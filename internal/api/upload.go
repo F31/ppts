@@ -87,7 +87,13 @@ func (s *UploadService) AbortUpload(ctx context.Context, req *connect.Request[pp
 // rewriteURL 把 local:// 签名链接重写为同源 HTTP 相对路径（供浏览器直接 PUT/GET）。
 // http(s) 预签名链接（S3 等）原样返回。
 func (s *UploadService) rewriteURL(signed string) string {
-	if s.parser == nil || !strings.HasPrefix(signed, "local://") {
+	return rewriteLocalSignedURL(s.parser, signed)
+}
+
+// rewriteLocalSignedURL 是各 transport 共用的本地签名链接重写：
+// local:// → /ppts/object/{key}?token&op。S3 等原生预签名链接原样返回。
+func rewriteLocalSignedURL(parser signedURLParser, signed string) string {
+	if parser == nil || !strings.HasPrefix(signed, "local://") {
 		return signed
 	}
 	u, err := url.Parse(signed)

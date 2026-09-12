@@ -21,10 +21,12 @@ type ExportService struct {
 	jobs      JobCreator
 	artifacts artifact.Store
 	objects   objectstore.ObjectStore
+	parser    signedURLParser
 }
 
 func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore) *ExportService {
-	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects}
+	parser, _ := objects.(signedURLParser)
+	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser}
 }
 
 func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[pptsv1.CreateExportRequest]) (*connect.Response[pptsv1.CreateExportResponse], error) {
@@ -104,7 +106,7 @@ func (s *ExportService) CreateDownload(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&pptsv1.CreateDownloadResponse{SignedUrl: url, ExpiresAtUnix: time.Now().Add(ttl).Unix()}), nil
+	return connect.NewResponse(&pptsv1.CreateDownloadResponse{SignedUrl: rewriteLocalSignedURL(s.parser, url), ExpiresAtUnix: time.Now().Add(ttl).Unix()}), nil
 }
 
 func exportFormat(format pptsv1.ArtifactFormat) (artifact.Format, error) {

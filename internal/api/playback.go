@@ -20,10 +20,12 @@ type PlaybackService struct {
 	pptsv1connect.UnimplementedPlaybackServiceHandler
 	jobs    JobCreator
 	objects objectstore.ObjectStore
+	parser  signedURLParser
 }
 
 func NewPlaybackService(jobs JobCreator, objects objectstore.ObjectStore) *PlaybackService {
-	return &PlaybackService{jobs: jobs, objects: objects}
+	parser, _ := objects.(signedURLParser)
+	return &PlaybackService{jobs: jobs, objects: objects, parser: parser}
 }
 
 func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request[pptsv1.GetNarrationRequest]) (*connect.Response[pptsv1.GetNarrationResponse], error) {
@@ -86,7 +88,7 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 			return err
 		}
 		resources = append(resources, &pptsv1.PlaybackResource{
-			Type: typ, Key: key.String(), SignedUrl: signed,
+			Type: typ, Key: key.String(), SignedUrl: rewriteLocalSignedURL(s.parser, signed),
 			ContentType: meta.ContentType, SizeBytes: meta.Size, ContentHash: meta.ContentHash,
 			SlideId: slideID, SegmentId: segmentID,
 		})

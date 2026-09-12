@@ -34,6 +34,9 @@ GOWORK=off go build ./...        # BUG-001 修复前使用发布版 go-pptx v1.0
 GOWORK=off go vet ./...
 GOWORK=off go test ./...
 
+# 含 PostgreSQL 的测试（共享测试库，必须串行 -p 1）
+PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 ./... -count=1
+
 cd web && npm ci && npm run build
 ```
 
@@ -42,7 +45,7 @@ cd web && npm ci && npm run build
 - `UploadService`：`CreateUpload/CompleteUpload/AbortUpload`（授权直传：分配受限对象键与预签名写链接，完成时校验大小/哈希/租户所有权后才创建源版本并入队解析任务）；
 - `ScriptService`：`Get/Update/Approve/Lock/GenerateDraft`（原文讲稿生成）；`NarrationService.CreateGeneration`；`ExportService`；`PlaybackService.GetNarration/GetManifest`（GetNarration 发现最近成功配音时间轴，容器化页面渲染未就绪时 GetManifest 允许无页面图）。
 
-Web 真实链路：直传 → 解析 → 展示真实页面 rail → 生成原文讲稿 → 生成配音 → 拉取真实播放 manifest（音频+字幕）；`local://` 预签名链接由 API 的 `/ppts/object/{key}` 端点服务，S3 后端返回原生预签名 URL。
+Web 真实链路：直传 → 解析 → 展示真实页面 rail → 生成原文讲稿 → 生成配音 → 拉取真实播放 manifest（音频+字幕）→ 导出下载；`local://` 预签名链接（上传、播放、导出）统一由 API 的 `/ppts/object/{key}` 端点重写服务，S3 后端返回原生预签名 URL。真实链路的 HTTP 端到端验收测试见 `internal/api/e2e_test.go`（`-tags=pg`，真实 PG + 本地存储 + 真实 worker，TTS 用 fake）。
 
 ## 本地服务
 

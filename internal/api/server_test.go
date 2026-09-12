@@ -487,6 +487,9 @@ func TestCreateDownloadSignsArtifactObject(t *testing.T) {
 	if resp.Msg.GetSignedUrl() == "" || resp.Msg.GetExpiresAtUnix() <= time.Now().Unix() {
 		t.Fatalf("download = %+v", resp.Msg)
 	}
+	if !strings.HasPrefix(resp.Msg.GetSignedUrl(), "/ppts/object/") {
+		t.Fatalf("local download url not rewritten: %q", resp.Msg.GetSignedUrl())
+	}
 }
 
 func TestPlaybackManifestSignsAllRequiredResources(t *testing.T) {
@@ -526,6 +529,9 @@ func TestPlaybackManifestSignsAllRequiredResources(t *testing.T) {
 	for _, res := range resp.Msg.GetResources() {
 		if res.GetSignedUrl() == "" || res.GetKey() == "" {
 			t.Fatalf("resource missing url/key: %+v", res)
+		}
+		if !strings.HasPrefix(res.GetSignedUrl(), "/ppts/object/") {
+			t.Fatalf("local resource url not rewritten: %+v", res)
 		}
 		counts[res.GetType()]++
 	}
