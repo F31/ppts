@@ -113,6 +113,18 @@ var ErrLeaseMismatch = errors.New("pipeline: job lease/fencing mismatch")
 // ErrNoSucceededJob 表示某项目尚无成功完成的指定类型任务。
 var ErrNoSucceededJob = errors.New("pipeline: no succeeded job")
 
+// ErrCancelRequested 表示续租时发现任务已被请求取消，worker 应在安全点停止。
+var ErrCancelRequested = errors.New("pipeline: cancel requested")
+
+// ErrJobNotFound 表示任务不存在或越权。
+var ErrJobNotFound = errors.New("pipeline: job not found")
+
+// ErrJobNotCancelable 表示任务当前状态不可取消。
+var ErrJobNotCancelable = errors.New("pipeline: job not cancelable")
+
+// ErrJobNotRetryable 表示任务当前状态不可重试。
+var ErrJobNotRetryable = errors.New("pipeline: job not retryable")
+
 // RetryError 由 handler 返回以请求按 RetryAfter 退避重试（V4.0 §10.4）。
 // 非 RetryError 的错误视为永久失败（不盲目重试）。
 type RetryError struct {
@@ -155,8 +167,13 @@ type Store interface {
 	ScheduleRetry(ctx context.Context, id, owner string, fencing int64, runAt time.Time, errMsg []byte) error
 	// MarkStep 记录步骤结果；成功引用与步骤完成同事务提交（由调用方事务控制）。
 	MarkStep(ctx context.Context, step JobStep) error
-	// CancelRequested 把任务置为 cancel_requested（客户端先持久化请求，worker 安全点检查）。
-	CancelRequested(ctx context.Context, id, tenantID string) (*Job, error)
+	// Cancel 取消任务：queued/retry_wait 直接置 canceled，running 置 cancel_requested
+	// 由 worker 在安全点停止并提交 canceled。不可取消状态返回 ErrJobNotCancelable。
+	Cancel(ctx context.Context, id, tenantID string) (*Job, error)
+	// RetryFailed 将 failed 任务重新入队（同任务行，保留 fencing 递增语义）。
+	RetryFailed(ctx context.Context, id, tenantID string) (*Job, error)
+	// List 按项目/状态游标分页查询（created_at 倒序）。
+	List(ctx context.Context, tenantID, projectID, state, cursor string, pageSize int) ([]*Job, string, error)
 	// Get 按 ID 查询（含跨步校验）。
 	Get(ctx context.Context, id, tenantID string) (*Job, error)
 }

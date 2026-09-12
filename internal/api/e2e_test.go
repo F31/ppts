@@ -29,6 +29,7 @@ import (
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
+	"github.com/F31/ppts/internal/usage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -77,7 +78,7 @@ func startE2EWorker(t *testing.T, pool *pgxpool.Pool, jobs *pipeline.PGStore, ob
 	np := narration.NewPGStore(pool)
 	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{}))
 	draftHandler := app.NewScriptDraftHandler(np, objects)
-	narrationHandler := app.NewNarrationHandler(np, jobs, objects, tts.NewFakeProvider())
+	narrationHandler := app.NewNarrationHandler(np, jobs, objects, tts.NewFakeProvider()).WithUsage(usage.NewPGStore(pool))
 	exportHandler := app.NewExportHandler(artifact.NewPGStore(pool), jobs, objects, nil)
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
 		switch job.Kind {
@@ -133,9 +134,11 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 	pool, jobs, objects := setupE2E(t)
 	startE2EWorker(t, pool, jobs, objects)
 
+	usageStore := usage.NewPGStore(pool)
 	server := httptest.NewServer(NewHandler(
 		project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 		narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool), objects,
+		Options{Quota: usageStore, Usage: usageStore, Policy: tenant.NewPGStore(pool)},
 	))
 	t.Cleanup(server.Close)
 	hc := http.DefaultClient
@@ -268,6 +271,16 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 			t.Fatalf("audio resource status=%d len=%d", aresp.StatusCode, len(abytes))
 		}
 		break
+	}
+
+	// G3-2：配音完成后额度按真实时长结算（预占释放、计入 consumed 并写账本）。
+	uStore := usage.NewPGStore(pool)
+	q, err := uStore.GetQuota(ctx, e2eTenant, usage.KindGenSeconds)
+	if err != nil {
+		t.Fatalf("GetQuota: %v", err)
+	}
+	if q.ConsumedUnits <= 0 || q.ReservedUnits != 0 {
+		t.Fatalf("usage not settled after narration: %+v", q)
 	}
 
 	// 7) 导出 SRT → GetArtifact → CreateDownload → 实际下载正文。

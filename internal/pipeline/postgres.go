@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -111,14 +112,15 @@ func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, le
 			  AND (j.run_at IS NULL OR j.run_at <= now())
 			  AND (
 			    (j.state IN ('queued','retry_wait') AND (j.lease_until IS NULL OR j.lease_until < now()))
-			    OR (j.state='running' AND j.lease_until < now()) -- 崩溃 worker 租约过期可重领取
+			    OR (j.state IN ('running','cancel_requested') AND j.lease_until < now())
 			  )
 			ORDER BY j.created_at
 			LIMIT 1
 			FOR UPDATE SKIP LOCKED
 		)
 		UPDATE jobs j SET
-			state='running', attempt=j.attempt+1,
+			state=CASE WHEN j.state='cancel_requested' THEN 'cancel_requested' ELSE 'running' END,
+			attempt=j.attempt+1,
 			lease_owner=$2, lease_until=now()+$3,
 			fencing_token=j.fencing_token+1, updated_at=now()
 		FROM candidate c WHERE j.id=c.id
@@ -139,7 +141,7 @@ func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, le
 	return j, nil
 }
 
-// Heartbeat 续租；fencing 不匹配或非运行态返回 ErrLeaseMismatch。
+// Heartbeat 续租；发现取消请求返回 ErrCancelRequested，fencing 不匹配返回 ErrLeaseMismatch。
 // 使用 context 中的租户上下文（由 worker 在处理任务前注入）。
 func (s *PGStore) Heartbeat(ctx context.Context, id, owner string, fencing int64, extend time.Duration) error {
 	return tenant.RunCtx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
@@ -150,10 +152,18 @@ func (s *PGStore) Heartbeat(ctx context.Context, id, owner string, fencing int64
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() != 1 {
-			return ErrLeaseMismatch
+		if tag.RowsAffected() == 1 {
+			return nil
 		}
-		return nil
+		// 未命中：区分"被请求取消"与"租约失效"。
+		var state string
+		serr := tx.QueryRow(ctx,
+			`SELECT state FROM jobs WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3`,
+			id, owner, fencing).Scan(&state)
+		if serr == nil && state == string(StateCancelReq) {
+			return ErrCancelRequested
+		}
+		return ErrLeaseMismatch
 	})
 }
 
@@ -164,7 +174,8 @@ func (s *PGStore) Complete(ctx context.Context, id, owner string, fencing int64,
 			`UPDATE jobs SET state=$4, lease_owner=NULL, lease_until=NULL,
 			   last_error=$5, progress=CASE WHEN $4='succeeded' THEN 100 ELSE progress END,
 			   updated_at=now()
-			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND state='running'`,
+			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3
+			   AND state IN ('running','cancel_requested')`,
 			id, owner, fencing, string(state), nullableBytes(errMsg))
 		if err != nil {
 			return err
@@ -207,19 +218,117 @@ func (s *PGStore) MarkStep(ctx context.Context, step JobStep) error {
 	})
 }
 
-// CancelRequested 客户端先持久化取消请求；worker 在安全点检查。
-func (s *PGStore) CancelRequested(ctx context.Context, id, tenantID string) (*Job, error) {
+// Cancel 取消任务：queued/retry_wait 直接置 canceled；running 置 cancel_requested
+// 由 worker 安全点停止后提交 canceled。
+func (s *PGStore) Cancel(ctx context.Context, id, tenantID string) (*Job, error) {
 	var j *Job
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		var e error
-		j, e = scanJob(tx.QueryRow(ctx,
-			`UPDATE jobs SET state='cancel_requested', updated_at=now()
-			 WHERE id=$1 AND tenant_id=$2
-			   AND state IN ('queued','running','retry_wait')
+		got, err := scanJob(tx.QueryRow(ctx,
+			`UPDATE jobs SET
+			   state = CASE WHEN state IN ('queued','retry_wait') THEN 'canceled' ELSE 'cancel_requested' END,
+			   updated_at=now()
+			 WHERE id=$1 AND tenant_id=$2 AND state IN ('queued','retry_wait','running')
 			 RETURNING `+jobSelectColumns, id, tenantID))
-		return e
+		if errors.Is(err, pgx.ErrNoRows) {
+			// 区分不存在与状态不可取消。
+			var state string
+			if serr := tx.QueryRow(ctx, `SELECT state FROM jobs WHERE id=$1 AND tenant_id=$2`, id, tenantID).Scan(&state); errors.Is(serr, pgx.ErrNoRows) {
+				return ErrJobNotFound
+			} else if serr != nil {
+				return serr
+			}
+			return ErrJobNotCancelable
+		}
+		if err != nil {
+			return err
+		}
+		j = got
+		return nil
 	})
-	return j, err
+	if err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
+// RetryFailed 将 failed 任务重新入队（保留原行与 attempt，下次领取 fencing 递增）。
+func (s *PGStore) RetryFailed(ctx context.Context, id, tenantID string) (*Job, error) {
+	var j *Job
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		got, err := scanJob(tx.QueryRow(ctx,
+			`UPDATE jobs SET state='queued', run_at=NULL, lease_owner=NULL, lease_until=NULL, last_error=NULL, updated_at=now()
+			 WHERE id=$1 AND tenant_id=$2 AND state='failed'
+			 RETURNING `+jobSelectColumns, id, tenantID))
+		if errors.Is(err, pgx.ErrNoRows) {
+			var state string
+			if serr := tx.QueryRow(ctx, `SELECT state FROM jobs WHERE id=$1 AND tenant_id=$2`, id, tenantID).Scan(&state); errors.Is(serr, pgx.ErrNoRows) {
+				return ErrJobNotFound
+			} else if serr != nil {
+				return serr
+			}
+			return ErrJobNotRetryable
+		}
+		if err != nil {
+			return err
+		}
+		j = got
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
+// List 按项目与状态游标分页（created_at 倒序）；cursor 为空取首页。
+func (s *PGStore) List(ctx context.Context, tenantID, projectID, state, cursor string, pageSize int) ([]*Job, string, error) {
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+	var out []*Job
+	next := ""
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		args := []any{tenantID, projectID, pageSize + 1}
+		where := "tenant_id=$1 AND project_id=$2"
+		if state != "" {
+			args = append(args, state)
+			where += " AND state=$4"
+		}
+		if cursor != "" {
+			createdBefore, perr := time.Parse(time.RFC3339Nano, cursor)
+			if perr != nil {
+				return perr
+			}
+			args = append(args, createdBefore)
+			where += " AND created_at < $" + strconv.Itoa(len(args))
+		}
+		rows, err := tx.Query(ctx,
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE "+where+" ORDER BY created_at DESC LIMIT $3", args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out = make([]*Job, 0, pageSize)
+		for rows.Next() {
+			job, err := scanJob(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, job)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(out) > pageSize {
+			next = out[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
+			out = out[:pageSize]
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return out, next, nil
 }
 
 // Get 按 ID + 租户查询。

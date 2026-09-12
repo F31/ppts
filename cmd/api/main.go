@@ -16,7 +16,9 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
+	"github.com/F31/ppts/internal/usage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -58,9 +60,20 @@ func run() error {
 	}
 	defer jobs.Close()
 
+	policyStore := tenant.NewPGStore(pool)
+	objects, err := objectstore.NewRegistry("local", map[string]objectstore.ObjectStore{
+		"local": objectstore.NewLocal(objectRoot, []byte(objectSecret)),
+	}, policyStore)
+	if err != nil {
+		return err
+	}
+	usageStore := usage.NewPGStore(pool)
 	server := &http.Server{
-		Addr:              addr,
-		Handler:           api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool), narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool), objectstore.NewLocal(objectRoot, []byte(objectSecret))),
+		Addr: addr,
+		Handler: api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
+			narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
+			objects,
+			api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)

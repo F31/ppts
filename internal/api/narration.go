@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
@@ -14,6 +16,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/usage"
 )
 
 // JobCreator 是 API transport 需要的任务能力（创建任务 + 播放服务发现最近成功配音）。
@@ -23,16 +26,23 @@ type JobCreator interface {
 	StepResultRef(ctx context.Context, jobID, stepType string) (string, error)
 }
 
+// QuotaManager 是配音生成前的额度预占能力（G3-2）。
+type QuotaManager interface {
+	Reserve(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind, units float64) (*usage.Reservation, error)
+	Release(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind) error
+}
+
 // NarrationGenerationService creates revision-bound narration jobs.
 type NarrationGenerationService struct {
 	pptsv1connect.UnimplementedNarrationServiceHandler
 	scripts narration.Store
 	jobs    JobCreator
+	quota   QuotaManager
 }
 
 // NewNarrationGenerationService creates a narration task service.
-func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator) *NarrationGenerationService {
-	return &NarrationGenerationService{scripts: scripts, jobs: jobs}
+func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, quota QuotaManager) *NarrationGenerationService {
+	return &NarrationGenerationService{scripts: scripts, jobs: jobs, quota: quota}
 }
 
 func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *connect.Request[pptsv1.CreateGenerationRequest]) (*connect.Response[pptsv1.CreateGenerationResponse], error) {
@@ -66,6 +76,7 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		SpeechControl: tts.SpeechControl{RatePercent: rate}, SampleRate: 16000,
 	}
 	seen := make(map[string]struct{}, len(req.Msg.GetSlideIds()))
+	totalRunes := 0
 	for _, rawSlideID := range req.Msg.GetSlideIds() {
 		slideID := strings.TrimSpace(rawSlideID)
 		if slideID == "" {
@@ -82,6 +93,11 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		if snapshot.RequireConfirmed && revision.Status != narration.StatusApproved && revision.Status != narration.StatusLocked {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("all selected scripts must be approved or locked"))
 		}
+		for _, segment := range revision.Segments {
+			if segment != nil {
+				totalRunes += utf8.RuneCountInString(segment.SpokenText)
+			}
+		}
 		snapshot.Slides = append(snapshot.Slides, app.NarrationSlideSnapshot{
 			SlideID: slideID, ScriptRevision: revision.Revision,
 		})
@@ -90,12 +106,65 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+
+	// 配额预占：预占成功才创建可执行任务（V4.0 §12.2）。
+	var reserved *usage.Reservation
+	if s.quota != nil {
+		units := usage.EstimateSeconds(totalRunes)
+		res, rerr := s.quota.Reserve(ctx, principal.TenantID, idempotencyKey, usage.KindGenSeconds, units)
+		if errors.Is(rerr, usage.ErrInsufficientQuota) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("quota exceeded for requested narration"))
+		}
+		if rerr != nil {
+			return nil, connect.NewError(connect.CodeInternal, rerr)
+		}
+		reserved = res
+	}
+	releaseReservation := func() {
+		if reserved != nil && reserved.Created {
+			_ = s.quota.Release(ctx, principal.TenantID, idempotencyKey, usage.KindGenSeconds)
+		}
+	}
 	job, err := s.jobs.Create(ctx, principal.TenantID, projectID, string(pipeline.KindNarration), idempotencyKey, string(snapshotBytes), time.Time{})
 	if err != nil {
+		releaseReservation()
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	if job.InputSnapshot != string(snapshotBytes) {
+		releaseReservation()
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
 	}
 	return connect.NewResponse(&pptsv1.CreateGenerationResponse{JobId: job.ID, WithinBudget: true}), nil
+}
+
+// Estimate 估算所选页面的播报秒数。定价随正式 TTS 供应商确定（当前返回 0 费用）。
+func (s *NarrationGenerationService) Estimate(ctx context.Context, req *connect.Request[pptsv1.NarrationEstimateRequest]) (*connect.Response[pptsv1.NarrationEstimateResponse], error) {
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projectID := strings.TrimSpace(req.Msg.GetProjectId())
+	if projectID == "" || len(req.Msg.GetSlideIds()) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id and slide_ids are required"))
+	}
+	language := requestLanguage(req.Header())
+	totalRunes := 0
+	for _, rawSlideID := range req.Msg.GetSlideIds() {
+		slideID := strings.TrimSpace(rawSlideID)
+		if slideID == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slide_id cannot be empty"))
+		}
+		revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, slideID, language)
+		if err != nil {
+			return nil, scriptError(err)
+		}
+		for _, segment := range revision.Segments {
+			if segment != nil {
+				totalRunes += utf8.RuneCountInString(segment.SpokenText)
+			}
+		}
+	}
+	return connect.NewResponse(&pptsv1.NarrationEstimateResponse{
+		EstimatedSeconds: int64(math.Ceil(usage.EstimateSeconds(totalRunes))),
+	}), nil
 }

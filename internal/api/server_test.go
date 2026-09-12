@@ -23,7 +23,9 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
+	"github.com/F31/ppts/internal/usage"
 )
 
 type fakeScriptStore struct {
@@ -162,6 +164,8 @@ type jobCreatorStub struct {
 	projectID      string
 	idempotencyKey string
 	inputSnapshot  string
+	listJobs       []*pipeline.Job
+	listNext       string
 }
 
 type fakeArtifactStore struct {
@@ -202,6 +206,43 @@ func (s *jobCreatorStub) LatestSucceededJob(context.Context, string, string, str
 
 func (s *jobCreatorStub) StepResultRef(context.Context, string, string) (string, error) {
 	return "", nil
+}
+
+func (s *jobCreatorStub) Get(context.Context, string, string) (*pipeline.Job, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.job == nil {
+		return nil, pipeline.ErrJobNotFound
+	}
+	return s.job, nil
+}
+
+func (s *jobCreatorStub) List(context.Context, string, string, string, string, int) ([]*pipeline.Job, string, error) {
+	if s.err != nil {
+		return nil, "", s.err
+	}
+	return s.listJobs, s.listNext, nil
+}
+
+func (s *jobCreatorStub) Cancel(context.Context, string, string) (*pipeline.Job, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.job == nil {
+		return nil, pipeline.ErrJobNotFound
+	}
+	return s.job, nil
+}
+
+func (s *jobCreatorStub) RetryFailed(context.Context, string, string) (*pipeline.Job, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.job == nil {
+		return nil, pipeline.ErrJobNotFound
+	}
+	return s.job, nil
 }
 
 func (s *fakeScriptStore) Get(_ context.Context, tenantID, _, _, language string) (*narration.Revision, error) {
@@ -427,6 +468,241 @@ func TestCreateGenerationRejectsIdempotencyKeyReuseWithDifferentSnapshot(t *test
 	}
 }
 
+// fakeQuotaManager 记录预占/释放，验证 G3-2 配额接线。
+type fakeQuotaManager struct {
+	reserveErr error
+	reserved   []usage.Reservation
+	released   []string
+}
+
+func (f *fakeQuotaManager) Reserve(_ context.Context, tenantID, logicalOperationID string, kind usage.Kind, units float64) (*usage.Reservation, error) {
+	if f.reserveErr != nil {
+		return nil, f.reserveErr
+	}
+	r := &usage.Reservation{
+		ID: "res-1", TenantID: tenantID, LogicalOperationID: logicalOperationID,
+		Kind: kind, ReservedUnits: units, State: "reserved", Created: true,
+	}
+	f.reserved = append(f.reserved, *r)
+	return r, nil
+}
+
+func (f *fakeQuotaManager) Release(_ context.Context, tenantID, logicalOperationID string, kind usage.Kind) error {
+	f.released = append(f.released, logicalOperationID)
+	return nil
+}
+
+func TestCreateGenerationReservesQuota(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	jobs := &jobCreatorStub{}
+	quota := &fakeQuotaManager{}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), Options{Quota: quota}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "quota-1")
+	resp, err := client.CreateGeneration(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateGeneration: %v", err)
+	}
+	if !resp.Msg.GetWithinBudget() {
+		t.Fatalf("within_budget should be true")
+	}
+	if len(quota.reserved) != 1 || quota.reserved[0].LogicalOperationID != "quota-1" || quota.reserved[0].ReservedUnits <= 0 {
+		t.Fatalf("reservation = %+v", quota.reserved)
+	}
+}
+
+func TestCreateGenerationQuotaExceeded(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	quota := &fakeQuotaManager{reserveErr: usage.ErrInsufficientQuota}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), Options{Quota: quota}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "quota-2")
+	_, err := client.CreateGeneration(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("code=%v err=%v", connect.CodeOf(err), err)
+	}
+	if len(quota.reserved) != 0 {
+		t.Fatalf("no reservation should be recorded on rejection")
+	}
+}
+
+func TestCreateGenerationReleasesQuotaOnJobFailure(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	quota := &fakeQuotaManager{}
+	jobs := &jobCreatorStub{err: errors.New("db down")}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), Options{Quota: quota}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "quota-3")
+	_, err := client.CreateGeneration(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodeInternal {
+		t.Fatalf("code=%v err=%v", connect.CodeOf(err), err)
+	}
+	if len(quota.released) != 1 || quota.released[0] != "quota-3" {
+		t.Fatalf("expected release on job failure, got %+v", quota.released)
+	}
+}
+
+func TestJobServiceGetListCancelRetry(t *testing.T) {
+	job := &pipeline.Job{
+		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
+		State: pipeline.StateRunning, Attempt: 2, Progress: 40, InputSnapshot: "snap",
+		CreatedAt: time.Unix(10, 0), UpdatedAt: time.Unix(20, 0),
+		LastError: &pipeline.JobError{Code: "throttled", Retryable: true, RetryAfterSeconds: 5},
+	}
+	jobs := &jobCreatorStub{job: job, listJobs: []*pipeline.Job{job}, listNext: "cursor-2"}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	got, err := client.Get(context.Background(), authRequest(&pptsv1.GetJobRequest{JobId: "job-1"}))
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Msg.GetJobId() != "job-1" || got.Msg.GetState() != pptsv1.JobState_JOB_STATE_RUNNING ||
+		got.Msg.GetAttempt() != 2 || got.Msg.GetProgressPercent() != 40 || got.Msg.GetLastError().GetRetryable() != true {
+		t.Fatalf("job = %+v", got.Msg)
+	}
+
+	list, err := client.List(context.Background(), authRequest(&pptsv1.ListJobsRequest{
+		ProjectId: "project-1", State: pptsv1.JobState_JOB_STATE_RUNNING, PageSize: 10,
+	}))
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(list.Msg.GetJobs()) != 1 || list.Msg.GetNextCursor().GetValue() != "cursor-2" {
+		t.Fatalf("list = %+v", list.Msg)
+	}
+
+	canceled, err := client.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"}))
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if canceled.Msg.GetJobId() != "job-1" {
+		t.Fatalf("cancel = %+v", canceled.Msg)
+	}
+
+	retried, err := client.RetryFailed(context.Background(), authRequest(&pptsv1.RetryFailedRequest{JobId: "job-1"}))
+	if err != nil {
+		t.Fatalf("RetryFailed: %v", err)
+	}
+	if retried.Msg.GetJobId() != "job-1" {
+		t.Fatalf("retry = %+v", retried.Msg)
+	}
+}
+
+func TestJobServiceNotFoundAndNotCancelable(t *testing.T) {
+	jobs := &jobCreatorStub{} // job == nil → ErrJobNotFound
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.Get(context.Background(), authRequest(&pptsv1.GetJobRequest{JobId: "missing"})); connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("Get missing code = %v", connect.CodeOf(err))
+	}
+
+	notCancelable := &jobCreatorStub{err: pipeline.ErrJobNotCancelable}
+	server2 := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, notCancelable, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server2.Close)
+	client2 := pptsv1connect.NewJobServiceClient(http.DefaultClient, server2.URL)
+	if _, err := client2.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("Cancel not-cancelable code = %v", connect.CodeOf(err))
+	}
+}
+
+// fakeTenantUsage / fakeTenantPolicy 用于 TenantService 只读接口测试。
+type fakeTenantUsage struct {
+	quota   *usage.Quota
+	seconds float64
+	cost    float64
+	err     error
+}
+
+func (f *fakeTenantUsage) GetQuota(_ context.Context, tenantID string, kind usage.Kind) (*usage.Quota, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.quota == nil {
+		return &usage.Quota{TenantID: tenantID, Kind: kind, LimitUnits: -1}, nil
+	}
+	return f.quota, nil
+}
+
+func (f *fakeTenantUsage) UsageSummary(context.Context, string, string) (float64, float64, error) {
+	if f.err != nil {
+		return 0, 0, f.err
+	}
+	return f.seconds, f.cost, nil
+}
+
+type fakeTenantPolicy struct {
+	policy *tenant.Policy
+	err    error
+}
+
+func (f *fakeTenantPolicy) GetPolicy(context.Context, string) (*tenant.Policy, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.policy == nil {
+		return &tenant.Policy{}, nil
+	}
+	return f.policy, nil
+}
+
+func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
+	u := &fakeTenantUsage{
+		quota:   &usage.Quota{TenantID: "tenant-1", Kind: usage.KindGenSeconds, LimitUnits: 3600, ConsumedUnits: 120, ReservedUnits: 30},
+		seconds: 120, cost: 0,
+	}
+	p := &fakeTenantPolicy{policy: &tenant.Policy{
+		StorageBackend: "s3", StorageRegion: "cn-north-1", SourceRetentionDays: 30,
+		MaxConcurrentJobs: 4, MaxStorageBytes: 1 << 30,
+	}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), Options{Usage: u, Policy: p}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	quota, err := client.Quota(context.Background(), authRequest(&pptsv1.GetQuotaRequest{}))
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if quota.Msg.GetMonthlySeconds() != 3600 || quota.Msg.GetUsedSeconds() != 120 ||
+		quota.Msg.GetMaxConcurrentJobs() != 4 || quota.Msg.GetMaxStorageBytes() != 1<<30 {
+		t.Fatalf("quota = %+v", quota.Msg)
+	}
+
+	usageResp, err := client.Usage(context.Background(), authRequest(&pptsv1.GetUsageRequest{Month: "2026-09"}))
+	if err != nil {
+		t.Fatalf("Usage: %v", err)
+	}
+	if usageResp.Msg.GetSecondsUsed() != 120 {
+		t.Fatalf("usage = %+v", usageResp.Msg)
+	}
+
+	policy, err := client.Policy(context.Background(), authRequest(&pptsv1.GetPolicyRequest{}))
+	if err != nil {
+		t.Fatalf("Policy: %v", err)
+	}
+	if policy.Msg.GetStorageBackend() != "s3" || policy.Msg.GetStorageRegion() != "cn-north-1" ||
+		policy.Msg.GetSourceRetentionDays() != 30 {
+		t.Fatalf("policy = %+v", policy.Msg)
+	}
+
+	// Members/Roles 依赖 G3-3，暂返回 Unimplemented。
+	if _, err := client.Members(context.Background(), authRequest(&pptsv1.GetMembersRequest{})); connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("Members code = %v want Unimplemented", connect.CodeOf(err))
+	}
+}
+
 func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
@@ -629,6 +905,22 @@ func (s *narrationJobStub) LatestSucceededJob(context.Context, string, string, s
 
 func (s *narrationJobStub) StepResultRef(context.Context, string, string) (string, error) {
 	return s.stepRef, nil
+}
+
+func (s *narrationJobStub) Get(context.Context, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
+}
+
+func (s *narrationJobStub) List(context.Context, string, string, string, string, int) ([]*pipeline.Job, string, error) {
+	return nil, "", nil
+}
+
+func (s *narrationJobStub) Cancel(context.Context, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
+}
+
+func (s *narrationJobStub) RetryFailed(context.Context, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
 }
 
 func TestProjectGetSlidesReadsParsedDocument(t *testing.T) {

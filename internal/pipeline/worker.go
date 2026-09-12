@@ -3,7 +3,9 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/F31/ppts/internal/tenant"
@@ -87,11 +89,21 @@ func (w *Worker) Run(ctx context.Context) error {
 func (w *Worker) process(ctx context.Context, job *Job) {
 	// 注入任务所属租户，供续租/终态提交与 handler 建立 RLS 上下文。
 	ctx = tenant.WithContext(ctx, job.TenantID)
+
+	// 领取到"待取消"任务：不执行 handler，直接提交 canceled。
+	if job.State == StateCancelReq {
+		if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateCanceled, nil); cerr != nil {
+			w.logger.Printf("worker: complete pending-cancel job=%s: %v", job.ID, cerr)
+		}
+		return
+	}
+
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	canceled := &atomic.Bool{}
 	hbDone := make(chan struct{})
-	go w.heartbeatRun(workCtx, job, hbDone)
+	go w.heartbeatRun(workCtx, job, hbDone, cancel, canceled)
 
 	err := w.handler(workCtx, job)
 	cancel()
@@ -100,6 +112,13 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 	// 父 ctx 取消 = worker 停机/崩溃：不写终态，靠租约过期让其他 worker 重领取。
 	if ctx.Err() != nil {
 		w.logger.Printf("worker: ctx canceled for job %s, leaving for reclaim", job.ID)
+		return
+	}
+	// 心跳发现取消请求：安全点停止并提交 canceled。
+	if canceled.Load() {
+		if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateCanceled, nil); cerr != nil {
+			w.logger.Printf("worker: complete canceled job=%s: %v", job.ID, cerr)
+		}
 		return
 	}
 	if err != nil {
@@ -124,8 +143,8 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 	}
 }
 
-// heartbeatRun 周期性续租；fencing 失效时通知取消 handler。
-func (w *Worker) heartbeatRun(ctx context.Context, job *Job, done chan<- struct{}) {
+// heartbeatRun 周期性续租；fencing 失效或取消请求时终止本 worker 处理。
+func (w *Worker) heartbeatRun(ctx context.Context, job *Job, done chan<- struct{}, cancel context.CancelFunc, canceled *atomic.Bool) {
 	defer close(done)
 	t := time.NewTicker(w.heartbeat)
 	defer t.Stop()
@@ -136,6 +155,10 @@ func (w *Worker) heartbeatRun(ctx context.Context, job *Job, done chan<- struct{
 			return
 		case <-t.C:
 			if err := w.store.Heartbeat(bg, job.ID, job.LeaseOwner, job.FencingToken, w.leaseFor); err != nil {
+				if errors.Is(err, ErrCancelRequested) {
+					canceled.Store(true)
+					cancel()
+				}
 				// 租约丢失（如被重领取）：终止本 worker 处理，其提交自然失败。
 				return
 			}

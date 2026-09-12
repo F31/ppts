@@ -237,6 +237,26 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-1 角色分离 | 🟡 运行角色已就位，迁移账号待账号化 | 实测 dev/test owner=`postgres`、运行账号 `ppts_app` 为 `NOSUPERUSER NOBYPASSRLS` 且非 owner；迁移由 owner 账号执行。ADR-019 提出的专属 `ppts_migrator` 作为部署最佳实践待落地（当前用 `postgres` 承担 owner 角色） |
 | G3-1 验收测试 | ✅ 通过 | `internal/tenant/rls_test.go`（`-tags=pg`）：缺上下文查询不可见、空上下文写入被拒、以 A 上下文写 B 被拒、单连接连续切租户不串；既有全部 PG 测试在 RLS 开启后仍通过 |
 | G3-1 调度角色（跨租户领取） | ⏸ 待 ADR-018 | 当前 worker 单租户，任务领取在租户上下文内；跨租户调度角色与策略属 ADR-018，未实现 |
+| G3-2 配额与用量账本 | ✅ 主体实现 | `migrations/0007_usage_quotas.sql`（`tenant_quotas`/`quota_reservations`，含 FORCE RLS）；`internal/usage` 提供原子"预占→结算/释放"（条件更新 + 行锁 + 幂等唯一键，`Settle` 写 `usage_ledger`）；`EstimateSeconds` 时长估算 |
+| G3-2 接线 | ✅ 已接 | `NarrationGenerationService` 生成前预占（不足返回 `ResourceExhausted`）、任务创建失败/幂等冲突即释放、`WithinBudget` 由真实预占决定；`Estimate` RPC 返回估算秒数；`NarrationHandler.WithUsage` 在完成后按真实合成时长结算；`cmd/api`/`cmd/worker` 注入 `usage.NewPGStore` |
+| G3-2 测试 | ✅ 通过 | `internal/usage/postgres_test.go`（预占幂等/限额原子拒绝/结算写账本幂等/释放/跨租户隔离）；`internal/api` 配额用例（预占、超限 `ResourceExhausted`、任务失败释放）；E2E 断言配音后 `consumed>0` 且 `reserved=0` |
+
+> G3-2 剩余：per-tenant 并发上限与公平调度（属 ADR-018 跨租户调度）；定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）；任务失败/取消的自动释放与预占过期清理。
+
+| G3-6 存储策略路由 | 🟡 最小实现 | `internal/integrations/objectstore.Registry` 按 `ObjectKey.TenantID` 查询租户 `storage_backend` 并路由到注册后端；空策略回退默认 local；未知后端返回 `ErrBackendNotFound`，不伪成功。`cmd/api` 与 `cmd/worker` 均改为通过 Registry 使用对象存储，现有 local 行为保持不变 |
+| G3-6 生命周期接口 | 🟡 接口层 | Registry 将 `ApplyLifecyclePolicy` 分发到已注册后端，并忽略 local 的 `ErrOperationNotSupported`；S3 适配器已有原生 lifecycle 翻译。真实 per-tenant lifecycle 配置下发与成本汇总待后续 |
+
+> G3-6 剩余：S3/BYOS 后端配置与凭据存储、按租户区域/桶路由、生命周期策略下发时机、存储成本按租户汇总、企业信封加密/KMS。
+
+| G3-7 数据保留/到期清理 | ✅ 实现 | `migrations/0008_retention.sql`（`source_revisions.source_deleted_at`）；`internal/retention` 提供 `Sweeper`：按控制面 tenants 逐租户清理（租户上下文内）。执行两类删除——① 项目 `source_retention_days` 到期；② 上传会话 `delete_source_after=true` 且解析任务已成功；并清理超时仍 `pending` 的孤儿上传（删除临时对象 + 置 aborted，对象已不存在视为幂等成功） |
+| G3-7 接线与测试 | ✅ | `cmd/worker` 启动清理循环（`PPTS_RETENTION_INTERVAL` 默认 1h、`PPTS_UPLOAD_ABANDON_TTL` 默认 24h，启动即跑一次）；`internal/retention/postgres_test.go`（到期源/处理后删除/孤儿上传均删除并标记、未到期保留） |
+
+> G3-7 剩余：`delete_source_after` 目前按"解析任务成功"触发（渲染/导出完成后删除留待渲染链路接通）；租户级默认保留期与"派生产物保留期"分档；删除审计日志（G3-4）。
+
+| G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 增量轮询已满足首版，服务端流留待增强版 |
+| G3-9 TenantService | 🟡 只读部分 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）。`Members/Roles` 依赖 G3-3 身份与角色模型，暂返回 `Unimplemented` |
+
+> G3-9 剩余：`WatchEvents` 服务端流与事件序号；TenantService `Members/Roles`（G3-3）；Job 进度百分比由 handler 上报（当前仅终态置 100）。
 
 > G3-1 剩余：`pg_roles` 断言测试（`rolsuper=false`/`rolbypassrls=false`）、专属迁移账号、调度角色策略（随 ADR-018），以及 job_steps 缺失租户上下文时的显式拒绝用例补充。
 
@@ -315,3 +335,7 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-12 | V1.2 | 多租户架构评审对齐：新增 §1.4 评审发现→任务映射与 §1.4.1 两项 G1 收尾前置决策；细化 G3-1~G3-7；新增 G3-8（可观测性/成本）、G3-9（JobService/TenantService）、G3-10（CI 门禁）；更新 §5 关键路径、§6 风险、§8 行动清单 |
 | 2026-09-12 | V1.2 | G1 收尾执行登记（§4.2.1）：记录 ADR-018/019；修复崩溃窗口源版本重复（migration 0005 + 幂等 store + PG 测试）；CI 新增 postgres/s3/proto 门禁 |
 | 2026-09-12 | V1.2 | G3-1 执行登记（§4.4.1）：migration 0006 启用 FORCE RLS + 策略；`internal/tenant` 租户事务助手；全部 store 改造为租户上下文事务；RLS 验收测试通过 |
+| 2026-09-12 | V1.2 | G3-2 执行登记（§4.4.1）：migration 0007 配额表；`internal/usage` 原子预占/结算/释放 + 账本；CreateGeneration 预占与配音完成结算接线；Estimate 估算；测试通过 |
+| 2026-09-12 | V1.2 | G3-7 执行登记（§4.4.1）：migration 0008 源对象删除标记；`internal/retention` 逐租户清理到期源/处理后删除/孤儿上传；worker 周期清理；测试通过 |
+| 2026-09-12 | V1.2 | G3-9 执行登记（§4.4.1）：JobService Get/List/Cancel/RetryFailed（含 worker 安全点取消、claim 回收 cancel_requested）；TenantService Quota/Usage/Policy 只读（Members/Roles 待 G3-3）；测试通过 |
+| 2026-09-12 | V1.2 | G3-6 最小执行登记（§4.4.1）：新增 `ObjectStoreRegistry` 按租户策略路由对象存储；API/worker 接入 Registry，默认 local 行为不变；补路由与未知后端测试 |

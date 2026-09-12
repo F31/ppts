@@ -99,6 +99,61 @@ func TestRLSCrossTenantWriteRejected(t *testing.T) {
 	}
 }
 
+// 运行账号必须是非 superuser、非 BYPASSRLS、且非受保护表的 owner，否则 RLS 形同虚设。
+func TestRuntimeRoleIsNotPrivileged(t *testing.T) {
+	pool := rlsPool(t)
+	ctx := context.Background()
+
+	var (
+		curUser      string
+		isSuper      bool
+		bypassRLS    bool
+		projectOwner string
+	)
+	if err := pool.QueryRow(ctx,
+		`SELECT current_user, r.rolsuper, r.rolbypassrls
+		   FROM pg_roles r WHERE r.rolname = current_user`).Scan(&curUser, &isSuper, &bypassRLS); err != nil {
+		t.Fatalf("query pg_roles: %v", err)
+	}
+	if isSuper || bypassRLS {
+		t.Fatalf("runtime role %q must be NOSUPERUSER NOBYPASSRLS (super=%v bypassrls=%v)", curUser, isSuper, bypassRLS)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='projects'`).Scan(&projectOwner); err != nil {
+		t.Fatalf("query table owner: %v", err)
+	}
+	if projectOwner == curUser {
+		t.Fatalf("runtime role %q must not own protected tables; owner=%q", curUser, projectOwner)
+	}
+}
+
+// job_steps 同样受 RLS 约束：缺失租户上下文写入必须被拒绝。
+func TestRLSJobStepsMissingContextDenied(t *testing.T) {
+	pool := rlsPool(t)
+	ctx := context.Background()
+
+	// 先在租户 A 上下文建一个真实 job（满足 job_steps 外键），排除 FK 干扰。
+	jobID := "00000000-0000-0000-0000-0000000000d1"
+	if err := tenant.Run(ctx, pool, rlsTenantA, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO jobs (id, tenant_id, project_id, kind, state) VALUES ($1,$2,$3,'parse','queued')`,
+			jobID, rlsTenantA, rlsProjectA)
+		return err
+	}); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+
+	err := tenant.Run(ctx, pool, "", func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`INSERT INTO job_steps (id, job_id, tenant_id, step_type, step_key, state, result_ref)
+			 VALUES (gen_random_uuid(), $1, $2, 't', 'k', 'pending', '')`, jobID, rlsTenantA)
+		return err
+	})
+	if err == nil {
+		t.Fatalf("job_steps insert without tenant context: want error, got nil")
+	}
+}
+
 // 租户隔离：各自只可见本租户项目；单连接连续切租户不串。
 func TestRLSTenantIsolationSameConnection(t *testing.T) {
 	dsn := os.Getenv("PPTS_TEST_DATABASE")

@@ -19,6 +19,7 @@ import (
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/usage"
 )
 
 const ttsAdapterVersion = "v1"
@@ -71,6 +72,12 @@ type NarrationHandler struct {
 	}
 	objects  objectstore.ObjectStore
 	provider tts.TTSProvider
+	usage    UsageSettler
+}
+
+// UsageSettler 是配音完成后按实际时长结算额度所需的窄能力（G3-2）。
+type UsageSettler interface {
+	Settle(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind, actualUnits float64, priceVersion string) error
 }
 
 // NewNarrationHandler creates a segmented TTS handler.
@@ -78,6 +85,12 @@ func NewNarrationHandler(scripts narration.Store, steps interface {
 	MarkStep(context.Context, pipeline.JobStep) error
 }, objects objectstore.ObjectStore, provider tts.TTSProvider) *NarrationHandler {
 	return &NarrationHandler{scripts: scripts, steps: steps, objects: objects, provider: provider}
+}
+
+// WithUsage 注入额度结算能力；未注入时跳过结算（测试/私有化）。
+func (h *NarrationHandler) WithUsage(u UsageSettler) *NarrationHandler {
+	h.usage = u
+	return h
 }
 
 // Handle implements pipeline.HandlerFunc for narration jobs.
@@ -143,6 +156,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		planned = append(planned, plannedSlide{snapshot: slide, revision: revision})
 	}
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
+	totalMS := int64(0)
 	for _, slide := range planned {
 		timelineSlide := media.SlideInput{SlideID: slide.snapshot.SlideID}
 		for _, segment := range slide.revision.Segments {
@@ -153,6 +167,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			if err != nil {
 				return err
 			}
+			totalMS += asset.DurationMS
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
 				SegmentID: segment.SegmentID, DisplayText: segment.DisplayText,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
@@ -160,7 +175,16 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		}
 		timelineSlides = append(timelineSlides, timelineSlide)
 	}
-	return h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides)
+	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides); err != nil {
+		return err
+	}
+	// 按真实合成时长结算额度（幂等键与 API 预占一致）。
+	if h.usage != nil && job.IDempotencyKey != "" {
+		if err := h.usage.Settle(ctx, job.TenantID, job.IDempotencyKey, usage.KindGenSeconds, float64(totalMS)/1000.0, ""); err != nil {
+			return fmt.Errorf("narration job: settle usage: %w", err)
+		}
+	}
+	return nil
 }
 
 func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, capabilities tts.VoiceCapabilities, segment *narration.Segment) (*SegmentAsset, error) {

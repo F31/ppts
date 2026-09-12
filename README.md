@@ -71,3 +71,7 @@ GOWORK=off go run ./cmd/worker
 ```
 
 `fake` TTS 只生成开发测试用静音 WAV，不构成 G1-5 正式供应商验收。
+
+worker 还运行数据保留清理循环（G3-7）：可配 `PPTS_RETENTION_INTERVAL`（默认 `1h`）与
+`PPTS_UPLOAD_ABANDON_TTL`（默认 `24h`）。清理项包括超过项目 `source_retention_days` 的源对象、
+选择"处理后删除"且解析成功的源对象，以及超时仍 `pending` 的上传临时对象。

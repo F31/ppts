@@ -198,19 +198,121 @@ func TestRetrySchedule(t *testing.T) {
 	}
 }
 
-func TestCancelRequestedBlocksClaim(t *testing.T) {
+func TestCancelQueuedJob(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := tenant.WithContext(context.Background(), testTenant)
 	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-C", "snap", time.Time{})
-	c, err := s.CancelRequested(ctx, j.ID, testTenant)
+	c, err := s.Cancel(ctx, j.ID, testTenant)
 	if err != nil {
-		t.Fatalf("CancelRequested: %v", err)
+		t.Fatalf("Cancel: %v", err)
 	}
-	if c == nil || c.State != StateCancelReq {
-		t.Fatalf("CancelRequested: %+v", c)
+	// queued 直接取消。
+	if c == nil || c.State != StateCanceled {
+		t.Fatalf("Cancel: %+v", c)
 	}
 	if _, err := s.ClaimNext(ctx, testTenant, "worker-x", time.Second); !errors.Is(err, ErrNoJob) {
-		t.Fatalf("claim after cancel request: got %v", err)
+		t.Fatalf("claim after cancel: got %v", err)
+	}
+	// 不可取消状态（已取消）返回 ErrJobNotCancelable。
+	if _, err := s.Cancel(ctx, j.ID, testTenant); !errors.Is(err, ErrJobNotCancelable) {
+		t.Fatalf("cancel terminal: got %v want ErrJobNotCancelable", err)
+	}
+	// 不存在的任务返回 ErrJobNotFound。
+	if _, err := s.Cancel(ctx, "00000000-0000-0000-0000-0000000000ff", testTenant); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("cancel missing: got %v want ErrJobNotFound", err)
+	}
+}
+
+func TestCancelRunningAndHeartbeatDetectsRequest(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-RC", "snap", time.Time{})
+	if _, err := s.ClaimNext(ctx, testTenant, "worker-a", 30*time.Second); err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	c, err := s.Cancel(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("Cancel running: %v", err)
+	}
+	if c.State != StateCancelReq {
+		t.Fatalf("running cancel state = %s want cancel_requested", c.State)
+	}
+	// 心跳应发现取消请求。
+	if err := s.Heartbeat(ctx, j.ID, "worker-a", 1, 30*time.Second); !errors.Is(err, ErrCancelRequested) {
+		t.Fatalf("heartbeat: got %v want ErrCancelRequested", err)
+	}
+	// worker 安全点停止后提交 canceled。
+	if err := s.Complete(ctx, j.ID, "worker-a", 1, StateCanceled, nil); err != nil {
+		t.Fatalf("Complete canceled: %v", err)
+	}
+	got, err := s.Get(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != StateCanceled {
+		t.Fatalf("state = %s want canceled", got.State)
+	}
+}
+
+func TestRetryFailedJob(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-RF", "snap", time.Time{})
+	if _, err := s.ClaimNext(ctx, testTenant, "worker-a", 30*time.Second); err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	if err := s.Complete(ctx, j.ID, "worker-a", 1, StateFailed, []byte(`{"code":"internal"}`)); err != nil {
+		t.Fatalf("Complete failed: %v", err)
+	}
+	retried, err := s.RetryFailed(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("RetryFailed: %v", err)
+	}
+	if retried.State != StateQueued || retried.LastError != nil {
+		t.Fatalf("retried = %+v", retried)
+	}
+	// 非 failed 状态不可重试。
+	if _, err := s.RetryFailed(ctx, j.ID, testTenant); !errors.Is(err, ErrJobNotRetryable) {
+		t.Fatalf("retry non-failed: got %v want ErrJobNotRetryable", err)
+	}
+}
+
+func TestListJobsFiltersAndPaginates(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	for _, key := range []string{"l-1", "l-2", "l-3"} {
+		if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), key, "snap", time.Time{}); err != nil {
+			t.Fatalf("Create %s: %v", key, err)
+		}
+	}
+	jobs, next, err := s.List(ctx, testTenant, testProject, "", "", 2)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(jobs) != 2 || next == "" {
+		t.Fatalf("page1 jobs=%d next=%q", len(jobs), next)
+	}
+	jobs2, next2, err := s.List(ctx, testTenant, testProject, "", next, 2)
+	if err != nil {
+		t.Fatalf("List page2: %v", err)
+	}
+	if len(jobs2) != 1 || next2 != "" {
+		t.Fatalf("page2 jobs=%d next=%q", len(jobs2), next2)
+	}
+	// 状态过滤：全部 queued。
+	queued, _, err := s.List(ctx, testTenant, testProject, string(StateQueued), "", 10)
+	if err != nil {
+		t.Fatalf("List queued: %v", err)
+	}
+	if len(queued) != 3 {
+		t.Fatalf("queued jobs = %d want 3", len(queued))
+	}
+	succeeded, _, err := s.List(ctx, testTenant, testProject, string(StateSucceeded), "", 10)
+	if err != nil {
+		t.Fatalf("List succeeded: %v", err)
+	}
+	if len(succeeded) != 0 {
+		t.Fatalf("succeeded jobs = %d want 0", len(succeeded))
 	}
 }
 
