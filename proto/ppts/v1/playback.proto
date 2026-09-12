@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// PlaybackService 提供播放器资源 manifest（V4.0 §8.5/§11.1）。
+service PlaybackService {
+  rpc GetManifest(GetPlaybackManifestRequest) returns (PlaybackManifest);
+}
+
+message GetPlaybackManifestRequest {
+  string project_id = 1;
+  string timeline_key = 2;
+  repeated string page_png_keys = 3; // 按 timeline 页序
+  int64 ttl_seconds = 4;
+}
+
+enum PlaybackResourceType {
+  PLAYBACK_RESOURCE_TYPE_UNSPECIFIED = 0;
+  PLAYBACK_RESOURCE_TYPE_PAGE_PNG = 1;
+  PLAYBACK_RESOURCE_TYPE_AUDIO = 2;
+  PLAYBACK_RESOURCE_TYPE_SUBTITLE_SRT = 3;
+  PLAYBACK_RESOURCE_TYPE_SUBTITLE_VTT = 4;
+  PLAYBACK_RESOURCE_TYPE_TIMELINE = 5;
+}
+
+message PlaybackResource {
+  PlaybackResourceType type = 1;
+  string key = 2;
+  string signed_url = 3;
+  string content_type = 4;
+  int64 size_bytes = 5;
+  string content_hash = 6;
+  string slide_id = 7;
+  string segment_id = 8;
+}
+
+message PlaybackManifest {
+  string project_id = 1;
+  string timeline_key = 2;
+  string timeline_json = 3;
+  repeated PlaybackResource resources = 4;
+  int64 expires_at_unix = 5;
+}

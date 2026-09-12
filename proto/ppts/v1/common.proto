@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// 统一的错误模型（V4.0 §11.1）：
+// code、message、retryable、retry_after、affected_slide_ids、trace_id。
+message ErrorInfo {
+  string code = 1;                // 稳定错误码（如 "quota_exceeded"、"conflict"）
+  string message = 2;             // 可读信息
+  bool retryable = 3;             // 是否可重试
+  int64 retry_after_seconds = 4;  // 建议重试间隔（retryable 时有效）
+  repeated string affected_slide_ids = 5;
+  string trace_id = 6;
+}
+
+// 游标分页（V4.0 §11.1）：按 last_received 序号/ID 取下一页。
+message Cursor {
+  string value = 1; // 上一页最后一个元素的稳定序号/ID
+}
+
+// 语言与稿件模式（V4.0 §3.1）。
+enum ScriptMode {
+  SCRIPT_MODE_UNSPECIFIED = 0;
+  SCRIPT_MODE_ORIGINAL = 1;   // 原文朗读
+  SCRIPT_MODE_POLISH = 2;     // 润色讲解
+  SCRIPT_MODE_AI_GENERATED = 3; // AI 生成讲解
+}
+
+// 语音时长目标。
+message DurationTarget {
+  int32 total_seconds = 1; // 全篇目标时长（0=不限定）
+  int32 min_per_page = 2;  // 单页下限（秒）
+  int32 max_per_page = 3;  // 单页上限（秒）
+}

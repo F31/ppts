@@ -1,0 +1,77 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+import "ppts/v1/common.proto";
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// JobService 任务查询与操作（V4.0 §10/§11.1）。
+// 首版可用增量轮询（Get/List）；增强版用 WatchEvents 服务端流，保留轮询回退。
+service JobService {
+  rpc Get(GetJobRequest) returns (Job);
+  rpc List(ListJobsRequest) returns (ListJobsResponse);
+  rpc Cancel(CancelJobRequest) returns (Job);
+  rpc RetryFailed(RetryFailedRequest) returns (Job);
+  rpc WatchEvents(WatchEventsRequest) returns (stream JobEvent);
+}
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_QUEUED = 1;
+  JOB_STATE_RUNNING = 2;
+  JOB_STATE_RETRY_WAIT = 3;
+  JOB_STATE_WAITING_REVIEW = 4;
+  JOB_STATE_SUCCEEDED = 5;
+  JOB_STATE_FAILED = 6;
+  JOB_STATE_CANCEL_REQUESTED = 7;
+  JOB_STATE_CANCELED = 8;
+  JOB_STATE_UNKNOWN_PROVIDER_RESULT = 9;
+}
+
+message Job {
+  string job_id = 1;
+  string project_id = 2;
+  string kind = 3;          // parse / render / script_draft / narration / export
+  JobState state = 4;
+  int64 attempt = 5;
+  int32 progress_percent = 6;
+  ErrorInfo last_error = 7;
+  string input_snapshot = 8; // 输入快照 ID（不可变）
+  int64 created_at_unix = 9;
+  int64 updated_at_unix = 10;
+}
+
+message GetJobRequest {
+  string job_id = 1;
+}
+
+message ListJobsRequest {
+  string project_id = 1;
+  JobState state = 2;
+  Cursor cursor = 3;
+  int32 page_size = 4;
+}
+
+message ListJobsResponse {
+  repeated Job jobs = 1;
+  Cursor next_cursor = 2;
+}
+
+message CancelJobRequest {
+  string job_id = 1;
+}
+
+message RetryFailedRequest {
+  string job_id = 1;
+}
+
+message WatchEventsRequest {
+  string project_id = 1;
+  int64 after_seq = 2; // 重连携带最后序号；超出保留窗口则拉全量
+}
+
+message JobEvent {
+  int64 seq = 1;
+  Job job = 2;
+}

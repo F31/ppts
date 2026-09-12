@@ -1,0 +1,159 @@
+// Package pipeline 负责任务状态、租约、重试、幂等与取消（V4.0 §10/§4.2）。
+//
+// 数据库是任务事实来源，channel 只做进程内并发控制。本包是领域层：定义
+// Job/JobStep 与 Store 端口，不依赖 HTTP/云 SDK。PostgreSQL 实现见本包
+// postgres.go（SKIP LOCKED 领取 + 租约 + fencing 条件提交）。
+package pipeline
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+)
+
+// JobState 任务状态（与 0001_init.sql CHECK 保持一致）。
+type JobState string
+
+const (
+	StateQueued        JobState = "queued"
+	StateRunning       JobState = "running"
+	StateRetryWait     JobState = "retry_wait"
+	StateWaitingReview JobState = "waiting_review"
+	StateSucceeded     JobState = "succeeded"
+	StateFailed        JobState = "failed"
+	StateCancelReq     JobState = "cancel_requested"
+	StateCanceled      JobState = "canceled"
+	StateUnknownResult JobState = "unknown_provider_result"
+)
+
+// JobKind 任务种类。
+type JobKind string
+
+const (
+	KindParse       JobKind = "parse"
+	KindRender      JobKind = "render"
+	KindScriptDraft JobKind = "script_draft"
+	KindNarration   JobKind = "narration"
+	KindExport      JobKind = "export"
+)
+
+// Job 是任务真相（源自数据库行）。
+type Job struct {
+	ID             string
+	TenantID       string
+	ProjectID      string
+	Kind           JobKind
+	State          JobState
+	InputSnapshot  string
+	IDempotencyKey string
+	Attempt        int
+	LeaseOwner     string
+	LeaseUntil     time.Time
+	FencingToken   int64
+	RunAt          time.Time
+	Progress       int
+	LastError      *JobError
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// JobError 是结构化错误（V4.0 §11.1 code/message/retryable/retry_after）。
+type JobError struct {
+	Code              string `json:"code"`
+	Message           string `json:"message"`
+	Retryable         bool   `json:"retryable"`
+	RetryAfterSeconds int    `json:"retryAfterSeconds"`
+	TraceID           string `json:"traceId"`
+}
+
+// Terminal 报告该状态是否为终态（不可再领取）。
+func (s JobState) Terminal() bool {
+	switch s {
+	case StateSucceeded, StateFailed, StateCanceled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Clerical 报告该状态是否可被领取器领取（queued 或到期 retry_wait）。
+func (s JobState) Clerical() bool {
+	return s == StateQueued || s == StateRetryWait
+}
+
+// JobStepState 步骤状态。
+type JobStepState string
+
+const (
+	StepPending JobStepState = "pending"
+	StepSuccess JobStepState = "success"
+	StepSkipped JobStepState = "skipped"
+	StepFailed  JobStepState = "failed"
+)
+
+// JobStep 是任务内的一个执行步骤（重试只重跑未确认完成的步骤，V4.0 §10.2）。
+type JobStep struct {
+	ID        string
+	JobID     string
+	TenantID  string
+	StepType  string
+	StepKey   string
+	State     JobStepState
+	ResultRef string
+	UpdatedAt time.Time
+}
+
+// ErrNoJob 表示符合条件的可领取任务不存在。
+var ErrNoJob = errors.New("pipeline: no claimable job")
+
+// ErrLeaseMismatch 表示 fencing 校验失败（过期 worker 的提交无效）。
+var ErrLeaseMismatch = errors.New("pipeline: job lease/fencing mismatch")
+
+// RetryError 由 handler 返回以请求按 RetryAfter 退避重试（V4.0 §10.4）。
+// 非 RetryError 的错误视为永久失败（不盲目重试）。
+type RetryError struct {
+	Err error
+	At  time.Time // 建议下次运行时间；零值 = 默认退避
+}
+
+func (r *RetryError) Error() string { return r.Err.Error() }
+
+func (r *RetryError) Unwrap() error { return r.Err }
+
+// AsRetry 提取 *RetryError；非可重试错误返回 nil。
+func AsRetry(err error) *RetryError {
+	var r *RetryError
+	if errors.As(err, &r) {
+		return r
+	}
+	return nil
+}
+
+// TryMarshalJobError 将 error 转为 JobError JSON（供 last_error 存储）。
+func TryMarshalJobError(err error) []byte {
+	je := JobError{Code: "internal", Message: err.Error()}
+	b, _ := json.Marshal(je)
+	return b
+}
+
+// Store 任务存储端口。任何方法都要求显式 tenant_id（源自登录身份，非客户端传入）。
+type Store interface {
+	// Create 创建任务；同 (tenant, idempotency_key, kind) 幂等：命中唯一约束时
+	// 返回已存在行而非新建。
+	Create(ctx context.Context, tenantID, projectID, kind, idemKey, snapshot string, runAt time.Time) (*Job, error)
+	// ClaimNext 以 SKIP LOCKED 领取一个可运行任务，原子写入 lease 与 fencing，返回租约内任务。
+	ClaimNext(ctx context.Context, tenantID, leaseOwner string, leaseFor time.Duration) (*Job, error)
+	// Heartbeat 续租；fencing 不匹配返回 ErrLeaseMismatch。
+	Heartbeat(ctx context.Context, id, owner string, fencing int64, extend time.Duration) error
+	// Complete 以 fencing 条件把任务置为终态（succeeded/failed/canceled）。
+	Complete(ctx context.Context, id, owner string, fencing int64, state JobState, errMsg []byte) error
+	// ScheduleRetry 把任务置为 retry_wait，带退避 run_at 与错误。
+	ScheduleRetry(ctx context.Context, id, owner string, fencing int64, runAt time.Time, errMsg []byte) error
+	// MarkStep 记录步骤结果；成功引用与步骤完成同事务提交（由调用方事务控制）。
+	MarkStep(ctx context.Context, step JobStep) error
+	// CancelRequested 把任务置为 cancel_requested（客户端先持久化请求，worker 安全点检查）。
+	CancelRequested(ctx context.Context, id, tenantID string) (*Job, error)
+	// Get 按 ID 查询（含跨步校验）。
+	Get(ctx context.Context, id, tenantID string) (*Job, error)
+}

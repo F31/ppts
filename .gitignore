@@ -1,0 +1,28 @@
+# Go
+*.exe
+*.test
+*.out
+bin/
+go.work
+go.work.sum
+
+# 运行时数据
+/tmp/
+/data/
+*.log
+
+# 前端
+node_modules/
+dist/
+*.tsbuildinfo
+*.local
+
+# 本地环境
+.env
+.env.*
+!.env.example
+.vscode/
+.idea/
+
+# 对象存储本地适配器根目录（单机开发）
+/var/ppts-objects/

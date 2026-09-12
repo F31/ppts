@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+import "ppts/v1/common.proto";
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// NarrationService 语音生成（V4.0 §11.1）。
+// Estimate 生成前估算费用区间；CreateGeneration 创建全篇/单页生成任务；
+// RegenerateSegments 只重做变更分段（局部重生成）。
+service NarrationService {
+  rpc Estimate(NarrationEstimateRequest) returns (NarrationEstimateResponse);
+  rpc CreateGeneration(CreateGenerationRequest) returns (CreateGenerationResponse);
+  rpc RegenerateSegments(RegenerateSegmentsRequest) returns (RegenerateSegmentsResponse);
+}
+
+message NarrationEstimateRequest {
+  string project_id = 1;
+  repeated string slide_ids = 2;
+  string voice_id = 3;
+  ScriptMode mode = 4;
+}
+
+message NarrationEstimateResponse {
+  string currency = 1;
+  int64 cost_min = 2; // 预估费用区间（按最小/最大时长与供应商价目）
+  int64 cost_max = 3;
+  int64 estimated_seconds = 4;
+}
+
+message CreateGenerationRequest {
+  string project_id = 1;
+  repeated string slide_ids = 2; // 空=全篇
+  string voice_id = 3;
+  int32 rate_percent = 4;   // 语速（100=标准）
+  bool lock_confirmed_only = 5; // 仅锁定/已审核分段参与
+}
+
+message CreateGenerationResponse {
+  string job_id = 1;
+  bool within_budget = 2;
+}
+
+message RegenerateSegmentsRequest {
+  string project_id = 1;
+  string slide_id = 2;
+  repeated string segment_ids = 3;
+  string voice_id = 4;
+}
+
+message RegenerateSegmentsResponse {
+  string job_id = 1;
+}

@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "ppts.corpus/1.0",
+  "externalCorpusRoot": "/mnt/e/projects/go-pptx/testdata/corpus",
+  "entries": [
+    { "id": "s100", "path": "testdata/corpus/generated/s100.pptx", "pages": 1, "withNotes": false },
+    { "id": "s101", "path": "testdata/corpus/generated/s101.pptx", "pages": 2, "withNotes": true },
+    { "id": "s102", "path": "testdata/corpus/generated/s102.pptx", "pages": 3, "withNotes": false },
+    { "id": "s103", "path": "testdata/corpus/generated/s103.pptx", "pages": 4, "withNotes": true },
+    { "id": "s104", "path": "testdata/corpus/generated/s104.pptx", "pages": 5, "withNotes": false },
+    { "id": "s105", "path": "testdata/corpus/generated/s105.pptx", "pages": 3, "withNotes": true },
+    { "id": "s106", "path": "testdata/corpus/generated/s106.pptx", "pages": 8, "withNotes": false },
+    { "id": "s107", "path": "testdata/corpus/generated/s107.pptx", "pages": 2, "withNotes": false },
+    { "id": "s001", "externalPath": "s001-text/s001-text.pptx", "pages": 0, "withNotes": false },
+    { "id": "s002", "externalPath": "s002-table/s002-table.pptx", "pages": 0, "withNotes": false },
+    { "id": "s003", "externalPath": "s003-image/s003-image.pptx", "pages": 0, "withNotes": false }
+  ]
+}

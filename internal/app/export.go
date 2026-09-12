@@ -1,0 +1,180 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/pipeline"
+)
+
+// ExportSnapshot fixes all inputs for an export job.
+type ExportSnapshot struct {
+	Format      artifact.Format `json:"format"`
+	TimelineKey string          `json:"timelineKey"`
+	PagePNGKeys []string        `json:"pagePngKeys,omitempty"`
+	Width       int             `json:"width,omitempty"`
+	Height      int             `json:"height,omitempty"`
+	FPS         int             `json:"fps,omitempty"`
+}
+
+type ExportHandler struct {
+	artifacts artifact.Store
+	steps     interface {
+		MarkStep(context.Context, pipeline.JobStep) error
+	}
+	objects objectstore.ObjectStore
+	encoder *media.MP4Encoder
+}
+
+func NewExportHandler(artifacts artifact.Store, steps interface {
+	MarkStep(context.Context, pipeline.JobStep) error
+}, objects objectstore.ObjectStore, encoder *media.MP4Encoder) *ExportHandler {
+	return &ExportHandler{artifacts: artifacts, steps: steps, objects: objects, encoder: encoder}
+}
+
+func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
+	if job == nil || job.Kind != pipeline.KindExport {
+		return errors.New("export job: unexpected job kind")
+	}
+	var snapshot ExportSnapshot
+	if err := json.Unmarshal([]byte(job.InputSnapshot), &snapshot); err != nil {
+		return fmt.Errorf("export job: invalid input snapshot: %w", err)
+	}
+	if job.TenantID == "" || job.ProjectID == "" || snapshot.TimelineKey == "" || snapshot.Format == "" {
+		return errors.New("export job: incomplete input snapshot")
+	}
+	snapshotBytes, _ := json.Marshal(snapshot)
+	snapshotHash := hashBytes(snapshotBytes)
+	step := pipeline.JobStep{
+		JobID: job.ID, TenantID: job.TenantID, StepType: "export",
+		StepKey: "export:" + string(snapshot.Format) + ":" + snapshotHash,
+	}
+	if err := h.steps.MarkStep(ctx, pipeline.JobStep{JobID: step.JobID, TenantID: step.TenantID, StepType: step.StepType, StepKey: step.StepKey, State: pipeline.StepPending}); err != nil {
+		return err
+	}
+	failStep := func(err error) error {
+		step.State = pipeline.StepFailed
+		_ = h.steps.MarkStep(ctx, step)
+		return err
+	}
+	bundle, err := h.loadTimelineBundle(ctx, job.TenantID, snapshot.TimelineKey)
+	if err != nil {
+		return failStep(err)
+	}
+	var data []byte
+	var contentType, ext string
+	switch snapshot.Format {
+	case artifact.FormatSRT:
+		data, err = h.readTenantObject(ctx, job.TenantID, bundle.SRTKey)
+		contentType, ext = "application/x-subrip", "srt"
+	case artifact.FormatVTT:
+		data, err = h.readTenantObject(ctx, job.TenantID, bundle.VTTKey)
+		contentType, ext = "text/vtt; charset=utf-8", "vtt"
+	case artifact.FormatMP4:
+		data, err = h.renderMP4(ctx, job, snapshot, bundle)
+		contentType, ext = "video/mp4", "mp4"
+	default:
+		err = fmt.Errorf("export job: unsupported format %q", snapshot.Format)
+	}
+	if err != nil {
+		return failStep(err)
+	}
+	contentHash := hashBytes(data)
+	key := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact", AssetType: "artifact", AssetID: contentHash, Ext: ext}
+	if err := h.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: int64(len(data))}); err != nil {
+		return failStep(fmt.Errorf("export job: publish artifact: %w", err))
+	}
+	a, err := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
+		ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
+		ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: int64(len(data)),
+	})
+	if err != nil {
+		return failStep(err)
+	}
+	step.State, step.ResultRef = pipeline.StepSuccess, a.ID
+	return h.steps.MarkStep(ctx, step)
+}
+
+func (h *ExportHandler) loadTimelineBundle(ctx context.Context, tenantID, key string) (*TimelineAsset, error) {
+	data, err := h.readTenantObject(ctx, tenantID, key)
+	if err != nil {
+		return nil, err
+	}
+	var bundle TimelineAsset
+	if err := json.Unmarshal(data, &bundle); err != nil || bundle.Timeline == nil || bundle.SRTKey == "" || bundle.VTTKey == "" {
+		return nil, errors.New("export job: invalid timeline bundle")
+	}
+	return &bundle, nil
+}
+
+func (h *ExportHandler) readTenantObject(ctx context.Context, tenantID, rawKey string) ([]byte, error) {
+	key, err := objectstore.Parse(rawKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := key.EnsureTenant(tenantID); err != nil {
+		return nil, err
+	}
+	r, _, err := h.objects.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset) ([]byte, error) {
+	if h.encoder == nil {
+		return nil, errors.New("export job: mp4 encoder is not configured")
+	}
+	if len(snapshot.PagePNGKeys) != len(bundle.Timeline.Slides) {
+		return nil, errors.New("export job: page png count does not match timeline")
+	}
+	pagePNGs := make([][]byte, 0, len(snapshot.PagePNGKeys))
+	for _, rawKey := range snapshot.PagePNGKeys {
+		data, err := h.readTenantObject(ctx, job.TenantID, rawKey)
+		if err != nil {
+			return nil, err
+		}
+		pagePNGs = append(pagePNGs, data)
+	}
+	clips := map[string][]byte{}
+	for _, slide := range bundle.Timeline.Slides {
+		for _, segment := range slide.Segments {
+			if _, ok := clips[segment.AudioKey]; ok {
+				continue
+			}
+			data, err := h.readTenantObject(ctx, job.TenantID, segment.AudioKey)
+			if err != nil {
+				return nil, err
+			}
+			clips[segment.AudioKey] = data
+		}
+	}
+	audio, err := media.AssembleTimelineWAV(bundle.Timeline, clips)
+	if err != nil {
+		return nil, err
+	}
+	pageDurations := make([]int64, 0, len(bundle.Timeline.Slides))
+	for _, slide := range bundle.Timeline.Slides {
+		pageDurations = append(pageDurations, (slide.EndUS-slide.StartUS)/1000)
+	}
+	tmp := filepath.Join(os.TempDir(), "ppts-export-"+job.ID+".mp4")
+	defer os.Remove(tmp)
+	if _, err := h.encoder.Encode(ctx, media.MP4EncodeOptions{
+		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
+		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioWAV: audio,
+	}); err != nil {
+		return nil, err
+	}
+	return os.ReadFile(tmp)
+}

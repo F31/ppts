@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// UploadService 授权直传与分片上传（V4.0 §11.1）：
+// 大文件走预签名直传，RPC 只传元数据；CompleteUpload 校验大小/哈希/租户所有权后才建解析任务。
+service UploadService {
+  rpc CreateUpload(CreateUploadRequest) returns (CreateUploadResponse);
+  rpc CompleteUpload(CompleteUploadRequest) returns (CompleteUploadResponse);
+  rpc AbortUpload(AbortUploadRequest) returns (AbortUploadResponse);
+}
+
+message CreateUploadRequest {
+  string project_id = 1;
+  string filename = 2;
+  int64 size_bytes = 3;
+  string content_type = 4;
+  // delete_source_after 为"处理完成后删除源文件"选项（V4.0 §13.1）。
+  bool delete_source_after = 5;
+}
+
+message CreateUploadResponse {
+  string upload_id = 1;
+  // 预签名上传链接（受限对象键 + 有效期）；分片上传时提供各片签名。
+  repeated string signed_upload_urls = 2;
+  int32 chunk_size_bytes = 3;
+  string object_key = 4; // 服务端分配的完整对象键
+}
+
+message CompleteUploadRequest {
+  string upload_id = 1;
+  string expected_hash = 2; // sha256
+  int64 size_bytes = 3;
+}
+
+message CompleteUploadResponse {
+  string source_revision_id = 1; // 解析任务入队后返回
+  string job_id = 2;
+  repeated string warnings = 3; // 异常页/缺字体提示
+}
+
+message AbortUploadRequest {
+  string upload_id = 1;
+}
+
+message AbortUploadResponse {}

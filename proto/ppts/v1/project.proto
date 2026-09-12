@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+import "ppts/v1/common.proto";
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// ProjectService 项目与源文件版本（V4.0 §11.1）。
+service ProjectService {
+  rpc Create(CreateProjectRequest) returns (CreateProjectResponse);
+  rpc Get(GetProjectRequest) returns (Project);
+  rpc List(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc CreateSourceRevision(CreateSourceRevisionRequest) returns (SourceRevision);
+  rpc Archive(ArchiveProjectRequest) returns (Project);
+}
+
+message Project {
+  string id = 1;
+  string tenant_id = 2;
+  string owner = 3;
+  string title = 4;
+  int64 current_revision = 5; // project_revision
+  string policy = 6;          // 租户策略（存储后端/保留期等）引用
+  bool archived = 7;
+  int64 created_at_unix = 8;
+}
+
+message CreateProjectRequest {
+  string title = 1;
+  // tenant_id 不作为授权依据；由服务端从登录身份推导。
+}
+
+message CreateProjectResponse {
+  Project project = 1;
+}
+
+message GetProjectRequest {
+  string id = 1;
+}
+
+message ListProjectsRequest {
+  Cursor cursor = 1;
+  int32 page_size = 2;
+}
+
+message ListProjectsResponse {
+  repeated Project projects = 1;
+  Cursor next_cursor = 2;
+}
+
+message CreateSourceRevisionRequest {
+  string project_id = 1;
+  string object_key = 2; // {tenant}/{project}/source/...（服务端校验前缀）
+  string source_hash = 3;
+  int64 size_bytes = 4;
+  string parser_version = 5;
+}
+
+message SourceRevision {
+  string revision_id = 1; // src-03
+  string source_hash = 2;
+  string object_key = 3;
+  string parser_version = 4;
+  int64 page_count = 5;
+  int64 created_at_unix = 6;
+}
+
+message ArchiveProjectRequest {
+  string id = 1;
+}

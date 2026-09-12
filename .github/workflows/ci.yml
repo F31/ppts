@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  GO_VERSION: "1.25.x"
+  # CI 从模块代理按 go.mod 锁定版本解析依赖，不依赖开发期 go.work 本地产库。
+  GOWORK: "off"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+      - name: go vet
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go build
+        run: go build ./...
+      - name: go test
+        run: go test ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+      - name: build
+        working-directory: web
+        run: npm run build
+
+  # CGO_ENABLED=0 交叉构建：验证架构约束（对齐 go-pptx 的 CI 惯例）。
+  crossbuild:
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: cross build
+        run: |
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build ./cmd/...
+
+  # 语料回放：默认测试不含 -tags=corpus；本 job 独立运行，缺源文件的条目 Skip 不红。
+  corpus:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: F31/go-pptx
+          path: _corpus/go-pptx
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: corpus replay
+        env:
+          GOPPTX_CORPUS: ${{ github.workspace }}/_corpus/go-pptx/testdata/corpus
+        run: go test -tags=corpus ./internal/project/ -run TestCorpusReplayInspect

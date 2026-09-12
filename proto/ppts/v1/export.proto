@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// ExportService 三种成品与分享（V4.0 §9/§11.1）。
+// 成品不可变（Artifact），CreateExport 异步合成；CreateDownload 生成短期签名链接。
+service ExportService {
+  rpc CreateExport(CreateExportRequest) returns (CreateExportResponse);
+  rpc GetArtifact(GetArtifactRequest) returns (Artifact);
+  rpc CreateDownload(CreateDownloadRequest) returns (CreateDownloadResponse);
+}
+
+enum ArtifactFormat {
+  ARTIFACT_FORMAT_UNSPECIFIED = 0;
+  ARTIFACT_FORMAT_WEB_PROJECT = 1; // Web 讲解工程
+  ARTIFACT_FORMAT_MP4 = 2;
+  ARTIFACT_FORMAT_AUDIO_PACK = 3;  // 音频包
+  ARTIFACT_FORMAT_SUBTITLE_SRT = 4;
+  ARTIFACT_FORMAT_SUBTITLE_VTT = 5;
+  ARTIFACT_FORMAT_AUDIO_PPTX = 6;  // 带音频 PPTX（独立门禁）
+}
+
+message Artifact {
+  string artifact_id = 1;
+  string project_id = 2;
+  int64 snapshot_id = 3;
+  ArtifactFormat format = 4;
+  string object_key = 5;
+  string content_hash = 6;
+  int64 size_bytes = 7;
+  int64 created_at_unix = 8;
+  string snapshot_hash = 9;
+}
+
+message CreateExportRequest {
+  string project_id = 1;
+  ArtifactFormat format = 2;
+  repeated string slide_ids = 3; // 范围；正式导出必须满足范围完整性
+  bool burn_subtitles = 4;       // MP4 是否烧录字幕
+  bool include_notes = 5;        // 是否保留备注（导出元数据，V4.0 §13）
+  string timeline_key = 6;        // 服务端校验租户前缀；G1 显式固定输入快照
+  repeated string page_png_keys = 7; // MP4：按 timeline 页序传入页面 PNG
+}
+
+message CreateExportResponse {
+  string job_id = 1;
+}
+
+message GetArtifactRequest {
+  string artifact_id = 1;
+}
+
+message CreateDownloadRequest {
+  string artifact_id = 1;
+  int64 ttl_seconds = 2; // 短期签名链接有效期
+}
+
+message CreateDownloadResponse {
+  string signed_url = 1; // 对象存储预签名链接（校验租户前缀）
+  int64 expires_at_unix = 2;
+}

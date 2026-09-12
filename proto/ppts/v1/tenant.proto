@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// TenantService 租户成员、角色、配额与策略（V4.0 §11.1/§12）。
+// tenant_id 始终由服务端从登录身份与成员关系推导；客户端传入值不作授权依据。
+service TenantService {
+  rpc Members(GetMembersRequest) returns (GetMembersResponse);
+  rpc Roles(GetRolesRequest) returns (GetRolesResponse);
+  rpc Quota(GetQuotaRequest) returns (TenantQuota);
+  rpc Usage(GetUsageRequest) returns (GetUsageResponse);
+  rpc Policy(GetPolicyRequest) returns (TenantPolicy);
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_OWNER = 1;
+  ROLE_ADMIN = 2;
+  ROLE_EDITOR = 3;
+  ROLE_REVIEWER = 4;
+  ROLE_VIEWER = 5;
+}
+
+message Member {
+  string user_id = 1;
+  Role role = 2;
+}
+
+message GetMembersRequest {}
+message GetMembersResponse {
+  repeated Member members = 1;
+}
+
+message GetRolesRequest {}
+message GetRolesResponse {
+  map<string, Role> user_roles = 1;
+}
+
+message TenantQuota {
+  int64 monthly_seconds = 1;  // 生成分钟/秒额度
+  int64 used_seconds = 2;
+  int64 max_concurrent_jobs = 3;
+  int64 max_storage_bytes = 4;
+}
+
+message GetQuotaRequest {}
+
+message GetUsageRequest {
+  string month = 1; // YYYY-MM
+}
+
+message GetUsageResponse {
+  int64 seconds_used = 1;
+  int64 cost_units = 2; // 账本原始数量
+}
+
+// TenantPolicy 租户策略（V4.0 §12.4：存储后端/保留期/加密档位按租户持久化）。
+message TenantPolicy {
+  string storage_backend = 1;         // s3 / local / byos:<id>
+  string storage_region = 2;
+  int32 source_retention_days = 3;    // 源文件保留期（独立于派生产物，默认更短）
+  bool envelope_encryption = 4;       // 企业信封加密
+  bool delete_source_after_default = 5;
+}
+
+message GetPolicyRequest {}

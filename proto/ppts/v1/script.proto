@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+package ppts.v1;
+
+import "ppts/v1/common.proto";
+
+option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
+
+// ScriptService 讲稿编辑与审核（V4.0 §11.1）。
+// 更新携带 expected_revision，冲突返回最新版与差异，禁止最后写入者静默覆盖。
+service ScriptService {
+  rpc Get(GetScriptRequest) returns (ScriptRevision);
+  rpc Update(UpdateScriptRequest) returns (UpdateScriptResponse);
+  rpc GenerateDraft(GenerateDraftRequest) returns (GenerateDraftResponse);
+  rpc Approve(ApproveScriptRequest) returns (ScriptRevision);
+  rpc Lock(LockScriptRequest) returns (ScriptRevision);
+}
+
+message Segment {
+  string segment_id = 1;        // seg-07-02
+  string slide_id = 2;
+  string display_text = 3;      // 用户可见稿
+  string spoken_text = 4;       // 规范化发音稿
+  repeated string source_refs = 5; // slide-07/shape-12
+  string status = 6;            // draft / approved / locked
+}
+
+message ScriptRevision {
+  string project_id = 1;
+  string slide_id = 2;
+  string language = 3;
+  ScriptMode mode = 4;
+  int64 revision = 5;
+  string status = 6; // draft / reviewing / approved / locked
+  repeated Segment segments = 7;
+  int64 updated_at_unix = 8;
+}
+
+message GetScriptRequest {
+  string project_id = 1;
+  string slide_id = 2;
+}
+
+message UpdateScriptRequest {
+  string project_id = 1;
+  string slide_id = 2;
+  int64 expected_revision = 3;
+  repeated Segment segments = 4;
+}
+
+message UpdateScriptResponse {
+  ScriptRevision revision = 1;
+  bool conflict = 2;        // expected_revision 不匹配时为 true
+  ScriptRevision latest = 3; // conflict 时返回最新版供对比
+}
+
+message GenerateDraftRequest {
+  string project_id = 1;
+  repeated string slide_ids = 2;
+  ScriptMode mode = 3;
+  string audience = 4;    // 入门/专业/管理层
+  string style = 5;       // 培训/汇报/产品演示
+  DurationTarget duration = 6;
+}
+
+message GenerateDraftResponse {
+  string job_id = 1;          // 异步草稿生成任务
+  bool fully_supported = 2;   // 全部页面可生成
+}
+
+message ApproveScriptRequest {
+  string project_id = 1;
+  string slide_id = 2;
+}
+
+message LockScriptRequest {
+  string project_id = 1;
+  string slide_id = 2;
+  bool lock = 3;
+}
