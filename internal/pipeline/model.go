@@ -110,6 +110,9 @@ var ErrNoJob = errors.New("pipeline: no claimable job")
 // ErrLeaseMismatch 表示 fencing 校验失败（过期 worker 的提交无效）。
 var ErrLeaseMismatch = errors.New("pipeline: job lease/fencing mismatch")
 
+// ErrNoSucceededJob 表示某项目尚无成功完成的指定类型任务。
+var ErrNoSucceededJob = errors.New("pipeline: no succeeded job")
+
 // RetryError 由 handler 返回以请求按 RetryAfter 退避重试（V4.0 §10.4）。
 // 非 RetryError 的错误视为永久失败（不盲目重试）。
 type RetryError struct {

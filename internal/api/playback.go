@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"time"
 
 	"connectrpc.com/connect"
@@ -12,15 +13,45 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/pipeline"
 )
 
 type PlaybackService struct {
 	pptsv1connect.UnimplementedPlaybackServiceHandler
+	jobs    JobCreator
 	objects objectstore.ObjectStore
 }
 
-func NewPlaybackService(objects objectstore.ObjectStore) *PlaybackService {
-	return &PlaybackService{objects: objects}
+func NewPlaybackService(jobs JobCreator, objects objectstore.ObjectStore) *PlaybackService {
+	return &PlaybackService{jobs: jobs, objects: objects}
+}
+
+func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request[pptsv1.GetNarrationRequest]) (*connect.Response[pptsv1.GetNarrationResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projectID := strings.TrimSpace(req.Msg.GetProjectId())
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
+	}
+	job, err := s.jobs.LatestSucceededJob(ctx, p.TenantID, projectID, string(pipeline.KindNarration))
+	if errors.Is(err, pipeline.ErrNoSucceededJob) {
+		return connect.NewResponse(&pptsv1.GetNarrationResponse{Ready: false}), nil
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	timelineKey, err := s.jobs.StepResultRef(ctx, job.ID, "timeline")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if timelineKey == "" {
+		return connect.NewResponse(&pptsv1.GetNarrationResponse{Ready: false}), nil
+	}
+	return connect.NewResponse(&pptsv1.GetNarrationResponse{
+		Ready: true, TimelineKey: timelineKey,
+	}), nil
 }
 
 func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[pptsv1.GetPlaybackManifestRequest]) (*connect.Response[pptsv1.PlaybackManifest], error) {
@@ -39,11 +70,12 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	if len(req.Msg.GetPagePngKeys()) != len(bundle.Timeline.Slides) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("page_png_keys count must match timeline slides"))
+	pagePNGKeys := req.Msg.GetPagePngKeys()
+	if len(pagePNGKeys) != 0 && len(pagePNGKeys) != len(bundle.Timeline.Slides) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("page_png_keys count must match timeline slides when provided"))
 	}
 	expires := time.Now().Add(ttl).Unix()
-	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(req.Msg.GetPagePngKeys())+len(bundle.Timeline.Slides))
+	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(pagePNGKeys)+len(bundle.Timeline.Slides))
 	appendSigned := func(rawKey string, typ pptsv1.PlaybackResourceType, slideID, segmentID string) error {
 		key, meta, err := s.statTenantObject(ctx, p.TenantID, rawKey)
 		if err != nil {
@@ -69,7 +101,7 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 	if err := appendSigned(bundle.VTTKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_SUBTITLE_VTT, "", ""); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	for i, rawKey := range req.Msg.GetPagePngKeys() {
+	for i, rawKey := range pagePNGKeys {
 		if err := appendSigned(rawKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG, bundle.Timeline.Slides[i].SlideID, ""); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}

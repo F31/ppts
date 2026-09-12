@@ -16,9 +16,11 @@ import (
 	"github.com/F31/ppts/internal/pipeline"
 )
 
-// JobCreator is the narrow task capability needed by the API transport.
+// JobCreator 是 API transport 需要的任务能力（创建任务 + 播放服务发现最近成功配音）。
 type JobCreator interface {
 	Create(context.Context, string, string, string, string, string, time.Time) (*pipeline.Job, error)
+	LatestSucceededJob(ctx context.Context, tenantID, projectID, kind string) (*pipeline.Job, error)
+	StepResultRef(ctx context.Context, jobID, stepType string) (string, error)
 }
 
 // NarrationGenerationService creates revision-bound narration jobs.

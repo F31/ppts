@@ -33,6 +33,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// PlaybackServiceGetNarrationProcedure is the fully-qualified name of the PlaybackService's
+	// GetNarration RPC.
+	PlaybackServiceGetNarrationProcedure = "/ppts.v1.PlaybackService/GetNarration"
 	// PlaybackServiceGetManifestProcedure is the fully-qualified name of the PlaybackService's
 	// GetManifest RPC.
 	PlaybackServiceGetManifestProcedure = "/ppts.v1.PlaybackService/GetManifest"
@@ -40,6 +43,8 @@ const (
 
 // PlaybackServiceClient is a client for the ppts.v1.PlaybackService service.
 type PlaybackServiceClient interface {
+	// GetNarration 返回某项目最近一次成功配音的时间轴对象键（页面图渲染未就绪时为空数组）。
+	GetNarration(context.Context, *connect.Request[v1.GetNarrationRequest]) (*connect.Response[v1.GetNarrationResponse], error)
 	GetManifest(context.Context, *connect.Request[v1.GetPlaybackManifestRequest]) (*connect.Response[v1.PlaybackManifest], error)
 }
 
@@ -54,6 +59,12 @@ func NewPlaybackServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 	baseURL = strings.TrimRight(baseURL, "/")
 	playbackServiceMethods := v1.File_ppts_v1_playback_proto.Services().ByName("PlaybackService").Methods()
 	return &playbackServiceClient{
+		getNarration: connect.NewClient[v1.GetNarrationRequest, v1.GetNarrationResponse](
+			httpClient,
+			baseURL+PlaybackServiceGetNarrationProcedure,
+			connect.WithSchema(playbackServiceMethods.ByName("GetNarration")),
+			connect.WithClientOptions(opts...),
+		),
 		getManifest: connect.NewClient[v1.GetPlaybackManifestRequest, v1.PlaybackManifest](
 			httpClient,
 			baseURL+PlaybackServiceGetManifestProcedure,
@@ -65,7 +76,13 @@ func NewPlaybackServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 
 // playbackServiceClient implements PlaybackServiceClient.
 type playbackServiceClient struct {
-	getManifest *connect.Client[v1.GetPlaybackManifestRequest, v1.PlaybackManifest]
+	getNarration *connect.Client[v1.GetNarrationRequest, v1.GetNarrationResponse]
+	getManifest  *connect.Client[v1.GetPlaybackManifestRequest, v1.PlaybackManifest]
+}
+
+// GetNarration calls ppts.v1.PlaybackService.GetNarration.
+func (c *playbackServiceClient) GetNarration(ctx context.Context, req *connect.Request[v1.GetNarrationRequest]) (*connect.Response[v1.GetNarrationResponse], error) {
+	return c.getNarration.CallUnary(ctx, req)
 }
 
 // GetManifest calls ppts.v1.PlaybackService.GetManifest.
@@ -75,6 +92,8 @@ func (c *playbackServiceClient) GetManifest(ctx context.Context, req *connect.Re
 
 // PlaybackServiceHandler is an implementation of the ppts.v1.PlaybackService service.
 type PlaybackServiceHandler interface {
+	// GetNarration 返回某项目最近一次成功配音的时间轴对象键（页面图渲染未就绪时为空数组）。
+	GetNarration(context.Context, *connect.Request[v1.GetNarrationRequest]) (*connect.Response[v1.GetNarrationResponse], error)
 	GetManifest(context.Context, *connect.Request[v1.GetPlaybackManifestRequest]) (*connect.Response[v1.PlaybackManifest], error)
 }
 
@@ -85,6 +104,12 @@ type PlaybackServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewPlaybackServiceHandler(svc PlaybackServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	playbackServiceMethods := v1.File_ppts_v1_playback_proto.Services().ByName("PlaybackService").Methods()
+	playbackServiceGetNarrationHandler := connect.NewUnaryHandler(
+		PlaybackServiceGetNarrationProcedure,
+		svc.GetNarration,
+		connect.WithSchema(playbackServiceMethods.ByName("GetNarration")),
+		connect.WithHandlerOptions(opts...),
+	)
 	playbackServiceGetManifestHandler := connect.NewUnaryHandler(
 		PlaybackServiceGetManifestProcedure,
 		svc.GetManifest,
@@ -93,6 +118,8 @@ func NewPlaybackServiceHandler(svc PlaybackServiceHandler, opts ...connect.Handl
 	)
 	return "/ppts.v1.PlaybackService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case PlaybackServiceGetNarrationProcedure:
+			playbackServiceGetNarrationHandler.ServeHTTP(w, r)
 		case PlaybackServiceGetManifestProcedure:
 			playbackServiceGetManifestHandler.ServeHTTP(w, r)
 		default:
@@ -103,6 +130,10 @@ func NewPlaybackServiceHandler(svc PlaybackServiceHandler, opts ...connect.Handl
 
 // UnimplementedPlaybackServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedPlaybackServiceHandler struct{}
+
+func (UnimplementedPlaybackServiceHandler) GetNarration(context.Context, *connect.Request[v1.GetNarrationRequest]) (*connect.Response[v1.GetNarrationResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.PlaybackService.GetNarration is not implemented"))
+}
 
 func (UnimplementedPlaybackServiceHandler) GetManifest(context.Context, *connect.Request[v1.GetPlaybackManifestRequest]) (*connect.Response[v1.PlaybackManifest], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.PlaybackService.GetManifest is not implemented"))

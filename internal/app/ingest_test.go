@@ -16,6 +16,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/upload"
 )
 
 const (
@@ -28,6 +29,7 @@ type appEnv struct {
 	projects *project.PGProjectStore
 	jobs     *pipeline.PGStore
 	objects  *objectstore.LocalFS
+	uploads  *upload.PGUploadStore
 	root     string
 }
 
@@ -43,7 +45,7 @@ func setupApp(t *testing.T) *appEnv {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE uploads, jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, q := range []struct {
@@ -65,7 +67,8 @@ func setupApp(t *testing.T) *appEnv {
 	t.Cleanup(jobs.Close)
 	return &appEnv{
 		pool: pool, projects: project.NewPGProjectStore(pool),
-		jobs: jobs, objects: objectstore.NewLocal(root, []byte("test-secret")), root: root,
+		jobs: jobs, objects: objectstore.NewLocal(root, []byte("test-secret")),
+		uploads: upload.NewPGUploadStore(pool), root: root,
 	}
 }
 

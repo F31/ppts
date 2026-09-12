@@ -11,6 +11,7 @@ service ProjectService {
   rpc Create(CreateProjectRequest) returns (CreateProjectResponse);
   rpc Get(GetProjectRequest) returns (Project);
   rpc List(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc GetSlides(GetSlidesRequest) returns (GetSlidesResponse);
   rpc CreateSourceRevision(CreateSourceRevisionRequest) returns (SourceRevision);
   rpc Archive(ArchiveProjectRequest) returns (Project);
 }
@@ -33,6 +34,26 @@ message CreateProjectRequest {
 
 message CreateProjectResponse {
   Project project = 1;
+}
+
+message GetSlidesRequest {
+  string project_id = 1;
+  // 0 = 当前最新已解析版本；否则指定源版本号。
+  int64 revision_no = 2;
+}
+
+message SlideSummary {
+  string slide_id = 1;
+  int32 index = 2;          // 0 基放映序
+  string title = 3;         // 页名（可用时）
+  string preview = 4;       // 备注或首文本预览
+  bool has_notes = 5;
+  repeated string feature_flags = 6; // 本页渲染/播放特性提示
+}
+
+message GetSlidesResponse {
+  int64 revision_no = 1;
+  repeated SlideSummary slides = 2;
 }
 
 message GetProjectRequest {

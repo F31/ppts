@@ -6,13 +6,27 @@ option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
 
 // PlaybackService 提供播放器资源 manifest（V4.0 §8.5/§11.1）。
 service PlaybackService {
+  // GetNarration 返回某项目最近一次成功配音的时间轴对象键（页面图渲染未就绪时为空数组）。
+  rpc GetNarration(GetNarrationRequest) returns (GetNarrationResponse);
   rpc GetManifest(GetPlaybackManifestRequest) returns (PlaybackManifest);
+}
+
+message GetNarrationRequest {
+  string project_id = 1;
+  int64 ttl_seconds = 2; // 返回的签名资源有效期
+}
+
+message GetNarrationResponse {
+  bool ready = 1; // 是否有成功配音
+  string timeline_key = 2;
+  repeated string page_png_keys = 3; // 暂无渲染产物时为空
+  int64 revision_no = 4;             // 配音对应的源版本（可空=未知）
 }
 
 message GetPlaybackManifestRequest {
   string project_id = 1;
   string timeline_key = 2;
-  repeated string page_png_keys = 3; // 按 timeline 页序
+  repeated string page_png_keys = 3; // 按 timeline 页序；可为空（无页面图）
   int64 ttl_seconds = 4;
 }
 

@@ -2,13 +2,17 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/pipeline"
 )
 
 const defaultLanguage = "zh-CN"
@@ -17,11 +21,12 @@ const defaultLanguage = "zh-CN"
 type ScriptService struct {
 	pptsv1connect.UnimplementedScriptServiceHandler
 	store narration.Store
+	jobs  JobCreator
 }
 
 // NewScriptService creates a ScriptService.
-func NewScriptService(store narration.Store) *ScriptService {
-	return &ScriptService{store: store}
+func NewScriptService(store narration.Store, jobs JobCreator) *ScriptService {
+	return &ScriptService{store: store, jobs: jobs}
 }
 
 func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.GetScriptRequest]) (*connect.Response[pptsv1.ScriptRevision], error) {
@@ -93,6 +98,60 @@ func (s *ScriptService) Lock(ctx context.Context, req *connect.Request[pptsv1.Lo
 		return nil, scriptError(err)
 	}
 	return connect.NewResponse(toProtoRevision(rev)), nil
+}
+
+func (s *ScriptService) GenerateDraft(ctx context.Context, req *connect.Request[pptsv1.GenerateDraftRequest]) (*connect.Response[pptsv1.GenerateDraftResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projectID := strings.TrimSpace(req.Msg.GetProjectId())
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
+	}
+	idempotencyKey := strings.TrimSpace(req.Header().Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("Idempotency-Key header is required"))
+	}
+	mode := toDomainMode(req.Msg.GetMode())
+	if mode != narration.ModeOriginal {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("polish/AI draft generation is G2; only original mode is available"))
+	}
+	snapshot := app.ScriptDraftSnapshot{
+		ProjectID: projectID, Language: requestLanguage(req.Header()), Mode: string(mode),
+	}
+	for _, rawSlideID := range req.Msg.GetSlideIds() {
+		slideID := strings.TrimSpace(rawSlideID)
+		if slideID == "" {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slide_id cannot be empty"))
+		}
+		snapshot.SlideIDs = append(snapshot.SlideIDs, slideID)
+	}
+	snapshotBytes, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	job, err := s.jobs.Create(ctx, p.TenantID, projectID, string(pipeline.KindScriptDraft), idempotencyKey, string(snapshotBytes), time.Time{})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if job.InputSnapshot != string(snapshotBytes) {
+		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
+	}
+	return connect.NewResponse(&pptsv1.GenerateDraftResponse{JobId: job.ID, FullySupported: true}), nil
+}
+
+func toDomainMode(mode pptsv1.ScriptMode) narration.ScriptMode {
+	switch mode {
+	case pptsv1.ScriptMode_SCRIPT_MODE_ORIGINAL:
+		return narration.ModeOriginal
+	case pptsv1.ScriptMode_SCRIPT_MODE_POLISH:
+		return narration.ModePolish
+	case pptsv1.ScriptMode_SCRIPT_MODE_AI_GENERATED:
+		return narration.ModeAIGenerated
+	default:
+		return narration.ModeOriginal
+	}
 }
 
 func requirePrincipal(ctx context.Context) (Principal, error) {

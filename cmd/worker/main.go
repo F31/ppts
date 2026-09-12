@@ -57,6 +57,7 @@ func run() error {
 
 	objects := objectstore.NewLocal(objectRoot, nil)
 	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{}))
+	scriptDraftHandler := app.NewScriptDraftHandler(narration.NewPGStore(pool), objects)
 	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider())
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {
@@ -67,6 +68,8 @@ func run() error {
 		switch job.Kind {
 		case pipeline.KindParse:
 			return parseHandler.Handle(ctx, job)
+		case pipeline.KindScriptDraft:
+			return scriptDraftHandler.Handle(ctx, job)
 		case pipeline.KindNarration:
 			return narrationHandler.Handle(ctx, job)
 		case pipeline.KindExport:

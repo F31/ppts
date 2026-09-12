@@ -3,10 +3,13 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/upload"
 )
 
 type fakeScriptStore struct {
@@ -32,6 +36,7 @@ type fakeProjectStore struct {
 	projects      []*project.Project
 	createdTenant string
 	createdOwner  string
+	nextRev       int
 }
 
 func (s *fakeProjectStore) CreateProject(_ context.Context, tenantID, owner, title string) (*project.Project, error) {
@@ -63,12 +68,91 @@ func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, id string
 	return p, nil
 }
 
-func (*fakeProjectStore) CreateSourceRevision(context.Context, string, project.NewSourceRevision) (*project.SourceRevision, error) {
-	return nil, errors.New("not used")
+func (s *fakeProjectStore) CreateSourceRevision(ctx context.Context, tenantID string, in project.NewSourceRevision) (*project.SourceRevision, error) {
+	if _, err := s.GetProject(ctx, tenantID, in.ProjectID); err != nil {
+		return nil, err
+	}
+	s.nextRev++
+	return &project.SourceRevision{
+		ID: "rev-" + itoa(s.nextRev), ProjectID: in.ProjectID, TenantID: tenantID,
+		RevisionNo: s.nextRev, SourceHash: in.SourceHash, ObjectKey: in.ObjectKey,
+		ParserVersion: in.ParserVersion, CreatedAt: time.Unix(int64(s.nextRev), 0),
+	}, nil
 }
 
 func (*fakeProjectStore) GetSourceRevision(context.Context, string, string, int) (*project.SourceRevision, error) {
 	return nil, errors.New("not used")
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var digits []byte
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
+}
+
+type fakeUploadStore struct {
+	sessions map[string]*upload.UploadSession
+}
+
+func newFakeUploadStore() *fakeUploadStore {
+	return &fakeUploadStore{sessions: map[string]*upload.UploadSession{}}
+}
+
+func (s *fakeUploadStore) Create(_ context.Context, in upload.NewUpload) (*upload.UploadSession, error) {
+	now := time.Unix(1, 0)
+	ses := &upload.UploadSession{
+		ID: in.ID, TenantID: in.TenantID, ProjectID: in.ProjectID,
+		Filename: in.Filename, ContentType: in.ContentType, ObjectKey: in.ObjectKey,
+		SizeBytes: in.SizeBytes, DeleteSourceAfter: in.DeleteSourceAfter,
+		State: upload.StatePending, CreatedAt: now, UpdatedAt: now,
+	}
+	s.sessions[in.ID] = ses
+	return ses, nil
+}
+
+func (s *fakeUploadStore) Get(_ context.Context, tenantID, uploadID string) (*upload.UploadSession, error) {
+	ses, ok := s.sessions[uploadID]
+	if !ok || ses.TenantID != tenantID {
+		return nil, upload.ErrNotFound
+	}
+	return ses, nil
+}
+
+func (s *fakeUploadStore) Complete(_ context.Context, tenantID, uploadID, sourceRevisionID, jobID string) (*upload.UploadSession, error) {
+	ses, err := s.Get(context.Background(), tenantID, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	switch ses.State {
+	case upload.StateCompleted:
+		return ses, nil
+	case upload.StateAborted:
+		return nil, upload.ErrAlreadyAborted
+	}
+	ses.State = upload.StateCompleted
+	ses.SourceRevisionID, ses.JobID = sourceRevisionID, jobID
+	return ses, nil
+}
+
+func (s *fakeUploadStore) Abort(_ context.Context, tenantID, uploadID string) (*upload.UploadSession, error) {
+	ses, err := s.Get(context.Background(), tenantID, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	switch ses.State {
+	case upload.StateAborted:
+		return ses, nil
+	case upload.StateCompleted:
+		return nil, upload.ErrAlreadyCompleted
+	}
+	ses.State = upload.StateAborted
+	return ses, nil
 }
 
 type jobCreatorStub struct {
@@ -110,6 +194,14 @@ func (s *jobCreatorStub) Create(_ context.Context, tenantID, projectID, _ string
 		return s.job, nil
 	}
 	return &pipeline.Job{ID: "job-1", InputSnapshot: snapshot}, nil
+}
+
+func (s *jobCreatorStub) LatestSucceededJob(context.Context, string, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrNoSucceededJob
+}
+
+func (s *jobCreatorStub) StepResultRef(context.Context, string, string) (string, error) {
+	return "", nil
 }
 
 func (s *fakeScriptStore) Get(_ context.Context, tenantID, _, _, language string) (*narration.Revision, error) {
@@ -174,7 +266,7 @@ func authRequest[T any](msg *T) *connect.Request[T] {
 
 func TestHandlerHealthAndAuthentication(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 
 	resp, err := http.Get(server.URL + "/healthz")
@@ -199,7 +291,7 @@ func TestProjectServiceCreateListAndArchive(t *testing.T) {
 	projects := &fakeProjectStore{projects: []*project.Project{{
 		ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "旧项目", CreatedAt: time.Unix(90, 0),
 	}}}
-	server := httptest.NewServer(NewHandler(projects, &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
 
@@ -228,7 +320,7 @@ func TestProjectServiceCreateListAndArchive(t *testing.T) {
 
 func TestScriptGetUsesAuthenticatedTenantAndLanguage(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -248,7 +340,7 @@ func TestScriptGetUsesAuthenticatedTenantAndLanguage(t *testing.T) {
 
 func TestScriptUpdateReturnsLatestOnConflict(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -266,7 +358,7 @@ func TestScriptUpdateReturnsLatestOnConflict(t *testing.T) {
 
 func TestScriptValidationAndIrreversibleLock(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -290,7 +382,7 @@ func TestCreateGenerationPersistsRevisionBoundSnapshot(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	store.revision.Status = narration.StatusApproved
 	jobs := &jobCreatorStub{}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, jobs, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -321,7 +413,7 @@ func TestCreateGenerationPersistsRevisionBoundSnapshot(t *testing.T) {
 func TestCreateGenerationRejectsIdempotencyKeyReuseWithDifferentSnapshot(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{job: &pipeline.Job{ID: "existing", InputSnapshot: `{"different":true}`}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, jobs, &fakeArtifactStore{}, testObjects(t)))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -339,7 +431,7 @@ func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
 	objects := testObjects(t)
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, store, jobs, &fakeArtifactStore{}, objects))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
 
@@ -384,7 +476,7 @@ func TestCreateDownloadSignsArtifactObject(t *testing.T) {
 		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1", Format: artifact.FormatSRT,
 		ObjectKey: key.String(), ContentHash: "hash", SizeBytes: 3, CreatedAt: time.Unix(1, 0),
 	}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
 
@@ -417,7 +509,7 @@ func TestPlaybackManifestSignsAllRequiredResources(t *testing.T) {
 	putAPIObject(t, objects, audioKey, []byte("wav"), "audio/wav")
 	bundle, _ := json.Marshal(app.TimelineAsset{Timeline: timeline, SRTKey: srtKey.String(), VTTKey: vttKey.String()})
 	putAPIObject(t, objects, timelineKey, bundle, "application/json")
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
 
@@ -441,11 +533,29 @@ func TestPlaybackManifestSignsAllRequiredResources(t *testing.T) {
 		t.Fatalf("counts = %v", counts)
 	}
 
-	_, err = client.GetManifest(context.Background(), authRequest(&pptsv1.GetPlaybackManifestRequest{
+	// 空页面图：渲染未就绪时允许（音频+字幕仍可返回，无 PAGE_PNG 资源）。
+	respNoPage, err := client.GetManifest(context.Background(), authRequest(&pptsv1.GetPlaybackManifestRequest{
 		ProjectId: "project-1", TimelineKey: timelineKey.String(), TtlSeconds: 60,
 	}))
+	if err != nil {
+		t.Fatalf("GetManifest no-page: %v", err)
+	}
+	if len(respNoPage.Msg.GetResources()) != 4 {
+		t.Fatalf("no-page resources = %d: %+v", len(respNoPage.Msg.GetResources()), respNoPage.Msg)
+	}
+	for _, res := range respNoPage.Msg.GetResources() {
+		if res.GetType() == pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG {
+			t.Fatalf("unexpected PAGE_PNG resource without page keys: %+v", res)
+		}
+	}
+
+	// 数量不匹配（仅提供部分页面）仍拒绝。
+	_, err = client.GetManifest(context.Background(), authRequest(&pptsv1.GetPlaybackManifestRequest{
+		ProjectId: "project-1", TimelineKey: timelineKey.String(),
+		PagePngKeys: []string{pageKey.String(), pageKey.String()}, TtlSeconds: 60,
+	}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("page count code=%v err=%v", connect.CodeOf(err), err)
+		t.Fatalf("page count mismatch code = %v, err=%v", connect.CodeOf(err), err)
 	}
 }
 
@@ -453,5 +563,272 @@ func putAPIObject(t *testing.T, objects objectstore.ObjectStore, key objectstore
 	t.Helper()
 	if err := objects.Put(context.Background(), key, bytes.NewReader(data), objectstore.ObjectMeta{ContentType: contentType, ContentHash: "hash", Size: int64(len(data))}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPlaybackGetNarration(t *testing.T) {
+	objects := testObjects(t)
+	jobs := &narrationJobStub{
+		job:         &pipeline.Job{ID: "job-narr", Kind: pipeline.KindNarration},
+		stepRef:     "tenant-1/project-1/narration-job-narr/timeline/abc.json",
+		jobNotFound: false,
+	}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
+
+	resp, err := client.GetNarration(context.Background(), authRequest(&pptsv1.GetNarrationRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("GetNarration: %v", err)
+	}
+	if !resp.Msg.GetReady() || resp.Msg.GetTimelineKey() != "tenant-1/project-1/narration-job-narr/timeline/abc.json" {
+		t.Fatalf("response = %+v", resp.Msg)
+	}
+
+	// 无成功配音 → ready=false。
+	notReady := &narrationJobStub{jobNotFound: true}
+	server2 := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, notReady, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server2.Close)
+	client2 := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server2.URL)
+	resp2, err := client2.GetNarration(context.Background(), authRequest(&pptsv1.GetNarrationRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("GetNarration#2: %v", err)
+	}
+	if resp2.Msg.GetReady() {
+		t.Fatalf("expected not ready: %+v", resp2.Msg)
+	}
+}
+
+// narrationJobStub 是 GetNarration 专用 stub：精确控制最近成功任务与 timeline ref。
+type narrationJobStub struct {
+	job         *pipeline.Job
+	stepRef     string
+	jobNotFound bool
+}
+
+func (s *narrationJobStub) Create(_ context.Context, tenantID, projectID, _ string, idemKey, snapshot string, _ time.Time) (*pipeline.Job, error) {
+	job := s.job
+	if job == nil {
+		job = &pipeline.Job{ID: "job-narr", InputSnapshot: snapshot}
+	}
+	return job, nil
+}
+
+func (s *narrationJobStub) LatestSucceededJob(context.Context, string, string, string) (*pipeline.Job, error) {
+	if s.jobNotFound || s.job == nil {
+		return nil, pipeline.ErrNoSucceededJob
+	}
+	return s.job, nil
+}
+
+func (s *narrationJobStub) StepResultRef(context.Context, string, string) (string, error) {
+	return s.stepRef, nil
+}
+
+func TestProjectGetSlidesReadsParsedDocument(t *testing.T) {
+	projects := &fakeProjectStore{projects: []*project.Project{{
+		ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "解析项目", CurrentRevision: 2, CreatedAt: time.Unix(90, 0),
+	}}}
+	objects := testObjects(t)
+	docKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1",
+		Revision: "src-02", AssetType: "document", AssetID: "extracted", Ext: "json",
+	}
+	doc := `{"schemaVersion":"1.0","pages":[
+		{"index":0,"slideId":"slide-1","name":"首页","notesText":"开场介绍", "featureFlags":["picture"]},
+		{"index":1,"slideId":"slide-2","shapes":[{"text":"PCIe 5.0 性能"}]}
+	],"features":{"pageCount":2}}`
+	putAPIObject(t, objects, docKey, []byte(doc), "application/json")
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
+
+	// 未指定版本 → 使用项目当前版本 2。
+	resp, err := client.GetSlides(context.Background(), authRequest(&pptsv1.GetSlidesRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("GetSlides: %v", err)
+	}
+	if resp.Msg.GetRevisionNo() != 2 || len(resp.Msg.GetSlides()) != 2 {
+		t.Fatalf("response = %+v", resp.Msg)
+	}
+	if resp.Msg.GetSlides()[0].GetSlideId() != "slide-1" || resp.Msg.GetSlides()[0].GetPreview() != "开场介绍" ||
+		len(resp.Msg.GetSlides()[0].GetFeatureFlags()) != 1 {
+		t.Fatalf("slide[0] = %+v", resp.Msg.GetSlides()[0])
+	}
+	if resp.Msg.GetSlides()[1].GetSlideId() != "slide-2" || resp.Msg.GetSlides()[1].GetPreview() != "PCIe 5.0 性能" {
+		t.Fatalf("slide[1] = %+v", resp.Msg.GetSlides()[1])
+	}
+
+	// 指定版本读取不存在 → NotFound。
+	_, err = client.GetSlides(context.Background(), authRequest(&pptsv1.GetSlidesRequest{ProjectId: "project-1", RevisionNo: 99}))
+	if connect.CodeOf(err) != connect.CodeNotFound {
+		t.Fatalf("missing revision code = %v, err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestGenerateDraftEnqueuesOriginalModeJob(t *testing.T) {
+	store := &fakeScriptStore{}
+	jobs := &jobCreatorStub{}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.GenerateDraftRequest{
+		ProjectId: "project-1", SlideIds: []string{"slide-1"}, Mode: pptsv1.ScriptMode_SCRIPT_MODE_ORIGINAL,
+	})
+	req.Header().Set("Idempotency-Key", "draft-1")
+	resp, err := client.GenerateDraft(context.Background(), req)
+	if err != nil {
+		t.Fatalf("GenerateDraft: %v", err)
+	}
+	if jobs.idempotencyKey != "draft-1" || jobs.projectID != "project-1" {
+		t.Fatalf("job identity = %q/%q", jobs.tenantID, jobs.projectID)
+	}
+	var snap app.ScriptDraftSnapshot
+	if err := json.Unmarshal([]byte(jobs.inputSnapshot), &snap); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snap.ProjectID != "project-1" || snap.Mode != "original" || len(snap.SlideIDs) != 1 {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+	if resp.Msg.GetJobId() != "job-1" || !resp.Msg.GetFullySupported() {
+		t.Fatalf("response = %+v", resp.Msg)
+	}
+
+	// polish 模式在 G1 未实现 → Unimplemented。
+	polishReq := authRequest(&pptsv1.GenerateDraftRequest{
+		ProjectId: "project-1", Mode: pptsv1.ScriptMode_SCRIPT_MODE_POLISH,
+	})
+	polishReq.Header().Set("Idempotency-Key", "draft-2")
+	_, err = client.GenerateDraft(context.Background(), polishReq)
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		t.Fatalf("polish mode code = %v, err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestUploadDirectFlow(t *testing.T) {
+	projects := &fakeProjectStore{projects: []*project.Project{{
+		ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "上传项目", CreatedAt: time.Unix(90, 0),
+	}}}
+	jobs := &jobCreatorStub{}
+	objects := testObjects(t)
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewUploadServiceClient(http.DefaultClient, server.URL)
+
+	created, err := client.CreateUpload(context.Background(), authRequest(&pptsv1.CreateUploadRequest{
+		ProjectId: "project-1", Filename: "demo.pptx", SizeBytes: 8,
+	}))
+	if err != nil {
+		t.Fatalf("CreateUpload: %v", err)
+	}
+	uploadID := created.Msg.GetUploadId()
+	if uploadID == "" || created.Msg.GetObjectKey() == "" || len(created.Msg.GetSignedUploadUrls()) != 1 {
+		t.Fatalf("create = %+v", created.Msg)
+	}
+	url := created.Msg.GetSignedUploadUrls()[0]
+	if !strings.HasPrefix(url, "/ppts/object/") {
+		t.Fatalf("local upload url not rewritten: %q", url)
+	}
+
+	// 通过签名对象端点写入正文。
+	put, err := http.NewRequest(http.MethodPut, server.URL+url, bytes.NewReader([]byte("PPTXDATA")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	put.Header.Set("Content-Type", "application/octet-stream")
+	presp, err := http.DefaultClient.Do(put)
+	if err != nil {
+		t.Fatalf("PUT object: %v", err)
+	}
+	presp.Body.Close()
+	if presp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT status = %d", presp.StatusCode)
+	}
+
+	sum := sha256.Sum256([]byte("PPTXDATA"))
+	hash := hex.EncodeToString(sum[:])
+	completed, err := client.CompleteUpload(context.Background(), authRequest(&pptsv1.CompleteUploadRequest{
+		UploadId: uploadID, ExpectedHash: hash, SizeBytes: 8,
+	}))
+	if err != nil {
+		t.Fatalf("CompleteUpload: %v", err)
+	}
+	if completed.Msg.GetSourceRevisionId() != "rev-1" || completed.Msg.GetJobId() != "job-1" {
+		t.Fatalf("complete = %+v", completed.Msg)
+	}
+	if jobs.idempotencyKey != uploadID {
+		t.Fatalf("parse idem key = %q want upload id %q", jobs.idempotencyKey, uploadID)
+	}
+	var snap app.ParseSnapshot
+	if err := json.Unmarshal([]byte(jobs.inputSnapshot), &snap); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snap.SourceRevisionID != "rev-1" || snap.ObjectKey == "" {
+		t.Fatalf("snapshot = %+v", snap)
+	}
+
+	// 幂等：再次完成返回同一结果。
+	again, err := client.CompleteUpload(context.Background(), authRequest(&pptsv1.CompleteUploadRequest{
+		UploadId: uploadID, ExpectedHash: hash, SizeBytes: 8,
+	}))
+	if err != nil {
+		t.Fatalf("CompleteUpload#2: %v", err)
+	}
+	if again.Msg.GetSourceRevisionId() != "rev-1" || again.Msg.GetJobId() != "job-1" {
+		t.Fatalf("idempotent complete = %+v", again.Msg)
+	}
+}
+
+func TestUploadRejectsHashMismatchAndAbort(t *testing.T) {
+	projects := &fakeProjectStore{projects: []*project.Project{{
+		ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "上传项目", CreatedAt: time.Unix(90, 0),
+	}}}
+	jobs := &jobCreatorStub{}
+	objects := testObjects(t)
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewUploadServiceClient(http.DefaultClient, server.URL)
+
+	created, err := client.CreateUpload(context.Background(), authRequest(&pptsv1.CreateUploadRequest{
+		ProjectId: "project-1", Filename: "demo.pptx", SizeBytes: 8,
+	}))
+	if err != nil {
+		t.Fatalf("CreateUpload: %v", err)
+	}
+	url := created.Msg.GetSignedUploadUrls()[0]
+	put, _ := http.NewRequest(http.MethodPut, server.URL+url, bytes.NewReader([]byte("PPTXDATA")))
+	presp, err := http.DefaultClient.Do(put)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	presp.Body.Close()
+
+	// 错误哈希 → InvalidArgument。
+	_, err = client.CompleteUpload(context.Background(), authRequest(&pptsv1.CompleteUploadRequest{
+		UploadId: created.Msg.GetUploadId(), ExpectedHash: "ffff", SizeBytes: 8,
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("hash mismatch code = %v, err=%v", connect.CodeOf(err), err)
+	}
+
+	// 大小不符 → InvalidArgument。
+	_, err = client.CompleteUpload(context.Background(), authRequest(&pptsv1.CompleteUploadRequest{
+		UploadId: created.Msg.GetUploadId(), ExpectedHash: "ffff", SizeBytes: 999,
+	}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("size mismatch code = %v, err=%v", connect.CodeOf(err), err)
+	}
+
+	// 中止后不能再完成。
+	if _, err := client.AbortUpload(context.Background(), authRequest(&pptsv1.AbortUploadRequest{UploadId: created.Msg.GetUploadId()})); err != nil {
+		t.Fatalf("AbortUpload: %v", err)
+	}
+	sum := sha256.Sum256([]byte("PPTXDATA"))
+	_, err = client.CompleteUpload(context.Background(), authRequest(&pptsv1.CompleteUploadRequest{
+		UploadId: created.Msg.GetUploadId(), ExpectedHash: hex.EncodeToString(sum[:]), SizeBytes: 8,
+	}))
+	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("complete aborted code = %v, err=%v", connect.CodeOf(err), err)
 	}
 }

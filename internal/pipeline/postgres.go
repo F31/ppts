@@ -204,6 +204,32 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Job, error) {
 	return j, err
 }
 
+// LatestSucceededJob 返回某项目最近一次成功的指定类型任务；
+// 不存在返回 ErrNoSucceededJob。
+func (s *PGStore) LatestSucceededJob(ctx context.Context, tenantID, projectID, kind string) (*Job, error) {
+	j, err := scanJob(s.pool.QueryRow(ctx,
+		"SELECT "+jobSelectColumns+" FROM jobs WHERE tenant_id=$1 AND project_id=$2 AND kind=$3 AND state='succeeded' ORDER BY created_at DESC LIMIT 1",
+		tenantID, projectID, kind))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoSucceededJob
+	}
+	return j, err
+}
+
+// StepResultRef 返回某任务最近成功的指定步骤的 result_ref；
+// 无记录时不返回错误（ref 为空，由调用方决定 NotFound）。
+func (s *PGStore) StepResultRef(ctx context.Context, jobID, stepType string) (string, error) {
+	var ref string
+	err := s.pool.QueryRow(ctx,
+		`SELECT result_ref FROM job_steps
+		 WHERE job_id=$1 AND step_type=$2 AND state='success'
+		 ORDER BY updated_at DESC LIMIT 1`, jobID, stepType).Scan(&ref)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return ref, err
+}
+
 func nullableTime(t *time.Time) any {
 	if t == nil {
 		return nil

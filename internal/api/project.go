@@ -2,22 +2,27 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/project"
 )
 
 type ProjectService struct {
 	pptsv1connect.UnimplementedProjectServiceHandler
-	store project.ProjectStore
+	store   project.ProjectStore
+	objects objectstore.ObjectStore
 }
 
-func NewProjectService(store project.ProjectStore) *ProjectService {
-	return &ProjectService{store: store}
+func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore) *ProjectService {
+	return &ProjectService{store: store, objects: objects}
 }
 
 func (s *ProjectService) Create(ctx context.Context, req *connect.Request[pptsv1.CreateProjectRequest]) (*connect.Response[pptsv1.CreateProjectResponse], error) {
@@ -74,6 +79,95 @@ func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv
 		return nil, projectError(err)
 	}
 	return connect.NewResponse(toProtoProject(archived)), nil
+}
+
+type shapeText struct {
+	Text string `json:"text"`
+}
+
+func (s *ProjectService) GetSlides(ctx context.Context, req *connect.Request[pptsv1.GetSlidesRequest]) (*connect.Response[pptsv1.GetSlidesResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	projectID := strings.TrimSpace(req.Msg.GetProjectId())
+	if projectID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
+	}
+	revisionNo := int(req.Msg.GetRevisionNo())
+	projectRow, err := s.store.GetProject(ctx, p.TenantID, projectID)
+	if err != nil {
+		return nil, projectError(err)
+	}
+	if revisionNo == 0 {
+		revisionNo = projectRow.CurrentRevision
+	}
+	docKey := objectstore.ObjectKey{
+		TenantID: p.TenantID, ProjectID: projectID,
+		Revision: srcRevString(revisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
+	}
+	rc, _, err := s.objects.Get(ctx, docKey)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errors.New("project has no parsed document yet"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	var doc struct {
+		Pages []struct {
+			Index        int         `json:"index"`
+			SlideID      string      `json:"slideId"`
+			Name         string      `json:"name"`
+			NotesText    string      `json:"notesText"`
+			FeatureFlags []string    `json:"featureFlags"`
+			Shapes       []shapeText `json:"shapes"`
+		} `json:"pages"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("invalid parsed document: %w", err))
+	}
+	out := make([]*pptsv1.SlideSummary, 0, len(doc.Pages))
+	for _, pg := range doc.Pages {
+		out = append(out, &pptsv1.SlideSummary{
+			SlideId: pg.SlideID, Index: int32(pg.Index),
+			Title: pg.Name, HasNotes: pg.NotesText != "",
+			Preview:      previewText(pg.NotesText, pg.Shapes),
+			FeatureFlags: pg.FeatureFlags,
+		})
+	}
+	return connect.NewResponse(&pptsv1.GetSlidesResponse{RevisionNo: int64(revisionNo), Slides: out}), nil
+}
+
+// previewText 优先用备注，其次首个非空形状文本，截断到 120 字符。
+func previewText(notes string, shapes []shapeText) string {
+	if notes = strings.TrimSpace(notes); notes != "" {
+		return truncate(notes, 120)
+	}
+	for _, sh := range shapes {
+		if t := strings.TrimSpace(sh.Text); t != "" {
+			return truncate(t, 120)
+		}
+	}
+	return ""
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+func srcRevString(n int) string {
+	if n < 0 {
+		n = 0
+	}
+	return fmt.Sprintf("src-%02d", n)
 }
 
 func (s *ProjectService) CreateSourceRevision(context.Context, *connect.Request[pptsv1.CreateSourceRevisionRequest]) (*connect.Response[pptsv1.SourceRevision], error) {

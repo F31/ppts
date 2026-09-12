@@ -39,6 +39,10 @@ button, textarea, input { font: inherit; }
 .upload-entry input { display: none; }
 .upload-note, .api-status { margin: 8px 0 0; color: #9fb1cf; font-size: 12px; line-height: 1.45; }
 .api-status { color: #c9d6ea; }
+.empty-state { padding: 14px; margin: 8px 0; color: #9fb1cf; line-height: 1.6; font-size: 13px; }
+.draft-actions { margin-top: 8px; }
+.draft-actions button, .editor-card .draft-actions button { border: 0; border-radius: 999px; padding: 10px 16px; color: #07111f; background: #67e8f9; font-weight: 800; cursor: pointer; }
+.draft-actions button:disabled { opacity: .55; cursor: default; }
 
 .editor-card { display: flex; flex-direction: column; min-height: 560px; padding: 18px; }
 .editor-card header, .editor-card footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; }

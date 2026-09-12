@@ -39,6 +39,9 @@ const (
 	ProjectServiceGetProcedure = "/ppts.v1.ProjectService/Get"
 	// ProjectServiceListProcedure is the fully-qualified name of the ProjectService's List RPC.
 	ProjectServiceListProcedure = "/ppts.v1.ProjectService/List"
+	// ProjectServiceGetSlidesProcedure is the fully-qualified name of the ProjectService's GetSlides
+	// RPC.
+	ProjectServiceGetSlidesProcedure = "/ppts.v1.ProjectService/GetSlides"
 	// ProjectServiceCreateSourceRevisionProcedure is the fully-qualified name of the ProjectService's
 	// CreateSourceRevision RPC.
 	ProjectServiceCreateSourceRevisionProcedure = "/ppts.v1.ProjectService/CreateSourceRevision"
@@ -51,6 +54,7 @@ type ProjectServiceClient interface {
 	Create(context.Context, *connect.Request[v1.CreateProjectRequest]) (*connect.Response[v1.CreateProjectResponse], error)
 	Get(context.Context, *connect.Request[v1.GetProjectRequest]) (*connect.Response[v1.Project], error)
 	List(context.Context, *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error)
+	GetSlides(context.Context, *connect.Request[v1.GetSlidesRequest]) (*connect.Response[v1.GetSlidesResponse], error)
 	CreateSourceRevision(context.Context, *connect.Request[v1.CreateSourceRevisionRequest]) (*connect.Response[v1.SourceRevision], error)
 	Archive(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.Project], error)
 }
@@ -84,6 +88,12 @@ func NewProjectServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(projectServiceMethods.ByName("List")),
 			connect.WithClientOptions(opts...),
 		),
+		getSlides: connect.NewClient[v1.GetSlidesRequest, v1.GetSlidesResponse](
+			httpClient,
+			baseURL+ProjectServiceGetSlidesProcedure,
+			connect.WithSchema(projectServiceMethods.ByName("GetSlides")),
+			connect.WithClientOptions(opts...),
+		),
 		createSourceRevision: connect.NewClient[v1.CreateSourceRevisionRequest, v1.SourceRevision](
 			httpClient,
 			baseURL+ProjectServiceCreateSourceRevisionProcedure,
@@ -104,6 +114,7 @@ type projectServiceClient struct {
 	create               *connect.Client[v1.CreateProjectRequest, v1.CreateProjectResponse]
 	get                  *connect.Client[v1.GetProjectRequest, v1.Project]
 	list                 *connect.Client[v1.ListProjectsRequest, v1.ListProjectsResponse]
+	getSlides            *connect.Client[v1.GetSlidesRequest, v1.GetSlidesResponse]
 	createSourceRevision *connect.Client[v1.CreateSourceRevisionRequest, v1.SourceRevision]
 	archive              *connect.Client[v1.ArchiveProjectRequest, v1.Project]
 }
@@ -123,6 +134,11 @@ func (c *projectServiceClient) List(ctx context.Context, req *connect.Request[v1
 	return c.list.CallUnary(ctx, req)
 }
 
+// GetSlides calls ppts.v1.ProjectService.GetSlides.
+func (c *projectServiceClient) GetSlides(ctx context.Context, req *connect.Request[v1.GetSlidesRequest]) (*connect.Response[v1.GetSlidesResponse], error) {
+	return c.getSlides.CallUnary(ctx, req)
+}
+
 // CreateSourceRevision calls ppts.v1.ProjectService.CreateSourceRevision.
 func (c *projectServiceClient) CreateSourceRevision(ctx context.Context, req *connect.Request[v1.CreateSourceRevisionRequest]) (*connect.Response[v1.SourceRevision], error) {
 	return c.createSourceRevision.CallUnary(ctx, req)
@@ -138,6 +154,7 @@ type ProjectServiceHandler interface {
 	Create(context.Context, *connect.Request[v1.CreateProjectRequest]) (*connect.Response[v1.CreateProjectResponse], error)
 	Get(context.Context, *connect.Request[v1.GetProjectRequest]) (*connect.Response[v1.Project], error)
 	List(context.Context, *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error)
+	GetSlides(context.Context, *connect.Request[v1.GetSlidesRequest]) (*connect.Response[v1.GetSlidesResponse], error)
 	CreateSourceRevision(context.Context, *connect.Request[v1.CreateSourceRevisionRequest]) (*connect.Response[v1.SourceRevision], error)
 	Archive(context.Context, *connect.Request[v1.ArchiveProjectRequest]) (*connect.Response[v1.Project], error)
 }
@@ -167,6 +184,12 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 		connect.WithSchema(projectServiceMethods.ByName("List")),
 		connect.WithHandlerOptions(opts...),
 	)
+	projectServiceGetSlidesHandler := connect.NewUnaryHandler(
+		ProjectServiceGetSlidesProcedure,
+		svc.GetSlides,
+		connect.WithSchema(projectServiceMethods.ByName("GetSlides")),
+		connect.WithHandlerOptions(opts...),
+	)
 	projectServiceCreateSourceRevisionHandler := connect.NewUnaryHandler(
 		ProjectServiceCreateSourceRevisionProcedure,
 		svc.CreateSourceRevision,
@@ -187,6 +210,8 @@ func NewProjectServiceHandler(svc ProjectServiceHandler, opts ...connect.Handler
 			projectServiceGetHandler.ServeHTTP(w, r)
 		case ProjectServiceListProcedure:
 			projectServiceListHandler.ServeHTTP(w, r)
+		case ProjectServiceGetSlidesProcedure:
+			projectServiceGetSlidesHandler.ServeHTTP(w, r)
 		case ProjectServiceCreateSourceRevisionProcedure:
 			projectServiceCreateSourceRevisionHandler.ServeHTTP(w, r)
 		case ProjectServiceArchiveProcedure:
@@ -210,6 +235,10 @@ func (UnimplementedProjectServiceHandler) Get(context.Context, *connect.Request[
 
 func (UnimplementedProjectServiceHandler) List(context.Context, *connect.Request[v1.ListProjectsRequest]) (*connect.Response[v1.ListProjectsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.ProjectService.List is not implemented"))
+}
+
+func (UnimplementedProjectServiceHandler) GetSlides(context.Context, *connect.Request[v1.GetSlidesRequest]) (*connect.Response[v1.GetSlidesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.ProjectService.GetSlides is not implemented"))
 }
 
 func (UnimplementedProjectServiceHandler) CreateSourceRevision(context.Context, *connect.Request[v1.CreateSourceRevisionRequest]) (*connect.Response[v1.SourceRevision], error) {

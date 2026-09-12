@@ -16,6 +16,7 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/upload"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -59,7 +60,7 @@ func run() error {
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           api.NewHandler(project.NewPGProjectStore(pool), narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool), objectstore.NewLocal(objectRoot, []byte(objectSecret))),
+		Handler:           api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool), narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool), objectstore.NewLocal(objectRoot, []byte(objectSecret))),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)

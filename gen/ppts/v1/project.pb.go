@@ -209,6 +209,195 @@ func (x *CreateProjectResponse) GetProject() *Project {
 	return nil
 }
 
+type GetSlidesRequest struct {
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	ProjectId string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	// 0 = 当前最新已解析版本；否则指定源版本号。
+	RevisionNo    int64 `protobuf:"varint,2,opt,name=revision_no,json=revisionNo,proto3" json:"revision_no,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSlidesRequest) Reset() {
+	*x = GetSlidesRequest{}
+	mi := &file_ppts_v1_project_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSlidesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSlidesRequest) ProtoMessage() {}
+
+func (x *GetSlidesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_project_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSlidesRequest.ProtoReflect.Descriptor instead.
+func (*GetSlidesRequest) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetSlidesRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *GetSlidesRequest) GetRevisionNo() int64 {
+	if x != nil {
+		return x.RevisionNo
+	}
+	return 0
+}
+
+type SlideSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SlideId       string                 `protobuf:"bytes,1,opt,name=slide_id,json=slideId,proto3" json:"slide_id,omitempty"`
+	Index         int32                  `protobuf:"varint,2,opt,name=index,proto3" json:"index,omitempty"`    // 0 基放映序
+	Title         string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`     // 页名（可用时）
+	Preview       string                 `protobuf:"bytes,4,opt,name=preview,proto3" json:"preview,omitempty"` // 备注或首文本预览
+	HasNotes      bool                   `protobuf:"varint,5,opt,name=has_notes,json=hasNotes,proto3" json:"has_notes,omitempty"`
+	FeatureFlags  []string               `protobuf:"bytes,6,rep,name=feature_flags,json=featureFlags,proto3" json:"feature_flags,omitempty"` // 本页渲染/播放特性提示
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SlideSummary) Reset() {
+	*x = SlideSummary{}
+	mi := &file_ppts_v1_project_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SlideSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SlideSummary) ProtoMessage() {}
+
+func (x *SlideSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_project_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SlideSummary.ProtoReflect.Descriptor instead.
+func (*SlideSummary) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SlideSummary) GetSlideId() string {
+	if x != nil {
+		return x.SlideId
+	}
+	return ""
+}
+
+func (x *SlideSummary) GetIndex() int32 {
+	if x != nil {
+		return x.Index
+	}
+	return 0
+}
+
+func (x *SlideSummary) GetTitle() string {
+	if x != nil {
+		return x.Title
+	}
+	return ""
+}
+
+func (x *SlideSummary) GetPreview() string {
+	if x != nil {
+		return x.Preview
+	}
+	return ""
+}
+
+func (x *SlideSummary) GetHasNotes() bool {
+	if x != nil {
+		return x.HasNotes
+	}
+	return false
+}
+
+func (x *SlideSummary) GetFeatureFlags() []string {
+	if x != nil {
+		return x.FeatureFlags
+	}
+	return nil
+}
+
+type GetSlidesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RevisionNo    int64                  `protobuf:"varint,1,opt,name=revision_no,json=revisionNo,proto3" json:"revision_no,omitempty"`
+	Slides        []*SlideSummary        `protobuf:"bytes,2,rep,name=slides,proto3" json:"slides,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetSlidesResponse) Reset() {
+	*x = GetSlidesResponse{}
+	mi := &file_ppts_v1_project_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetSlidesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetSlidesResponse) ProtoMessage() {}
+
+func (x *GetSlidesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_project_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetSlidesResponse.ProtoReflect.Descriptor instead.
+func (*GetSlidesResponse) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetSlidesResponse) GetRevisionNo() int64 {
+	if x != nil {
+		return x.RevisionNo
+	}
+	return 0
+}
+
+func (x *GetSlidesResponse) GetSlides() []*SlideSummary {
+	if x != nil {
+		return x.Slides
+	}
+	return nil
+}
+
 type GetProjectRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
@@ -218,7 +407,7 @@ type GetProjectRequest struct {
 
 func (x *GetProjectRequest) Reset() {
 	*x = GetProjectRequest{}
-	mi := &file_ppts_v1_project_proto_msgTypes[3]
+	mi := &file_ppts_v1_project_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -230,7 +419,7 @@ func (x *GetProjectRequest) String() string {
 func (*GetProjectRequest) ProtoMessage() {}
 
 func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_project_proto_msgTypes[3]
+	mi := &file_ppts_v1_project_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -243,7 +432,7 @@ func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProjectRequest.ProtoReflect.Descriptor instead.
 func (*GetProjectRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_project_proto_rawDescGZIP(), []int{3}
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GetProjectRequest) GetId() string {
@@ -263,7 +452,7 @@ type ListProjectsRequest struct {
 
 func (x *ListProjectsRequest) Reset() {
 	*x = ListProjectsRequest{}
-	mi := &file_ppts_v1_project_proto_msgTypes[4]
+	mi := &file_ppts_v1_project_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -275,7 +464,7 @@ func (x *ListProjectsRequest) String() string {
 func (*ListProjectsRequest) ProtoMessage() {}
 
 func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_project_proto_msgTypes[4]
+	mi := &file_ppts_v1_project_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -288,7 +477,7 @@ func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsRequest.ProtoReflect.Descriptor instead.
 func (*ListProjectsRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_project_proto_rawDescGZIP(), []int{4}
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListProjectsRequest) GetCursor() *Cursor {
@@ -315,7 +504,7 @@ type ListProjectsResponse struct {
 
 func (x *ListProjectsResponse) Reset() {
 	*x = ListProjectsResponse{}
-	mi := &file_ppts_v1_project_proto_msgTypes[5]
+	mi := &file_ppts_v1_project_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -327,7 +516,7 @@ func (x *ListProjectsResponse) String() string {
 func (*ListProjectsResponse) ProtoMessage() {}
 
 func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_project_proto_msgTypes[5]
+	mi := &file_ppts_v1_project_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -340,7 +529,7 @@ func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsResponse.ProtoReflect.Descriptor instead.
 func (*ListProjectsResponse) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_project_proto_rawDescGZIP(), []int{5}
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListProjectsResponse) GetProjects() []*Project {
@@ -370,7 +559,7 @@ type CreateSourceRevisionRequest struct {
 
 func (x *CreateSourceRevisionRequest) Reset() {
 	*x = CreateSourceRevisionRequest{}
-	mi := &file_ppts_v1_project_proto_msgTypes[6]
+	mi := &file_ppts_v1_project_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -382,7 +571,7 @@ func (x *CreateSourceRevisionRequest) String() string {
 func (*CreateSourceRevisionRequest) ProtoMessage() {}
 
 func (x *CreateSourceRevisionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_project_proto_msgTypes[6]
+	mi := &file_ppts_v1_project_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -395,7 +584,7 @@ func (x *CreateSourceRevisionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateSourceRevisionRequest.ProtoReflect.Descriptor instead.
 func (*CreateSourceRevisionRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_project_proto_rawDescGZIP(), []int{6}
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CreateSourceRevisionRequest) GetProjectId() string {
@@ -447,7 +636,7 @@ type SourceRevision struct {
 
 func (x *SourceRevision) Reset() {
 	*x = SourceRevision{}
-	mi := &file_ppts_v1_project_proto_msgTypes[7]
+	mi := &file_ppts_v1_project_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -459,7 +648,7 @@ func (x *SourceRevision) String() string {
 func (*SourceRevision) ProtoMessage() {}
 
 func (x *SourceRevision) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_project_proto_msgTypes[7]
+	mi := &file_ppts_v1_project_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -472,7 +661,7 @@ func (x *SourceRevision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceRevision.ProtoReflect.Descriptor instead.
 func (*SourceRevision) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_project_proto_rawDescGZIP(), []int{7}
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SourceRevision) GetRevisionId() string {
@@ -526,7 +715,7 @@ type ArchiveProjectRequest struct {
 
 func (x *ArchiveProjectRequest) Reset() {
 	*x = ArchiveProjectRequest{}
-	mi := &file_ppts_v1_project_proto_msgTypes[8]
+	mi := &file_ppts_v1_project_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -538,7 +727,7 @@ func (x *ArchiveProjectRequest) String() string {
 func (*ArchiveProjectRequest) ProtoMessage() {}
 
 func (x *ArchiveProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_project_proto_msgTypes[8]
+	mi := &file_ppts_v1_project_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -551,7 +740,7 @@ func (x *ArchiveProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ArchiveProjectRequest.ProtoReflect.Descriptor instead.
 func (*ArchiveProjectRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_project_proto_rawDescGZIP(), []int{8}
+	return file_ppts_v1_project_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ArchiveProjectRequest) GetId() string {
@@ -578,7 +767,23 @@ const file_ppts_v1_project_proto_rawDesc = "" +
 	"\x14CreateProjectRequest\x12\x14\n" +
 	"\x05title\x18\x01 \x01(\tR\x05title\"C\n" +
 	"\x15CreateProjectResponse\x12*\n" +
-	"\aproject\x18\x01 \x01(\v2\x10.ppts.v1.ProjectR\aproject\"#\n" +
+	"\aproject\x18\x01 \x01(\v2\x10.ppts.v1.ProjectR\aproject\"R\n" +
+	"\x10GetSlidesRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x1f\n" +
+	"\vrevision_no\x18\x02 \x01(\x03R\n" +
+	"revisionNo\"\xb1\x01\n" +
+	"\fSlideSummary\x12\x19\n" +
+	"\bslide_id\x18\x01 \x01(\tR\aslideId\x12\x14\n" +
+	"\x05index\x18\x02 \x01(\x05R\x05index\x12\x14\n" +
+	"\x05title\x18\x03 \x01(\tR\x05title\x12\x18\n" +
+	"\apreview\x18\x04 \x01(\tR\apreview\x12\x1b\n" +
+	"\thas_notes\x18\x05 \x01(\bR\bhasNotes\x12#\n" +
+	"\rfeature_flags\x18\x06 \x03(\tR\ffeatureFlags\"c\n" +
+	"\x11GetSlidesResponse\x12\x1f\n" +
+	"\vrevision_no\x18\x01 \x01(\x03R\n" +
+	"revisionNo\x12-\n" +
+	"\x06slides\x18\x02 \x03(\v2\x15.ppts.v1.SlideSummaryR\x06slides\"#\n" +
 	"\x11GetProjectRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\"[\n" +
 	"\x13ListProjectsRequest\x12'\n" +
@@ -610,11 +815,12 @@ const file_ppts_v1_project_proto_rawDesc = "" +
 	"page_count\x18\x05 \x01(\x03R\tpageCount\x12&\n" +
 	"\x0fcreated_at_unix\x18\x06 \x01(\x03R\rcreatedAtUnix\"'\n" +
 	"\x15ArchiveProjectRequest\x12\x0e\n" +
-	"\x02id\x18\x01 \x01(\tR\x02id2\xe7\x02\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id2\xab\x03\n" +
 	"\x0eProjectService\x12G\n" +
 	"\x06Create\x12\x1d.ppts.v1.CreateProjectRequest\x1a\x1e.ppts.v1.CreateProjectResponse\x123\n" +
 	"\x03Get\x12\x1a.ppts.v1.GetProjectRequest\x1a\x10.ppts.v1.Project\x12C\n" +
-	"\x04List\x12\x1c.ppts.v1.ListProjectsRequest\x1a\x1d.ppts.v1.ListProjectsResponse\x12U\n" +
+	"\x04List\x12\x1c.ppts.v1.ListProjectsRequest\x1a\x1d.ppts.v1.ListProjectsResponse\x12B\n" +
+	"\tGetSlides\x12\x19.ppts.v1.GetSlidesRequest\x1a\x1a.ppts.v1.GetSlidesResponse\x12U\n" +
 	"\x14CreateSourceRevision\x12$.ppts.v1.CreateSourceRevisionRequest\x1a\x17.ppts.v1.SourceRevision\x12;\n" +
 	"\aArchive\x12\x1e.ppts.v1.ArchiveProjectRequest\x1a\x10.ppts.v1.ProjectB(Z&github.com/F31/ppts/gen/ppts/v1;pptsv1b\x06proto3"
 
@@ -630,39 +836,45 @@ func file_ppts_v1_project_proto_rawDescGZIP() []byte {
 	return file_ppts_v1_project_proto_rawDescData
 }
 
-var file_ppts_v1_project_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_ppts_v1_project_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_ppts_v1_project_proto_goTypes = []any{
 	(*Project)(nil),                     // 0: ppts.v1.Project
 	(*CreateProjectRequest)(nil),        // 1: ppts.v1.CreateProjectRequest
 	(*CreateProjectResponse)(nil),       // 2: ppts.v1.CreateProjectResponse
-	(*GetProjectRequest)(nil),           // 3: ppts.v1.GetProjectRequest
-	(*ListProjectsRequest)(nil),         // 4: ppts.v1.ListProjectsRequest
-	(*ListProjectsResponse)(nil),        // 5: ppts.v1.ListProjectsResponse
-	(*CreateSourceRevisionRequest)(nil), // 6: ppts.v1.CreateSourceRevisionRequest
-	(*SourceRevision)(nil),              // 7: ppts.v1.SourceRevision
-	(*ArchiveProjectRequest)(nil),       // 8: ppts.v1.ArchiveProjectRequest
-	(*Cursor)(nil),                      // 9: ppts.v1.Cursor
+	(*GetSlidesRequest)(nil),            // 3: ppts.v1.GetSlidesRequest
+	(*SlideSummary)(nil),                // 4: ppts.v1.SlideSummary
+	(*GetSlidesResponse)(nil),           // 5: ppts.v1.GetSlidesResponse
+	(*GetProjectRequest)(nil),           // 6: ppts.v1.GetProjectRequest
+	(*ListProjectsRequest)(nil),         // 7: ppts.v1.ListProjectsRequest
+	(*ListProjectsResponse)(nil),        // 8: ppts.v1.ListProjectsResponse
+	(*CreateSourceRevisionRequest)(nil), // 9: ppts.v1.CreateSourceRevisionRequest
+	(*SourceRevision)(nil),              // 10: ppts.v1.SourceRevision
+	(*ArchiveProjectRequest)(nil),       // 11: ppts.v1.ArchiveProjectRequest
+	(*Cursor)(nil),                      // 12: ppts.v1.Cursor
 }
 var file_ppts_v1_project_proto_depIdxs = []int32{
-	0, // 0: ppts.v1.CreateProjectResponse.project:type_name -> ppts.v1.Project
-	9, // 1: ppts.v1.ListProjectsRequest.cursor:type_name -> ppts.v1.Cursor
-	0, // 2: ppts.v1.ListProjectsResponse.projects:type_name -> ppts.v1.Project
-	9, // 3: ppts.v1.ListProjectsResponse.next_cursor:type_name -> ppts.v1.Cursor
-	1, // 4: ppts.v1.ProjectService.Create:input_type -> ppts.v1.CreateProjectRequest
-	3, // 5: ppts.v1.ProjectService.Get:input_type -> ppts.v1.GetProjectRequest
-	4, // 6: ppts.v1.ProjectService.List:input_type -> ppts.v1.ListProjectsRequest
-	6, // 7: ppts.v1.ProjectService.CreateSourceRevision:input_type -> ppts.v1.CreateSourceRevisionRequest
-	8, // 8: ppts.v1.ProjectService.Archive:input_type -> ppts.v1.ArchiveProjectRequest
-	2, // 9: ppts.v1.ProjectService.Create:output_type -> ppts.v1.CreateProjectResponse
-	0, // 10: ppts.v1.ProjectService.Get:output_type -> ppts.v1.Project
-	5, // 11: ppts.v1.ProjectService.List:output_type -> ppts.v1.ListProjectsResponse
-	7, // 12: ppts.v1.ProjectService.CreateSourceRevision:output_type -> ppts.v1.SourceRevision
-	0, // 13: ppts.v1.ProjectService.Archive:output_type -> ppts.v1.Project
-	9, // [9:14] is the sub-list for method output_type
-	4, // [4:9] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	0,  // 0: ppts.v1.CreateProjectResponse.project:type_name -> ppts.v1.Project
+	4,  // 1: ppts.v1.GetSlidesResponse.slides:type_name -> ppts.v1.SlideSummary
+	12, // 2: ppts.v1.ListProjectsRequest.cursor:type_name -> ppts.v1.Cursor
+	0,  // 3: ppts.v1.ListProjectsResponse.projects:type_name -> ppts.v1.Project
+	12, // 4: ppts.v1.ListProjectsResponse.next_cursor:type_name -> ppts.v1.Cursor
+	1,  // 5: ppts.v1.ProjectService.Create:input_type -> ppts.v1.CreateProjectRequest
+	6,  // 6: ppts.v1.ProjectService.Get:input_type -> ppts.v1.GetProjectRequest
+	7,  // 7: ppts.v1.ProjectService.List:input_type -> ppts.v1.ListProjectsRequest
+	3,  // 8: ppts.v1.ProjectService.GetSlides:input_type -> ppts.v1.GetSlidesRequest
+	9,  // 9: ppts.v1.ProjectService.CreateSourceRevision:input_type -> ppts.v1.CreateSourceRevisionRequest
+	11, // 10: ppts.v1.ProjectService.Archive:input_type -> ppts.v1.ArchiveProjectRequest
+	2,  // 11: ppts.v1.ProjectService.Create:output_type -> ppts.v1.CreateProjectResponse
+	0,  // 12: ppts.v1.ProjectService.Get:output_type -> ppts.v1.Project
+	8,  // 13: ppts.v1.ProjectService.List:output_type -> ppts.v1.ListProjectsResponse
+	5,  // 14: ppts.v1.ProjectService.GetSlides:output_type -> ppts.v1.GetSlidesResponse
+	10, // 15: ppts.v1.ProjectService.CreateSourceRevision:output_type -> ppts.v1.SourceRevision
+	0,  // 16: ppts.v1.ProjectService.Archive:output_type -> ppts.v1.Project
+	11, // [11:17] is the sub-list for method output_type
+	5,  // [5:11] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_ppts_v1_project_proto_init() }
@@ -677,7 +889,7 @@ func file_ppts_v1_project_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ppts_v1_project_proto_rawDesc), len(file_ppts_v1_project_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

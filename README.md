@@ -37,9 +37,12 @@ GOWORK=off go test ./...
 cd web && npm ci && npm run build
 ```
 
-当前 Connect API 已提供 Project/Script/Narration/Playback/Export 主链路；Web 项目面板会调用
-`ProjectService` 的 `List/Create/Archive`，上传入口会明确提示文件将上传至云端，完整
-`UploadService` 直传链路仍在后续接入。
+当前 Connect API 已提供 Project/Script/Narration/Playback/Export/Upload 主链路：
+- `ProjectService`：`Create/Get/List/Archive/GetSlides`；
+- `UploadService`：`CreateUpload/CompleteUpload/AbortUpload`（授权直传：分配受限对象键与预签名写链接，完成时校验大小/哈希/租户所有权后才创建源版本并入队解析任务）；
+- `ScriptService`：`Get/Update/Approve/Lock/GenerateDraft`（原文讲稿生成）；`NarrationService.CreateGeneration`；`ExportService`；`PlaybackService.GetNarration/GetManifest`（GetNarration 发现最近成功配音时间轴，容器化页面渲染未就绪时 GetManifest 允许无页面图）。
+
+Web 真实链路：直传 → 解析 → 展示真实页面 rail → 生成原文讲稿 → 生成配音 → 拉取真实播放 manifest（音频+字幕）；`local://` 预签名链接由 API 的 `/ppts/object/{key}` 端点服务，S3 后端返回原生预签名 URL。
 
 ## 本地服务
 

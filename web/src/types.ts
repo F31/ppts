@@ -82,3 +82,12 @@ export type Project = {
   archived: boolean;
   createdAtUnix: number;
 };
+
+export type SlideSummary = {
+  slideId: string;
+  index: number;
+  title: string;
+  preview: string;
+  hasNotes: boolean;
+  featureFlags: string[];
+};

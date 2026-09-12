@@ -79,11 +79,131 @@ func (PlaybackResourceType) EnumDescriptor() ([]byte, []int) {
 	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{0}
 }
 
+type GetNarrationRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	TtlSeconds    int64                  `protobuf:"varint,2,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"` // 返回的签名资源有效期
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNarrationRequest) Reset() {
+	*x = GetNarrationRequest{}
+	mi := &file_ppts_v1_playback_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNarrationRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNarrationRequest) ProtoMessage() {}
+
+func (x *GetNarrationRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_playback_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNarrationRequest.ProtoReflect.Descriptor instead.
+func (*GetNarrationRequest) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *GetNarrationRequest) GetProjectId() string {
+	if x != nil {
+		return x.ProjectId
+	}
+	return ""
+}
+
+func (x *GetNarrationRequest) GetTtlSeconds() int64 {
+	if x != nil {
+		return x.TtlSeconds
+	}
+	return 0
+}
+
+type GetNarrationResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Ready         bool                   `protobuf:"varint,1,opt,name=ready,proto3" json:"ready,omitempty"` // 是否有成功配音
+	TimelineKey   string                 `protobuf:"bytes,2,opt,name=timeline_key,json=timelineKey,proto3" json:"timeline_key,omitempty"`
+	PagePngKeys   []string               `protobuf:"bytes,3,rep,name=page_png_keys,json=pagePngKeys,proto3" json:"page_png_keys,omitempty"` // 暂无渲染产物时为空
+	RevisionNo    int64                  `protobuf:"varint,4,opt,name=revision_no,json=revisionNo,proto3" json:"revision_no,omitempty"`     // 配音对应的源版本（可空=未知）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetNarrationResponse) Reset() {
+	*x = GetNarrationResponse{}
+	mi := &file_ppts_v1_playback_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetNarrationResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetNarrationResponse) ProtoMessage() {}
+
+func (x *GetNarrationResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_playback_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetNarrationResponse.ProtoReflect.Descriptor instead.
+func (*GetNarrationResponse) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GetNarrationResponse) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
+}
+
+func (x *GetNarrationResponse) GetTimelineKey() string {
+	if x != nil {
+		return x.TimelineKey
+	}
+	return ""
+}
+
+func (x *GetNarrationResponse) GetPagePngKeys() []string {
+	if x != nil {
+		return x.PagePngKeys
+	}
+	return nil
+}
+
+func (x *GetNarrationResponse) GetRevisionNo() int64 {
+	if x != nil {
+		return x.RevisionNo
+	}
+	return 0
+}
+
 type GetPlaybackManifestRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	TimelineKey   string                 `protobuf:"bytes,2,opt,name=timeline_key,json=timelineKey,proto3" json:"timeline_key,omitempty"`
-	PagePngKeys   []string               `protobuf:"bytes,3,rep,name=page_png_keys,json=pagePngKeys,proto3" json:"page_png_keys,omitempty"` // 按 timeline 页序
+	PagePngKeys   []string               `protobuf:"bytes,3,rep,name=page_png_keys,json=pagePngKeys,proto3" json:"page_png_keys,omitempty"` // 按 timeline 页序；可为空（无页面图）
 	TtlSeconds    int64                  `protobuf:"varint,4,opt,name=ttl_seconds,json=ttlSeconds,proto3" json:"ttl_seconds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -91,7 +211,7 @@ type GetPlaybackManifestRequest struct {
 
 func (x *GetPlaybackManifestRequest) Reset() {
 	*x = GetPlaybackManifestRequest{}
-	mi := &file_ppts_v1_playback_proto_msgTypes[0]
+	mi := &file_ppts_v1_playback_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -103,7 +223,7 @@ func (x *GetPlaybackManifestRequest) String() string {
 func (*GetPlaybackManifestRequest) ProtoMessage() {}
 
 func (x *GetPlaybackManifestRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_playback_proto_msgTypes[0]
+	mi := &file_ppts_v1_playback_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -116,7 +236,7 @@ func (x *GetPlaybackManifestRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPlaybackManifestRequest.ProtoReflect.Descriptor instead.
 func (*GetPlaybackManifestRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{0}
+	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *GetPlaybackManifestRequest) GetProjectId() string {
@@ -163,7 +283,7 @@ type PlaybackResource struct {
 
 func (x *PlaybackResource) Reset() {
 	*x = PlaybackResource{}
-	mi := &file_ppts_v1_playback_proto_msgTypes[1]
+	mi := &file_ppts_v1_playback_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -175,7 +295,7 @@ func (x *PlaybackResource) String() string {
 func (*PlaybackResource) ProtoMessage() {}
 
 func (x *PlaybackResource) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_playback_proto_msgTypes[1]
+	mi := &file_ppts_v1_playback_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -188,7 +308,7 @@ func (x *PlaybackResource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaybackResource.ProtoReflect.Descriptor instead.
 func (*PlaybackResource) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{1}
+	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PlaybackResource) GetType() PlaybackResourceType {
@@ -260,7 +380,7 @@ type PlaybackManifest struct {
 
 func (x *PlaybackManifest) Reset() {
 	*x = PlaybackManifest{}
-	mi := &file_ppts_v1_playback_proto_msgTypes[2]
+	mi := &file_ppts_v1_playback_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -272,7 +392,7 @@ func (x *PlaybackManifest) String() string {
 func (*PlaybackManifest) ProtoMessage() {}
 
 func (x *PlaybackManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_playback_proto_msgTypes[2]
+	mi := &file_ppts_v1_playback_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -285,7 +405,7 @@ func (x *PlaybackManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PlaybackManifest.ProtoReflect.Descriptor instead.
 func (*PlaybackManifest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{2}
+	return file_ppts_v1_playback_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *PlaybackManifest) GetProjectId() string {
@@ -327,7 +447,18 @@ var File_ppts_v1_playback_proto protoreflect.FileDescriptor
 
 const file_ppts_v1_playback_proto_rawDesc = "" +
 	"\n" +
-	"\x16ppts/v1/playback.proto\x12\appts.v1\"\xa3\x01\n" +
+	"\x16ppts/v1/playback.proto\x12\appts.v1\"U\n" +
+	"\x13GetNarrationRequest\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x1f\n" +
+	"\vttl_seconds\x18\x02 \x01(\x03R\n" +
+	"ttlSeconds\"\x94\x01\n" +
+	"\x14GetNarrationResponse\x12\x14\n" +
+	"\x05ready\x18\x01 \x01(\bR\x05ready\x12!\n" +
+	"\ftimeline_key\x18\x02 \x01(\tR\vtimelineKey\x12\"\n" +
+	"\rpage_png_keys\x18\x03 \x03(\tR\vpagePngKeys\x12\x1f\n" +
+	"\vrevision_no\x18\x04 \x01(\x03R\n" +
+	"revisionNo\"\xa3\x01\n" +
 	"\x1aGetPlaybackManifestRequest\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\x12!\n" +
@@ -360,8 +491,9 @@ const file_ppts_v1_playback_proto_rawDesc = "" +
 	"\x1cPLAYBACK_RESOURCE_TYPE_AUDIO\x10\x02\x12'\n" +
 	"#PLAYBACK_RESOURCE_TYPE_SUBTITLE_SRT\x10\x03\x12'\n" +
 	"#PLAYBACK_RESOURCE_TYPE_SUBTITLE_VTT\x10\x04\x12#\n" +
-	"\x1fPLAYBACK_RESOURCE_TYPE_TIMELINE\x10\x052`\n" +
-	"\x0fPlaybackService\x12M\n" +
+	"\x1fPLAYBACK_RESOURCE_TYPE_TIMELINE\x10\x052\xad\x01\n" +
+	"\x0fPlaybackService\x12K\n" +
+	"\fGetNarration\x12\x1c.ppts.v1.GetNarrationRequest\x1a\x1d.ppts.v1.GetNarrationResponse\x12M\n" +
 	"\vGetManifest\x12#.ppts.v1.GetPlaybackManifestRequest\x1a\x19.ppts.v1.PlaybackManifestB(Z&github.com/F31/ppts/gen/ppts/v1;pptsv1b\x06proto3"
 
 var (
@@ -377,20 +509,24 @@ func file_ppts_v1_playback_proto_rawDescGZIP() []byte {
 }
 
 var file_ppts_v1_playback_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ppts_v1_playback_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_ppts_v1_playback_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_ppts_v1_playback_proto_goTypes = []any{
 	(PlaybackResourceType)(0),          // 0: ppts.v1.PlaybackResourceType
-	(*GetPlaybackManifestRequest)(nil), // 1: ppts.v1.GetPlaybackManifestRequest
-	(*PlaybackResource)(nil),           // 2: ppts.v1.PlaybackResource
-	(*PlaybackManifest)(nil),           // 3: ppts.v1.PlaybackManifest
+	(*GetNarrationRequest)(nil),        // 1: ppts.v1.GetNarrationRequest
+	(*GetNarrationResponse)(nil),       // 2: ppts.v1.GetNarrationResponse
+	(*GetPlaybackManifestRequest)(nil), // 3: ppts.v1.GetPlaybackManifestRequest
+	(*PlaybackResource)(nil),           // 4: ppts.v1.PlaybackResource
+	(*PlaybackManifest)(nil),           // 5: ppts.v1.PlaybackManifest
 }
 var file_ppts_v1_playback_proto_depIdxs = []int32{
 	0, // 0: ppts.v1.PlaybackResource.type:type_name -> ppts.v1.PlaybackResourceType
-	2, // 1: ppts.v1.PlaybackManifest.resources:type_name -> ppts.v1.PlaybackResource
-	1, // 2: ppts.v1.PlaybackService.GetManifest:input_type -> ppts.v1.GetPlaybackManifestRequest
-	3, // 3: ppts.v1.PlaybackService.GetManifest:output_type -> ppts.v1.PlaybackManifest
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
+	4, // 1: ppts.v1.PlaybackManifest.resources:type_name -> ppts.v1.PlaybackResource
+	1, // 2: ppts.v1.PlaybackService.GetNarration:input_type -> ppts.v1.GetNarrationRequest
+	3, // 3: ppts.v1.PlaybackService.GetManifest:input_type -> ppts.v1.GetPlaybackManifestRequest
+	2, // 4: ppts.v1.PlaybackService.GetNarration:output_type -> ppts.v1.GetNarrationResponse
+	5, // 5: ppts.v1.PlaybackService.GetManifest:output_type -> ppts.v1.PlaybackManifest
+	4, // [4:6] is the sub-list for method output_type
+	2, // [2:4] is the sub-list for method input_type
 	2, // [2:2] is the sub-list for extension type_name
 	2, // [2:2] is the sub-list for extension extendee
 	0, // [0:2] is the sub-list for field type_name
@@ -407,7 +543,7 @@ func file_ppts_v1_playback_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ppts_v1_playback_proto_rawDesc), len(file_ppts_v1_playback_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
