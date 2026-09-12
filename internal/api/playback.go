@@ -14,6 +14,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/tenant"
 )
 
 type PlaybackService struct {
@@ -44,7 +45,7 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	timelineKey, err := s.jobs.StepResultRef(ctx, job.ID, "timeline")
+	timelineKey, err := s.jobs.StepResultRef(tenant.WithContext(ctx, p.TenantID), job.ID, "timeline")
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

@@ -52,13 +52,18 @@ Web 真实链路：直传 → 解析 → 展示真实页面 rail → 生成原�
 API 依赖已应用迁移的 PostgreSQL。G1 开发身份由可信上游头
 `X-PPTS-Tenant-ID` / `X-PPTS-User-ID` 注入；G3 将替换为 OIDC 校验。
 
+**角色与 RLS（G3-1，`migrations/0006_rls.sql`）**：迁移由表 owner 账号执行（部署中建议专用 `ppts_migrator`）；
+运行时账号 `ppts_app` 必须 `NOSUPERUSER NOBYPASSRLS` 且非表 owner。租户业务表启用 `FORCE ROW LEVEL SECURITY`，
+策略依据事务局部 `app.tenant_id`；业务代码通过 `internal/tenant.Run` 设置上下文，缺失上下文时访问被拒绝。
+因此 `PPTS_DATABASE_URL` 应使用非 owner 的运行账号（测试库同理）。
+
 ```bash
-PPTS_DATABASE_URL='postgres://...' \
+PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
 PPTS_OBJECT_ROOT='./var/ppts-objects' \
 PPTS_OBJECT_SECRET='dev-download-secret' \
 GOWORK=off go run ./cmd/api
 
-PPTS_DATABASE_URL='postgres://...' \
+PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
 PPTS_TENANT_ID='00000000-0000-0000-0000-000000000000' \
 PPTS_OBJECT_ROOT='./var/ppts-objects' \
 PPTS_TTS_PROVIDER='fake' \

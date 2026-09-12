@@ -89,3 +89,89 @@ jobs:
         env:
           GOPPTX_CORPUS: ${{ github.workspace }}/_corpus/go-pptx/testdata/corpus
         run: go test -tags=corpus ./internal/project/ -run TestCorpusReplayInspect
+
+  # 多租户/幂等测试：需要 PostgreSQL。迁移按角色模型执行（postgres owner / ppts_app 运行账号）。
+  postgres:
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ppts
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: prepare database
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d ppts -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE ppts_app LOGIN PASSWORD 'ppts_app' NOSUPERUSER NOBYPASSRLS;"
+          for f in migrations/*.sql; do
+            echo "applying $f"
+            psql -h localhost -U postgres -d ppts -v ON_ERROR_STOP=1 -f "$f"
+          done
+          psql -h localhost -U postgres -d ppts -v ON_ERROR_STOP=1 -c \
+            "GRANT USAGE ON SCHEMA public TO ppts_app;
+             GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ppts_app;
+             GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ppts_app;"
+      - name: pg tests
+        env:
+          PPTS_TEST_DATABASE: postgres://ppts_app:ppts_app@localhost:5432/ppts?sslmode=disable
+        run: go test -tags=pg -p 1 ./... -count=1
+
+  # S3 兼容适配器测试：真实 MinIO。
+  s3:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: start minio
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=pptsminio -e MINIO_ROOT_PASSWORD=pptsminio123 \
+            quay.io/minio/minio server /data
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live >/dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://localhost:9000/minio/health/live >/dev/null || { echo "minio not ready"; exit 1; }
+      - name: s3 adapter tests
+        env:
+          S3_ENDPOINT: localhost:9000
+          S3_ACCESS_KEY: pptsminio
+          S3_SECRET_KEY: pptsminio123
+        run: go test ./internal/integrations/objectstore/s3/ -count=1 -v
+
+  # 契约门禁：Buf lint + 兼容性（breaking）检查。
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: bufbuild/buf-setup-action@v1
+        with:
+          github_token: ${{ github.token }}
+      - name: buf lint
+        working-directory: proto
+        run: buf lint
+      - name: buf breaking
+        working-directory: proto
+        run: buf breaking --against '../.git#branch=main,subdir=proto'
+

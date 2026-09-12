@@ -3,11 +3,12 @@ package project
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // Project 是项目领域实体（V4.0 §7.1）。所有访问都经租户与项目授权。
@@ -34,11 +35,15 @@ type SourceRevision struct {
 	ObjectKey     string
 	ParserVersion string
 	PageCount     int
+	UploadID      string // 上传会话幂等键；非上传路径为空
 	CreatedAt     time.Time
 }
 
 // ErrProjectNotFound 表示项目不存在或越权。
 var ErrProjectNotFound = errors.New("project: project not found")
+
+// ErrSourceRevisionNotFound 表示源版本不存在。
+var ErrSourceRevisionNotFound = errors.New("project: source revision not found")
 
 // ProjectStore 项目与源版本存储端口。
 type ProjectStore interface {
@@ -58,6 +63,7 @@ type NewSourceRevision struct {
 	SourceHash    string
 	ObjectKey     string
 	ParserVersion string
+	UploadID      string // 上传链路幂等键；为空时不启用按会话去重
 }
 
 // PGProjectStore 以 PostgreSQL 实现 ProjectStore。revision 递增与版本行写入同事务，
@@ -72,19 +78,29 @@ func NewPGProjectStore(pool *pgxpool.Pool) *PGProjectStore {
 }
 
 func (s *PGProjectStore) CreateProject(ctx context.Context, tenantID, owner, title string) (*Project, error) {
-	row := s.pool.QueryRow(ctx,
-		`INSERT INTO projects (id, tenant_id, owner_user, title)
-		 VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id, tenant_id, owner_user, title,
-		   current_revision, policy, archived, delete_source_after, created_at, updated_at`,
-		tenantID, owner, title)
-	return scanProject(row)
+	var p *Project
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		p, e = scanProject(tx.QueryRow(ctx,
+			`INSERT INTO projects (id, tenant_id, owner_user, title)
+			 VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id, tenant_id, owner_user, title,
+			   current_revision, policy, archived, delete_source_after, created_at, updated_at`,
+			tenantID, owner, title))
+		return e
+	})
+	return p, err
 }
 
 func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, id string) (*Project, error) {
-	p, err := scanProject(s.pool.QueryRow(ctx,
-		`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
-		   delete_source_after, created_at, updated_at
-		 FROM projects WHERE id=$1 AND tenant_id=$2`, id, tenantID))
+	var p *Project
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		p, e = scanProject(tx.QueryRow(ctx,
+			`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
+			   delete_source_after, created_at, updated_at
+			 FROM projects WHERE id=$1 AND tenant_id=$2`, id, tenantID))
+		return e
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProjectNotFound
 	}
@@ -95,54 +111,66 @@ func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, cursor stri
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 50
 	}
-	var rows pgx.Rows
-	var err error
-	if cursor == "" {
-		rows, err = s.pool.Query(ctx,
-			`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
-			   delete_source_after, created_at, updated_at
-			 FROM projects WHERE tenant_id=$1 AND archived=false
-			 ORDER BY created_at DESC LIMIT $2`, tenantID, pageSize+1)
-	} else {
-		createdBefore, parseErr := time.Parse(time.RFC3339Nano, cursor)
-		if parseErr != nil {
-			return nil, "", parseErr
+	var projects []*Project
+	next := ""
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var rows pgx.Rows
+		var err error
+		if cursor == "" {
+			rows, err = tx.Query(ctx,
+				`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
+				   delete_source_after, created_at, updated_at
+				 FROM projects WHERE tenant_id=$1 AND archived=false
+				 ORDER BY created_at DESC LIMIT $2`, tenantID, pageSize+1)
+		} else {
+			createdBefore, parseErr := time.Parse(time.RFC3339Nano, cursor)
+			if parseErr != nil {
+				return parseErr
+			}
+			rows, err = tx.Query(ctx,
+				`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
+				   delete_source_after, created_at, updated_at
+				 FROM projects WHERE tenant_id=$1 AND archived=false AND created_at < $2
+				 ORDER BY created_at DESC LIMIT $3`, tenantID, createdBefore, pageSize+1)
 		}
-		rows, err = s.pool.Query(ctx,
-			`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
-			   delete_source_after, created_at, updated_at
-			 FROM projects WHERE tenant_id=$1 AND archived=false AND created_at < $2
-			 ORDER BY created_at DESC LIMIT $3`, tenantID, createdBefore, pageSize+1)
-	}
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		projects = make([]*Project, 0, pageSize)
+		for rows.Next() {
+			p, err := scanProject(rows)
+			if err != nil {
+				return err
+			}
+			projects = append(projects, p)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(projects) > pageSize {
+			next = projects[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
+			projects = projects[:pageSize]
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, "", err
-	}
-	defer rows.Close()
-	projects := make([]*Project, 0, pageSize)
-	for rows.Next() {
-		p, err := scanProject(rows)
-		if err != nil {
-			return nil, "", err
-		}
-		projects = append(projects, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, "", err
-	}
-	next := ""
-	if len(projects) > pageSize {
-		next = projects[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
-		projects = projects[:pageSize]
 	}
 	return projects, next, nil
 }
 
 func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, id string) (*Project, error) {
-	p, err := scanProject(s.pool.QueryRow(ctx,
-		`UPDATE projects SET archived=true, updated_at=now()
-		 WHERE id=$1 AND tenant_id=$2
-		 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
-		   delete_source_after, created_at, updated_at`, id, tenantID))
+	var p *Project
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		p, e = scanProject(tx.QueryRow(ctx,
+			`UPDATE projects SET archived=true, updated_at=now()
+			 WHERE id=$1 AND tenant_id=$2
+			 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
+			   delete_source_after, created_at, updated_at`, id, tenantID))
+		return e
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProjectNotFound
 	}
@@ -150,44 +178,68 @@ func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, id string
 }
 
 func (s *PGProjectStore) CreateSourceRevision(ctx context.Context, tenantID string, in NewSourceRevision) (*SourceRevision, error) {
-	tx, err := s.pool.Begin(ctx)
+	var sr *SourceRevision
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		// 锁定项目行，串行化 current_revision 递增。
+		var current int
+		if err := tx.QueryRow(ctx,
+			`SELECT current_revision FROM projects WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
+			in.ProjectID, tenantID).Scan(&current); err != nil {
+			return errors.Join(ErrProjectNotFound, err)
+		}
+
+		// 上传链路幂等：同一 upload_id 已建源版本时返回既有版本，不重复递增。
+		if in.UploadID != "" {
+			existing, err := scanSourceRevision(tx.QueryRow(ctx,
+				`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at
+				 FROM source_revisions WHERE tenant_id=$1 AND upload_id=$2`,
+				tenantID, in.UploadID))
+			switch {
+			case err == nil:
+				sr = existing
+				return nil
+			case !errors.Is(err, ErrSourceRevisionNotFound):
+				return err
+			}
+		}
+
+		sr = &SourceRevision{
+			ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: current + 1,
+			SourceHash: in.SourceHash, ObjectKey: in.ObjectKey, ParserVersion: in.ParserVersion,
+			UploadID: in.UploadID,
+		}
+		if err := tx.QueryRow(ctx,
+			`INSERT INTO source_revisions (id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, upload_id)
+			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7)
+			 RETURNING id, created_at`,
+			sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey, sr.ParserVersion, sr.UploadID,
+		).Scan(&sr.ID, &sr.CreatedAt); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE projects SET current_revision=$3, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+			in.ProjectID, tenantID, sr.RevisionNo); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(context.Background())
-
-	var rev int
-	if err := tx.QueryRow(ctx,
-		`UPDATE projects SET current_revision=current_revision+1, updated_at=now()
-		 WHERE id=$1 AND tenant_id=$2 RETURNING current_revision`,
-		in.ProjectID, tenantID).Scan(&rev); err != nil {
-		return nil, errors.Join(ErrProjectNotFound, err)
-	}
-
-	sr := &SourceRevision{
-		ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: rev,
-		SourceHash: in.SourceHash, ObjectKey: in.ObjectKey, ParserVersion: in.ParserVersion,
-	}
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO source_revisions (id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version)
-		 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6)
-		 RETURNING id, created_at`,
-		sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey, sr.ParserVersion,
-	).Scan(&sr.ID, &sr.CreatedAt); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(context.Background()); err != nil {
 		return nil, err
 	}
 	return sr, nil
 }
 
 func (s *PGProjectStore) GetSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) (*SourceRevision, error) {
-	r := s.pool.QueryRow(ctx,
-		`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, created_at
-		 FROM source_revisions WHERE project_id=$1 AND tenant_id=$2 AND revision_no=$3`,
-		projectID, tenantID, revisionNo)
-	return scanSourceRevision(r)
+	var r *SourceRevision
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		r, e = scanSourceRevision(tx.QueryRow(ctx,
+			`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at
+			 FROM source_revisions WHERE project_id=$1 AND tenant_id=$2 AND revision_no=$3`,
+			projectID, tenantID, revisionNo))
+		return e
+	})
+	return r, err
 }
 
 func scanProject(row pgx.Row) (*Project, error) {
@@ -206,9 +258,9 @@ func scanProject(row pgx.Row) (*Project, error) {
 func scanSourceRevision(row pgx.Row) (*SourceRevision, error) {
 	var r SourceRevision
 	err := row.Scan(&r.ID, &r.ProjectID, &r.TenantID, &r.RevisionNo, &r.SourceHash,
-		&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.CreatedAt)
+		&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &r.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("project: source revision not found")
+		return nil, ErrSourceRevisionNotFound
 	}
 	if err != nil {
 		return nil, err

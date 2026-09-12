@@ -27,6 +27,7 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -361,7 +362,7 @@ func waitArtifact(t *testing.T, ctx context.Context, jobs *pipeline.PGStore, job
 			t.Fatalf("job get: %v", err)
 		}
 		if job.State == pipeline.StateSucceeded {
-			ref, err := jobs.StepResultRef(ctx, jobID, "export")
+			ref, err := jobs.StepResultRef(tenant.WithContext(ctx, e2eTenant), jobID, "export")
 			if err != nil {
 				t.Fatalf("StepResultRef: %v", err)
 			}

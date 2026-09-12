@@ -8,7 +8,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 const (
@@ -33,16 +36,17 @@ func nrStore(t *testing.T) *PGStore {
 		"TRUNCATE narration_segments, narration_scripts, jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	for _, q := range []struct {
-		sql  string
-		args []any
-	}{
-		{"INSERT INTO tenants(id,name) VALUES ($1,$2) ON CONFLICT DO NOTHING", []any{nrTenant, "nr"}},
-		{"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING", []any{nrProject, nrTenant, "tester"}},
-	} {
-		if _, err := pool.Exec(context.Background(), q.sql, q.args...); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO tenants(id,name) VALUES ($1,$2) ON CONFLICT DO NOTHING", nrTenant, "nr"); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if err := tenant.Run(context.Background(), pool, nrTenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING",
+			nrProject, nrTenant, "tester")
+		return err
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
 	}
 	return NewPGStore(pool)
 }

@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/F31/go-pptx"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
 )
 
@@ -53,11 +55,18 @@ func setupApp(t *testing.T) *appEnv {
 		args []any
 	}{
 		{"INSERT INTO tenants(id,name) VALUES ($1,$2) ON CONFLICT DO NOTHING", []any{appTenant, "app-test"}},
-		{"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING", []any{appProject, appTenant, "tester"}},
 	} {
 		if _, err := pool.Exec(context.Background(), q.sql, q.args...); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
+	}
+	if err := tenant.Run(context.Background(), pool, appTenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING",
+			appProject, appTenant, "tester")
+		return err
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
 	}
 	root := t.TempDir()
 	jobs, err := pipeline.NewPGStore(context.Background(), dsn)

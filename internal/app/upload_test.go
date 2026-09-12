@@ -14,6 +14,7 @@ import (
 
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/upload"
 )
 
@@ -166,5 +167,48 @@ func TestUploadAbortCleansObject(t *testing.T) {
 	}
 	if err := svc.AbortUpload(ctx, appTenant, done.Session.ID); !errors.Is(err, upload.ErrAlreadyCompleted) {
 		t.Fatalf("abort completed: got %v want ErrAlreadyCompleted", err)
+	}
+}
+
+// TestCreateSourceRevisionIdempotentByUpload 覆盖崩溃窗口：
+// CompleteUpload 在 CreateSourceRevision 与 uploads.Complete 之间失败并重试时，
+// 同一 upload_id 不得重复创建源版本或重复递增 current_revision。
+func TestCreateSourceRevisionIdempotentByUpload(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+
+	in := project.NewSourceRevision{
+		ProjectID: appProject, SourceHash: "hash-crash", ObjectKey: appTenant + "/" + appProject + "/src/source/hash-crash.pptx",
+		ParserVersion: ParserVersion, UploadID: "upload-crash-1",
+	}
+	first, err := env.projects.CreateSourceRevision(ctx, appTenant, in)
+	if err != nil {
+		t.Fatalf("CreateSourceRevision: %v", err)
+	}
+	second, err := env.projects.CreateSourceRevision(ctx, appTenant, in)
+	if err != nil {
+		t.Fatalf("CreateSourceRevision retry: %v", err)
+	}
+	if second.ID != first.ID || second.RevisionNo != first.RevisionNo {
+		t.Fatalf("retry duplicated source revision: %+v vs %+v", second, first)
+	}
+	p, err := env.projects.GetProject(ctx, appTenant, appProject)
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if p.CurrentRevision != first.RevisionNo {
+		t.Fatalf("current_revision bumped on retry: got %d want %d", p.CurrentRevision, first.RevisionNo)
+	}
+
+	// 不同上传会话仍应创建新版本。
+	other, err := env.projects.CreateSourceRevision(ctx, appTenant, project.NewSourceRevision{
+		ProjectID: appProject, SourceHash: "hash-2", ObjectKey: appTenant + "/" + appProject + "/src/source/hash-2.pptx",
+		ParserVersion: ParserVersion, UploadID: "upload-crash-2",
+	})
+	if err != nil {
+		t.Fatalf("CreateSourceRevision other: %v", err)
+	}
+	if other.RevisionNo != first.RevisionNo+1 {
+		t.Fatalf("new upload should create next revision: got %d want %d", other.RevisionNo, first.RevisionNo+1)
 	}
 }

@@ -26,7 +26,10 @@ func TestWorkerSuccessAndRetryThenFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create ok: %v", err)
 	}
-	_, _ = s.Create(ctx, testTenant, testProject, string(KindParse), "w-retry", "snap", time.Time{})
+	jRetry, err := s.Create(ctx, testTenant, testProject, string(KindParse), "w-retry", "snap", time.Time{})
+	if err != nil {
+		t.Fatalf("Create retry: %v", err)
+	}
 
 	runCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -43,7 +46,7 @@ func TestWorkerSuccessAndRetryThenFailed(t *testing.T) {
 		t.Fatalf("ok job terminal: got %s", got.State)
 	}
 	// 重试任务：第一次触发退避，第二次成功（attempt=2）。
-	jr, err := s.lookup(ctx, testTenant, "w-retry", string(KindParse))
+	jr, err := s.Get(ctx, jRetry.ID, testTenant)
 	if err != nil {
 		t.Fatalf("lookup retry: %v", err)
 	}

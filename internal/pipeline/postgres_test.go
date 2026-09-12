@@ -11,6 +11,10 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 const (
@@ -36,7 +40,7 @@ func testStore(t *testing.T) *PGStore {
 		"TRUNCATE jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	// 满足外键：插入测试租户与项目。
+	// 满足外键：插入测试租户与项目（项目写入需租户上下文，受 RLS 约束）。
 	for _, tkt := range []struct{ t, p string }{
 		{testTenant, testProject}, {testOtherTenant, testOtherProject},
 	} {
@@ -45,9 +49,12 @@ func testStore(t *testing.T) *PGStore {
 			tkt.t, "test-tenant"); err != nil {
 			t.Fatalf("seed tenant: %v", err)
 		}
-		if _, err := s.pool.Exec(context.Background(),
-			"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1::uuid,$2::uuid,$3,$3) ON CONFLICT DO NOTHING",
-			tkt.p, tkt.t, "tester"); err != nil {
+		if err := tenant.Run(context.Background(), s.pool, tkt.t, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx,
+				"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1::uuid,$2::uuid,$3,$3) ON CONFLICT DO NOTHING",
+				tkt.p, tkt.t, "tester")
+			return err
+		}); err != nil {
 			t.Fatalf("seed project: %v", err)
 		}
 	}
@@ -76,7 +83,7 @@ func TestCreateIdempotent(t *testing.T) {
 
 func TestClaimHeartbeatComplete(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := tenant.WithContext(context.Background(), testTenant)
 	j, err := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-c1", "snap", time.Time{})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -111,7 +118,7 @@ func TestClaimHeartbeatComplete(t *testing.T) {
 
 func TestStaleWorkerFencingRejected(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := tenant.WithContext(context.Background(), testTenant)
 	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-f", "snap", time.Time{})
 	claimed, err := s.ClaimNext(ctx, testTenant, "worker-a", 30*time.Second)
 	if err != nil {
@@ -140,7 +147,7 @@ func TestStaleWorkerFencingRejected(t *testing.T) {
 
 func TestLeaseExpiryReclaim(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := tenant.WithContext(context.Background(), testTenant)
 	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-L", "snap", time.Time{})
 	if _, err := s.ClaimNext(ctx, testTenant, "worker-a", 30*time.Millisecond); err != nil {
 		t.Fatalf("ClaimNext a: %v", err)
@@ -162,7 +169,7 @@ func TestLeaseExpiryReclaim(t *testing.T) {
 
 func TestRetrySchedule(t *testing.T) {
 	s := testStore(t)
-	ctx := context.Background()
+	ctx := tenant.WithContext(context.Background(), testTenant)
 	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-R", "snap", time.Time{})
 	if _, err := s.ClaimNext(ctx, testTenant, "worker-a", 30*time.Second); err != nil {
 		t.Fatalf("ClaimNext: %v", err)
@@ -176,7 +183,10 @@ func TestRetrySchedule(t *testing.T) {
 		t.Fatalf("claim before run_at: got %v, want ErrNoJob", err)
 	}
 	// 把 run_at 改为过去（模拟退避到期）→ 可领取。
-	if _, err := s.pool.Exec(ctx, "UPDATE jobs SET run_at=now()-interval '1 minute' WHERE id=$1", j.ID); err != nil {
+	if err := tenant.Run(ctx, s.pool, testTenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, "UPDATE jobs SET run_at=now()-interval '1 minute' WHERE id=$1", j.ID)
+		return err
+	}); err != nil {
 		t.Fatalf("bump run_at: %v", err)
 	}
 	claimed, err := s.ClaimNext(ctx, testTenant, "worker-b", 30*time.Second)

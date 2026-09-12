@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log"
 	"time"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // HandlerFunc 执行单个任务。返回 error：*RetryError → 按时间退避重跑；
@@ -83,6 +85,8 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // process 执行单任务：心跳驱动 handler，取消时不做终态提交（留给租约过期重领取）。
 func (w *Worker) process(ctx context.Context, job *Job) {
+	// 注入任务所属租户，供续租/终态提交与 handler 建立 RLS 上下文。
+	ctx = tenant.WithContext(ctx, job.TenantID)
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -125,7 +129,7 @@ func (w *Worker) heartbeatRun(ctx context.Context, job *Job, done chan<- struct{
 	defer close(done)
 	t := time.NewTicker(w.heartbeat)
 	defer t.Stop()
-	bg := context.Background()
+	bg := tenant.WithContext(context.Background(), job.TenantID)
 	for {
 		select {
 		case <-ctx.Done():

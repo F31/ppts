@@ -15,6 +15,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // TestRealChainUploadParseDraftNarration 验证真实项目主链路：
@@ -77,7 +78,7 @@ func TestRealChainUploadParseDraftNarration(t *testing.T) {
 	}
 
 	// 4) 通过 job_steps.result_ref 发现时间轴 bundle，并读取 bundle 确认 SRT/VTT/音频键。
-	ref, err := env.jobs.StepResultRef(ctx, narrJob.ID, "timeline")
+	ref, err := env.jobs.StepResultRef(tenant.WithContext(ctx, appTenant), narrJob.ID, "timeline")
 	if err != nil {
 		t.Fatalf("StepResultRef: %v", err)
 	}

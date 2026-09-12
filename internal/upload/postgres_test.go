@@ -7,7 +7,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 const (
@@ -30,16 +33,17 @@ func setupUploadStore(t *testing.T) *PGUploadStore {
 		"TRUNCATE uploads, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	for _, q := range []struct {
-		sql  string
-		args []any
-	}{
-		{"INSERT INTO tenants(id,name) VALUES ($1,$2) ON CONFLICT DO NOTHING", []any{upTenant, "upload-test"}},
-		{"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING", []any{upProject, upTenant, "tester"}},
-	} {
-		if _, err := pool.Exec(context.Background(), q.sql, q.args...); err != nil {
-			t.Fatalf("seed: %v", err)
-		}
+	if _, err := pool.Exec(context.Background(),
+		"INSERT INTO tenants(id,name) VALUES ($1,$2) ON CONFLICT DO NOTHING", upTenant, "upload-test"); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	if err := tenant.Run(context.Background(), pool, upTenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			"INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,$3,$3) ON CONFLICT DO NOTHING",
+			upProject, upTenant, "tester")
+		return err
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
 	}
 	return NewPGUploadStore(pool)
 }

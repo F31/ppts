@@ -1,7 +1,8 @@
-# PPT 自动讲解工具 — 项目开发计划 V1.1
+# PPT 自动讲解工具 — 项目开发计划 V1.2
 
-> 版本：V1.1｜编制日期：2026-09-12
+> 版本：V1.2｜编制日期：2026-09-12
 > 基线：已确认的《PPT自动讲解工具-技术方案-V4.0.md》（在 V3.6 基础上新增：桌面隐私模式 §11.10、云端处理合理性 §13.1、对象存储隔离与多后端 §12.4、存储成本 §12.5、向量检索按需 §6.6，及 ADR-014/015/016）。本文只做排期、任务分解、资源与门禁，不重述技术判断。
+> V1.2 变更：按 2026-09-12「架构合理性 / 先进性 / 多租户运营适应性」评审对齐——新增 §1.4 评审结论到任务的映射、细化 G3 多租户与成本任务、新增 G3-8/9/10（可观测性、JobService/TenantService、CI 门禁），并列出需在 G1 收尾前决策的两项结构性选择（worker 跨租户调度、迁移/运行角色分离）。
 > 项目根目录：`E:\projects\ppts`（WSL 下为 `/mnt/e/projects/ppts`）。
 > 代码仓库：`https://github.com/F31/ppts.git`（ppts 主仓库）；文档适配组件 go-pptx 已发布 v1.0.0（`github.com/F31/go-pptx`，模块依赖，开发期经 `go.work` 复用本地产库 `E:\projects\go-pptx`）。
 > 假设：一名 Go 后端、一名前端、兼职测试/产品支持；原生阶段另需 Rust 与移动音频能力。单人开发需重新排期（见 §6）。
@@ -58,6 +59,32 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 对象存储隔离 | §12.4 / ADR-014 | G0-9（端口+本地适配器+键结构）、G1-9（S3适配器+签名校验）、G3-6（多后端/BYOS/加密） |
 | 存储成本与生命周期 | §12.5 | G2-7（内容哈希去重）、G3-6（生命周期分层+成本可见性） |
 | 向量检索按需 | §6.6 / ADR-016 | P1 全文检索用 tsvector（§1.2）；语义检索仅当"暂停提问"立项，pgvector 按需引入 G5 |
+
+### 1.4 多租户运营架构评审与计划对齐（V1.2 新增）
+
+2026-09-12 对当前实现与 V4.0 做"架构合理性/先进性/多租户适应性"评审。结论：**骨架选型（模块化单体+独立 worker、DB 任务表+fencing、ObjectStore 端口+键前缀、契约优先、统一时间轴）与 V4.0 一致且扎实，不建议重构；缺口集中在"多租户运营闭环"**，且多为计划内 G3 项，但有两项结构性选择需前置。评审发现到任务的映射如下：
+
+| 评审发现 | 现状证据 | 与 V4.0 | 落点任务 |
+|---|---|---|---|
+| RLS 未实现（仅应用层 `WHERE tenant_id`，单层防线） | 全仓无 `FORCE ROW LEVEL SECURITY`/`set_config`；`0001_init.sql:5` 仅注释 | §12.1 明确要求 + §15.3 测试 | G3-1（细化：角色分离 + 事务级上下文 + 测试矩阵） |
+| 迁移/运行角色未分离（表 owner 可能即运行账号，RLS 会被 owner 绕过） | `0003/0004` GRANT 至 `ppts_app`，无角色 bootstrap | §12.1"运行账号非 owner/BYPASSRLS" | **G1 收尾前决策**（见 §1.4.1）+ G3-1 |
+| worker 天然单租户（`PPTS_TENANT_ID` + `ClaimNext WHERE tenant_id=$1`） | `cmd/worker/main.go:35/83`、`pipeline/postgres.go:103` | §10.4 公平调度、§12.1 调度角色 | **G1 收尾前决策**（见 §1.4.1）+ G3-2（公平/并发） |
+| 配额/账本/预算未实现（`usage_ledger` 表空置，`WithinBudget` 硬编码 true，`Estimate` 未实现） | `0001_init.sql:88`、`internal/api/narration.go:100` | §12.2、§10.3 | G3-2 |
+| 按租户多后端存储/生命周期/成本可见性未接（`tenants.policy` 未读、单例 ObjectStore、`ApplyLifecyclePolicy` 无调用） | `0001_init.sql:11`、`cmd/*/main.go`、`s3.go` | §12.4/§12.5、ADR-014 | G3-6 |
+| 保留期/删除未执行（`delete_source_after`、`source_retention_days` 只存不做；孤儿临时对象无清理） | `0001_init.sql:24-25`、`app/upload.go:100` | §13.1、§12.5 | G3-7 |
+| 认证仍为信任上游头；无成员/角色模型 | `internal/api/auth.go:9` | §12.3 | G3-3（部署前须限定可信网络，见 §6） |
+| JobService/TenantService 契约有实现无，无法取消/重试/看进度 | `gen/.../job.connect.go`、`internal/api` 无 handler | §11.1 | G3-9 |
+| 可观测性为 0（无 metrics/OTel，无每租户成本/队列等待） | 全仓无 | §14.2 | G3-8 |
+| CI 未跑多租户/加密 PG/S3/Buf breaking | `.github/workflows/ci.yml` | §15.3 | G3-10 |
+| 崩溃窗口下源版本可能重复（`CreateSourceRevision` 在 `uploads.Complete` 前，无 `(project_id,source_hash)` 唯一） | `app/upload.go:158-181` | §10.3 幂等 | G1 收尾修复 + G3-5 故障注入 |
+| 步骤成功与任务终态分两次事务 | `app/export.go:103-104` 与 worker `Complete` | §10.2 同事务要求 | G3-5（幂等重放测试）+ 可选 outbox |
+
+#### 1.4.1 需在 G1 收尾前决策的两项结构性选择（越早定越省返工）
+
+1. **worker 跨租户调度**：将 `ClaimNext` 扩展为"全局领取（独立最小权限角色，仅访问任务表）+ 返回 `tenant_id` + handler 执行前设租户上下文 + per-tenant 并发上限与公平排序"，保留单租户模式供私有化。此决策决定 G3-2 是"加配置"还是"改调度器"。
+2. **迁移/运行角色分离**：引入 `ppts_migrator`（owner，仅迁移）与 `ppts_app`（`NOSUPERUSER NOBYPASSRLS`，非 owner），为 G3-1 的 FORCE RLS 铺路。此决策决定 G3-1 是否需要数据/权限迁移。
+
+> 说明：以上两项在 V4.0 中分别属 §10.4/§12.1 与 §12.1，本计划将其从"G3 实现细节"提升为"G1 收尾决策点"，不对 V4.0 结论做改动。
 
 ## 2. 里程碑总览
 
@@ -158,6 +185,19 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 
 > 说明：G1 真实链路（上传→解析→原文讲稿→配音→播放 manifest→导出下载）后端与 Web 已接通，并已补 HTTP 端到端验收测试（真实 PG + 本地存储 + 真实 worker，fake TTS）；剩余阻塞为页面图渲染（需 LibreOffice 环境）与正式 TTS 供应商验收（受凭据阻塞）。带 PG 的测试命令：`PPTS_TEST_DATABASE=... go test -tags=pg -p 1 ./...`。go-pptx 本地产库在 ADR-017 重构中间态触发 `BUG-001` 时，本地 ppts 门禁临时使用 `GOWORK=off`（发布 tag v1.0.1，与 CI 一致），不越界修改依赖仓库。
 
+#### 4.2.1 G1 收尾执行登记（V1.2）
+
+按 §1.4.1/§8 顺序推进，本轮完成：
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| ADR-018 worker 跨租户调度与租户公平（提议） | ✅ 已记录 | `docs/adr/ADR-018-cross-tenant-scheduler.md`：全局领取+公平+调度最小权限角色，保留单租户模式；G3-2 据此扩展 |
+| ADR-019 迁移/运行角色分离（提议） | ✅ 已记录 | `docs/adr/ADR-019-migration-runtime-role-separation.md`；实测确认 dev/test 库 owner 为 `postgres`、运行账号 `ppts_app` 为 `NOSUPERUSER NOBYPASSRLS`，与决策一致 |
+| G1 崩溃窗口幂等修复（源版本重复） | ✅ 已实现并加测试 | `migrations/0005_source_revision_upload_id.sql`（`source_revisions.upload_id` + 部分唯一索引）；`PGProjectStore.CreateSourceRevision` 以 `upload_id` 幂等（`SELECT … FOR UPDATE` 串行化，命中则返回既有版本、不递增 `current_revision`）；`UploadService` 传入上传会话 ID；`TestCreateSourceRevisionIdempotentByUpload`（PG）覆盖"重试不重复、不同会话仍新增" |
+| CI 门禁补全（G3-10 提前最小版） | ✅ 已加入 | `.github/workflows/ci.yml` 新增 `postgres`（迁移按角色模型执行 + `-tags=pg -p 1`）、`s3`（真实 MinIO 适配器测试）、`proto`（`buf lint` + `buf breaking`）三个 job |
+
+> 待确认：ADR-018/019 状态为"提议"，实现排期见 G3-1/G3-2。`source_revisions` 现有重复数据（历史崩溃窗口产生）未做回溯清理，后续可加一次性核对脚本。
+
 ### 4.3 G2 AI 产品化（2–3周）
 
 | 编号 | 任务 | 验收 |
@@ -176,15 +216,29 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 
 | 编号 | 任务 | 验收 |
 |---|---|---|
-| G3-1 | RLS（事务级 set_config、FORCE、运行账号非 owner/BYPASSRLS）、跨租户约束测试 | 上下文缺失拒绝；伪造租户写入失败 |
-| G3-2 | 额度预占→执行→结算/释放；用量账本唯一键；供应商成本与用户计费分离 | 并发超额测试、重复扣费测试通过 |
-| G3-3 | 身份认证（OIDC Authorization Code + PKCE）、角色（Owner/Admin/Editor/Reviewer/Viewer） | 权限矩阵测试 |
-| G3-4 | 审计日志、备份与恢复演练（RPO≤15min / RTO≤2h 目标） | 联合恢复演练 |
-| G3-5 | 故障注入：worker 强杀、供应商限流、磁盘满、孤儿资产清理、未知供应商结果对账 | 操作手册覆盖 |
-| G3-6 | 存储加固：按租户多后端路由（配置持久化为租户策略，S3/本地/BYOS）+ 生命周期分层（源热存储、音频母版低频、成品按分享有效期、失效产物删除）+ 存储成本按租户汇总 + 企业信封加密可选（V4.0 §12.4/12.5） | 多后端切换无业务改动；生命周期策略生效可验证；跨租户对象签名独立单测通过 |
-| G3-7 | 数据保留：源文件默认保留期（独立于派生产物、默认更短）+ 到期清理 + "处理完成后删除源文件"选项执行（V4.0 §13.1） | 到期对象按策略清理；删除后仅保留必要派生产物 |
+| G3-1 | RLS 纵深防御：迁移/运行角色分离（`ppts_migrator` owner vs `ppts_app` 非 owner、`NOSUPERUSER NOBYPASSRLS`）；全租户表 `ENABLE`+`FORCE ROW LEVEL SECURITY`；所有业务事务经 `set_config('app.tenant_id', $1, true)` 设置上下文；调度角色独立且仅访问任务表（V4.0 §12.1） | 上下文缺失拒绝；伪造租户写入失败；同一连接连续切租户不串；越权前缀/Q 签名拒绝；跨租户外键测试通过 |
+| G3-2 | 配额与用量：`Estimate` 实现；额度"预占→执行→结算/释放"原子条件更新；`usage_ledger` 唯一键写入；供应商成本与用户计费分离；预算不再硬编码 `WithinBudget=true`；per-tenant 并发上限与公平调度（配合 §1.4.1 决策） | 并发超额测试、重复扣费测试通过；供应商成本与用户计费账目可对账、可审计；大租户不饿死小任务 |
+| G3-3 | 身份认证（OIDC Authorization Code + PKCE）、成员/角色表（Owner/Admin/Editor/Reviewer/Viewer，区分导出/分享/声音/费用权限）；替换 G1 可信头身份 | 权限矩阵测试；未认证/越权请求拒绝 |
+| G3-4 | 审计日志、备份与恢复演练（RPO≤15min / RTO≤2h 目标）；租户生命周期（停用/导出/删除/数据擦除） | 联合恢复演练有记录；审计可按租户检索；租户删除后派生数据按策略清理 |
+| G3-5 | 故障注入：worker 强杀、供应商限流、磁盘满、孤儿资产清理、未知供应商结果对账；崩溃窗口幂等（含源版本重复修复、步骤成功与任务终态一致性/可选 outbox） | 操作手册覆盖；强杀/迟到 worker/重复消息/租约过期下无重复结算、无重复源版本 |
+| G3-6 | 存储加固：`ObjectStoreRegistry` 按租户策略路由（S3/本地/BYOS + 区域选择），`tenants.policy` 持久化；接 `ApplyLifecyclePolicy` 与 StorageClass；存储成本按租户汇总；企业信封加密/KMS 可选（V4.0 §12.4/12.5、ADR-014） | 多后端切换无业务改动；生命周期策略生效可验证；跨租户对象签名独立单测通过 |
+| G3-7 | 数据保留：执行 `delete_source_after` 与 `source_retention_days`（源文件默认短于派生产物）+ 到期清理 + 孤儿临时对象周期清理（V4.0 §13.1/§12.5） | 到期对象按策略清理；删除后仅保留必要派生产物；无长期滞留的临时对象 |
+| G3-8 | 可观测性与成本可见性：结构化日志含租户/项目；核心指标（任务接受成功率、队列最老等待、租约过期数、步骤失败率、TTS 429/延迟、每项目成本、预占滞留）；OTel 短 Span + 异步任务 Span Link（V4.0 §14.2） | 指标可按租户汇总且不做高基数标签；每项目成本可查 |
+| G3-9 | 实现 JobService（Get/List/Cancel/RetryFailed/WatchEvents，含 Connect 服务端流+轮询回退）与 TenantService（Members/Roles/Quota/Usage/Policy）；接 `pipeline.CancelRequested` | 客户端可查询/取消/重试任务与查看配额用量；取消在安全点生效 |
+| G3-10 | CI 门禁补全：`-tags=pg -p 1` 多租户并发/隔离与幂等 job、MinIO/S3 适配器 job、`buf lint`+`buf breaking`、迁移可重放（V4.0 §15.3） | CI 绿；隔离、幂等、契约兼容、S3 回归均被自动守护 |
 
-**放行门禁**：跨租户与重复扣费测试通过；对象签名与生命周期测试通过；备份恢复演练有记录。
+**放行门禁**：跨租户与重复扣费测试通过；对象签名与生命周期测试通过；备份恢复演练有记录；JobService/TenantService 可用；CI 覆盖多租户/S3/契约门禁。
+
+#### 4.4.1 G3 执行登记（V1.2）
+
+| 项 | 状态 | 证据 |
+|---|---|---|
+| G3-1 RLS 纵深（表级 + 上下文） | 🟡 已实现主体 | `migrations/0006_rls.sql`：对 projects/source_revisions/jobs/job_steps/narration_scripts/narration_segments/artifacts/uploads/usage_ledger `ENABLE`+`FORCE ROW LEVEL SECURITY`，策略 `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`（缺失即拒绝）；新增 `internal/tenant.Run/RunCtx/WithContext`（事务局部 `set_config(..., true)`）；`internal/project`、`upload`、`narration`、`artifact`、`pipeline` 全部数据访问改经租户事务；worker 在处理任务前注入任务租户（续租/终态/步骤）；Playback 步骤发现注入租户 |
+| G3-1 角色分离 | 🟡 运行角色已就位，迁移账号待账号化 | 实测 dev/test owner=`postgres`、运行账号 `ppts_app` 为 `NOSUPERUSER NOBYPASSRLS` 且非 owner；迁移由 owner 账号执行。ADR-019 提出的专属 `ppts_migrator` 作为部署最佳实践待落地（当前用 `postgres` 承担 owner 角色） |
+| G3-1 验收测试 | ✅ 通过 | `internal/tenant/rls_test.go`（`-tags=pg`）：缺上下文查询不可见、空上下文写入被拒、以 A 上下文写 B 被拒、单连接连续切租户不串；既有全部 PG 测试在 RLS 开启后仍通过 |
+| G3-1 调度角色（跨租户领取） | ⏸ 待 ADR-018 | 当前 worker 单租户，任务领取在租户上下文内；跨租户调度角色与策略属 ADR-018，未实现 |
+
+> G3-1 剩余：`pg_roles` 断言测试（`rolsuper=false`/`rolbypassrls=false`）、专属迁移账号、调度角色策略（随 ADR-018），以及 job_steps 缺失租户上下文时的显式拒绝用例补充。
 
 ### 4.5 G4 统一原生客户端（3–5周）
 
@@ -215,7 +269,7 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 测试/产品支持 | 兼职 | 全程 | 兼容性语料、AI 评测集、真机矩阵、故障演练 |
 | Rust/移动工程支持 | 按需 | G0、G4 | Tauri 壳、sidecar 生命周期、Android/iOS 原生音频与插件 |
 
-关键路径：G0-1/G0-2（go-pptx 与渲染）→ G1-2/G1-3（解析与任务）→ G1-5/G1-7（TTS 与导出）→ G2-1/G2-3（AI 质量）→ G4-4/G4-5（移动离线与原生音频）。存储端口（G0-9）为 G1–G3 存储任务的公共前置。
+关键路径：G0-1/G0-2（go-pptx 与渲染）→ G1-2/G1-3（解析与任务）→ G1-5/G1-7（TTS 与导出）→ G2-1/G2-3（AI 质量）→ G4-4/G4-5（移动离线与原生音频）。存储端口（G0-9）为 G1–G3 存储任务的公共前置。**多租户运营关键路径（V1.2 新增）：G1 收尾决策（worker 跨租户调度 / 迁移-运行角色分离，§1.4.1）→ G3-1（RLS 纵深）→ G3-2（配额账本+公平调度）→ G3-6/3-7（按租户存储与保留），并贯穿 G3-8/9/10。**
 
 ## 6. 风险与应对
 
@@ -231,6 +285,8 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 隐私模式能力缺口（本地 LLM/TTS 未认证） | 中 | G4-9 能力清单逐项声明；未装能力包显式"不可用"；不承诺本地 AI 草稿（V4.0 §11.10/§16.2） | 用户开启后关键功能不可用引发投诉 |
 | 单人开发进度 | 高 | 按里程碑门禁滚动排期；P0 优先 Web/MP4 闭环 | G1 超期则压缩 G2 范围 |
 | 供应商限流/成本 | 中 | 并发信号量、预算预占、按段缓存、失败步骤定向重做 | 429/成本超预算持续 |
+| 多租户隔离仅单层（无 RLS/角色未分离） | 高 | §1.4.1 角色分离前置；G3-1 FORCE RLS + set_config + 测试矩阵；部署前身份仅可信网络可达 | 任一跨租户越权测试失败或渗透发现 |
+| 多租户运营未闭环（worker 单租户、无配额/账本、无成本可见性） | 高 | G1 收尾决策跨租户调度；G3-2 原子预占+账本；G3-8 每项目成本 | 租户数增长需线性加 worker；单租户成本不可控 |
 
 ## 7. 发布与验收节奏
 
@@ -245,6 +301,9 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 3. 确定 TTS 供应商与目标 PowerPoint 认证版本，登记到 ADR。
 4. 建首批兼容性语料（≥10 份，复用 go-pptx 语料）与 AI 评测集（≥100 页）登记表。
 5. 冻结 P0 页面交互走查，锁定三栏/单页布局与四步流程；上传界面文案明确"文件将上传至云端"（V4.0 §13.1）。
+6. （V1.2 新增）在 G1 收尾前完成 §1.4.1 两项结构性决策并落 ADR：worker 跨租户调度方案、迁移/运行角色分离方案。
+7. （V1.2 新增）修复 G1 崩溃窗口幂等：`source_revisions` 增加 `(project_id, source_hash)` 唯一或先查后建，并补"上传中途崩溃重试"测试；评估步骤成功与任务终态同事务/outbox。
+8. （V1.2 新增）把 `-tags=pg` 多租户/幂等测试与 MinIO/S3 测试纳入 CI（G3-10 提前启动最小版本）。
 
 ## 9. 变更记录
 
@@ -253,3 +312,6 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-12 | V1.0 | 初版：按 V3.6 规划 G0–G5、任务分解、风险与门禁 |
 | 2026-09-12 | V1.1 | 基线升级至 V4.0：新增 G0-9、G1-9、G2-7、G3-6/3-7、G4-9；§1.2 暂缓项与 §6 风险按 V4.0 更新 |
 | 2026-09-12 | V1.1 | G0 实现登记：仓库骨架/存储端口/文档适配器/渲染/MP4/sidecar 协议/语料库，见 §4.1"G0 实测进度" |
+| 2026-09-12 | V1.2 | 多租户架构评审对齐：新增 §1.4 评审发现→任务映射与 §1.4.1 两项 G1 收尾前置决策；细化 G3-1~G3-7；新增 G3-8（可观测性/成本）、G3-9（JobService/TenantService）、G3-10（CI 门禁）；更新 §5 关键路径、§6 风险、§8 行动清单 |
+| 2026-09-12 | V1.2 | G1 收尾执行登记（§4.2.1）：记录 ADR-018/019；修复崩溃窗口源版本重复（migration 0005 + 幂等 store + PG 测试）；CI 新增 postgres/s3/proto 门禁 |
+| 2026-09-12 | V1.2 | G3-1 执行登记（§4.4.1）：migration 0006 启用 FORCE RLS + 策略；`internal/tenant` 租户事务助手；全部 store 改造为租户上下文事务；RLS 验收测试通过 |
