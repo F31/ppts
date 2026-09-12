@@ -22,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
@@ -852,6 +853,96 @@ func (f *fakeTenantPolicy) GetPolicy(context.Context, string) (*tenant.Policy, e
 		return &tenant.Policy{}, nil
 	}
 	return f.policy, nil
+}
+
+// fakeMembershipReader 提供 TenantService.Members/Roles 的成员读取能力。
+type fakeMembershipReader struct {
+	members []membership.Member
+}
+
+func (f *fakeMembershipReader) GetRole(context.Context, string, string) (membership.Role, error) {
+	return "", membership.ErrNotFound
+}
+
+func (f *fakeMembershipReader) List(context.Context, string) ([]membership.Member, error) {
+	return f.members, nil
+}
+
+func TestTenantServiceMembersAndRoles(t *testing.T) {
+	m := &fakeMembershipReader{members: []membership.Member{
+		{UserID: "user-1", Role: membership.RoleOwner},
+		{UserID: "user-2", Role: membership.RoleReviewer},
+	}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: m}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	members, err := client.Members(context.Background(), authRequest(&pptsv1.GetMembersRequest{}))
+	if err != nil {
+		t.Fatalf("Members: %v", err)
+	}
+	if len(members.Msg.GetMembers()) != 2 || members.Msg.GetMembers()[0].GetRole() != pptsv1.Role_ROLE_OWNER {
+		t.Fatalf("members = %+v", members.Msg.GetMembers())
+	}
+
+	roles, err := client.Roles(context.Background(), authRequest(&pptsv1.GetRolesRequest{}))
+	if err != nil {
+		t.Fatalf("Roles: %v", err)
+	}
+	if roles.Msg.GetUserRoles()["user-1"] != pptsv1.Role_ROLE_OWNER ||
+		roles.Msg.GetUserRoles()["user-2"] != pptsv1.Role_ROLE_REVIEWER {
+		t.Fatalf("roles = %+v", roles.Msg.GetUserRoles())
+	}
+}
+
+// fakeRoleReader 提供可配置角色的成员读取，验证 G3-3 授权门禁。
+type fakeRoleReader struct {
+	role membership.Role
+	err  error
+}
+
+func (f *fakeRoleReader) GetRole(context.Context, string, string) (membership.Role, error) {
+	return f.role, f.err
+}
+
+func (f *fakeRoleReader) List(context.Context, string) ([]membership.Member, error) {
+	return nil, nil
+}
+
+func TestJobServiceCancelEnforcesRole(t *testing.T) {
+	job := &pipeline.Job{
+		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
+		State: pipeline.StateQueued,
+	}
+	members := &fakeRoleReader{role: membership.RoleViewer}
+	jobs := &jobCreatorStub{job: job}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), Options{Members: members}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("viewer cancel code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+
+	members.role = membership.RoleEditor
+	if _, err := client.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"})); err != nil {
+		t.Fatalf("editor cancel: %v", err)
+	}
+}
+
+func TestCreateGenerationRequiresEditorRole(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	members := &fakeRoleReader{role: membership.RoleViewer}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), Options{Members: members}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "role-1")
+	if _, err := client.CreateGeneration(context.Background(), req); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("viewer generation code = %v want PermissionDenied", connect.CodeOf(err))
+	}
 }
 
 func TestTenantServiceQuotaUsagePolicy(t *testing.T) {

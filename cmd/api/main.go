@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,7 +15,9 @@ import (
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
@@ -63,12 +66,16 @@ func run() error {
 	}
 	usageStore := usage.NewPGStore(pool)
 	auditStore := audit.NewPGStore(pool)
+	membersStore := membership.NewPGStore(pool)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	server := &http.Server{
 		Addr: addr,
-		Handler: api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
-			narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
-			objects,
-			api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore}),
+		Handler: observability.RequestLogger(
+			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
+				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
+				objects,
+				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore}),
+			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)

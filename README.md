@@ -88,6 +88,13 @@ API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar
 审计日志（G3-4，`migrations/0009_audit.sql`）：`audit_events` 按租户隔离（FORCE RLS），记录任务取消/重试与
 保留清理删除等操作；查询经 `internal/audit.PGStore.List`。
 
+租户成员/角色（G3-3 内核，`migrations/0010_members.sql`）：`tenant_members` 持久化
+Owner/Admin/Editor/Reviewer/Viewer，`TenantService.Members/Roles` 可读；配音生成、任务取消/重试要求 `editor+`
+（未配置成员读取时开发放行）；OIDC 身份与完整授权矩阵待后续。
+
+API 结构化请求日志（G3-8）：每个请求带 `X-Request-ID`，JSON slog 输出
+`request_id/method/path/status/duration_ms/bytes/tenant/user`。
+
 worker 还运行数据保留清理循环（G3-7）：可配 `PPTS_RETENTION_INTERVAL`（默认 `1h`）与
 `PPTS_UPLOAD_ABANDON_TTL`（默认 `24h`）。清理项包括超过项目 `source_retention_days` 的源对象、
 选择"处理后删除"且解析成功的源对象，以及超时仍 `pending` 的上传临时对象。

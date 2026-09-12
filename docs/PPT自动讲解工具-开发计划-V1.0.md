@@ -251,6 +251,10 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 
 > G3-4 剩余：审计读取 API/管理界面（当前仅内部 `List`）、审计保留期与归档、备份恢复演练（RPO≤15min/RTO≤2h）、租户停用/导出/删除/数据擦除流程。
 
+| G3-3 成员/角色内核 | 🟡 存储+读取+门禁 | `migrations/0010_members.sql`（`tenant_members`，FORCE RLS）；`internal/membership`（GetRole/List/SetRole/Remove，角色校验）；`TenantService.Members/Roles` 落地；`cmd/api` 注入。授权门禁 `requireRole`：配音生成/任务取消/重试要求 `editor+`，未配置成员读取时保持开发放行；PG 隔离、API 读写与门禁测试覆盖 |
+
+> G3-3 剩余：OIDC Authorization Code+PKCE 接入替换可信头、成员写入/管理 API、完整授权矩阵（导出/分享/声音/费用等 RPC 逐项标注）、权限矩阵测试。
+
 | G3-5 崩溃窗口幂等测试 | 🟡 测试加固 | `TestMarkStepIdempotentAndSurvivesTerminal`（步骤重放单行/引用不变、终态后可查）；`TestWorkerCrashAfterStepReplayIdempotent`（步骤成功后 worker 强杀，重放不重复步骤、任务恰好成功一次、fencing 递增） |
 
 > G3-5 剩余：磁盘满/对象写失败路径测试、未知供应商结果对账（`StateUnknownResult` 当前无触发路径）、步骤成功与任务终态同事务化（可选 outbox）、强杀操作手册。
@@ -267,13 +271,14 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 > G3-7 剩余：`delete_source_after` 目前按"解析任务成功"触发（渲染/导出完成后删除留待渲染链路接通）；租户级默认保留期与"派生产物保留期"分档；删除审计日志（G3-4）。
 
 | G3-8 可观测性最小版 | 🟡 基础实现 | 新增 `internal/observability` expvar 指标：`ppts_worker_jobs_total`、`ppts_worker_job_duration_ms_total`、`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录等待时长，均值=sum/claimed）；`pipeline.WorkerOptions.Metrics` 提供可注入 hook，记录 claimed/succeeded/failed/canceled/retry_scheduled/cancel_requested/lease_lost；`cmd/worker` 注入 recorder；API 暴露 `/debug/vars` 便于本地/CI 拉取 |
+| G3-8 结构化请求日志 | ✅ 实现 | `observability.RequestLogger` 中间件：为每请求生成 `X-Request-ID`（上下文可读），输出 `request_id/method/path/status/duration_ms/bytes/tenant/user` 结构化日志；`cmd/api` 以 JSON slog 输出；中间件单测覆盖字段与响应头 |
 
-> G3-8 剩余：结构化日志统一（trace_id/request_id/tenant/project/job）、当前积压"最老等待"gauge（现为领取时观测）、TTS 429/延迟、每项目成本查询、OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化。
+> G3-8 剩余：当前积压"最老等待"gauge（现为领取时观测）、TTS 429/延迟、每项目成本查询、OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化、worker 侧结构化日志统一。
 
 | G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 服务端流已实现：`pipeline.PGStore.UpdatedSince` 按 `updated_at` 升序增量轮询，`seq=updated_at UnixNano`，支持 `after_seq` 断点续传 |
-| G3-9 TenantService | 🟡 只读部分 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）。`Members/Roles` 依赖 G3-3 身份与角色模型，暂返回 `Unimplemented` |
+| G3-9 TenantService | 🟡 部分实现 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）、`Members`/`Roles`（基于 `tenant_members`，G3-3 内核）；未配置成员读取时返回 `Unimplemented` |
 
-> G3-9 剩余：`WatchEvents` 事件序号目前复用 `updated_at`（同毫秒并发更新可能漏发，后续可加专用事件表/序号）；TenantService `Members/Roles`（G3-3）；Job 进度百分比由 handler 上报（当前仅终态置 100）。
+> G3-9 剩余：`WatchEvents` 事件序号目前复用 `updated_at`（同毫秒并发更新可能漏发，后续可加专用事件表/序号）；Job 进度百分比由 handler 上报（当前仅终态置 100）；角色授权矩阵（随 G3-3 完整身份）。
 
 > G3-1 剩余：专属迁移账号 `ppts_migrator` 落地（当前以 owner `postgres` 承担）、调度角色策略（随 ADR-018）。`pg_roles` 特权断言与 `job_steps` 缺失上下文拒绝用例已在 `internal/tenant/rls_test.go` 覆盖（并修复了测试未清理 `jobs` 导致的跨次运行冲突）。
 
@@ -366,3 +371,6 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-12 | V1.2 | G3-8 登记：新增 `ppts_worker_queue_wait_ms_total` 队列等待指标（领取时按 CreatedAt 记录）；补指标单测 |
 | 2026-09-12 | V1.2 | G3-4 登记：migration 0009 审计表（FORCE RLS）；`internal/audit` Record/List；接入 JobService cancel/retry 与 retention 清理；补 PG 隔离测试与接线测试 |
 | 2026-09-12 | V1.2 | G3-5 登记：崩溃窗口幂等测试（步骤重放幂等、步骤后强杀重放不重复、终态一致性）；修正测试上下文缺租户导致的 RLS 误失败 |
+| 2026-09-12 | V1.2 | G3-3 登记：migration 0010 成员表（FORCE RLS）；`internal/membership` 存储；TenantService Members/Roles 落地；补 PG 隔离与 API 测试 |
+| 2026-09-12 | V1.2 | G3-8 登记：结构化请求日志中间件（request_id/tenant/user/status/时长），cmd/api 以 JSON slog 输出；补中间件单测 |
+| 2026-09-12 | V1.2 | G3-3 登记：授权门禁 `requireRole`（editor+），接入配音生成/任务取消/重试；未配置成员时开发放行；补允许/拒绝/回退测试 |

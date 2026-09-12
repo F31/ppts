@@ -14,6 +14,7 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/tts"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/usage"
@@ -39,15 +40,12 @@ type NarrationGenerationService struct {
 	jobs    JobCreator
 	quota   QuotaManager
 	policy  TenantPolicyReader
+	members membership.Reader
 }
 
 // NewNarrationGenerationService creates a narration task service.
-func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, quota QuotaManager, policy ...TenantPolicyReader) *NarrationGenerationService {
-	var p TenantPolicyReader
-	if len(policy) > 0 {
-		p = policy[0]
-	}
-	return &NarrationGenerationService{scripts: scripts, jobs: jobs, quota: quota, policy: p}
+func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, quota QuotaManager, policy TenantPolicyReader, members membership.Reader) *NarrationGenerationService {
+	return &NarrationGenerationService{scripts: scripts, jobs: jobs, quota: quota, policy: policy, members: members}
 }
 
 type activeJobCounter interface {
@@ -61,6 +59,9 @@ type jobByIdempotencyFinder interface {
 func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *connect.Request[pptsv1.CreateGenerationRequest]) (*connect.Response[pptsv1.CreateGenerationResponse], error) {
 	principal, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	projectID := strings.TrimSpace(req.Msg.GetProjectId())

@@ -9,6 +9,7 @@ import (
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/upload"
@@ -17,10 +18,11 @@ import (
 // Options 是可选横切依赖（G3-2 配额预占、G3-9 租户用量/策略）。
 // tenant_id 始终由服务端从可信身份推导，客户端传入值不作授权依据。
 type Options struct {
-	Quota  QuotaManager
-	Usage  TenantUsageReader
-	Policy TenantPolicyReader
-	Audit  audit.Recorder
+	Quota   QuotaManager
+	Usage   TenantUsageReader
+	Policy  TenantPolicyReader
+	Audit   audit.Recorder
+	Members membership.Reader
 }
 
 // NewHandler builds the HTTP surface. Health checks intentionally bypass auth;
@@ -44,16 +46,16 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs))
 	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy))
+	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy, opt.Members))
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects))
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewPlaybackServiceHandler(NewPlaybackService(jobs, objects))
 	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewJobServiceHandler(NewJobService(jobs, opt.Quota, opt.Audit))
+	path, handler = pptsv1connect.NewJobServiceHandler(NewJobService(jobs, opt.Quota, opt.Audit, opt.Members))
 	mux.Handle(path, AuthMiddleware(handler))
 	if opt.Usage != nil && opt.Policy != nil {
-		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy))
+		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy, opt.Members))
 		mux.Handle(path, AuthMiddleware(handler))
 	}
 	if parser, ok := objects.(signedURLParser); ok {

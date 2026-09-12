@@ -10,6 +10,7 @@ import (
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/usage"
 )
@@ -34,14 +35,15 @@ type JobStore interface {
 // JobService 提供任务查询、取消与重试（V4.0 §11.1）。
 type JobService struct {
 	pptsv1connect.UnimplementedJobServiceHandler
-	jobs  JobStore
-	quota QuotaReleaser
-	audit audit.Recorder
+	jobs    JobStore
+	quota   QuotaReleaser
+	audit   audit.Recorder
+	members membership.Reader
 }
 
 // NewJobService 创建任务服务。
-func NewJobService(jobs JobStore, quota QuotaReleaser, auditor audit.Recorder) *JobService {
-	return &JobService{jobs: jobs, quota: quota, audit: auditor}
+func NewJobService(jobs JobStore, quota QuotaReleaser, auditor audit.Recorder, members membership.Reader) *JobService {
+	return &JobService{jobs: jobs, quota: quota, audit: auditor, members: members}
 }
 
 // QuotaReleaser 是取消配音任务后释放预占额度所需的窄能力。
@@ -97,6 +99,9 @@ func (s *JobService) List(ctx context.Context, req *connect.Request[pptsv1.ListJ
 func (s *JobService) Cancel(ctx context.Context, req *connect.Request[pptsv1.CancelJobRequest]) (*connect.Response[pptsv1.Job], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	jobID := strings.TrimSpace(req.Msg.GetJobId())
@@ -173,6 +178,9 @@ func (s *JobService) WatchEvents(ctx context.Context, req *connect.Request[pptsv
 func (s *JobService) RetryFailed(ctx context.Context, req *connect.Request[pptsv1.RetryFailedRequest]) (*connect.Response[pptsv1.Job], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	jobID := strings.TrimSpace(req.Msg.GetJobId())

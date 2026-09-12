@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/usage"
 )
@@ -23,17 +24,76 @@ type TenantPolicyReader interface {
 	GetPolicy(ctx context.Context, tenantID string) (*tenant.Policy, error)
 }
 
-// TenantService 提供租户配额、用量与策略只读接口（V4.0 §11.1/§12）。
-// Members/Roles 依赖 G3-3 身份与角色模型，暂未实现。
+// TenantService 提供租户成员、角色、配额与策略接口（V4.0 §11.1/§12）。
 type TenantService struct {
 	pptsv1connect.UnimplementedTenantServiceHandler
-	usage  TenantUsageReader
-	policy TenantPolicyReader
+	usage   TenantUsageReader
+	policy  TenantPolicyReader
+	members membership.Reader
 }
 
 // NewTenantService 创建租户服务。
-func NewTenantService(u TenantUsageReader, p TenantPolicyReader) *TenantService {
-	return &TenantService{usage: u, policy: p}
+func NewTenantService(u TenantUsageReader, p TenantPolicyReader, members ...membership.Reader) *TenantService {
+	var m membership.Reader
+	if len(members) > 0 {
+		m = members[0]
+	}
+	return &TenantService{usage: u, policy: p, members: m}
+}
+
+func (s *TenantService) Members(ctx context.Context, _ *connect.Request[pptsv1.GetMembersRequest]) (*connect.Response[pptsv1.GetMembersResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.members == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("members not configured"))
+	}
+	list, err := s.members.List(ctx, p.TenantID)
+	if err != nil {
+		return nil, tenantError(err)
+	}
+	out := make([]*pptsv1.Member, 0, len(list))
+	for _, m := range list {
+		out = append(out, &pptsv1.Member{UserId: m.UserID, Role: roleProto(m.Role)})
+	}
+	return connect.NewResponse(&pptsv1.GetMembersResponse{Members: out}), nil
+}
+
+func (s *TenantService) Roles(ctx context.Context, _ *connect.Request[pptsv1.GetRolesRequest]) (*connect.Response[pptsv1.GetRolesResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.members == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("members not configured"))
+	}
+	list, err := s.members.List(ctx, p.TenantID)
+	if err != nil {
+		return nil, tenantError(err)
+	}
+	roles := make(map[string]pptsv1.Role, len(list))
+	for _, m := range list {
+		roles[m.UserID] = roleProto(m.Role)
+	}
+	return connect.NewResponse(&pptsv1.GetRolesResponse{UserRoles: roles}), nil
+}
+
+func roleProto(r membership.Role) pptsv1.Role {
+	switch r {
+	case membership.RoleOwner:
+		return pptsv1.Role_ROLE_OWNER
+	case membership.RoleAdmin:
+		return pptsv1.Role_ROLE_ADMIN
+	case membership.RoleEditor:
+		return pptsv1.Role_ROLE_EDITOR
+	case membership.RoleReviewer:
+		return pptsv1.Role_ROLE_REVIEWER
+	case membership.RoleViewer:
+		return pptsv1.Role_ROLE_VIEWER
+	default:
+		return pptsv1.Role_ROLE_UNSPECIFIED
+	}
 }
 
 func (s *TenantService) Quota(ctx context.Context, _ *connect.Request[pptsv1.GetQuotaRequest]) (*connect.Response[pptsv1.TenantQuota], error) {
