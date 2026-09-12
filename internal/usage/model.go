@@ -31,6 +31,8 @@ var (
 	ErrReservationNotFound = errors.New("usage: reservation not found")
 	// ErrReservationReleased 表示预占已释放，不能再结算。
 	ErrReservationReleased = errors.New("usage: reservation already released")
+	// ErrReservationSettled 表示预占已结算，不能再释放。
+	ErrReservationSettled = errors.New("usage: reservation already settled")
 )
 
 // Quota 是某租户某计量种类的额度与累计用量。

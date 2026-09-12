@@ -102,6 +102,34 @@ func (s *PGStore) Create(ctx context.Context, tenantID, projectID, kind, idemKey
 	return j, err
 }
 
+// CountActive 返回租户下非终态任务数量，用于租户并发上限检查。
+func (s *PGStore) CountActive(ctx context.Context, tenantID string) (int, error) {
+	count := 0
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT count(*) FROM jobs
+			 WHERE tenant_id=$1 AND state NOT IN ('succeeded','failed','canceled')`,
+			tenantID).Scan(&count)
+	})
+	return count, err
+}
+
+// ByIdempotency 返回某租户同 kind/idempotency_key 的既有任务。
+func (s *PGStore) ByIdempotency(ctx context.Context, tenantID, kind, idemKey string) (*Job, error) {
+	var j *Job
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		j, e = scanJob(tx.QueryRow(ctx,
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE tenant_id=$1 AND kind=$2 AND idempotency_key=$3",
+			tenantID, kind, idemKey))
+		return e
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrJobNotFound
+	}
+	return j, err
+}
+
 // ClaimNext 以 SKIP LOCKED 领取一个可运行任务。
 func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, leaseFor time.Duration) (*Job, error) {
 	var j *Job
@@ -329,6 +357,35 @@ func (s *PGStore) List(ctx context.Context, tenantID, projectID, state, cursor s
 		return nil, "", err
 	}
 	return out, next, nil
+}
+
+// UpdatedSince 返回某项目在 after 之后更新的任务，按 updated_at 升序，供 WatchEvents 增量轮询。
+func (s *PGStore) UpdatedSince(ctx context.Context, tenantID, projectID string, after time.Time, limit int) ([]*Job, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	var out []*Job
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE tenant_id=$1 AND project_id=$2 AND updated_at > $3 ORDER BY updated_at ASC LIMIT $4",
+			tenantID, projectID, after, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			job, err := scanJob(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, job)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Get 按 ID + 租户查询。

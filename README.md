@@ -72,6 +72,23 @@ GOWORK=off go run ./cmd/worker
 
 `fake` TTS 只生成开发测试用静音 WAV，不构成 G1-5 正式供应商验收。
 
+对象存储后端（G3-6）：`PPTS_OBJECT_BACKEND` 指定默认后端（缺省 `local`）。
+`local` 使用 `PPTS_OBJECT_ROOT`（`PPTS_OBJECT_SECRET` 用于本地签名链接）；
+`s3` 使用 `PPTS_S3_ENDPOINT`/`PPTS_S3_BUCKET`/`PPTS_S3_ACCESS_KEY`/`PPTS_S3_SECRET_KEY`/`PPTS_S3_REGION`/`PPTS_S3_USE_SSL`。
+租户 `tenants.policy.storage_backend` 可覆盖默认后端，未注册后端会显式失败。
+
+API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar 指标。worker 已接入基础任务指标：
+`ppts_worker_jobs_total`（按事件/终态）、`ppts_worker_job_duration_ms_total`（执行时长）、
+`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed），
+均按租户与任务类型聚合。
+
+租户策略 `tenants.policy.max_concurrent_jobs`（>0 时生效）限制配音生成的非终态任务数，超限返回 `ResourceExhausted`；
+同 `Idempotency-Key` 重放不受上限影响，仍返回既有任务。
+
+审计日志（G3-4，`migrations/0009_audit.sql`）：`audit_events` 按租户隔离（FORCE RLS），记录任务取消/重试与
+保留清理删除等操作；查询经 `internal/audit.PGStore.List`。
+
 worker 还运行数据保留清理循环（G3-7）：可配 `PPTS_RETENTION_INTERVAL`（默认 `1h`）与
 `PPTS_UPLOAD_ABANDON_TTL`（默认 `24h`）。清理项包括超过项目 `source_retention_days` 的源对象、
 选择"处理后删除"且解析成功的源对象，以及超时仍 `pending` 的上传临时对象。
+同一循环还清理超过 `PPTS_QUOTA_RESERVATION_TTL`（默认 `24h`）仍处于 `reserved` 的额度预占。

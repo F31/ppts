@@ -1,11 +1,13 @@
 package api
 
 import (
+	"expvar"
 	"net/http"
 
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/project"
@@ -18,6 +20,7 @@ type Options struct {
 	Quota  QuotaManager
 	Usage  TenantUsageReader
 	Policy TenantPolicyReader
+	Audit  audit.Recorder
 }
 
 // NewHandler builds the HTTP surface. Health checks intentionally bypass auth;
@@ -34,19 +37,20 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	mux.Handle("GET /debug/vars", expvar.Handler())
 	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects))
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects))
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs))
 	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota))
+	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy))
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects))
 	mux.Handle(path, AuthMiddleware(handler))
 	path, handler = pptsv1connect.NewPlaybackServiceHandler(NewPlaybackService(jobs, objects))
 	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewJobServiceHandler(NewJobService(jobs))
+	path, handler = pptsv1connect.NewJobServiceHandler(NewJobService(jobs, opt.Quota, opt.Audit))
 	mux.Handle(path, AuthMiddleware(handler))
 	if opt.Usage != nil && opt.Policy != nil {
 		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy))

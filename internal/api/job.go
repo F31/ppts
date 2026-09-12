@@ -4,12 +4,23 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/usage"
 )
+
+// watchEventsPollInterval 是 WatchEvents 服务端流的轮询间隔。
+const watchEventsPollInterval = 500 * time.Millisecond
+
+// JobWatcher 是 WatchEvents 所需的增量事件能力。
+type JobWatcher interface {
+	UpdatedSince(ctx context.Context, tenantID, projectID string, after time.Time, limit int) ([]*pipeline.Job, error)
+}
 
 // JobStore 是 JobService 需要的任务查询与操作能力（G3-9）。
 type JobStore interface {
@@ -23,11 +34,20 @@ type JobStore interface {
 // JobService 提供任务查询、取消与重试（V4.0 §11.1）。
 type JobService struct {
 	pptsv1connect.UnimplementedJobServiceHandler
-	jobs JobStore
+	jobs  JobStore
+	quota QuotaReleaser
+	audit audit.Recorder
 }
 
 // NewJobService 创建任务服务。
-func NewJobService(jobs JobStore) *JobService { return &JobService{jobs: jobs} }
+func NewJobService(jobs JobStore, quota QuotaReleaser, auditor audit.Recorder) *JobService {
+	return &JobService{jobs: jobs, quota: quota, audit: auditor}
+}
+
+// QuotaReleaser 是取消配音任务后释放预占额度所需的窄能力。
+type QuotaReleaser interface {
+	Release(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind) error
+}
 
 func (s *JobService) Get(ctx context.Context, req *connect.Request[pptsv1.GetJobRequest]) (*connect.Response[pptsv1.Job], error) {
 	p, err := requirePrincipal(ctx)
@@ -87,7 +107,67 @@ func (s *JobService) Cancel(ctx context.Context, req *connect.Request[pptsv1.Can
 	if err != nil {
 		return nil, jobError(err)
 	}
+	s.releaseCanceledReservation(ctx, job)
+	s.recordAudit(ctx, p, "job.cancel", job)
 	return connect.NewResponse(toProtoJob(job)), nil
+}
+
+func (s *JobService) recordAudit(ctx context.Context, p Principal, action string, job *pipeline.Job) {
+	if s.audit == nil || job == nil {
+		return
+	}
+	_ = s.audit.Record(ctx, audit.Event{
+		TenantID: p.TenantID, ActorUser: p.UserID, Action: action,
+		ResourceType: "job", ResourceID: job.ID,
+		Metadata: map[string]any{"kind": string(job.Kind), "state": string(job.State)},
+	})
+}
+
+func (s *JobService) releaseCanceledReservation(ctx context.Context, job *pipeline.Job) {
+	if s.quota == nil || job.Kind != pipeline.KindNarration || job.State != pipeline.StateCanceled || job.IDempotencyKey == "" {
+		return
+	}
+	err := s.quota.Release(ctx, job.TenantID, job.IDempotencyKey, usage.KindGenSeconds)
+	if errors.Is(err, usage.ErrReservationNotFound) || errors.Is(err, usage.ErrReservationReleased) || errors.Is(err, usage.ErrReservationSettled) {
+		return
+	}
+}
+
+// WatchEvents 以服务端流持续推送项目任务变更（seq=updated_at UnixNano）。
+// 首版基于增量轮询实现；客户端可用 after_seq 断点续传，超出窗口时从头拉取。
+func (s *JobService) WatchEvents(ctx context.Context, req *connect.Request[pptsv1.WatchEventsRequest], stream *connect.ServerStream[pptsv1.JobEvent]) error {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return err
+	}
+	projectID := strings.TrimSpace(req.Msg.GetProjectId())
+	if projectID == "" {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
+	}
+	watcher, ok := s.jobs.(JobWatcher)
+	if !ok {
+		return connect.NewError(connect.CodeUnimplemented, errors.New("WatchEvents is not supported by the configured job store"))
+	}
+	after := time.Unix(0, req.Msg.GetAfterSeq())
+	ticker := time.NewTicker(watchEventsPollInterval)
+	defer ticker.Stop()
+	for {
+		jobs, err := watcher.UpdatedSince(ctx, p.TenantID, projectID, after, 200)
+		if err != nil {
+			return jobError(err)
+		}
+		for _, job := range jobs {
+			if err := stream.Send(&pptsv1.JobEvent{Seq: job.UpdatedAt.UnixNano(), Job: toProtoJob(job)}); err != nil {
+				return err
+			}
+			after = job.UpdatedAt
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+	}
 }
 
 func (s *JobService) RetryFailed(ctx context.Context, req *connect.Request[pptsv1.RetryFailedRequest]) (*connect.Response[pptsv1.Job], error) {
@@ -103,6 +183,7 @@ func (s *JobService) RetryFailed(ctx context.Context, req *connect.Request[pptsv
 	if err != nil {
 		return nil, jobError(err)
 	}
+	s.recordAudit(ctx, p, "job.retry", job)
 	return connect.NewResponse(toProtoJob(job)), nil
 }
 

@@ -38,11 +38,24 @@ type NarrationGenerationService struct {
 	scripts narration.Store
 	jobs    JobCreator
 	quota   QuotaManager
+	policy  TenantPolicyReader
 }
 
 // NewNarrationGenerationService creates a narration task service.
-func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, quota QuotaManager) *NarrationGenerationService {
-	return &NarrationGenerationService{scripts: scripts, jobs: jobs, quota: quota}
+func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, quota QuotaManager, policy ...TenantPolicyReader) *NarrationGenerationService {
+	var p TenantPolicyReader
+	if len(policy) > 0 {
+		p = policy[0]
+	}
+	return &NarrationGenerationService{scripts: scripts, jobs: jobs, quota: quota, policy: p}
+}
+
+type activeJobCounter interface {
+	CountActive(ctx context.Context, tenantID string) (int, error)
+}
+
+type jobByIdempotencyFinder interface {
+	ByIdempotency(ctx context.Context, tenantID, kind, idemKey string) (*pipeline.Job, error)
 }
 
 func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *connect.Request[pptsv1.CreateGenerationRequest]) (*connect.Response[pptsv1.CreateGenerationResponse], error) {
@@ -106,6 +119,11 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if existing, err := s.enforceConcurrentLimit(ctx, principal.TenantID, idempotencyKey, string(snapshotBytes)); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return connect.NewResponse(&pptsv1.CreateGenerationResponse{JobId: existing.ID, WithinBudget: true}), nil
+	}
 
 	// 配额预占：预占成功才创建可执行任务（V4.0 §12.2）。
 	var reserved *usage.Reservation
@@ -135,6 +153,43 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
 	}
 	return connect.NewResponse(&pptsv1.CreateGenerationResponse{JobId: job.ID, WithinBudget: true}), nil
+}
+
+func (s *NarrationGenerationService) enforceConcurrentLimit(ctx context.Context, tenantID, idempotencyKey, snapshot string) (*pipeline.Job, error) {
+	if s.policy == nil {
+		return nil, nil
+	}
+	policy, err := s.policy.GetPolicy(ctx, tenantID)
+	if err != nil {
+		return nil, tenantError(err)
+	}
+	if policy.MaxConcurrentJobs <= 0 {
+		return nil, nil
+	}
+	counter, ok := s.jobs.(activeJobCounter)
+	if !ok {
+		return nil, nil
+	}
+	active, err := counter.CountActive(ctx, tenantID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if active < policy.MaxConcurrentJobs {
+		return nil, nil
+	}
+	if finder, ok := s.jobs.(jobByIdempotencyFinder); ok {
+		job, err := finder.ByIdempotency(ctx, tenantID, string(pipeline.KindNarration), idempotencyKey)
+		if err == nil {
+			if job.InputSnapshot != snapshot {
+				return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
+			}
+			return job, nil
+		}
+		if !errors.Is(err, pipeline.ErrJobNotFound) {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+	return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("tenant concurrent job limit reached"))
 }
 
 // Estimate 估算所选页面的播报秒数。定价随正式 TTS 供应商确定（当前返回 0 费用）。

@@ -26,6 +26,8 @@ const (
 	rUploadP  = "00000000-0000-0000-0000-0000000000f6" // pending 孤儿
 	rUploadC  = "00000000-0000-0000-0000-0000000000f7" // completed + delete_source_after
 	rJobB     = "00000000-0000-0000-0000-0000000000f8"
+	rResOld   = "00000000-0000-0000-0000-0000000000f9"
+	rResFresh = "00000000-0000-0000-0000-0000000000fa"
 )
 
 func retentionKey(id string) objectstore.ObjectKey {
@@ -45,7 +47,7 @@ func setupRetention(t *testing.T) (*PGStore, objectstore.ObjectStore) {
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE source_revisions, uploads, jobs, job_steps, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE quota_reservations, tenant_quotas, source_revisions, uploads, jobs, job_steps, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "INSERT INTO tenants(id,name) VALUES ($1,'retention')", rTenant); err != nil {
@@ -182,5 +184,63 @@ func TestSweeperKeepsFreshSource(t *testing.T) {
 	}
 	if _, _, err := objects.Get(ctx, key); err != nil {
 		t.Fatalf("fresh source should remain, got %v", err)
+	}
+}
+
+func TestSweeperReleasesStaleQuotaReservations(t *testing.T) {
+	store, objects := setupRetention(t)
+	ctx := context.Background()
+	old := time.Now().Add(-48 * time.Hour)
+
+	if err := tenant.Run(ctx, store.pool, rTenant, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO tenant_quotas(tenant_id,usage_kind,limit_units,reserved_units)
+			 VALUES ($1,'gen_seconds',100,30)`, rTenant); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO quota_reservations(id,tenant_id,logical_operation_id,usage_kind,reserved_units,state,created_at)
+			 VALUES ($1,$2,'old-op','gen_seconds',10,'reserved',$3)`, rResOld, rTenant, old); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO quota_reservations(id,tenant_id,logical_operation_id,usage_kind,reserved_units,state,created_at)
+			 VALUES ($1,$2,'fresh-op','gen_seconds',20,'reserved',now())`, rResFresh, rTenant)
+		return err
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := NewSweeper(store, objects, 24*time.Hour, nil).WithQuotaReservationTTL(24 * time.Hour).Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	if err := tenant.Run(ctx, store.pool, rTenant, func(ctx context.Context, tx pgx.Tx) error {
+		var reserved float64
+		if err := tx.QueryRow(ctx, `SELECT reserved_units FROM tenant_quotas WHERE tenant_id=$1 AND usage_kind='gen_seconds'`, rTenant).Scan(&reserved); err != nil {
+			return err
+		}
+		if reserved != 20 {
+			t.Fatalf("reserved_units = %v want 20", reserved)
+		}
+		states := map[string]string{}
+		rows, err := tx.Query(ctx, `SELECT logical_operation_id, state FROM quota_reservations WHERE tenant_id=$1`, rTenant)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var op, state string
+			if err := rows.Scan(&op, &state); err != nil {
+				return err
+			}
+			states[op] = state
+		}
+		if states["old-op"] != "released" || states["fresh-op"] != "reserved" {
+			t.Fatalf("states = %+v", states)
+		}
+		return rows.Err()
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
 	}
 }

@@ -148,7 +148,7 @@ func (s *PGStore) Release(ctx context.Context, tenantID, logicalOperationID stri
 		case "released":
 			return nil // 幂等
 		case "settled":
-			return errors.New("usage: reservation already settled")
+			return ErrReservationSettled
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE tenant_quotas SET reserved_units=GREATEST(reserved_units-$3, 0), updated_at=now()

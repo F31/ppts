@@ -8,6 +8,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 )
 
@@ -23,6 +24,13 @@ type OrphanUpload struct {
 	ObjectKey string
 }
 
+// StaleReservation 是超过 TTL 仍未结算/释放的额度预占。
+type StaleReservation struct {
+	ReservationID      string
+	LogicalOperationID string
+	UsageKind          string
+}
+
 // Store 是保留策略所需的存储能力。
 type Store interface {
 	// ListTenants 返回控制面租户 ID（tenants 表不受 RLS 约束）。
@@ -35,6 +43,10 @@ type Store interface {
 	SourcesToDelete(ctx context.Context, tenantID string, now time.Time) ([]SourceToDelete, error)
 	// MarkSourceDeleted 标记源对象已删除。
 	MarkSourceDeleted(ctx context.Context, tenantID, revisionID string) error
+	// StaleReservationsBefore 返回 cutoff 前仍 reserved 的额度预占。
+	StaleReservationsBefore(ctx context.Context, tenantID string, cutoff time.Time) ([]StaleReservation, error)
+	// ReleaseReservationByID 释放指定预占并回退 reserved_units。
+	ReleaseReservationByID(ctx context.Context, tenantID, reservationID string) error
 }
 
 // Sweeper 周期性执行保留与清理。
@@ -42,12 +54,26 @@ type Sweeper struct {
 	store      Store
 	objects    objectstore.ObjectStore
 	abandonTTL time.Duration
+	quotaTTL   time.Duration
 	logger     *log.Logger
+	auditor    audit.Recorder
 }
 
 // NewSweeper 创建清理器。abandonTTL 为上传会话滞留多久后视为孤儿。
 func NewSweeper(store Store, objects objectstore.ObjectStore, abandonTTL time.Duration, logger *log.Logger) *Sweeper {
 	return &Sweeper{store: store, objects: objects, abandonTTL: abandonTTL, logger: logger}
+}
+
+// WithQuotaReservationTTL 启用超过 ttl 的 reserved 额度预占自动释放；ttl<=0 表示关闭。
+func (s *Sweeper) WithQuotaReservationTTL(ttl time.Duration) *Sweeper {
+	s.quotaTTL = ttl
+	return s
+}
+
+// WithAuditor 记录删除类操作审计（G3-4）。
+func (s *Sweeper) WithAuditor(auditor audit.Recorder) *Sweeper {
+	s.auditor = auditor
+	return s
 }
 
 // Sweep 对所有租户执行一次清理；单个租户失败不阻断其他租户。
@@ -58,8 +84,12 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	}
 	now := time.Now()
 	cutoff := now.Add(-s.abandonTTL)
+	quotaCutoff := time.Time{}
+	if s.quotaTTL > 0 {
+		quotaCutoff = now.Add(-s.quotaTTL)
+	}
 	for _, tenantID := range tenants {
-		if err := s.sweepTenant(ctx, tenantID, cutoff, now); err != nil {
+		if err := s.sweepTenant(ctx, tenantID, cutoff, quotaCutoff, now); err != nil {
 			if s.logger != nil {
 				s.logger.Printf("retention: tenant %s sweep failed: %v", tenantID, err)
 			}
@@ -68,7 +98,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	return nil
 }
 
-func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, now time.Time) error {
+func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, quotaCutoff, now time.Time) error {
 	orphans, err := s.store.PendingUploadsBefore(ctx, tenantID, cutoff)
 	if err != nil {
 		return err
@@ -83,6 +113,7 @@ func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, now 
 		if s.logger != nil {
 			s.logger.Printf("retention: aborted orphan upload %s (tenant %s)", o.UploadID, tenantID)
 		}
+		s.record(ctx, tenantID, "upload.abort", "upload", o.UploadID, nil)
 	}
 
 	sources, err := s.store.SourcesToDelete(ctx, tenantID, now)
@@ -99,8 +130,41 @@ func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, now 
 		if s.logger != nil {
 			s.logger.Printf("retention: deleted source object for revision %s (tenant %s)", src.RevisionID, tenantID)
 		}
+		s.record(ctx, tenantID, "source.delete", "source_revision", src.RevisionID, map[string]any{"object_key": src.ObjectKey})
+	}
+
+	if !quotaCutoff.IsZero() {
+		stale, err := s.store.StaleReservationsBefore(ctx, tenantID, quotaCutoff)
+		if err != nil {
+			return err
+		}
+		for _, r := range stale {
+			if err := s.store.ReleaseReservationByID(ctx, tenantID, r.ReservationID); err != nil {
+				return err
+			}
+			if s.logger != nil {
+				s.logger.Printf("retention: released stale reservation %s (tenant %s, operation %s, kind %s)", r.ReservationID, tenantID, r.LogicalOperationID, r.UsageKind)
+			}
+			s.record(ctx, tenantID, "quota.reservation_release", "quota_reservation", r.ReservationID,
+				map[string]any{"logical_operation_id": r.LogicalOperationID, "usage_kind": r.UsageKind})
+		}
 	}
 	return nil
+}
+
+// record 追加审计事件；审计失败不阻断清理主流程。
+func (s *Sweeper) record(ctx context.Context, tenantID, action, resourceType, resourceID string, metadata map[string]any) {
+	if s.auditor == nil {
+		return
+	}
+	if err := s.auditor.Record(ctx, audit.Event{
+		TenantID: tenantID, ActorUser: "system", Action: action,
+		ResourceType: resourceType, ResourceID: resourceID, Metadata: metadata,
+	}); err != nil {
+		if s.logger != nil {
+			s.logger.Printf("retention: audit %s %s: %v", action, resourceID, err)
+		}
+	}
 }
 
 // deleteObject 删除对象；对象已不存在视为成功（幂等）。

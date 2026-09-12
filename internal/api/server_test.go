@@ -18,7 +18,9 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
@@ -166,6 +168,10 @@ type jobCreatorStub struct {
 	inputSnapshot  string
 	listJobs       []*pipeline.Job
 	listNext       string
+	activeCount    int
+	byIdem         *pipeline.Job
+	byIdemErr      error
+	watchJobs      []*pipeline.Job
 }
 
 type fakeArtifactStore struct {
@@ -206,6 +212,33 @@ func (s *jobCreatorStub) LatestSucceededJob(context.Context, string, string, str
 
 func (s *jobCreatorStub) StepResultRef(context.Context, string, string) (string, error) {
 	return "", nil
+}
+
+func (s *jobCreatorStub) CountActive(context.Context, string) (int, error) {
+	return s.activeCount, nil
+}
+
+func (s *jobCreatorStub) ByIdempotency(context.Context, string, string, string) (*pipeline.Job, error) {
+	if s.byIdemErr != nil {
+		return nil, s.byIdemErr
+	}
+	if s.byIdem == nil {
+		return nil, pipeline.ErrJobNotFound
+	}
+	return s.byIdem, nil
+}
+
+func (s *jobCreatorStub) UpdatedSince(_ context.Context, _, _ string, after time.Time, _ int) ([]*pipeline.Job, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	var out []*pipeline.Job
+	for _, job := range s.watchJobs {
+		if job.UpdatedAt.After(after) {
+			out = append(out, job)
+		}
+	}
+	return out, nil
 }
 
 func (s *jobCreatorStub) Get(context.Context, string, string) (*pipeline.Job, error) {
@@ -314,9 +347,18 @@ func TestHandlerHealthAndAuthentication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("healthz: %v", err)
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("health status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp, err = http.Get(server.URL + "/debug/vars")
+	if err != nil {
+		t.Fatalf("debug vars: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("debug vars status = %d", resp.StatusCode)
 	}
 
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
@@ -551,6 +593,91 @@ func TestCreateGenerationReleasesQuotaOnJobFailure(t *testing.T) {
 	}
 }
 
+func TestCreateGenerationRejectsWhenTenantConcurrentLimitReached(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	quota := &fakeQuotaManager{}
+	jobs := &jobCreatorStub{activeCount: 1}
+	policy := &fakeTenantPolicy{policy: &tenant.Policy{MaxConcurrentJobs: 1}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), Options{Quota: quota, Policy: policy}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "limit-1")
+	_, err := client.CreateGeneration(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		t.Fatalf("code=%v err=%v", connect.CodeOf(err), err)
+	}
+	if len(quota.reserved) != 0 || jobs.idempotencyKey != "" {
+		t.Fatalf("limit should reject before reserve/create: reserved=%+v idem=%q", quota.reserved, jobs.idempotencyKey)
+	}
+}
+
+func TestCreateGenerationAllowsIdempotentReplayWhenTenantConcurrentLimitReached(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	snapshot := app.NarrationSnapshot{
+		Language: defaultLanguage, VoiceID: "voice-1",
+		SpeechControl: tts.SpeechControl{RatePercent: 100}, SampleRate: 16000,
+		Slides: []app.NarrationSlideSnapshot{{SlideID: "slide-1", ScriptRevision: 3}},
+	}
+	snapshotBytes, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	quota := &fakeQuotaManager{}
+	jobs := &jobCreatorStub{
+		activeCount: 1,
+		byIdem:      &pipeline.Job{ID: "existing", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration, InputSnapshot: string(snapshotBytes)},
+	}
+	policy := &fakeTenantPolicy{policy: &tenant.Policy{MaxConcurrentJobs: 1}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), Options{Quota: quota, Policy: policy}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "limit-replay")
+	resp, err := client.CreateGeneration(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CreateGeneration replay: %v", err)
+	}
+	if resp.Msg.GetJobId() != "existing" || len(quota.reserved) != 0 || jobs.idempotencyKey != "" {
+		t.Fatalf("replay response=%+v reserved=%+v idem=%q", resp.Msg, quota.reserved, jobs.idempotencyKey)
+	}
+}
+
+// fakeAuditRecorder 记录审计事件，验证 G3-4 接线。
+type fakeAuditRecorder struct {
+	events []audit.Event
+}
+
+func (f *fakeAuditRecorder) Record(_ context.Context, e audit.Event) error {
+	f.events = append(f.events, e)
+	return nil
+}
+
+func TestJobServiceCancelWritesAudit(t *testing.T) {
+	job := &pipeline.Job{
+		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
+		State: pipeline.StateCanceled, IDempotencyKey: "idem-1",
+	}
+	recorder := &fakeAuditRecorder{}
+	jobs := &jobCreatorStub{job: job}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), Options{Audit: recorder}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"})); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(recorder.events) != 1 {
+		t.Fatalf("audit events = %+v", recorder.events)
+	}
+	ev := recorder.events[0]
+	if ev.Action != "job.cancel" || ev.ResourceID != "job-1" || ev.ActorUser != "user-1" || ev.TenantID != "tenant-1" {
+		t.Fatalf("audit event = %+v", ev)
+	}
+}
+
 func TestJobServiceGetListCancelRetry(t *testing.T) {
 	job := &pipeline.Job{
 		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
@@ -596,6 +723,75 @@ func TestJobServiceGetListCancelRetry(t *testing.T) {
 	}
 	if retried.Msg.GetJobId() != "job-1" {
 		t.Fatalf("retry = %+v", retried.Msg)
+	}
+}
+
+func TestJobServiceCancelReleasesNarrationReservation(t *testing.T) {
+	job := &pipeline.Job{
+		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
+		State: pipeline.StateCanceled, IDempotencyKey: "idem-1",
+	}
+	quota := &fakeQuotaManager{}
+	jobs := &jobCreatorStub{job: job}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), Options{Quota: quota}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"})); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if len(quota.released) != 1 || quota.released[0] != "idem-1" {
+		t.Fatalf("released = %+v", quota.released)
+	}
+}
+
+func TestJobServiceWatchEventsStreamsUpdates(t *testing.T) {
+	updated := time.Unix(100, 0)
+	job := &pipeline.Job{
+		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
+		State: pipeline.StateRunning, Progress: 40, UpdatedAt: updated,
+	}
+	jobs := &jobCreatorStub{watchJobs: []*pipeline.Job{job}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	stream, err := client.WatchEvents(ctx, authRequest(&pptsv1.WatchEventsRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("WatchEvents: %v", err)
+	}
+	defer stream.Close()
+	if !stream.Receive() {
+		t.Fatalf("Receive: %v", stream.Err())
+	}
+	ev := stream.Msg()
+	if ev.GetSeq() != updated.UnixNano() || ev.GetJob().GetJobId() != "job-1" ||
+		ev.GetJob().GetState() != pptsv1.JobState_JOB_STATE_RUNNING {
+		t.Fatalf("event = %+v", ev)
+	}
+	cancel()
+}
+
+func TestJobServiceWatchEventsRequiresProject(t *testing.T) {
+	jobs := &jobCreatorStub{}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	stream, err := client.WatchEvents(ctx, authRequest(&pptsv1.WatchEventsRequest{}))
+	if err == nil {
+		if stream.Receive() {
+			err = nil
+		} else {
+			err = stream.Err()
+		}
+	}
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("WatchEvents missing project code = %v err=%v", connect.CodeOf(err), err)
 	}
 }
 

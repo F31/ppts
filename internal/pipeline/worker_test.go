@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 func TestWorkerSuccessAndRetryThenFailed(t *testing.T) {
@@ -172,3 +174,63 @@ type retryableHTTPErr struct {
 
 func (e *retryableHTTPErr) Error() string   { return e.code }
 func (e *retryableHTTPErr) HTTPStatus() int { return e.status }
+
+// TestWorkerCrashAfterStepReplayIdempotent 覆盖崩溃窗口：步骤写入成功后 worker 强杀，
+// 新 worker 重放同一任务；步骤幂等（单行/引用不变），任务最终恰好成功一次。
+func TestWorkerCrashAfterStepReplayIdempotent(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	j, _ := s.Create(ctx, testTenant, testProject, string(KindParse), "w-step-crash", "snap", time.Time{})
+
+	stepCalls := 0
+	started := make(chan struct{}, 1)
+	handler := func(ctx context.Context, job *Job) error {
+		stepCalls++
+		if err := s.MarkStep(ctx, JobStep{
+			TenantID: job.TenantID, JobID: job.ID, StepType: "parse", StepKey: "extract",
+			State: "success", ResultRef: "ref-1",
+		}); err != nil {
+			return err
+		}
+		if stepCalls == 1 {
+			<-ctx.Done() // 模拟步骤成功后崩溃：不写终态、不续租
+			return ctx.Err()
+		}
+		return nil
+	}
+	w1 := NewWorker(s, "wk-step1", testTenant, func(ctx context.Context, job *Job) error {
+		started <- struct{}{}
+		return handler(ctx, job)
+	}, WorkerOptions{LeaseFor: 150 * time.Millisecond, Heartbeat: 40 * time.Millisecond, Poll: 10 * time.Millisecond})
+
+	runCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	done := make(chan error, 1)
+	go func() { done <- w1.Run(runCtx) }()
+	<-started
+	cancel()
+	<-done
+	time.Sleep(200 * time.Millisecond) // 等租约过期
+
+	w2 := NewWorker(s, "wk-step2", testTenant, handler, WorkerOptions{
+		LeaseFor: 3 * time.Second, Heartbeat: time.Second, Poll: 10 * time.Millisecond,
+	})
+	runCtx2, cancel2 := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel2()
+	if err := w2.Run(runCtx2); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run w2: %v", err)
+	}
+
+	got, err := s.Get(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != StateSucceeded || got.Attempt != 2 {
+		t.Fatalf("after replay: state=%s attempt=%d", got.State, got.Attempt)
+	}
+	if stepCalls != 2 {
+		t.Fatalf("handler ran %d times want 2 (replay)", stepCalls)
+	}
+	if ref, err := s.StepResultRef(ctx, j.ID, "parse"); err != nil || ref != "ref-1" {
+		t.Fatalf("step result after replay = %q err=%v", ref, err)
+	}
+}

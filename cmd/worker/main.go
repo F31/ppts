@@ -13,10 +13,12 @@ import (
 
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
-	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/retention"
@@ -35,9 +37,8 @@ func main() {
 func run() error {
 	dsn := os.Getenv("PPTS_DATABASE_URL")
 	tenantID := os.Getenv("PPTS_TENANT_ID")
-	objectRoot := os.Getenv("PPTS_OBJECT_ROOT")
-	if dsn == "" || tenantID == "" || objectRoot == "" {
-		return errors.New("PPTS_DATABASE_URL, PPTS_TENANT_ID, and PPTS_OBJECT_ROOT are required")
+	if dsn == "" || tenantID == "" {
+		return errors.New("PPTS_DATABASE_URL and PPTS_TENANT_ID are required")
 	}
 	if os.Getenv("PPTS_TTS_PROVIDER") != "fake" {
 		return errors.New("development worker requires explicit PPTS_TTS_PROVIDER=fake")
@@ -60,15 +61,15 @@ func run() error {
 	defer jobs.Close()
 
 	policyStore := tenant.NewPGStore(pool)
-	objects, err := objectstore.NewRegistry("local", map[string]objectstore.ObjectStore{
-		"local": objectstore.NewLocal(objectRoot, nil),
-	}, policyStore)
+	objects, err := storefactory.FromEnv(policyStore)
 	if err != nil {
 		return err
 	}
+	auditStore := audit.NewPGStore(pool)
 	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{}))
 	scriptDraftHandler := app.NewScriptDraftHandler(narration.NewPGStore(pool), objects)
-	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider()).WithUsage(usage.NewPGStore(pool))
+	usageStore := usage.NewPGStore(pool)
+	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider()).WithUsage(usageStore)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {
 		log.Printf("worker: mp4 encoder unavailable: %v", err)
@@ -90,10 +91,24 @@ func run() error {
 	}
 	hostname, _ := os.Hostname()
 	owner := hostname + "-" + strconv.Itoa(os.Getpid())
-	worker := pipeline.NewWorker(jobs, owner, tenantID, dispatch, pipeline.WorkerOptions{})
+	worker := pipeline.NewWorker(jobs, owner, tenantID, dispatch, pipeline.WorkerOptions{
+		Metrics: observability.NewPipelineMetrics(),
+		OnCanceled: func(ctx context.Context, job *pipeline.Job) error {
+			if job.Kind != pipeline.KindNarration || job.IDempotencyKey == "" {
+				return nil
+			}
+			err := usageStore.Release(ctx, job.TenantID, job.IDempotencyKey, usage.KindGenSeconds)
+			if errors.Is(err, usage.ErrReservationNotFound) || errors.Is(err, usage.ErrReservationReleased) || errors.Is(err, usage.ErrReservationSettled) {
+				return nil
+			}
+			return err
+		},
+	})
 
 	// 保留与清理后台循环（G3-7）：孤儿上传清理 + 源文件到期/按需删除。
-	sweeper := retention.NewSweeper(retention.NewPGStore(pool), objects, durationEnv("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), log.Default())
+	sweeper := retention.NewSweeper(retention.NewPGStore(pool), objects, durationEnv("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), log.Default()).
+		WithQuotaReservationTTL(durationEnv("PPTS_QUOTA_RESERVATION_TTL", 24*time.Hour)).
+		WithAuditor(auditStore)
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	defer stopSweep()
 	go runSweeper(sweepCtx, sweeper, durationEnv("PPTS_RETENTION_INTERVAL", time.Hour))

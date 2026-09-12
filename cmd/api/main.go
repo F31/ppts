@@ -12,7 +12,8 @@ import (
 
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/artifact"
-	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
@@ -33,11 +34,6 @@ func run() error {
 	dsn := os.Getenv("PPTS_DATABASE_URL")
 	if dsn == "" {
 		return errors.New("PPTS_DATABASE_URL is required")
-	}
-	objectRoot := os.Getenv("PPTS_OBJECT_ROOT")
-	objectSecret := os.Getenv("PPTS_OBJECT_SECRET")
-	if objectRoot == "" || objectSecret == "" {
-		return errors.New("PPTS_OBJECT_ROOT and PPTS_OBJECT_SECRET are required")
 	}
 	addr := os.Getenv("PPTS_HTTP_ADDR")
 	if addr == "" {
@@ -61,19 +57,18 @@ func run() error {
 	defer jobs.Close()
 
 	policyStore := tenant.NewPGStore(pool)
-	objects, err := objectstore.NewRegistry("local", map[string]objectstore.ObjectStore{
-		"local": objectstore.NewLocal(objectRoot, []byte(objectSecret)),
-	}, policyStore)
+	objects, err := storefactory.FromEnv(policyStore)
 	if err != nil {
 		return err
 	}
 	usageStore := usage.NewPGStore(pool)
+	auditStore := audit.NewPGStore(pool)
 	server := &http.Server{
 		Addr: addr,
 		Handler: api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 			narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
 			objects,
-			api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore}),
+			api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)

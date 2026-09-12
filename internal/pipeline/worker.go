@@ -19,25 +19,46 @@ type HandlerFunc func(ctx context.Context, job *Job) error
 // Worker 是任务执行器（V4.0 §10.2）：
 // 短事务领取 → 事务外执行 + 心跳续租 → fencing 条件提交；崩溃不写终态、租约到期重领取。
 type Worker struct {
-	store     Store
-	owner     string
-	tenantID  string
-	leaseFor  time.Duration
-	heartbeat time.Duration
-	poll      time.Duration
-	handler   HandlerFunc
-	backoff   func(attempt int) time.Duration
-	logger    *log.Logger
+	store      Store
+	owner      string
+	tenantID   string
+	leaseFor   time.Duration
+	heartbeat  time.Duration
+	poll       time.Duration
+	handler    HandlerFunc
+	backoff    func(attempt int) time.Duration
+	logger     *log.Logger
+	metrics    WorkerMetrics
+	onCanceled func(context.Context, *Job) error
 }
 
 // WorkerOptions Worker 构造参数（零值给默认）。
 type WorkerOptions struct {
-	LeaseFor  time.Duration // 租约时长（默认 30s）
-	Heartbeat time.Duration // 心跳间隔（默认 lease/3）
-	Poll      time.Duration // 无任务轮询间隔（默认 500ms）
-	Backoff   func(attempt int) time.Duration
-	Logger    *log.Logger
+	LeaseFor   time.Duration // 租约时长（默认 30s）
+	Heartbeat  time.Duration // 心跳间隔（默认 lease/3）
+	Poll       time.Duration // 无任务轮询间隔（默认 500ms）
+	Backoff    func(attempt int) time.Duration
+	Logger     *log.Logger
+	Metrics    WorkerMetrics
+	OnCanceled func(context.Context, *Job) error
 }
+
+// WorkerMetrics 是 worker 的低基数观测 hook（按租户/任务类型/终态聚合）。
+type WorkerMetrics interface {
+	JobClaimed(job *Job)
+	JobCompleted(job *Job, state JobState, duration time.Duration)
+	JobRetryScheduled(job *Job)
+	JobCancelRequested(job *Job)
+	JobLeaseLost(job *Job)
+}
+
+type noopWorkerMetrics struct{}
+
+func (noopWorkerMetrics) JobClaimed(*Job)                            {}
+func (noopWorkerMetrics) JobCompleted(*Job, JobState, time.Duration) {}
+func (noopWorkerMetrics) JobRetryScheduled(*Job)                     {}
+func (noopWorkerMetrics) JobCancelRequested(*Job)                    {}
+func (noopWorkerMetrics) JobLeaseLost(*Job)                          {}
 
 // NewWorker 创建 worker。
 func NewWorker(store Store, owner, tenantID string, handler HandlerFunc, opts WorkerOptions) *Worker {
@@ -62,6 +83,11 @@ func NewWorker(store Store, owner, tenantID string, handler HandlerFunc, opts Wo
 	if w.logger == nil {
 		w.logger = log.Default()
 	}
+	w.metrics = opts.Metrics
+	if w.metrics == nil {
+		w.metrics = noopWorkerMetrics{}
+	}
+	w.onCanceled = opts.OnCanceled
 	return w
 }
 
@@ -74,6 +100,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		job, err := w.store.ClaimNext(ctx, w.tenantID, w.owner, w.leaseFor)
 		switch {
 		case err == nil:
+			w.metrics.JobClaimed(job)
 			w.process(ctx, job)
 		case err == ErrNoJob:
 			if err := sleepCtx(ctx, w.poll); err != nil {
@@ -87,6 +114,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 // process 执行单任务：心跳驱动 handler，取消时不做终态提交（留给租约过期重领取）。
 func (w *Worker) process(ctx context.Context, job *Job) {
+	started := time.Now()
 	// 注入任务所属租户，供续租/终态提交与 handler 建立 RLS 上下文。
 	ctx = tenant.WithContext(ctx, job.TenantID)
 
@@ -94,6 +122,9 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 	if job.State == StateCancelReq {
 		if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateCanceled, nil); cerr != nil {
 			w.logger.Printf("worker: complete pending-cancel job=%s: %v", job.ID, cerr)
+		} else {
+			w.releaseCanceled(ctx, job)
+			w.metrics.JobCompleted(job, StateCanceled, time.Since(started))
 		}
 		return
 	}
@@ -112,12 +143,16 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 	// 父 ctx 取消 = worker 停机/崩溃：不写终态，靠租约过期让其他 worker 重领取。
 	if ctx.Err() != nil {
 		w.logger.Printf("worker: ctx canceled for job %s, leaving for reclaim", job.ID)
+		w.metrics.JobLeaseLost(job)
 		return
 	}
 	// 心跳发现取消请求：安全点停止并提交 canceled。
 	if canceled.Load() {
 		if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateCanceled, nil); cerr != nil {
 			w.logger.Printf("worker: complete canceled job=%s: %v", job.ID, cerr)
+		} else {
+			w.releaseCanceled(ctx, job)
+			w.metrics.JobCompleted(job, StateCanceled, time.Since(started))
 		}
 		return
 	}
@@ -129,17 +164,32 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 			}
 			if jerr := w.store.ScheduleRetry(ctx, job.ID, job.LeaseOwner, job.FencingToken, at, marshalRetryError(retry, at)); jerr != nil {
 				w.logger.Printf("worker: schedule retry failed job=%s: %v", job.ID, jerr)
+			} else {
+				w.metrics.JobRetryScheduled(job)
 			}
 			w.logger.Printf("worker: job %s scheduled retry at %s", job.ID, at)
 			return
 		}
 		if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateFailed, TryMarshalJobError(err)); cerr != nil {
 			w.logger.Printf("worker: complete failed job=%s: %v", job.ID, cerr)
+		} else {
+			w.metrics.JobCompleted(job, StateFailed, time.Since(started))
 		}
 		return
 	}
 	if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateSucceeded, nil); cerr != nil {
 		w.logger.Printf("worker: complete succeeded job=%s: %v", job.ID, cerr)
+	} else {
+		w.metrics.JobCompleted(job, StateSucceeded, time.Since(started))
+	}
+}
+
+func (w *Worker) releaseCanceled(ctx context.Context, job *Job) {
+	if w.onCanceled == nil {
+		return
+	}
+	if err := w.onCanceled(ctx, job); err != nil {
+		w.logger.Printf("worker: on canceled job=%s: %v", job.ID, err)
 	}
 }
 
@@ -157,6 +207,7 @@ func (w *Worker) heartbeatRun(ctx context.Context, job *Job, done chan<- struct{
 			if err := w.store.Heartbeat(bg, job.ID, job.LeaseOwner, job.FencingToken, w.leaseFor); err != nil {
 				if errors.Is(err, ErrCancelRequested) {
 					canceled.Store(true)
+					w.metrics.JobCancelRequested(job)
 					cancel()
 				}
 				// 租约丢失（如被重领取）：终止本 worker 处理，其提交自然失败。

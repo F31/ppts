@@ -116,3 +116,56 @@ func (s *PGStore) MarkSourceDeleted(ctx context.Context, tenantID, revisionID st
 		return err
 	})
 }
+
+func (s *PGStore) StaleReservationsBefore(ctx context.Context, tenantID string, cutoff time.Time) ([]StaleReservation, error) {
+	var out []StaleReservation
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id::text, logical_operation_id, usage_kind
+			 FROM quota_reservations
+			 WHERE tenant_id=$1 AND state='reserved' AND created_at < $2
+			 ORDER BY created_at`, tenantID, cutoff)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r StaleReservation
+			if err := rows.Scan(&r.ReservationID, &r.LogicalOperationID, &r.UsageKind); err != nil {
+				return err
+			}
+			out = append(out, r)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+func (s *PGStore) ReleaseReservationByID(ctx context.Context, tenantID, reservationID string) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var kind, state string
+		var reserved float64
+		err := tx.QueryRow(ctx,
+			`SELECT usage_kind, reserved_units, state
+			 FROM quota_reservations
+			 WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, reservationID).Scan(&kind, &reserved, &state)
+		if err == pgx.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if state != "reserved" {
+			return nil
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE tenant_quotas SET reserved_units=GREATEST(reserved_units-$3, 0), updated_at=now()
+			 WHERE tenant_id=$1 AND usage_kind=$2`, tenantID, kind, reserved); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx,
+			`UPDATE quota_reservations SET state='released', updated_at=now()
+			 WHERE tenant_id=$1 AND id=$2`, tenantID, reservationID)
+		return err
+	})
+}

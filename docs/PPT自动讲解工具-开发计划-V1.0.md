@@ -241,24 +241,41 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-2 接线 | ✅ 已接 | `NarrationGenerationService` 生成前预占（不足返回 `ResourceExhausted`）、任务创建失败/幂等冲突即释放、`WithinBudget` 由真实预占决定；`Estimate` RPC 返回估算秒数；`NarrationHandler.WithUsage` 在完成后按真实合成时长结算；`cmd/api`/`cmd/worker` 注入 `usage.NewPGStore` |
 | G3-2 测试 | ✅ 通过 | `internal/usage/postgres_test.go`（预占幂等/限额原子拒绝/结算写账本幂等/释放/跨租户隔离）；`internal/api` 配额用例（预占、超限 `ResourceExhausted`、任务失败释放）；E2E 断言配音后 `consumed>0` 且 `reserved=0` |
 
-> G3-2 剩余：per-tenant 并发上限与公平调度（属 ADR-018 跨租户调度）；定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）；任务失败/取消的自动释放与预占过期清理。
+| G3-2 取消释放 | ✅ 实现 | JobService 对 queued/retry_wait 取消后已终态 `canceled` 的配音任务释放 `gen_seconds` 预占；running 任务先进入 `cancel_requested`，worker 在安全点提交 `canceled` 后通过 `OnCanceled` 释放，避免与成功结算竞态；已结算/不存在/已释放视为幂等收敛 |
+| G3-2 预占过期清理 | ✅ 实现 | retention sweeper 增加 `WithQuotaReservationTTL`：逐租户扫描超过 TTL 仍 `reserved` 的 `quota_reservations`，回退 `tenant_quotas.reserved_units` 并标记 `released`；worker 通过 `PPTS_QUOTA_RESERVATION_TTL`（默认 24h）启用；PG 测试覆盖过期释放与新鲜预占保留 |
+| G3-2 租户并发上限 | ✅ 实现 | `pipeline.PGStore.CountActive`/`ByIdempotency`；`CreateGeneration` 依据 `tenants.policy.max_concurrent_jobs` 在预占前检查非终态任务数，超限返回 `ResourceExhausted`；同 `Idempotency-Key` 重放仍返回既有任务，不同快照复用返回 `AlreadyExists`；API 与 PG 测试覆盖 |
+
+> G3-2 剩余：跨租户公平调度（属 ADR-018 调度角色）；定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）。
+
+| G3-4 审计日志最小版 | 🟡 实现 | `migrations/0009_audit.sql`（`audit_events`，含 FORCE RLS）；`internal/audit` 提供租户隔离的 `Record`/`List`（动作/资源类型/时间过滤）；接入 JobService `cancel`/`retry` 与 retention 清理（`source.delete`/`upload.abort`/`quota.reservation_release`），审计失败不阻断主流程；PG 隔离测试与接线测试覆盖 |
+
+> G3-4 剩余：审计读取 API/管理界面（当前仅内部 `List`）、审计保留期与归档、备份恢复演练（RPO≤15min/RTO≤2h）、租户停用/导出/删除/数据擦除流程。
+
+| G3-5 崩溃窗口幂等测试 | 🟡 测试加固 | `TestMarkStepIdempotentAndSurvivesTerminal`（步骤重放单行/引用不变、终态后可查）；`TestWorkerCrashAfterStepReplayIdempotent`（步骤成功后 worker 强杀，重放不重复步骤、任务恰好成功一次、fencing 递增） |
+
+> G3-5 剩余：磁盘满/对象写失败路径测试、未知供应商结果对账（`StateUnknownResult` 当前无触发路径）、步骤成功与任务终态同事务化（可选 outbox）、强杀操作手册。
 
 | G3-6 存储策略路由 | 🟡 最小实现 | `internal/integrations/objectstore.Registry` 按 `ObjectKey.TenantID` 查询租户 `storage_backend` 并路由到注册后端；空策略回退默认 local；未知后端返回 `ErrBackendNotFound`，不伪成功。`cmd/api` 与 `cmd/worker` 均改为通过 Registry 使用对象存储，现有 local 行为保持不变 |
 | G3-6 生命周期接口 | 🟡 接口层 | Registry 将 `ApplyLifecyclePolicy` 分发到已注册后端，并忽略 local 的 `ErrOperationNotSupported`；S3 适配器已有原生 lifecycle 翻译。真实 per-tenant lifecycle 配置下发与成本汇总待后续 |
+| G3-6 多后端接入 | ✅ 实现 | `internal/integrations/objectstore/storefactory` 从 `PPTS_OBJECT_BACKEND`/`PPTS_OBJECT_*`/`PPTS_S3_*` 构建 local+s3 注册表并校验默认后端；`cmd/api`/`cmd/worker` 统一改用工厂，业务代码只依赖 Registry 接口；补工厂单测 |
 
-> G3-6 剩余：S3/BYOS 后端配置与凭据存储、按租户区域/桶路由、生命周期策略下发时机、存储成本按租户汇总、企业信封加密/KMS。
+> G3-6 剩余：BYOS 凭据加密存储、按租户区域/桶路由、生命周期策略下发时机、存储成本按租户汇总、企业信封加密/KMS。
 
 | G3-7 数据保留/到期清理 | ✅ 实现 | `migrations/0008_retention.sql`（`source_revisions.source_deleted_at`）；`internal/retention` 提供 `Sweeper`：按控制面 tenants 逐租户清理（租户上下文内）。执行两类删除——① 项目 `source_retention_days` 到期；② 上传会话 `delete_source_after=true` 且解析任务已成功；并清理超时仍 `pending` 的孤儿上传（删除临时对象 + 置 aborted，对象已不存在视为幂等成功） |
 | G3-7 接线与测试 | ✅ | `cmd/worker` 启动清理循环（`PPTS_RETENTION_INTERVAL` 默认 1h、`PPTS_UPLOAD_ABANDON_TTL` 默认 24h，启动即跑一次）；`internal/retention/postgres_test.go`（到期源/处理后删除/孤儿上传均删除并标记、未到期保留） |
 
 > G3-7 剩余：`delete_source_after` 目前按"解析任务成功"触发（渲染/导出完成后删除留待渲染链路接通）；租户级默认保留期与"派生产物保留期"分档；删除审计日志（G3-4）。
 
-| G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 增量轮询已满足首版，服务端流留待增强版 |
+| G3-8 可观测性最小版 | 🟡 基础实现 | 新增 `internal/observability` expvar 指标：`ppts_worker_jobs_total`、`ppts_worker_job_duration_ms_total`、`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录等待时长，均值=sum/claimed）；`pipeline.WorkerOptions.Metrics` 提供可注入 hook，记录 claimed/succeeded/failed/canceled/retry_scheduled/cancel_requested/lease_lost；`cmd/worker` 注入 recorder；API 暴露 `/debug/vars` 便于本地/CI 拉取 |
+
+> G3-8 剩余：结构化日志统一（trace_id/request_id/tenant/project/job）、当前积压"最老等待"gauge（现为领取时观测）、TTS 429/延迟、每项目成本查询、OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化。
+
+| G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 服务端流已实现：`pipeline.PGStore.UpdatedSince` 按 `updated_at` 升序增量轮询，`seq=updated_at UnixNano`，支持 `after_seq` 断点续传 |
 | G3-9 TenantService | 🟡 只读部分 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）。`Members/Roles` 依赖 G3-3 身份与角色模型，暂返回 `Unimplemented` |
 
-> G3-9 剩余：`WatchEvents` 服务端流与事件序号；TenantService `Members/Roles`（G3-3）；Job 进度百分比由 handler 上报（当前仅终态置 100）。
+> G3-9 剩余：`WatchEvents` 事件序号目前复用 `updated_at`（同毫秒并发更新可能漏发，后续可加专用事件表/序号）；TenantService `Members/Roles`（G3-3）；Job 进度百分比由 handler 上报（当前仅终态置 100）。
 
-> G3-1 剩余：`pg_roles` 断言测试（`rolsuper=false`/`rolbypassrls=false`）、专属迁移账号、调度角色策略（随 ADR-018），以及 job_steps 缺失租户上下文时的显式拒绝用例补充。
+> G3-1 剩余：专属迁移账号 `ppts_migrator` 落地（当前以 owner `postgres` 承担）、调度角色策略（随 ADR-018）。`pg_roles` 特权断言与 `job_steps` 缺失上下文拒绝用例已在 `internal/tenant/rls_test.go` 覆盖（并修复了测试未清理 `jobs` 导致的跨次运行冲突）。
 
 ### 4.5 G4 统一原生客户端（3–5周）
 
@@ -339,3 +356,13 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-12 | V1.2 | G3-7 执行登记（§4.4.1）：migration 0008 源对象删除标记；`internal/retention` 逐租户清理到期源/处理后删除/孤儿上传；worker 周期清理；测试通过 |
 | 2026-09-12 | V1.2 | G3-9 执行登记（§4.4.1）：JobService Get/List/Cancel/RetryFailed（含 worker 安全点取消、claim 回收 cancel_requested）；TenantService Quota/Usage/Policy 只读（Members/Roles 待 G3-3）；测试通过 |
 | 2026-09-12 | V1.2 | G3-6 最小执行登记（§4.4.1）：新增 `ObjectStoreRegistry` 按租户策略路由对象存储；API/worker 接入 Registry，默认 local 行为不变；补路由与未知后端测试 |
+| 2026-09-12 | V1.2 | G3-8 最小执行登记（§4.4.1）：新增 worker metrics hook 与 expvar recorder；API 暴露 `/debug/vars`；补 worker metrics 与 debug vars 测试 |
+| 2026-09-12 | V1.2 | G3-2 收尾登记：取消配音任务时释放尚未结算的额度预占；queued/retry_wait 由 JobService 释放，running 在 worker 安全点取消后释放；补 API 与 worker hook 测试 |
+| 2026-09-12 | V1.2 | G3-2 收尾登记：retention sweeper 增加预占过期清理，超过 `PPTS_QUOTA_RESERVATION_TTL` 仍 reserved 的额度预占自动释放；补 PG 测试 |
+| 2026-09-12 | V1.2 | G3-2 收尾登记：按 `tenants.policy.max_concurrent_jobs` 在配音生成创建前做租户并发上限检查，超限 `ResourceExhausted`；同幂等键重放仍返回既有任务；补 API 与 PG 测试 |
+| 2026-09-12 | V1.2 | G3-6 登记：新增对象存储工厂，按环境变量注册 local/s3 后端并校验默认后端；API/worker 统一经工厂构建 Registry；补工厂单测 |
+| 2026-09-12 | V1.2 | G3-9 登记：WatchEvents 服务端流（PG `UpdatedSince` 增量轮询、`seq=updated_at`、`after_seq` 续传）；补 API 流式测试 |
+| 2026-09-12 | V1.2 | G3-1 登记：修复 `internal/tenant/rls_test.go` 未清理 `jobs` 导致的跨次运行冲突，`pg_roles` 特权与 `job_steps` 缺上下文拒绝用例稳定通过 |
+| 2026-09-12 | V1.2 | G3-8 登记：新增 `ppts_worker_queue_wait_ms_total` 队列等待指标（领取时按 CreatedAt 记录）；补指标单测 |
+| 2026-09-12 | V1.2 | G3-4 登记：migration 0009 审计表（FORCE RLS）；`internal/audit` Record/List；接入 JobService cancel/retry 与 retention 清理；补 PG 隔离测试与接线测试 |
+| 2026-09-12 | V1.2 | G3-5 登记：崩溃窗口幂等测试（步骤重放幂等、步骤后强杀重放不重复、终态一致性）；修正测试上下文缺租户导致的 RLS 误失败 |

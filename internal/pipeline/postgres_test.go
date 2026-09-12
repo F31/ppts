@@ -81,6 +81,86 @@ func TestCreateIdempotent(t *testing.T) {
 	}
 }
 
+func TestCountActiveJobs(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindNarration), "active-1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create active: %v", err)
+	}
+	terminal, err := s.Create(ctx, testTenant, testProject, string(KindNarration), "done-1", "snap", time.Time{})
+	if err != nil {
+		t.Fatalf("Create terminal: %v", err)
+	}
+	if _, err := s.Create(ctx, testOtherTenant, testOtherProject, string(KindNarration), "other-1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	if err := tenant.Run(ctx, s.pool, testTenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `UPDATE jobs SET state='succeeded' WHERE id=$1`, terminal.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("terminal update: %v", err)
+	}
+	count, err := s.CountActive(ctx, testTenant)
+	if err != nil {
+		t.Fatalf("CountActive: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("active count = %d want 1", count)
+	}
+}
+
+func TestMarkStepIdempotentAndSurvivesTerminal(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-step", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	claimed, err := s.ClaimNext(ctx, testTenant, "worker-step", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	step := JobStep{
+		TenantID: testTenant, JobID: claimed.ID, StepType: "parse", StepKey: "extract",
+		State: "success", ResultRef: "ref-1",
+	}
+	if err := s.MarkStep(ctx, step); err != nil {
+		t.Fatalf("MarkStep#1: %v", err)
+	}
+	// 重放：同 step_key 再次写成功（结果引用一致）→ 单行、引用不变。
+	if err := s.MarkStep(ctx, step); err != nil {
+		t.Fatalf("MarkStep#2: %v", err)
+	}
+	var ref string
+	if err := tenant.Run(ctx, s.pool, testTenant, func(ctx context.Context, tx pgx.Tx) error {
+		var count int
+		if err := tx.QueryRow(ctx,
+			"SELECT count(*) FROM job_steps WHERE job_id=$1 AND step_key=$2", claimed.ID, "extract").Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			t.Fatalf("job_steps rows = %d want 1", count)
+		}
+		return tx.QueryRow(ctx, "SELECT result_ref FROM job_steps WHERE job_id=$1 AND step_key=$2", claimed.ID, "extract").Scan(&ref)
+	}); err != nil {
+		t.Fatalf("verify step row: %v", err)
+	}
+	if ref != "ref-1" {
+		t.Fatalf("result_ref = %q want ref-1", ref)
+	}
+
+	if err := s.Complete(ctx, claimed.ID, "worker-step", claimed.FencingToken, StateSucceeded, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	// 终态后步骤引用仍可查询。
+	got, err := s.StepResultRef(ctx, claimed.ID, "parse")
+	if err != nil {
+		t.Fatalf("StepResultRef: %v", err)
+	}
+	if got != "ref-1" {
+		t.Fatalf("StepResultRef after terminal = %q want ref-1", got)
+	}
+}
+
 func TestClaimHeartbeatComplete(t *testing.T) {
 	s := testStore(t)
 	ctx := tenant.WithContext(context.Background(), testTenant)
