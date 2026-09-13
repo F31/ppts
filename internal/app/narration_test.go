@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/http"
 	"testing"
 	"time"
 
@@ -55,6 +56,27 @@ type testTTSProvider struct {
 	calls int
 	fake  *tts.FakeProvider
 }
+
+type ttsMetricsRecorder struct {
+	total     int
+	failed    int
+	retryable bool
+	throttled bool
+}
+
+func (r *ttsMetricsRecorder) SegmentSynthesized(_ *pipeline.Job, retryable, throttled bool, _ time.Duration, err error) {
+	r.total++
+	if err != nil {
+		r.failed++
+	}
+	r.retryable = r.retryable || retryable
+	r.throttled = r.throttled || throttled
+}
+
+type httpStatusErr struct{ status int }
+
+func (e httpStatusErr) Error() string   { return "http status" }
+func (e httpStatusErr) HTTPStatus() int { return e.status }
 
 func (p *testTTSProvider) Capabilities(context.Context, string) (tts.VoiceCapabilities, error) {
 	return p.caps, nil
@@ -235,6 +257,33 @@ func TestNarrationHandlerClassifiesRetryableProviderError(t *testing.T) {
 		if step.State != pipeline.StepFailed {
 			t.Fatalf("step = %+v", step)
 		}
+	}
+}
+
+func TestNarrationHandlerRecordsTTSMetrics(t *testing.T) {
+	store := &narrationStoreStub{revision: approvedRevision(&narration.Segment{SegmentID: "seg-1", DisplayText: "一段", SpokenText: "一段"})}
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := providerForTests()
+	metrics := &ttsMetricsRecorder{}
+	handler := NewNarrationHandler(store, steps, objects, provider).WithTTSMetrics(metrics)
+
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("Handle success: %v", err)
+	}
+	if metrics.total != 1 || metrics.failed != 0 || metrics.retryable || metrics.throttled {
+		t.Fatalf("success metrics = %+v", metrics)
+	}
+
+	provider = providerForTests()
+	provider.err = &tts.RetryableError{Err: httpStatusErr{status: http.StatusTooManyRequests}, RetryAfter: time.Second}
+	metrics = &ttsMetricsRecorder{}
+	handler = NewNarrationHandler(store, &stepRecorder{}, objectstore.NewLocal(t.TempDir(), nil), provider).WithTTSMetrics(metrics)
+	if err := handler.Handle(context.Background(), narrationJob(t)); err == nil {
+		t.Fatalf("Handle 429 should fail")
+	}
+	if metrics.total != 1 || metrics.failed != 1 || !metrics.retryable || !metrics.throttled {
+		t.Fatalf("429 metrics = %+v", metrics)
 	}
 }
 

@@ -105,10 +105,16 @@ func TestRuntimeRoleIsNotPrivileged(t *testing.T) {
 	ctx := context.Background()
 
 	var (
-		curUser      string
-		isSuper      bool
-		bypassRLS    bool
-		projectOwner string
+		curUser            string
+		isSuper            bool
+		bypassRLS          bool
+		migratorSuper      bool
+		migratorBypassRLS  bool
+		schedulerSuper     bool
+		schedulerBypassRLS bool
+		schedulerProjects  bool
+		schedulerFunction  bool
+		projectOwner       string
 	)
 	if err := pool.QueryRow(ctx,
 		`SELECT current_user, r.rolsuper, r.rolbypassrls
@@ -119,11 +125,32 @@ func TestRuntimeRoleIsNotPrivileged(t *testing.T) {
 		t.Fatalf("runtime role %q must be NOSUPERUSER NOBYPASSRLS (super=%v bypassrls=%v)", curUser, isSuper, bypassRLS)
 	}
 	if err := pool.QueryRow(ctx,
+		`SELECT r.rolsuper, r.rolbypassrls
+		   FROM pg_roles r WHERE r.rolname = 'ppts_migrator'`).Scan(&migratorSuper, &migratorBypassRLS); err != nil {
+		t.Fatalf("query ppts_migrator role: %v", err)
+	}
+	if migratorSuper || migratorBypassRLS {
+		t.Fatalf("migrator role must be NOSUPERUSER NOBYPASSRLS (super=%v bypassrls=%v)", migratorSuper, migratorBypassRLS)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT r.rolsuper, r.rolbypassrls,
+		        has_table_privilege('ppts_scheduler', 'projects', 'SELECT'),
+		        has_function_privilege('ppts_scheduler', 'ppts_claim_next_job(text, integer)', 'EXECUTE')
+		   FROM pg_roles r WHERE r.rolname = 'ppts_scheduler'`).Scan(&schedulerSuper, &schedulerBypassRLS, &schedulerProjects, &schedulerFunction); err != nil {
+		t.Fatalf("query ppts_scheduler role: %v", err)
+	}
+	if schedulerSuper || schedulerBypassRLS || schedulerProjects || !schedulerFunction {
+		t.Fatalf("scheduler role privileges invalid (super=%v bypassrls=%v projects_select=%v function_execute=%v)", schedulerSuper, schedulerBypassRLS, schedulerProjects, schedulerFunction)
+	}
+	if err := pool.QueryRow(ctx,
 		`SELECT tableowner FROM pg_tables WHERE schemaname='public' AND tablename='projects'`).Scan(&projectOwner); err != nil {
 		t.Fatalf("query table owner: %v", err)
 	}
 	if projectOwner == curUser {
 		t.Fatalf("runtime role %q must not own protected tables; owner=%q", curUser, projectOwner)
+	}
+	if projectOwner != "ppts_migrator" {
+		t.Fatalf("protected tables should be owned by ppts_migrator; projects owner=%q", projectOwner)
 	}
 }
 

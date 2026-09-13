@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -72,6 +73,10 @@ func (s *PGStore) List(ctx context.Context, tenantID string, filter Filter) ([]E
 			args = append(args, filter.Since)
 			where += " AND created_at >= $" + strconv.Itoa(len(args))
 		}
+		if !filter.Before.IsZero() {
+			args = append(args, filter.Before)
+			where += " AND created_at < $" + strconv.Itoa(len(args))
+		}
 		rows, err := tx.Query(ctx,
 			"SELECT "+eventColumns+" FROM audit_events WHERE "+where+" ORDER BY created_at DESC LIMIT $2", args...)
 		if err != nil {
@@ -105,4 +110,22 @@ func scanEvent(row pgx.Row) (*Event, error) {
 		}
 	}
 	return &e, nil
+}
+
+// DeleteBefore 删除 before 之前（排他）的审计事件，返回删除行数。
+func (s *PGStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return 0, ErrTenantRequired
+	}
+	var n int64
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx,
+			"DELETE FROM audit_events WHERE tenant_id=$1 AND created_at < $2", tenantID, before)
+		if err != nil {
+			return err
+		}
+		n = tag.RowsAffected()
+		return nil
+	})
+	return n, err
 }

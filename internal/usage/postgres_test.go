@@ -155,3 +155,44 @@ func TestReserveCrossTenantIsolated(t *testing.T) {
 		t.Fatalf("tenant B reserve: %v", err)
 	}
 }
+
+func TestProjectUsageAttributesByJob(t *testing.T) {
+	s := qStore(t)
+	ctx := context.Background()
+	projectID := "00000000-0000-0000-0000-0000000000e7"
+	if err := tenant.Run(ctx, s.pool, qTenant, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1::uuid,$2::uuid,'t','p')`,
+			projectID, qTenant); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx,
+			`INSERT INTO jobs(id,tenant_id,project_id,kind,idempotency_key,state)
+			 VALUES (gen_random_uuid(),$1::uuid,$2::uuid,'narration','op-proj','succeeded')`,
+			qTenant, projectID)
+		return err
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := s.Reserve(ctx, qTenant, "op-proj", KindGenSeconds, 30); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := s.Settle(ctx, qTenant, "op-proj", KindGenSeconds, 90, ""); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	u, err := s.ProjectUsage(ctx, qTenant, projectID)
+	if err != nil {
+		t.Fatalf("ProjectUsage: %v", err)
+	}
+	if u.Seconds != 90 || u.JobCount != 1 {
+		t.Fatalf("project usage = %+v want seconds 90 jobcount 1", u)
+	}
+	// 其他租户（RLS）读不到该项目用量。
+	other, err := s.ProjectUsage(ctx, otherQT, projectID)
+	if err != nil {
+		t.Fatalf("ProjectUsage other: %v", err)
+	}
+	if other.Seconds != 0 || other.JobCount != 0 {
+		t.Fatalf("other tenant usage = %+v want zero", other)
+	}
+}

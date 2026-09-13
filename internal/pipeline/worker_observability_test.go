@@ -10,12 +10,17 @@ import (
 type observeStore struct {
 	completed JobState
 	retried   bool
+	global    bool
 }
 
 func (s *observeStore) Create(context.Context, string, string, string, string, string, time.Time) (*Job, error) {
 	return nil, errors.New("not implemented")
 }
 func (s *observeStore) ClaimNext(context.Context, string, string, time.Duration) (*Job, error) {
+	return nil, ErrNoJob
+}
+func (s *observeStore) ClaimNextAny(context.Context, string, time.Duration) (*Job, error) {
+	s.global = true
 	return nil, ErrNoJob
 }
 func (s *observeStore) Heartbeat(context.Context, string, string, int64, time.Duration) error {
@@ -53,6 +58,43 @@ func (m *observeMetrics) JobCompleted(_ *Job, state JobState, _ time.Duration) {
 func (m *observeMetrics) JobRetryScheduled(*Job)  { m.retries++ }
 func (m *observeMetrics) JobCancelRequested(*Job) {}
 func (m *observeMetrics) JobLeaseLost(*Job)       {}
+
+type claimerStub struct {
+	tenantClaimed string
+	global        bool
+}
+
+func (s *claimerStub) ClaimNext(_ context.Context, tenantID, _ string, _ time.Duration) (*Job, error) {
+	s.tenantClaimed = tenantID
+	return nil, ErrNoJob
+}
+
+func (s *claimerStub) ClaimNextAny(context.Context, string, time.Duration) (*Job, error) {
+	s.global = true
+	return nil, ErrNoJob
+}
+
+func TestWorkerUsesSeparateClaimer(t *testing.T) {
+	store := &observeStore{}
+	claimer := &claimerStub{}
+
+	w := NewWorker(store, "wk", "", func(context.Context, *Job) error { return nil }, WorkerOptions{Claimer: claimer})
+	if _, err := w.claimNext(context.Background()); !errors.Is(err, ErrNoJob) {
+		t.Fatalf("global claimNext err = %v want ErrNoJob", err)
+	}
+	if !claimer.global || store.global {
+		t.Fatalf("global claim should use claimer, not store (claimer.global=%v store.global=%v)", claimer.global, store.global)
+	}
+
+	claimer = &claimerStub{}
+	w = NewWorker(store, "wk", "tenant-1", func(context.Context, *Job) error { return nil }, WorkerOptions{Claimer: claimer})
+	if _, err := w.claimNext(context.Background()); !errors.Is(err, ErrNoJob) {
+		t.Fatalf("tenant claimNext err = %v want ErrNoJob", err)
+	}
+	if claimer.tenantClaimed != "tenant-1" || claimer.global {
+		t.Fatalf("tenant claim should use claimer with tenant (claimed=%q global=%v)", claimer.tenantClaimed, claimer.global)
+	}
+}
 
 func TestWorkerMetricsSuccessAndRetry(t *testing.T) {
 	job := &Job{ID: "j1", TenantID: "tenant-1", ProjectID: "project-1", Kind: KindParse, LeaseOwner: "wk", FencingToken: 1}
@@ -93,5 +135,16 @@ func TestWorkerCallsOnCanceledAfterTerminalCancel(t *testing.T) {
 	w.process(context.Background(), job)
 	if store.completed != StateCanceled || !called {
 		t.Fatalf("completed=%s onCanceled=%v", store.completed, called)
+	}
+}
+
+func TestWorkerUsesGlobalClaimWhenTenantEmpty(t *testing.T) {
+	store := &observeStore{}
+	w := NewWorker(store, "wk", "", func(context.Context, *Job) error { return nil }, WorkerOptions{})
+	if _, err := w.claimNext(context.Background()); !errors.Is(err, ErrNoJob) {
+		t.Fatalf("claimNext err = %v want ErrNoJob", err)
+	}
+	if !store.global {
+		t.Fatalf("worker did not use global claim")
 	}
 }

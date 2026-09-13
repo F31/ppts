@@ -70,6 +70,14 @@ type Reservation struct {
 	UpdatedAt          time.Time
 }
 
+// ProjectUsage 是某项目累计用量（G3-8）。costUnits 待正式教学设计；
+// Quantity 即生成秒数，与 usage_ledger.quantity 对齐。
+type ProjectUsage struct {
+	ProjectID string
+	Seconds   float64
+	JobCount  int64
+}
+
 // Store 是配额与用量端口。所有操作必须原子且幂等。
 type Store interface {
 	// Reserve 原子预占 units；超出上限返回 ErrInsufficientQuota。

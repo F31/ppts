@@ -12,6 +12,7 @@ import (
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/project"
 )
 
@@ -19,15 +20,19 @@ type ProjectService struct {
 	pptsv1connect.UnimplementedProjectServiceHandler
 	store   project.ProjectStore
 	objects objectstore.ObjectStore
+	members membership.Reader
 }
 
-func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore) *ProjectService {
-	return &ProjectService{store: store, objects: objects}
+func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader) *ProjectService {
+	return &ProjectService{store: store, objects: objects, members: members}
 }
 
 func (s *ProjectService) Create(ctx context.Context, req *connect.Request[pptsv1.CreateProjectRequest]) (*connect.Response[pptsv1.CreateProjectResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	title := strings.TrimSpace(req.Msg.GetTitle())
@@ -72,6 +77,9 @@ func (s *ProjectService) List(ctx context.Context, req *connect.Request[pptsv1.L
 func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv1.ArchiveProjectRequest]) (*connect.Response[pptsv1.Project], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleAdmin); err != nil {
 		return nil, err
 	}
 	archived, err := s.store.ArchiveProject(ctx, p.TenantID, req.Msg.GetId())

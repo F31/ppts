@@ -191,8 +191,8 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 
 | 项 | 状态 | 证据 |
 |---|---|---|
-| ADR-018 worker 跨租户调度与租户公平（提议） | ✅ 已记录 | `docs/adr/ADR-018-cross-tenant-scheduler.md`：全局领取+公平+调度最小权限角色，保留单租户模式；G3-2 据此扩展 |
-| ADR-019 迁移/运行角色分离（提议） | ✅ 已记录 | `docs/adr/ADR-019-migration-runtime-role-separation.md`；实测确认 dev/test 库 owner 为 `postgres`、运行账号 `ppts_app` 为 `NOSUPERUSER NOBYPASSRLS`，与决策一致 |
+| ADR-018 worker 跨租户调度与租户公平（提议） | ✅ 实现 | `docs/adr/ADR-018-cross-tenant-scheduler.md`：全局领取+公平+调度最小权限角色，保留单租户模式；`migrations/0013_scheduler_role.sql` + `PGStore.ClaimNextAny` + worker 双连接部署（`PPTS_SCHEDULER_DATABASE_URL`）已落地 |
+| ADR-019 迁移/运行角色分离（提议） | ✅ 已落地 | `docs/adr/ADR-019-migration-runtime-role-separation.md`；`migrations/0012_migrator_role.sql` 创建 `ppts_migrator` 并转移表 owner，运行账号 `ppts_app` 为 `NOSUPERUSER NOBYPASSRLS` 且非 owner |
 | G1 崩溃窗口幂等修复（源版本重复） | ✅ 已实现并加测试 | `migrations/0005_source_revision_upload_id.sql`（`source_revisions.upload_id` + 部分唯一索引）；`PGProjectStore.CreateSourceRevision` 以 `upload_id` 幂等（`SELECT … FOR UPDATE` 串行化，命中则返回既有版本、不递增 `current_revision`）；`UploadService` 传入上传会话 ID；`TestCreateSourceRevisionIdempotentByUpload`（PG）覆盖"重试不重复、不同会话仍新增" |
 | CI 门禁补全（G3-10 提前最小版） | ✅ 已加入 | `.github/workflows/ci.yml` 新增 `postgres`（迁移按角色模型执行 + `-tags=pg -p 1`）、`s3`（真实 MinIO 适配器测试）、`proto`（`buf lint` + `buf breaking`）三个 job |
 
@@ -234,9 +234,9 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 项 | 状态 | 证据 |
 |---|---|---|
 | G3-1 RLS 纵深（表级 + 上下文） | 🟡 已实现主体 | `migrations/0006_rls.sql`：对 projects/source_revisions/jobs/job_steps/narration_scripts/narration_segments/artifacts/uploads/usage_ledger `ENABLE`+`FORCE ROW LEVEL SECURITY`，策略 `tenant_id = NULLIF(current_setting('app.tenant_id', true), '')::uuid`（缺失即拒绝）；新增 `internal/tenant.Run/RunCtx/WithContext`（事务局部 `set_config(..., true)`）；`internal/project`、`upload`、`narration`、`artifact`、`pipeline` 全部数据访问改经租户事务；worker 在处理任务前注入任务租户（续租/终态/步骤）；Playback 步骤发现注入租户 |
-| G3-1 角色分离 | 🟡 运行角色已就位，迁移账号待账号化 | 实测 dev/test owner=`postgres`、运行账号 `ppts_app` 为 `NOSUPERUSER NOBYPASSRLS` 且非 owner；迁移由 owner 账号执行。ADR-019 提出的专属 `ppts_migrator` 作为部署最佳实践待落地（当前用 `postgres` 承担 owner 角色） |
+| G3-1 角色分离 | ✅ 实现 | `migrations/0012_migrator_role.sql` 创建专属迁移账号 `ppts_migrator`，并将现有 public 表 owner 转移给迁移账号；运行账号 `ppts_app` 保持 `NOSUPERUSER NOBYPASSRLS` 且非 owner；PG 测试断言运行账号非特权、migrator 非特权且受保护表 owner 为 `ppts_migrator` |
 | G3-1 验收测试 | ✅ 通过 | `internal/tenant/rls_test.go`（`-tags=pg`）：缺上下文查询不可见、空上下文写入被拒、以 A 上下文写 B 被拒、单连接连续切租户不串；既有全部 PG 测试在 RLS 开启后仍通过 |
-| G3-1 调度角色（跨租户领取） | ⏸ 待 ADR-018 | 当前 worker 单租户，任务领取在租户上下文内；跨租户调度角色与策略属 ADR-018，未实现 |
+| G3-1 调度角色（跨租户领取） | ✅ 实现 | `migrations/0013_scheduler_role.sql` 创建 `ppts_scheduler`，仅授予 `ppts_claim_next_job` 执行权限；`worker` 支持 `PPTS_TENANT_ID` 缺省时跨租户全局领取，`PPTS_SCHEDULER_DATABASE_URL` 走独立调度连接；PG 测试断言 scheduler 非 superuser/BYPASSRLS、无业务表读取权 |
 | G3-2 配额与用量账本 | ✅ 主体实现 | `migrations/0007_usage_quotas.sql`（`tenant_quotas`/`quota_reservations`，含 FORCE RLS）；`internal/usage` 提供原子"预占→结算/释放"（条件更新 + 行锁 + 幂等唯一键，`Settle` 写 `usage_ledger`）；`EstimateSeconds` 时长估算 |
 | G3-2 接线 | ✅ 已接 | `NarrationGenerationService` 生成前预占（不足返回 `ResourceExhausted`）、任务创建失败/幂等冲突即释放、`WithinBudget` 由真实预占决定；`Estimate` RPC 返回估算秒数；`NarrationHandler.WithUsage` 在完成后按真实合成时长结算；`cmd/api`/`cmd/worker` 注入 `usage.NewPGStore` |
 | G3-2 测试 | ✅ 通过 | `internal/usage/postgres_test.go`（预占幂等/限额原子拒绝/结算写账本幂等/释放/跨租户隔离）；`internal/api` 配额用例（预占、超限 `ResourceExhausted`、任务失败释放）；E2E 断言配音后 `consumed>0` 且 `reserved=0` |
@@ -245,15 +245,16 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-2 预占过期清理 | ✅ 实现 | retention sweeper 增加 `WithQuotaReservationTTL`：逐租户扫描超过 TTL 仍 `reserved` 的 `quota_reservations`，回退 `tenant_quotas.reserved_units` 并标记 `released`；worker 通过 `PPTS_QUOTA_RESERVATION_TTL`（默认 24h）启用；PG 测试覆盖过期释放与新鲜预占保留 |
 | G3-2 租户并发上限 | ✅ 实现 | `pipeline.PGStore.CountActive`/`ByIdempotency`；`CreateGeneration` 依据 `tenants.policy.max_concurrent_jobs` 在预占前检查非终态任务数，超限返回 `ResourceExhausted`；同 `Idempotency-Key` 重放仍返回既有任务，不同快照复用返回 `AlreadyExists`；API 与 PG 测试覆盖 |
 
-> G3-2 剩余：跨租户公平调度（属 ADR-018 调度角色）；定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）。
+> G3-2 剩余：更完整的 per-tenant 并发/公平策略（当前初版按在途数排序）、定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）。
 
-| G3-4 审计日志最小版 | 🟡 实现 | `migrations/0009_audit.sql`（`audit_events`，含 FORCE RLS）；`internal/audit` 提供租户隔离的 `Record`/`List`（动作/资源类型/时间过滤）；接入 JobService `cancel`/`retry` 与 retention 清理（`source.delete`/`upload.abort`/`quota.reservation_release`），审计失败不阻断主流程；PG 隔离测试与接线测试覆盖 |
+| G3-4 审计日志最小版 | 🟡 实现 | `migrations/0009_audit.sql`（`audit_events`，含 FORCE RLS）；`internal/audit` 提供租户隔离的 `Record`/`List`（动作/资源类型/时间过滤）+ `DeleteBefore`（到期清理）；接入 JobService `cancel`/`retry` 与 retention 清理（`source.delete`/`upload.abort`/`quota.reservation_release`），审计失败不阻断主流程；`TenantService.ListAuditEvents` 暴露 admin+ 审计读取 API；`Archiver` 到期待审记账到对象存储（JSONL）后清除，worker 周期运行（`PPTS_AUDIT_RETENTION_DAYS`/`PPTS_AUDIT_ARCHIVE_INTERVAL`）；PG 隔离测试、接线测试、API 授权测试与归档单测覆盖 |
+| G3-4 租户停用最小版 | 🟡 实现 | `migrations/0011_tenant_status.sql` 为 `tenants` 增加 `status/suspended_at/updated_at`（active/suspended/deleted）；`tenant.PGStore` 提供 `Status/TenantActive/Suspend/Resume`；`AuthMiddleware` 可选接入 `TenantStatusChecker`，`cmd/api` 默认注入，suspended/deleted/不存在租户在进入 RPC 前返回 403/PermissionDenied；API 与 PG 测试覆盖 |
 
-> G3-4 剩余：审计读取 API/管理界面（当前仅内部 `List`）、审计保留期与归档、备份恢复演练（RPO≤15min/RTO≤2h）、租户停用/导出/删除/数据擦除流程。
+> G3-4 剩余：审计管理界面、归档文件检索/生命周期分层、备份恢复演练（RPO≤15min/RTO≤2h）。
 
-| G3-3 成员/角色内核 | 🟡 存储+读取+门禁 | `migrations/0010_members.sql`（`tenant_members`，FORCE RLS）；`internal/membership`（GetRole/List/SetRole/Remove，角色校验）；`TenantService.Members/Roles` 落地；`cmd/api` 注入。授权门禁 `requireRole`：配音生成/任务取消/重试要求 `editor+`，未配置成员读取时保持开发放行；PG 隔离、API 读写与门禁测试覆盖 |
+| G3-3 成员/角色内核 | 🟡 存储+读取+管理+门禁 | `migrations/0010_members.sql`（`tenant_members`，FORCE RLS）；`internal/membership`（GetRole/List/SetRole/Remove，角色校验）；`TenantService.Members/Roles/SetMemberRole/RemoveMember` 落地（admin+ 管理普通成员，owner 变更仅 owner）；`cmd/api` 注入。授权门禁 `requireRole` 已覆盖配音生成、任务取消/重试、Project Create/Archive、Script Update/Approve/Lock/GenerateDraft、Upload Create/Complete/Abort、Export Create/CreateDownload；未配置成员读取时保持开发放行；PG 隔离、API 读写与门禁测试覆盖 |
 
-> G3-3 剩余：OIDC Authorization Code+PKCE 接入替换可信头、成员写入/管理 API、完整授权矩阵（导出/分享/声音/费用等 RPC 逐项标注）、权限矩阵测试。
+> G3-3 剩余：OIDC Authorization Code+PKCE 接入替换可信头、分享/声音/费用等后续 RPC 的授权矩阵逐项标注与测试。
 
 | G3-5 崩溃窗口幂等测试 | 🟡 测试加固 | `TestMarkStepIdempotentAndSurvivesTerminal`（步骤重放单行/引用不变、终态后可查）；`TestWorkerCrashAfterStepReplayIdempotent`（步骤成功后 worker 强杀，重放不重复步骤、任务恰好成功一次、fencing 递增） |
 
@@ -270,17 +271,18 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 
 > G3-7 剩余：`delete_source_after` 目前按"解析任务成功"触发（渲染/导出完成后删除留待渲染链路接通）；租户级默认保留期与"派生产物保留期"分档；删除审计日志（G3-4）。
 
-| G3-8 可观测性最小版 | 🟡 基础实现 | 新增 `internal/observability` expvar 指标：`ppts_worker_jobs_total`、`ppts_worker_job_duration_ms_total`、`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录等待时长，均值=sum/claimed）；`pipeline.WorkerOptions.Metrics` 提供可注入 hook，记录 claimed/succeeded/failed/canceled/retry_scheduled/cancel_requested/lease_lost；`cmd/worker` 注入 recorder；API 暴露 `/debug/vars` 便于本地/CI 拉取 |
+| G3-8 可观测性最小版 | 🟡 基础实现 | 新增 `internal/observability` expvar 指标：`ppts_worker_jobs_total`、`ppts_worker_job_duration_ms_total`、`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录等待时长，均值=sum/claimed）、`ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`；`pipeline.WorkerOptions.Metrics` 提供可注入 hook，记录 worker 生命周期；`NarrationHandler.WithTTSMetrics` 记录 TTS 成功/失败/retryable/429；API 暴露 `/debug/vars` 便于本地/CI 拉取 |
 | G3-8 结构化请求日志 | ✅ 实现 | `observability.RequestLogger` 中间件：为每请求生成 `X-Request-ID`（上下文可读），输出 `request_id/method/path/status/duration_ms/bytes/tenant/user` 结构化日志；`cmd/api` 以 JSON slog 输出；中间件单测覆盖字段与响应头 |
+| G3-8 每项目用量查询 | ✅ 实现 | `usage.PGStore.ProjectUsage` 将 usage_ledger 按幂等键关联 narration 任务归属项目，返回累计生成秒数与任务数；`TenantService.ProjectUsage` RPC；PG/API 门禁覆盖（成本金额随正式定价表） |
 
-> G3-8 剩余：当前积压"最老等待"gauge（现为领取时观测）、TTS 429/延迟、每项目成本查询、OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化、worker 侧结构化日志统一。
+> G3-8 剩余：当前积压"最老等待"gauge（现为领取时观测）、OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化、worker 侧结构化日志统一。
 
 | G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 服务端流已实现：`pipeline.PGStore.UpdatedSince` 按 `updated_at` 升序增量轮询，`seq=updated_at UnixNano`，支持 `after_seq` 断点续传 |
 | G3-9 TenantService | 🟡 部分实现 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）、`Members`/`Roles`（基于 `tenant_members`，G3-3 内核）；未配置成员读取时返回 `Unimplemented` |
 
-> G3-9 剩余：`WatchEvents` 事件序号目前复用 `updated_at`（同毫秒并发更新可能漏发，后续可加专用事件表/序号）；Job 进度百分比由 handler 上报（当前仅终态置 100）；角色授权矩阵（随 G3-3 完整身份）。
+> G3-9 剩余：`WatchEvents` 事件序号目前复用 `updated_at`（同毫秒并发更新可能漏发，后续可加专用事件表/序号）；Job 进度百分比由 handler 上报（当前仅终态置 100）。
 
-> G3-1 剩余：专属迁移账号 `ppts_migrator` 落地（当前以 owner `postgres` 承担）、调度角色策略（随 ADR-018）。`pg_roles` 特权断言与 `job_steps` 缺失上下文拒绝用例已在 `internal/tenant/rls_test.go` 覆盖（并修复了测试未清理 `jobs` 导致的跨次运行冲突）。
+> G3-1 剩余：更完善调度公平/并发策略（随 G3-2）。`pg_roles` 特权断言、`ppts_migrator` owner 断言、`ppts_scheduler` 权限断言与 `job_steps` 缺失上下文拒绝用例已在 `internal/tenant/rls_test.go` 覆盖。
 
 ### 4.5 G4 统一原生客户端（3–5周）
 
@@ -374,3 +376,14 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-12 | V1.2 | G3-3 登记：migration 0010 成员表（FORCE RLS）；`internal/membership` 存储；TenantService Members/Roles 落地；补 PG 隔离与 API 测试 |
 | 2026-09-12 | V1.2 | G3-8 登记：结构化请求日志中间件（request_id/tenant/user/status/时长），cmd/api 以 JSON slog 输出；补中间件单测 |
 | 2026-09-12 | V1.2 | G3-3 登记：授权门禁 `requireRole`（editor+），接入配音生成/任务取消/重试；未配置成员时开发放行；补允许/拒绝/回退测试 |
+| 2026-09-12 | V1.2 | G3-4 登记：migration 0011 租户生命周期状态；API 身份中间件接入租户 active 检查，停用/删除租户请求 403；补 API 与 PG 测试 |
+| 2026-09-12 | V1.2 | G3-8 登记：TTS 合成指标（成功/失败/retryable/429/耗时），NarrationHandler 接入 metrics hook，worker 复用 expvar recorder；补 app 与 observability 测试 |
+| 2026-09-12 | V1.2 | G3-3 登记：扩展核心写操作授权矩阵，Project/Script/Upload/Export 写入口接入角色门禁；补 viewer/reviewer/editor/admin 矩阵测试 |
+| 2026-09-12 | V1.2 | G3-3 登记：TenantService 新增 SetMemberRole/RemoveMember 成员管理 RPC；admin+ 管理普通成员，owner 变更仅 owner；补管理权限测试 |
+| 2026-09-12 | V1.2 | G3-4 登记：TenantService 新增 ListAuditEvents 审计读取 RPC；admin+ 可按 action/resource_type/since/page_size 查询租户审计事件；补 API 授权与过滤测试 |
+| 2026-09-13 | V1.2 | G3-1 登记：migration 0012 账号化 `ppts_migrator` 并转移现有表 owner；补 PG 断言运行账号非 owner、migrator 非 superuser/BYPASSRLS |
+| 2026-09-13 | V1.2 | G3-2/ADR-018 登记：migration 0013 创建 `ppts_scheduler` 与受限 `ppts_claim_next_job` 全局领取函数；`PGStore.ClaimNextAny` 支持按租户在途数初版公平领取；补 PG 权限与领取测试 |
+| 2026-09-13 | V1.2 | G3-2/ADR-018 登记：worker 双连接部署，`PPTS_TENANT_ID` 缺省走跨租户全局领取，`PPTS_SCHEDULER_DATABASE_URL` 提供独立调度连接；补 Claimer 单元测试 |
+| 2026-09-13 | V1.2 | G3-4 登记：审计保留/归档，`Store.DeleteBefore` + `Filter.Before`，`audit.Archiver` 到期事件 JSONL 归档对象存储后清除；worker 周期运行；补归档单测与 PG 测试 |
+| 2026-09-13 | V1.2 | G3-4 登记：租户导出/数据擦除，`tenant.PGStore.ExportTenant`（JSONL+manifest 到对象存储）与 `PurgeTenant`（对象 GC + RLS 上下文逐表删除 + 置 deleted）；TenantService 新增 owner 级 `ExportTenant`/`PurgeTenant` RPC；补 PG 与 API 门禁测试 |
+| 2026-09-13 | V1.2 | G3-8 登记：每项目用量查询，`usage.PGStore.ProjectUsage` 按账本幂等键关联 narration 任务归属项目；TenantService 新增 `ProjectUsage` RPC；补 PG 与 API 测试 |

@@ -16,10 +16,18 @@ import (
 // handler 必须响应 workCtx 取消（取消请求/worker 停机）。
 type HandlerFunc func(ctx context.Context, job *Job) error
 
+// Claimer 是独立的任务领取能力（ADR-018 双连接部署：scheduler 连接只领取，
+// handler 执行与终态提交走业务连接）。为零值即复用 Store 自身领取。
+type Claimer interface {
+	ClaimNext(ctx context.Context, tenantID, leaseOwner string, leaseFor time.Duration) (*Job, error)
+	ClaimNextAny(ctx context.Context, leaseOwner string, leaseFor time.Duration) (*Job, error)
+}
+
 // Worker 是任务执行器（V4.0 §10.2）：
 // 短事务领取 → 事务外执行 + 心跳续租 → fencing 条件提交；崩溃不写终态、租约到期重领取。
 type Worker struct {
 	store      Store
+	claimer    Claimer
 	owner      string
 	tenantID   string
 	leaseFor   time.Duration
@@ -41,6 +49,8 @@ type WorkerOptions struct {
 	Logger     *log.Logger
 	Metrics    WorkerMetrics
 	OnCanceled func(context.Context, *Job) error
+	// Claimer 指定的独立领取器（跨租户调度连接）。nil 时使用 store 领取。
+	Claimer Claimer
 }
 
 // WorkerMetrics 是 worker 的低基数观测 hook（按租户/任务类型/终态聚合）。
@@ -62,7 +72,7 @@ func (noopWorkerMetrics) JobLeaseLost(*Job)                          {}
 
 // NewWorker 创建 worker。
 func NewWorker(store Store, owner, tenantID string, handler HandlerFunc, opts WorkerOptions) *Worker {
-	w := &Worker{store: store, owner: owner, tenantID: tenantID, handler: handler}
+	w := &Worker{store: store, claimer: opts.Claimer, owner: owner, tenantID: tenantID, handler: handler}
 	w.leaseFor = opts.LeaseFor
 	if w.leaseFor <= 0 {
 		w.leaseFor = 30 * time.Second
@@ -97,7 +107,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		job, err := w.store.ClaimNext(ctx, w.tenantID, w.owner, w.leaseFor)
+		job, err := w.claimNext(ctx)
 		switch {
 		case err == nil:
 			w.metrics.JobClaimed(job)
@@ -110,6 +120,19 @@ func (w *Worker) Run(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+func (w *Worker) claimNext(ctx context.Context) (*Job, error) {
+	if w.claimer != nil {
+		if w.tenantID == "" {
+			return w.claimer.ClaimNextAny(ctx, w.owner, w.leaseFor)
+		}
+		return w.claimer.ClaimNext(ctx, w.tenantID, w.owner, w.leaseFor)
+	}
+	if w.tenantID == "" {
+		return w.store.ClaimNextAny(ctx, w.owner, w.leaseFor)
+	}
+	return w.store.ClaimNext(ctx, w.tenantID, w.owner, w.leaseFor)
 }
 
 // process 执行单任务：心跳驱动 handler，取消时不做终态提交（留给租约过期重领取）。

@@ -1,6 +1,6 @@
 # ADR-018：worker 跨租户调度与租户公平
 
-- 状态：提议（2026-09-12 架构评审提出；G1 收尾前确认）
+- 状态：已实现（2026-09-13：`ppts_scheduler` 角色、`ppts_claim_next_job` 全局领取函数与 worker 双连接部署已落地）
 - 关联：V4.0 §10.2/§10.4/§12.1；开发计划 §1.4.1、G3-2
 - 编号说明：V4.0 §17 已定义 ppts ADR-001–016；ADR-017 属 go-pptx 仓库，此处 ppts 续编为 018。
 
@@ -14,10 +14,10 @@
 
 将任务领取从"按租户领取"升级为"全局领取 + 租户公平"，同时保留单租户模式供私有化部署：
 
-1. `Store.ClaimNext` 增加不绑定租户的变体（或参数化租户范围）：领取器只读取调度元数据（`id/tenant_id/project_id/kind/state/run_at/attempt/lease*`），不读取任务内容。
+1. `Store.ClaimNext` 增加不绑定租户的变体（或参数化租户范围）：领取器只读取调度元数据（`id/tenant_id/project_id/kind/state/run_at/attempt/lease*`），不读取任务内容。（已以 `PGStore.ClaimNextAny` + `ppts_claim_next_job` 落地）
 2. 领取结果必须返回 `tenant_id`、`project_id`；worker 在执行 handler 前建立该租户的上下文（配合 ADR-019 的 `set_config('app.tenant_id')`），handler 内所有数据访问都在该租户上下文内。
-3. 领取排序引入公平策略：默认按 `run_at` 就绪 + 每租户在途任务数上限（per-tenant concurrency），避免单一租户占满队列；大租户不得饿死小任务。
-4. 调度账号使用独立最小权限角色，只授予任务调度表/受限函数的访问权，**不授予业务表 BYPASSRLS 或通用读取权**（V4.0 §12.1）。
+3. 领取排序引入公平策略：默认按 `run_at` 就绪 + 每租户在途任务数上限（per-tenant concurrency），避免单一租户占满队列；大租户不得饿死小任务。（初版按租户 running/cancel_requested 在途数升序，再按 created_at）
+4. 调度账号使用独立最小权限角色，只授予任务调度表/受限函数的访问权，**不授予业务表 BYPASSRLS 或通用读取权**（V4.0 §12.1）。（已引入 `ppts_scheduler`，仅授予调度函数执行权限）
 5. 单租户模式（`PPTS_TENANT_ID` 设定时）保留，作为私有化/本地开发路径；共享部署不设该变量则走全局领取。
 
 ## 影响
@@ -35,3 +35,4 @@
 
 - 单队列下多租户任务被公平领取；大租户饱和时小租户任务仍能在有界等待内被领取。
 - 调度账号无业务表访问权；handler 缺失租户上下文时数据访问被 RLS 拒绝。
+- `ppts_scheduler` 非 superuser、非 BYPASSRLS、无业务表通用读取权，仅可执行 `ppts_claim_next_job`。

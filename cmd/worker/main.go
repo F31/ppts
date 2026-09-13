@@ -37,8 +37,8 @@ func main() {
 func run() error {
 	dsn := os.Getenv("PPTS_DATABASE_URL")
 	tenantID := os.Getenv("PPTS_TENANT_ID")
-	if dsn == "" || tenantID == "" {
-		return errors.New("PPTS_DATABASE_URL and PPTS_TENANT_ID are required")
+	if dsn == "" {
+		return errors.New("PPTS_DATABASE_URL is required")
 	}
 	if os.Getenv("PPTS_TTS_PROVIDER") != "fake" {
 		return errors.New("development worker requires explicit PPTS_TTS_PROVIDER=fake")
@@ -60,6 +60,19 @@ func run() error {
 	}
 	defer jobs.Close()
 
+	// ADR-018 双连接：跨租户模式（未设 PPTS_TENANT_ID）下可用 PPTS_SCHEDULER_DATABASE_URL
+	// 提供独立调度连接（ppts_scheduler 角色，仅权限受限的调度函数）；未提供则复用业务连接。
+	var claimer pipeline.Claimer
+	if tenantID == "" {
+		if schedDSN := os.Getenv("PPTS_SCHEDULER_DATABASE_URL"); schedDSN != "" {
+			claimer, err = pipeline.NewPGStore(ctx, schedDSN)
+			if err != nil {
+				return err
+			}
+			defer claimer.(*pipeline.PGStore).Close()
+		}
+	}
+
 	policyStore := tenant.NewPGStore(pool)
 	objects, err := storefactory.FromEnv(policyStore)
 	if err != nil {
@@ -69,7 +82,8 @@ func run() error {
 	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{}))
 	scriptDraftHandler := app.NewScriptDraftHandler(narration.NewPGStore(pool), objects)
 	usageStore := usage.NewPGStore(pool)
-	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider()).WithUsage(usageStore)
+	metrics := observability.NewPipelineMetrics()
+	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider()).WithUsage(usageStore).WithTTSMetrics(metrics)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {
 		log.Printf("worker: mp4 encoder unavailable: %v", err)
@@ -92,7 +106,8 @@ func run() error {
 	hostname, _ := os.Hostname()
 	owner := hostname + "-" + strconv.Itoa(os.Getpid())
 	worker := pipeline.NewWorker(jobs, owner, tenantID, dispatch, pipeline.WorkerOptions{
-		Metrics: observability.NewPipelineMetrics(),
+		Metrics: metrics,
+		Claimer: claimer,
 		OnCanceled: func(ctx context.Context, job *pipeline.Job) error {
 			if job.Kind != pipeline.KindNarration || job.IDempotencyKey == "" {
 				return nil
@@ -113,7 +128,20 @@ func run() error {
 	defer stopSweep()
 	go runSweeper(sweepCtx, sweeper, durationEnv("PPTS_RETENTION_INTERVAL", time.Hour))
 
-	log.Printf("worker %s started for tenant %s", owner, tenantID)
+	// 审计保留/归档（G3-4）：到期审计事件先写对象存储，再清除。
+	if retDays := envInt("PPTS_AUDIT_RETENTION_DAYS", 365); retDays > 0 {
+		archiver := audit.NewArchiver(auditStore, retention.NewPGStore(pool), objects, log.Default())
+		archiveCtx, stopArchive := context.WithCancel(ctx)
+		defer stopArchive()
+		go runAuditArchiver(archiveCtx, archiver, time.Duration(retDays)*24*time.Hour,
+			durationEnv("PPTS_AUDIT_ARCHIVE_INTERVAL", time.Hour))
+	}
+
+	if tenantID == "" {
+		log.Printf("worker %s started in cross-tenant mode (global claim)", owner)
+	} else {
+		log.Printf("worker %s started for tenant %s", owner, tenantID)
+	}
 	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
@@ -138,6 +166,23 @@ func runSweeper(ctx context.Context, s *retention.Sweeper, interval time.Duratio
 	}
 }
 
+func runAuditArchiver(ctx context.Context, a *audit.Archiver, retention time.Duration, interval time.Duration) {
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	_ = a.ArchiveBefore(ctx, time.Now().Add(-retention))
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = a.ArchiveBefore(ctx, time.Now().Add(-retention))
+		}
+	}
+}
+
 // durationEnv 读取时长环境变量，非法或缺失时返回默认值。
 func durationEnv(name string, fallback time.Duration) time.Duration {
 	raw := os.Getenv(name)
@@ -149,4 +194,17 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// envInt 读取整数环境变量，非法或缺失时返回默认值。
+func envInt(name string, fallback int) int {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return n
 }

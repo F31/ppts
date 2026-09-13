@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -73,11 +74,17 @@ type NarrationHandler struct {
 	objects  objectstore.ObjectStore
 	provider tts.TTSProvider
 	usage    UsageSettler
+	metrics  TTSMetrics
 }
 
 // UsageSettler 是配音完成后按实际时长结算额度所需的窄能力（G3-2）。
 type UsageSettler interface {
 	Settle(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind, actualUnits float64, priceVersion string) error
+}
+
+// TTSMetrics 记录供应商合成可观测性（G3-8）。
+type TTSMetrics interface {
+	SegmentSynthesized(job *pipeline.Job, retryable, throttled bool, duration time.Duration, err error)
 }
 
 // NewNarrationHandler creates a segmented TTS handler.
@@ -90,6 +97,12 @@ func NewNarrationHandler(scripts narration.Store, steps interface {
 // WithUsage 注入额度结算能力；未注入时跳过结算（测试/私有化）。
 func (h *NarrationHandler) WithUsage(u UsageSettler) *NarrationHandler {
 	h.usage = u
+	return h
+}
+
+// WithTTSMetrics 注入供应商合成指标记录器。
+func (h *NarrationHandler) WithTTSMetrics(m TTSMetrics) *NarrationHandler {
+	h.metrics = m
 	return h
 }
 
@@ -228,7 +241,9 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		VoiceID:     snapshot.VoiceID, Text: segment.SpokenText, Language: snapshot.Language,
 		SpeechControl: snapshot.SpeechControl, SampleRate: snapshot.SampleRate,
 	}
+	started := time.Now()
 	result, err := h.provider.Synthesize(ctx, request)
+	h.recordTTSSynthesis(job, started, err)
 	if err != nil {
 		return failStep(classifyTTSError(err))
 	}
@@ -269,6 +284,14 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		return nil, err
 	}
 	return &manifest, nil
+}
+
+func (h *NarrationHandler) recordTTSSynthesis(job *pipeline.Job, started time.Time, err error) {
+	if h.metrics == nil {
+		return
+	}
+	retryable, throttled := ttsErrorFlags(err)
+	h.metrics.SegmentSynthesized(job, retryable, throttled, time.Since(started), err)
 }
 
 func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput) error {
@@ -446,6 +469,19 @@ func classifyTTSError(err error) error {
 		retry.At = time.Now().Add(retryable.RetryAfter)
 	}
 	return retry
+}
+
+func ttsErrorFlags(err error) (retryable bool, throttled bool) {
+	if err == nil {
+		return false, false
+	}
+	var retry *tts.RetryableError
+	retryable = errors.As(err, &retry)
+	var status interface{ HTTPStatus() int }
+	if errors.As(err, &status) && status.HTTPStatus() == http.StatusTooManyRequests {
+		throttled = true
+	}
+	return retryable, throttled
 }
 
 func hashBytes(data []byte) string {

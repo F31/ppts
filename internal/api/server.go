@@ -18,11 +18,13 @@ import (
 // Options 是可选横切依赖（G3-2 配额预占、G3-9 租户用量/策略）。
 // tenant_id 始终由服务端从可信身份推导，客户端传入值不作授权依据。
 type Options struct {
-	Quota   QuotaManager
-	Usage   TenantUsageReader
-	Policy  TenantPolicyReader
-	Audit   audit.Recorder
-	Members membership.Reader
+	Quota        QuotaManager
+	Usage        TenantUsageReader
+	Policy       TenantPolicyReader
+	Audit        audit.Store
+	Members      membership.Store
+	Lifecycle    TenantLifecycle
+	TenantStatus TenantStatusChecker
 }
 
 // NewHandler builds the HTTP surface. Health checks intentionally bypass auth;
@@ -40,23 +42,24 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("GET /debug/vars", expvar.Handler())
-	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects))
-	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects))
-	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs))
-	mux.Handle(path, AuthMiddleware(handler))
+	auth := func(handler http.Handler) http.Handler { return AuthMiddleware(handler, opt.TenantStatus) }
+	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members))
+	mux.Handle(path, auth(handler))
+	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members))
+	mux.Handle(path, auth(handler))
+	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members))
+	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy, opt.Members))
-	mux.Handle(path, AuthMiddleware(handler))
-	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects))
-	mux.Handle(path, AuthMiddleware(handler))
+	mux.Handle(path, auth(handler))
+	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members))
+	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewPlaybackServiceHandler(NewPlaybackService(jobs, objects))
-	mux.Handle(path, AuthMiddleware(handler))
+	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewJobServiceHandler(NewJobService(jobs, opt.Quota, opt.Audit, opt.Members))
-	mux.Handle(path, AuthMiddleware(handler))
+	mux.Handle(path, auth(handler))
 	if opt.Usage != nil && opt.Policy != nil {
-		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy, opt.Members))
-		mux.Handle(path, AuthMiddleware(handler))
+		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy, opt.Members, opt.Audit, opt.Lifecycle, objects))
+		mux.Handle(path, auth(handler))
 	}
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}

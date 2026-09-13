@@ -213,6 +213,24 @@ func (s *PGStore) UsageSummary(ctx context.Context, tenantID, month string) (sec
 	return seconds, 0, nil
 }
 
+// ProjectUsage 返回某项目的累计生成秒数与配音任务数。账本按
+// logical_operation_id=任务幂等键 与 narration 任务行关联归属项目（G3-8）。
+func (s *PGStore) ProjectUsage(ctx context.Context, tenantID, projectID string) (ProjectUsage, error) {
+	var out ProjectUsage
+	out.ProjectID = projectID
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COALESCE(SUM(l.quantity),0), COUNT(DISTINCT j.id)
+			 FROM usage_ledger l
+			 JOIN jobs j ON j.tenant_id = l.tenant_id
+			   AND j.idempotency_key = l.logical_operation_id
+			   AND j.kind = 'narration'
+			 WHERE l.tenant_id=$1 AND j.project_id=$2 AND l.usage_kind=$3`,
+			tenantID, projectID, string(KindGenSeconds)).Scan(&out.Seconds, &out.JobCount)
+	})
+	return out, err
+}
+
 func monthRange(month string) (time.Time, time.Time, error) {
 	if month == "" {
 		month = time.Now().UTC().Format("2006-01")

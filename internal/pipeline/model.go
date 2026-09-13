@@ -159,6 +159,8 @@ type Store interface {
 	Create(ctx context.Context, tenantID, projectID, kind, idemKey, snapshot string, runAt time.Time) (*Job, error)
 	// ClaimNext 以 SKIP LOCKED 领取一个可运行任务，原子写入 lease 与 fencing，返回租约内任务。
 	ClaimNext(ctx context.Context, tenantID, leaseOwner string, leaseFor time.Duration) (*Job, error)
+	// ClaimNextAny 跨租户领取一个可运行任务；仅调度面使用，返回任务 tenant_id 供 worker 执行前注入上下文。
+	ClaimNextAny(ctx context.Context, leaseOwner string, leaseFor time.Duration) (*Job, error)
 	// Heartbeat 续租；fencing 不匹配返回 ErrLeaseMismatch。
 	Heartbeat(ctx context.Context, id, owner string, fencing int64, extend time.Duration) error
 	// Complete 以 fencing 条件把任务置为终态（succeeded/failed/canceled）。

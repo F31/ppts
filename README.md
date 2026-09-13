@@ -52,10 +52,14 @@ Web 真实链路：直传 → 解析 → 展示真实页面 rail → 生成原�
 API 依赖已应用迁移的 PostgreSQL。G1 开发身份由可信上游头
 `X-PPTS-Tenant-ID` / `X-PPTS-User-ID` 注入；G3 将替换为 OIDC 校验。
 
-**角色与 RLS（G3-1，`migrations/0006_rls.sql`）**：迁移由表 owner 账号执行（部署中建议专用 `ppts_migrator`）；
-运行时账号 `ppts_app` 必须 `NOSUPERUSER NOBYPASSRLS` 且非表 owner。租户业务表启用 `FORCE ROW LEVEL SECURITY`，
+**角色与 RLS（G3-1，`migrations/0006_rls.sql`/`0012_migrator_role.sql`）**：迁移账号 `ppts_migrator`
+持有表 owner 权限，运行时账号 `ppts_app` 必须 `NOSUPERUSER NOBYPASSRLS` 且非表 owner。租户业务表启用 `FORCE ROW LEVEL SECURITY`，
 策略依据事务局部 `app.tenant_id`；业务代码通过 `internal/tenant.Run` 设置上下文，缺失上下文时访问被拒绝。
 因此 `PPTS_DATABASE_URL` 应使用非 owner 的运行账号（测试库同理）。
+
+跨租户调度（ADR-018，`migrations/0013_scheduler_role.sql`）：`ppts_scheduler` 仅可执行受限函数
+`ppts_claim_next_job`，无业务表通用读取权；worker 未设 `PPTS_TENANT_ID` 时按跨租户模式全局领取（按租户在途数初版公平排序），
+并可用 `PPTS_SCHEDULER_DATABASE_URL` 提供独立调度连接，handler 执行与终态提交仍走业务连接。
 
 ```bash
 PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
@@ -80,17 +84,29 @@ GOWORK=off go run ./cmd/worker
 API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar 指标。worker 已接入基础任务指标：
 `ppts_worker_jobs_total`（按事件/终态）、`ppts_worker_job_duration_ms_total`（执行时长）、
 `ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed），
+以及 TTS 指标 `ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`，
 均按租户与任务类型聚合。
 
 租户策略 `tenants.policy.max_concurrent_jobs`（>0 时生效）限制配音生成的非终态任务数，超限返回 `ResourceExhausted`；
 同 `Idempotency-Key` 重放不受上限影响，仍返回既有任务。
 
 审计日志（G3-4，`migrations/0009_audit.sql`）：`audit_events` 按租户隔离（FORCE RLS），记录任务取消/重试与
-保留清理删除等操作；查询经 `internal/audit.PGStore.List`。
+保留清理删除等操作；`TenantService.ListAuditEvents` 提供 admin+ 审计读取 API，可按 action/resource_type/since 过滤。
+到期审计事件由 worker 归档到对象存储（JSONL）后清除：`PPTS_AUDIT_RETENTION_DAYS`（默认 365）控制保留期，
+`PPTS_AUDIT_ARCHIVE_INTERVAL`（默认 1h）控制执行周期。
+
+租户生命周期（G3-4，`migrations/0011_tenant_status.sql`）：`tenants.status` 为 `active/suspended/deleted`；
+API 默认检查租户 active 状态，停用/删除租户请求在进入 RPC 前返回 403/PermissionDenied。
+
+用量可见性：`TenantService.Usage` 汇总当月生成秒数，`TenantService.ProjectUsage` 按项目返回累计生成秒数与
+配音任务数（账本经幂等键归属 narration 任务，G3-8；成本金额随正式定价表接入）。
+数据导出/擦除：`TenantService.ExportTenant/PurgeTenant`（owner+）把租户全部业务数据按表 JSONL 导出到对象存储，
+或执行对象 GC + 逐表清除并置 `tenants.status='deleted'`（`internal/tenant.ExportTenant/PurgeTenant`，PG 门禁覆盖）。
 
 租户成员/角色（G3-3 内核，`migrations/0010_members.sql`）：`tenant_members` 持久化
-Owner/Admin/Editor/Reviewer/Viewer，`TenantService.Members/Roles` 可读；配音生成、任务取消/重试要求 `editor+`
-（未配置成员读取时开发放行）；OIDC 身份与完整授权矩阵待后续。
+Owner/Admin/Editor/Reviewer/Viewer，`TenantService.Members/Roles` 可读，`SetMemberRole/RemoveMember` 可管理成员
+（admin+，owner 变更仅 owner）；配音生成、任务取消/重试、Project/Script/Upload/Export 核心写入口均有角色门禁
+（未配置成员读取时开发放行）；OIDC 身份与后续分享/声音/费用权限矩阵待后续。
 
 API 结构化请求日志（G3-8）：每个请求带 `X-Request-ID`，JSON slog 输出
 `request_id/method/path/status/duration_ms/bytes/tenant/user`。

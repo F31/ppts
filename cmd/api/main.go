@@ -74,7 +74,7 @@ func run() error {
 			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
 				objects,
-				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore}),
+				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, TenantStatus: policyStore}),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

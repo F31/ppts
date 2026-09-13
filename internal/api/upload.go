@@ -14,6 +14,7 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/upload"
 )
 
@@ -25,19 +26,23 @@ type signedURLParser interface {
 // UploadService 是 UploadService RPC transport，持有 app 用例并映射错误码。
 type UploadService struct {
 	pptsv1connect.UnimplementedUploadServiceHandler
-	svc    *app.UploadService
-	parser signedURLParser
+	svc     *app.UploadService
+	parser  signedURLParser
+	members membership.Reader
 }
 
 // NewUploadService 创建 transport。objects 为本地后端时用于把 local:// 链接重写为 HTTP 相对路径。
-func NewUploadService(svc *app.UploadService, objects objectstore.ObjectStore) *UploadService {
+func NewUploadService(svc *app.UploadService, objects objectstore.ObjectStore, members membership.Reader) *UploadService {
 	parser, _ := objects.(signedURLParser)
-	return &UploadService{svc: svc, parser: parser}
+	return &UploadService{svc: svc, parser: parser, members: members}
 }
 
 func (s *UploadService) CreateUpload(ctx context.Context, req *connect.Request[pptsv1.CreateUploadRequest]) (*connect.Response[pptsv1.CreateUploadResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	res, err := s.svc.CreateUpload(ctx, p.TenantID, app.UploadRequest{
@@ -64,6 +69,9 @@ func (s *UploadService) CompleteUpload(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, err
 	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
+		return nil, err
+	}
 	srcRevID, jobID, err := s.svc.CompleteUpload(ctx, p.TenantID, req.Msg.GetUploadId(), req.Msg.GetExpectedHash(), req.Msg.GetSizeBytes())
 	if err != nil {
 		return nil, uploadError(err)
@@ -76,6 +84,9 @@ func (s *UploadService) CompleteUpload(ctx context.Context, req *connect.Request
 func (s *UploadService) AbortUpload(ctx context.Context, req *connect.Request[pptsv1.AbortUploadRequest]) (*connect.Response[pptsv1.AbortUploadResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	if err := s.svc.AbortUpload(ctx, p.TenantID, req.Msg.GetUploadId()); err != nil {

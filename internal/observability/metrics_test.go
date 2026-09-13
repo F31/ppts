@@ -48,3 +48,38 @@ func TestJobClaimedWithoutCreatedAtSkipsWait(t *testing.T) {
 		t.Fatalf("unexpected queue wait recorded for job without CreatedAt")
 	}
 }
+
+func TestSegmentSynthesizedRecordsTTSMetrics(t *testing.T) {
+	job := &pipeline.Job{TenantID: "tenant-tts", Kind: pipeline.KindNarration}
+	NewPipelineMetrics().SegmentSynthesized(job, true, true, 1500*time.Millisecond, assertErr("429"))
+
+	key := jobKey(job, "retryable_failed")
+	if got := expvarMapValue("ppts_tts_synthesis_total", key); got < 1 {
+		t.Fatalf("tts total[%s]=%d want >=1", key, got)
+	}
+	if got := expvarMapValue("ppts_tts_synthesis_duration_ms_total", key); got < 1500 {
+		t.Fatalf("tts duration[%s]=%d want >=1500", key, got)
+	}
+	throttleKey := jobKey(job, "429")
+	if got := expvarMapValue("ppts_tts_throttled_total", throttleKey); got < 1 {
+		t.Fatalf("tts throttled[%s]=%d want >=1", throttleKey, got)
+	}
+}
+
+type assertErr string
+
+func (e assertErr) Error() string { return string(e) }
+
+func expvarMapValue(name, key string) int64 {
+	m, _ := expvar.Get(name).(*expvar.Map)
+	if m == nil {
+		return 0
+	}
+	var got int64
+	m.Do(func(kv expvar.KeyValue) {
+		if kv.Key == key {
+			got = kv.Value.(*expvar.Int).Value()
+		}
+	})
+	return got
+}

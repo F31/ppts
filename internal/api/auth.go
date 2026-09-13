@@ -20,6 +20,11 @@ type Principal struct {
 	UserID   string
 }
 
+// TenantStatusChecker 检查租户生命周期状态（G3-4）。
+type TenantStatusChecker interface {
+	TenantActive(ctx context.Context, tenantID string) (bool, error)
+}
+
 // PrincipalFromContext returns the authenticated tenant and user.
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
@@ -28,13 +33,24 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 
 // AuthMiddleware rejects requests without the trusted identity headers and
 // injects the resulting principal into the request context.
-func AuthMiddleware(next http.Handler) http.Handler {
+func AuthMiddleware(next http.Handler, checkers ...TenantStatusChecker) http.Handler {
+	var checker TenantStatusChecker
+	if len(checkers) > 0 {
+		checker = checkers[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		tenantID := strings.TrimSpace(r.Header.Get(tenantHeader))
 		userID := strings.TrimSpace(r.Header.Get(userHeader))
 		if tenantID == "" || userID == "" {
 			http.Error(w, "missing authenticated tenant or user", http.StatusUnauthorized)
 			return
+		}
+		if checker != nil {
+			active, err := checker.TenantActive(r.Context(), tenantID)
+			if err != nil || !active {
+				http.Error(w, "tenant is not active", http.StatusForbidden)
+				return
+			}
 		}
 		ctx := context.WithValue(r.Context(), principalKey{}, Principal{
 			TenantID: tenantID,

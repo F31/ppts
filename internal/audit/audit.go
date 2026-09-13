@@ -36,7 +36,8 @@ type Recorder interface {
 type Filter struct {
 	Action       string
 	ResourceType string
-	Since        time.Time
+	Since        time.Time // created_at >= since
+	Before       time.Time // created_at < before（归档/到期清理用，排他）
 	Limit        int
 }
 
@@ -44,4 +45,6 @@ type Filter struct {
 type Store interface {
 	Recorder
 	List(ctx context.Context, tenantID string, filter Filter) ([]Event, error)
+	// DeleteBefore 删除 before 之前（排他）的审计事件，返回删除行数。供保留/归档清理。
+	DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
 )
 
@@ -22,16 +23,20 @@ type ExportService struct {
 	artifacts artifact.Store
 	objects   objectstore.ObjectStore
 	parser    signedURLParser
+	members   membership.Reader
 }
 
-func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore) *ExportService {
+func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore, members membership.Reader) *ExportService {
 	parser, _ := objects.(signedURLParser)
-	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser}
+	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser, members: members}
 }
 
 func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[pptsv1.CreateExportRequest]) (*connect.Response[pptsv1.CreateExportResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	projectID := strings.TrimSpace(req.Msg.GetProjectId())
@@ -88,6 +93,9 @@ func (s *ExportService) GetArtifact(ctx context.Context, req *connect.Request[pp
 func (s *ExportService) CreateDownload(ctx context.Context, req *connect.Request[pptsv1.CreateDownloadRequest]) (*connect.Response[pptsv1.CreateDownloadResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleViewer); err != nil {
 		return nil, err
 	}
 	ttl := time.Duration(req.Msg.GetTtlSeconds()) * time.Second

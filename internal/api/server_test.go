@@ -179,6 +179,37 @@ type fakeArtifactStore struct {
 	artifact *artifact.Artifact
 }
 
+type fakeAuditStore struct {
+	events []audit.Event
+	err    error
+	filter audit.Filter
+}
+
+func (f *fakeAuditStore) Record(context.Context, audit.Event) error {
+	return f.err
+}
+
+func (f *fakeAuditStore) List(_ context.Context, _ string, filter audit.Filter) ([]audit.Event, error) {
+	f.filter = filter
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.events, nil
+}
+
+func (f *fakeAuditStore) DeleteBefore(context.Context, string, time.Time) (int64, error) {
+	return 0, f.err
+}
+
+type fakeTenantStatusChecker struct {
+	active bool
+	err    error
+}
+
+func (f fakeTenantStatusChecker) TenantActive(context.Context, string) (bool, error) {
+	return f.active, f.err
+}
+
 func (s *fakeArtifactStore) Create(context.Context, string, artifact.NewArtifact) (*artifact.Artifact, error) {
 	return nil, errors.New("not used")
 }
@@ -368,6 +399,18 @@ func TestHandlerHealthAndAuthentication(t *testing.T) {
 	}))
 	if connect.CodeOf(err) != connect.CodeUnauthenticated {
 		t.Fatalf("unauthenticated code = %v, err=%v", connect.CodeOf(err), err)
+	}
+}
+
+func TestHandlerRejectsInactiveTenant(t *testing.T) {
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{TenantStatus: fakeTenantStatusChecker{active: false}}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
+
+	_, err := client.Create(context.Background(), authRequest(&pptsv1.CreateProjectRequest{Title: "blocked"}))
+	if connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("inactive tenant code = %v err=%v", connect.CodeOf(err), err)
 	}
 }
 
@@ -656,6 +699,14 @@ func (f *fakeAuditRecorder) Record(_ context.Context, e audit.Event) error {
 	return nil
 }
 
+func (f *fakeAuditRecorder) List(context.Context, string, audit.Filter) ([]audit.Event, error) {
+	return f.events, nil
+}
+
+func (f *fakeAuditRecorder) DeleteBefore(context.Context, string, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func TestJobServiceCancelWritesAudit(t *testing.T) {
 	job := &pipeline.Job{
 		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
@@ -840,6 +891,13 @@ func (f *fakeTenantUsage) UsageSummary(context.Context, string, string) (float64
 	return f.seconds, f.cost, nil
 }
 
+func (f *fakeTenantUsage) ProjectUsage(context.Context, string, string) (usage.ProjectUsage, error) {
+	if f.err != nil {
+		return usage.ProjectUsage{}, f.err
+	}
+	return usage.ProjectUsage{ProjectID: "project-1", Seconds: f.seconds, JobCount: 3}, nil
+}
+
 type fakeTenantPolicy struct {
 	policy *tenant.Policy
 	err    error
@@ -866,6 +924,27 @@ func (f *fakeMembershipReader) GetRole(context.Context, string, string) (members
 
 func (f *fakeMembershipReader) List(context.Context, string) ([]membership.Member, error) {
 	return f.members, nil
+}
+
+func (f *fakeMembershipReader) SetRole(_ context.Context, _, userID string, role membership.Role) error {
+	for i := range f.members {
+		if f.members[i].UserID == userID {
+			f.members[i].Role = role
+			return nil
+		}
+	}
+	f.members = append(f.members, membership.Member{UserID: userID, Role: role})
+	return nil
+}
+
+func (f *fakeMembershipReader) Remove(_ context.Context, _, userID string) error {
+	for i := range f.members {
+		if f.members[i].UserID == userID {
+			f.members = append(f.members[:i], f.members[i+1:]...)
+			return nil
+		}
+	}
+	return membership.ErrNotFound
 }
 
 func TestTenantServiceMembersAndRoles(t *testing.T) {
@@ -896,18 +975,181 @@ func TestTenantServiceMembersAndRoles(t *testing.T) {
 	}
 }
 
-// fakeRoleReader 提供可配置角色的成员读取，验证 G3-3 授权门禁。
-type fakeRoleReader struct {
-	role membership.Role
-	err  error
+func TestTenantServiceMemberManagementEnforcesRoles(t *testing.T) {
+	members := &fakeRoleReader{roles: map[string]membership.Role{"user-1": membership.RoleReviewer}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-2", Role: pptsv1.Role_ROLE_VIEWER})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("reviewer set member code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.roles["user-1"] = membership.RoleAdmin
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-2", Role: pptsv1.Role_ROLE_VIEWER})); err != nil {
+		t.Fatalf("admin set viewer: %v", err)
+	}
+	if members.roles["user-2"] != membership.RoleViewer {
+		t.Fatalf("user-2 role = %q want viewer", members.roles["user-2"])
+	}
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-3", Role: pptsv1.Role_ROLE_OWNER})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("admin set owner code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.roles["user-1"] = membership.RoleOwner
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-3", Role: pptsv1.Role_ROLE_OWNER})); err != nil {
+		t.Fatalf("owner set owner: %v", err)
+	}
+	members.roles["user-1"] = membership.RoleAdmin
+	if _, err := client.RemoveMember(context.Background(), authRequest(&pptsv1.RemoveMemberRequest{UserId: "user-2"})); err != nil {
+		t.Fatalf("admin remove viewer: %v", err)
+	}
+	if _, ok := members.roles["user-2"]; ok {
+		t.Fatalf("user-2 still present after remove")
+	}
 }
 
-func (f *fakeRoleReader) GetRole(context.Context, string, string) (membership.Role, error) {
+func TestTenantServiceProjectUsage(t *testing.T) {
+	u := &fakeTenantUsage{seconds: 120}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: u, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	resp, err := client.ProjectUsage(context.Background(), authRequest(&pptsv1.GetProjectUsageRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("ProjectUsage: %v", err)
+	}
+	if resp.Msg.GetSeconds() != 120 || resp.Msg.GetJobCount() != 3 || resp.Msg.GetProjectId() != "project-1" {
+		t.Fatalf("project usage = %+v", resp.Msg)
+	}
+	if _, err := client.ProjectUsage(context.Background(), authRequest(&pptsv1.GetProjectUsageRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("missing project_id code = %v want InvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestTenantServiceListAuditEventsRequiresAdmin(t *testing.T) {
+	members := &fakeRoleReader{roles: map[string]membership.Role{"user-1": membership.RoleReviewer}}
+	audits := &fakeAuditStore{events: []audit.Event{{
+		ID: "audit-1", ActorUser: "user-2", Action: "job.cancel", ResourceType: "job", ResourceID: "job-1",
+		Metadata: map[string]any{"reason": "test"}, CreatedAt: time.Unix(100, 0),
+	}}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Audit: audits}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.ListAuditEventsRequest{Action: "job.cancel", ResourceType: "job", SinceUnix: 90, PageSize: 5})
+	if _, err := client.ListAuditEvents(context.Background(), req); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("reviewer list audit code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.roles["user-1"] = membership.RoleAdmin
+	resp, err := client.ListAuditEvents(context.Background(), req)
+	if err != nil {
+		t.Fatalf("admin list audit: %v", err)
+	}
+	if audits.filter.Action != "job.cancel" || audits.filter.ResourceType != "job" || audits.filter.Limit != 5 || audits.filter.Since.Unix() != 90 {
+		t.Fatalf("filter = %+v", audits.filter)
+	}
+	if len(resp.Msg.GetEvents()) != 1 || !strings.Contains(resp.Msg.GetEvents()[0].GetMetadataJson(), "reason") {
+		t.Fatalf("events = %+v", resp.Msg.GetEvents())
+	}
+}
+
+// fakeRoleReader 提供可配置角色的成员读取，验证 G3-3 授权门禁。
+type fakeRoleReader struct {
+	role  membership.Role
+	roles map[string]membership.Role
+	err   error
+}
+
+func (f *fakeRoleReader) GetRole(_ context.Context, _, userID string) (membership.Role, error) {
+	if f.roles != nil {
+		role, ok := f.roles[userID]
+		if !ok {
+			return "", membership.ErrNotFound
+		}
+		return role, f.err
+	}
 	return f.role, f.err
 }
 
 func (f *fakeRoleReader) List(context.Context, string) ([]membership.Member, error) {
 	return nil, nil
+}
+
+func (f *fakeRoleReader) SetRole(_ context.Context, _, userID string, role membership.Role) error {
+	if f.roles == nil {
+		f.roles = map[string]membership.Role{}
+	}
+	f.roles[userID] = role
+	return f.err
+}
+
+func (f *fakeRoleReader) Remove(_ context.Context, _, userID string) error {
+	if f.err != nil {
+		return f.err
+	}
+	if f.roles != nil {
+		if _, ok := f.roles[userID]; !ok {
+			return membership.ErrNotFound
+		}
+		delete(f.roles, userID)
+	}
+	return nil
+}
+
+type fakeTenantLifecycle struct {
+	manifest *tenant.ExportManifest
+	deleted  int64
+	err      error
+}
+
+func (f *fakeTenantLifecycle) ExportTenant(_ context.Context, tenantID string, _ objectstore.ObjectStore) (*tenant.ExportManifest, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.manifest == nil {
+		return &tenant.ExportManifest{TenantID: tenantID, ManifestKey: "m", Files: []tenant.ExportFile{{Table: "uploads", ObjectKey: "uploads.jsonl", Rows: 2}}}, nil
+	}
+	return f.manifest, nil
+}
+
+func (f *fakeTenantLifecycle) PurgeTenant(context.Context, string, objectstore.ObjectStore) (int64, error) {
+	if f.err != nil {
+		return 0, f.err
+	}
+	return f.deleted, nil
+}
+
+func TestTenantServiceExportPurgeRequireOwner(t *testing.T) {
+	members := &fakeRoleReader{roles: map[string]membership.Role{"user-1": membership.RoleEditor}}
+	lifecycle := &fakeTenantLifecycle{deleted: 7}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Lifecycle: lifecycle}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.ExportTenant(context.Background(), authRequest(&pptsv1.ExportTenantRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("editor export code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	if _, err := client.PurgeTenant(context.Background(), authRequest(&pptsv1.PurgeTenantRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("editor purge code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.roles["user-1"] = membership.RoleOwner
+	exported, err := client.ExportTenant(context.Background(), authRequest(&pptsv1.ExportTenantRequest{}))
+	if err != nil {
+		t.Fatalf("owner export: %v", err)
+	}
+	if exported.Msg.GetManifestObjectKey() == "" || len(exported.Msg.GetFiles()) != 1 || exported.Msg.GetFiles()[0].GetTable() != "uploads" {
+		t.Fatalf("export = %+v", exported.Msg)
+	}
+	purged, err := client.PurgeTenant(context.Background(), authRequest(&pptsv1.PurgeTenantRequest{}))
+	if err != nil {
+		t.Fatalf("owner purge: %v", err)
+	}
+	if purged.Msg.GetDeletedRows() != 7 {
+		t.Fatalf("purge deleted = %d want 7", purged.Msg.GetDeletedRows())
+	}
 }
 
 func TestJobServiceCancelEnforcesRole(t *testing.T) {
@@ -942,6 +1184,85 @@ func TestCreateGenerationRequiresEditorRole(t *testing.T) {
 	req.Header().Set("Idempotency-Key", "role-1")
 	if _, err := client.CreateGeneration(context.Background(), req); connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("viewer generation code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+}
+
+func TestProjectWriteOperationsEnforceRoles(t *testing.T) {
+	members := &fakeRoleReader{role: membership.RoleViewer}
+	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "Demo"}}}
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), Options{Members: members}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.Create(context.Background(), authRequest(&pptsv1.CreateProjectRequest{Title: "New"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("viewer create project code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.role = membership.RoleEditor
+	if _, err := client.Create(context.Background(), authRequest(&pptsv1.CreateProjectRequest{Title: "New"})); err != nil {
+		t.Fatalf("editor create project: %v", err)
+	}
+	if _, err := client.Archive(context.Background(), authRequest(&pptsv1.ArchiveProjectRequest{Id: "project-1"})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("editor archive project code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.role = membership.RoleAdmin
+	if _, err := client.Archive(context.Background(), authRequest(&pptsv1.ArchiveProjectRequest{Id: "project-1"})); err != nil {
+		t.Fatalf("admin archive project: %v", err)
+	}
+}
+
+func TestScriptWriteOperationsEnforceRoles(t *testing.T) {
+	members := &fakeRoleReader{role: membership.RoleViewer}
+	store := &fakeScriptStore{revision: newTestRevision()}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), Options{Members: members}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
+	segment := &pptsv1.Segment{SegmentId: "seg-1", DisplayText: "第一页", SpokenText: "第一页"}
+
+	if _, err := client.Update(context.Background(), authRequest(&pptsv1.UpdateScriptRequest{ProjectId: "project-1", SlideId: "slide-1", ExpectedRevision: 3, Segments: []*pptsv1.Segment{segment}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("viewer update script code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.role = membership.RoleReviewer
+	if _, err := client.Approve(context.Background(), authRequest(&pptsv1.ApproveScriptRequest{ProjectId: "project-1", SlideId: "slide-1"})); err != nil {
+		t.Fatalf("reviewer approve script: %v", err)
+	}
+	if _, err := client.Update(context.Background(), authRequest(&pptsv1.UpdateScriptRequest{ProjectId: "project-1", SlideId: "slide-1", ExpectedRevision: 3, Segments: []*pptsv1.Segment{segment}})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("reviewer update script code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.role = membership.RoleEditor
+	if _, err := client.Update(context.Background(), authRequest(&pptsv1.UpdateScriptRequest{ProjectId: "project-1", SlideId: "slide-1", ExpectedRevision: 3, Segments: []*pptsv1.Segment{segment}})); err != nil {
+		t.Fatalf("editor update script: %v", err)
+	}
+}
+
+func TestUploadAndExportWriteOperationsEnforceRoles(t *testing.T) {
+	members := &fakeRoleReader{role: membership.RoleViewer}
+	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "Demo"}}}
+	objects := testObjects(t)
+	artifacts := &fakeArtifactStore{artifact: &artifact.Artifact{
+		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1",
+		Format: artifact.FormatSRT, ObjectKey: "tenant-1/project-1/artifact/artifact/hash.srt",
+	}}
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects, Options{Members: members}))
+	t.Cleanup(server.Close)
+	uploadClient := pptsv1connect.NewUploadServiceClient(http.DefaultClient, server.URL)
+	exportClient := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := uploadClient.CreateUpload(context.Background(), authRequest(&pptsv1.CreateUploadRequest{ProjectId: "project-1", Filename: "demo.pptx", SizeBytes: 3})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("viewer create upload code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	createExport := authRequest(&pptsv1.CreateExportRequest{ProjectId: "project-1", Format: pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_SRT, TimelineKey: "tenant-1/project-1/narration/timeline/tl.json"})
+	createExport.Header().Set("Idempotency-Key", "export-role-1")
+	if _, err := exportClient.CreateExport(context.Background(), createExport); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("viewer create export code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.role = membership.RoleEditor
+	if _, err := uploadClient.CreateUpload(context.Background(), authRequest(&pptsv1.CreateUploadRequest{ProjectId: "project-1", Filename: "demo.pptx", SizeBytes: 3})); err != nil {
+		t.Fatalf("editor create upload: %v", err)
+	}
+	createExport = authRequest(&pptsv1.CreateExportRequest{ProjectId: "project-1", Format: pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_SRT, TimelineKey: "tenant-1/project-1/narration/timeline/tl.json"})
+	createExport.Header().Set("Idempotency-Key", "export-role-2")
+	if _, err := exportClient.CreateExport(context.Background(), createExport); err != nil {
+		t.Fatalf("editor create export: %v", err)
 	}
 }
 

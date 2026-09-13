@@ -196,6 +196,31 @@ func TestClaimHeartbeatComplete(t *testing.T) {
 	}
 }
 
+func TestClaimNextAnyPrefersTenantWithLowerRunningLoad(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), "global-a1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create a1: %v", err)
+	}
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), "global-a2", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create a2: %v", err)
+	}
+	if _, err := s.Create(ctx, testOtherTenant, testOtherProject, string(KindParse), "global-b1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create b1: %v", err)
+	}
+	if _, err := s.ClaimNext(tenant.WithContext(ctx, testTenant), testTenant, "tenant-worker", 30*time.Second); err != nil {
+		t.Fatalf("ClaimNext tenant A: %v", err)
+	}
+
+	claimed, err := s.ClaimNextAny(ctx, "global-worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNextAny: %v", err)
+	}
+	if claimed.TenantID != testOtherTenant || claimed.Attempt != 1 || claimed.LeaseOwner != "global-worker" || claimed.State != StateRunning {
+		t.Fatalf("claimed = %+v, want tenant %s running by global-worker", claimed, testOtherTenant)
+	}
+}
+
 func TestStaleWorkerFencingRejected(t *testing.T) {
 	s := testStore(t)
 	ctx := tenant.WithContext(context.Background(), testTenant)

@@ -9,9 +9,15 @@ option go_package = "github.com/F31/ppts/gen/ppts/v1;pptsv1";
 service TenantService {
   rpc Members(GetMembersRequest) returns (GetMembersResponse);
   rpc Roles(GetRolesRequest) returns (GetRolesResponse);
+  rpc SetMemberRole(SetMemberRoleRequest) returns (SetMemberRoleResponse);
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+  rpc ExportTenant(ExportTenantRequest) returns (ExportTenantResponse);
+  rpc PurgeTenant(PurgeTenantRequest) returns (PurgeTenantResponse);
   rpc Quota(GetQuotaRequest) returns (TenantQuota);
   rpc Usage(GetUsageRequest) returns (GetUsageResponse);
+  rpc ProjectUsage(GetProjectUsageRequest) returns (GetProjectUsageResponse);
   rpc Policy(GetPolicyRequest) returns (TenantPolicy);
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
 }
 
 enum Role {
@@ -38,6 +44,36 @@ message GetRolesResponse {
   map<string, Role> user_roles = 1;
 }
 
+message SetMemberRoleRequest {
+  string user_id = 1;
+  Role role = 2;
+}
+message SetMemberRoleResponse {
+  Member member = 1;
+}
+
+message RemoveMemberRequest {
+  string user_id = 1;
+}
+message RemoveMemberResponse {}
+
+message ExportTenantRequest {}
+message ExportFile {
+  string table = 1;
+  string object_key = 2;
+  int64 rows = 3;
+}
+message ExportTenantResponse {
+  string manifest_object_key = 1;
+  repeated ExportFile files = 2;
+  int64 exported_at_unix = 3;
+}
+
+message PurgeTenantRequest {}
+message PurgeTenantResponse {
+  int64 deleted_rows = 1;
+}
+
 message TenantQuota {
   int64 monthly_seconds = 1;  // 生成分钟/秒额度
   int64 used_seconds = 2;
@@ -56,6 +92,16 @@ message GetUsageResponse {
   int64 cost_units = 2; // 账本原始数量
 }
 
+message GetProjectUsageRequest {
+  string project_id = 1;
+}
+
+message GetProjectUsageResponse {
+  string project_id = 1;
+  int64 seconds = 2; // 生成秒数（G3-8 每项目用量，成本待定价表）
+  int64 job_count = 3;
+}
+
 // TenantPolicy 租户策略（V4.0 §12.4：存储后端/保留期/加密档位按租户持久化）。
 message TenantPolicy {
   string storage_backend = 1;         // s3 / local / byos:<id>
@@ -66,3 +112,24 @@ message TenantPolicy {
 }
 
 message GetPolicyRequest {}
+
+message AuditEvent {
+  string id = 1;
+  string actor_user = 2;
+  string action = 3;
+  string resource_type = 4;
+  string resource_id = 5;
+  string metadata_json = 6;
+  int64 created_at_unix = 7;
+}
+
+message ListAuditEventsRequest {
+  string action = 1;
+  string resource_type = 2;
+  int64 since_unix = 3;
+  int32 page_size = 4;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+}

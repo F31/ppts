@@ -7,8 +7,12 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 const (
@@ -105,5 +109,60 @@ func TestAuditValidation(t *testing.T) {
 	}
 	if _, err := s.List(ctx, "", Filter{}); !errors.Is(err, ErrTenantRequired) {
 		t.Fatalf("list missing tenant = %v want ErrTenantRequired", err)
+	}
+}
+
+func TestAuditListBeforeAndDeleteBefore(t *testing.T) {
+	s := auditStore(t)
+	ctx := context.Background()
+	// 直插不同 created_at（租户上下文内，受 RLS），验证归档边界。
+	old := time.Now().Add(-48 * time.Hour)
+	fresh := time.Now().Add(-time.Hour)
+	for _, in := range []struct {
+		when time.Time
+		act  string
+	}{
+		{old, "old.one"}, {old, "old.two"}, {fresh, "fresh"},
+	} {
+		if err := tenant.Run(ctx, s.pool, auditTenantA, func(ctx context.Context, tx pgx.Tx) error {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO audit_events (tenant_id, actor_user, action, created_at)
+				 VALUES ($1::uuid, 'user-1', $2, $3)`, auditTenantA, in.act, in.when)
+			return err
+		}); err != nil {
+			t.Fatalf("insert %s: %v", in.act, err)
+		}
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+
+	before, err := s.List(ctx, auditTenantA, Filter{Before: cutoff})
+	if err != nil {
+		t.Fatalf("List Before: %v", err)
+	}
+	if len(before) != 2 {
+		t.Fatalf("before events = %d want 2", len(before))
+	}
+
+	deleted, err := s.DeleteBefore(ctx, auditTenantA, cutoff)
+	if err != nil {
+		t.Fatalf("DeleteBefore: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted = %d want 2", deleted)
+	}
+	remaining, err := s.List(ctx, auditTenantA, Filter{})
+	if err != nil {
+		t.Fatalf("List remaining: %v", err)
+	}
+	if len(remaining) != 1 || remaining[0].Action != "fresh" {
+		t.Fatalf("remaining = %+v want only fresh", remaining)
+	}
+	// 租户 B 不受影响。
+	delB, err := s.DeleteBefore(ctx, auditTenantB, cutoff)
+	if err != nil {
+		t.Fatalf("DeleteBefore B: %v", err)
+	}
+	if delB != 0 {
+		t.Fatalf("tenant B deleted = %d want 0", delB)
 	}
 }

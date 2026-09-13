@@ -169,6 +169,23 @@ func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, le
 	return j, nil
 }
 
+// ClaimNextAny 通过受限调度函数跨租户领取一个可运行任务。
+func (s *PGStore) ClaimNextAny(ctx context.Context, leaseOwner string, leaseFor time.Duration) (*Job, error) {
+	seconds := int(leaseFor / time.Second)
+	if seconds <= 0 {
+		seconds = 1
+	}
+	j, err := scanJob(s.pool.QueryRow(ctx,
+		"SELECT "+jobSelectColumns+" FROM ppts_claim_next_job($1,$2)", leaseOwner, seconds))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNoJob
+	}
+	if err != nil {
+		return nil, err
+	}
+	return j, nil
+}
+
 // Heartbeat 续租；发现取消请求返回 ErrCancelRequested，fencing 不匹配返回 ErrLeaseMismatch。
 // 使用 context 中的租户上下文（由 worker 在处理任务前注入）。
 func (s *PGStore) Heartbeat(ctx context.Context, id, owner string, fencing int64, extend time.Duration) error {

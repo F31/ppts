@@ -11,6 +11,7 @@ import (
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 )
@@ -20,13 +21,14 @@ const defaultLanguage = "zh-CN"
 // ScriptService exposes the narration revision domain over Connect.
 type ScriptService struct {
 	pptsv1connect.UnimplementedScriptServiceHandler
-	store narration.Store
-	jobs  JobCreator
+	store   narration.Store
+	jobs    JobCreator
+	members membership.Reader
 }
 
 // NewScriptService creates a ScriptService.
-func NewScriptService(store narration.Store, jobs JobCreator) *ScriptService {
-	return &ScriptService{store: store, jobs: jobs}
+func NewScriptService(store narration.Store, jobs JobCreator, members membership.Reader) *ScriptService {
+	return &ScriptService{store: store, jobs: jobs, members: members}
 }
 
 func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.GetScriptRequest]) (*connect.Response[pptsv1.ScriptRevision], error) {
@@ -47,6 +49,9 @@ func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.Get
 func (s *ScriptService) Update(ctx context.Context, req *connect.Request[pptsv1.UpdateScriptRequest]) (*connect.Response[pptsv1.UpdateScriptResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	if err := requireProjectSlide(req.Msg.GetProjectId(), req.Msg.GetSlideId()); err != nil {
@@ -72,6 +77,9 @@ func (s *ScriptService) Approve(ctx context.Context, req *connect.Request[pptsv1
 	if err != nil {
 		return nil, err
 	}
+	if err := requireRole(ctx, s.members, membership.RoleReviewer); err != nil {
+		return nil, err
+	}
 	if err := requireProjectSlide(req.Msg.GetProjectId(), req.Msg.GetSlideId()); err != nil {
 		return nil, err
 	}
@@ -85,6 +93,9 @@ func (s *ScriptService) Approve(ctx context.Context, req *connect.Request[pptsv1
 func (s *ScriptService) Lock(ctx context.Context, req *connect.Request[pptsv1.LockScriptRequest]) (*connect.Response[pptsv1.ScriptRevision], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleReviewer); err != nil {
 		return nil, err
 	}
 	if err := requireProjectSlide(req.Msg.GetProjectId(), req.Msg.GetSlideId()); err != nil {
@@ -103,6 +114,9 @@ func (s *ScriptService) Lock(ctx context.Context, req *connect.Request[pptsv1.Lo
 func (s *ScriptService) GenerateDraft(ctx context.Context, req *connect.Request[pptsv1.GenerateDraftRequest]) (*connect.Response[pptsv1.GenerateDraftResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
 		return nil, err
 	}
 	projectID := strings.TrimSpace(req.Msg.GetProjectId())
