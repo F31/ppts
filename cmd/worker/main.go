@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
@@ -36,6 +38,9 @@ func main() {
 }
 
 func run() error {
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	// 后台循环组件接受 *log.Logger，用 slog 后端适配器统一为结构化输出。
+	stdLogger := slog.NewLogLogger(logger.Handler(), slog.LevelInfo)
 	dsn := os.Getenv("PPTS_DATABASE_URL")
 	tenantID := os.Getenv("PPTS_TENANT_ID")
 	if dsn == "" {
@@ -75,7 +80,12 @@ func run() error {
 	}
 
 	policyStore := tenant.NewPGStore(pool)
-	objects, err := storefactory.FromEnv(policyStore)
+	registry, err := storefactory.FromEnv(policyStore)
+	if err != nil {
+		return err
+	}
+	objects := objectstore.WithInventory(registry, policyStore)
+	objects, err = storefactory.WithEnvelopeEncryptionFromEnv(objects, policyStore)
 	if err != nil {
 		return err
 	}
@@ -87,7 +97,7 @@ func run() error {
 	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider()).WithUsage(usageStore).WithTTSMetrics(metrics)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {
-		log.Printf("worker: mp4 encoder unavailable: %v", err)
+		logger.Info("mp4 encoder unavailable", "error", err)
 	}
 	exportHandler := app.NewExportHandler(artifact.NewPGStore(pool), jobs, objects, mp4Encoder)
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
@@ -108,6 +118,7 @@ func run() error {
 	owner := hostname + "-" + strconv.Itoa(os.Getpid())
 	worker := pipeline.NewWorker(jobs, owner, tenantID, dispatch, pipeline.WorkerOptions{
 		Metrics: metrics,
+		Logger:  stdLogger,
 		Claimer: claimer,
 		OnCanceled: func(ctx context.Context, job *pipeline.Job) error {
 			if job.Kind != pipeline.KindNarration || job.IDempotencyKey == "" {
@@ -122,31 +133,43 @@ func run() error {
 	})
 
 	// 保留与清理后台循环（G3-7）：孤儿上传清理 + 源文件到期/按需删除。
-	sweeper := retention.NewSweeper(retention.NewPGStore(pool), objects, durationEnv("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), log.Default()).
+	sweeper := retention.NewSweeper(retention.NewPGStore(pool), objects, durationEnv("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), stdLogger).
 		WithQuotaReservationTTL(durationEnv("PPTS_QUOTA_RESERVATION_TTL", 24*time.Hour)).
 		WithAuditor(auditStore)
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	defer stopSweep()
 	go runSweeper(sweepCtx, sweeper, durationEnv("PPTS_RETENTION_INTERVAL", time.Hour))
 
+	// 队列积压 gauge（G3-8）：跨租户模式下优先用调度连接读取最老等待。
+	var backlogAge observability.QueueAgeFunc
+	if sched, ok := claimer.(*pipeline.PGStore); ok {
+		backlogAge = sched.OldestQueuedAge
+	} else {
+		backlogAge = jobs.OldestQueuedAge
+	}
+	backlogReporter := observability.NewQueueBacklogReporter(metrics, backlogAge, durationEnv("PPTS_QUEUE_BACKLOG_INTERVAL", 30*time.Second), stdLogger)
+	backlogCtx, stopBacklog := context.WithCancel(ctx)
+	defer stopBacklog()
+	go backlogReporter.Run(backlogCtx)
+
 	// 审计保留/归档（G3-4）：到期审计事件先写对象存储，再清除。
 	if retDays := envInt("PPTS_AUDIT_RETENTION_DAYS", 365); retDays > 0 {
-		archiver := audit.NewArchiver(auditStore, retention.NewPGStore(pool), objects, log.Default())
+		archiver := audit.NewArchiver(auditStore, retention.NewPGStore(pool), objects, stdLogger)
 		archiveCtx, stopArchive := context.WithCancel(ctx)
 		defer stopArchive()
 		go runAuditArchiver(archiveCtx, archiver, time.Duration(retDays)*24*time.Hour,
 			durationEnv("PPTS_AUDIT_ARCHIVE_INTERVAL", time.Hour))
 	}
 
-	storageSyncer := storagelifecycle.NewSyncer(policyStore, objects, log.Default())
+	storageSyncer := storagelifecycle.NewSyncer(policyStore, objects, stdLogger)
 	storageLifecycleCtx, stopStorageLifecycle := context.WithCancel(ctx)
 	defer stopStorageLifecycle()
 	go runStorageLifecycleSyncer(storageLifecycleCtx, storageSyncer, durationEnv("PPTS_STORAGE_LIFECYCLE_INTERVAL", 6*time.Hour))
 
 	if tenantID == "" {
-		log.Printf("worker %s started in cross-tenant mode (global claim)", owner)
+		logger.Info("worker started", "mode", "cross-tenant", "owner", owner)
 	} else {
-		log.Printf("worker %s started for tenant %s", owner, tenantID)
+		logger.Info("worker started", "mode", "tenant", "tenant_id", tenantID, "owner", owner)
 	}
 	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err

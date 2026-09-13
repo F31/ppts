@@ -35,6 +35,16 @@ type TenantLifecycle interface {
 	PurgeTenant(ctx context.Context, tenantID string, objects objectstore.ObjectStore) (int64, error)
 }
 
+// TenantStorageReader provides tenant storage usage visibility (G3-6/G3-8).
+type TenantStorageReader interface {
+	StorageUsage(ctx context.Context, tenantID string) (*tenant.StorageUsage, error)
+}
+
+// TenantArchiveReader provides audit archive object listing (G3-4).
+type TenantArchiveReader interface {
+	ListAuditArchives(ctx context.Context, tenantID string, limit int) ([]tenant.ArchiveFile, error)
+}
+
 // TenantService 提供租户成员、角色、配额与策略接口（V4.0 §11.1/§12）。
 type TenantService struct {
 	pptsv1connect.UnimplementedTenantServiceHandler
@@ -44,11 +54,13 @@ type TenantService struct {
 	audit     audit.Store
 	lifecycle TenantLifecycle
 	objects   objectstore.ObjectStore
+	storage   TenantStorageReader
+	archive   TenantArchiveReader
 }
 
 // NewTenantService 创建租户服务。
-func NewTenantService(u TenantUsageReader, p TenantPolicyReader, members membership.Store, auditStore audit.Store, lifecycle TenantLifecycle, objects objectstore.ObjectStore) *TenantService {
-	return &TenantService{usage: u, policy: p, members: members, audit: auditStore, lifecycle: lifecycle, objects: objects}
+func NewTenantService(u TenantUsageReader, p TenantPolicyReader, members membership.Store, auditStore audit.Store, lifecycle TenantLifecycle, objects objectstore.ObjectStore, storage TenantStorageReader, archive TenantArchiveReader) *TenantService {
+	return &TenantService{usage: u, policy: p, members: members, audit: auditStore, lifecycle: lifecycle, objects: objects, storage: storage, archive: archive}
 }
 
 func (s *TenantService) Members(ctx context.Context, _ *connect.Request[pptsv1.GetMembersRequest]) (*connect.Response[pptsv1.GetMembersResponse], error) {
@@ -250,6 +262,29 @@ func (s *TenantService) ProjectUsage(ctx context.Context, req *connect.Request[p
 	}), nil
 }
 
+func (s *TenantService) StorageUsage(ctx context.Context, _ *connect.Request[pptsv1.GetStorageUsageRequest]) (*connect.Response[pptsv1.GetStorageUsageResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.storage == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("storage usage not configured"))
+	}
+	usage, err := s.storage.StorageUsage(ctx, p.TenantID)
+	if err != nil {
+		return nil, tenantError(err)
+	}
+	return connect.NewResponse(&pptsv1.GetStorageUsageResponse{
+		SourceBytes:     usage.SourceBytes,
+		ArtifactBytes:   usage.ArtifactBytes,
+		TotalBytes:      usage.TotalBytes,
+		SourceObjects:   usage.SourceObjects,
+		ArtifactObjects: usage.ArtifactObjects,
+		OtherBytes:      usage.OtherBytes,
+		OtherObjects:    usage.OtherObjects,
+	}), nil
+}
+
 func (s *TenantService) Policy(ctx context.Context, _ *connect.Request[pptsv1.GetPolicyRequest]) (*connect.Response[pptsv1.TenantPolicy], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
@@ -312,6 +347,35 @@ func (s *TenantService) ListAuditEvents(ctx context.Context, req *connect.Reques
 		})
 	}
 	return connect.NewResponse(&pptsv1.ListAuditEventsResponse{Events: out}), nil
+}
+
+func (s *TenantService) ListAuditArchives(ctx context.Context, req *connect.Request[pptsv1.ListAuditArchivesRequest]) (*connect.Response[pptsv1.ListAuditArchivesResponse], error) {
+	p, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.archive == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("audit archive not configured"))
+	}
+	if s.members == nil {
+		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("members not configured"))
+	}
+	if err := requireRole(ctx, s.members, membership.RoleAdmin); err != nil {
+		return nil, err
+	}
+	files, err := s.archive.ListAuditArchives(ctx, p.TenantID, int(req.Msg.GetLimit()))
+	if err != nil {
+		return nil, tenantError(err)
+	}
+	out := make([]*pptsv1.AuditArchiveFile, 0, len(files))
+	for _, f := range files {
+		out = append(out, &pptsv1.AuditArchiveFile{
+			ObjectKey:     f.ObjectKey,
+			SizeBytes:     f.SizeBytes,
+			UpdatedAtUnix: f.UpdatedAt.Unix(),
+		})
+	}
+	return connect.NewResponse(&pptsv1.ListAuditArchivesResponse{Files: out}), nil
 }
 
 func (s *TenantService) ExportTenant(ctx context.Context, _ *connect.Request[pptsv1.ExportTenantRequest]) (*connect.Response[pptsv1.ExportTenantResponse], error) {

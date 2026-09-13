@@ -221,6 +221,79 @@ func TestClaimNextAnyPrefersTenantWithLowerRunningLoad(t *testing.T) {
 	}
 }
 
+func TestClaimNextAnyRespectsPerTenantNarrationCap(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	// 租户 A 限制 narration 并发为 1。
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE tenants SET policy='{"max_concurrent_jobs":1}'::jsonb WHERE id=$1`, testTenant); err != nil {
+		t.Fatalf("set policy: %v", err)
+	}
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindNarration), "cap-1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create cap-1: %v", err)
+	}
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindNarration), "cap-2", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create cap-2: %v", err)
+	}
+
+	first, err := s.ClaimNextAny(ctx, "global-worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNextAny first: %v", err)
+	}
+	if first.Kind != KindNarration {
+		t.Fatalf("first kind = %s want narration", first.Kind)
+	}
+	// 已到达并发上限，第二个 narration 任务不应被领取。
+	if _, err := s.ClaimNextAny(ctx, "global-worker", 30*time.Second); !errors.Is(err, ErrNoJob) {
+		t.Fatalf("ClaimNextAny at cap = %v want ErrNoJob", err)
+	}
+	// 完成后释放槽位。
+	if err := s.Complete(tenant.WithContext(ctx, first.TenantID), first.ID, first.LeaseOwner, first.FencingToken, StateSucceeded, nil); err != nil {
+		t.Fatalf("Complete first: %v", err)
+	}
+	second, err := s.ClaimNextAny(ctx, "global-worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNextAny after complete: %v", err)
+	}
+	if second.IDempotencyKey != "cap-2" {
+		t.Fatalf("second job = %+v want cap-2", second)
+	}
+}
+
+func TestOldestQueuedAge(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), "age-1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// 置旧 created_at（2 分钟前），模拟积压。
+	if err := tenant.Run(ctx, s.pool, testTenant, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE jobs SET created_at=now()-interval '2 minutes' WHERE idempotency_key='age-1'`)
+		return err
+	}); err != nil {
+		t.Fatalf("age job: %v", err)
+	}
+	age, err := s.OldestQueuedAge(ctx)
+	if err != nil {
+		t.Fatalf("OldestQueuedAge: %v", err)
+	}
+	if age < 90*time.Second || age > 180*time.Second {
+		t.Fatalf("age = %v want ~120s", age)
+	}
+	// 领取后无运行就绪任务 → 0。
+	if _, err := s.ClaimNextAny(ctx, "worker", 30*time.Second); err != nil {
+		t.Fatalf("ClaimNextAny: %v", err)
+	}
+	age, err = s.OldestQueuedAge(ctx)
+	if err != nil {
+		t.Fatalf("OldestQueuedAge empty: %v", err)
+	}
+	if age != 0 {
+		t.Fatalf("age after claim = %v want 0", age)
+	}
+}
+
 func TestStaleWorkerFencingRejected(t *testing.T) {
 	s := testStore(t)
 	ctx := tenant.WithContext(context.Background(), testTenant)

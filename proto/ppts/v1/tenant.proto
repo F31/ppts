@@ -16,8 +16,10 @@ service TenantService {
   rpc Quota(GetQuotaRequest) returns (TenantQuota);
   rpc Usage(GetUsageRequest) returns (GetUsageResponse);
   rpc ProjectUsage(GetProjectUsageRequest) returns (GetProjectUsageResponse);
+  rpc StorageUsage(GetStorageUsageRequest) returns (GetStorageUsageResponse);
   rpc Policy(GetPolicyRequest) returns (TenantPolicy);
   rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+  rpc ListAuditArchives(ListAuditArchivesRequest) returns (ListAuditArchivesResponse);
 }
 
 enum Role {
@@ -102,6 +104,17 @@ message GetProjectUsageResponse {
   int64 job_count = 3;
 }
 
+message GetStorageUsageRequest {}
+message GetStorageUsageResponse {
+  int64 source_bytes = 1;
+  int64 artifact_bytes = 2;
+  int64 total_bytes = 3;
+  int64 source_objects = 4;
+  int64 artifact_objects = 5;
+  int64 other_bytes = 6;
+  int64 other_objects = 7;
+}
+
 // TenantPolicy 租户策略（V4.0 §12.4：存储后端/保留期/加密档位按租户持久化）。
 message TenantPolicy {
   string storage_backend = 1;         // s3 / local / byos:<id>
@@ -134,4 +147,16 @@ message ListAuditEventsRequest {
 
 message ListAuditEventsResponse {
   repeated AuditEvent events = 1;
+}
+
+message ListAuditArchivesRequest {
+  int32 limit = 1;
+}
+message AuditArchiveFile {
+  string object_key = 1;
+  int64 size_bytes = 2;
+  int64 updated_at_unix = 3;
+}
+message ListAuditArchivesResponse {
+  repeated AuditArchiveFile files = 1;
 }

@@ -56,11 +56,17 @@ const (
 	// TenantServiceProjectUsageProcedure is the fully-qualified name of the TenantService's
 	// ProjectUsage RPC.
 	TenantServiceProjectUsageProcedure = "/ppts.v1.TenantService/ProjectUsage"
+	// TenantServiceStorageUsageProcedure is the fully-qualified name of the TenantService's
+	// StorageUsage RPC.
+	TenantServiceStorageUsageProcedure = "/ppts.v1.TenantService/StorageUsage"
 	// TenantServicePolicyProcedure is the fully-qualified name of the TenantService's Policy RPC.
 	TenantServicePolicyProcedure = "/ppts.v1.TenantService/Policy"
 	// TenantServiceListAuditEventsProcedure is the fully-qualified name of the TenantService's
 	// ListAuditEvents RPC.
 	TenantServiceListAuditEventsProcedure = "/ppts.v1.TenantService/ListAuditEvents"
+	// TenantServiceListAuditArchivesProcedure is the fully-qualified name of the TenantService's
+	// ListAuditArchives RPC.
+	TenantServiceListAuditArchivesProcedure = "/ppts.v1.TenantService/ListAuditArchives"
 )
 
 // TenantServiceClient is a client for the ppts.v1.TenantService service.
@@ -74,8 +80,10 @@ type TenantServiceClient interface {
 	Quota(context.Context, *connect.Request[v1.GetQuotaRequest]) (*connect.Response[v1.TenantQuota], error)
 	Usage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
 	ProjectUsage(context.Context, *connect.Request[v1.GetProjectUsageRequest]) (*connect.Response[v1.GetProjectUsageResponse], error)
+	StorageUsage(context.Context, *connect.Request[v1.GetStorageUsageRequest]) (*connect.Response[v1.GetStorageUsageResponse], error)
 	Policy(context.Context, *connect.Request[v1.GetPolicyRequest]) (*connect.Response[v1.TenantPolicy], error)
 	ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error)
+	ListAuditArchives(context.Context, *connect.Request[v1.ListAuditArchivesRequest]) (*connect.Response[v1.ListAuditArchivesResponse], error)
 }
 
 // NewTenantServiceClient constructs a client for the ppts.v1.TenantService service. By default, it
@@ -143,6 +151,12 @@ func NewTenantServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(tenantServiceMethods.ByName("ProjectUsage")),
 			connect.WithClientOptions(opts...),
 		),
+		storageUsage: connect.NewClient[v1.GetStorageUsageRequest, v1.GetStorageUsageResponse](
+			httpClient,
+			baseURL+TenantServiceStorageUsageProcedure,
+			connect.WithSchema(tenantServiceMethods.ByName("StorageUsage")),
+			connect.WithClientOptions(opts...),
+		),
 		policy: connect.NewClient[v1.GetPolicyRequest, v1.TenantPolicy](
 			httpClient,
 			baseURL+TenantServicePolicyProcedure,
@@ -155,22 +169,30 @@ func NewTenantServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(tenantServiceMethods.ByName("ListAuditEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		listAuditArchives: connect.NewClient[v1.ListAuditArchivesRequest, v1.ListAuditArchivesResponse](
+			httpClient,
+			baseURL+TenantServiceListAuditArchivesProcedure,
+			connect.WithSchema(tenantServiceMethods.ByName("ListAuditArchives")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // tenantServiceClient implements TenantServiceClient.
 type tenantServiceClient struct {
-	members         *connect.Client[v1.GetMembersRequest, v1.GetMembersResponse]
-	roles           *connect.Client[v1.GetRolesRequest, v1.GetRolesResponse]
-	setMemberRole   *connect.Client[v1.SetMemberRoleRequest, v1.SetMemberRoleResponse]
-	removeMember    *connect.Client[v1.RemoveMemberRequest, v1.RemoveMemberResponse]
-	exportTenant    *connect.Client[v1.ExportTenantRequest, v1.ExportTenantResponse]
-	purgeTenant     *connect.Client[v1.PurgeTenantRequest, v1.PurgeTenantResponse]
-	quota           *connect.Client[v1.GetQuotaRequest, v1.TenantQuota]
-	usage           *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
-	projectUsage    *connect.Client[v1.GetProjectUsageRequest, v1.GetProjectUsageResponse]
-	policy          *connect.Client[v1.GetPolicyRequest, v1.TenantPolicy]
-	listAuditEvents *connect.Client[v1.ListAuditEventsRequest, v1.ListAuditEventsResponse]
+	members           *connect.Client[v1.GetMembersRequest, v1.GetMembersResponse]
+	roles             *connect.Client[v1.GetRolesRequest, v1.GetRolesResponse]
+	setMemberRole     *connect.Client[v1.SetMemberRoleRequest, v1.SetMemberRoleResponse]
+	removeMember      *connect.Client[v1.RemoveMemberRequest, v1.RemoveMemberResponse]
+	exportTenant      *connect.Client[v1.ExportTenantRequest, v1.ExportTenantResponse]
+	purgeTenant       *connect.Client[v1.PurgeTenantRequest, v1.PurgeTenantResponse]
+	quota             *connect.Client[v1.GetQuotaRequest, v1.TenantQuota]
+	usage             *connect.Client[v1.GetUsageRequest, v1.GetUsageResponse]
+	projectUsage      *connect.Client[v1.GetProjectUsageRequest, v1.GetProjectUsageResponse]
+	storageUsage      *connect.Client[v1.GetStorageUsageRequest, v1.GetStorageUsageResponse]
+	policy            *connect.Client[v1.GetPolicyRequest, v1.TenantPolicy]
+	listAuditEvents   *connect.Client[v1.ListAuditEventsRequest, v1.ListAuditEventsResponse]
+	listAuditArchives *connect.Client[v1.ListAuditArchivesRequest, v1.ListAuditArchivesResponse]
 }
 
 // Members calls ppts.v1.TenantService.Members.
@@ -218,6 +240,11 @@ func (c *tenantServiceClient) ProjectUsage(ctx context.Context, req *connect.Req
 	return c.projectUsage.CallUnary(ctx, req)
 }
 
+// StorageUsage calls ppts.v1.TenantService.StorageUsage.
+func (c *tenantServiceClient) StorageUsage(ctx context.Context, req *connect.Request[v1.GetStorageUsageRequest]) (*connect.Response[v1.GetStorageUsageResponse], error) {
+	return c.storageUsage.CallUnary(ctx, req)
+}
+
 // Policy calls ppts.v1.TenantService.Policy.
 func (c *tenantServiceClient) Policy(ctx context.Context, req *connect.Request[v1.GetPolicyRequest]) (*connect.Response[v1.TenantPolicy], error) {
 	return c.policy.CallUnary(ctx, req)
@@ -226,6 +253,11 @@ func (c *tenantServiceClient) Policy(ctx context.Context, req *connect.Request[v
 // ListAuditEvents calls ppts.v1.TenantService.ListAuditEvents.
 func (c *tenantServiceClient) ListAuditEvents(ctx context.Context, req *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error) {
 	return c.listAuditEvents.CallUnary(ctx, req)
+}
+
+// ListAuditArchives calls ppts.v1.TenantService.ListAuditArchives.
+func (c *tenantServiceClient) ListAuditArchives(ctx context.Context, req *connect.Request[v1.ListAuditArchivesRequest]) (*connect.Response[v1.ListAuditArchivesResponse], error) {
+	return c.listAuditArchives.CallUnary(ctx, req)
 }
 
 // TenantServiceHandler is an implementation of the ppts.v1.TenantService service.
@@ -239,8 +271,10 @@ type TenantServiceHandler interface {
 	Quota(context.Context, *connect.Request[v1.GetQuotaRequest]) (*connect.Response[v1.TenantQuota], error)
 	Usage(context.Context, *connect.Request[v1.GetUsageRequest]) (*connect.Response[v1.GetUsageResponse], error)
 	ProjectUsage(context.Context, *connect.Request[v1.GetProjectUsageRequest]) (*connect.Response[v1.GetProjectUsageResponse], error)
+	StorageUsage(context.Context, *connect.Request[v1.GetStorageUsageRequest]) (*connect.Response[v1.GetStorageUsageResponse], error)
 	Policy(context.Context, *connect.Request[v1.GetPolicyRequest]) (*connect.Response[v1.TenantPolicy], error)
 	ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error)
+	ListAuditArchives(context.Context, *connect.Request[v1.ListAuditArchivesRequest]) (*connect.Response[v1.ListAuditArchivesResponse], error)
 }
 
 // NewTenantServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -304,6 +338,12 @@ func NewTenantServiceHandler(svc TenantServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(tenantServiceMethods.ByName("ProjectUsage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	tenantServiceStorageUsageHandler := connect.NewUnaryHandler(
+		TenantServiceStorageUsageProcedure,
+		svc.StorageUsage,
+		connect.WithSchema(tenantServiceMethods.ByName("StorageUsage")),
+		connect.WithHandlerOptions(opts...),
+	)
 	tenantServicePolicyHandler := connect.NewUnaryHandler(
 		TenantServicePolicyProcedure,
 		svc.Policy,
@@ -314,6 +354,12 @@ func NewTenantServiceHandler(svc TenantServiceHandler, opts ...connect.HandlerOp
 		TenantServiceListAuditEventsProcedure,
 		svc.ListAuditEvents,
 		connect.WithSchema(tenantServiceMethods.ByName("ListAuditEvents")),
+		connect.WithHandlerOptions(opts...),
+	)
+	tenantServiceListAuditArchivesHandler := connect.NewUnaryHandler(
+		TenantServiceListAuditArchivesProcedure,
+		svc.ListAuditArchives,
+		connect.WithSchema(tenantServiceMethods.ByName("ListAuditArchives")),
 		connect.WithHandlerOptions(opts...),
 	)
 	return "/ppts.v1.TenantService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -336,10 +382,14 @@ func NewTenantServiceHandler(svc TenantServiceHandler, opts ...connect.HandlerOp
 			tenantServiceUsageHandler.ServeHTTP(w, r)
 		case TenantServiceProjectUsageProcedure:
 			tenantServiceProjectUsageHandler.ServeHTTP(w, r)
+		case TenantServiceStorageUsageProcedure:
+			tenantServiceStorageUsageHandler.ServeHTTP(w, r)
 		case TenantServicePolicyProcedure:
 			tenantServicePolicyHandler.ServeHTTP(w, r)
 		case TenantServiceListAuditEventsProcedure:
 			tenantServiceListAuditEventsHandler.ServeHTTP(w, r)
+		case TenantServiceListAuditArchivesProcedure:
+			tenantServiceListAuditArchivesHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -385,10 +435,18 @@ func (UnimplementedTenantServiceHandler) ProjectUsage(context.Context, *connect.
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.TenantService.ProjectUsage is not implemented"))
 }
 
+func (UnimplementedTenantServiceHandler) StorageUsage(context.Context, *connect.Request[v1.GetStorageUsageRequest]) (*connect.Response[v1.GetStorageUsageResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.TenantService.StorageUsage is not implemented"))
+}
+
 func (UnimplementedTenantServiceHandler) Policy(context.Context, *connect.Request[v1.GetPolicyRequest]) (*connect.Response[v1.TenantPolicy], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.TenantService.Policy is not implemented"))
 }
 
 func (UnimplementedTenantServiceHandler) ListAuditEvents(context.Context, *connect.Request[v1.ListAuditEventsRequest]) (*connect.Response[v1.ListAuditEventsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.TenantService.ListAuditEvents is not implemented"))
+}
+
+func (UnimplementedTenantServiceHandler) ListAuditArchives(context.Context, *connect.Request[v1.ListAuditArchivesRequest]) (*connect.Response[v1.ListAuditArchivesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("ppts.v1.TenantService.ListAuditArchives is not implemented"))
 }

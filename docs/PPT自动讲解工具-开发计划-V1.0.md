@@ -245,12 +245,12 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-2 预占过期清理 | ✅ 实现 | retention sweeper 增加 `WithQuotaReservationTTL`：逐租户扫描超过 TTL 仍 `reserved` 的 `quota_reservations`，回退 `tenant_quotas.reserved_units` 并标记 `released`；worker 通过 `PPTS_QUOTA_RESERVATION_TTL`（默认 24h）启用；PG 测试覆盖过期释放与新鲜预占保留 |
 | G3-2 租户并发上限 | ✅ 实现 | `pipeline.PGStore.CountActive`/`ByIdempotency`；`CreateGeneration` 依据 `tenants.policy.max_concurrent_jobs` 在预占前检查非终态任务数，超限返回 `ResourceExhausted`；同 `Idempotency-Key` 重放仍返回既有任务，不同快照复用返回 `AlreadyExists`；API 与 PG 测试覆盖 |
 
-> G3-2 剩余：更完整的 per-tenant 并发/公平策略（当前初版按在途数排序）、定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）。
+> G3-2 剩余：定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）。
 
 | G3-4 审计日志最小版 | 🟡 实现 | `migrations/0009_audit.sql`（`audit_events`，含 FORCE RLS）；`internal/audit` 提供租户隔离的 `Record`/`List`（动作/资源类型/时间过滤）+ `DeleteBefore`（到期清理）；接入 JobService `cancel`/`retry` 与 retention 清理（`source.delete`/`upload.abort`/`quota.reservation_release`），审计失败不阻断主流程；`TenantService.ListAuditEvents` 暴露 admin+ 审计读取 API；`Archiver` 到期待审记账到对象存储（JSONL）后清除，worker 周期运行（`PPTS_AUDIT_RETENTION_DAYS`/`PPTS_AUDIT_ARCHIVE_INTERVAL`）；PG 隔离测试、接线测试、API 授权测试与归档单测覆盖 |
 | G3-4 租户停用最小版 | 🟡 实现 | `migrations/0011_tenant_status.sql` 为 `tenants` 增加 `status/suspended_at/updated_at`（active/suspended/deleted）；`tenant.PGStore` 提供 `Status/TenantActive/Suspend/Resume`；`AuthMiddleware` 可选接入 `TenantStatusChecker`，`cmd/api` 默认注入，suspended/deleted/不存在租户在进入 RPC 前返回 403/PermissionDenied；API 与 PG 测试覆盖 |
 
-> G3-4 剩余：审计管理界面、归档文件检索/生命周期分层、备份恢复演练（RPO≤15min/RTO≤2h）。
+> G3-4 剩余：审计管理界面、归档文件生命周期分层、备份恢复演练（RPO≤15min/RTO≤2h）。
 
 | G3-3 成员/角色内核 | 🟡 存储+读取+管理+门禁 | `migrations/0010_members.sql`（`tenant_members`，FORCE RLS）；`internal/membership`（GetRole/List/SetRole/Remove，角色校验）；`TenantService.Members/Roles/SetMemberRole/RemoveMember` 落地（admin+ 管理普通成员，owner 变更仅 owner）；`cmd/api` 注入。授权门禁 `requireRole` 已覆盖配音生成、任务取消/重试、Project Create/Archive、Script Update/Approve/Lock/GenerateDraft、Upload Create/Complete/Abort、Export Create/CreateDownload；未配置成员读取时保持开发放行；PG 隔离、API 读写与门禁测试覆盖 |
 
@@ -263,8 +263,12 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-6 存储策略路由 | 🟡 最小实现 | `internal/integrations/objectstore.Registry` 按 `ObjectKey.TenantID` 查询租户 `storage_backend` 并路由到注册后端；空策略回退默认 local；未知后端返回 `ErrBackendNotFound`，不伪成功。`cmd/api` 与 `cmd/worker` 均改为通过 Registry 使用对象存储，现有 local 行为保持不变 |
 | G3-6 生命周期接口 | 🟡 下发实现 | Registry 支持按租户后端下发生命周期策略；S3 适配器已有原生 lifecycle 翻译，local 的 `ErrOperationNotSupported` 被跳过。`storagelifecycle.Syncer` 读取 active 租户 `storage_transition_days`/`storage_expiration_days`，worker 通过 `PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期下发；`source_retention_days` 仍由 DB 保留清理精确处理，不映射为桶级过期规则 |
 | G3-6 多后端接入 | ✅ 实现 | `internal/integrations/objectstore/storefactory` 从 `PPTS_OBJECT_BACKEND`/`PPTS_OBJECT_*`/`PPTS_S3_*` 构建 local+s3 注册表并校验默认后端；`cmd/api`/`cmd/worker` 统一改用工厂，业务代码只依赖 Registry 接口；补工厂单测 |
+| G3-6 存储占用汇总 | ✅ 实现 | `migrations/0014_object_inventory.sql` 新增 `object_inventory`（FORCE RLS）；API/worker 通过 `objectstore.WithInventory` 在 Put/Delete 后维护对象清单；`tenant.PGStore.StorageUsage` 与 `TenantService.StorageUsage` 汇总源上传、artifact 与清单中未被前两者覆盖的 work/audio/export/archive 等对象；不依赖对象存储 List |
+| G3-6 BYOS 凭据加密存储 | 🟡 控制面实现 | `migrations/0015_byos_credentials.sql` 新增 `byos_credentials`（FORCE RLS）；`tenant.PGStore.SetBYOSCredential/GetBYOSCredential/RemoveBYOSCredential` 以 AES-GCM 加密存取配置，AAD 绑定 tenant/credential/backend，`kms_key_id` 记录外部包裹密钥标识；PG 测试覆盖密文不等于明文、解密、移除与 AAD 拒绝 |
+| G3-6 BYOS 运行时动态路由 | 🟡 S3 兼容实现 | `objectstore.Registry` 支持动态后端解析；`storefactory.BYOSResolver` 识别 `storage_backend=byos:<credential_id>`，通过 `PPTS_BYOS_AES_KEY_BASE64` 解密租户凭据并按需构建/缓存 S3 兼容 Store；未配置凭据读取器或密钥时保持显式失败，不回退默认后端 |
+| G3-6 对象信封加密 | ✅ 最小实现 | `objectstore.WithEnvelopeEncryption` 按租户 `envelope_encryption` 策略在 Put 加密/Get 解密（AES-GCM，AAD 绑定对象键），启用加密租户的直接预签名读写返回不支持以避免绕过；`PPTS_OBJECT_ENCRYPTION_KEY_BASE64` 接入 storefactory，API/worker 包装 Registry→Inventory→Encryption；补 round-trip/预签名禁用/明文直通测试 |
 
-> G3-6 剩余：BYOS 凭据加密存储、按租户区域/桶路由、存储成本按租户汇总、企业信封加密/KMS。
+> G3-6 剩余：按租户区域/桶路由。企业信封加密最小实现已落地（见上），外部 KMS 包裹密钥可替换本地 AES 密钥。
 
 | G3-7 数据保留/到期清理 | ✅ 实现 | `migrations/0008_retention.sql`（`source_revisions.source_deleted_at`）；`internal/retention` 提供 `Sweeper`：按控制面 tenants 逐租户清理（租户上下文内）。执行两类删除——① 项目 `source_retention_days` 到期；② 上传会话 `delete_source_after=true` 且解析任务已成功；并清理超时仍 `pending` 的孤儿上传（删除临时对象 + 置 aborted，对象已不存在视为幂等成功） |
 | G3-7 接线与测试 | ✅ | `cmd/worker` 启动清理循环（`PPTS_RETENTION_INTERVAL` 默认 1h、`PPTS_UPLOAD_ABANDON_TTL` 默认 24h，启动即跑一次）；`internal/retention/postgres_test.go`（到期源/处理后删除/孤儿上传均删除并标记、未到期保留） |
@@ -275,7 +279,7 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-8 结构化请求日志 | ✅ 实现 | `observability.RequestLogger` 中间件：为每请求生成 `X-Request-ID`（上下文可读），输出 `request_id/method/path/status/duration_ms/bytes/tenant/user` 结构化日志；`cmd/api` 以 JSON slog 输出；中间件单测覆盖字段与响应头 |
 | G3-8 每项目用量查询 | ✅ 实现 | `usage.PGStore.ProjectUsage` 将 usage_ledger 按幂等键关联 narration 任务归属项目，返回累计生成秒数与任务数；`TenantService.ProjectUsage` RPC；PG/API 门禁覆盖（成本金额随正式定价表） |
 
-> G3-8 剩余：当前积压"最老等待"gauge（现为领取时观测）、OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化、worker 侧结构化日志统一。
+> G3-8 剩余：OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化。
 
 | G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 服务端流已实现：`pipeline.PGStore.UpdatedSince` 按 `updated_at` 升序增量轮询，`seq=updated_at UnixNano`，支持 `after_seq` 断点续传 |
 | G3-9 TenantService | 🟡 部分实现 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）、`Members`/`Roles`（基于 `tenant_members`，G3-3 内核）；未配置成员读取时返回 `Unimplemented` |
@@ -388,3 +392,12 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-13 | V1.2 | G3-4 登记：租户导出/数据擦除，`tenant.PGStore.ExportTenant`（JSONL+manifest 到对象存储）与 `PurgeTenant`（对象 GC + RLS 上下文逐表删除 + 置 deleted）；TenantService 新增 owner 级 `ExportTenant`/`PurgeTenant` RPC；补 PG 与 API 门禁测试 |
 | 2026-09-13 | V1.2 | G3-8 登记：每项目用量查询，`usage.PGStore.ProjectUsage` 按账本幂等键关联 narration 任务归属项目；TenantService 新增 `ProjectUsage` RPC；补 PG 与 API 测试 |
 | 2026-09-13 | V1.2 | G3-6 登记：新增 `storagelifecycle.Syncer` 与 `tenant.PGStore.ListLifecyclePolicies`，worker 周期下发 active 租户显式存储生命周期策略；补 Syncer/API/PG 测试 |
+| 2026-09-13 | V1.2 | G3-6 登记：新增 `tenant.PGStore.StorageUsage` 与 `TenantService.StorageUsage`，按源上传和 artifact 元数据汇总租户存储占用；补 PG/API 测试 |
+| 2026-09-13 | V1.2 | G3-6 登记：migration 0014 新增 `object_inventory`；`objectstore.WithInventory` 接入 API/worker 对象写删；StorageUsage 纳入 work/audio/export/archive 等清单对象；补 wrapper 与 PG 测试 |
+| 2026-09-13 | V1.2 | G3-6 登记：migration 0015 新增 `byos_credentials` 加密凭据表；`tenant.PGStore` 支持 AES-GCM 存取 BYOS 凭据；补 PG/AAD 测试 |
+| 2026-09-13 | V1.2 | G3-6 登记：Registry 支持动态后端；新增 `storefactory.BYOSResolver`，`byos:<credential_id>` 可解密 BYOS 凭据并动态构建 S3 兼容 Store；补缓存/环境变量测试 |
+| 2026-09-13 | V1.2 | G3-6 登记：对象信封加密最小实现，`objectstore.WithEnvelopeEncryption` + `PPTS_OBJECT_ENCRYPTION_KEY_BASE64`，启用租户 Put/Get 服务端 AES-GCM 加解密、禁用直接预签名；补测试 |
+| 2026-09-13 | V1.2 | G3-4 登记：`tenant.PGStore.ListAuditArchives` + `TenantService.ListAuditArchives`，基于 `object_inventory` 返回租户审计归档对象清单（admin+）；补 API/PG 测试 |
+| 2026-09-13 | V1.2 | G3-2/ADR-018 登记：migration 0016 重建 `ppts_claim_next_job`，narration 任务按 `tenants.policy.max_concurrent_jobs` 并发上限领取；补 PG 测试 |
+| 2026-09-13 | V1.2 | G3-8 登记：队列积压最老等待 gauge，`migrations/0017_queue_backlog.sql` 受限函数 + `PGStore.OldestQueuedAge` + `observability.QueueBacklogReporter`（`PPTS_QUEUE_BACKLOG_INTERVAL` 默认 30s）；补单测与 PG 测试 |
+| 2026-09-13 | V1.2 | G3-8 登记：worker 结构化日志统一，slog JSON 输出，后台循环经 `slog.NewLogLogger` 适配器对齐 |

@@ -68,3 +68,10 @@ func TestFromEnvRejectsBadUseSSL(t *testing.T) {
 		t.Fatalf("FromEnv should reject invalid PPTS_S3_USE_SSL")
 	}
 }
+
+func TestWithEnvelopeEncryptionFromEnvRejectsBadKey(t *testing.T) {
+	t.Setenv("PPTS_OBJECT_ENCRYPTION_KEY_BASE64", "not-base64")
+	if _, err := WithEnvelopeEncryptionFromEnv(objectstore.NewLocal(t.TempDir(), nil), nil); err == nil {
+		t.Fatalf("WithEnvelopeEncryptionFromEnv should reject bad key")
+	}
+}

@@ -9,12 +9,14 @@
 package storefactory
 
 import (
+	"encoding/base64"
 	"errors"
 	"os"
 	"strconv"
 
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/s3"
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // Config 描述可注册的后端集合。
@@ -23,6 +25,13 @@ type Config struct {
 	LocalRoot   string
 	LocalSecret string
 	S3          *S3Config
+	BYOS        *BYOSConfig
+}
+
+// BYOSConfig enables dynamic customer-owned S3-compatible backends.
+type BYOSConfig struct {
+	Credentials BYOSCredentialReader
+	Cipher      tenant.CredentialCipher
 }
 
 // S3Config 是 S3 兼容后端配置。
@@ -59,7 +68,14 @@ func New(cfg Config, resolver objectstore.BackendResolver) (*objectstore.Registr
 	if def == "" {
 		def = "local"
 	}
-	return objectstore.NewRegistry(def, stores, resolver)
+	registry, err := objectstore.NewRegistry(def, stores, resolver)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.BYOS != nil {
+		registry.WithDynamicResolver(NewBYOSResolver(cfg.BYOS.Credentials, cfg.BYOS.Cipher))
+	}
+	return registry, nil
 }
 
 // FromEnv 从环境变量构建 Registry。
@@ -87,5 +103,33 @@ func FromEnv(resolver objectstore.BackendResolver) (*objectstore.Registry, error
 			UseSSL:    useSSL,
 		}
 	}
+	if rawKey := os.Getenv("PPTS_BYOS_AES_KEY_BASE64"); rawKey != "" {
+		key, err := base64.StdEncoding.DecodeString(rawKey)
+		if err != nil {
+			return nil, err
+		}
+		cipher, err := tenant.NewAESGCMCipher(key)
+		if err != nil {
+			return nil, err
+		}
+		creds, ok := resolver.(BYOSCredentialReader)
+		if !ok {
+			return nil, errors.New("objectstore: BYOS credentials require resolver implementing BYOSCredentialReader")
+		}
+		cfg.BYOS = &BYOSConfig{Credentials: creds, Cipher: cipher}
+	}
 	return New(cfg, resolver)
+}
+
+// WithEnvelopeEncryptionFromEnv wraps store when PPTS_OBJECT_ENCRYPTION_KEY_BASE64 is set.
+func WithEnvelopeEncryptionFromEnv(store objectstore.ObjectStore, resolver objectstore.EnvelopeEncryptionResolver) (objectstore.ObjectStore, error) {
+	rawKey := os.Getenv("PPTS_OBJECT_ENCRYPTION_KEY_BASE64")
+	if rawKey == "" {
+		return store, nil
+	}
+	key, err := base64.StdEncoding.DecodeString(rawKey)
+	if err != nil {
+		return nil, err
+	}
+	return objectstore.WithEnvelopeEncryption(store, resolver, key)
 }

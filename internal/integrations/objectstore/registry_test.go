@@ -88,3 +88,33 @@ func TestRegistryRejectsUnknownBackend(t *testing.T) {
 		t.Fatalf("Put unknown backend = %v, want ErrBackendNotFound", err)
 	}
 }
+
+type dynamicBackendResolver struct {
+	store ObjectStore
+	seen  string
+}
+
+func (d *dynamicBackendResolver) ObjectStoreForBackend(_ context.Context, _ string, backend string) (ObjectStore, error) {
+	d.seen = backend
+	return d.store, nil
+}
+
+func TestRegistryRoutesDynamicBackend(t *testing.T) {
+	dynStore := newMemoryStore()
+	dyn := &dynamicBackendResolver{store: dynStore}
+	registry, err := NewRegistry("local", map[string]ObjectStore{"local": newMemoryStore()}, testBackendResolver{"tenant-1": "byos:main"})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	registry.WithDynamicResolver(dyn)
+	key := ObjectKey{TenantID: "tenant-1", ProjectID: "p", Revision: "r", AssetType: "source", AssetID: "a"}
+	if err := registry.Put(context.Background(), key, bytes.NewReader([]byte("x")), ObjectMeta{}); err != nil {
+		t.Fatalf("Put dynamic: %v", err)
+	}
+	if dyn.seen != "byos:main" {
+		t.Fatalf("dynamic backend = %q want byos:main", dyn.seen)
+	}
+	if _, ok := dynStore.objects[key.String()]; !ok {
+		t.Fatalf("dynamic store did not receive object")
+	}
+}

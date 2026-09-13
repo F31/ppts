@@ -13,6 +13,7 @@ var (
 	workerJobsTotal            = expvar.NewMap("ppts_worker_jobs_total")
 	workerJobMillisTotal       = expvar.NewMap("ppts_worker_job_duration_ms_total")
 	workerQueueWaitMillisTotal = expvar.NewMap("ppts_worker_queue_wait_ms_total")
+	queueOldestWaitSeconds     = expvar.NewFloat("ppts_worker_queue_oldest_wait_seconds")
 	ttsSynthesisTotal          = expvar.NewMap("ppts_tts_synthesis_total")
 	ttsSynthesisMillisTotal    = expvar.NewMap("ppts_tts_synthesis_duration_ms_total")
 	ttsThrottledTotal          = expvar.NewMap("ppts_tts_throttled_total")
@@ -47,6 +48,11 @@ func (m *PipelineMetrics) JobCancelRequested(job *pipeline.Job) {
 
 func (m *PipelineMetrics) JobLeaseLost(job *pipeline.Job) {
 	workerJobsTotal.Add(jobKey(job, "lease_lost"), 1)
+}
+
+// SetQueueOldestWait updates the queue backlog gauge with the age of the oldest runnable queued job.
+func (m *PipelineMetrics) SetQueueOldestWait(seconds float64) {
+	queueOldestWaitSeconds.Set(seconds)
 }
 
 // SegmentSynthesized records TTS provider synthesis outcomes.

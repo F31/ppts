@@ -60,6 +60,8 @@ API 依赖已应用迁移的 PostgreSQL。G1 开发身份由可信上游头
 跨租户调度（ADR-018，`migrations/0013_scheduler_role.sql`）：`ppts_scheduler` 仅可执行受限函数
 `ppts_claim_next_job`，无业务表通用读取权；worker 未设 `PPTS_TENANT_ID` 时按跨租户模式全局领取（按租户在途数初版公平排序），
 并可用 `PPTS_SCHEDULER_DATABASE_URL` 提供独立调度连接，handler 执行与终态提交仍走业务连接。
+调度并发上限（`migrations/0016_scheduler_concurrency_cap.sql`）：`ppts_claim_next_job` 对 narration 任务
+执行 `tenants.policy.max_concurrent_jobs` 并发上限，避免单租户占满队列。
 
 ```bash
 PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
@@ -83,12 +85,24 @@ GOWORK=off go run ./cmd/worker
 存储生命周期下发：租户策略 `storage_transition_days`/`storage_expiration_days` 显式配置时，worker 通过
 `PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期调用对象存储生命周期接口；`source_retention_days` 仍由
 数据库保留清理精确处理，不映射为桶级过期规则。
+存储占用可见性：API/worker 对象存储写入会同步维护 `object_inventory`；`TenantService.StorageUsage` 按源上传、
+artifact 与清单中未被前两者覆盖的 work/audio/export/archive 等对象汇总字节数/对象数，不依赖对象存储 List。
+BYOS 凭据（G3-6，`migrations/0015_byos_credentials.sql`）：`byos_credentials` 按租户 RLS 隔离，配置以 AES-GCM
+密文保存（AAD 绑定 tenant/credential/backend），`kms_key_id` 记录外部包裹密钥标识；租户策略
+`storage_backend=byos:<credential_id>` 且设置 `PPTS_BYOS_AES_KEY_BASE64` 时，Registry 会按需解密凭据并动态构建
+S3 兼容后端。
+对象信封加密：设置 `PPTS_OBJECT_ENCRYPTION_KEY_BASE64` 后，租户策略 `envelope_encryption=true` 的对象 Put/Get
+会在服务端 AES-GCM 加/解密；为避免绕过服务端加密，启用加密租户的直接预签名读写会返回不支持。
 
 API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar 指标。worker 已接入基础任务指标：
 `ppts_worker_jobs_total`（按事件/终态）、`ppts_worker_job_duration_ms_total`（执行时长）、
-`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed），
+`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed）、
+`ppts_worker_queue_oldest_wait_seconds`（队列积压最老任务等待时长，由 `migrations/0017_queue_backlog.sql`
+受限函数 + worker 周期报告器更新，`PPTS_QUEUE_BACKLOG_INTERVAL` 默认 30s），
 以及 TTS 指标 `ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`，
 均按租户与任务类型聚合。
+worker 日志统一为结构化 JSON（slog），后台循环（保留清理/审计归档/生命周期/队列积压）经
+`slog.NewLogLogger` 适配器输出，与 worker 自身日志一致。
 
 租户策略 `tenants.policy.max_concurrent_jobs`（>0 时生效）限制配音生成的非终态任务数，超限返回 `ResourceExhausted`；
 同 `Idempotency-Key` 重放不受上限影响，仍返回既有任务。
@@ -96,7 +110,8 @@ API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar
 审计日志（G3-4，`migrations/0009_audit.sql`）：`audit_events` 按租户隔离（FORCE RLS），记录任务取消/重试与
 保留清理删除等操作；`TenantService.ListAuditEvents` 提供 admin+ 审计读取 API，可按 action/resource_type/since 过滤。
 到期审计事件由 worker 归档到对象存储（JSONL）后清除：`PPTS_AUDIT_RETENTION_DAYS`（默认 365）控制保留期，
-`PPTS_AUDIT_ARCHIVE_INTERVAL`（默认 1h）控制执行周期。
+`PPTS_AUDIT_ARCHIVE_INTERVAL`（默认 1h）控制执行周期；`TenantService.ListAuditArchives` 按 `object_inventory`
+返回归档对象清单（admin+）。
 
 租户生命周期（G3-4，`migrations/0011_tenant_status.sql`）：`tenants.status` 为 `active/suspended/deleted`；
 API 默认检查租户 active 状态，停用/删除租户请求在进入 RPC 前返回 403/PermissionDenied。

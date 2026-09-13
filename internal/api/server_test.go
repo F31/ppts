@@ -903,6 +903,21 @@ type fakeTenantPolicy struct {
 	err    error
 }
 
+type fakeTenantStorage struct {
+	usage *tenant.StorageUsage
+	err   error
+}
+
+func (f *fakeTenantStorage) StorageUsage(context.Context, string) (*tenant.StorageUsage, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.usage == nil {
+		return &tenant.StorageUsage{}, nil
+	}
+	return f.usage, nil
+}
+
 func (f *fakeTenantPolicy) GetPolicy(context.Context, string) (*tenant.Policy, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -1024,6 +1039,63 @@ func TestTenantServiceProjectUsage(t *testing.T) {
 	}
 	if _, err := client.ProjectUsage(context.Background(), authRequest(&pptsv1.GetProjectUsageRequest{})); connect.CodeOf(err) != connect.CodeInvalidArgument {
 		t.Fatalf("missing project_id code = %v want InvalidArgument", connect.CodeOf(err))
+	}
+}
+
+func TestTenantServiceStorageUsage(t *testing.T) {
+	storage := &fakeTenantStorage{usage: &tenant.StorageUsage{
+		SourceBytes: 30, ArtifactBytes: 7, OtherBytes: 5, TotalBytes: 42, SourceObjects: 2, ArtifactObjects: 1, OtherObjects: 1,
+	}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Storage: storage}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	resp, err := client.StorageUsage(context.Background(), authRequest(&pptsv1.GetStorageUsageRequest{}))
+	if err != nil {
+		t.Fatalf("StorageUsage: %v", err)
+	}
+	if resp.Msg.GetSourceBytes() != 30 || resp.Msg.GetArtifactBytes() != 7 || resp.Msg.GetOtherBytes() != 5 ||
+		resp.Msg.GetTotalBytes() != 42 || resp.Msg.GetSourceObjects() != 2 || resp.Msg.GetArtifactObjects() != 1 ||
+		resp.Msg.GetOtherObjects() != 1 {
+		t.Fatalf("storage usage = %+v", resp.Msg)
+	}
+}
+
+type fakeTenantArchive struct {
+	files []tenant.ArchiveFile
+	err   error
+	limit int
+}
+
+func (f *fakeTenantArchive) ListAuditArchives(context.Context, string, int) ([]tenant.ArchiveFile, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.files, nil
+}
+
+func TestTenantServiceListAuditArchivesRequiresAdmin(t *testing.T) {
+	members := &fakeRoleReader{roles: map[string]membership.Role{"user-1": membership.RoleReviewer}}
+	archive := &fakeTenantArchive{files: []tenant.ArchiveFile{
+		{ObjectKey: "t/audit/archive/audit/x.jsonl", SizeBytes: 10, UpdatedAt: time.Unix(200, 0)},
+	}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Archive: archive}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	if _, err := client.ListAuditArchives(context.Background(), authRequest(&pptsv1.ListAuditArchivesRequest{})); connect.CodeOf(err) != connect.CodePermissionDenied {
+		t.Fatalf("reviewer list archives code = %v want PermissionDenied", connect.CodeOf(err))
+	}
+	members.roles["user-1"] = membership.RoleAdmin
+	resp, err := client.ListAuditArchives(context.Background(), authRequest(&pptsv1.ListAuditArchivesRequest{Limit: 10}))
+	if err != nil {
+		t.Fatalf("admin list archives: %v", err)
+	}
+	if len(resp.Msg.GetFiles()) != 1 || resp.Msg.GetFiles()[0].GetObjectKey() != "t/audit/archive/audit/x.jsonl" ||
+		resp.Msg.GetFiles()[0].GetSizeBytes() != 10 || resp.Msg.GetFiles()[0].GetUpdatedAtUnix() != 200 {
+		t.Fatalf("archive files = %+v", resp.Msg.GetFiles())
 	}
 }
 

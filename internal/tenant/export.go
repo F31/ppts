@@ -20,10 +20,12 @@ var businessTables = []string{
 	"uploads",
 	"source_revisions",
 	"artifacts",
+	"object_inventory",
 	"jobs",
 	"narration_segments",
 	"narration_scripts",
 	"projects",
+	"byos_credentials",
 	"tenant_members",
 	"tenant_quotas",
 	"quota_reservations",
@@ -54,6 +56,7 @@ var objectTables = []struct {
 	{"uploads", "object_key"},
 	{"source_revisions", "object_key"},
 	{"artifacts", "object_key"},
+	{"object_inventory", "object_key"},
 }
 
 // ExportTenant 把租户全部业务数据按表导出为对象存储 JSONL 并返回清单。

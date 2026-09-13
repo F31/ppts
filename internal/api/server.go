@@ -24,6 +24,8 @@ type Options struct {
 	Audit        audit.Store
 	Members      membership.Store
 	Lifecycle    TenantLifecycle
+	Storage      TenantStorageReader
+	Archive      TenantArchiveReader
 	TenantStatus TenantStatusChecker
 }
 
@@ -58,7 +60,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	path, handler = pptsv1connect.NewJobServiceHandler(NewJobService(jobs, opt.Quota, opt.Audit, opt.Members))
 	mux.Handle(path, auth(handler))
 	if opt.Usage != nil && opt.Policy != nil {
-		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy, opt.Members, opt.Audit, opt.Lifecycle, objects))
+		path, handler = pptsv1connect.NewTenantServiceHandler(NewTenantService(opt.Usage, opt.Policy, opt.Members, opt.Audit, opt.Lifecycle, objects, opt.Storage, opt.Archive))
 		mux.Handle(path, auth(handler))
 	}
 	if parser, ok := objects.(signedURLParser); ok {

@@ -14,6 +14,7 @@ import (
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
@@ -60,7 +61,12 @@ func run() error {
 	defer jobs.Close()
 
 	policyStore := tenant.NewPGStore(pool)
-	objects, err := storefactory.FromEnv(policyStore)
+	registry, err := storefactory.FromEnv(policyStore)
+	if err != nil {
+		return err
+	}
+	objects := objectstore.WithInventory(registry, policyStore)
+	objects, err = storefactory.WithEnvelopeEncryptionFromEnv(objects, policyStore)
 	if err != nil {
 		return err
 	}
@@ -74,7 +80,7 @@ func run() error {
 			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
 				objects,
-				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, TenantStatus: policyStore}),
+				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore}),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}

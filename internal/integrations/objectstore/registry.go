@@ -14,6 +14,11 @@ type BackendResolver interface {
 	ObjectStoreBackend(ctx context.Context, tenantID string) (string, error)
 }
 
+// DynamicBackendResolver lazily creates object stores for backend names not statically registered.
+type DynamicBackendResolver interface {
+	ObjectStoreForBackend(ctx context.Context, tenantID, backend string) (ObjectStore, error)
+}
+
 // ErrBackendNotFound means a tenant policy references an unregistered backend.
 var ErrBackendNotFound = errors.New("objectstore: backend not found")
 
@@ -22,6 +27,7 @@ type Registry struct {
 	defaultBackend string
 	stores         map[string]ObjectStore
 	resolver       BackendResolver
+	dynamic        DynamicBackendResolver
 }
 
 // NewRegistry creates a tenant-aware object store router.
@@ -42,6 +48,12 @@ func NewRegistry(defaultBackend string, stores map[string]ObjectStore, resolver 
 	return &Registry{defaultBackend: defaultBackend, stores: copyStores, resolver: resolver}, nil
 }
 
+// WithDynamicResolver enables lazy backend creation for names not statically registered.
+func (r *Registry) WithDynamicResolver(dynamic DynamicBackendResolver) *Registry {
+	r.dynamic = dynamic
+	return r
+}
+
 func (r *Registry) storeFor(ctx context.Context, tenantID string) (ObjectStore, error) {
 	backend := r.defaultBackend
 	if r.resolver != nil {
@@ -55,6 +67,15 @@ func (r *Registry) storeFor(ctx context.Context, tenantID string) (ObjectStore, 
 	}
 	store := r.stores[backend]
 	if store == nil {
+		if r.dynamic != nil {
+			store, err := r.dynamic.ObjectStoreForBackend(ctx, tenantID, backend)
+			if err != nil {
+				return nil, err
+			}
+			if store != nil {
+				return store, nil
+			}
+		}
 		return nil, fmt.Errorf("%w: %s", ErrBackendNotFound, backend)
 	}
 	return store, nil

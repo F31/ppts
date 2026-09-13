@@ -186,6 +186,20 @@ func (s *PGStore) ClaimNextAny(ctx context.Context, leaseOwner string, leaseFor 
 	return j, nil
 }
 
+// OldestQueuedAge returns the age of the oldest runnable queued job across tenants,
+// using the restricted scheduler function. Returns 0 when the queue is empty.
+func (s *PGStore) OldestQueuedAge(ctx context.Context) (time.Duration, error) {
+	var seconds float64
+	err := s.pool.QueryRow(ctx, "SELECT COALESCE(ppts_queue_backlog_seconds(), 0)").Scan(&seconds)
+	if err != nil {
+		return 0, err
+	}
+	if seconds <= 0 {
+		return 0, nil
+	}
+	return time.Duration(seconds * float64(time.Second)), nil
+}
+
 // Heartbeat 续租；发现取消请求返回 ErrCancelRequested，fencing 不匹配返回 ErrLeaseMismatch。
 // 使用 context 中的租户上下文（由 worker 在处理任务前注入）。
 func (s *PGStore) Heartbeat(ctx context.Context, id, owner string, fencing int64, extend time.Duration) error {

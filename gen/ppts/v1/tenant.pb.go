@@ -1007,6 +1007,134 @@ func (x *GetProjectUsageResponse) GetJobCount() int64 {
 	return 0
 }
 
+type GetStorageUsageRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetStorageUsageRequest) Reset() {
+	*x = GetStorageUsageRequest{}
+	mi := &file_ppts_v1_tenant_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStorageUsageRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStorageUsageRequest) ProtoMessage() {}
+
+func (x *GetStorageUsageRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_tenant_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStorageUsageRequest.ProtoReflect.Descriptor instead.
+func (*GetStorageUsageRequest) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{20}
+}
+
+type GetStorageUsageResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	SourceBytes     int64                  `protobuf:"varint,1,opt,name=source_bytes,json=sourceBytes,proto3" json:"source_bytes,omitempty"`
+	ArtifactBytes   int64                  `protobuf:"varint,2,opt,name=artifact_bytes,json=artifactBytes,proto3" json:"artifact_bytes,omitempty"`
+	TotalBytes      int64                  `protobuf:"varint,3,opt,name=total_bytes,json=totalBytes,proto3" json:"total_bytes,omitempty"`
+	SourceObjects   int64                  `protobuf:"varint,4,opt,name=source_objects,json=sourceObjects,proto3" json:"source_objects,omitempty"`
+	ArtifactObjects int64                  `protobuf:"varint,5,opt,name=artifact_objects,json=artifactObjects,proto3" json:"artifact_objects,omitempty"`
+	OtherBytes      int64                  `protobuf:"varint,6,opt,name=other_bytes,json=otherBytes,proto3" json:"other_bytes,omitempty"`
+	OtherObjects    int64                  `protobuf:"varint,7,opt,name=other_objects,json=otherObjects,proto3" json:"other_objects,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *GetStorageUsageResponse) Reset() {
+	*x = GetStorageUsageResponse{}
+	mi := &file_ppts_v1_tenant_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetStorageUsageResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetStorageUsageResponse) ProtoMessage() {}
+
+func (x *GetStorageUsageResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_tenant_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetStorageUsageResponse.ProtoReflect.Descriptor instead.
+func (*GetStorageUsageResponse) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *GetStorageUsageResponse) GetSourceBytes() int64 {
+	if x != nil {
+		return x.SourceBytes
+	}
+	return 0
+}
+
+func (x *GetStorageUsageResponse) GetArtifactBytes() int64 {
+	if x != nil {
+		return x.ArtifactBytes
+	}
+	return 0
+}
+
+func (x *GetStorageUsageResponse) GetTotalBytes() int64 {
+	if x != nil {
+		return x.TotalBytes
+	}
+	return 0
+}
+
+func (x *GetStorageUsageResponse) GetSourceObjects() int64 {
+	if x != nil {
+		return x.SourceObjects
+	}
+	return 0
+}
+
+func (x *GetStorageUsageResponse) GetArtifactObjects() int64 {
+	if x != nil {
+		return x.ArtifactObjects
+	}
+	return 0
+}
+
+func (x *GetStorageUsageResponse) GetOtherBytes() int64 {
+	if x != nil {
+		return x.OtherBytes
+	}
+	return 0
+}
+
+func (x *GetStorageUsageResponse) GetOtherObjects() int64 {
+	if x != nil {
+		return x.OtherObjects
+	}
+	return 0
+}
+
 // TenantPolicy 租户策略（V4.0 §12.4：存储后端/保留期/加密档位按租户持久化）。
 type TenantPolicy struct {
 	state                    protoimpl.MessageState `protogen:"open.v1"`
@@ -1023,7 +1151,7 @@ type TenantPolicy struct {
 
 func (x *TenantPolicy) Reset() {
 	*x = TenantPolicy{}
-	mi := &file_ppts_v1_tenant_proto_msgTypes[20]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1035,7 +1163,7 @@ func (x *TenantPolicy) String() string {
 func (*TenantPolicy) ProtoMessage() {}
 
 func (x *TenantPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_tenant_proto_msgTypes[20]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1048,7 +1176,7 @@ func (x *TenantPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TenantPolicy.ProtoReflect.Descriptor instead.
 func (*TenantPolicy) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{20}
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *TenantPolicy) GetStorageBackend() string {
@@ -1108,7 +1236,7 @@ type GetPolicyRequest struct {
 
 func (x *GetPolicyRequest) Reset() {
 	*x = GetPolicyRequest{}
-	mi := &file_ppts_v1_tenant_proto_msgTypes[21]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1120,7 +1248,7 @@ func (x *GetPolicyRequest) String() string {
 func (*GetPolicyRequest) ProtoMessage() {}
 
 func (x *GetPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_tenant_proto_msgTypes[21]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1133,7 +1261,7 @@ func (x *GetPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetPolicyRequest.ProtoReflect.Descriptor instead.
 func (*GetPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{21}
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{23}
 }
 
 type AuditEvent struct {
@@ -1151,7 +1279,7 @@ type AuditEvent struct {
 
 func (x *AuditEvent) Reset() {
 	*x = AuditEvent{}
-	mi := &file_ppts_v1_tenant_proto_msgTypes[22]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1163,7 +1291,7 @@ func (x *AuditEvent) String() string {
 func (*AuditEvent) ProtoMessage() {}
 
 func (x *AuditEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_tenant_proto_msgTypes[22]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1176,7 +1304,7 @@ func (x *AuditEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuditEvent.ProtoReflect.Descriptor instead.
 func (*AuditEvent) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{22}
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *AuditEvent) GetId() string {
@@ -1240,7 +1368,7 @@ type ListAuditEventsRequest struct {
 
 func (x *ListAuditEventsRequest) Reset() {
 	*x = ListAuditEventsRequest{}
-	mi := &file_ppts_v1_tenant_proto_msgTypes[23]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1252,7 +1380,7 @@ func (x *ListAuditEventsRequest) String() string {
 func (*ListAuditEventsRequest) ProtoMessage() {}
 
 func (x *ListAuditEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_tenant_proto_msgTypes[23]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1265,7 +1393,7 @@ func (x *ListAuditEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListAuditEventsRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{23}
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ListAuditEventsRequest) GetAction() string {
@@ -1305,7 +1433,7 @@ type ListAuditEventsResponse struct {
 
 func (x *ListAuditEventsResponse) Reset() {
 	*x = ListAuditEventsResponse{}
-	mi := &file_ppts_v1_tenant_proto_msgTypes[24]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1317,7 +1445,7 @@ func (x *ListAuditEventsResponse) String() string {
 func (*ListAuditEventsResponse) ProtoMessage() {}
 
 func (x *ListAuditEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_tenant_proto_msgTypes[24]
+	mi := &file_ppts_v1_tenant_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1330,12 +1458,160 @@ func (x *ListAuditEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAuditEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListAuditEventsResponse) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{24}
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ListAuditEventsResponse) GetEvents() []*AuditEvent {
 	if x != nil {
 		return x.Events
+	}
+	return nil
+}
+
+type ListAuditArchivesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Limit         int32                  `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAuditArchivesRequest) Reset() {
+	*x = ListAuditArchivesRequest{}
+	mi := &file_ppts_v1_tenant_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAuditArchivesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAuditArchivesRequest) ProtoMessage() {}
+
+func (x *ListAuditArchivesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_tenant_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAuditArchivesRequest.ProtoReflect.Descriptor instead.
+func (*ListAuditArchivesRequest) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ListAuditArchivesRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type AuditArchiveFile struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ObjectKey     string                 `protobuf:"bytes,1,opt,name=object_key,json=objectKey,proto3" json:"object_key,omitempty"`
+	SizeBytes     int64                  `protobuf:"varint,2,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	UpdatedAtUnix int64                  `protobuf:"varint,3,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuditArchiveFile) Reset() {
+	*x = AuditArchiveFile{}
+	mi := &file_ppts_v1_tenant_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuditArchiveFile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuditArchiveFile) ProtoMessage() {}
+
+func (x *AuditArchiveFile) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_tenant_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuditArchiveFile.ProtoReflect.Descriptor instead.
+func (*AuditArchiveFile) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *AuditArchiveFile) GetObjectKey() string {
+	if x != nil {
+		return x.ObjectKey
+	}
+	return ""
+}
+
+func (x *AuditArchiveFile) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *AuditArchiveFile) GetUpdatedAtUnix() int64 {
+	if x != nil {
+		return x.UpdatedAtUnix
+	}
+	return 0
+}
+
+type ListAuditArchivesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Files         []*AuditArchiveFile    `protobuf:"bytes,1,rep,name=files,proto3" json:"files,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListAuditArchivesResponse) Reset() {
+	*x = ListAuditArchivesResponse{}
+	mi := &file_ppts_v1_tenant_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListAuditArchivesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListAuditArchivesResponse) ProtoMessage() {}
+
+func (x *ListAuditArchivesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_tenant_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListAuditArchivesResponse.ProtoReflect.Descriptor instead.
+func (*ListAuditArchivesResponse) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_tenant_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *ListAuditArchivesResponse) GetFiles() []*AuditArchiveFile {
+	if x != nil {
+		return x.Files
 	}
 	return nil
 }
@@ -1399,7 +1675,18 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x18\n" +
 	"\aseconds\x18\x02 \x01(\x03R\aseconds\x12\x1b\n" +
-	"\tjob_count\x18\x03 \x01(\x03R\bjobCount\"\xf2\x02\n" +
+	"\tjob_count\x18\x03 \x01(\x03R\bjobCount\"\x18\n" +
+	"\x16GetStorageUsageRequest\"\x9c\x02\n" +
+	"\x17GetStorageUsageResponse\x12!\n" +
+	"\fsource_bytes\x18\x01 \x01(\x03R\vsourceBytes\x12%\n" +
+	"\x0eartifact_bytes\x18\x02 \x01(\x03R\rartifactBytes\x12\x1f\n" +
+	"\vtotal_bytes\x18\x03 \x01(\x03R\n" +
+	"totalBytes\x12%\n" +
+	"\x0esource_objects\x18\x04 \x01(\x03R\rsourceObjects\x12)\n" +
+	"\x10artifact_objects\x18\x05 \x01(\x03R\x0fartifactObjects\x12\x1f\n" +
+	"\vother_bytes\x18\x06 \x01(\x03R\n" +
+	"otherBytes\x12#\n" +
+	"\rother_objects\x18\a \x01(\x03R\fotherObjects\"\xf2\x02\n" +
 	"\fTenantPolicy\x12'\n" +
 	"\x0fstorage_backend\x18\x01 \x01(\tR\x0estorageBackend\x12%\n" +
 	"\x0estorage_region\x18\x02 \x01(\tR\rstorageRegion\x122\n" +
@@ -1427,7 +1714,17 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"since_unix\x18\x03 \x01(\x03R\tsinceUnix\x12\x1b\n" +
 	"\tpage_size\x18\x04 \x01(\x05R\bpageSize\"F\n" +
 	"\x17ListAuditEventsResponse\x12+\n" +
-	"\x06events\x18\x01 \x03(\v2\x13.ppts.v1.AuditEventR\x06events*q\n" +
+	"\x06events\x18\x01 \x03(\v2\x13.ppts.v1.AuditEventR\x06events\"0\n" +
+	"\x18ListAuditArchivesRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\"x\n" +
+	"\x10AuditArchiveFile\x12\x1d\n" +
+	"\n" +
+	"object_key\x18\x01 \x01(\tR\tobjectKey\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x02 \x01(\x03R\tsizeBytes\x12&\n" +
+	"\x0fupdated_at_unix\x18\x03 \x01(\x03R\rupdatedAtUnix\"L\n" +
+	"\x19ListAuditArchivesResponse\x12/\n" +
+	"\x05files\x18\x01 \x03(\v2\x19.ppts.v1.AuditArchiveFileR\x05files*q\n" +
 	"\x04Role\x12\x14\n" +
 	"\x10ROLE_UNSPECIFIED\x10\x00\x12\x0e\n" +
 	"\n" +
@@ -1436,7 +1733,7 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"ROLE_ADMIN\x10\x02\x12\x0f\n" +
 	"\vROLE_EDITOR\x10\x03\x12\x11\n" +
 	"\rROLE_REVIEWER\x10\x04\x12\x0f\n" +
-	"\vROLE_VIEWER\x10\x052\xa1\x06\n" +
+	"\vROLE_VIEWER\x10\x052\xd0\a\n" +
 	"\rTenantService\x12B\n" +
 	"\aMembers\x12\x1a.ppts.v1.GetMembersRequest\x1a\x1b.ppts.v1.GetMembersResponse\x12<\n" +
 	"\x05Roles\x12\x18.ppts.v1.GetRolesRequest\x1a\x19.ppts.v1.GetRolesResponse\x12N\n" +
@@ -1446,9 +1743,11 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"\vPurgeTenant\x12\x1b.ppts.v1.PurgeTenantRequest\x1a\x1c.ppts.v1.PurgeTenantResponse\x127\n" +
 	"\x05Quota\x12\x18.ppts.v1.GetQuotaRequest\x1a\x14.ppts.v1.TenantQuota\x12<\n" +
 	"\x05Usage\x12\x18.ppts.v1.GetUsageRequest\x1a\x19.ppts.v1.GetUsageResponse\x12Q\n" +
-	"\fProjectUsage\x12\x1f.ppts.v1.GetProjectUsageRequest\x1a .ppts.v1.GetProjectUsageResponse\x12:\n" +
+	"\fProjectUsage\x12\x1f.ppts.v1.GetProjectUsageRequest\x1a .ppts.v1.GetProjectUsageResponse\x12Q\n" +
+	"\fStorageUsage\x12\x1f.ppts.v1.GetStorageUsageRequest\x1a .ppts.v1.GetStorageUsageResponse\x12:\n" +
 	"\x06Policy\x12\x19.ppts.v1.GetPolicyRequest\x1a\x15.ppts.v1.TenantPolicy\x12T\n" +
-	"\x0fListAuditEvents\x12\x1f.ppts.v1.ListAuditEventsRequest\x1a .ppts.v1.ListAuditEventsResponseB(Z&github.com/F31/ppts/gen/ppts/v1;pptsv1b\x06proto3"
+	"\x0fListAuditEvents\x12\x1f.ppts.v1.ListAuditEventsRequest\x1a .ppts.v1.ListAuditEventsResponse\x12Z\n" +
+	"\x11ListAuditArchives\x12!.ppts.v1.ListAuditArchivesRequest\x1a\".ppts.v1.ListAuditArchivesResponseB(Z&github.com/F31/ppts/gen/ppts/v1;pptsv1b\x06proto3"
 
 var (
 	file_ppts_v1_tenant_proto_rawDescOnce sync.Once
@@ -1463,72 +1762,82 @@ func file_ppts_v1_tenant_proto_rawDescGZIP() []byte {
 }
 
 var file_ppts_v1_tenant_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ppts_v1_tenant_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_ppts_v1_tenant_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
 var file_ppts_v1_tenant_proto_goTypes = []any{
-	(Role)(0),                       // 0: ppts.v1.Role
-	(*Member)(nil),                  // 1: ppts.v1.Member
-	(*GetMembersRequest)(nil),       // 2: ppts.v1.GetMembersRequest
-	(*GetMembersResponse)(nil),      // 3: ppts.v1.GetMembersResponse
-	(*GetRolesRequest)(nil),         // 4: ppts.v1.GetRolesRequest
-	(*GetRolesResponse)(nil),        // 5: ppts.v1.GetRolesResponse
-	(*SetMemberRoleRequest)(nil),    // 6: ppts.v1.SetMemberRoleRequest
-	(*SetMemberRoleResponse)(nil),   // 7: ppts.v1.SetMemberRoleResponse
-	(*RemoveMemberRequest)(nil),     // 8: ppts.v1.RemoveMemberRequest
-	(*RemoveMemberResponse)(nil),    // 9: ppts.v1.RemoveMemberResponse
-	(*ExportTenantRequest)(nil),     // 10: ppts.v1.ExportTenantRequest
-	(*ExportFile)(nil),              // 11: ppts.v1.ExportFile
-	(*ExportTenantResponse)(nil),    // 12: ppts.v1.ExportTenantResponse
-	(*PurgeTenantRequest)(nil),      // 13: ppts.v1.PurgeTenantRequest
-	(*PurgeTenantResponse)(nil),     // 14: ppts.v1.PurgeTenantResponse
-	(*TenantQuota)(nil),             // 15: ppts.v1.TenantQuota
-	(*GetQuotaRequest)(nil),         // 16: ppts.v1.GetQuotaRequest
-	(*GetUsageRequest)(nil),         // 17: ppts.v1.GetUsageRequest
-	(*GetUsageResponse)(nil),        // 18: ppts.v1.GetUsageResponse
-	(*GetProjectUsageRequest)(nil),  // 19: ppts.v1.GetProjectUsageRequest
-	(*GetProjectUsageResponse)(nil), // 20: ppts.v1.GetProjectUsageResponse
-	(*TenantPolicy)(nil),            // 21: ppts.v1.TenantPolicy
-	(*GetPolicyRequest)(nil),        // 22: ppts.v1.GetPolicyRequest
-	(*AuditEvent)(nil),              // 23: ppts.v1.AuditEvent
-	(*ListAuditEventsRequest)(nil),  // 24: ppts.v1.ListAuditEventsRequest
-	(*ListAuditEventsResponse)(nil), // 25: ppts.v1.ListAuditEventsResponse
-	nil,                             // 26: ppts.v1.GetRolesResponse.UserRolesEntry
+	(Role)(0),                         // 0: ppts.v1.Role
+	(*Member)(nil),                    // 1: ppts.v1.Member
+	(*GetMembersRequest)(nil),         // 2: ppts.v1.GetMembersRequest
+	(*GetMembersResponse)(nil),        // 3: ppts.v1.GetMembersResponse
+	(*GetRolesRequest)(nil),           // 4: ppts.v1.GetRolesRequest
+	(*GetRolesResponse)(nil),          // 5: ppts.v1.GetRolesResponse
+	(*SetMemberRoleRequest)(nil),      // 6: ppts.v1.SetMemberRoleRequest
+	(*SetMemberRoleResponse)(nil),     // 7: ppts.v1.SetMemberRoleResponse
+	(*RemoveMemberRequest)(nil),       // 8: ppts.v1.RemoveMemberRequest
+	(*RemoveMemberResponse)(nil),      // 9: ppts.v1.RemoveMemberResponse
+	(*ExportTenantRequest)(nil),       // 10: ppts.v1.ExportTenantRequest
+	(*ExportFile)(nil),                // 11: ppts.v1.ExportFile
+	(*ExportTenantResponse)(nil),      // 12: ppts.v1.ExportTenantResponse
+	(*PurgeTenantRequest)(nil),        // 13: ppts.v1.PurgeTenantRequest
+	(*PurgeTenantResponse)(nil),       // 14: ppts.v1.PurgeTenantResponse
+	(*TenantQuota)(nil),               // 15: ppts.v1.TenantQuota
+	(*GetQuotaRequest)(nil),           // 16: ppts.v1.GetQuotaRequest
+	(*GetUsageRequest)(nil),           // 17: ppts.v1.GetUsageRequest
+	(*GetUsageResponse)(nil),          // 18: ppts.v1.GetUsageResponse
+	(*GetProjectUsageRequest)(nil),    // 19: ppts.v1.GetProjectUsageRequest
+	(*GetProjectUsageResponse)(nil),   // 20: ppts.v1.GetProjectUsageResponse
+	(*GetStorageUsageRequest)(nil),    // 21: ppts.v1.GetStorageUsageRequest
+	(*GetStorageUsageResponse)(nil),   // 22: ppts.v1.GetStorageUsageResponse
+	(*TenantPolicy)(nil),              // 23: ppts.v1.TenantPolicy
+	(*GetPolicyRequest)(nil),          // 24: ppts.v1.GetPolicyRequest
+	(*AuditEvent)(nil),                // 25: ppts.v1.AuditEvent
+	(*ListAuditEventsRequest)(nil),    // 26: ppts.v1.ListAuditEventsRequest
+	(*ListAuditEventsResponse)(nil),   // 27: ppts.v1.ListAuditEventsResponse
+	(*ListAuditArchivesRequest)(nil),  // 28: ppts.v1.ListAuditArchivesRequest
+	(*AuditArchiveFile)(nil),          // 29: ppts.v1.AuditArchiveFile
+	(*ListAuditArchivesResponse)(nil), // 30: ppts.v1.ListAuditArchivesResponse
+	nil,                               // 31: ppts.v1.GetRolesResponse.UserRolesEntry
 }
 var file_ppts_v1_tenant_proto_depIdxs = []int32{
 	0,  // 0: ppts.v1.Member.role:type_name -> ppts.v1.Role
 	1,  // 1: ppts.v1.GetMembersResponse.members:type_name -> ppts.v1.Member
-	26, // 2: ppts.v1.GetRolesResponse.user_roles:type_name -> ppts.v1.GetRolesResponse.UserRolesEntry
+	31, // 2: ppts.v1.GetRolesResponse.user_roles:type_name -> ppts.v1.GetRolesResponse.UserRolesEntry
 	0,  // 3: ppts.v1.SetMemberRoleRequest.role:type_name -> ppts.v1.Role
 	1,  // 4: ppts.v1.SetMemberRoleResponse.member:type_name -> ppts.v1.Member
 	11, // 5: ppts.v1.ExportTenantResponse.files:type_name -> ppts.v1.ExportFile
-	23, // 6: ppts.v1.ListAuditEventsResponse.events:type_name -> ppts.v1.AuditEvent
-	0,  // 7: ppts.v1.GetRolesResponse.UserRolesEntry.value:type_name -> ppts.v1.Role
-	2,  // 8: ppts.v1.TenantService.Members:input_type -> ppts.v1.GetMembersRequest
-	4,  // 9: ppts.v1.TenantService.Roles:input_type -> ppts.v1.GetRolesRequest
-	6,  // 10: ppts.v1.TenantService.SetMemberRole:input_type -> ppts.v1.SetMemberRoleRequest
-	8,  // 11: ppts.v1.TenantService.RemoveMember:input_type -> ppts.v1.RemoveMemberRequest
-	10, // 12: ppts.v1.TenantService.ExportTenant:input_type -> ppts.v1.ExportTenantRequest
-	13, // 13: ppts.v1.TenantService.PurgeTenant:input_type -> ppts.v1.PurgeTenantRequest
-	16, // 14: ppts.v1.TenantService.Quota:input_type -> ppts.v1.GetQuotaRequest
-	17, // 15: ppts.v1.TenantService.Usage:input_type -> ppts.v1.GetUsageRequest
-	19, // 16: ppts.v1.TenantService.ProjectUsage:input_type -> ppts.v1.GetProjectUsageRequest
-	22, // 17: ppts.v1.TenantService.Policy:input_type -> ppts.v1.GetPolicyRequest
-	24, // 18: ppts.v1.TenantService.ListAuditEvents:input_type -> ppts.v1.ListAuditEventsRequest
-	3,  // 19: ppts.v1.TenantService.Members:output_type -> ppts.v1.GetMembersResponse
-	5,  // 20: ppts.v1.TenantService.Roles:output_type -> ppts.v1.GetRolesResponse
-	7,  // 21: ppts.v1.TenantService.SetMemberRole:output_type -> ppts.v1.SetMemberRoleResponse
-	9,  // 22: ppts.v1.TenantService.RemoveMember:output_type -> ppts.v1.RemoveMemberResponse
-	12, // 23: ppts.v1.TenantService.ExportTenant:output_type -> ppts.v1.ExportTenantResponse
-	14, // 24: ppts.v1.TenantService.PurgeTenant:output_type -> ppts.v1.PurgeTenantResponse
-	15, // 25: ppts.v1.TenantService.Quota:output_type -> ppts.v1.TenantQuota
-	18, // 26: ppts.v1.TenantService.Usage:output_type -> ppts.v1.GetUsageResponse
-	20, // 27: ppts.v1.TenantService.ProjectUsage:output_type -> ppts.v1.GetProjectUsageResponse
-	21, // 28: ppts.v1.TenantService.Policy:output_type -> ppts.v1.TenantPolicy
-	25, // 29: ppts.v1.TenantService.ListAuditEvents:output_type -> ppts.v1.ListAuditEventsResponse
-	19, // [19:30] is the sub-list for method output_type
-	8,  // [8:19] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	25, // 6: ppts.v1.ListAuditEventsResponse.events:type_name -> ppts.v1.AuditEvent
+	29, // 7: ppts.v1.ListAuditArchivesResponse.files:type_name -> ppts.v1.AuditArchiveFile
+	0,  // 8: ppts.v1.GetRolesResponse.UserRolesEntry.value:type_name -> ppts.v1.Role
+	2,  // 9: ppts.v1.TenantService.Members:input_type -> ppts.v1.GetMembersRequest
+	4,  // 10: ppts.v1.TenantService.Roles:input_type -> ppts.v1.GetRolesRequest
+	6,  // 11: ppts.v1.TenantService.SetMemberRole:input_type -> ppts.v1.SetMemberRoleRequest
+	8,  // 12: ppts.v1.TenantService.RemoveMember:input_type -> ppts.v1.RemoveMemberRequest
+	10, // 13: ppts.v1.TenantService.ExportTenant:input_type -> ppts.v1.ExportTenantRequest
+	13, // 14: ppts.v1.TenantService.PurgeTenant:input_type -> ppts.v1.PurgeTenantRequest
+	16, // 15: ppts.v1.TenantService.Quota:input_type -> ppts.v1.GetQuotaRequest
+	17, // 16: ppts.v1.TenantService.Usage:input_type -> ppts.v1.GetUsageRequest
+	19, // 17: ppts.v1.TenantService.ProjectUsage:input_type -> ppts.v1.GetProjectUsageRequest
+	21, // 18: ppts.v1.TenantService.StorageUsage:input_type -> ppts.v1.GetStorageUsageRequest
+	24, // 19: ppts.v1.TenantService.Policy:input_type -> ppts.v1.GetPolicyRequest
+	26, // 20: ppts.v1.TenantService.ListAuditEvents:input_type -> ppts.v1.ListAuditEventsRequest
+	28, // 21: ppts.v1.TenantService.ListAuditArchives:input_type -> ppts.v1.ListAuditArchivesRequest
+	3,  // 22: ppts.v1.TenantService.Members:output_type -> ppts.v1.GetMembersResponse
+	5,  // 23: ppts.v1.TenantService.Roles:output_type -> ppts.v1.GetRolesResponse
+	7,  // 24: ppts.v1.TenantService.SetMemberRole:output_type -> ppts.v1.SetMemberRoleResponse
+	9,  // 25: ppts.v1.TenantService.RemoveMember:output_type -> ppts.v1.RemoveMemberResponse
+	12, // 26: ppts.v1.TenantService.ExportTenant:output_type -> ppts.v1.ExportTenantResponse
+	14, // 27: ppts.v1.TenantService.PurgeTenant:output_type -> ppts.v1.PurgeTenantResponse
+	15, // 28: ppts.v1.TenantService.Quota:output_type -> ppts.v1.TenantQuota
+	18, // 29: ppts.v1.TenantService.Usage:output_type -> ppts.v1.GetUsageResponse
+	20, // 30: ppts.v1.TenantService.ProjectUsage:output_type -> ppts.v1.GetProjectUsageResponse
+	22, // 31: ppts.v1.TenantService.StorageUsage:output_type -> ppts.v1.GetStorageUsageResponse
+	23, // 32: ppts.v1.TenantService.Policy:output_type -> ppts.v1.TenantPolicy
+	27, // 33: ppts.v1.TenantService.ListAuditEvents:output_type -> ppts.v1.ListAuditEventsResponse
+	30, // 34: ppts.v1.TenantService.ListAuditArchives:output_type -> ppts.v1.ListAuditArchivesResponse
+	22, // [22:35] is the sub-list for method output_type
+	9,  // [9:22] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_ppts_v1_tenant_proto_init() }
@@ -1542,7 +1851,7 @@ func file_ppts_v1_tenant_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ppts_v1_tenant_proto_rawDesc), len(file_ppts_v1_tenant_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   26,
+			NumMessages:   31,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -67,6 +67,15 @@ func (s *PGStore) ObjectStoreBackend(ctx context.Context, tenantID string) (stri
 	return p.StorageBackend, nil
 }
 
+// ObjectEnvelopeEncryption reports whether object payloads for tenant should be envelope-encrypted.
+func (s *PGStore) ObjectEnvelopeEncryption(ctx context.Context, tenantID string) (bool, error) {
+	p, err := s.GetPolicy(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	return p.EnvelopeEncryption, nil
+}
+
 // ListLifecyclePolicies 返回 active 租户的存储生命周期策略配置。
 func (s *PGStore) ListLifecyclePolicies(ctx context.Context) ([]LifecyclePolicySetting, error) {
 	rows, err := s.pool.Query(ctx, "SELECT id, policy FROM tenants WHERE status='active' ORDER BY id")
