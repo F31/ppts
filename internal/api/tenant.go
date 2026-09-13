@@ -265,6 +265,8 @@ func (s *TenantService) Policy(ctx context.Context, _ *connect.Request[pptsv1.Ge
 		SourceRetentionDays:      int32(policy.SourceRetentionDays),
 		EnvelopeEncryption:       policy.EnvelopeEncryption,
 		DeleteSourceAfterDefault: policy.DeleteSourceAfterDefault,
+		StorageTransitionDays:    int32(policy.StorageTransitionDays),
+		StorageExpirationDays:    int32(policy.StorageExpirationDays),
 	}), nil
 }
 

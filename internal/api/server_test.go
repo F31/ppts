@@ -1273,6 +1273,7 @@ func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 	}
 	p := &fakeTenantPolicy{policy: &tenant.Policy{
 		StorageBackend: "s3", StorageRegion: "cn-north-1", SourceRetentionDays: 30,
+		StorageTransitionDays: 45, StorageExpirationDays: 365,
 		MaxConcurrentJobs: 4, MaxStorageBytes: 1 << 30,
 	}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), Options{Usage: u, Policy: p}))
@@ -1301,7 +1302,8 @@ func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 		t.Fatalf("Policy: %v", err)
 	}
 	if policy.Msg.GetStorageBackend() != "s3" || policy.Msg.GetStorageRegion() != "cn-north-1" ||
-		policy.Msg.GetSourceRetentionDays() != 30 {
+		policy.Msg.GetSourceRetentionDays() != 30 || policy.Msg.GetStorageTransitionDays() != 45 ||
+		policy.Msg.GetStorageExpirationDays() != 365 {
 		t.Fatalf("policy = %+v", policy.Msg)
 	}
 

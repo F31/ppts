@@ -80,6 +80,9 @@ GOWORK=off go run ./cmd/worker
 `local` 使用 `PPTS_OBJECT_ROOT`（`PPTS_OBJECT_SECRET` 用于本地签名链接）；
 `s3` 使用 `PPTS_S3_ENDPOINT`/`PPTS_S3_BUCKET`/`PPTS_S3_ACCESS_KEY`/`PPTS_S3_SECRET_KEY`/`PPTS_S3_REGION`/`PPTS_S3_USE_SSL`。
 租户 `tenants.policy.storage_backend` 可覆盖默认后端，未注册后端会显式失败。
+存储生命周期下发：租户策略 `storage_transition_days`/`storage_expiration_days` 显式配置时，worker 通过
+`PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期调用对象存储生命周期接口；`source_retention_days` 仍由
+数据库保留清理精确处理，不映射为桶级过期规则。
 
 API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar 指标。worker 已接入基础任务指标：
 `ppts_worker_jobs_total`（按事件/终态）、`ppts_worker_job_duration_ms_total`（执行时长）、

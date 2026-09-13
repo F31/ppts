@@ -22,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/retention"
+	"github.com/F31/ppts/internal/storagelifecycle"
 	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/usage"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -137,6 +138,11 @@ func run() error {
 			durationEnv("PPTS_AUDIT_ARCHIVE_INTERVAL", time.Hour))
 	}
 
+	storageSyncer := storagelifecycle.NewSyncer(policyStore, objects, log.Default())
+	storageLifecycleCtx, stopStorageLifecycle := context.WithCancel(ctx)
+	defer stopStorageLifecycle()
+	go runStorageLifecycleSyncer(storageLifecycleCtx, storageSyncer, durationEnv("PPTS_STORAGE_LIFECYCLE_INTERVAL", 6*time.Hour))
+
 	if tenantID == "" {
 		log.Printf("worker %s started in cross-tenant mode (global claim)", owner)
 	} else {
@@ -179,6 +185,23 @@ func runAuditArchiver(ctx context.Context, a *audit.Archiver, retention time.Dur
 			return
 		case <-ticker.C:
 			_ = a.ArchiveBefore(ctx, time.Now().Add(-retention))
+		}
+	}
+}
+
+func runStorageLifecycleSyncer(ctx context.Context, s *storagelifecycle.Syncer, interval time.Duration) {
+	if interval <= 0 {
+		interval = 6 * time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	_ = s.Sync(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = s.Sync(ctx)
 		}
 	}
 }

@@ -109,6 +109,8 @@ message TenantPolicy {
   int32 source_retention_days = 3;    // 源文件保留期（独立于派生产物，默认更短）
   bool envelope_encryption = 4;       // 企业信封加密
   bool delete_source_after_default = 5;
+  int32 storage_transition_days = 6;  // 对象 N 天后转入低频存储；0 表示不下发
+  int32 storage_expiration_days = 7;   // 对象 N 天后过期；0 表示不下发
 }
 
 message GetPolicyRequest {}

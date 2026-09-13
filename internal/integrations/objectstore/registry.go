@@ -114,6 +114,18 @@ func (r *Registry) ApplyLifecyclePolicy(ctx context.Context, bucket string, poli
 	return nil
 }
 
+// ApplyTenantLifecyclePolicy applies lifecycle policy only to the backend selected for tenantID.
+func (r *Registry) ApplyTenantLifecyclePolicy(ctx context.Context, tenantID, bucket string, policy LifecyclePolicy) error {
+	store, err := r.storeFor(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := store.ApplyLifecyclePolicy(ctx, bucket, policy); err != nil && !errors.Is(err, ErrOperationNotSupported) {
+		return err
+	}
+	return nil
+}
+
 // ParseSignedURL delegates local signed URL parsing to registered backends that support it.
 func (r *Registry) ParseSignedURL(raw string) (ObjectKey, Operation, error) {
 	for _, store := range r.stores {

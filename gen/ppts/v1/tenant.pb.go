@@ -1015,6 +1015,8 @@ type TenantPolicy struct {
 	SourceRetentionDays      int32                  `protobuf:"varint,3,opt,name=source_retention_days,json=sourceRetentionDays,proto3" json:"source_retention_days,omitempty"` // 源文件保留期（独立于派生产物，默认更短）
 	EnvelopeEncryption       bool                   `protobuf:"varint,4,opt,name=envelope_encryption,json=envelopeEncryption,proto3" json:"envelope_encryption,omitempty"`      // 企业信封加密
 	DeleteSourceAfterDefault bool                   `protobuf:"varint,5,opt,name=delete_source_after_default,json=deleteSourceAfterDefault,proto3" json:"delete_source_after_default,omitempty"`
+	StorageTransitionDays    int32                  `protobuf:"varint,6,opt,name=storage_transition_days,json=storageTransitionDays,proto3" json:"storage_transition_days,omitempty"` // 对象 N 天后转入低频存储；0 表示不下发
+	StorageExpirationDays    int32                  `protobuf:"varint,7,opt,name=storage_expiration_days,json=storageExpirationDays,proto3" json:"storage_expiration_days,omitempty"` // 对象 N 天后过期；0 表示不下发
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -1082,6 +1084,20 @@ func (x *TenantPolicy) GetDeleteSourceAfterDefault() bool {
 		return x.DeleteSourceAfterDefault
 	}
 	return false
+}
+
+func (x *TenantPolicy) GetStorageTransitionDays() int32 {
+	if x != nil {
+		return x.StorageTransitionDays
+	}
+	return 0
+}
+
+func (x *TenantPolicy) GetStorageExpirationDays() int32 {
+	if x != nil {
+		return x.StorageExpirationDays
+	}
+	return 0
 }
 
 type GetPolicyRequest struct {
@@ -1383,13 +1399,15 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x18\n" +
 	"\aseconds\x18\x02 \x01(\x03R\aseconds\x12\x1b\n" +
-	"\tjob_count\x18\x03 \x01(\x03R\bjobCount\"\x82\x02\n" +
+	"\tjob_count\x18\x03 \x01(\x03R\bjobCount\"\xf2\x02\n" +
 	"\fTenantPolicy\x12'\n" +
 	"\x0fstorage_backend\x18\x01 \x01(\tR\x0estorageBackend\x12%\n" +
 	"\x0estorage_region\x18\x02 \x01(\tR\rstorageRegion\x122\n" +
 	"\x15source_retention_days\x18\x03 \x01(\x05R\x13sourceRetentionDays\x12/\n" +
 	"\x13envelope_encryption\x18\x04 \x01(\bR\x12envelopeEncryption\x12=\n" +
-	"\x1bdelete_source_after_default\x18\x05 \x01(\bR\x18deleteSourceAfterDefault\"\x12\n" +
+	"\x1bdelete_source_after_default\x18\x05 \x01(\bR\x18deleteSourceAfterDefault\x126\n" +
+	"\x17storage_transition_days\x18\x06 \x01(\x05R\x15storageTransitionDays\x126\n" +
+	"\x17storage_expiration_days\x18\a \x01(\x05R\x15storageExpirationDays\"\x12\n" +
 	"\x10GetPolicyRequest\"\xe6\x01\n" +
 	"\n" +
 	"AuditEvent\x12\x0e\n" +

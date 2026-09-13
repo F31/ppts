@@ -261,10 +261,10 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 > G3-5 剩余：磁盘满/对象写失败路径测试、未知供应商结果对账（`StateUnknownResult` 当前无触发路径）、步骤成功与任务终态同事务化（可选 outbox）、强杀操作手册。
 
 | G3-6 存储策略路由 | 🟡 最小实现 | `internal/integrations/objectstore.Registry` 按 `ObjectKey.TenantID` 查询租户 `storage_backend` 并路由到注册后端；空策略回退默认 local；未知后端返回 `ErrBackendNotFound`，不伪成功。`cmd/api` 与 `cmd/worker` 均改为通过 Registry 使用对象存储，现有 local 行为保持不变 |
-| G3-6 生命周期接口 | 🟡 接口层 | Registry 将 `ApplyLifecyclePolicy` 分发到已注册后端，并忽略 local 的 `ErrOperationNotSupported`；S3 适配器已有原生 lifecycle 翻译。真实 per-tenant lifecycle 配置下发与成本汇总待后续 |
+| G3-6 生命周期接口 | 🟡 下发实现 | Registry 支持按租户后端下发生命周期策略；S3 适配器已有原生 lifecycle 翻译，local 的 `ErrOperationNotSupported` 被跳过。`storagelifecycle.Syncer` 读取 active 租户 `storage_transition_days`/`storage_expiration_days`，worker 通过 `PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期下发；`source_retention_days` 仍由 DB 保留清理精确处理，不映射为桶级过期规则 |
 | G3-6 多后端接入 | ✅ 实现 | `internal/integrations/objectstore/storefactory` 从 `PPTS_OBJECT_BACKEND`/`PPTS_OBJECT_*`/`PPTS_S3_*` 构建 local+s3 注册表并校验默认后端；`cmd/api`/`cmd/worker` 统一改用工厂，业务代码只依赖 Registry 接口；补工厂单测 |
 
-> G3-6 剩余：BYOS 凭据加密存储、按租户区域/桶路由、生命周期策略下发时机、存储成本按租户汇总、企业信封加密/KMS。
+> G3-6 剩余：BYOS 凭据加密存储、按租户区域/桶路由、存储成本按租户汇总、企业信封加密/KMS。
 
 | G3-7 数据保留/到期清理 | ✅ 实现 | `migrations/0008_retention.sql`（`source_revisions.source_deleted_at`）；`internal/retention` 提供 `Sweeper`：按控制面 tenants 逐租户清理（租户上下文内）。执行两类删除——① 项目 `source_retention_days` 到期；② 上传会话 `delete_source_after=true` 且解析任务已成功；并清理超时仍 `pending` 的孤儿上传（删除临时对象 + 置 aborted，对象已不存在视为幂等成功） |
 | G3-7 接线与测试 | ✅ | `cmd/worker` 启动清理循环（`PPTS_RETENTION_INTERVAL` 默认 1h、`PPTS_UPLOAD_ABANDON_TTL` 默认 24h，启动即跑一次）；`internal/retention/postgres_test.go`（到期源/处理后删除/孤儿上传均删除并标记、未到期保留） |
@@ -387,3 +387,4 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-13 | V1.2 | G3-4 登记：审计保留/归档，`Store.DeleteBefore` + `Filter.Before`，`audit.Archiver` 到期事件 JSONL 归档对象存储后清除；worker 周期运行；补归档单测与 PG 测试 |
 | 2026-09-13 | V1.2 | G3-4 登记：租户导出/数据擦除，`tenant.PGStore.ExportTenant`（JSONL+manifest 到对象存储）与 `PurgeTenant`（对象 GC + RLS 上下文逐表删除 + 置 deleted）；TenantService 新增 owner 级 `ExportTenant`/`PurgeTenant` RPC；补 PG 与 API 门禁测试 |
 | 2026-09-13 | V1.2 | G3-8 登记：每项目用量查询，`usage.PGStore.ProjectUsage` 按账本幂等键关联 narration 任务归属项目；TenantService 新增 `ProjectUsage` RPC；补 PG 与 API 测试 |
+| 2026-09-13 | V1.2 | G3-6 登记：新增 `storagelifecycle.Syncer` 与 `tenant.PGStore.ListLifecyclePolicies`，worker 周期下发 active 租户显式存储生命周期策略；补 Syncer/API/PG 测试 |
