@@ -10,9 +10,10 @@ import (
 type Format string
 
 const (
-	FormatMP4 Format = "mp4"
-	FormatSRT Format = "srt"
-	FormatVTT Format = "vtt"
+	FormatMP4        Format = "mp4"
+	FormatSRT        Format = "srt"
+	FormatVTT        Format = "vtt"
+	FormatWebProject Format = "web_project"
 )
 
 type Artifact struct {

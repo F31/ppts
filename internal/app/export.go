@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/integrations/objectstore"
@@ -82,6 +84,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	case artifact.FormatMP4:
 		data, err = h.renderMP4(ctx, job, snapshot, bundle)
 		contentType, ext = "video/mp4", "mp4"
+	case artifact.FormatWebProject:
+		data, err = h.packWebProject(ctx, job.TenantID, bundle)
+		contentType, ext = "application/zip", "zip"
 	default:
 		err = fmt.Errorf("export job: unsupported format %q", snapshot.Format)
 	}
@@ -104,6 +109,70 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
 	pipeline.SetCommitStep(ctx, step)
 	return nil
+}
+
+// packWebProject 打包可离线播放的 Web 讲解工程：timeline.json + 字幕 + 各音频片段。
+func (h *ExportHandler) packWebProject(ctx context.Context, tenantID string, bundle *TimelineAsset) ([]byte, error) {
+	timelineJSON, err := json.Marshal(bundle.Timeline)
+	if err != nil {
+		return nil, err
+	}
+	srt, err := h.readTenantObject(ctx, tenantID, bundle.SRTKey)
+	if err != nil {
+		return nil, err
+	}
+	vtt, err := h.readTenantObject(ctx, tenantID, bundle.VTTKey)
+	if err != nil {
+		return nil, err
+	}
+	type audioClip struct {
+		name string
+		data []byte
+	}
+	clips := make([]audioClip, 0, len(bundle.Timeline.Slides))
+	seen := map[string]struct{}{}
+	for _, slide := range bundle.Timeline.Slides {
+		for _, segment := range slide.Segments {
+			if _, ok := seen[segment.AudioKey]; ok {
+				continue
+			}
+			seen[segment.AudioKey] = struct{}{}
+			data, err := h.readTenantObject(ctx, tenantID, segment.AudioKey)
+			if err != nil {
+				return nil, err
+			}
+			name := "audio/" + segment.AudioKey[strings.LastIndex(segment.AudioKey, "/")+1:]
+			clips = append(clips, audioClip{name: name, data: data})
+		}
+	}
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+	add := func(name string, data []byte) error {
+		w, err := zw.Create(name)
+		if err != nil {
+			return err
+		}
+		_, err = w.Write(data)
+		return err
+	}
+	if err := add("timeline.json", timelineJSON); err != nil {
+		return nil, err
+	}
+	if err := add("subtitles.srt", srt); err != nil {
+		return nil, err
+	}
+	if err := add("subtitles.vtt", vtt); err != nil {
+		return nil, err
+	}
+	for _, clip := range clips {
+		if err := add(clip.name, clip.data); err != nil {
+			return nil, err
+		}
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func (h *ExportHandler) loadTimelineBundle(ctx context.Context, tenantID, key string) (*TimelineAsset, error) {

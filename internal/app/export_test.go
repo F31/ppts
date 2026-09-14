@@ -1,6 +1,7 @@
 package app
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -110,6 +111,56 @@ func TestExportHandlerPublishesMP4Artifact(t *testing.T) {
 	if artifacts.created == nil || artifacts.created.Format != artifact.FormatMP4 || artifacts.created.SizeBytes <= 0 {
 		t.Fatalf("artifact = %+v", artifacts.created)
 	}
+}
+
+func TestExportHandlerPublishesWebProjectArtifact(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	putObject(t, objects, audioKey, pcmWAVForExportTest(1000, 100), "audio/wav")
+	artifacts := &artifactStoreStub{}
+	steps := &stepRecorder{}
+	handler := NewExportHandler(artifacts, steps, objects, nil)
+
+	err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{Format: artifact.FormatWebProject, TimelineKey: bundleKey.String()}))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if artifacts.created == nil || artifacts.created.Format != artifact.FormatWebProject || artifacts.created.SizeBytes <= 0 {
+		t.Fatalf("artifact = %+v", artifacts.created)
+	}
+	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
+	data := readAll(t, objects, key)
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+	for _, want := range []string{"timeline.json", "subtitles.srt", "subtitles.vtt"} {
+		if !names[want] {
+			t.Fatalf("web project zip missing %s: entries=%v", want, names)
+		}
+	}
+	if !names["audio/a.wav"] {
+		t.Fatalf("web project zip missing audio clip: entries=%v", names)
+	}
+}
+
+func readAll(t *testing.T, objects objectstore.ObjectStore, key objectstore.ObjectKey) []byte {
+	t.Helper()
+	r, _, err := objects.Get(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }
 
 type failArtifactPutStore struct {

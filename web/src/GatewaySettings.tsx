@@ -35,11 +35,13 @@ const emptyForm: FormState = {
 export function GatewaySettings({
   identity,
   onSaved,
-  onClose
+  onClose,
+  inline = true
 }: {
   identity: ClientIdentity;
   onSaved?: () => void | Promise<void>;
-  onClose: () => void;
+  onClose?: () => void;
+  inline?: boolean;
 }) {
   const [gateways, setGateways] = useState<ModelGateway[]>([]);
   const [loading, setLoading] = useState(true);
@@ -113,18 +115,19 @@ export function GatewaySettings({
     }
   };
 
-  return (
-    <div className="modal-backdrop" role="dialog" aria-label="模型网关配置">
-      <section className="modal-card gateway-panel">
-        <header>
-          <div>
-            <span className="eyebrow">模型网关</span>
-            <h2>TTS / LLM 接入配置</h2>
-          </div>
+  const content = (
+    <>
+      <header>
+        <div>
+          <span className="eyebrow">模型网关</span>
+          <h2>TTS / LLM 接入配置</h2>
+        </div>
+        {onClose && !inline && (
           <button type="button" onClick={onClose}>
             关闭
           </button>
-        </header>
+        )}
+      </header>
         {error && <p className="form-error">{error}</p>}
         {loading ? (
           <p className="empty-state">加载中…</p>
@@ -286,7 +289,15 @@ export function GatewaySettings({
             </div>
           </form>
         )}
-      </section>
+    </>
+  );
+
+  if (inline) {
+    return <section className="panel gateway-panel">{content}</section>;
+  }
+  return (
+    <div className="modal-backdrop" role="dialog" aria-label="模型网关配置">
+      <section className="modal-card gateway-panel">{content}</section>
     </div>
   );
 }

@@ -1435,6 +1435,40 @@ func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T
 	}
 }
 
+func TestCreateExportSupportsWebProjectFormat(t *testing.T) {
+	store := &fakeScriptStore{revision: newTestRevision()}
+	jobs := &jobCreatorStub{}
+	objects := testObjects(t)
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateExportRequest{
+		ProjectId: "project-1", Format: pptsv1.ArtifactFormat_ARTIFACT_FORMAT_WEB_PROJECT,
+		TimelineKey: "tenant-1/project-1/narration/timeline/tl.json",
+	})
+	req.Header().Set("Idempotency-Key", "export-web-1")
+	if _, err := client.CreateExport(context.Background(), req); err != nil {
+		t.Fatalf("CreateExport web_project: %v", err)
+	}
+	var snapshot app.ExportSnapshot
+	if err := json.Unmarshal([]byte(jobs.inputSnapshot), &snapshot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snapshot.Format != artifact.FormatWebProject {
+		t.Fatalf("snapshot format = %q want web_project", snapshot.Format)
+	}
+
+	bad := authRequest(&pptsv1.CreateExportRequest{
+		ProjectId: "project-1", Format: pptsv1.ArtifactFormat_ARTIFACT_FORMAT_UNSPECIFIED,
+		TimelineKey: "tenant-1/project-1/narration/timeline/tl.json",
+	})
+	bad.Header().Set("Idempotency-Key", "export-web-2")
+	if _, err := client.CreateExport(context.Background(), bad); connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("unspecified format code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
 func TestCreateDownloadSignsArtifactObject(t *testing.T) {
 	objects := testObjects(t)
 	key := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "artifact", AssetType: "artifact", AssetID: "hash", Ext: "srt"}

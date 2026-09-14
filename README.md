@@ -43,11 +43,11 @@ cd web && npm ci && npm run build
 当前 Connect API 已提供 Project/Script/Narration/Playback/Export/Upload 主链路：
 - `ProjectService`：`Create/Get/List/Archive/GetSlides`；
 - `UploadService`：`CreateUpload/CompleteUpload/AbortUpload`（授权直传：分配受限对象键与预签名写链接，完成时校验大小/哈希/租户所有权后才创建源版本并入队解析任务）；
-- `ScriptService`：`Get/Update/Approve/Lock/GenerateDraft`（原文讲稿生成）；`NarrationService.CreateGeneration`；`ExportService`；`PlaybackService.GetNarration/GetManifest`（GetNarration 发现最近成功配音时间轴，并在解析阶段已渲染页面时返回按 timeline 页序对齐的 `page_png_keys`；渲染器不可用/失败时降级为音频+字幕，GetManifest 允许无页面图）。
+- `ScriptService`：`Get/Update/Approve/Lock/GenerateDraft`（原文讲稿生成）；`NarrationService.CreateGeneration`；`ExportService`（`CreateExport/GetArtifact/CreateDownload`，格式 `Web 讲解工程`(zip：timeline+字幕+音频片段)/`MP4`(需 page_png_keys)/`SRT`/`VTT`）；`PlaybackService.GetNarration/GetManifest`（GetNarration 发现最近成功配音时间轴，并在解析阶段已渲染页面时返回按 timeline 页序对齐的 `page_png_keys`；渲染器不可用/失败时降级为音频+字幕，GetManifest 允许无页面图）。
 
 页面图渲染（G0-2/G1-6）：worker 解析任务在读完源 PPTX 后调用 `internal/integrations/render`（LibreOffice→PDF→poppler→PNG）渲染全页，写入 `{tenant}/{project}/src-NN/render/page-NNNN.png`，并以 `render/pages.json` 记录页序/slideId 清单（登记在解析任务 `pages` 步骤的 `result_ref`）；渲染是可选增强，失败只记步骤失败、不影响解析成功。
 
-Web 真实链路：直传 → 解析（可选渲染页面图）→ 展示真实页面 rail → 选择讲稿模式（原文/润色/AI 生成）→ 逐页编辑并保存到真实 `UpdateScript`（`expected_revision` 乐观并发，冲突时后端返回 latest、前端加载最新版并提示）→ 生成配音 → 拉取真实播放 manifest（音频+字幕+页面图）→ 导出下载；`local://` 预签名链接（上传、播放、导出）统一由 API 的 `/ppts/object/{key}` 端点重写服务，S3 后端返回原生预签名 URL。真实链路的 HTTP 端到端验收测试见 `internal/api/e2e_test.go`（`-tags=pg`，真实 PG + 本地存储 + 真实 worker，TTS 用 fake）。
+Web 真实链路：登录（正式 OIDC，未配置时开发身份入口）→ 控制台（首页/讲解项目/任务中心/系统设置）→ 直传 → 解析（可选渲染页面图）→ 展示真实页面 rail → 选择讲稿模式（原文/润色/AI 生成）→ 逐页编辑并保存到真实 `UpdateScript`（`expected_revision` 乐观并发，冲突时后端返回 latest、前端加载最新版并提示）→ 生成配音 → 拉取真实播放 manifest（音频+字幕+页面图）→ 导出下载（Web 讲解工程/MP4/SRT/VTT）；`local://` 预签名链接（上传、播放、导出）统一由 API 的 `/ppts/object/{key}` 端点重写服务，S3 后端返回原生预签名 URL。真实链路的 HTTP 端到端验收测试见 `internal/api/e2e_test.go`（`-tags=pg`，真实 PG + 本地存储 + 真实 worker，TTS 用 fake）。
 
 ## 本地服务
 

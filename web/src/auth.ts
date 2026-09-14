@@ -1,6 +1,35 @@
 const tokenKey = 'pptsAccessToken';
 const verifierKey = 'pptsPKCEVerifier';
 const stateKey = 'pptsOIDCState';
+const devIdentityKey = 'pptsDevIdentity';
+
+export type DevIdentity = { tenantId: string; userId: string };
+
+export function storedDevIdentity(): DevIdentity | null {
+  const raw = localStorage.getItem(devIdentityKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as DevIdentity;
+    if (parsed.tenantId && parsed.userId) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDevIdentity(identity: DevIdentity) {
+  localStorage.setItem(devIdentityKey, JSON.stringify(identity));
+}
+
+export function isDevIdentityEnabled() {
+  // 开发身份进入需显式门控：仅本地开发或未配置 OIDC 时开放。
+  return !oidcConfigured() || import.meta.env.DEV;
+}
+
+export function clearAllIdentity() {
+  localStorage.removeItem(tokenKey);
+  localStorage.removeItem(devIdentityKey);
+}
 
 function base64URL(bytes: ArrayBuffer | Uint8Array) {
   const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);

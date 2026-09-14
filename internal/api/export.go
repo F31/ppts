@@ -121,6 +121,8 @@ func exportFormat(format pptsv1.ArtifactFormat) (artifact.Format, error) {
 	switch format {
 	case pptsv1.ArtifactFormat_ARTIFACT_FORMAT_MP4:
 		return artifact.FormatMP4, nil
+	case pptsv1.ArtifactFormat_ARTIFACT_FORMAT_WEB_PROJECT:
+		return artifact.FormatWebProject, nil
 	case pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_SRT:
 		return artifact.FormatSRT, nil
 	case pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_VTT:
@@ -156,6 +158,8 @@ func toProtoExportFormat(format artifact.Format) pptsv1.ArtifactFormat {
 	switch format {
 	case artifact.FormatMP4:
 		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_MP4
+	case artifact.FormatWebProject:
+		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_WEB_PROJECT
 	case artifact.FormatSRT:
 		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_SRT
 	case artifact.FormatVTT:

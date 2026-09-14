@@ -1,4 +1,24 @@
-import type { AuditArchiveFile, AuditEvent, PlaybackManifest, Project, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from './types';
+import type {
+  ArtifactFormat,
+  AuditArchiveFile,
+  AuditEvent,
+  Job,
+  Member,
+  PlaybackManifest,
+  Project,
+  PronunciationDictionary,
+  PronunciationRule,
+  ProjectUsage,
+  Role,
+  ScriptMode,
+  ScriptRevision,
+  ScriptSegment,
+  SlideSummary,
+  StorageUsage,
+  TenantPolicy,
+  TenantQuota,
+  TenantUsage
+} from './types';
 
 export type ClientIdentity = {
   tenantId: string;
@@ -364,3 +384,107 @@ export async function setDefaultGateway(identity: ClientIdentity, name: string, 
 export async function testGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<GatewayTestResult> {
   return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}`)) as GatewayTestResult;
 }
+
+// ---- 任务（JobService） ----
+
+export async function listJobs(identity: ClientIdentity, projectId?: string): Promise<Job[]> {
+  const data = await connectJSON<{ jobs?: Job[] }>(identity, '/ppts.v1.JobService/List', {
+    projectId: projectId ?? '',
+    pageSize: 50
+  });
+  return data.jobs ?? [];
+}
+
+export async function getJob(identity: ClientIdentity, jobId: string): Promise<Job> {
+  return connectJSON<Job>(identity, '/ppts.v1.JobService/Get', { jobId });
+}
+
+export async function cancelJob(identity: ClientIdentity, jobId: string): Promise<Job> {
+  return connectJSON<Job>(identity, '/ppts.v1.JobService/Cancel', { jobId });
+}
+
+export async function retryFailedJob(identity: ClientIdentity, jobId: string): Promise<Job> {
+  return connectJSON<Job>(identity, '/ppts.v1.JobService/RetryFailed', { jobId });
+}
+
+// ---- 租户（TenantService） ----
+
+export async function listMembers(identity: ClientIdentity): Promise<Member[]> {
+  const data = await connectJSON<{ members?: Member[] }>(identity, '/ppts.v1.TenantService/Members', {});
+  return data.members ?? [];
+}
+
+export async function setMemberRole(identity: ClientIdentity, userId: string, role: Role): Promise<Member> {
+  const data = await connectJSON<{ member?: Member }>(identity, '/ppts.v1.TenantService/SetMemberRole', { userId, role });
+  return data.member!;
+}
+
+export async function removeMember(identity: ClientIdentity, userId: string): Promise<void> {
+  await connectJSON<Record<string, never>>(identity, '/ppts.v1.TenantService/RemoveMember', { userId });
+}
+
+export async function getQuota(identity: ClientIdentity): Promise<TenantQuota> {
+  return connectJSON<TenantQuota>(identity, '/ppts.v1.TenantService/Quota', {});
+}
+
+export async function getUsage(identity: ClientIdentity, month?: string): Promise<TenantUsage> {
+  return connectJSON<TenantUsage>(identity, '/ppts.v1.TenantService/Usage', { month: month ?? '' });
+}
+
+export async function getProjectUsage(identity: ClientIdentity, projectId: string): Promise<ProjectUsage> {
+  return connectJSON<ProjectUsage>(identity, '/ppts.v1.TenantService/ProjectUsage', { projectId });
+}
+
+export async function getStorageUsage(identity: ClientIdentity): Promise<StorageUsage> {
+  return connectJSON<StorageUsage>(identity, '/ppts.v1.TenantService/StorageUsage', {});
+}
+
+export async function getPolicy(identity: ClientIdentity): Promise<TenantPolicy> {
+  return connectJSON<TenantPolicy>(identity, '/ppts.v1.TenantService/Policy', {});
+}
+
+// ---- 导出（ExportService） ----
+
+export async function createExport(
+  identity: ClientIdentity,
+  params: { projectId: string; format: ArtifactFormat; timelineKey: string; pagePngKeys: string[]; burnSubtitles?: boolean; includeNotes?: boolean }
+): Promise<{ jobId: string }> {
+  return connectJSON<{ jobId: string }>(identity, '/ppts.v1.ExportService/CreateExport', {
+    projectId: params.projectId,
+    format: params.format,
+    timelineKey: params.timelineKey,
+    pagePngKeys: params.pagePngKeys,
+    burnSubtitles: params.burnSubtitles,
+    includeNotes: params.includeNotes
+  });
+}
+
+export async function createDownload(identity: ClientIdentity, artifactId: string, ttlSeconds = 900): Promise<{ signedUrl: string; expiresAtUnix: number }> {
+  return connectJSON<{ signedUrl: string; expiresAtUnix: number }>(identity, '/ppts.v1.ExportService/CreateDownload', {
+    artifactId,
+    ttlSeconds
+  });
+}
+
+// ---- 发音词典（/api/pronunciation，需认证，tenant 隔离） ----
+
+export async function listDictionaries(identity: ClientIdentity): Promise<PronunciationDictionary[]> {
+  const data = (await gatewayPath(identity, 'GET', '/api/pronunciation')) as { dictionaries?: PronunciationDictionary[] };
+  return data.dictionaries ?? [];
+}
+
+export async function createDictionary(identity: ClientIdentity, input: { name: string; rules: PronunciationRule[] }): Promise<PronunciationDictionary> {
+  const data = (await gatewayPath(identity, 'POST', '/api/pronunciation', input)) as { dictionary?: PronunciationDictionary };
+  return data.dictionary!;
+}
+
+export async function updateDictionary(identity: ClientIdentity, id: string, input: { name: string; rules: PronunciationRule[] }): Promise<PronunciationDictionary> {
+  const data = (await gatewayPath(identity, 'PUT', `/api/pronunciation/${encodeURIComponent(id)}`, input)) as { dictionary?: PronunciationDictionary };
+  return data.dictionary!;
+}
+
+export async function deleteDictionary(identity: ClientIdentity, id: string): Promise<void> {
+  await gatewayPath(identity, 'DELETE', `/api/pronunciation/${encodeURIComponent(id)}`);
+}
+
+
