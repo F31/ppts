@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 )
@@ -25,37 +26,65 @@ type TenantStatusChecker interface {
 	TenantActive(ctx context.Context, tenantID string) (bool, error)
 }
 
+// Authenticator verifies a production identity source (for example OIDC bearer tokens).
+type Authenticator interface {
+	Authenticate(ctx context.Context, r *http.Request) (Principal, bool, error)
+}
+
+type AuthOptions struct {
+	TenantStatus    TenantStatusChecker
+	Authenticator   Authenticator
+	AllowDevHeaders bool
+}
+
 // PrincipalFromContext returns the authenticated tenant and user.
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(principalKey{}).(Principal)
 	return p, ok
 }
 
-// AuthMiddleware rejects requests without the trusted identity headers and
-// injects the resulting principal into the request context.
-func AuthMiddleware(next http.Handler, checkers ...TenantStatusChecker) http.Handler {
-	var checker TenantStatusChecker
-	if len(checkers) > 0 {
-		checker = checkers[0]
-	}
+// AuthMiddlewareWithOptions authenticates OIDC bearer tokens when configured and
+// only falls back to development headers when explicitly allowed.
+func AuthMiddlewareWithOptions(next http.Handler, opts AuthOptions) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tenantID := strings.TrimSpace(r.Header.Get(tenantHeader))
-		userID := strings.TrimSpace(r.Header.Get(userHeader))
-		if tenantID == "" || userID == "" {
+		principal, ok, err := authenticateRequest(r, opts)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
+		if !ok {
 			http.Error(w, "missing authenticated tenant or user", http.StatusUnauthorized)
 			return
 		}
-		if checker != nil {
-			active, err := checker.TenantActive(r.Context(), tenantID)
+		if opts.TenantStatus != nil {
+			active, err := opts.TenantStatus.TenantActive(r.Context(), principal.TenantID)
 			if err != nil || !active {
 				http.Error(w, "tenant is not active", http.StatusForbidden)
 				return
 			}
 		}
-		ctx := context.WithValue(r.Context(), principalKey{}, Principal{
-			TenantID: tenantID,
-			UserID:   userID,
-		})
+		ctx := context.WithValue(r.Context(), principalKey{}, principal)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func authenticateRequest(r *http.Request, opts AuthOptions) (Principal, bool, error) {
+	if opts.Authenticator != nil {
+		principal, ok, err := opts.Authenticator.Authenticate(r.Context(), r)
+		if err != nil || ok {
+			return principal, ok, err
+		}
+	}
+	if !opts.AllowDevHeaders {
+		return Principal{}, false, nil
+	}
+	tenantID := strings.TrimSpace(r.Header.Get(tenantHeader))
+	userID := strings.TrimSpace(r.Header.Get(userHeader))
+	if tenantID == "" && userID == "" {
+		return Principal{}, false, nil
+	}
+	if tenantID == "" || userID == "" {
+		return Principal{}, false, errors.New("missing authenticated tenant or user")
+	}
+	return Principal{TenantID: tenantID, UserID: userID}, true, nil
 }

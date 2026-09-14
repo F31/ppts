@@ -234,13 +234,20 @@ func (e *MP4Encoder) verify(ctx context.Context, out string) (*MP4EncodeResult, 
 	if res.VideoCodec != "h264" || res.AudioCodec != "aac" || res.Width <= 0 || res.Height <= 0 {
 		return nil, fmt.Errorf("media: verify failed: %+v", res)
 	}
+	// 抽帧验证画面非空（V4.0 §9.2）：取首帧，确认可解码且输出非空。
+	if res.Duration > 0 {
+		dst := filepath.Join(filepath.Dir(out), ".ppts-verify-frame.png")
+		if err := extractFrame(ctx, e.ffmpeg, out, "0", dst); err != nil {
+			return nil, err
+		}
+	}
 	return res, nil
 }
 
-// FramePNG 抽取指定帧为 PNG，用于画面非空校验。
-func (e *MP4Encoder) FramePNG(ctx context.Context, src string, frame int, dst string) error {
-	cmd := exec.CommandContext(ctx, e.ffmpeg, "-y", "-i", src,
-		"-vf", fmt.Sprintf("select='eq(n\\,%d)'", frame), "-frames:v", "1", dst)
+// extractFrame 抽取指定时间位置的单帧到 dst，校验输出非空（verify 与测试共用）。
+// -ss 置于 -i 之后（output seek），低帧率视频也能取到最近一帧。
+func extractFrame(ctx context.Context, ffmpeg, src, position, dst string) error {
+	cmd := exec.CommandContext(ctx, ffmpeg, "-y", "-i", src, "-ss", position, "-frames:v", "1", dst)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("media: frame extract failed: %w\n%s", err, string(out))
 	}
@@ -250,23 +257,3 @@ func (e *MP4Encoder) FramePNG(ctx context.Context, src string, frame int, dst st
 	}
 	return nil
 }
-
-// FrameAt extracts the frame visible at the specified media-clock position.
-func (e *MP4Encoder) FrameAt(ctx context.Context, src string, positionUS int64, dst string) error {
-	if positionUS < 0 {
-		return errors.New("media: frame position cannot be negative")
-	}
-	position := strconv.FormatFloat(float64(positionUS)/1_000_000, 'f', 6, 64)
-	cmd := exec.CommandContext(ctx, e.ffmpeg, "-y", "-ss", position, "-i", src, "-frames:v", "1", dst)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("media: frame extract failed: %w\n%s", err, string(out))
-	}
-	st, err := os.Stat(dst)
-	if err != nil || st.Size() == 0 {
-		return errors.New("media: extracted frame is empty")
-	}
-	return nil
-}
-
-// Close 保留占位：必要时校验临时资源释放语义（V4.0 §15.1 适配器契约）。
-func (e *MP4Encoder) Close() error { return nil }

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/internal/tenant"
 )
 
@@ -31,7 +32,7 @@ func qStore(t *testing.T) *PGStore {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE quota_reservations, tenant_quotas, usage_ledger, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE job_steps, jobs, quota_reservations, tenant_quotas, usage_ledger, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, id := range []string{qTenant, otherQT} {
@@ -194,5 +195,37 @@ func TestProjectUsageAttributesByJob(t *testing.T) {
 	}
 	if other.Seconds != 0 || other.JobCount != 0 {
 		t.Fatalf("other tenant usage = %+v want zero", other)
+	}
+}
+
+// 定价表分账：结算时按内部价目写入 user_amount/supplier_cost，汇总与项目用量返回金额。
+func TestSettleRecordsPriceCosts(t *testing.T) {
+	s := qStore(t)
+	s.WithPriceBook(DefaultBookForTest())
+	ctx := context.Background()
+	if _, err := s.Reserve(ctx, qTenant, "op-price", KindGenSeconds, 10); err != nil {
+		t.Fatalf("Reserve: %v", err)
+	}
+	if err := s.Settle(ctx, qTenant, "op-price", KindGenSeconds, 100, "v1"); err != nil {
+		t.Fatalf("Settle: %v", err)
+	}
+	seconds, userAmount, supplierCost, err := s.UsageSummary(ctx, qTenant, "")
+	if err != nil {
+		t.Fatalf("UsageSummary: %v", err)
+	}
+	if seconds != 100 || userAmount != 1.0 || supplierCost != 0.4 {
+		t.Fatalf("summary = sec %v user %v supplier %v want 100/1.0/0.4", seconds, userAmount, supplierCost)
+	}
+	if s.Currency() != "CNY" {
+		t.Fatalf("currency = %q want CNY", s.Currency())
+	}
+}
+
+func DefaultBookForTest() *pricing.Book {
+	return &pricing.Book{
+		Version:  "test-v1",
+		Currency: "CNY",
+		User:     map[string]float64{"gen_seconds": 0.01},
+		Supplier: map[string]float64{"gen_seconds": 0.004},
 	}
 }

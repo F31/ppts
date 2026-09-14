@@ -115,13 +115,3 @@ type RetryableError struct {
 func (e *RetryableError) Error() string { return e.Err.Error() }
 
 func (e *RetryableError) Unwrap() error { return e.Err }
-
-// NotSupportedError 供应商明确不支持的能力（禁止静默丢弃参数）。
-type NotSupportedError struct {
-	Feature string
-	Detail  string
-}
-
-func (e *NotSupportedError) Error() string {
-	return "tts: voice does not support " + e.Feature + ": " + e.Detail
-}

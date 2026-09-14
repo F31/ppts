@@ -20,15 +20,22 @@ import (
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/usage"
 )
 
 const ttsAdapterVersion = "v1"
 
+// sharedCacheProject 是租户级共享缓存的伪项目段（G2-7 内容哈希去重），
+// 音频与分段清单按内容寻址存放，跨项目复用同一对象；仍受租户前缀隔离。
+const sharedCacheProject = "shared"
+
 // NarrationSnapshot fixes all inputs used by a narration job. A later script
 // edit must enqueue a new job rather than changing an in-flight job's inputs.
 type NarrationSnapshot struct {
 	Slides           []NarrationSlideSnapshot `json:"slides"`
+	SegmentIDs       []string                 `json:"segmentIds,omitempty"`       // G2-5 空=全量；非空=仅重生成指定分段
+	TargetDurationMS int64                    `json:"targetDurationMs,omitempty"` // G2-5 目标总时长(ms)，0=不限
 	Language         string                   `json:"language"`
 	VoiceID          string                   `json:"voiceId"`
 	RequireConfirmed bool                     `json:"requireConfirmed"`
@@ -71,10 +78,12 @@ type NarrationHandler struct {
 	steps   interface {
 		MarkStep(context.Context, pipeline.JobStep) error
 	}
-	objects  objectstore.ObjectStore
-	provider tts.TTSProvider
-	usage    UsageSettler
-	metrics  TTSMetrics
+	objects     objectstore.ObjectStore
+	provider    tts.TTSProvider
+	usage       UsageSettler
+	metrics     TTSMetrics
+	dictLoader  DictionaryLoader
+	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
 }
 
 // UsageSettler 是配音完成后按实际时长结算额度所需的窄能力（G3-2）。
@@ -85,6 +94,8 @@ type UsageSettler interface {
 // TTSMetrics 记录供应商合成可观测性（G3-8）。
 type TTSMetrics interface {
 	SegmentSynthesized(job *pipeline.Job, retryable, throttled bool, duration time.Duration, err error)
+	// SegmentCacheHit 记录分段音频从缓存命中的次数（G2-7 去重命中率）。
+	SegmentCacheHit(job *pipeline.Job, scope string)
 }
 
 // NewNarrationHandler creates a segmented TTS handler.
@@ -106,6 +117,39 @@ func (h *NarrationHandler) WithTTSMetrics(m TTSMetrics) *NarrationHandler {
 	return h
 }
 
+// DictionaryLoader 按租户加载发音词典规则；未配置词典时返回空集。
+type DictionaryLoader interface {
+	LoadTenantDefault(ctx context.Context, tenantID string) (pronunciation.Rules, error)
+}
+
+// WithDictionary 注入发音词典加载器；未注入时合成不替换任何文本。
+func (h *NarrationHandler) WithDictionary(dl DictionaryLoader) *NarrationHandler {
+	h.dictLoader = dl
+	return h
+}
+
+// WithTenantProvider 注入按租户解析的 TTS 供应商（模型网关）；
+// 设置后优先于 NewNarrationHandler 传入的固定 provider。
+func (h *NarrationHandler) WithTenantProvider(f func(ctx context.Context, tenantID string) (tts.TTSProvider, error)) *NarrationHandler {
+	h.providerFor = f
+	return h
+}
+
+func (h *NarrationHandler) providerForTenant(ctx context.Context, tenantID string) (tts.TTSProvider, error) {
+	if h.providerFor != nil {
+		return h.providerFor(ctx, tenantID)
+	}
+	if h.provider == nil {
+		return nil, errors.New("narration job: no TTS provider configured")
+	}
+	return h.provider, nil
+}
+
+type plannedSlide struct {
+	snapshot NarrationSlideSnapshot
+	revision *narration.Revision
+}
+
 // Handle implements pipeline.HandlerFunc for narration jobs.
 func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if job == nil || job.Kind != pipeline.KindNarration {
@@ -119,16 +163,31 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		return errors.New("narration job: incomplete input snapshot")
 	}
 
-	capabilities, err := h.provider.Capabilities(ctx, snapshot.VoiceID)
+	provider, err := h.providerForTenant(ctx, job.TenantID)
+	if err != nil {
+		return err
+	}
+	capabilities, err := provider.Capabilities(ctx, snapshot.VoiceID)
 	if err != nil {
 		return classifyTTSError(err)
 	}
 	if len(capabilities.Languages) > 0 && !slices.Contains(capabilities.Languages, snapshot.Language) {
 		return fmt.Errorf("narration job: voice %q does not support language %q", snapshot.VoiceID, snapshot.Language)
 	}
-	type plannedSlide struct {
-		snapshot NarrationSlideSnapshot
-		revision *narration.Revision
+	// G2-4 加载租户发音词典；未配置时为空集（不替换）。
+	var dictRules pronunciation.Rules
+	if h.dictLoader != nil {
+		if rules, err := h.dictLoader.LoadTenantDefault(ctx, job.TenantID); err == nil {
+			dictRules = rules
+		}
+	}
+	// G2-5 构建分段过滤集：非空时仅统计指定分段进度（全部分段仍走 synthesizeSegment 以复用缓存）。
+	var segmentFilter map[string]struct{}
+	if len(snapshot.SegmentIDs) > 0 {
+		segmentFilter = make(map[string]struct{}, len(snapshot.SegmentIDs))
+		for _, id := range snapshot.SegmentIDs {
+			segmentFilter[id] = struct{}{}
+		}
 	}
 	planned := make([]plannedSlide, 0, len(snapshot.Slides))
 	seenSlides := make(map[string]struct{}, len(snapshot.Slides))
@@ -168,15 +227,29 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		}
 		planned = append(planned, plannedSlide{snapshot: slide, revision: revision})
 	}
+
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
+	completedSegments := 0
+	// G2-5 进度统计：有过滤集时仅统计目标分段。
+	totalTargeted := 0
+	for _, slide := range planned {
+		for _, segment := range slide.revision.Segments {
+			if segmentFilter == nil {
+				totalTargeted++
+			} else if _, ok := segmentFilter[segment.SegmentID]; ok {
+				totalTargeted++
+			}
+		}
+	}
 	for _, slide := range planned {
 		timelineSlide := media.SlideInput{SlideID: slide.snapshot.SlideID}
 		for _, segment := range slide.revision.Segments {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			asset, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, capabilities, segment)
+			// synthesizeSegment 内部按 content hash 做缓存，未修改分段直接命中缓存，开销极低。
+			asset, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules)
 			if err != nil {
 				return err
 			}
@@ -185,9 +258,44 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 				SegmentID: segment.SegmentID, DisplayText: segment.DisplayText,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
 			})
+			if segmentFilter == nil {
+				completedSegments++
+			} else if _, ok := segmentFilter[segment.SegmentID]; ok {
+				completedSegments++
+			}
+			if totalTargeted > 0 {
+				pct := completedSegments * 100 / totalTargeted
+				if err := pipeline.ReportProgress(ctx, pct); err != nil {
+					return err
+				}
+			}
 		}
 		timelineSlides = append(timelineSlides, timelineSlide)
 	}
+
+	// G2-5 时长控制：首轮合成后若超出目标 ±10%，自动按比例调整速率重合成。
+	if snapshot.TargetDurationMS > 0 && totalMS > 0 {
+		ratio := float64(snapshot.TargetDurationMS) / float64(totalMS)
+		if ratio > 1.1 || ratio < 0.9 {
+			adjusted := snapshot
+			currentRate := adjusted.SpeechControl.RatePercent
+			if currentRate <= 0 {
+				currentRate = 100
+			}
+			newRate := int(float64(currentRate) * ratio)
+			if newRate < 50 {
+				newRate = 50
+			}
+			if newRate > 200 {
+				newRate = 200
+			}
+			if newRate != currentRate {
+				adjusted.SpeechControl.RatePercent = newRate
+				return h.retryWithAdjustedRate(ctx, job, adjusted, segmentFilter, dictRules, provider, capabilities, planned)
+			}
+		}
+	}
+
 	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides); err != nil {
 		return err
 	}
@@ -200,8 +308,10 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 	return nil
 }
 
-func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, capabilities tts.VoiceCapabilities, segment *narration.Segment) (*SegmentAsset, error) {
-	configHash, err := synthesisHash(snapshot, capabilities, segment.SpokenText)
+func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules) (*SegmentAsset, error) {
+	// G2-4 应用发音词典替换，effectiveText 送 TTS。
+	effectiveText := pronunciation.Apply(segment.SpokenText, dictRules)
+	configHash, err := synthesisHash(snapshot, capabilities, effectiveText)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +328,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 	if manifest, ok, err := h.loadPublishedSegment(ctx, manifestKey); err != nil {
 		return nil, err
 	} else if ok {
+		h.recordCacheHit(job, "project")
 		step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
 		if err := h.steps.MarkStep(ctx, step); err != nil {
 			return nil, err
@@ -225,6 +336,32 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		return manifest, nil
 	} else if manifest != nil {
 		return nil, errors.New("narration job: invalid cached segment manifest")
+	}
+
+	// G2-7 内容哈希去重：相同合成配置（文本+音色+语率+模型）的音频按内容寻址存放在
+	// 租户级共享缓存，跨页面/跨项目直接复用，零 TTS 调用。
+	sharedKey := objectstore.ObjectKey{
+		TenantID: job.TenantID, ProjectID: sharedCacheProject, Revision: "cache",
+		AssetType: "segments", AssetID: configHash, Ext: "json",
+	}
+	if shared, ok, err := h.loadSharedSegment(ctx, sharedKey); err != nil {
+		return nil, err
+	} else if ok {
+		h.recordCacheHit(job, "shared")
+		manifestBytes, err := json.Marshal(shared)
+		if err != nil {
+			return nil, err
+		}
+		if err := h.objects.Put(ctx, manifestKey, bytes.NewReader(manifestBytes), objectstore.ObjectMeta{
+			ContentType: "application/json", ContentHash: hashBytes(manifestBytes), Size: int64(len(manifestBytes)),
+		}); err != nil {
+			return nil, fmt.Errorf("narration job: publish manifest: %w", err)
+		}
+		step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
+		if err := h.steps.MarkStep(ctx, step); err != nil {
+			return nil, err
+		}
+		return shared, nil
 	}
 
 	step.State = pipeline.StepPending
@@ -238,11 +375,11 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 	}
 	request := tts.SynthesisRequest{
 		LogicalOpID: job.ID + ":" + slide.SlideID + ":" + segment.SegmentID + ":" + configHash,
-		VoiceID:     snapshot.VoiceID, Text: segment.SpokenText, Language: snapshot.Language,
+		VoiceID:     snapshot.VoiceID, Text: effectiveText, Language: snapshot.Language,
 		SpeechControl: snapshot.SpeechControl, SampleRate: snapshot.SampleRate,
 	}
 	started := time.Now()
-	result, err := h.provider.Synthesize(ctx, request)
+	result, err := provider.Synthesize(ctx, request)
 	h.recordTTSSynthesis(job, started, err)
 	if err != nil {
 		return failStep(classifyTTSError(err))
@@ -255,9 +392,10 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		return failStep(err)
 	}
 	audioHash := hashBytes(result.Audio)
+	// G2-7 音频按内容寻址（configHash）存放在租户级共享路径，跨项目复用同一对象。
 	audioKey := objectstore.ObjectKey{
-		TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "cache",
-		AssetType: "audio", AssetID: manifestID, Ext: ext,
+		TenantID: job.TenantID, ProjectID: sharedCacheProject, Revision: "cache",
+		AssetType: "audio", AssetID: configHash, Ext: ext,
 	}
 	manifest := SegmentAsset{
 		SegmentID: segment.SegmentID, AudioKey: audioKey.String(), AudioHash: audioHash,
@@ -273,6 +411,16 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		ContentType: result.Format, ContentHash: audioHash, Size: int64(len(result.Audio)),
 	}); err != nil {
 		return failStep(fmt.Errorf("narration job: publish audio: %w", err))
+	}
+	// 写共享分段清单，供后续相同内容复用。
+	sharedManifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		return failStep(err)
+	}
+	if err := h.objects.Put(ctx, sharedKey, bytes.NewReader(sharedManifestBytes), objectstore.ObjectMeta{
+		ContentType: "application/json", ContentHash: hashBytes(sharedManifestBytes), Size: int64(len(sharedManifestBytes)),
+	}); err != nil {
+		return failStep(fmt.Errorf("narration job: publish shared manifest: %w", err))
 	}
 	if err := h.objects.Put(ctx, manifestKey, bytes.NewReader(manifestBytes), objectstore.ObjectMeta{
 		ContentType: "application/json", ContentHash: hashBytes(manifestBytes), Size: int64(len(manifestBytes)),
@@ -292,6 +440,14 @@ func (h *NarrationHandler) recordTTSSynthesis(job *pipeline.Job, started time.Ti
 	}
 	retryable, throttled := ttsErrorFlags(err)
 	h.metrics.SegmentSynthesized(job, retryable, throttled, time.Since(started), err)
+}
+
+// recordCacheHit 记录缓存命中（G2-7 去重命中率观测）。
+func (h *NarrationHandler) recordCacheHit(job *pipeline.Job, scope string) {
+	if h.metrics == nil {
+		return
+	}
+	h.metrics.SegmentCacheHit(job, scope)
 }
 
 func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput) error {
@@ -358,6 +514,39 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 	return h.steps.MarkStep(ctx, step)
 }
 
+// retryWithAdjustedRate 用调整后的语速重新执行合成（时长控制）。
+func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide) error {
+	timelineSlides := make([]media.SlideInput, 0, len(planned))
+	totalMS := int64(0)
+	for _, slide := range planned {
+		timelineSlide := media.SlideInput{SlideID: slide.snapshot.SlideID}
+		for _, segment := range slide.revision.Segments {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			asset, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules)
+			if err != nil {
+				return err
+			}
+			totalMS += asset.DurationMS
+			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
+				SegmentID: segment.SegmentID, DisplayText: segment.DisplayText,
+				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
+			})
+		}
+		timelineSlides = append(timelineSlides, timelineSlide)
+	}
+	if err := h.publishTimeline(ctx, job, adjusted.Timing, timelineSlides); err != nil {
+		return err
+	}
+	if h.usage != nil && job.IDempotencyKey != "" {
+		if err := h.usage.Settle(ctx, job.TenantID, job.IDempotencyKey, usage.KindGenSeconds, float64(totalMS)/1000.0, ""); err != nil {
+			return fmt.Errorf("narration job: settle usage: %w", err)
+		}
+	}
+	return nil
+}
+
 func (h *NarrationHandler) objectsExist(ctx context.Context, keys ...objectstore.ObjectKey) (bool, error) {
 	for _, key := range keys {
 		r, _, err := h.objects.Get(ctx, key)
@@ -396,8 +585,48 @@ func (h *NarrationHandler) loadPublishedSegment(ctx context.Context, key objects
 		return &manifest, false, nil
 	}
 	audioKey, err := objectstore.Parse(manifest.AudioKey)
-	if err != nil || audioKey.TenantID != key.TenantID || audioKey.ProjectID != key.ProjectID {
+	// G2-7 音频存放在租户级共享路径（shared 伪项目），清单跨项目引用时仅校验租户一致。
+	if err != nil || audioKey.TenantID != key.TenantID {
 		return &manifest, false, nil
+	}
+	audio, _, err := h.objects.Get(ctx, audioKey)
+	if errors.Is(err, objectstore.ErrObjectNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if err := audio.Close(); err != nil {
+		return nil, false, err
+	}
+	return &manifest, true, nil
+}
+
+// loadSharedSegment 加载租户级共享分段清单（G2-7 内容哈希去重）。
+// 清单有效且音频存在时返回 true；跨项目复用同一音频对象，零 TTS 调用。
+func (h *NarrationHandler) loadSharedSegment(ctx context.Context, key objectstore.ObjectKey) (*SegmentAsset, bool, error) {
+	r, _, err := h.objects.Get(ctx, key)
+	if errors.Is(err, objectstore.ErrObjectNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	data, readErr := io.ReadAll(r)
+	closeErr := r.Close()
+	if readErr != nil {
+		return nil, false, readErr
+	}
+	if closeErr != nil {
+		return nil, false, closeErr
+	}
+	var manifest SegmentAsset
+	if err := json.Unmarshal(data, &manifest); err != nil || manifest.AudioKey == "" || manifest.DurationMS <= 0 {
+		return nil, false, nil
+	}
+	audioKey, err := objectstore.Parse(manifest.AudioKey)
+	if err != nil || audioKey.TenantID != key.TenantID {
+		return nil, false, nil
 	}
 	audio, _, err := h.objects.Get(ctx, audioKey)
 	if errors.Is(err, objectstore.ErrObjectNotFound) {

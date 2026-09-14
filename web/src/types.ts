@@ -61,13 +61,26 @@ export type ScriptSegment = {
   slideId: string;
   displayText: string;
   spokenText: string;
+  sourceRefs?: string[];
+  sourceAnchors?: SourceAnchor[];
   status: 'draft' | 'approved' | 'locked';
+};
+
+export type ScriptMode = 'SCRIPT_MODE_ORIGINAL' | 'SCRIPT_MODE_POLISH' | 'SCRIPT_MODE_AI_GENERATED';
+
+export type SourceAnchor = {
+  slideId: string;
+  shapeId: string;
+  kind: string;
+  raw: string;
+  confidence: number;
 };
 
 export type ScriptRevision = {
   projectId: string;
   slideId: string;
   language: string;
+  mode?: ScriptMode;
   revision: number;
   status: 'draft' | 'approved' | 'locked';
   segments: ScriptSegment[];
@@ -90,4 +103,20 @@ export type SlideSummary = {
   preview: string;
   hasNotes: boolean;
   featureFlags: string[];
+};
+
+export type AuditEvent = {
+  id: string;
+  actorUser: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  metadataJson: string;
+  createdAtUnix: number;
+};
+
+export type AuditArchiveFile = {
+  objectKey: string;
+  sizeBytes: number;
+  updatedAtUnix: number;
 };

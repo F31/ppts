@@ -23,6 +23,9 @@ type Policy struct {
 	DeleteSourceAfterDefault bool   `json:"delete_source_after_default"`
 	MaxConcurrentJobs        int    `json:"max_concurrent_jobs"`
 	MaxStorageBytes          int64  `json:"max_storage_bytes"`
+	ArtifactRetentionDays    int    `json:"artifact_retention_days"`
+	AudioRetentionDays       int    `json:"audio_retention_days"`
+	RenderRetentionDays      int    `json:"render_retention_days"`
 }
 
 // LifecyclePolicySetting 是租户级存储生命周期策略下发所需的控制面行。
@@ -65,6 +68,15 @@ func (s *PGStore) ObjectStoreBackend(ctx context.Context, tenantID string) (stri
 		return "", err
 	}
 	return p.StorageBackend, nil
+}
+
+// StorageRegion 返回租户对象存储区域，供 S3 区域桶路由使用。
+func (s *PGStore) StorageRegion(ctx context.Context, tenantID string) (string, error) {
+	p, err := s.GetPolicy(ctx, tenantID)
+	if err != nil {
+		return "", err
+	}
+	return p.StorageRegion, nil
 }
 
 // ObjectEnvelopeEncryption reports whether object payloads for tenant should be envelope-encrypted.

@@ -28,19 +28,35 @@ var decks = []struct {
 	{"s105", "three pages with notes only second", 3, true},
 	{"s106", "eight pages marker text", 8, false},
 	{"s107", "two pages english+chinese", 2, false},
+	// G2-6 评测集扩容：≥100 页（含数字/单位/型号/日期实体，供数字保持与发音评测）。
+	{"s108", "ten pages mixed notes", 10, true},
+	{"s109", "twelve pages tables entities", 12, false},
+	{"s110", "fifteen pages notes entities", 15, true},
+	{"s111", "twenty pages long deck", 20, false},
+	{"s112", "fifteen pages mixed content", 15, true},
 }
+
+// evalPageCountMin 是 G2-6 评测集最低页数门槛。
+const evalPageCountMin = 100
 
 func main() {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		fatal(err)
 	}
+	total := 0
 	for _, d := range decks {
 		path := filepath.Join(outDir, d.id+".pptx")
 		if err := build(d.id, d.desc, d.pages, d.withNotes, path); err != nil {
 			fatal(fmt.Errorf("%s: %w", d.id, err))
 		}
+		total += d.pages
 		fmt.Printf("wrote %s (%s)\n", path, d.desc)
 	}
+	// G2-6 门槛：评测集总页数 ≥100。
+	if total < evalPageCountMin {
+		fatal(fmt.Errorf("corpus has %d pages, G2-6 requires >= %d", total, evalPageCountMin))
+	}
+	fmt.Printf("total pages: %d (G2-6 gate: >= %d)\n", total, evalPageCountMin)
 }
 
 func build(id, desc string, pages int, withNotes bool, path string) error {

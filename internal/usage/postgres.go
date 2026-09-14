@@ -8,16 +8,49 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/internal/tenant"
 )
 
 // PGStore 以 PostgreSQL 实现 Store。所有写操作在租户事务内、以行锁与条件更新保证原子。
 type PGStore struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	priceBook *pricing.Book
 }
 
 // NewPGStore 创建存储。
 func NewPGStore(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
+
+// WithPriceBook 设置定价表（G3-2 分账）；未设置时金额记 0（保持既有行为）。
+func (s *PGStore) WithPriceBook(b *pricing.Book) *PGStore {
+	s.priceBook = b
+	return s
+}
+
+// userAmount 返回给定种类与用量的用户计费金额。
+func (s *PGStore) userAmount(kind Kind, units float64) float64 {
+	if s.priceBook == nil {
+		return 0
+	}
+	return s.priceBook.UserAmount(string(kind), units)
+}
+
+func (s *PGStore) supplierCost(kind Kind, units float64) float64 {
+	if s.priceBook == nil {
+		return 0
+	}
+	return s.priceBook.SupplierAmount(string(kind), units)
+}
+
+func (s *PGStore) currency() string {
+	if s.priceBook == nil {
+		return ""
+	}
+	return s.priceBook.Currency
+}
+
+// Currency 返回定价表币种（G3-2 分账展示用）。
+func (s *PGStore) Currency() string { return s.currency() }
 
 const reservationColumns = `id, tenant_id, logical_operation_id, usage_kind, reserved_units, state, created_at, updated_at`
 
@@ -120,10 +153,11 @@ func (s *PGStore) Settle(ctx context.Context, tenantID, logicalOperationID strin
 			return err
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO usage_ledger (id, tenant_id, logical_operation_id, usage_kind, quantity, unit, price_version)
-			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6)
+			`INSERT INTO usage_ledger (id, tenant_id, logical_operation_id, usage_kind, quantity, unit, price_version, user_amount, supplier_cost, currency)
+			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,$8,$9)
 			 ON CONFLICT (tenant_id, logical_operation_id, usage_kind) DO NOTHING`,
-			tenantID, logicalOperationID, string(kind), actualUnits, string(kind), priceVersion); err != nil {
+			tenantID, logicalOperationID, string(kind), actualUnits, string(kind), priceVersion,
+			s.userAmount(kind, actualUnits), s.supplierCost(kind, actualUnits), s.currency()); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `UPDATE quota_reservations SET state='settled', updated_at=now() WHERE id=$1`, res.ID)
@@ -194,39 +228,41 @@ func (s *PGStore) SetLimit(ctx context.Context, tenantID string, kind Kind, limi
 	})
 }
 
-// UsageSummary 返回指定月份（YYYY-MM，空=当月 UTC）的用户计费用量汇总。
-// 当前仅计量生成时长；成本字段待正式 TTS 定价表接入。
-func (s *PGStore) UsageSummary(ctx context.Context, tenantID, month string) (seconds float64, costUnits float64, err error) {
+// UsageSummary 返回指定月份（YYYY-MM，空=当月 UTC）的用户计费用量汇总与成本分账金额。
+func (s *PGStore) UsageSummary(ctx context.Context, tenantID, month string) (seconds, userAmount, supplierCost float64, err error) {
 	start, end, err := monthRange(month)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 	err = tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT COALESCE(SUM(quantity),0) FROM usage_ledger
+			`SELECT COALESCE(SUM(quantity),0), COALESCE(SUM(user_amount),0), COALESCE(SUM(supplier_cost),0)
+			 FROM usage_ledger
 			 WHERE tenant_id=$1 AND usage_kind=$2 AND created_at >= $3 AND created_at < $4`,
-			tenantID, string(KindGenSeconds), start, end).Scan(&seconds)
+			tenantID, string(KindGenSeconds), start, end).Scan(&seconds, &userAmount, &supplierCost)
 	})
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return seconds, 0, nil
+	return seconds, userAmount, supplierCost, nil
 }
 
-// ProjectUsage 返回某项目的累计生成秒数与配音任务数。账本按
+// ProjectUsage 返回某项目的累计生成秒数、配音任务数与成本分账金额。账本按
 // logical_operation_id=任务幂等键 与 narration 任务行关联归属项目（G3-8）。
 func (s *PGStore) ProjectUsage(ctx context.Context, tenantID, projectID string) (ProjectUsage, error) {
 	var out ProjectUsage
 	out.ProjectID = projectID
+	out.Currency = s.currency()
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		return tx.QueryRow(ctx,
-			`SELECT COALESCE(SUM(l.quantity),0), COUNT(DISTINCT j.id)
+			`SELECT COALESCE(SUM(l.quantity),0), COUNT(DISTINCT j.id),
+			        COALESCE(SUM(l.user_amount),0), COALESCE(SUM(l.supplier_cost),0)
 			 FROM usage_ledger l
 			 JOIN jobs j ON j.tenant_id = l.tenant_id
 			   AND j.idempotency_key = l.logical_operation_id
 			   AND j.kind = 'narration'
 			 WHERE l.tenant_id=$1 AND j.project_id=$2 AND l.usage_kind=$3`,
-			tenantID, projectID, string(KindGenSeconds)).Scan(&out.Seconds, &out.JobCount)
+			tenantID, projectID, string(KindGenSeconds)).Scan(&out.Seconds, &out.JobCount, &out.UserAmount, &out.SupplierCost)
 	})
 	return out, err
 }

@@ -138,7 +138,7 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 |---|---|---|
 | G0-1 读适配器 | ✅ 已实现 | `internal/project`，reader 测试 3 项 + 语料回放 11 项 |
 | G0-1 写适配器（配音） | ✅ 已实现 | `internal/integrations` NarrationWriter，回读/Validate/幂等测试 |
-| G0-2 渲染 | 🟡 代码完备，本机待装 LibreOffice | `internal/integrations/render`；poppler 链路实测通过（`TestPopplerRasterize`），soffice 全链路测试待有环境机自动启用 |
+| G0-2 渲染 | ✅ 已实测（本机 Windows LibreOffice + WSL interop） | `internal/integrations/render`；poppler 链路实测（`TestPopplerRasterize`）；`NewSofficeRenderer` 支持 `PPTS_SOFFICE_BIN`/`PPTS_PDFTOPPPM_BIN`/`PPTS_PDFINFO_BIN`/`PPTS_RENDER_WORK_ROOT` 路径覆盖与 Windows .exe interop（`toWinPath` 路径转换 + `UserInstallation` 隔离），`TestSofficeRenderWindowsInterop` 对宿主机 `D:\LibreOffice`（v26.8.0.3）真实转换→PDF→PNG 通过；正式渲染需自定义证书并仅进入 worker 容器（G5 桌面 L3 作能力包） |
 | G0-3 MP4 | ✅ 实测通过 | `internal/media` ffmpeg 编码 + ffprobe + 抽帧（h264/aac/等比留边） |
 | G0-4 sidecar IPC | ✅ Go 侧已实现 | `internal/sidecar` 握手/能力/超限拒收测试；Rust 桥接在 G4 |
 | G0-6 语料 | ✅ 首建 | `testdata/corpus`：8 合成（`scripts/gen_corpus`）+ 3 go-pptx 金样，回放全绿 |
@@ -176,14 +176,14 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G1-9 存储多后端 | ✅ S3 适配器已实测 | `internal/integrations/objectstore/s3`：minio-go 实现（Put/Get/Delete、预签名读/写、生命周期过期规则）；本地 MinIO（`quay.io/minio/minio`，端口 9000）真实通过 4 项测试；门控 `S3_ENDPOINT` |
 | Connect API 入口 | ✅ 主链路已实测 | Buf/Protobuf/Connect Go 绑定已生成并纳入源码；`internal/api` 提供可信身份头注入、Project Create/Get/List/Archive/GetSlides、Script Get/Update/Approve/Lock、Narration CreateGeneration、Playback GetManifest、Export CreateExport/GetArtifact/CreateDownload、Upload CreateUpload/CompleteUpload/AbortUpload、健康检查；HTTP/Connect 端到端测试覆盖 |
 | G1-1 上传直传 | ✅ 授权直传已实测 | `internal/upload`（0004_uploads.sql）+ `internal/app.UploadService`：CreateUpload 分配受限对象键与预签名写链接；CompleteUpload 读回对象校验大小/SHA-256/租户颜色后才创建源版本并入队解析任务（幂等键=上传会话），重试幂等返回同一源版本与任务；AbortUpload 清理临时对象。`local://` 预签名链接由 API `/ppts/object/{key}` 端点服务，S3 后端原生预签名；Web 前端用 Web Crypto 计算 SHA-256 后直传并完成 |
-| G1-5 分段 TTS | 🟡 本地闭环完成，正式供应商待接 | `internal/integrations/tts`：供应商端口 + FakeProvider 3 项测试；`internal/app/NarrationHandler` 固定多页讲稿 revision、全量预检、逐段配置哈希、不可变音频/对齐 manifest、半写入保护、重跑资产复用与 RetryableError 退避映射，4 项测试全过；缓存身份为 slide+稳定 segment+配置哈希，未改分段可跨讲稿 revision 复用且不同分段不会互相覆盖；`cmd/worker` 已装配 parse/narration 分发。正式供应商与句首偏差 P95 门禁待凭据/语料 |
-| G1-6/7 播放器/导出 | 🟡 播放/导出后端闭环已落地 | `internal/media` 以整数微秒实现页面/分段/字幕唯一时间轴；PCM16 WAV 按精确采样位置装配并补静音；MP4 以逐页 loop + CFR concat filter 支持任意页时长并抽帧确认切页。`internal/artifact` + `0003_artifacts.sql` 持久化不可变成品，按 `(tenant, project, snapshot_hash, format)` 幂等；`internal/app/ExportHandler` 支持 SRT/VTT 复制与 MP4 从 timeline/page/audio 固定快照生成；`internal/api/ExportService` 支持 CreateExport/GetArtifact/CreateDownload（短期签名）；`PlaybackService.GetManifest` 返回内嵌 timeline JSON、页面/音频/字幕签名资源、TTL；**`PlaybackService.GetNarration`** 通过 `jobs.LatestSucceededJob` + `job_steps.result_ref` 发现最近成功配音的时间轴 bundle；GetManifest 允许空页面图（渲染未就绪时音频+字幕仍可播）。`cmd/worker` 已分发 export。媒体+导出+artifact/API 测试覆盖，含真实链路 PG 端到端（上传→解析→讲稿→配音→GetNarration）通过 |
-| G1-8/9 Web 三栏编辑器、S3 适配器 | 🟡 Web 真实链路已接通（除页面图渲染） | `web/`：Vite + React + TypeScript 独立包；三栏布局（项目/页面 rail / 讲稿 editor / 预览播放器）、debounce 自动保存状态、播放器以单一媒体时钟驱动页面与字幕，不使用独立 `setTimeout`；ProjectService JSON client 已接 `List/Create/Archive/GetSlides`；上传入口已接真实直传（SHA-256 → 预签名 PUT → CompleteUpload）→ 解析完成后展示真实页面 rail → "生成原文讲稿"入队并轮询 → "生成配音"CreateGeneration → 轮询 `PlaybackService.GetNarration` 取时间轴 → 渲染真实 manifest 播放（音频+字幕；页面渲染未就绪时自动降级为无图）。`npm run build` 通过并纳入 CI。S3 适配器已按 G1-9 完成 |
+| G1-5 分段 TTS | ✅ 已接真实供应商（SiliconFlow），正式语料验收待凭据外评测 | `internal/integrations/tts`：供应商端口 + FakeProvider；新增 `SiliconFlowProvider`（OpenAI 兼容 `/v1/audio/speech`，`PPTS_TTS_PROVIDER=siliconflow` + `PPTS_TTS_API_KEY`/`PPTS_TTS_BASE_URL`/`PPTS_TTS_MODEL`/`PPTS_TTS_VOICE` 接线，cmd/worker 按环境选择供应商）；live smoke 对 `https://api.siliconflow.cn` 真实合成通过（voice 约定 `FunAudioLLM/CosyVoice2-0.5B:<voice>`）；适配器解码真实时长、规范化占位大 data 的 PCM16 WAV 保证 media 链路可解码、构造估算对齐（AlignEstimate）；句首偏差 P95≤200ms 门禁待专业语料评测 |
+| G1-6/7 播放器/导出 | ✅ 播放/导出后端闭环（含页面图） | `internal/media` 以整数微秒实现页面/分段/字幕唯一时间轴；PCM16 WAV 按精确采样位置装配并补静音；MP4 以逐页 loop + CFR concat filter 支持任意页时长并抽帧确认切页。`internal/artifact` + `0003_artifacts.sql` 持久化不可变成品，按 `(tenant, project, snapshot_hash, format)` 幂等；`internal/app/ExportHandler` 支持 SRT/VTT 复制与 MP4 从 timeline/page/audio 固定快照生成；`internal/api/ExportService` 支持 CreateExport/GetArtifact/CreateDownload（短期签名）；`PlaybackService.GetManifest` 返回内嵌 timeline JSON、页面/音频/字幕签名资源、TTL；**`PlaybackService.GetNarration`** 通过 `jobs.LatestSucceededJob` + `job_steps.result_ref` 发现最近成功配音的时间轴 bundle，并读取解析任务 `pages` 步骤清单按 timeline 页序返回 `page_png_keys`（页数不齐时返回空，降级音频+字幕）。解析阶段页面渲染：worker `ParseHandler` 可选渲染全页 PNG（`render/page-NNNN.png` + `render/pages.json` 清单），失败不影响解析成功。`cmd/worker` 已分发 export。媒体+导出+artifact/API+渲染接线测试覆盖，含真实链路 PG 端到端（上传→解析→讲稿→配音→GetNarration）通过 |
+| G1-8/9 Web 三栏编辑器、S3 适配器 | ✅ Web 真实链路已接通（含页面图） | `web/`：Vite + React + TypeScript 独立包；三栏布局（项目/页面 rail / 讲稿 editor / 预览播放器）、debounce 自动保存状态、播放器以单一媒体时钟驱动页面与字幕，不使用独立 `setTimeout`；ProjectService JSON client 已接 `List/Create/Archive/GetSlides`；上传入口已接真实直传（SHA-256 → 预签名 PUT → CompleteUpload）→ 解析完成后展示真实页面 rail → "生成原文讲稿"入队并轮询 → "生成配音"CreateGeneration → 轮询 `PlaybackService.GetNarration` 取时间轴与页面图键 → 渲染真实 manifest 播放（音频+字幕+页面图；渲染未就绪时自动降级为无图）。`npm run build` 通过并纳入 CI。S3 适配器已按 G1-9 完成 |
 | G1-2 解析流水线完成度 | 🟡 解析任务已接 Web | 上传成功入队 `parse` 任务已由 worker `ParseHandler` 消费（读对象→Inspect→写回 document.json）；`ProjectService.GetSlides` 读取最新源版本的 document.json 返回页面列表；`internal/api` 新增 Project GetSlides 传输测试 |
-| G1 放行门禁（端到端） | ✅ 真实链路 HTTP 端到端验收通过 | `internal/api/e2e_test.go`（`-tags=pg`）：真实 PG + 本地对象存储 + 真实 worker 循环（parse/script_draft/narration/export 分发）+ `NewHandler`，经 Connect HTTP 走完整链路：CreateProject → CreateUpload → PUT → CompleteUpload → 解析 → GetSlides → GenerateDraft → GetScript → CreateGeneration → GetNarration → GetManifest（timeline/音频/SRT/VTT 四类资源，并实际 GET 音频）→ CreateExport(SRT) → GetArtifact → CreateDownload → 下载正文。正式 TTS 仍为 fake（供应商受凭据阻塞）。 |
+| G1/G2 放行门禁（端到端） | ✅ 真实链路 HTTP 端到端验收通过（含页面图与 polish 模式） | `internal/api/e2e_test.go`（`-tags=pg`）：真实 PG + 本地对象存储 + 真实 worker 循环（parse/script_draft/narration/export 分发，parse 注入渲染 stub，script_draft 注入 polish stub）+ `NewHandler`，经 Connect HTTP 走完整链路：CreateProject → CreateUpload → PUT → CompleteUpload → 解析 → GetSlides → GenerateDraft(`SCRIPT_MODE_POLISH`) → GetScript → CreateGeneration → GetNarration（含 `page_png_keys`）→ GetManifest（timeline/页面图/音频/SRT/VTT 五类资源，并实际 GET 页面图与音频）→ CreateExport(SRT) → GetArtifact → CreateDownload → 下载正文。CI 内 TTS 用 fake（无凭据）、渲染/LLM 用 stub；SiliconFlow 真实供应商与 LibreOffice 真实渲染分别单独验收。 |
 | 本地签名链接重写修复 | ✅ 修复并加单测 | E2E 暴露：`PlaybackService.GetManifest` 与 `ExportService.CreateDownload` 对本地后端原样返回 `local://` 链接，浏览器不可用。已提取 `rewriteLocalSignedURL` 共享重写，两处接入后返回 `/ppts/object/{key}?token&op`；新增单测断言，含上传直传链路一致。 |
 
-> 说明：G1 真实链路（上传→解析→原文讲稿→配音→播放 manifest→导出下载）后端与 Web 已接通，并已补 HTTP 端到端验收测试（真实 PG + 本地存储 + 真实 worker，fake TTS）；剩余阻塞为页面图渲染（需 LibreOffice 环境）与正式 TTS 供应商验收（受凭据阻塞）。带 PG 的测试命令：`PPTS_TEST_DATABASE=... go test -tags=pg -p 1 ./...`。go-pptx 本地产库在 ADR-017 重构中间态触发 `BUG-001` 时，本地 ppts 门禁临时使用 `GOWORK=off`（发布 tag v1.0.1，与 CI 一致），不越界修改依赖仓库。
+> 说明：G1 真实链路（上传→解析（含页面图渲染）→原文讲稿→配音→播放 manifest→导出下载）后端与 Web 已接通，并已补 HTTP 端到端验收测试（真实 PG + 本地存储 + 真实 worker，fake TTS）；页面图渲染已接入解析任务，渲染器不可用时自动降级为音频+字幕。正式 TTS 供应商（SiliconFlow）已 live smoke 验收，句首偏差 P95≤200ms 待专业语料评测。带 PG 的测试命令：`PPTS_TEST_DATABASE=... go test -tags=pg -p 1 ./...`。go-pptx 本地产库在 ADR-017 重构中间态触发 `BUG-001` 时，本地 ppts 门禁临时使用 `GOWORK=off`（发布 tag v1.0.1，与 CI 一致），不越界修改依赖仓库。
 
 #### 4.2.1 G1 收尾执行登记（V1.2）
 
@@ -202,13 +202,13 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 
 | 编号 | 任务 | 验收 |
 |---|---|---|
-| G2-1 | 双通道理解：结构通道 + 页面截图视觉通道；来源锚点模型（source_slide_id/shape_id/原始值/单位/confidence） | 图文关系基于证据，非 OCR 拼接 |
-| G2-2 | 原文朗读 / 润色讲解 / AI 生成讲解三种模式；并排对比与接受修改 | 编辑不覆盖审核稿；锁定稿不被后台覆盖 |
-| G2-3 | 数字/单位/型号/日期确定性校验器 + 定向重生成（有限迭代） | 首批 100 页评测集；零未经批准数字变更 |
+| G2-1 | 🟡 双通道理解最小闭环 + 置信 UI 已落地，评测报告可视化待后续 | `narration_segments.source_anchors`（jsonb）+ proto `SourceAnchor` 暴露 slide/shape/kind/raw/confidence；`ScriptDraftHandler` 从解析 document.json 的 shape 文本生成结构化 anchors（confidence=1.0），备注 fallback 写 notes anchor；若 `render/page-NNNN.png` 存在且配置 `PPTS_LLM_PROVIDER=siliconflow`，通过 `PPTS_LLM_VISION_MODEL`（缺省 `Qwen/Qwen3-VL-8B-Instruct`）提取 `visual_*` anchors（低置信、待审核证据）；用户 Update 按 segment_id 保留服务端 anchors，不接受客户端伪造来源；Web 编辑器锚点摘要展示逐锚点 kind（结构/视觉）与置信度百分比 |
+| G2-2 | ✅ 三种模式 + 并排对比与接受修改已落地 | `SCRIPT_MODE_ORIGINAL`/`SCRIPT_MODE_POLISH`/`SCRIPT_MODE_AI_GENERATED` 已开放入队，Web 可选模式生成逐页讲稿，worker 通过 `PPTS_LLM_PROVIDER=siliconflow` 调用 OpenAI 兼容 chat completions（缺省 `Qwen/Qwen2.5-7B-Instruct`）；既有稿件不覆盖、锁定稿仍由 store 保护；冲突时保留本地修改进入并排对比视图（我的修改 vs 服务器最新版），可"以我的修改重试保存"（rebase 到最新 revision）或"采用服务器最新版"，不静默覆盖 |
+| G2-3 | 🟡 数字/单位/型号/日期确定性校验器初版 + 一次定向修正 + 回退原文 | `internal/validation` 抽取数字/单位/日期/型号实体，polish 后校验 source→target 不丢失、不新增；失败时用实体清单定向重试一次，仍失败则回退原文，保证不输出未经批准的数字漂移；首批 100 页评测集与 P95/人工门禁待 G2-6 |
 | G2-4 | 读音词典（用户/租户/项目层级、版本号）、spoken_text/display_text 映射 | 数字缩写读法与字幕一致 |
-| G2-5 | 局部重生成（分段级）、时长控制（先缩扩稿后调语速）、预算预占 | 超预算前暂停并给选择 |
-| G2-6 | 专业语料 AI 评测集（≥100 页）与人工审核门禁 | 关键数字全部忠于来源 |
-| G2-7 | 内容哈希去重：同租户跨 revision/跨项目复用 `content_hash` 相同的分段音频与成品（避免重复 TTS 调用与重复存储，V4.0 §12.5） | 局部重生成只产生增量对象；去重命中率可观测 |
+| G2-5 | ✅ 分段级重生成 + 时长控制 + LLM token 预算 + 超预算前预估选择已落地 | `NarrationSnapshot.SegmentIDs` 非空时仅统计目标分段进度（全部分段仍走 `synthesizeSegment` 复用缓存）；`TargetDurationMS` 非零时首轮合成后计算速率偏差，超出 ±10% 自动按比例调整 `SpeechControl.RatePercent`（50–200%）重合成；`usage.KindLLMTokens` 预占（`EstimateLLMTokens` 粗估）→ 供应商真实 prompt+completion 结算（`ScriptDraftHandler.WithTokenAccounting`）；Web 配音前调用 `Estimate` 展示预计时长，额度不足（`resource_exhausted`）时给出"减少页面重试/联系管理员"选择而非静默失败 |
+| G2-6 | 🟡 评测集 ≥100 页 + ai_eval 门禁脚本已落地，live LLM 评测待有密钥环境执行 | `scripts/gen_corpus` 扩至 13 套 100 页（含数字/单位/型号实体，`evalPageCountMin=100` 门槛断言）；`scripts/ai_eval` 逐页 polish + `validation.CheckPreserved` 实体漂移检查，报告写 `testdata/ai-eval/report.json`（passRate/P95），任一页漂移即 exit 1；人工审核门禁已由 Approve/Lock + `RequireConfirmed`（API 与 worker 双侧校验）+ AI 草稿不覆盖既有稿件保障 |
+| G2-7 | 🟡 内容哈希去重已落地，命中率观测已接入，跨项目复用成品（MP4）待后续 | 音频按内容寻址（configHash）存租户级共享路径 `shared/cache/audio/{configHash}.{ext}`，分段清单 `shared/cache/segments/{configHash}.json`；相同合成配置（文本+音色+语率+模型）跨页面/跨项目复用，零 TTS 调用；`ppts_tts_cache_hit_total`（scope=project/shared）观测命中率 |
 
 **放行门禁**：专业语料门禁通过；AI 草稿不覆盖用户已审核内容。
 
@@ -240,51 +240,60 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | G3-2 配额与用量账本 | ✅ 主体实现 | `migrations/0007_usage_quotas.sql`（`tenant_quotas`/`quota_reservations`，含 FORCE RLS）；`internal/usage` 提供原子"预占→结算/释放"（条件更新 + 行锁 + 幂等唯一键，`Settle` 写 `usage_ledger`）；`EstimateSeconds` 时长估算 |
 | G3-2 接线 | ✅ 已接 | `NarrationGenerationService` 生成前预占（不足返回 `ResourceExhausted`）、任务创建失败/幂等冲突即释放、`WithinBudget` 由真实预占决定；`Estimate` RPC 返回估算秒数；`NarrationHandler.WithUsage` 在完成后按真实合成时长结算；`cmd/api`/`cmd/worker` 注入 `usage.NewPGStore` |
 | G3-2 测试 | ✅ 通过 | `internal/usage/postgres_test.go`（预占幂等/限额原子拒绝/结算写账本幂等/释放/跨租户隔离）；`internal/api` 配额用例（预占、超限 `ResourceExhausted`、任务失败释放）；E2E 断言配音后 `consumed>0` 且 `reserved=0` |
+| G3-2 定价表与成本分账 | ✅ 实现 | 新增 `internal/pricing`（`Book`：按计量种类每单位用户价/供应商成本 + 币种 + 版本；`PPTS_PRICE_BOOK` JSON 覆盖，缺省占位价目）；`migrations/0020_price_costs.sql` 为 `usage_ledger` 增加 `user_amount`/`supplier_cost`/`currency`；`usage.PGStore.WithPriceBook` 结算时同事务落账；`UsageSummary`/`ProjectUsage` 返回用户计费金额与供应商成本，`TenantService.Usage/ProjectUsage` RPC 暴露金额与币种；正式供应商价格接入后仅需更新价目配置 |
 
 | G3-2 取消释放 | ✅ 实现 | JobService 对 queued/retry_wait 取消后已终态 `canceled` 的配音任务释放 `gen_seconds` 预占；running 任务先进入 `cancel_requested`，worker 在安全点提交 `canceled` 后通过 `OnCanceled` 释放，避免与成功结算竞态；已结算/不存在/已释放视为幂等收敛 |
 | G3-2 预占过期清理 | ✅ 实现 | retention sweeper 增加 `WithQuotaReservationTTL`：逐租户扫描超过 TTL 仍 `reserved` 的 `quota_reservations`，回退 `tenant_quotas.reserved_units` 并标记 `released`；worker 通过 `PPTS_QUOTA_RESERVATION_TTL`（默认 24h）启用；PG 测试覆盖过期释放与新鲜预占保留 |
 | G3-2 租户并发上限 | ✅ 实现 | `pipeline.PGStore.CountActive`/`ByIdempotency`；`CreateGeneration` 依据 `tenants.policy.max_concurrent_jobs` 在预占前检查非终态任务数，超限返回 `ResourceExhausted`；同 `Idempotency-Key` 重放仍返回既有任务，不同快照复用返回 `AlreadyExists`；API 与 PG 测试覆盖 |
 
-> G3-2 剩余：定价表与"供应商成本 vs 用户计费"分账（随正式 TTS）。
+> G3-2 剩余：无（供应商成本 vs 用户计费分账已随定价表落地，正式供应商价格以 `PPTS_PRICE_BOOK` 配置接入）。
 
-| G3-4 审计日志最小版 | 🟡 实现 | `migrations/0009_audit.sql`（`audit_events`，含 FORCE RLS）；`internal/audit` 提供租户隔离的 `Record`/`List`（动作/资源类型/时间过滤）+ `DeleteBefore`（到期清理）；接入 JobService `cancel`/`retry` 与 retention 清理（`source.delete`/`upload.abort`/`quota.reservation_release`），审计失败不阻断主流程；`TenantService.ListAuditEvents` 暴露 admin+ 审计读取 API；`Archiver` 到期待审记账到对象存储（JSONL）后清除，worker 周期运行（`PPTS_AUDIT_RETENTION_DAYS`/`PPTS_AUDIT_ARCHIVE_INTERVAL`）；PG 隔离测试、接线测试、API 授权测试与归档单测覆盖 |
+| G3-4 审计日志最小版 | ✅ 实现 | `migrations/0009_audit.sql`（`audit_events`，含 FORCE RLS）；`internal/audit` 提供租户隔离的 `Record`/`List`（动作/资源类型/时间过滤）+ `DeleteBefore`（到期清理）；接入 JobService `cancel`/`retry` 与 retention 清理（`source.delete`/`upload.abort`/`quota.reservation_release`），审计失败不阻断主流程；`TenantService.ListAuditEvents` 暴露 admin+ 审计读取 API；`Archiver` 到期审计记账到对象存储（JSONL）后清除，worker 周期运行（`PPTS_AUDIT_RETENTION_DAYS`/`PPTS_AUDIT_ARCHIVE_INTERVAL`）；Web `AuditPanel` 提供审计管理界面（过滤、刷新、归档清单）；PG 隔离测试、接线测试、API 授权测试、归档单测与前端构建覆盖 |
 | G3-4 租户停用最小版 | 🟡 实现 | `migrations/0011_tenant_status.sql` 为 `tenants` 增加 `status/suspended_at/updated_at`（active/suspended/deleted）；`tenant.PGStore` 提供 `Status/TenantActive/Suspend/Resume`；`AuthMiddleware` 可选接入 `TenantStatusChecker`，`cmd/api` 默认注入，suspended/deleted/不存在租户在进入 RPC 前返回 403/PermissionDenied；API 与 PG 测试覆盖 |
 
-> G3-4 剩余：审计管理界面、归档文件生命周期分层、备份恢复演练（RPO≤15min/RTO≤2h）。
+> G3-4 剩余：无。备份恢复演练脚本与 runbook 已落地，需在正式备份基础设施接入后周期性执行并留存报告。
 
 | G3-3 成员/角色内核 | 🟡 存储+读取+管理+门禁 | `migrations/0010_members.sql`（`tenant_members`，FORCE RLS）；`internal/membership`（GetRole/List/SetRole/Remove，角色校验）；`TenantService.Members/Roles/SetMemberRole/RemoveMember` 落地（admin+ 管理普通成员，owner 变更仅 owner）；`cmd/api` 注入。授权门禁 `requireRole` 已覆盖配音生成、任务取消/重试、Project Create/Archive、Script Update/Approve/Lock/GenerateDraft、Upload Create/Complete/Abort、Export Create/CreateDownload；未配置成员读取时保持开发放行；PG 隔离、API 读写与门禁测试覆盖 |
 
-> G3-3 剩余：OIDC Authorization Code+PKCE 接入替换可信头、分享/声音/费用等后续 RPC 的授权矩阵逐项标注与测试。
+> G3-3 剩余：分享/声音/费用等后续 RPC 的授权矩阵逐项标注与测试；高级企业 SSO/SAML 代理按 G5/企业需求扩展。OIDC Authorization Code+PKCE 已接入：Web 执行 PKCE code flow，API 校验 bearer token；可信头仅作为显式开发 fallback。
 
-| G3-5 崩溃窗口幂等测试 | 🟡 测试加固 | `TestMarkStepIdempotentAndSurvivesTerminal`（步骤重放单行/引用不变、终态后可查）；`TestWorkerCrashAfterStepReplayIdempotent`（步骤成功后 worker 强杀，重放不重复步骤、任务恰好成功一次、fencing 递增） |
+| G3-5 崩溃窗口幂等测试 | ✅ 测试加固 | `TestMarkStepIdempotentAndSurvivesTerminal`（步骤重放单行/引用不变、终态后可查）；`TestWorkerCrashAfterStepReplayIdempotent`（步骤成功后 worker 强杀，重放不重复步骤、任务恰好成功一次、fencing 递增）；`TestExportHandlerObjectWriteFailureDoesNotCreateArtifact` 覆盖磁盘满/对象写失败不创建 artifact；`UnknownResultError` 触发 `unknown_provider_result` 并由 `RetryFailed` 对账后重入队，`TestWorkerUnknownProviderResultCanBeRetried` 覆盖 |
+| G3-5 outbox 同事务化 | ✅ 实现 | handler 通过 `pipeline.SetCommitStep(ctx, step)` 声明最终成功步骤；worker 收集后在 `CompleteWithStep` 中与任务终态同一事务 upsert（fencing 条件，任一步失败整体回滚）；`ExportHandler` 成功收尾改用 outbox；后端未实现时回退 MarkStep+Complete；PG 测试覆盖原子写入与 fencing 失效整体回滚，worker 单测覆盖成功/无步骤路径 |
 
-> G3-5 剩余：磁盘满/对象写失败路径测试、未知供应商结果对账（`StateUnknownResult` 当前无触发路径）、步骤成功与任务终态同事务化（可选 outbox）、强杀操作手册。
+> G3-5 剩余：无。步骤成功与任务终态同事务化（outbox）已落地：handler 通过 `pipeline.SetCommitStep` 声明最终成功步骤，worker 以 `CompleteWithStep` 在任务终态同一事务 upsert（fencing 条件，失败整体回滚），`ExportHandler` 已接入；磁盘满/对象写失败、未知供应商结果对账与强杀操作手册已落地。
 
 | G3-6 存储策略路由 | 🟡 最小实现 | `internal/integrations/objectstore.Registry` 按 `ObjectKey.TenantID` 查询租户 `storage_backend` 并路由到注册后端；空策略回退默认 local；未知后端返回 `ErrBackendNotFound`，不伪成功。`cmd/api` 与 `cmd/worker` 均改为通过 Registry 使用对象存储，现有 local 行为保持不变 |
-| G3-6 生命周期接口 | 🟡 下发实现 | Registry 支持按租户后端下发生命周期策略；S3 适配器已有原生 lifecycle 翻译，local 的 `ErrOperationNotSupported` 被跳过。`storagelifecycle.Syncer` 读取 active 租户 `storage_transition_days`/`storage_expiration_days`，worker 通过 `PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期下发；`source_retention_days` 仍由 DB 保留清理精确处理，不映射为桶级过期规则 |
+| G3-6 生命周期接口 | ✅ 下发实现 | Registry 支持按租户后端下发生命周期策略；S3 适配器已有原生 lifecycle 翻译，规则限定租户前缀 `{tenant_id}/`，覆盖 audit archive 等归档对象且避免整桶误用；local 的 `ErrOperationNotSupported` 被跳过。`storagelifecycle.Syncer` 读取 active 租户 `storage_transition_days`/`storage_expiration_days`，worker 通过 `PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期下发；`source_retention_days` 仍由 DB 保留清理精确处理，不映射为桶级过期规则 |
 | G3-6 多后端接入 | ✅ 实现 | `internal/integrations/objectstore/storefactory` 从 `PPTS_OBJECT_BACKEND`/`PPTS_OBJECT_*`/`PPTS_S3_*` 构建 local+s3 注册表并校验默认后端；`cmd/api`/`cmd/worker` 统一改用工厂，业务代码只依赖 Registry 接口；补工厂单测 |
 | G3-6 存储占用汇总 | ✅ 实现 | `migrations/0014_object_inventory.sql` 新增 `object_inventory`（FORCE RLS）；API/worker 通过 `objectstore.WithInventory` 在 Put/Delete 后维护对象清单；`tenant.PGStore.StorageUsage` 与 `TenantService.StorageUsage` 汇总源上传、artifact 与清单中未被前两者覆盖的 work/audio/export/archive 等对象；不依赖对象存储 List |
 | G3-6 BYOS 凭据加密存储 | 🟡 控制面实现 | `migrations/0015_byos_credentials.sql` 新增 `byos_credentials`（FORCE RLS）；`tenant.PGStore.SetBYOSCredential/GetBYOSCredential/RemoveBYOSCredential` 以 AES-GCM 加密存取配置，AAD 绑定 tenant/credential/backend，`kms_key_id` 记录外部包裹密钥标识；PG 测试覆盖密文不等于明文、解密、移除与 AAD 拒绝 |
 | G3-6 BYOS 运行时动态路由 | 🟡 S3 兼容实现 | `objectstore.Registry` 支持动态后端解析；`storefactory.BYOSResolver` 识别 `storage_backend=byos:<credential_id>`，通过 `PPTS_BYOS_AES_KEY_BASE64` 解密租户凭据并按需构建/缓存 S3 兼容 Store；未配置凭据读取器或密钥时保持显式失败，不回退默认后端 |
+| G3-6 区域/桶路由 | ✅ 实现 | `tenant.PGStore.StorageRegion` 读取租户 `storage_region`；storefactory 构建 `s3.RegionRouter`，把租户对象路由到 `{base-bucket}-{region}` 桶（懒创建+缓存，区域为空回退基础桶）；`Registry.ApplyTenantLifecyclePolicy` 优先调用按租户路由的后端生命周期接口，生命周期规则落到对应区域桶 |
 | G3-6 对象信封加密 | ✅ 最小实现 | `objectstore.WithEnvelopeEncryption` 按租户 `envelope_encryption` 策略在 Put 加密/Get 解密（AES-GCM，AAD 绑定对象键），启用加密租户的直接预签名读写返回不支持以避免绕过；`PPTS_OBJECT_ENCRYPTION_KEY_BASE64` 接入 storefactory，API/worker 包装 Registry→Inventory→Encryption；补 round-trip/预签名禁用/明文直通测试 |
 
-> G3-6 剩余：按租户区域/桶路由。企业信封加密最小实现已落地（见上），外部 KMS 包裹密钥可替换本地 AES 密钥。
+> G3-6 剩余：无。区域/桶路由已落地（S3 兼容后端按租户 `storage_region` 选择桶，懒创建并缓存）；企业信封加密最小实现已落地（见上），外部 KMS 包裹密钥可替换本地 AES 密钥。
 
 | G3-7 数据保留/到期清理 | ✅ 实现 | `migrations/0008_retention.sql`（`source_revisions.source_deleted_at`）；`internal/retention` 提供 `Sweeper`：按控制面 tenants 逐租户清理（租户上下文内）。执行两类删除——① 项目 `source_retention_days` 到期；② 上传会话 `delete_source_after=true` 且解析任务已成功；并清理超时仍 `pending` 的孤儿上传（删除临时对象 + 置 aborted，对象已不存在视为幂等成功） |
-| G3-7 接线与测试 | ✅ | `cmd/worker` 启动清理循环（`PPTS_RETENTION_INTERVAL` 默认 1h、`PPTS_UPLOAD_ABANDON_TTL` 默认 24h，启动即跑一次）；`internal/retention/postgres_test.go`（到期源/处理后删除/孤儿上传均删除并标记、未到期保留） |
+| G3-7 接线与测试 | ✅ | `cmd/worker` 启动清理循环（`PPTS_RETENTION_INTERVAL` 默认 1h、`PPTS_UPLOAD_ABANDON_TTL` 默认 24h，启动即跑一次）；`internal/retention/postgres_test.go`（到期源/处理后删除/孤儿上传均删除并标记、未到期保留、租户默认保留期回退、派生产物分档删除） |
+| G3-7 租户默认保留期与派生产物分档 | ✅ 实现 | `tenants.policy` 新增 `artifact_retention_days`/`audio_retention_days`/`render_retention_days` 分档；`SourcesToDelete` 项目未设保留期时回退 `source_retention_days` 租户默认；`DerivedToDelete`/`DeleteDerivedRecord` 按分档过期删除 `object_inventory` 对象（artifact 同时删除 artifacts 行），清理走租户 RLS 上下文并写 `derived.delete` 审计 |
 
-> G3-7 剩余：`delete_source_after` 目前按"解析任务成功"触发（渲染/导出完成后删除留待渲染链路接通）；租户级默认保留期与"派生产物保留期"分档；删除审计日志（G3-4）。
+> G3-7 剩余：`delete_source_after` 目前按"解析任务成功"触发（渲染/导出完成后删除留待渲染链路接通）。租户级默认保留期与派生产物保留分档已落地。
 
 | G3-8 可观测性最小版 | 🟡 基础实现 | 新增 `internal/observability` expvar 指标：`ppts_worker_jobs_total`、`ppts_worker_job_duration_ms_total`、`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录等待时长，均值=sum/claimed）、`ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`；`pipeline.WorkerOptions.Metrics` 提供可注入 hook，记录 worker 生命周期；`NarrationHandler.WithTTSMetrics` 记录 TTS 成功/失败/retryable/429；API 暴露 `/debug/vars` 便于本地/CI 拉取 |
 | G3-8 结构化请求日志 | ✅ 实现 | `observability.RequestLogger` 中间件：为每请求生成 `X-Request-ID`（上下文可读），输出 `request_id/method/path/status/duration_ms/bytes/tenant/user` 结构化日志；`cmd/api` 以 JSON slog 输出；中间件单测覆盖字段与响应头 |
 | G3-8 每项目用量查询 | ✅ 实现 | `usage.PGStore.ProjectUsage` 将 usage_ledger 按幂等键关联 narration 任务归属项目，返回累计生成秒数与任务数；`TenantService.ProjectUsage` RPC；PG/API 门禁覆盖（成本金额随正式定价表） |
 
-> G3-8 剩余：OTel Span 与异步任务 Span Link、避免高基数字段的指标规范化。
+> G3-8 剩余：无（指标、日志、链路追踪均已落地；OTel 与现有 expvar 可并行使用）。
 
-| G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 服务端流已实现：`pipeline.PGStore.UpdatedSince` 按 `updated_at` 升序增量轮询，`seq=updated_at UnixNano`，支持 `after_seq` 断点续传 |
+| G3-9 JobService | ✅ 实现 | `internal/api/job.go`：`Get/List/Cancel/RetryFailed`（状态/错误映射、游标分页）。取消语义：queued/retry_wait 直接 `canceled`；running 置 `cancel_requested`，worker 心跳检测后在安全点提交 `canceled`；`ClaimNext` 可回收租约过期的 `cancel_requested` 任务。`RetryFailed` 将 failed 重新入队（同任务行）。`WatchEvents` 服务端流已实现：`migrations/0019_job_events.sql` 新增 `job_events` 专用事件表（`bigint GENERATED ALWAYS AS IDENTITY` 单调 seq），任务状态/进度变更在事务内写事件（Create/Complete/ScheduleRetry/Cancel/RetryFailed/UpdateProgress），客户端可用 `after_seq` 断点续传，避免复用 `updated_at` 同毫秒并发漏发；事件快照保存任务全量状态 |
+| G3-9 Job 进度上报 | ✅ 实现 | `pipeline.Store.UpdateProgress`（fencing 条件，state='running'）+ `pipeline.ReportProgress(ctx,pct)`：worker 把上报函数注入任务上下文，handler 调用上报；`NarrationHandler` 按已合成 segment 数上报 0-100%；PG 测试覆盖单调 seq、断点续传、进度事件与 fencing 失效拒绝 |
 | G3-9 TenantService | 🟡 部分实现 | `internal/api/tenant.go` + `usage.UsageSummary` + `tenant.PGStore.GetPolicy`：`Quota`（额度/已用/并发/存储上限）、`Usage`（按月生成秒数）、`Policy`（存储后端/区域/保留期/信封加密）、`Members`/`Roles`（基于 `tenant_members`，G3-3 内核）；未配置成员读取时返回 `Unimplemented` |
 
-> G3-9 剩余：`WatchEvents` 事件序号目前复用 `updated_at`（同毫秒并发更新可能漏发，后续可加专用事件表/序号）；Job 进度百分比由 handler 上报（当前仅终态置 100）。
+> G3-9 剩余：无。WatchEvents 已改用 `job_events` 专用表单调 seq（避免 `updated_at` 同毫秒漏发）；Job 进度由 handler 通过 `ReportProgress` 上报（NarrationHandler 已按 segment 上报）。
+
+| G3-10 CI 门禁补全 | ✅ 实现 | `.github/workflows/ci.yml`：`postgres` job（`-tags=pg -p 1` 多租户并发/隔离/幂等 + 迁移按角色模型执行 + 二次 replay 验证迁移可重放）、`s3` job（真实 MinIO 适配器测试）、`proto` job（`buf lint` + `buf breaking`）、`corpus` job（回归语料回放）、`crossbuild`（CGO_ENABLED=0 架构矩阵）与 lint/test/frontend |
+| G3-11 模型网关可视化配置 | ✅ 实现 | `migrations/0023_model_gateways.sql` 新增 `model_gateways`，TTS/LLM endpoint/key/model/vision_model/voice/sample_rate 持久化；key 以 AES-GCM 加密（`PPTS_GATEWAY_AES_KEY_BASE64`，回退 `PPTS_BYOS_AES_KEY_BASE64`，AAD 绑定 tenant/name/kind）；API `/api/model-gateways` admin only CRUD/set-default/test 并写审计；Worker 按"租户默认 → 平台默认 → env fallback"解析，provider 缓存 30s，API 写入同进程失效、跨进程 TTL 收敛；Web `GatewaySettings` 提供新建/删除/设默认/探活，配音生成优先使用默认 TTS 网关 voice |
+| 死代码治理 | ✅ 完成 | 删除旧 `IngestService`/`api.AuthMiddleware` wrapper/`tts.NotSupportedError`/未用 MP4 导出 API/`RequestIDFromContext`/`sidecar.PeekMethod`/未用字段；修复 `cmd/worker` SA4023；`deadcode ./...` 剩余项均为刻意保留的测试或门禁 surface（go-pptx narration writer、`EnsureOp`、`Engine.HandleJSON`） |
 
 > G3-1 剩余：更完善调度公平/并发策略（随 G3-2）。`pg_roles` 特权断言、`ppts_migrator` owner 断言、`ppts_scheduler` 权限断言与 `job_steps` 缺失上下文拒绝用例已在 `internal/tenant/rls_test.go` 覆盖。
 
@@ -401,3 +410,31 @@ go-pptx 已不是"待验证依赖"（V3.6/V4.0 §证据边界 表述均已被 v1
 | 2026-09-13 | V1.2 | G3-2/ADR-018 登记：migration 0016 重建 `ppts_claim_next_job`，narration 任务按 `tenants.policy.max_concurrent_jobs` 并发上限领取；补 PG 测试 |
 | 2026-09-13 | V1.2 | G3-8 登记：队列积压最老等待 gauge，`migrations/0017_queue_backlog.sql` 受限函数 + `PGStore.OldestQueuedAge` + `observability.QueueBacklogReporter`（`PPTS_QUEUE_BACKLOG_INTERVAL` 默认 30s）；补单测与 PG 测试 |
 | 2026-09-13 | V1.2 | G3-8 登记：worker 结构化日志统一，slog JSON 输出，后台循环经 `slog.NewLogLogger` 适配器对齐 |
+| 2026-09-13 | V1.2 | G3-8 登记：指标高基数字段规范化，默认按 kind×event 聚合，`PPTS_METRICS_TENANT_LABELS=true` 开启租户维度；补测试 |
+| 2026-09-13 | V1.2 | G3-8 登记：OTel 链路追踪，API RPC interceptor span + `jobs.traceparent` 持久化 + worker 异步任务 SpanLink；`PPTS_OTEL_EXPORTER_OTLP_ENDPOINT` 未配置时 no-op；补 traceprop/API/worker 接线与 PG 测试 |
+| 2026-09-13 | V1.2 | G3-4 登记：Web 审计管理界面，新增 `AuditPanel` 调用 `TenantService.ListAuditEvents/ListAuditArchives`，支持 action/resource_type/since 过滤、刷新和归档清单展示；前端构建通过 |
+| 2026-09-13 | V1.2 | G3-4 登记：新增 `scripts/backup_restore_drill.sh` 与 `docs/runbooks/backup-restore-drill.md`，标准化数据库恢复到独立演练库、关键表计数、RPO/RTO 判定和本地对象引用校验 |
+| 2026-09-13 | V1.2 | G3-4/G3-6 登记：生命周期下发改为租户前缀规则 `{tenant_id}/`，审计归档对象 `{tenant_id}/audit/archive/...` 纳入分层，同时避免 S3 整桶规则误作用 |
+| 2026-09-13 | V1.2 | G3-3 登记：OIDC Authorization Code+PKCE 接入，Web 支持 PKCE 登录/回调换 token，API 通过 `go-oidc` discovery/JWKS 校验 bearer token 并从 claims 推导 tenant/user；配置 OIDC 后默认关闭可信头 fallback，可用 `PPTS_AUTH_DEV_HEADERS=true` 显式开启开发模式 |
+| 2026-09-13 | V1.2 | G3-5 登记：新增 `UnknownResultError` → `unknown_provider_result` 状态与对账后 `RetryFailed` 重入队；补对象写失败不创建 artifact 测试、worker 未知结果 PG 测试和强杀/未知结果 runbook |
+| 2026-09-13 | V1.2 | G3-6 登记：按租户区域/桶路由，`s3.RegionRouter` 把对象路由到 `{base-bucket}-{region}` 桶（懒创建+缓存），`tenant.PGStore.StorageRegion` 提供区域解析，生命周期规则落到对应区域桶；补规范化单测与 PG 测试 |
+| 2026-09-13 | V1.2 | G3-7 登记：租户级默认源保留期回退与派生产物保留分档（artifact/audio/render），`DerivedToDelete`/`DeleteDerivedRecord` 按分档清理并写 `derived.delete` 审计；补 PG 测试 |
+| 2026-09-13 | V1.2 | G3-9 登记：`migrations/0019_job_events.sql` 新增 `job_events` 专用事件表（单调 seq），WatchEvents 改用事件快照断点续传；`UpdateProgress` + `ReportProgress` 由 handler 上报进度，NarrationHandler 按 segment 上报；测试库 truncate 移除 RESTART IDENTITY（主键均 uuid） |
+| 2026-09-13 | V1.2 | G3-10 登记：CI postgres job 增加迁移二次 replay 步骤验证可重放（本地全量迁移 replay 通过）；G3-10 全部门禁落地 |
+| 2026-09-13 | V1.2 | G3-5 登记：outbox 同事务化落地，`SetCommitStep` + `CompleteWithStep` 使最终成功步骤与任务终态原子提交（fencing 条件，失败整体回滚），ExportHandler 接入；补 worker 单测与 PG 原子性/回滚测试 |
+| 2026-09-13 | V1.2 | G3-2 登记：定价表与成本分账落地，`internal/pricing` 价目（`PPTS_PRICE_BOOK` 可配置）+ `migrations/0020_price_costs.sql`（usage_ledger 用户金额/供应商成本/币种）+ `WithPriceBook` 结算同事务落账；`TenantService.Usage/ProjectUsage` RPC 暴露金额与币种；补 pricing 单测、PG 结算成本测试与 API 断言 |
+| 2026-09-13 | V1.2 | G0-2/G1-5 登记：渲染实测通过（宿主机 Windows `D:\LibreOffice` v26.8.0.3 + WSL interop，`toWinPath` 路径转换 + `UserInstallation` 隔离，`TestSofficeRenderWindowsInterop` 真实转换→PDF→PNG）；SiliconFlow TTS 供应商落地（`PPTS_TTS_PROVIDER=siliconflow`，OpenAI 兼容 `/v1/audio/speech`，真实 API live smoke 通过，WAV 规范化保证 media 链路可解码，voice 约定 `<model>:<voice>`） |
+| 2026-09-13 | V1.2 | G1-6 登记：页面图渲染接入解析任务（`ParseHandler` 可选 renderer → `render/page-NNNN.png` + `render/pages.json` 清单登记到 `pages` 步骤），`GetNarration` 按 timeline 页序返回 `page_png_keys`（解析任务 pages 步骤 + 页面清单对象 + bundle slideId 对齐，页数不齐降级为空）；渲染失败不影响解析成功；worker 装配 `render.NewSofficeRenderer`；补 ParseHandler 渲染单测与 GetNarration 页面键 API 测试 |
+| 2026-09-13 | V1.2 | G1 端到端验收扩展：E2E 注入渲染 stub，断言 `GetNarration.page_png_keys` → `GetManifest` 页面图资源可签名拉取；修复 E2E 测试隔离缺陷（`quota_reservations` 无 tenants 外键，`TRUNCATE tenants CASCADE` 不清理，导致重复运行时预占幂等命中使结算量为 0），显式 truncate `quota_reservations/usage_ledger/tenant_quotas` |
+| 2026-09-13 | V1.2 | G2-2/G2-3 起步登记：新增 `internal/integrations/llm`（SiliconFlow/OpenAI 兼容 chat completions，`PPTS_LLM_PROVIDER=siliconflow`，默认 `Qwen/Qwen2.5-7B-Instruct`，429/5xx 可重试）与 `internal/validation` 实体保持校验；`SCRIPT_MODE_POLISH`/`SCRIPT_MODE_AI_GENERATED` 开放入队，`ScriptDraftHandler` 通过 LLM 生成讲稿并用数字/单位/日期/型号校验兜底，漂移时定向修正一次，仍失败回退原文；E2E 改为 `SCRIPT_MODE_POLISH` 并注入 polish stub 覆盖 HTTP 全链路；真实 SiliconFlow LLM live smoke 通过 |
+| 2026-09-13 | V1.2 | G2-1 结构通道登记：新增 `migrations/0021_segment_source_anchors.sql`（`narration_segments.source_anchors` jsonb）与 proto `SourceAnchor`；草稿生成从结构化解析结果写入 shape/notes anchors，API 返回结构化 provenance，用户 Update 保留服务端 anchors；补 PG store 保留测试、script_draft anchor 测试与 API 映射测试 |
+| 2026-09-13 | V1.2 | G2-1 视觉通道登记：`internal/integrations/llm` 增加 `VisionExtractor` 与 SiliconFlow 多模态 chat completions（`PPTS_LLM_VISION_MODEL`，默认 `Qwen/Qwen3-VL-8B-Instruct`）；`ScriptDraftHandler` 在页面 PNG 存在时 best-effort 提取 `visual_*` anchors 并与结构 anchors 合并，视觉失败不影响草稿生成；补多模态请求 httptest 与 PG 视觉 anchor 合并测试 |
+| 2026-09-13 | V1.2 | G2-2 Web 登记：前端 `GenerateDraft` 增加 mode/audience/style/duration 请求参数，真实项目讲稿空态加入三种模式选择（原文朗读/润色讲解/AI 生成讲解），编辑器展示 script mode 与来源锚点摘要（结构/视觉锚点计数与样例） |
+| 2026-09-13 | V1.2 | G2-2 Web 登记：真实项目逐页编辑落库 `UpdateScript`（`expected_revision` 乐观并发），冲突时服务端返回 latest，前端加载最新版并提示；demo 模式保持本地乐观更新 |
+| 2026-09-13 | V1.2 | G2-4 发音词典落地：`pronunciation_dictionaries` 租户级表（JSONB 规则 `pattern→replacement`，按字面量全局替换 spoken_text）；`pronunciation.Engine` 逐条替换（enabled 控制）；`narration.go` 合成前加载租户最新词典、应用替换，规则变更使合成缓存自动失效；HTTP CRUD 端点 `GET/POST /api/pronunciation`、`PUT/DELETE /api/pronunciation/{id}`（tenant 隔离） |
+| 2026-09-13 | V1.2 | G2-5 分段级重生成 + 时长控制落地：`NarrationSnapshot.SegmentIDs` 非空时仅统计目标分段进度（全部分段仍走 `synthesizeSegment` 复用缓存，未改分段命中缓存零 TTS 开销）；`TargetDurationMS` 非零时首轮合成后计算速率偏差，超出 ±10% 自动按比例调整 `SpeechControl.RatePercent` 重合成（50–200% 范围） |
+| 2026-09-13 | V1.2 | G2-5 LLM token 预算落地：`usage.KindLLMTokens` + `EstimateLLMTokens`（中文 1.5 字符/token 粗估 + 指令开销）预占；`ScriptDraftHandler.WithTokenAccounting` 每次 polish/guard 调用前预占、按供应商真实 prompt+completion 结算（超出额度任务失败，记账失败不阻塞已成功文案）；worker 注入 usageStore |
+| 2026-09-13 | V1.2 | G2-7 内容哈希去重落地：音频按内容寻址（configHash）存租户级共享路径 `shared/cache/audio/{configHash}.{ext}`，分段清单 `shared/cache/segments/{configHash}.json`；相同合成配置跨页面/跨项目复用零 TTS 调用（`loadPublishedSegment` 放宽为仅校验租户一致）；`ppts_tts_cache_hit_total`（scope=project/shared）命中率观测；单测覆盖同项目/跨项目去重 |
+| 2026-09-13 | V1.2 | G2-6 评测集扩容至 100 页（13 套，`evalPageCountMin=100` 门槛断言）+ `scripts/ai_eval` 评测门禁脚本（逐页 polish + `validation.CheckPreserved` 实体漂移检查，报告写 `testdata/ai-eval/report.json`，任一页漂移 exit 1；无 LLM 供应商时优雅跳过）；人工审核门禁由 Approve/Lock + `RequireConfirmed` 双侧校验保障 |
+| 2026-09-13 | V1.2 | G2 🟡 前端增强收尾：G2-2 冲突并排对比（保留本地修改 vs 服务器最新版，"以我的修改重试保存"rebase / "采用服务器最新版"二选一，不静默覆盖）；G2-5 配音前 `Estimate` 预估时长展示 + `resource_exhausted` 时给出明确选项；G2-1 编辑器锚点摘要展示逐锚点 kind 与置信度百分比 |
+| 2026-09-14 | V1.2 | 死代码治理 + G3-11 模型网关落地：清理旧上传服务/旧 auth wrapper/未用 TTS/MP4/observability/sidecar API；新增 `model_gateways` 控制面（AES-GCM key 加密、admin CRUD/test/audit、env seed、Worker 按租户热解析与 30s TTL、Web 设置页），并把 Web 配音音色从硬编码改为默认 TTS 网关配置驱动 |

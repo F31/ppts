@@ -22,7 +22,9 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
@@ -58,7 +60,7 @@ func setupE2E(t *testing.T) (*pgxpool.Pool, *pipeline.PGStore, objectstore.Objec
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE uploads, jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE uploads, jobs, job_steps, source_revisions, projects, tenants, quota_reservations, usage_ledger, tenant_quotas CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "INSERT INTO tenants(id,name) VALUES ($1,$2)", e2eTenant, "e2e"); err != nil {
@@ -72,12 +74,31 @@ func setupE2E(t *testing.T) (*pgxpool.Pool, *pipeline.PGStore, objectstore.Objec
 	return pool, jobs, objectstore.NewLocal(t.TempDir(), []byte("e2e-secret"))
 }
 
+// e2eRenderer 是端到端验收用的渲染器 stub：CI 无 LibreOffice，用固定单页 PNG 验证
+// 渲染产物确实经解析任务 → GetNarration.page_png_keys → GetManifest 全链路串起来。
+type e2eRenderer struct{}
+
+func (e2eRenderer) Render(context.Context, io.ReaderAt, int64, render.RenderOptions) (*render.RenderResult, error) {
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00}
+	return &render.RenderResult{
+		Pages:  []render.PageImage{{Index: 0, Width: 1, Height: 1, PNG: png}},
+		Report: render.RenderReport{Renderer: "e2e-stub", PageCount: 1},
+	}, nil
+}
+
+type e2ePolisher struct{}
+
+func (e2ePolisher) Rewrite(_ context.Context, req llm.RewriteRequest) (llm.RewriteResult, error) {
+	return llm.RewriteResult{Text: "这页重点介绍端到端验收 PCIe 5.0 的完整链路。"}, nil
+}
+
 // startE2EWorker 运行真实 worker 循环，分发 G1 的 parse/script_draft/narration/export 任务。
 func startE2EWorker(t *testing.T, pool *pgxpool.Pool, jobs *pipeline.PGStore, objects objectstore.ObjectStore) {
 	t.Helper()
 	np := narration.NewPGStore(pool)
-	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{}))
-	draftHandler := app.NewScriptDraftHandler(np, objects)
+	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{})).
+		WithRenderer(e2eRenderer{}).WithSteps(jobs)
+	draftHandler := app.NewScriptDraftHandler(np, objects).WithPolisher(e2ePolisher{})
 	narrationHandler := app.NewNarrationHandler(np, jobs, objects, tts.NewFakeProvider()).WithUsage(usage.NewPGStore(pool))
 	exportHandler := app.NewExportHandler(artifact.NewPGStore(pool), jobs, objects, nil)
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
@@ -205,7 +226,7 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 
 	// 4) 原文讲稿生成 → GetScript 出现草稿。
 	draftReq := e2eAuth(&pptsv1.GenerateDraftRequest{
-		ProjectId: projectID, SlideIds: []string{slideID}, Mode: pptsv1.ScriptMode_SCRIPT_MODE_ORIGINAL,
+		ProjectId: projectID, SlideIds: []string{slideID}, Mode: pptsv1.ScriptMode_SCRIPT_MODE_POLISH,
 	})
 	draftReq.Header().Set("Idempotency-Key", "e2e-draft")
 	if _, err := scriptClient.GenerateDraft(ctx, draftReq); err != nil {
@@ -214,6 +235,9 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 	script := waitScript(t, ctx, scriptClient, projectID, slideID)
 	if len(script.GetSegments()) == 0 || script.GetSegments()[0].GetDisplayText() == "" {
 		t.Fatalf("script = %+v", script)
+	}
+	if script.GetMode() != pptsv1.ScriptMode_SCRIPT_MODE_POLISH {
+		t.Fatalf("script mode = %v", script.GetMode())
 	}
 
 	// 5) 配音生成 → GetNarration ready。
@@ -229,9 +253,13 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 		t.Fatalf("narration = %+v", narr)
 	}
 
-	// 6) 播放 manifest：无页面图时仍含 timeline + 音频 + SRT/VTT。
+	// 6) 播放 manifest：页面图（渲染 stub）+ timeline + 音频 + SRT/VTT。
+	narrPages := narr.GetPagePngKeys()
+	if len(narrPages) != len(slides) {
+		t.Fatalf("narration page keys = %v, want %d", narrPages, len(slides))
+	}
 	manifest, err := playbackClient.GetManifest(ctx, e2eAuth(&pptsv1.GetPlaybackManifestRequest{
-		ProjectId: projectID, TimelineKey: narr.GetTimelineKey(), TtlSeconds: 600,
+		ProjectId: projectID, TimelineKey: narr.GetTimelineKey(), PagePngKeys: narrPages, TtlSeconds: 600,
 	}))
 	if err != nil {
 		t.Fatalf("GetManifest: %v", err)
@@ -251,33 +279,43 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 		pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_AUDIO,
 		pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_SUBTITLE_SRT,
 		pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_SUBTITLE_VTT,
+		pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG,
 	} {
 		if kinds[want] == 0 {
 			t.Fatalf("manifest missing resource %v: %+v", want, manifest.Msg.GetResources())
 		}
 	}
-	// 浏览器实际拉取音频资源：验证本地签名链接可用。
+	// 浏览器实际拉取页面图与音频资源：验证本地签名链接可用。
 	for _, r := range manifest.Msg.GetResources() {
-		if r.GetType() != pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_AUDIO {
+		if r.GetType() != pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG &&
+			r.GetType() != pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_AUDIO {
 			continue
 		}
 		aresp, err := hc.Get(server.URL + r.GetSignedUrl())
 		if err != nil {
-			t.Fatalf("fetch audio resource: %v", err)
+			t.Fatalf("fetch %v resource: %v", r.GetType(), err)
 		}
 		abytes, _ := io.ReadAll(aresp.Body)
 		aresp.Body.Close()
 		if aresp.StatusCode != http.StatusOK || len(abytes) == 0 {
-			t.Fatalf("audio resource status=%d len=%d", aresp.StatusCode, len(abytes))
+			t.Fatalf("%v resource status=%d len=%d", r.GetType(), aresp.StatusCode, len(abytes))
 		}
-		break
 	}
 
 	// G3-2：配音完成后额度按真实时长结算（预占释放、计入 consumed 并写账本）。
+	// 时间轴发布先于结算，故轮询等待结算完成。
 	uStore := usage.NewPGStore(pool)
-	q, err := uStore.GetQuota(ctx, e2eTenant, usage.KindGenSeconds)
-	if err != nil {
-		t.Fatalf("GetQuota: %v", err)
+	var q *usage.Quota
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		q, err = uStore.GetQuota(ctx, e2eTenant, usage.KindGenSeconds)
+		if err != nil {
+			t.Fatalf("GetQuota: %v", err)
+		}
+		if q.ConsumedUnits > 0 && q.ReservedUnits == 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if q.ConsumedUnits <= 0 || q.ReservedUnits != 0 {
 		t.Fatalf("usage not settled after narration: %+v", q)

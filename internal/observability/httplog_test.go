@@ -36,7 +36,7 @@ func TestRequestLoggerLogsAndSetsRequestID(t *testing.T) {
 	capture := &recordCapture{}
 	logger := slog.New(capture)
 	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if RequestIDFromContext(r.Context()) == "" {
+		if id, _ := r.Context().Value(requestIDKey{}).(string); id == "" {
 			t.Error("missing request id in context")
 		}
 		w.WriteHeader(http.StatusNoContent)

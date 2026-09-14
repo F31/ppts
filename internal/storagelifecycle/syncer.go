@@ -43,6 +43,7 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		if !ok {
 			continue
 		}
+		policy.Prefix = setting.TenantID + "/"
 		if err := s.apply(ctx, setting.TenantID, policy); err != nil {
 			if errors.Is(err, objectstore.ErrOperationNotSupported) {
 				continue

@@ -31,6 +31,13 @@ type StaleReservation struct {
 	UsageKind          string
 }
 
+// DerivedToDelete 是超过租户派生产物保留分档的派生产物对象（artifact/audio/render）。
+type DerivedToDelete struct {
+	ObjectKey string
+	AssetType string
+	AssetID   string
+}
+
 // Store 是保留策略所需的存储能力。
 type Store interface {
 	// ListTenants 返回控制面租户 ID（tenants 表不受 RLS 约束）。
@@ -39,10 +46,14 @@ type Store interface {
 	PendingUploadsBefore(ctx context.Context, tenantID string, cutoff time.Time) ([]OrphanUpload, error)
 	// AbortUpload 将 pending 会话置为 aborted（清理幂等）。
 	AbortUpload(ctx context.Context, tenantID, uploadID string) error
-	// SourcesToDelete 返回应删除源对象的版本：超过项目保留期，或已选择"处理后删除"且解析成功。
+	// SourcesToDelete 返回应删除源对象的版本：超过项目保留期（或租户级默认保留期），或已选择"处理后删除"且解析成功。
 	SourcesToDelete(ctx context.Context, tenantID string, now time.Time) ([]SourceToDelete, error)
 	// MarkSourceDeleted 标记源对象已删除。
 	MarkSourceDeleted(ctx context.Context, tenantID, revisionID string) error
+	// DerivedToDelete 返回超过租户派生产物保留分档（artifact/audio/render）的对象清单。
+	DerivedToDelete(ctx context.Context, tenantID string, now time.Time) ([]DerivedToDelete, error)
+	// DeleteDerivedRecord 删除派生对象清单记录；artifact 同时删除 artifacts 表对应行。
+	DeleteDerivedRecord(ctx context.Context, tenantID, objectKey, assetType string) error
 	// StaleReservationsBefore 返回 cutoff 前仍 reserved 的额度预占。
 	StaleReservationsBefore(ctx context.Context, tenantID string, cutoff time.Time) ([]StaleReservation, error)
 	// ReleaseReservationByID 释放指定预占并回退 reserved_units。
@@ -131,6 +142,23 @@ func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, quot
 			s.logger.Printf("retention: deleted source object for revision %s (tenant %s)", src.RevisionID, tenantID)
 		}
 		s.record(ctx, tenantID, "source.delete", "source_revision", src.RevisionID, map[string]any{"object_key": src.ObjectKey})
+	}
+
+	derived, err := s.store.DerivedToDelete(ctx, tenantID, now)
+	if err != nil {
+		return err
+	}
+	for _, d := range derived {
+		if err := s.deleteObject(ctx, d.ObjectKey); err != nil {
+			return err
+		}
+		if err := s.store.DeleteDerivedRecord(ctx, tenantID, d.ObjectKey, d.AssetType); err != nil {
+			return err
+		}
+		if s.logger != nil {
+			s.logger.Printf("retention: deleted derived %s object %s (tenant %s)", d.AssetType, d.ObjectKey, tenantID)
+		}
+		s.record(ctx, tenantID, "derived.delete", d.AssetType, d.AssetID, map[string]any{"object_key": d.ObjectKey})
 	}
 
 	if !quotaCutoff.IsZero() {

@@ -154,6 +154,13 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 
 	workCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// 注入进度上报：handler 可通过 pipeline.ReportProgress(ctx, pct) 上报 0-100。
+	workCtx = context.WithValue(workCtx, progressKey{}, progressFunc(func(ctx context.Context, pct int) error {
+		return w.store.UpdateProgress(ctx, job.ID, job.LeaseOwner, job.FencingToken, pct)
+	}))
+	// 注入 outbox：handler 可通过 pipeline.SetCommitStep(ctx, step) 声明随终态原子提交的最终步骤。
+	commitStep := &commitStepHolder{}
+	workCtx = context.WithValue(workCtx, commitStepKey{}, commitStep)
 
 	canceled := &atomic.Bool{}
 	hbDone := make(chan struct{})
@@ -180,6 +187,14 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 		return
 	}
 	if err != nil {
+		if unknown := AsUnknownResult(err); unknown != nil {
+			if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateUnknownResult, TryMarshalJobError(unknown)); cerr != nil {
+				w.logger.Printf("worker: complete unknown-result job=%s: %v", job.ID, cerr)
+			} else {
+				w.metrics.JobCompleted(job, StateUnknownResult, time.Since(started))
+			}
+			return
+		}
 		if retry := AsRetry(err); retry != nil {
 			at := retry.At
 			if at.IsZero() {
@@ -199,6 +214,20 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 			w.metrics.JobCompleted(job, StateFailed, time.Since(started))
 		}
 		return
+	}
+	if err == nil && commitStep.step != nil {
+		if completer, ok := w.store.(CompleteWithStep); ok {
+			if cerr := completer.CompleteWithStep(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateSucceeded, nil, commitStep.step); cerr != nil {
+				w.logger.Printf("worker: complete succeeded (outbox) job=%s: %v", job.ID, cerr)
+			} else {
+				w.metrics.JobCompleted(job, StateSucceeded, time.Since(started))
+			}
+			return
+		}
+		// 后端未实现 outbox：回退为先写步骤再提交终态。
+		if err := w.store.MarkStep(ctx, *commitStep.step); err != nil {
+			w.logger.Printf("worker: mark outbox step failed job=%s: %v", job.ID, err)
+		}
 	}
 	if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateSucceeded, nil); cerr != nil {
 		w.logger.Printf("worker: complete succeeded job=%s: %v", job.ID, cerr)

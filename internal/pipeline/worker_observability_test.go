@@ -30,11 +30,21 @@ func (s *observeStore) Complete(_ context.Context, _ string, _ string, _ int64, 
 	s.completed = state
 	return nil
 }
+func (s *observeStore) CompleteWithStep(_ context.Context, _ string, _ string, _ int64, state JobState, _ []byte, _ *JobStep) error {
+	s.completed = state
+	return nil
+}
 func (s *observeStore) ScheduleRetry(context.Context, string, string, int64, time.Time, []byte) error {
 	s.retried = true
 	return nil
 }
 func (s *observeStore) MarkStep(context.Context, JobStep) error { return nil }
+func (s *observeStore) UpdateProgress(context.Context, string, string, int64, int) error {
+	return nil
+}
+func (s *observeStore) EventsSince(context.Context, string, string, int64, int) ([]JobEvent, error) {
+	return nil, nil
+}
 func (s *observeStore) Cancel(context.Context, string, string) (*Job, error) {
 	return nil, ErrJobNotFound
 }
@@ -49,6 +59,75 @@ func (s *observeStore) Get(context.Context, string, string) (*Job, error) { retu
 type observeMetrics struct {
 	completed []JobState
 	retries   int
+}
+
+type progressStore struct {
+	observeStore
+	progress int
+}
+
+func (s *progressStore) UpdateProgress(_ context.Context, _ string, _ string, _ int64, pct int) error {
+	s.progress = pct
+	return nil
+}
+
+func TestWorkerReportProgressFromHandler(t *testing.T) {
+	job := &Job{ID: "j1", TenantID: "tenant-1", ProjectID: "project-1", Kind: KindParse, LeaseOwner: "wk", FencingToken: 1}
+	store := &progressStore{}
+	w := NewWorker(store, "wk", "tenant-1", func(ctx context.Context, _ *Job) error {
+		return ReportProgress(ctx, 55)
+	}, WorkerOptions{})
+	w.process(context.Background(), job)
+	if store.progress != 55 {
+		t.Fatalf("progress = %d want 55", store.progress)
+	}
+	if store.completed != StateSucceeded {
+		t.Fatalf("completed = %s want succeeded", store.completed)
+	}
+}
+
+func TestReportProgressWithoutWorkerIsNoop(t *testing.T) {
+	if err := ReportProgress(context.Background(), 100); err != nil {
+		t.Fatalf("ReportProgress outside worker = %v, want nil", err)
+	}
+}
+
+type commitStore struct {
+	observeStore
+	step *JobStep
+}
+
+func (s *commitStore) CompleteWithStep(_ context.Context, _ string, _ string, _ int64, state JobState, _ []byte, step *JobStep) error {
+	s.completed = state
+	s.step = step
+	return nil
+}
+
+func TestWorkerOutboxCommitStepWithTerminal(t *testing.T) {
+	job := &Job{ID: "j1", TenantID: "tenant-1", ProjectID: "project-1", Kind: KindExport, LeaseOwner: "wk", FencingToken: 1}
+	store := &commitStore{}
+	commit := JobStep{JobID: job.ID, TenantID: job.TenantID, StepType: "export", StepKey: "export:srt:h", State: StepSuccess, ResultRef: "artifact-1"}
+	w := NewWorker(store, "wk", "tenant-1", func(ctx context.Context, _ *Job) error {
+		SetCommitStep(ctx, commit)
+		return nil
+	}, WorkerOptions{})
+	w.process(context.Background(), job)
+	if store.completed != StateSucceeded {
+		t.Fatalf("completed = %s want succeeded", store.completed)
+	}
+	if store.step == nil || store.step.ResultRef != "artifact-1" || store.step.State != StepSuccess {
+		t.Fatalf("commit step = %+v want artifact-1 success", store.step)
+	}
+}
+
+func TestWorkerOutboxWithoutStepUsesPlainComplete(t *testing.T) {
+	job := &Job{ID: "j1", TenantID: "tenant-1", ProjectID: "project-1", Kind: KindParse, LeaseOwner: "wk", FencingToken: 1}
+	store := &commitStore{}
+	w := NewWorker(store, "wk", "tenant-1", func(context.Context, *Job) error { return nil }, WorkerOptions{})
+	w.process(context.Background(), job)
+	if store.completed != StateSucceeded || store.step != nil {
+		t.Fatalf("completed=%s step=%+v want succeeded + nil step", store.completed, store.step)
+	}
 }
 
 func (m *observeMetrics) JobClaimed(*Job) {}

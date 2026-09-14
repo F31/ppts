@@ -131,8 +131,9 @@ func (s *Store) ApplyLifecyclePolicy(ctx context.Context, bucket string, policy 
 	cfg := lifecycle.Configuration{}
 	for i, tr := range policy.Transitions {
 		cfg.Rules = append(cfg.Rules, lifecycle.Rule{
-			ID:     "ppts-tier-" + strconv.Itoa(i),
-			Status: "Enabled",
+			ID:         "ppts-tier-" + strconv.Itoa(i),
+			Status:     "Enabled",
+			RuleFilter: lifecycle.Filter{Prefix: policy.Prefix},
 			Transition: lifecycle.Transition{
 				Days:         lifecycle.ExpirationDays(tr.AfterDays),
 				StorageClass: string(tr.To),
@@ -141,7 +142,9 @@ func (s *Store) ApplyLifecyclePolicy(ctx context.Context, bucket string, policy 
 	}
 	if policy.Expiration != nil {
 		cfg.Rules = append(cfg.Rules, lifecycle.Rule{
-			ID: "ppts-expire", Status: "Enabled",
+			ID:         "ppts-expire",
+			Status:     "Enabled",
+			RuleFilter: lifecycle.Filter{Prefix: policy.Prefix},
 			Expiration: lifecycle.Expiration{Days: lifecycle.ExpirationDays(policy.Expiration.AfterDays)},
 		})
 	}

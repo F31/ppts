@@ -135,11 +135,22 @@ func (r *Registry) ApplyLifecyclePolicy(ctx context.Context, bucket string, poli
 	return nil
 }
 
+// tenantLifecycleApplier 是可选接口：按租户路由的后端可直接在正确的桶上应用生命周期规则。
+type tenantLifecycleApplier interface {
+	ApplyTenantLifecyclePolicy(ctx context.Context, tenantID, bucket string, policy LifecyclePolicy) error
+}
+
 // ApplyTenantLifecyclePolicy applies lifecycle policy only to the backend selected for tenantID.
 func (r *Registry) ApplyTenantLifecyclePolicy(ctx context.Context, tenantID, bucket string, policy LifecyclePolicy) error {
 	store, err := r.storeFor(ctx, tenantID)
 	if err != nil {
 		return err
+	}
+	if applier, ok := store.(tenantLifecycleApplier); ok {
+		if err := applier.ApplyTenantLifecyclePolicy(ctx, tenantID, bucket, policy); err != nil && !errors.Is(err, ErrOperationNotSupported) {
+			return err
+		}
+		return nil
 	}
 	if err := store.ApplyLifecyclePolicy(ctx, bucket, policy); err != nil && !errors.Is(err, ErrOperationNotSupported) {
 		return err

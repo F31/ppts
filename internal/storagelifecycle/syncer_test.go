@@ -54,7 +54,7 @@ func TestSyncerAppliesExplicitPolicies(t *testing.T) {
 		t.Fatalf("applied policies = %d want 1", len(objects.applied))
 	}
 	got := objects.applied[0]
-	if len(got.Transitions) != 1 || got.Transitions[0].AfterDays != 30 || got.Expiration == nil || got.Expiration.AfterDays != 365 {
+	if got.Prefix != "tenant-1/" || len(got.Transitions) != 1 || got.Transitions[0].AfterDays != 30 || got.Expiration == nil || got.Expiration.AfterDays != 365 {
 		t.Fatalf("policy = %+v", got)
 	}
 }

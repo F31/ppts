@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/tenant"
 )
 
@@ -74,11 +75,13 @@ func (s *PGStore) SourcesToDelete(ctx context.Context, tenantID string, now time
 			`SELECT sr.id::text, sr.object_key
 			 FROM source_revisions sr
 			 JOIN projects p ON p.id = sr.project_id AND p.tenant_id = sr.tenant_id
+			 JOIN tenants t ON t.id = sr.tenant_id
 			 WHERE sr.tenant_id = $1
 			   AND sr.source_deleted_at IS NULL
 			   AND (
-			     (p.source_retention_days IS NOT NULL
-			        AND sr.created_at < $2::timestamptz - (p.source_retention_days || ' days')::interval)
+			     (COALESCE(p.source_retention_days, (t.policy->>'source_retention_days')::int) IS NOT NULL
+			        AND sr.created_at < $2::timestamptz
+			            - (COALESCE(p.source_retention_days, (t.policy->>'source_retention_days')::int) || ' days')::interval)
 			     OR (
 			       p.delete_source_after = true
 			       AND EXISTS (
@@ -106,6 +109,60 @@ func (s *PGStore) SourcesToDelete(ctx context.Context, tenantID string, now time
 		return rows.Err()
 	})
 	return out, err
+}
+
+// DerivedToDelete 返回超过租户派生产物保留分档的对象清单。
+// 分档字段：artifact_retention_days（导出成品）/audio_retention_days（配音音频）/render_retention_days（页面渲染图）。
+func (s *PGStore) DerivedToDelete(ctx context.Context, tenantID string, now time.Time) ([]DerivedToDelete, error) {
+	var out []DerivedToDelete
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT oi.object_key, oi.asset_type, oi.asset_id
+			 FROM object_inventory oi
+			 JOIN tenants t ON t.id = oi.tenant_id
+			 WHERE oi.tenant_id = $1
+			   AND (
+			     (oi.asset_type = 'artifact' AND (t.policy->>'artifact_retention_days')::int > 0
+			        AND oi.updated_at < $2::timestamptz - ((t.policy->>'artifact_retention_days')::int || ' days')::interval)
+			     OR (oi.asset_type = 'audio' AND (t.policy->>'audio_retention_days')::int > 0
+			        AND oi.updated_at < $2::timestamptz - ((t.policy->>'audio_retention_days')::int || ' days')::interval)
+			     OR (oi.asset_type = 'render' AND (t.policy->>'render_retention_days')::int > 0
+			        AND oi.updated_at < $2::timestamptz - ((t.policy->>'render_retention_days')::int || ' days')::interval)
+			   )
+			 ORDER BY oi.updated_at`, tenantID, now)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var d DerivedToDelete
+			if err := rows.Scan(&d.ObjectKey, &d.AssetType, &d.AssetID); err != nil {
+				return err
+			}
+			out = append(out, d)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// DeleteDerivedRecord 删除派生产物清单记录；artifact 同时按 object_key 解析项目并删除 artifacts 表行。
+func (s *PGStore) DeleteDerivedRecord(ctx context.Context, tenantID, objectKey, assetType string) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if assetType == "artifact" {
+			if key, err := objectstore.Parse(objectKey); err == nil {
+				if _, err := tx.Exec(ctx,
+					`DELETE FROM artifacts
+					 WHERE tenant_id=$1 AND project_id=$2 AND content_hash=$3 AND format=$4`,
+					tenantID, key.ProjectID, key.AssetID, key.Ext); err != nil {
+					return err
+				}
+			}
+		}
+		_, err := tx.Exec(ctx,
+			`DELETE FROM object_inventory WHERE tenant_id=$1 AND object_key=$2`, tenantID, objectKey)
+		return err
+	})
 }
 
 func (s *PGStore) MarkSourceDeleted(ctx context.Context, tenantID, revisionID string) error {

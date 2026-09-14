@@ -10,13 +10,15 @@ import (
 )
 
 type fakeRetentionStore struct {
-	tenants  []string
-	orphans  []OrphanUpload
-	sources  []SourceToDelete
-	stale    []StaleReservation
-	aborted  []string
-	deleted  []string
-	released []string
+	tenants        []string
+	orphans        []OrphanUpload
+	sources        []SourceToDelete
+	stale          []StaleReservation
+	derived        []DerivedToDelete
+	aborted        []string
+	deleted        []string
+	released       []string
+	derivedRecords []string
 }
 
 func (f *fakeRetentionStore) ListTenants(context.Context) ([]string, error) { return f.tenants, nil }
@@ -32,6 +34,13 @@ func (f *fakeRetentionStore) SourcesToDelete(context.Context, string, time.Time)
 }
 func (f *fakeRetentionStore) MarkSourceDeleted(_ context.Context, _, revisionID string) error {
 	f.deleted = append(f.deleted, revisionID)
+	return nil
+}
+func (f *fakeRetentionStore) DerivedToDelete(context.Context, string, time.Time) ([]DerivedToDelete, error) {
+	return f.derived, nil
+}
+func (f *fakeRetentionStore) DeleteDerivedRecord(_ context.Context, _, objectKey, _ string) error {
+	f.derivedRecords = append(f.derivedRecords, objectKey)
 	return nil
 }
 func (f *fakeRetentionStore) StaleReservationsBefore(context.Context, string, time.Time) ([]StaleReservation, error) {
@@ -56,6 +65,7 @@ func TestSweeperWritesAuditEvents(t *testing.T) {
 		orphans: []OrphanUpload{{UploadID: "upload-1", ObjectKey: key.String()}},
 		sources: []SourceToDelete{{RevisionID: "rev-1", ObjectKey: key.String()}},
 		stale:   []StaleReservation{{ReservationID: "res-1", LogicalOperationID: "op-1", UsageKind: "gen_seconds"}},
+		derived: []DerivedToDelete{{ObjectKey: key.String(), AssetType: "audio", AssetID: "seg-1"}},
 	}
 	objects := objectstore.NewLocal(t.TempDir(), []byte("s"))
 	auditor := &fakeAuditor{}
@@ -73,9 +83,12 @@ func TestSweeperWritesAuditEvents(t *testing.T) {
 			t.Fatalf("audit event = %+v", e)
 		}
 	}
-	for _, want := range []string{"source.delete", "upload.abort", "quota.reservation_release"} {
+	for _, want := range []string{"source.delete", "upload.abort", "quota.reservation_release", "derived.delete"} {
 		if !actions[want] {
 			t.Fatalf("missing audit action %q in %+v", want, auditor.events)
 		}
+	}
+	if len(store.derivedRecords) != 1 || store.derivedRecords[0] != key.String() {
+		t.Fatalf("derived records deleted = %+v", store.derivedRecords)
 	}
 }

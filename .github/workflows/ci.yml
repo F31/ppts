@@ -127,6 +127,14 @@ jobs:
             "GRANT USAGE ON SCHEMA public TO ppts_app;
              GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ppts_app;
              GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ppts_app;"
+      - name: migration replay (idempotency)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for f in migrations/*.sql; do
+            echo "replaying $f"
+            psql -h localhost -U postgres -d ppts -v ON_ERROR_STOP=1 -f "$f"
+          done
       - name: pg tests
         env:
           PPTS_TEST_DATABASE: postgres://ppts_app:ppts_app@localhost:5432/ppts?sslmode=disable

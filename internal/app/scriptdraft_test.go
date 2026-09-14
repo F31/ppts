@@ -10,11 +10,32 @@ import (
 	"testing"
 	"time"
 
+	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 )
+
+type fakePolisher struct {
+	outputs     []string
+	visual      []llm.VisualAnchor
+	calls       int
+	visualCalls int
+}
+
+func (p *fakePolisher) Rewrite(_ context.Context, req llm.RewriteRequest) (llm.RewriteResult, error) {
+	p.calls++
+	if p.calls <= len(p.outputs) {
+		return llm.RewriteResult{Text: p.outputs[p.calls-1]}, nil
+	}
+	return llm.RewriteResult{Text: req.SourceText}, nil
+}
+
+func (p *fakePolisher) ExtractVisual(context.Context, llm.VisualExtractRequest) ([]llm.VisualAnchor, error) {
+	p.visualCalls++
+	return p.visual, nil
+}
 
 // runParseWorker 执行已入队的 parse 任务（复用 create deck 的 ingest）。
 func runParseWorker(t *testing.T, env *appEnv, jobID string) {
@@ -65,12 +86,8 @@ func parsedSlideID(t *testing.T, env *appEnv, revisionNo int) string {
 func TestScriptDraftProducesOriginalDraftFromParsedDocument(t *testing.T) {
 	env := setupApp(t)
 	ctx := context.Background()
-	ingest := NewIngestService(env.projects, env.jobs, env.objects)
-	res, err := ingest.Ingest(ctx, appTenant, appProject, bytes.NewReader(deckBytes(t)))
-	if err != nil {
-		t.Fatalf("Ingest: %v", err)
-	}
-	runParseWorker(t, env, res.ParseJob.ID)
+	_, parseJob := uploadDeck(t, env, 1, deckBytes(t))
+	runParseWorker(t, env, parseJob.ID)
 
 	// 入队 script_draft 任务并消费。
 	snap := ScriptDraftSnapshot{
@@ -99,8 +116,11 @@ func TestScriptDraftProducesOriginalDraftFromParsedDocument(t *testing.T) {
 		rev.Segments[0].DisplayText == "" || rev.Segments[0].SpokenText == "" {
 		t.Fatalf("segments = %+v", rev.Segments)
 	}
-	if len(rev.Segments[0].SourceRefs) != 1 || rev.Segments[0].SourceRefs[0] != slideID {
+	if len(rev.Segments[0].SourceRefs) < 1 || rev.Segments[0].SourceRefs[0] != slideID {
 		t.Fatalf("source refs = %v", rev.Segments[0].SourceRefs)
+	}
+	if len(rev.Segments[0].SourceAnchors) == 0 || rev.Segments[0].SourceAnchors[0].SlideID != slideID {
+		t.Fatalf("source anchors = %+v", rev.Segments[0].SourceAnchors)
 	}
 
 	// 幂等：再次处理不覆盖已存在（revision 不变）。
@@ -150,5 +170,137 @@ func TestScriptDraftSkipsEmptyPages(t *testing.T) {
 	store := narration.NewPGStore(env.pool)
 	if _, err := store.Get(ctx, appTenant, appProject, "slide-1", "zh-CN"); err != narration.ErrNotFound {
 		t.Fatalf("slide-1 should have no draft, got err=%v", err)
+	}
+}
+
+func TestScriptDraftPolishUsesLLMWhenEntitiesPreserved(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","shapes":[{"id":"shape-1","kind":"text","text":"吞吐提升 23.5%，延迟 12ms。"}]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "polish"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-polish", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	polisher := &fakePolisher{outputs: []string{"这页的重点是吞吐提升 23.5%，同时延迟控制在 12ms。"}}
+	handler := NewScriptDraftHandler(narration.NewPGStore(env.pool), env.objects).WithPolisher(polisher)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Mode != narration.ModePolish || len(rev.Segments) != 1 || rev.Segments[0].DisplayText != polisher.outputs[0] {
+		t.Fatalf("revision = %+v", rev)
+	}
+	if len(rev.Segments[0].SourceAnchors) != 1 || rev.Segments[0].SourceAnchors[0].ShapeID != "shape-1" || rev.Segments[0].SourceAnchors[0].Confidence != 1 {
+		t.Fatalf("anchors = %+v", rev.Segments[0].SourceAnchors)
+	}
+	if polisher.calls != 1 {
+		t.Fatalf("polisher calls = %d", polisher.calls)
+	}
+}
+
+func TestScriptDraftPolishFallsBackWhenEntityGuardStillFails(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	source := "吞吐提升 23.5%，延迟 12ms。"
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","shapes":[{"text":"` + source + `"}]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "polish"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-polish-guard", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	polisher := &fakePolisher{outputs: []string{"吞吐提升 30%，延迟 10ms。", "吞吐提升 30%，延迟 10ms。"}}
+	handler := NewScriptDraftHandler(narration.NewPGStore(env.pool), env.objects).WithPolisher(polisher)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Segments[0].DisplayText != source || rev.Segments[0].SpokenText != source {
+		t.Fatalf("expected fallback source, got %+v", rev.Segments[0])
+	}
+	if polisher.calls != 2 {
+		t.Fatalf("expected guard retry, calls=%d", polisher.calls)
+	}
+}
+
+func TestScriptDraftAIGeneratedUsesLLMWithEntityGuard(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	source := "端到端验收 PCIe 5.0。"
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","shapes":[{"text":"` + source + `"}]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "ai_generated"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-ai", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := "这一页可以这样讲：我们正在验证端到端链路对 PCIe 5.0 场景的支撑。"
+	polisher := &fakePolisher{outputs: []string{text}}
+	handler := NewScriptDraftHandler(narration.NewPGStore(env.pool), env.objects).WithPolisher(polisher)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.Mode != narration.ModeAIGenerated || len(rev.Segments) != 1 || rev.Segments[0].DisplayText != text {
+		t.Fatalf("revision = %+v", rev)
+	}
+}
+
+func TestScriptDraftAddsVisualAnchorsWhenPagePNGExists(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","shapes":[{"id":"shape-1","kind":"text","text":"可见数字 42%。"}]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	pageKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "render", AssetID: "page-0001", Ext: "png"}
+	if err := env.objects.Put(ctx, pageKey, bytes.NewReader([]byte("png")), objectstore.ObjectMeta{ContentType: "image/png"}); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "polish"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-visual", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	polisher := &fakePolisher{outputs: []string{"可见数字 42%，适合重点讲解。"}, visual: []llm.VisualAnchor{{Kind: "text", Raw: "图中可见 42%", Confidence: 0.8}}}
+	handler := NewScriptDraftHandler(narration.NewPGStore(env.pool), env.objects).WithPolisher(polisher).WithVisualExtractor(polisher)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polisher.visualCalls != 1 {
+		t.Fatalf("visual calls = %d", polisher.visualCalls)
+	}
+	anchors := rev.Segments[0].SourceAnchors
+	if len(anchors) != 2 || anchors[1].Kind != "visual_text" || anchors[1].Raw != "图中可见 42%" || anchors[1].Confidence != 0.8 {
+		t.Fatalf("anchors = %+v", anchors)
 	}
 }

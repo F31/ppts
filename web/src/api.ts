@@ -1,8 +1,9 @@
-import type { PlaybackManifest, Project, ScriptRevision, SlideSummary } from './types';
+import type { AuditArchiveFile, AuditEvent, PlaybackManifest, Project, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from './types';
 
 export type ClientIdentity = {
   tenantId: string;
   userId: string;
+  accessToken?: string;
 };
 
 export class ConnectError extends Error {
@@ -13,6 +14,16 @@ export class ConnectError extends Error {
     this.name = 'ConnectError';
     this.code = code;
   }
+}
+
+function identityHeaders(identity: ClientIdentity): Record<string, string> {
+  if (identity.accessToken) {
+    return { Authorization: `Bearer ${identity.accessToken}` };
+  }
+  return {
+    'X-PPTS-Tenant-ID': identity.tenantId,
+    'X-PPTS-User-ID': identity.userId
+  };
 }
 
 export async function getPlaybackManifest(params: {
@@ -26,8 +37,7 @@ export async function getPlaybackManifest(params: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-PPTS-Tenant-ID': params.identity.tenantId,
-      'X-PPTS-User-ID': params.identity.userId
+      ...identityHeaders(params.identity)
     },
     body: JSON.stringify({
       projectId: params.projectId,
@@ -47,8 +57,7 @@ async function connectJSON<T>(identity: ClientIdentity, procedure: string, body:
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-PPTS-Tenant-ID': identity.tenantId,
-      'X-PPTS-User-ID': identity.userId,
+      ...identityHeaders(identity),
       ...extraHeaders
     },
     body: JSON.stringify(body)
@@ -101,15 +110,45 @@ export async function getScript(
   return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Get', { projectId, slideId });
 }
 
+export type UpdateScriptResult = {
+  revision: ScriptRevision;
+  conflict: boolean;
+  latest?: ScriptRevision;
+};
+
+export async function updateScript(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string,
+  expectedRevision: number,
+  segments: ScriptSegment[]
+): Promise<UpdateScriptResult> {
+  return connectJSON<UpdateScriptResult>(identity, '/ppts.v1.ScriptService/Update', {
+    projectId,
+    slideId,
+    expectedRevision,
+    segments
+  });
+}
+
 export async function generateDraft(
   identity: ClientIdentity,
   projectId: string,
-  slideIds: string[]
-): Promise<{ jobId: string; fully_supported: boolean }> {
-  return connectJSON<{ jobId: string; fully_supported: boolean }>(
+  slideIds: string[],
+  mode: ScriptMode = 'SCRIPT_MODE_ORIGINAL',
+  options: { audience?: string; style?: string; totalSeconds?: number } = {}
+): Promise<{ jobId: string; fullySupported: boolean }> {
+  return connectJSON<{ jobId: string; fullySupported: boolean }>(
     identity,
     '/ppts.v1.ScriptService/GenerateDraft',
-    { projectId, slideIds }
+    {
+      projectId,
+      slideIds,
+      mode,
+      audience: options.audience,
+      style: options.style,
+      duration: options.totalSeconds ? { totalSeconds: options.totalSeconds } : undefined
+    }
   );
 }
 
@@ -126,6 +165,32 @@ export async function createGeneration(
     { projectId, slideIds, voiceId },
     { 'Idempotency-Key': idempotencyKey }
   );
+}
+
+export type NarrationEstimate = {
+  currency: string;
+  costMin: number;
+  costMax: number;
+  estimatedSeconds: number;
+};
+
+export async function estimateNarration(
+  identity: ClientIdentity,
+  projectId: string,
+  slideIds: string[],
+  voiceId: string
+): Promise<NarrationEstimate> {
+  const data = await connectJSON<{ currency?: string; costMin?: number; costMax?: number; estimatedSeconds?: number }>(
+    identity,
+    '/ppts.v1.NarrationService/Estimate',
+    { projectId, slideIds, voiceId }
+  );
+  return {
+    currency: data.currency ?? '',
+    costMin: data.costMin ?? 0,
+    costMax: data.costMax ?? 0,
+    estimatedSeconds: data.estimatedSeconds ?? 0
+  };
 }
 
 export type NarrationStatus = {
@@ -193,10 +258,109 @@ export async function abortUpload(identity: ClientIdentity, uploadId: string): P
   await connectJSON<Record<string, never>>(identity, '/ppts.v1.UploadService/AbortUpload', { uploadId });
 }
 
+export async function listAuditEvents(
+  identity: ClientIdentity,
+  params: { action?: string; resourceType?: string; sinceUnix?: number; pageSize?: number }
+): Promise<AuditEvent[]> {
+  const data = await connectJSON<{ events?: AuditEvent[] }>(identity, '/ppts.v1.TenantService/ListAuditEvents', {
+    action: params.action ?? '',
+    resourceType: params.resourceType ?? '',
+    sinceUnix: params.sinceUnix ?? 0,
+    pageSize: params.pageSize ?? 50
+  });
+  return data.events ?? [];
+}
+
+export async function listAuditArchives(identity: ClientIdentity, limit = 20): Promise<AuditArchiveFile[]> {
+  const data = await connectJSON<{ files?: AuditArchiveFile[] }>(identity, '/ppts.v1.TenantService/ListAuditArchives', { limit });
+  return data.files ?? [];
+}
+
 export async function sha256Hex(file: File): Promise<string> {
   const buffer = await file.arrayBuffer();
   const digest = await crypto.subtle.digest('SHA-256', buffer);
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
+}
+
+// ---- 模型网关管理（G3 可视化配置，admin only）----
+
+export type ModelGateway = {
+  tenantId: string;
+  name: string;
+  kind: 'tts' | 'llm';
+  provider: string;
+  baseUrl: string;
+  model: string;
+  visionModel: string;
+  voice: string;
+  sampleRate: number;
+  isDefault: boolean;
+  enabled: boolean;
+  version: number;
+  hasKey: boolean;
+  keyMasked: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type GatewayTestResult = { ok: boolean; latencyMs: number; error?: string };
+
+function gatewayPath(identity: ClientIdentity, method: string, path: string, body?: unknown): Promise<unknown> {
+  const url = path;
+  const response = fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...identityHeaders(identity) },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  return response.then(async (r) => {
+    if (!r.ok) {
+      let message = `${method} ${url} failed: HTTP ${r.status}`;
+      try {
+        const envelope = (await r.json()) as { message?: string };
+        if (envelope.message) message = envelope.message;
+      } catch {
+        // 保留默认 message。
+      }
+      throw new ConnectError(`http_${r.status}`, message);
+    }
+    if (r.status === 204) return undefined;
+    return r.json();
+  });
+}
+
+export async function listGateways(identity: ClientIdentity, kind?: 'tts' | 'llm'): Promise<ModelGateway[]> {
+  const suffix = kind ? `?kind=${kind}` : '';
+  const data = (await gatewayPath(identity, 'GET', `/api/model-gateways${suffix}`)) as { gateways?: ModelGateway[] };
+  return data.gateways ?? [];
+}
+
+export async function createGateway(
+  identity: ClientIdentity,
+  input: { kind: 'tts' | 'llm'; name: string; baseUrl: string; apiKey: string; model: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean }
+): Promise<ModelGateway> {
+  const data = (await gatewayPath(identity, 'POST', '/api/model-gateways', input)) as { gateway?: ModelGateway };
+  return data.gateway!;
+}
+
+export async function updateGateway(
+  identity: ClientIdentity,
+  name: string,
+  input: { kind: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean }
+): Promise<ModelGateway> {
+  const data = (await gatewayPath(identity, 'PUT', `/api/model-gateways/${encodeURIComponent(name)}`, input)) as { gateway?: ModelGateway };
+  return data.gateway!;
+}
+
+export async function deleteGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<void> {
+  await gatewayPath(identity, 'DELETE', `/api/model-gateways/${encodeURIComponent(name)}?kind=${kind}`);
+}
+
+export async function setDefaultGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<void> {
+  await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/set-default?kind=${kind}`);
+}
+
+export async function testGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<GatewayTestResult> {
+  return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}`)) as GatewayTestResult;
 }

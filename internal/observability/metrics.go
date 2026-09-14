@@ -3,6 +3,7 @@ package observability
 
 import (
 	"expvar"
+	"os"
 	"strings"
 	"time"
 
@@ -17,7 +18,15 @@ var (
 	ttsSynthesisTotal          = expvar.NewMap("ppts_tts_synthesis_total")
 	ttsSynthesisMillisTotal    = expvar.NewMap("ppts_tts_synthesis_duration_ms_total")
 	ttsThrottledTotal          = expvar.NewMap("ppts_tts_throttled_total")
+	ttsCacheHitTotal           = expvar.NewMap("ppts_tts_cache_hit_total")
 )
+
+// includeTenantLabel 控制指标键是否携带租户维度。默认关闭，避免以租户 UUID 作为
+// 高基数标签导致指标维度爆炸；排查单租户问题时经 PPTS_METRICS_TENANT_LABELS=true 开启。
+var includeTenantLabel = func() bool {
+	v := strings.TrimSpace(os.Getenv("PPTS_METRICS_TENANT_LABELS"))
+	return strings.EqualFold(v, "true") || v == "1"
+}()
 
 // PipelineMetrics records worker lifecycle counters with bounded labels.
 type PipelineMetrics struct{}
@@ -72,17 +81,22 @@ func (m *PipelineMetrics) SegmentSynthesized(job *pipeline.Job, retryable, throt
 	}
 }
 
+// SegmentCacheHit records a segment audio served from cache instead of the
+// provider (G2-7 内容哈希去重命中率观测：hit/(hit+succeeded) 即命中率).
+func (m *PipelineMetrics) SegmentCacheHit(job *pipeline.Job, scope string) {
+	ttsCacheHitTotal.Add(jobKey(job, scope), 1)
+}
+
 func jobKey(job *pipeline.Job, event string) string {
-	tenantID, kind := "unknown", "unknown"
-	if job != nil {
-		if job.TenantID != "" {
-			tenantID = job.TenantID
-		}
-		if job.Kind != "" {
-			kind = string(job.Kind)
-		}
+	kind := "unknown"
+	if job != nil && job.Kind != "" {
+		kind = string(job.Kind)
 	}
-	return "tenant=" + clean(tenantID) + ",kind=" + clean(kind) + ",event=" + clean(event)
+	key := "kind=" + clean(kind) + ",event=" + clean(event)
+	if includeTenantLabel && job != nil && job.TenantID != "" {
+		key = "tenant=" + clean(job.TenantID) + "," + key
+	}
+	return key
 }
 
 func clean(s string) string {

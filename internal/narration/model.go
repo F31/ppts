@@ -45,7 +45,19 @@ type Segment struct {
 	DisplayText string
 	SpokenText  string
 	SourceRefs  []string
-	Status      ScriptStatus
+	// SourceAnchors contains structured provenance. Nil means "preserve existing"
+	// when updating through user-facing APIs; an empty slice means explicitly no anchors.
+	SourceAnchors []SourceAnchor
+	Status        ScriptStatus
+}
+
+// SourceAnchor ties generated text back to structural or visual evidence.
+type SourceAnchor struct {
+	SlideID    string
+	ShapeID    string
+	Kind       string
+	Raw        string
+	Confidence float64
 }
 
 // ErrNotFound 表示讲稿不存在。

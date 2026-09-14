@@ -23,7 +23,7 @@ func setupArtifactStore(t *testing.T) *PGStore {
 		t.Fatalf("pool: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	if _, err := pool.Exec(context.Background(), "TRUNCATE artifacts RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := pool.Exec(context.Background(), "TRUNCATE artifacts CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return NewPGStore(pool)

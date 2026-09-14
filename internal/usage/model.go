@@ -8,13 +8,19 @@ import (
 	"time"
 )
 
-// Kind 是计量种类（用户计费口径）。首批以生成时长（秒）计量。
+// Kind 是计量种类（用户计费口径）。首批以生成时长（秒）计量；G2-5 增加 LLM token。
 type Kind string
 
 const KindGenSeconds Kind = "gen_seconds"
 
+// KindLLMTokens 计量 LLM 文案生成 token 消耗（prompt+completion，G2-5）。
+const KindLLMTokens Kind = "llm_tokens"
+
 // CharsPerSecond 是中文播报时长估算系数（用于生成前预估；实际以合成时长结算）。
 const CharsPerSecond = 5.0
+
+// CharsPerLLMToken 是 LLM token 粗估系数（中文约 1.5 字符/token，仅用于预占；结算以供应商返回为准）。
+const CharsPerLLMToken = 1.5
 
 // EstimateSeconds 依据讲稿字数估算播报秒数（仅用于预占，结算以真实时长为准）。
 func EstimateSeconds(runeCount int) float64 {
@@ -22,6 +28,14 @@ func EstimateSeconds(runeCount int) float64 {
 		return 0
 	}
 	return float64(runeCount) / CharsPerSecond
+}
+
+// EstimateLLMTokens 依据源文本字数粗估单次 LLM 调用 token 消耗（含指令开销）。
+func EstimateLLMTokens(runeCount int) float64 {
+	if runeCount <= 0 {
+		return 0
+	}
+	return float64(runeCount)/CharsPerLLMToken + 100
 }
 
 var (
@@ -70,12 +84,15 @@ type Reservation struct {
 	UpdatedAt          time.Time
 }
 
-// ProjectUsage 是某项目累计用量（G3-8）。costUnits 待正式教学设计；
-// Quantity 即生成秒数，与 usage_ledger.quantity 对齐。
+// ProjectUsage 是某项目累计用量与成本（G3-8）。Quantity 即生成秒数，
+// UserAmount/SupplierCost 为按定价表结算金额（"供应商成本 vs 用户计费"分账，G3-2）。
 type ProjectUsage struct {
-	ProjectID string
-	Seconds   float64
-	JobCount  int64
+	ProjectID    string
+	Seconds      float64
+	JobCount     int64
+	UserAmount   float64
+	SupplierCost float64
+	Currency     string
 }
 
 // Store 是配额与用量端口。所有操作必须原子且幂等。

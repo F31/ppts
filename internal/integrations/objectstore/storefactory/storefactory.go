@@ -59,7 +59,11 @@ func New(cfg Config, resolver objectstore.BackendResolver) (*objectstore.Registr
 		if err != nil {
 			return nil, err
 		}
-		stores["s3"] = st
+		var s3Store objectstore.ObjectStore = st
+		if rr, ok := resolver.(s3.RegionResolver); ok {
+			s3Store = s3.NewRegionRouter(st, rr)
+		}
+		stores["s3"] = s3Store
 	}
 	if len(stores) == 0 {
 		return nil, errors.New("objectstore: no backend configured")

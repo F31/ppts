@@ -18,9 +18,9 @@ import (
 // watchEventsPollInterval 是 WatchEvents 服务端流的轮询间隔。
 const watchEventsPollInterval = 500 * time.Millisecond
 
-// JobWatcher 是 WatchEvents 所需的增量事件能力。
+// JobWatcher 是 WatchEvents 所需的增量事件能力（G3-9 专用事件表/单调 seq）。
 type JobWatcher interface {
-	UpdatedSince(ctx context.Context, tenantID, projectID string, after time.Time, limit int) ([]*pipeline.Job, error)
+	EventsSince(ctx context.Context, tenantID, projectID string, afterSeq int64, limit int) ([]pipeline.JobEvent, error)
 }
 
 // JobStore 是 JobService 需要的任务查询与操作能力（G3-9）。
@@ -138,8 +138,8 @@ func (s *JobService) releaseCanceledReservation(ctx context.Context, job *pipeli
 	}
 }
 
-// WatchEvents 以服务端流持续推送项目任务变更（seq=updated_at UnixNano）。
-// 首版基于增量轮询实现；客户端可用 after_seq 断点续传，超出窗口时从头拉取。
+// WatchEvents 以服务端流持续推送项目任务变更（seq 为 job_events 单调序号）。
+// 客户端可用 after_seq 断点续传；序号在事件写入事务内生成，不会因同毫秒并发更新漏发。
 func (s *JobService) WatchEvents(ctx context.Context, req *connect.Request[pptsv1.WatchEventsRequest], stream *connect.ServerStream[pptsv1.JobEvent]) error {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
@@ -153,19 +153,19 @@ func (s *JobService) WatchEvents(ctx context.Context, req *connect.Request[pptsv
 	if !ok {
 		return connect.NewError(connect.CodeUnimplemented, errors.New("WatchEvents is not supported by the configured job store"))
 	}
-	after := time.Unix(0, req.Msg.GetAfterSeq())
+	afterSeq := req.Msg.GetAfterSeq()
 	ticker := time.NewTicker(watchEventsPollInterval)
 	defer ticker.Stop()
 	for {
-		jobs, err := watcher.UpdatedSince(ctx, p.TenantID, projectID, after, 200)
+		events, err := watcher.EventsSince(ctx, p.TenantID, projectID, afterSeq, 200)
 		if err != nil {
 			return jobError(err)
 		}
-		for _, job := range jobs {
-			if err := stream.Send(&pptsv1.JobEvent{Seq: job.UpdatedAt.UnixNano(), Job: toProtoJob(job)}); err != nil {
+		for _, ev := range events {
+			if err := stream.Send(&pptsv1.JobEvent{Seq: ev.Seq, Job: toProtoJob(ev.Job)}); err != nil {
 				return err
 			}
-			after = job.UpdatedAt
+			afterSeq = ev.Seq
 		}
 		select {
 		case <-ctx.Done():

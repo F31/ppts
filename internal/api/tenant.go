@@ -20,8 +20,10 @@ import (
 // TenantUsageReader 提供租户配额与用量读取（G3-9）。
 type TenantUsageReader interface {
 	GetQuota(ctx context.Context, tenantID string, kind usage.Kind) (*usage.Quota, error)
-	UsageSummary(ctx context.Context, tenantID, month string) (seconds float64, costUnits float64, err error)
+	UsageSummary(ctx context.Context, tenantID, month string) (seconds float64, userAmount float64, supplierCost float64, err error)
 	ProjectUsage(ctx context.Context, tenantID, projectID string) (usage.ProjectUsage, error)
+	// Currency 返回定价表币种（G3-2 分账）。
+	Currency() string
 }
 
 // TenantPolicyReader 提供租户策略读取。
@@ -232,13 +234,15 @@ func (s *TenantService) Usage(ctx context.Context, req *connect.Request[pptsv1.G
 		return nil, err
 	}
 	month := strings.TrimSpace(req.Msg.GetMonth())
-	seconds, cost, err := s.usage.UsageSummary(ctx, p.TenantID, month)
+	seconds, userAmount, supplierCost, err := s.usage.UsageSummary(ctx, p.TenantID, month)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewResponse(&pptsv1.GetUsageResponse{
-		SecondsUsed: int64(seconds),
-		CostUnits:   int64(cost),
+		SecondsUsed:  int64(seconds),
+		UserAmount:   userAmount,
+		SupplierCost: supplierCost,
+		Currency:     s.usage.Currency(),
 	}), nil
 }
 
@@ -256,9 +260,12 @@ func (s *TenantService) ProjectUsage(ctx context.Context, req *connect.Request[p
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewResponse(&pptsv1.GetProjectUsageResponse{
-		ProjectId: usage.ProjectID,
-		Seconds:   int64(usage.Seconds),
-		JobCount:  usage.JobCount,
+		ProjectId:    usage.ProjectID,
+		Seconds:      int64(usage.Seconds),
+		JobCount:     usage.JobCount,
+		UserAmount:   usage.UserAmount,
+		SupplierCost: usage.SupplierCost,
+		Currency:     usage.Currency,
 	}), nil
 }
 

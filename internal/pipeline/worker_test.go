@@ -105,6 +105,37 @@ func TestWorkerPermanentFailure(t *testing.T) {
 	}
 }
 
+func TestWorkerUnknownProviderResultCanBeRetried(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	w := NewWorker(s, "wk", testTenant, func(ctx context.Context, job *Job) error {
+		return &UnknownResultError{Err: errors.New("provider timeout after submit")}
+	}, WorkerOptions{Poll: 10 * time.Millisecond})
+
+	j, _ := s.Create(ctx, testTenant, testProject, string(KindNarration), "w-unknown", "snap", time.Time{})
+	runCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_ = w.Run(runCtx)
+
+	got, err := s.Get(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != StateUnknownResult || got.Attempt != 1 {
+		t.Fatalf("unknown result: state=%s attempt=%d", got.State, got.Attempt)
+	}
+	if got.LastError == nil || got.LastError.Message == "" {
+		t.Fatalf("unknown result error not recorded: %+v", got.LastError)
+	}
+	retried, err := s.RetryFailed(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("RetryFailed unknown: %v", err)
+	}
+	if retried.State != StateQueued || retried.LastError != nil {
+		t.Fatalf("retried unknown: state=%s last_error=%+v", retried.State, retried.LastError)
+	}
+}
+
 func TestWorkerCrashReclaimNoLoss(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

@@ -854,7 +854,10 @@ func (x *GetUsageRequest) GetMonth() string {
 type GetUsageResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SecondsUsed   int64                  `protobuf:"varint,1,opt,name=seconds_used,json=secondsUsed,proto3" json:"seconds_used,omitempty"`
-	CostUnits     int64                  `protobuf:"varint,2,opt,name=cost_units,json=costUnits,proto3" json:"cost_units,omitempty"` // 账本原始数量
+	CostUnits     int64                  `protobuf:"varint,2,opt,name=cost_units,json=costUnits,proto3" json:"cost_units,omitempty"`           // 账本原始数量
+	UserAmount    float64                `protobuf:"fixed64,3,opt,name=user_amount,json=userAmount,proto3" json:"user_amount,omitempty"`       // 用户计费金额（按定价表，G3-2）
+	SupplierCost  float64                `protobuf:"fixed64,4,opt,name=supplier_cost,json=supplierCost,proto3" json:"supplier_cost,omitempty"` // 供应商成本（与用户计费分账）
+	Currency      string                 `protobuf:"bytes,5,opt,name=currency,proto3" json:"currency,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -901,6 +904,27 @@ func (x *GetUsageResponse) GetCostUnits() int64 {
 		return x.CostUnits
 	}
 	return 0
+}
+
+func (x *GetUsageResponse) GetUserAmount() float64 {
+	if x != nil {
+		return x.UserAmount
+	}
+	return 0
+}
+
+func (x *GetUsageResponse) GetSupplierCost() float64 {
+	if x != nil {
+		return x.SupplierCost
+	}
+	return 0
+}
+
+func (x *GetUsageResponse) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
 }
 
 type GetProjectUsageRequest struct {
@@ -950,8 +974,11 @@ func (x *GetProjectUsageRequest) GetProjectId() string {
 type GetProjectUsageResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ProjectId     string                 `protobuf:"bytes,1,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	Seconds       int64                  `protobuf:"varint,2,opt,name=seconds,proto3" json:"seconds,omitempty"` // 生成秒数（G3-8 每项目用量，成本待定价表）
+	Seconds       int64                  `protobuf:"varint,2,opt,name=seconds,proto3" json:"seconds,omitempty"` // 生成秒数（G3-8 每项目用量）
 	JobCount      int64                  `protobuf:"varint,3,opt,name=job_count,json=jobCount,proto3" json:"job_count,omitempty"`
+	UserAmount    float64                `protobuf:"fixed64,4,opt,name=user_amount,json=userAmount,proto3" json:"user_amount,omitempty"`       // 用户计费金额（G3-2 分账）
+	SupplierCost  float64                `protobuf:"fixed64,5,opt,name=supplier_cost,json=supplierCost,proto3" json:"supplier_cost,omitempty"` // 供应商成本
+	Currency      string                 `protobuf:"bytes,6,opt,name=currency,proto3" json:"currency,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1005,6 +1032,27 @@ func (x *GetProjectUsageResponse) GetJobCount() int64 {
 		return x.JobCount
 	}
 	return 0
+}
+
+func (x *GetProjectUsageResponse) GetUserAmount() float64 {
+	if x != nil {
+		return x.UserAmount
+	}
+	return 0
+}
+
+func (x *GetProjectUsageResponse) GetSupplierCost() float64 {
+	if x != nil {
+		return x.SupplierCost
+	}
+	return 0
+}
+
+func (x *GetProjectUsageResponse) GetCurrency() string {
+	if x != nil {
+		return x.Currency
+	}
+	return ""
 }
 
 type GetStorageUsageRequest struct {
@@ -1663,19 +1711,27 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"\x11max_storage_bytes\x18\x04 \x01(\x03R\x0fmaxStorageBytes\"\x11\n" +
 	"\x0fGetQuotaRequest\"'\n" +
 	"\x0fGetUsageRequest\x12\x14\n" +
-	"\x05month\x18\x01 \x01(\tR\x05month\"T\n" +
+	"\x05month\x18\x01 \x01(\tR\x05month\"\xb6\x01\n" +
 	"\x10GetUsageResponse\x12!\n" +
 	"\fseconds_used\x18\x01 \x01(\x03R\vsecondsUsed\x12\x1d\n" +
 	"\n" +
-	"cost_units\x18\x02 \x01(\x03R\tcostUnits\"7\n" +
+	"cost_units\x18\x02 \x01(\x03R\tcostUnits\x12\x1f\n" +
+	"\vuser_amount\x18\x03 \x01(\x01R\n" +
+	"userAmount\x12#\n" +
+	"\rsupplier_cost\x18\x04 \x01(\x01R\fsupplierCost\x12\x1a\n" +
+	"\bcurrency\x18\x05 \x01(\tR\bcurrency\"7\n" +
 	"\x16GetProjectUsageRequest\x12\x1d\n" +
 	"\n" +
-	"project_id\x18\x01 \x01(\tR\tprojectId\"o\n" +
+	"project_id\x18\x01 \x01(\tR\tprojectId\"\xd1\x01\n" +
 	"\x17GetProjectUsageResponse\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x01 \x01(\tR\tprojectId\x12\x18\n" +
 	"\aseconds\x18\x02 \x01(\x03R\aseconds\x12\x1b\n" +
-	"\tjob_count\x18\x03 \x01(\x03R\bjobCount\"\x18\n" +
+	"\tjob_count\x18\x03 \x01(\x03R\bjobCount\x12\x1f\n" +
+	"\vuser_amount\x18\x04 \x01(\x01R\n" +
+	"userAmount\x12#\n" +
+	"\rsupplier_cost\x18\x05 \x01(\x01R\fsupplierCost\x12\x1a\n" +
+	"\bcurrency\x18\x06 \x01(\tR\bcurrency\"\x18\n" +
 	"\x16GetStorageUsageRequest\"\x9c\x02\n" +
 	"\x17GetStorageUsageResponse\x12!\n" +
 	"\fsource_bytes\x18\x01 \x01(\x03R\vsourceBytes\x12%\n" +

@@ -23,6 +23,15 @@ message Segment {
   string spoken_text = 4;       // 规范化发音稿
   repeated string source_refs = 5; // slide-07/shape-12
   string status = 6;            // draft / approved / locked
+  repeated SourceAnchor source_anchors = 7; // 结构化来源锚点（G2-1）
+}
+
+message SourceAnchor {
+  string slide_id = 1;
+  string shape_id = 2;
+  string kind = 3;       // shape_text | notes | visual_text | chart | table
+  string raw = 4;        // 原始来源文本/值
+  double confidence = 5; // 结构通道=1.0，视觉通道按模型置信度
 }
 
 message ScriptRevision {

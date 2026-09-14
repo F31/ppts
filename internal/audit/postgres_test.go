@@ -32,7 +32,7 @@ func auditStore(t *testing.T) *PGStore {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE audit_events, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE audit_events, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, id := range []string{auditTenantA, auditTenantB} {

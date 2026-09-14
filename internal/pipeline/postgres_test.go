@@ -7,14 +7,17 @@ package pipeline
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/F31/ppts/internal/tenant"
+	"github.com/F31/ppts/internal/traceprop"
 )
 
 const (
@@ -37,7 +40,7 @@ func testStore(t *testing.T) *PGStore {
 	t.Cleanup(s.Close)
 	// 隔离测试数据。
 	if _, err := s.pool.Exec(context.Background(),
-		"TRUNCATE jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE jobs, job_steps, source_revisions, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	// 满足外键：插入测试租户与项目（项目写入需租户上下文，受 RLS 约束）。
@@ -78,6 +81,39 @@ func TestCreateIdempotent(t *testing.T) {
 	}
 	if j1.State != StateQueued || j1.Attempt != 0 {
 		t.Fatalf("job: %+v", j1)
+	}
+}
+
+func validSpanContext() trace.SpanContext {
+	var tid trace.TraceID
+	var sid trace.SpanID
+	_, _ = hex.Decode(tid[:], []byte("0102030405060708090a0b0c0d0e0f10"))
+	_, _ = hex.Decode(sid[:], []byte("1112131415161718"))
+	return trace.NewSpanContext(trace.SpanContextConfig{TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled})
+}
+
+func TestCreateCapturesTraceParent(t *testing.T) {
+	s := testStore(t)
+	sc := validSpanContext()
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	j, err := s.Create(ctx, testTenant, testProject, string(KindParse), "trace-1", "snap", time.Time{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if j.TraceParent == "" {
+		t.Fatalf("TraceParent not captured")
+	}
+	parsed := traceprop.SpanContextFromTraceParent(j.TraceParent)
+	if parsed.TraceID() != sc.TraceID() {
+		t.Fatalf("trace id mismatch: %s vs %s", parsed.TraceID(), sc.TraceID())
+	}
+	// 领取后仍能带出 traceparent（调度函数返回列）。
+	claimed, err := s.ClaimNextAny(context.Background(), "worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNextAny: %v", err)
+	}
+	if claimed.TraceParent != j.TraceParent {
+		t.Fatalf("claimed traceparent = %q want %q", claimed.TraceParent, j.TraceParent)
 	}
 }
 
@@ -504,5 +540,138 @@ func TestCrossTenantIsolation(t *testing.T) {
 	}
 	if _, err := s.Get(ctx, j.ID, testOtherTenant); err == nil {
 		t.Fatalf("cross tenant Get should fail")
+	}
+}
+
+func TestJobEventsMonotonicSeqAndProgress(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	j, err := s.Create(ctx, testTenant, testProject, string(KindParse), "events-1", "snap", time.Time{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	claimed, err := s.ClaimNext(ctx, testTenant, "ev-worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	if err := s.UpdateProgress(ctx, claimed.ID, "ev-worker", claimed.FencingToken, 40); err != nil {
+		t.Fatalf("UpdateProgress: %v", err)
+	}
+	if err := s.Complete(ctx, claimed.ID, "ev-worker", claimed.FencingToken, StateSucceeded, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	events, err := s.EventsSince(ctx, testTenant, testProject, 0, 200)
+	if err != nil {
+		t.Fatalf("EventsSince: %v", err)
+	}
+	if len(events) < 3 {
+		t.Fatalf("events = %d want >=3 (create/progress/complete)", len(events))
+	}
+	last := int64(0)
+	gotProgress := false
+	gotSuccess := false
+	for _, ev := range events {
+		if ev.Seq <= last {
+			t.Fatalf("seq not monotonic: %d after %d", ev.Seq, last)
+		}
+		last = ev.Seq
+		if ev.Job.Progress == 40 {
+			gotProgress = true
+		}
+		if ev.Job.State == StateSucceeded {
+			gotSuccess = true
+		}
+	}
+	if !gotProgress || !gotSuccess {
+		t.Fatalf("progress/success events missing: %+v", events)
+	}
+	// 断点续传：last 之后无新事件；j.ID 一致。
+	after, err := s.EventsSince(ctx, testTenant, testProject, last, 200)
+	if err != nil {
+		t.Fatalf("EventsSince after: %v", err)
+	}
+	if len(after) != 0 {
+		t.Fatalf("events after %d = %d want 0", last, len(after))
+	}
+	// 其他租户看不到该事件流。
+	other, err := s.EventsSince(ctx, testOtherTenant, testProject, 0, 200)
+	if err != nil {
+		t.Fatalf("EventsSince other tenant: %v", err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("other tenant events = %d want 0", len(other))
+	}
+	_ = j
+}
+
+// 进度更新在任务结束后应因 fencing 失效失败（ErrLeaseMismatch）。
+func TestUpdateProgressAfterCompleteFails(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), "events-2", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	claimed, err := s.ClaimNext(ctx, testTenant, "ev-worker2", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	if err := s.Complete(ctx, claimed.ID, "ev-worker2", claimed.FencingToken, StateFailed, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := s.UpdateProgress(ctx, claimed.ID, "ev-worker2", claimed.FencingToken, 90); !errors.Is(err, ErrLeaseMismatch) {
+		t.Fatalf("UpdateProgress after complete: got %v want ErrLeaseMismatch", err)
+	}
+}
+
+// outbox：终态提交与最终成功步骤在同一事务原子写入。
+func TestCompleteWithStepAtomicallyWritesStepAndTerminal(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindExport), "outbox-1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	claimed, err := s.ClaimNext(ctx, testTenant, "ow", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	step := &JobStep{JobID: claimed.ID, TenantID: testTenant, StepType: "export", StepKey: "export:srt:hash", State: StepSuccess, ResultRef: "artifact-1"}
+	if err := s.CompleteWithStep(ctx, claimed.ID, "ow", claimed.FencingToken, StateSucceeded, nil, step); err != nil {
+		t.Fatalf("CompleteWithStep: %v", err)
+	}
+	got, err := s.Get(ctx, claimed.ID, testTenant)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != StateSucceeded {
+		t.Fatalf("state = %s want succeeded", got.State)
+	}
+	if ref, err := s.StepResultRef(ctx, claimed.ID, "export"); err != nil || ref != "artifact-1" {
+		t.Fatalf("step result = %q err=%v want artifact-1", ref, err)
+	}
+}
+
+// outbox 回滚：fencing 失效时终态与步骤都不写入。
+func TestCompleteWithStepRollsBackOnBadFencing(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindExport), "outbox-2", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	claimed, err := s.ClaimNext(ctx, testTenant, "ow2", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	step := &JobStep{JobID: claimed.ID, TenantID: testTenant, StepType: "export", StepKey: "export:srt:hash2", State: StepSuccess, ResultRef: "artifact-2"}
+	err = s.CompleteWithStep(ctx, claimed.ID, "wrong-owner", claimed.FencingToken, StateSucceeded, nil, step)
+	if !errors.Is(err, ErrLeaseMismatch) {
+		t.Fatalf("CompleteWithStep bad fencing: got %v want ErrLeaseMismatch", err)
+	}
+	if ref, _ := s.StepResultRef(ctx, claimed.ID, "export"); ref != "" {
+		t.Fatalf("step recorded after rollback: %q", ref)
+	}
+	got, err := s.Get(ctx, claimed.ID, testTenant)
+	if err != nil || got.State != StateRunning {
+		t.Fatalf("job after rollback: state=%s err=%v want running", got.State, err)
 	}
 }

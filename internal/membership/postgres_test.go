@@ -28,7 +28,7 @@ func memStore(t *testing.T) *PGStore {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE tenant_members, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE tenant_members, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, id := range []string{mTenantA, mTenantB} {

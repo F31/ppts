@@ -32,7 +32,7 @@ func rlsPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "TRUNCATE job_steps, jobs, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE job_steps, jobs, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, id := range []string{rlsTenantA, rlsTenantB} {
@@ -200,7 +200,7 @@ func TestRLSTenantIsolationSameConnection(t *testing.T) {
 	ctx := context.Background()
 
 	// 复用 rlsPool 的种子需要另一连接，这里直接在同一库上重新播种。
-	if _, err := pool.Exec(ctx, "TRUNCATE job_steps, jobs, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE job_steps, jobs, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, id := range []string{rlsTenantA, rlsTenantB} {

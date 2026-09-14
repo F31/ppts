@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 )
 
 // ProtocolVersion 是 IPC 协议主版本；与 Rust 侧不匹配时拒绝本地执行（V4.0 §11.5"主版本不匹配拒绝"）。
@@ -86,7 +85,6 @@ type Response struct {
 
 // Engine 是 sidecar 的请求分发器。方法通过 methodFn 表注册；未知方法返回 UNKNOWN_METHOD。
 type Engine struct {
-	mu      sync.Mutex
 	methods map[string]func(ctx context.Context, req *Request) (any, error)
 }
 
@@ -127,12 +125,6 @@ func methodPing(ctx context.Context, req *Request) (any, error) {
 
 func invalidRequestf(format string, args ...any) error {
 	return fmt.Errorf("%s: %s", ErrCodeInvalidRequest, fmt.Sprintf(format, args...))
-}
-
-// PeekMethod 判断方法是否已知（供 Rust 侧编码期判断，不实际执行）。
-func (e *Engine) PeekMethod(name string) bool {
-	_, ok := e.methods[name]
-	return ok
 }
 
 // Serve 读取 NDJSON 请求流并写出响应流。消息超限按协议拒绝（ErrOversize）且不中断

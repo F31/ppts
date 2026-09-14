@@ -2,6 +2,7 @@ package narration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
@@ -98,15 +99,30 @@ func (s *PGStore) Update(ctx context.Context, tenantID, projectID, slideID, lang
 		if revision != expected {
 			return &ErrConflict{Latest: loadRevisionTx(ctx, tx, scriptID)}
 		}
+		existingAnchors, err := loadAnchorsTx(ctx, tx, scriptID)
+		if err != nil {
+			return err
+		}
 		// 整页替换分段（分段携带稳定 ID；语音/字幕按稳定 ID 复用）。
 		if _, err := tx.Exec(ctx, `DELETE FROM narration_segments WHERE script_id=$1`, scriptID); err != nil {
 			return err
 		}
 		for _, seg := range segments {
+			anchors := seg.SourceAnchors
+			if anchors == nil {
+				anchors = existingAnchors[seg.SegmentID]
+			}
+			if anchors == nil {
+				anchors = []SourceAnchor{}
+			}
+			anchorBytes, err := json.Marshal(anchors)
+			if err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, status, revision)
-				 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,'draft',0)`,
-				scriptID, tenantID, seg.SegmentID, seg.DisplayText, seg.SpokenText, seg.SourceRefs); err != nil {
+				`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, status, revision)
+				 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,'draft',0)`,
+				scriptID, tenantID, seg.SegmentID, seg.DisplayText, seg.SpokenText, seg.SourceRefs, string(anchorBytes)); err != nil {
 				return err
 			}
 		}
@@ -197,7 +213,7 @@ func loadScriptTx(ctx context.Context, tx pgx.Tx, tenantID, projectID, slideID, 
 
 func loadSegmentsTx(ctx context.Context, tx pgx.Tx, scriptID string) ([]*Segment, error) {
 	rows, err := tx.Query(ctx,
-		`SELECT segment_id, display_text, spoken_text, source_refs, status
+		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, status
 		 FROM narration_segments WHERE script_id=$1 ORDER BY segment_id`, scriptID)
 	if err != nil {
 		return nil, err
@@ -207,13 +223,43 @@ func loadSegmentsTx(ctx context.Context, tx pgx.Tx, scriptID string) ([]*Segment
 	for rows.Next() {
 		var seg Segment
 		var refs []string
-		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refs, &seg.Status); err != nil {
+		var anchorBytes []byte
+		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refs, &anchorBytes, &seg.Status); err != nil {
 			return nil, err
 		}
 		seg.SourceRefs = refs
+		if len(anchorBytes) > 0 {
+			if err := json.Unmarshal(anchorBytes, &seg.SourceAnchors); err != nil {
+				return nil, err
+			}
+		}
 		segs = append(segs, &seg)
 	}
 	return segs, rows.Err()
+}
+
+func loadAnchorsTx(ctx context.Context, tx pgx.Tx, scriptID string) (map[string][]SourceAnchor, error) {
+	rows, err := tx.Query(ctx, `SELECT segment_id, source_anchors FROM narration_segments WHERE script_id=$1`, scriptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]SourceAnchor{}
+	for rows.Next() {
+		var segmentID string
+		var data []byte
+		if err := rows.Scan(&segmentID, &data); err != nil {
+			return nil, err
+		}
+		var anchors []SourceAnchor
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &anchors); err != nil {
+				return nil, err
+			}
+		}
+		out[segmentID] = anchors
+	}
+	return out, rows.Err()
 }
 
 // loadRevisionTx 读取最新完整讲稿（供 ErrConflict.Latest）。

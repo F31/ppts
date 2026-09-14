@@ -3,7 +3,6 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,12 +24,8 @@ func TestRealChainUploadParseDraftNarration(t *testing.T) {
 	ctx := context.Background()
 
 	// 1) 上传并消费 parse 任务。
-	ingest := NewIngestService(env.projects, env.jobs, env.objects)
-	res, err := ingest.Ingest(ctx, appTenant, appProject, bytes.NewReader(deckBytes(t)))
-	if err != nil {
-		t.Fatalf("Ingest: %v", err)
-	}
-	runParseWorker(t, env, res.ParseJob.ID)
+	_, parseJob := uploadDeck(t, env, 1, deckBytes(t))
+	runParseWorker(t, env, parseJob.ID)
 	slideID := parsedSlideID(t, env, 1)
 
 	// 2) 生成原文讲稿。

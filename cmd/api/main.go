@@ -14,13 +14,16 @@ import (
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
 	"github.com/F31/ppts/internal/usage"
@@ -46,12 +49,21 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	traceShutdown, err := observability.InitTracing()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = traceShutdown(ctx) }()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	if err := pool.Ping(ctx); err != nil {
+		return err
+	}
+	authenticator, err := oidcAuthenticatorFromEnv(ctx)
+	if err != nil {
 		return err
 	}
 	jobs, err := pipeline.NewPGStore(ctx, dsn)
@@ -70,17 +82,22 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	usageStore := usage.NewPGStore(pool)
+	priceBook, err := pricing.FromEnv()
+	if err != nil {
+		return err
+	}
+	usageStore := usage.NewPGStore(pool).WithPriceBook(priceBook)
 	auditStore := audit.NewPGStore(pool)
 	membersStore := membership.NewPGStore(pool)
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	gatewayStore := gatewayStoreFromEnv(ctx, logger, pool)
 	server := &http.Server{
 		Addr: addr,
 		Handler: observability.RequestLogger(
 			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
 				objects,
-				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore}),
+				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore, Auth: authenticator, DevHeaders: os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true", Pronunciation: pronunciation.NewPGStore(pool), Gateway: gatewayStore}),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -101,4 +118,30 @@ func run() error {
 		}
 		return err
 	}
+}
+
+func gatewayStoreFromEnv(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool) gateway.StoreResolver {
+	cipher, err := gateway.CipherFromEnv()
+	if err != nil {
+		logger.Info("model gateway disabled (no AES key)")
+		return nil
+	}
+	store := gateway.NewPGStore(pool, cipher)
+	if err := gateway.SeedFromEnv(ctx, store, gateway.EnvFromEnv()); err != nil {
+		logger.Warn("gateway seed from env failed", "error", err)
+	}
+	return store
+}
+
+func oidcAuthenticatorFromEnv(ctx context.Context) (api.Authenticator, error) {
+	issuer := os.Getenv("PPTS_OIDC_ISSUER")
+	if issuer == "" {
+		return nil, nil
+	}
+	return api.NewOIDCAuthenticator(ctx, api.OIDCConfig{
+		Issuer:      issuer,
+		ClientID:    os.Getenv("PPTS_OIDC_CLIENT_ID"),
+		TenantClaim: os.Getenv("PPTS_OIDC_TENANT_CLAIM"),
+		UserClaim:   os.Getenv("PPTS_OIDC_USER_CLAIM"),
+	})
 }

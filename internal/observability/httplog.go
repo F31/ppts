@@ -12,12 +12,6 @@ import (
 // requestIDKey 是上下文中的请求 ID。
 type requestIDKey struct{}
 
-// RequestIDFromContext 返回中间件生成的请求 ID（无则空串）。
-func RequestIDFromContext(ctx context.Context) string {
-	id, _ := ctx.Value(requestIDKey{}).(string)
-	return id
-}
-
 // RequestLogger 为每个 HTTP 请求输出结构化日志（request_id/tenant/user/status/时长）。
 // 不影响业务处理，仅记录可观测信息。
 func RequestLogger(next http.Handler, logger *slog.Logger) http.Handler {

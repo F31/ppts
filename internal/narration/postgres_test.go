@@ -33,7 +33,7 @@ func nrStore(t *testing.T) *PGStore {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE narration_segments, narration_scripts, jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE narration_segments, narration_scripts, jobs, job_steps, source_revisions, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(),
@@ -139,5 +139,36 @@ func TestNarrationLockPreventsEdit(t *testing.T) {
 	// 状态机不允许从 locked 回退。
 	if _, err := s.SetStatus(ctx, nrTenant, nrProject, nrSlide, lang, StatusApproved); err == nil {
 		t.Fatalf("downgrade from locked should fail")
+	}
+}
+
+func TestNarrationUpdateStoresAndPreservesSourceAnchors(t *testing.T) {
+	s := nrStore(t)
+	ctx := context.Background()
+	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, nrSlide, lang, ModePolish); err != nil {
+		t.Fatal(err)
+	}
+	anchors := []SourceAnchor{{SlideID: nrSlide, ShapeID: "shape-1", Kind: "shape_text", Raw: "PCIe 5.0", Confidence: 1}}
+	upd, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 0, []*Segment{{
+		SegmentID: "seg-01", DisplayText: "介绍 PCIe 5.0", SpokenText: "介绍 PCIe 5.0",
+		SourceRefs: []string{nrSlide + "/shape-1"}, SourceAnchors: anchors,
+	}})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(upd.Segments[0].SourceAnchors) != 1 || upd.Segments[0].SourceAnchors[0].ShapeID != "shape-1" {
+		t.Fatalf("anchors not stored: %+v", upd.Segments[0].SourceAnchors)
+	}
+
+	// User-facing Update sends nil anchors; store preserves server provenance by segment_id.
+	upd2, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, upd.Revision, []*Segment{{
+		SegmentID: "seg-01", DisplayText: "用户修改 PCIe 5.0", SpokenText: "用户修改 PCIe 5.0",
+		SourceRefs: []string{nrSlide + "/shape-1"},
+	}})
+	if err != nil {
+		t.Fatalf("Update preserve: %v", err)
+	}
+	if len(upd2.Segments[0].SourceAnchors) != 1 || upd2.Segments[0].SourceAnchors[0].Raw != "PCIe 5.0" {
+		t.Fatalf("anchors not preserved: %+v", upd2.Segments[0].SourceAnchors)
 	}
 }

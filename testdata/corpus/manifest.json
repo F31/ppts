@@ -10,6 +10,11 @@
     { "id": "s105", "path": "testdata/corpus/generated/s105.pptx", "pages": 3, "withNotes": true },
     { "id": "s106", "path": "testdata/corpus/generated/s106.pptx", "pages": 8, "withNotes": false },
     { "id": "s107", "path": "testdata/corpus/generated/s107.pptx", "pages": 2, "withNotes": false },
+    { "id": "s108", "path": "testdata/corpus/generated/s108.pptx", "pages": 10, "withNotes": true },
+    { "id": "s109", "path": "testdata/corpus/generated/s109.pptx", "pages": 12, "withNotes": false },
+    { "id": "s110", "path": "testdata/corpus/generated/s110.pptx", "pages": 15, "withNotes": true },
+    { "id": "s111", "path": "testdata/corpus/generated/s111.pptx", "pages": 20, "withNotes": false },
+    { "id": "s112", "path": "testdata/corpus/generated/s112.pptx", "pages": 15, "withNotes": true },
     { "id": "s001", "externalPath": "s001-text/s001-text.pptx", "pages": 0, "withNotes": false },
     { "id": "s002", "externalPath": "s002-table/s002-table.pptx", "pages": 0, "withNotes": false },
     { "id": "s003", "externalPath": "s003-image/s003-image.pptx", "pages": 0, "withNotes": false }

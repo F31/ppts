@@ -8,6 +8,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -51,14 +52,6 @@ func TestMP4EncodeTwoPages(t *testing.T) {
 	}
 	if res.Duration < 1.9 || res.Duration > 2.6 {
 		t.Fatalf("duration: %v (want ~2s)", res.Duration)
-	}
-	frame := filepath.Join(t.TempDir(), "frame0.png")
-	if err := e.FramePNG(context.Background(), out, 0, frame); err != nil {
-		t.Fatalf("FramePNG: %v", err)
-	}
-	st, err := os.Stat(frame)
-	if err != nil || st.Size() == 0 {
-		t.Fatalf("frame extract: stat=%v size=%d", err, st.Size())
 	}
 }
 
@@ -129,8 +122,9 @@ func TestMP4EncodeUsesTimelinePageDurationsAndAudio(t *testing.T) {
 func assertFrameColorAt(t *testing.T, encoder *MP4Encoder, video string, positionUS int64, red bool) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "frame.png")
-	if err := encoder.FrameAt(context.Background(), video, positionUS, path); err != nil {
-		t.Fatalf("FrameAt: %v", err)
+	position := strconv.FormatFloat(float64(positionUS)/1_000_000, 'f', 6, 64)
+	if err := extractFrame(context.Background(), encoder.ffmpeg, video, position, path); err != nil {
+		t.Fatalf("extractFrame: %v", err)
 	}
 	f, err := os.Open(path)
 	if err != nil {

@@ -15,19 +15,26 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/gateway"
+	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
+	"github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/retention"
 	"github.com/F31/ppts/internal/storagelifecycle"
 	"github.com/F31/ppts/internal/tenant"
+	"github.com/F31/ppts/internal/traceprop"
 	"github.com/F31/ppts/internal/usage"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func main() {
@@ -46,12 +53,20 @@ func run() error {
 	if dsn == "" {
 		return errors.New("PPTS_DATABASE_URL is required")
 	}
-	if os.Getenv("PPTS_TTS_PROVIDER") != "fake" {
-		return errors.New("development worker requires explicit PPTS_TTS_PROVIDER=fake")
+	switch provider := os.Getenv("PPTS_TTS_PROVIDER"); provider {
+	case "fake", "siliconflow":
+		// 支持的供应商：fake=开发/测试；siliconflow=正式（需 PPTS_TTS_API_KEY）。
+	default:
+		return fmt.Errorf("unsupported PPTS_TTS_PROVIDER=%q (supported: fake, siliconflow)", provider)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	traceShutdown, err := observability.InitTracing()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = traceShutdown(ctx) }()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return err
@@ -90,17 +105,40 @@ func run() error {
 		return err
 	}
 	auditStore := audit.NewPGStore(pool)
-	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{}))
-	scriptDraftHandler := app.NewScriptDraftHandler(narration.NewPGStore(pool), objects)
-	usageStore := usage.NewPGStore(pool)
+	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{})).WithSteps(jobs)
+	if renderer, err := render.NewSofficeRenderer(); err != nil {
+		logger.Info("renderer unavailable; page images disabled", "error", err)
+	} else {
+		parseHandler = parseHandler.WithRenderer(renderer)
+		logger.Info("renderer enabled", "version", renderer.Version())
+	}
+	polisher, err := llm.FromEnv()
+	if err != nil {
+		return err
+	}
+	priceBook, err := pricing.FromEnv()
+	if err != nil {
+		return err
+	}
+	usageStore := usage.NewPGStore(pool).WithPriceBook(priceBook)
+	scriptDraftHandler := app.NewScriptDraftHandler(narration.NewPGStore(pool), objects).WithPolisher(polisher).WithTokenAccounting(usageStore)
+	if vision, ok := polisher.(llm.VisionExtractor); ok {
+		scriptDraftHandler = scriptDraftHandler.WithVisualExtractor(vision)
+	}
 	metrics := observability.NewPipelineMetrics()
-	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, tts.NewFakeProvider()).WithUsage(usageStore).WithTTSMetrics(metrics)
+	ttsProvider := ttsProviderFromEnv()
+	narrationHandler := app.NewNarrationHandler(narration.NewPGStore(pool), jobs, objects, ttsProvider).WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(pronunciation.NewPGStore(pool))
+	attachGateway(ctx, logger, pool, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {
 		logger.Info("mp4 encoder unavailable", "error", err)
 	}
 	exportHandler := app.NewExportHandler(artifact.NewPGStore(pool), jobs, objects, mp4Encoder)
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
+		// 异步任务 span link：把 API 侧创建的 span 以 link 关联到 worker 执行 span（G3-8）。
+		_, span := observability.Tracer("ppts.worker").Start(ctx, "job."+string(job.Kind),
+			trace.WithLinks(trace.Link{SpanContext: traceprop.SpanContextFromTraceParent(job.TraceParent)}))
+		defer span.End()
 		switch job.Kind {
 		case pipeline.KindParse:
 			return parseHandler.Handle(ctx, job)
@@ -171,8 +209,9 @@ func run() error {
 	} else {
 		logger.Info("worker started", "mode", "tenant", "tenant_id", tenantID, "owner", owner)
 	}
-	if err := worker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
+	runErr := worker.Run(ctx)
+	if runErr != nil && !errors.Is(ctx.Err(), context.Canceled) {
+		return runErr
 	}
 	return nil
 }
@@ -253,4 +292,72 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// attachGateway 接入模型网关（G3 可视化配置）：DB 有配置时优先，否则回退 env 供应商。
+// 加密密钥未配置或 DB 不可用时静默回退 env，不阻断 worker 启动。
+func attachGateway(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, draft *app.ScriptDraftHandler, narr *app.NarrationHandler, envPolisher llm.TextRewriter, envTTS tts.TTSProvider) {
+	cipher, err := gateway.CipherFromEnv()
+	if err != nil {
+		logger.Info("model gateway disabled (no AES key); using env providers")
+		return
+	}
+	store := gateway.NewPGStore(pool, cipher)
+	providers := gateway.NewProviderCache()
+	if err := gateway.SeedFromEnv(ctx, store, gateway.EnvFromEnv()); err != nil {
+		logger.Warn("gateway seed from env failed", "error", err)
+	}
+	draft.WithTenantPolisher(func(ctx context.Context, tenantID string) (llm.TextRewriter, error) {
+		if cfg, err := store.Resolve(ctx, tenantID, gateway.KindLLM); err == nil {
+			return providers.LLM(cfg)
+		}
+		if envPolisher == nil {
+			return nil, errors.New("worker: no LLM provider configured (env or gateway)")
+		}
+		return envPolisher, nil
+	})
+	draft.WithTenantVision(func(ctx context.Context, tenantID string) (llm.VisionExtractor, error) {
+		p, err := draftTenantPolisher(ctx, store, providers, tenantID)
+		if err != nil || p == nil {
+			return nil, err
+		}
+		if v, ok := p.(llm.VisionExtractor); ok {
+			return v, nil
+		}
+		return nil, errors.New("worker: LLM provider does not support vision")
+	})
+	narr.WithTenantProvider(func(ctx context.Context, tenantID string) (tts.TTSProvider, error) {
+		if cfg, err := store.Resolve(ctx, tenantID, gateway.KindTTS); err == nil {
+			return providers.TTS(cfg), nil
+		}
+		if envTTS == nil {
+			return nil, errors.New("worker: no TTS provider configured (env or gateway)")
+		}
+		return envTTS, nil
+	})
+	logger.Info("model gateway attached", "ttl", "30s")
+}
+
+// draftTenantPolisher 与 attachGateway 的 LLM 解析保持一致（供 vision 复用同一实例）。
+func draftTenantPolisher(ctx context.Context, store *gateway.PGStore, providers *gateway.ProviderCache, tenantID string) (llm.TextRewriter, error) {
+	cfg, err := store.Resolve(ctx, tenantID, gateway.KindLLM)
+	if err != nil {
+		return nil, err
+	}
+	return providers.LLM(cfg)
+}
+
+// - siliconflow：PPTS_TTS_BASE_URL / PPTS_TTS_API_KEY / PPTS_TTS_MODEL / PPTS_TTS_VOICE
+func ttsProviderFromEnv() tts.TTSProvider {
+	switch os.Getenv("PPTS_TTS_PROVIDER") {
+	case "siliconflow":
+		return tts.NewSiliconFlowProvider(tts.SiliconFlowConfig{
+			BaseURL: os.Getenv("PPTS_TTS_BASE_URL"),
+			APIKey:  os.Getenv("PPTS_TTS_API_KEY"),
+			Model:   os.Getenv("PPTS_TTS_MODEL"),
+			Voice:   os.Getenv("PPTS_TTS_VOICE"),
+		})
+	default:
+		return tts.NewFakeProvider()
+	}
 }

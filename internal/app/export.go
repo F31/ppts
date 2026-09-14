@@ -101,7 +101,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		return failStep(err)
 	}
 	step.State, step.ResultRef = pipeline.StepSuccess, a.ID
-	return h.steps.MarkStep(ctx, step)
+	// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
+	pipeline.SetCommitStep(ctx, step)
+	return nil
 }
 
 func (h *ExportHandler) loadTimelineBundle(ctx context.Context, tenantID, key string) (*TimelineAsset, error) {

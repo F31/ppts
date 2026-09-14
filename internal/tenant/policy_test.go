@@ -56,3 +56,31 @@ func TestListLifecyclePoliciesReturnsActiveTenants(t *testing.T) {
 		t.Fatalf("active tenant %s not returned", ids[0])
 	}
 }
+
+func TestStorageRegionReadsPolicy(t *testing.T) {
+	dsn := os.Getenv("PPTS_TEST_DATABASE")
+	if dsn == "" {
+		t.Skip("PPTS_TEST_DATABASE not set")
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	ctx := context.Background()
+	id := "00000000-0000-0000-0000-0000000000f3"
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO tenants(id,name,status,policy) VALUES
+		 ($1::uuid,'region','active','{"storage_region":"cn-east-1"}'::jsonb)
+		 ON CONFLICT (id) DO UPDATE SET
+		   status=EXCLUDED.status, policy=EXCLUDED.policy, updated_at=now()`, id); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	got, err := NewPGStore(pool).StorageRegion(ctx, id)
+	if err != nil {
+		t.Fatalf("StorageRegion: %v", err)
+	}
+	if got != "cn-east-1" {
+		t.Fatalf("region = %q want cn-east-1", got)
+	}
+}

@@ -106,6 +106,42 @@ func TestSofficeRenderFullPipeline(t *testing.T) {
 	}
 }
 
+// TestSofficeRenderWindowsInterop 验证 WSL→宿主机 Windows LibreOffice interop 全链路：
+// 仅在设置了 PPTS_SOFFICE_BIN（Windows .exe）与 PPTS_RENDER_WORK_ROOT（/mnt 下）时执行。
+func TestSofficeRenderWindowsInterop(t *testing.T) {
+	if os.Getenv("PPTS_SOFFICE_BIN") == "" || os.Getenv("PPTS_RENDER_WORK_ROOT") == "" {
+		t.Skip("PPTS_SOFFICE_BIN + PPTS_RENDER_WORK_ROOT not set")
+	}
+	r, err := NewSofficeRenderer()
+	if err != nil {
+		t.Fatalf("NewSofficeRenderer: %v", err)
+	}
+	if !r.windows {
+		t.Fatalf("expected windows soffice, got %q", r.soffice)
+	}
+	src := buildDeckBytes(t)
+	res, err := r.Render(context.Background(), bytes.NewReader(src), int64(len(src)), RenderOptions{DPI: 96})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if res.Report.PageCount != 1 || len(res.Pages) != 1 || res.Pages[0].Width <= 0 {
+		t.Fatalf("pages: %+v", res.Pages)
+	}
+}
+
+func TestToWinPath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/mnt/c/Users/a/b", "C:\\Users\\a\\b"},
+		{"/mnt/d/LibreOffice/x.pptx", "D:\\LibreOffice\\x.pptx"},
+		{"/tmp/not-windows", "/tmp/not-windows"},
+	}
+	for _, c := range cases {
+		if got := toWinPath(c.in); got != c.want {
+			t.Fatalf("toWinPath(%q) = %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func writePDF(t *testing.T) string {
 	t.Helper()
 	p := t.TempDir() + "/min.pdf"

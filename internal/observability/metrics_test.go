@@ -2,6 +2,7 @@ package observability
 
 import (
 	"expvar"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +70,33 @@ func TestSegmentSynthesizedRecordsTTSMetrics(t *testing.T) {
 type assertErr string
 
 func (e assertErr) Error() string { return string(e) }
+
+func TestJobKeyOmitsTenantByDefault(t *testing.T) {
+	prev := includeTenantLabel
+	includeTenantLabel = false
+	defer func() { includeTenantLabel = prev }()
+
+	job := &pipeline.Job{TenantID: "tenant-1", Kind: pipeline.KindNarration}
+	key := jobKey(job, "succeeded")
+	if strings.Contains(key, "tenant") {
+		t.Fatalf("key should not include tenant by default: %q", key)
+	}
+	if !strings.Contains(key, "kind=narration,event=succeeded") {
+		t.Fatalf("key = %q", key)
+	}
+}
+
+func TestJobKeyIncludesTenantWhenEnabled(t *testing.T) {
+	prev := includeTenantLabel
+	includeTenantLabel = true
+	defer func() { includeTenantLabel = prev }()
+
+	job := &pipeline.Job{TenantID: "tenant-1", Kind: pipeline.KindNarration}
+	key := jobKey(job, "succeeded")
+	if !strings.Contains(key, "tenant=tenant-1") {
+		t.Fatalf("key should include tenant when enabled: %q", key)
+	}
+}
 
 func expvarMapValue(name, key string) int64 {
 	m, _ := expvar.Get(name).(*expvar.Map)

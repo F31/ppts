@@ -66,27 +66,69 @@ type SofficeRenderer struct {
 	soffice        string
 	pdftoppm       string
 	pdfinfo        string
+	windows        bool // soffice 为 Windows .exe（WSL interop 场景，需 Windows 路径与工作目录）
+	workRoot       string
 	version        string
 	defaultDPI     int
 	defaultTimeout time.Duration
 }
 
-// NewSofficeRenderer 解析可执行文件路径；任一缺失返回 ErrRendererUnavailable。
+// Config 允许显式指定可执行文件路径与工作目录根（用于非标准安装/WSL→Windows interop）。
+type Config struct {
+	SofficeBin  string // 缺省 exec.LookPath("soffice")
+	PdfToPPMBin string // 缺省 exec.LookPath("pdftoppm")
+	PdfInfoBin  string // 缺省 exec.LookPath("pdfinfo")
+	WorkRoot    string // 渲染临时目录根；Windows soffice 场景必须位于 /mnt/<drive> 下
+}
+
+// NewSofficeRenderer 从环境变量解析可执行文件路径并构建渲染器。
+// 支持 PPTS_SOFFICE_BIN / PPTS_PDFTOPPPM_BIN / PPTS_PDFINFO_BIN / PPTS_RENDER_WORK_ROOT 覆盖。
 func NewSofficeRenderer() (*SofficeRenderer, error) {
-	soffice, err1 := exec.LookPath("soffice")
-	pdfToPPM, err2 := exec.LookPath("pdftoppm")
-	pdfInfo, err3 := exec.LookPath("pdfinfo")
+	return NewSofficeRendererWithConfig(Config{
+		SofficeBin:  os.Getenv("PPTS_SOFFICE_BIN"),
+		PdfToPPMBin: os.Getenv("PPTS_PDFTOPPPM_BIN"),
+		PdfInfoBin:  os.Getenv("PPTS_PDFINFO_BIN"),
+		WorkRoot:    os.Getenv("PPTS_RENDER_WORK_ROOT"),
+	})
+}
+
+// NewSofficeRendererWithConfig 解析可执行文件路径；任一缺失返回 ErrRendererUnavailable。
+func NewSofficeRendererWithConfig(cfg Config) (*SofficeRenderer, error) {
+	soffice := cfg.SofficeBin
+	var err1 error
+	if soffice == "" {
+		soffice, err1 = exec.LookPath("soffice")
+	}
+	pdfToPPM := cfg.PdfToPPMBin
+	var err2 error
+	if pdfToPPM == "" {
+		pdfToPPM, err2 = exec.LookPath("pdftoppm")
+	}
+	pdfInfo := cfg.PdfInfoBin
+	var err3 error
+	if pdfInfo == "" {
+		pdfInfo, err3 = exec.LookPath("pdfinfo")
+	}
 	if err1 != nil || err2 != nil || err3 != nil {
 		return nil, fmt.Errorf("%w: soffice=%v pdftoppm=%v pdfinfo=%v",
 			ErrRendererUnavailable, err1, err2, err3)
 	}
+	windows := strings.HasSuffix(strings.ToLower(soffice), ".exe")
+	workRoot := cfg.WorkRoot
+	if workRoot == "" {
+		workRoot = os.TempDir()
+	}
 	ver := "unknown"
-	if v, err := exec.Command(soffice, "--version").Output(); err == nil {
+	if v, err := exec.Command(soffice, "--version").Output(); err == nil && strings.TrimSpace(string(v)) != "" {
 		ver = strings.TrimSpace(firstLine(string(v)))
+	}
+	if windows && ver == "unknown" {
+		ver = "unknown (Windows)"
 	}
 	return &SofficeRenderer{
 		soffice: soffice, pdftoppm: pdfToPPM, pdfinfo: pdfInfo,
-		version: ver, defaultDPI: 150, defaultTimeout: 120 * time.Second,
+		windows: windows, workRoot: workRoot, version: ver,
+		defaultDPI: 150, defaultTimeout: 120 * time.Second,
 	}, nil
 }
 
@@ -103,7 +145,14 @@ func (r *SofficeRenderer) Version() string { return r.version }
 // Render 执行：源 PPTX → 临时目录 → soffice 转 PDF → pdfinfo 尺寸/页数 → pdftoppm 逐页 PNG。
 // 源文件字节不落地为可编辑路径；工作目录用完即清。
 func (r *SofficeRenderer) Render(ctx context.Context, src io.ReaderAt, size int64, opts RenderOptions) (*RenderResult, error) {
-	work, err := os.MkdirTemp(opts.WorkDir, "ppts-render-*")
+	workRoot := r.workRoot
+	if opts.WorkDir != "" {
+		workRoot = opts.WorkDir
+	}
+	if r.windows && !strings.HasPrefix(workRoot, "/mnt/") {
+		return nil, fmt.Errorf("render: Windows soffice requires a work dir under /mnt/<drive> (set PPTS_RENDER_WORK_ROOT), got %q", workRoot)
+	}
+	work, err := os.MkdirTemp(workRoot, "ppts-render-*")
 	if err != nil {
 		return nil, err
 	}
@@ -181,11 +230,22 @@ func (r *SofficeRenderer) Render(ctx context.Context, src io.ReaderAt, size int6
 }
 
 // convertToPDF 运行 `soffice --headless --convert-to pdf --outdir <dir> <input>`。
+// Windows .exe（WSL interop）需要 Windows 风格路径与独立 UserInstallation，避免锁冲突。
 func (r *SofficeRenderer) convertToPDF(ctx context.Context, workDir, input string) (string, error) {
-	cmd := exec.CommandContext(ctx, r.soffice,
-		"--headless", "--convert-to", "pdf", "--outdir", workDir, input)
+	outDir := workDir
+	args := []string{"--headless", "--convert-to", "pdf", "--outdir", outDir, input}
+	env := append(os.Environ(), "HOME="+workDir)
+	if r.windows {
+		outDir = toWinPath(workDir)
+		winInput := toWinPath(input)
+		profile := "file:///" + strings.ReplaceAll(toWinPath(filepath.Join(workDir, "lo-profile")), "\\", "/")
+		args = []string{"--headless", "--convert-to", "pdf", "--outdir", outDir, winInput,
+			"-env:UserInstallation=" + profile}
+		env = append(os.Environ(), "HOME="+toWinPath(workDir))
+	}
+	cmd := exec.CommandContext(ctx, r.soffice, args...)
 	// LibreOffice 可能写 HOME 配置；隔离到工作目录，避免污染用户配置。
-	cmd.Env = append(os.Environ(), "HOME="+workDir)
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("render: soffice convert failed: %w\n%s", err, string(out))
@@ -196,6 +256,14 @@ func (r *SofficeRenderer) convertToPDF(ctx context.Context, workDir, input strin
 		return "", fmt.Errorf("render: soffice output pdf not found: %s", pdf)
 	}
 	return pdf, nil
+}
+
+// toWinPath 把 /mnt/<drive>/<rest> 转换为 <drive>:\<rest>，供 Windows 可执行文件使用。
+func toWinPath(p string) string {
+	if len(p) < 6 || p[:5] != "/mnt/" {
+		return p
+	}
+	return strings.ToUpper(p[5:6]) + ":\\" + strings.ReplaceAll(p[7:], "/", "\\")
 }
 
 // documentInfo 用 pdfinfo 取页数与页面尺寸。

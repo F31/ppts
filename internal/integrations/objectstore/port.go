@@ -42,6 +42,7 @@ const (
 // LifecyclePolicy 描述对象的生命周期分层策略（V4.0 §12.5）。
 // 由各后端适配器翻译为原生生命周期规则；本地适配器不支持时返回 ErrOperationNotSupported。
 type LifecyclePolicy struct {
+	Prefix      string
 	Transitions []LifecycleTransition
 	Expiration  *LifecycleExpiration
 }

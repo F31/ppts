@@ -52,9 +52,73 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 	if timelineKey == "" {
 		return connect.NewResponse(&pptsv1.GetNarrationResponse{Ready: false}), nil
 	}
-	return connect.NewResponse(&pptsv1.GetNarrationResponse{
-		Ready: true, TimelineKey: timelineKey,
-	}), nil
+	resp := &pptsv1.GetNarrationResponse{Ready: true, TimelineKey: timelineKey}
+	if pages, err := s.pagePngKeys(ctx, p.TenantID, projectID, timelineKey); err == nil {
+		resp.PagePngKeys = pages
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// pagePngKeys 按 timeline 页序返回页面 PNG 键；解析阶段未渲染或页数不齐时返回空（优雅降级为音频+字幕）。
+func (s *PlaybackService) pagePngKeys(ctx context.Context, tenantID, projectID, timelineKey string) ([]string, error) {
+	parseJob, err := s.jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
+	if errors.Is(err, pipeline.ErrNoSucceededJob) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ref, err := s.jobs.StepResultRef(tenant.WithContext(ctx, tenantID), parseJob.ID, "pages")
+	if err != nil || ref == "" {
+		return nil, err
+	}
+	manifest, err := s.loadPageManifest(ctx, tenantID, ref)
+	if err != nil {
+		return nil, err
+	}
+	bundle, _, err := s.loadBundle(ctx, tenantID, timelineKey)
+	if err != nil {
+		return nil, err
+	}
+	bySlide := make(map[string]string, len(manifest.Pages))
+	for _, pg := range manifest.Pages {
+		if pg.SlideID != "" {
+			bySlide[pg.SlideID] = pg.Key
+		}
+	}
+	out := make([]string, 0, len(bundle.Timeline.Slides))
+	for _, slide := range bundle.Timeline.Slides {
+		key, ok := bySlide[slide.SlideID]
+		if !ok {
+			return nil, nil
+		}
+		out = append(out, key)
+	}
+	return out, nil
+}
+
+func (s *PlaybackService) loadPageManifest(ctx context.Context, tenantID, rawKey string) (*app.PageManifest, error) {
+	key, err := objectstore.Parse(rawKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := key.EnsureTenant(tenantID); err != nil {
+		return nil, err
+	}
+	r, _, err := s.objects.Get(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	var manifest app.PageManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, err
+	}
+	return &manifest, nil
 }
 
 func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[pptsv1.GetPlaybackManifestRequest]) (*connect.Response[pptsv1.PlaybackManifest], error) {

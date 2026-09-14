@@ -30,7 +30,7 @@ func setupUploadStore(t *testing.T) *PGUploadStore {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE uploads, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE uploads, source_revisions, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if _, err := pool.Exec(context.Background(),

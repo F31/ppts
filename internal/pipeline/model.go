@@ -56,6 +56,49 @@ type Job struct {
 	LastError      *JobError
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	TraceParent    string
+}
+
+// JobEvent 是任务变更事件（G3-9 WatchEvents 单调序号）。
+type JobEvent struct {
+	Seq int64
+	Job *Job
+}
+
+// progressKey 把 worker 注入的进度上报函数放入任务执行上下文。
+type progressKey struct{}
+
+type progressFunc func(ctx context.Context, pct int) error
+
+// ReportProgress 由 handler 调用以上报任务进度（0-100）。
+// worker 未注入时静默忽略（例如独立执行 handler 的测试）。
+func ReportProgress(ctx context.Context, pct int) error {
+	if fn, ok := ctx.Value(progressKey{}).(progressFunc); ok {
+		return fn(ctx, pct)
+	}
+	return nil
+}
+
+// commitStepKey 把 handler 声明的"随终态原子提交的最终步骤"放入任务执行上下文（outbox，G3-5）。
+type commitStepKey struct{}
+
+type commitStepHolder struct {
+	step *JobStep
+}
+
+// SetCommitStep 由 handler 在成功收尾时调用：该步骤不会单独提交，而是随任务终态在同一事务写入。
+// 适用于"完成后才存在的最终产物步骤"；中途步骤仍用 MarkStep 独立提交。
+// 未在 worker 内（独立执行 handler 的测试）时静默忽略，调用方不应依赖立即持久化。
+func SetCommitStep(ctx context.Context, step JobStep) {
+	if h, ok := ctx.Value(commitStepKey{}).(*commitStepHolder); ok {
+		h.step = &step
+	}
+}
+
+// CompleteWithStep 是 Store 的可选能力：终态提交与最终步骤原子写入。
+type CompleteWithStep interface {
+	// CompleteWithStep 以 fencing 条件置为终态，并在同一事务 upsert 最终成功步骤。
+	CompleteWithStep(ctx context.Context, id, owner string, fencing int64, state JobState, errMsg []byte, step *JobStep) error
 }
 
 // JobError 是结构化错误（V4.0 §11.1 code/message/retryable/retry_after）。
@@ -145,6 +188,24 @@ func AsRetry(err error) *RetryError {
 	return nil
 }
 
+// UnknownResultError 表示供应商调用已发出但结果状态不可确认（超时/连接中断等）。
+// worker 会把任务置为 unknown_provider_result，等待对账或人工重试。
+type UnknownResultError struct {
+	Err error
+}
+
+func (e *UnknownResultError) Error() string { return e.Err.Error() }
+
+func (e *UnknownResultError) Unwrap() error { return e.Err }
+
+func AsUnknownResult(err error) *UnknownResultError {
+	var u *UnknownResultError
+	if errors.As(err, &u) {
+		return u
+	}
+	return nil
+}
+
 // TryMarshalJobError 将 error 转为 JobError JSON（供 last_error 存储）。
 func TryMarshalJobError(err error) []byte {
 	je := JobError{Code: "internal", Message: err.Error()}
@@ -163,16 +224,20 @@ type Store interface {
 	ClaimNextAny(ctx context.Context, leaseOwner string, leaseFor time.Duration) (*Job, error)
 	// Heartbeat 续租；fencing 不匹配返回 ErrLeaseMismatch。
 	Heartbeat(ctx context.Context, id, owner string, fencing int64, extend time.Duration) error
-	// Complete 以 fencing 条件把任务置为终态（succeeded/failed/canceled）。
+	// Complete 以 fencing 条件把任务置为终态（succeeded/failed/canceled）或 unknown_provider_result。
 	Complete(ctx context.Context, id, owner string, fencing int64, state JobState, errMsg []byte) error
 	// ScheduleRetry 把任务置为 retry_wait，带退避 run_at 与错误。
 	ScheduleRetry(ctx context.Context, id, owner string, fencing int64, runAt time.Time, errMsg []byte) error
 	// MarkStep 记录步骤结果；成功引用与步骤完成同事务提交（由调用方事务控制）。
 	MarkStep(ctx context.Context, step JobStep) error
+	// UpdateProgress 以 fencing 条件更新进度（state='running'）并记录事件。
+	UpdateProgress(ctx context.Context, id, owner string, fencing int64, progress int) error
+	// EventsSince 返回某项目在 afterSeq 之后的事件（升序），供 WatchEvents 断点续传。
+	EventsSince(ctx context.Context, tenantID, projectID string, afterSeq int64, limit int) ([]JobEvent, error)
 	// Cancel 取消任务：queued/retry_wait 直接置 canceled，running 置 cancel_requested
 	// 由 worker 在安全点停止并提交 canceled。不可取消状态返回 ErrJobNotCancelable。
 	Cancel(ctx context.Context, id, tenantID string) (*Job, error)
-	// RetryFailed 将 failed 任务重新入队（同任务行，保留 fencing 递增语义）。
+	// RetryFailed 将 failed/unknown_provider_result 任务重新入队（同任务行，保留 fencing 递增语义）。
 	RetryFailed(ctx context.Context, id, tenantID string) (*Job, error)
 	// List 按项目/状态游标分页查询（created_at 倒序）。
 	List(ctx context.Context, tenantID, projectID, state, cursor string, pageSize int) ([]*Job, string, error)

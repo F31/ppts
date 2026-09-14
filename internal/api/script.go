@@ -128,9 +128,6 @@ func (s *ScriptService) GenerateDraft(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("Idempotency-Key header is required"))
 	}
 	mode := toDomainMode(req.Msg.GetMode())
-	if mode != narration.ModeOriginal {
-		return nil, connect.NewError(connect.CodeUnimplemented, errors.New("polish/AI draft generation is G2; only original mode is available"))
-	}
 	snapshot := app.ScriptDraftSnapshot{
 		ProjectID: projectID, Language: requestLanguage(req.Header()), Mode: string(mode),
 	}
@@ -214,7 +211,9 @@ func fromProtoSegments(in []*pptsv1.Segment) ([]*narration.Segment, error) {
 			DisplayText: segment.GetDisplayText(),
 			SpokenText:  segment.GetSpokenText(),
 			SourceRefs:  append([]string(nil), segment.GetSourceRefs()...),
-			Status:      narration.ScriptStatus(segment.GetStatus()),
+			// SourceAnchors are server provenance. User updates preserve existing anchors
+			// in the store instead of accepting client-supplied values.
+			Status: narration.ScriptStatus(segment.GetStatus()),
 		})
 	}
 	return out, nil
@@ -227,12 +226,13 @@ func toProtoRevision(rev *narration.Revision) *pptsv1.ScriptRevision {
 	segments := make([]*pptsv1.Segment, 0, len(rev.Segments))
 	for _, segment := range rev.Segments {
 		segments = append(segments, &pptsv1.Segment{
-			SegmentId:   segment.SegmentID,
-			SlideId:     rev.SlideID,
-			DisplayText: segment.DisplayText,
-			SpokenText:  segment.SpokenText,
-			SourceRefs:  append([]string(nil), segment.SourceRefs...),
-			Status:      string(segment.Status),
+			SegmentId:     segment.SegmentID,
+			SlideId:       rev.SlideID,
+			DisplayText:   segment.DisplayText,
+			SpokenText:    segment.SpokenText,
+			SourceRefs:    append([]string(nil), segment.SourceRefs...),
+			SourceAnchors: toProtoSourceAnchors(segment.SourceAnchors),
+			Status:        string(segment.Status),
 		})
 	}
 	return &pptsv1.ScriptRevision{
@@ -245,6 +245,17 @@ func toProtoRevision(rev *narration.Revision) *pptsv1.ScriptRevision {
 		Segments:      segments,
 		UpdatedAtUnix: rev.UpdatedAt.Unix(),
 	}
+}
+
+func toProtoSourceAnchors(in []narration.SourceAnchor) []*pptsv1.SourceAnchor {
+	out := make([]*pptsv1.SourceAnchor, 0, len(in))
+	for _, anchor := range in {
+		out = append(out, &pptsv1.SourceAnchor{
+			SlideId: anchor.SlideID, ShapeId: anchor.ShapeID, Kind: anchor.Kind,
+			Raw: anchor.Raw, Confidence: anchor.Confidence,
+		})
+	}
+	return out
 }
 
 func toProtoMode(mode narration.ScriptMode) pptsv1.ScriptMode {

@@ -6,40 +6,18 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 )
 
 // ParserVersion 记录解析器版本，供 source revision 与缓存键追踪。
 const ParserVersion = "go-pptx-v1.0.1"
-
-// IngestService 实现"上传 → 存源 → 建源版本 → 入队解析任务"（G1-1/G1-2）。
-type IngestService struct {
-	projects project.ProjectStore
-	jobs     pipeline.Store
-	objects  objectstore.ObjectStore
-}
-
-// NewIngestService 创建服务。
-func NewIngestService(projects project.ProjectStore, jobs pipeline.Store, objects objectstore.ObjectStore) *IngestService {
-	return &IngestService{projects: projects, jobs: jobs, objects: objects}
-}
-
-// IngestResult 是入库结果（源版本 + 已入队解析任务）。
-type IngestResult struct {
-	SourceRevision *project.SourceRevision
-	ParseJob       *pipeline.Job
-	ObjectKey      string
-}
 
 // ParseSnapshot 是 parse 任务的输入快照（与任务强绑定，V4.0 §7.1 Job.input_snapshot）。
 type ParseSnapshot struct {
@@ -50,57 +28,48 @@ type ParseSnapshot struct {
 	ParserVersion    string `json:"parserVersion"`
 }
 
-// Ingest 读取源字节，计算哈希写入对象存储（键含租户/项目前缀），
-// 原子创建源版本，再以源哈希为幂等键入队解析任务。
-// 对象已写入但后续失败会留下孤儿对象（G3 清理策略覆盖）。
-func (s *IngestService) Ingest(ctx context.Context, tenantID, projectID string, src io.Reader) (*IngestResult, error) {
-	data, hash, err := readAndHash(src)
-	if err != nil {
-		return nil, err
-	}
-	if projectID == "" || tenantID == "" {
-		return nil, errors.New("app: tenantID and projectID are required")
-	}
+// PageEntry 是渲染后单页与源页面的对应关系（页序与 slideId 对齐）。
+type PageEntry struct {
+	SlideID string `json:"slideId"`
+	Index   int    `json:"index"` // 0 基页序
+	Key     string `json:"key"`   // 页面 PNG 对象键
+}
 
-	key := objectstore.ObjectKey{
-		TenantID: tenantID, ProjectID: projectID,
-		Revision: "src", AssetType: "source", AssetID: hash, Ext: "pptx",
-	}
-	if err := s.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{
-		ContentType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-		ContentHash: hash, Size: int64(len(data)),
-	}); err != nil {
-		return nil, fmt.Errorf("app: store source: %w", err)
-	}
-
-	rev, err := s.projects.CreateSourceRevision(ctx, tenantID, project.NewSourceRevision{
-		ProjectID: projectID, SourceHash: hash, ObjectKey: key.String(), ParserVersion: ParserVersion,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("app: create source revision: %w", err)
-	}
-
-	snap, _ := json.Marshal(ParseSnapshot{
-		SourceRevisionID: rev.ID, ProjectID: projectID, ObjectKey: key.String(),
-		RevisionNo: rev.RevisionNo, ParserVersion: ParserVersion,
-	})
-	job, err := s.jobs.Create(ctx, tenantID, projectID, string(pipeline.KindParse), hash, string(snap), time.Time{})
-	if err != nil {
-		return nil, fmt.Errorf("app: enqueue parse job: %w", err)
-	}
-	return &IngestResult{SourceRevision: rev, ParseJob: job, ObjectKey: key.String()}, nil
+// PageManifest 是解析阶段渲染产物的清单（供播放服务按 timeline 页序取页面图）。
+type PageManifest struct {
+	RevisionNo int         `json:"revisionNo"`
+	Renderer   string      `json:"renderer,omitempty"`
+	Pages      []PageEntry `json:"pages"`
 }
 
 // ParseHandler 是解析任务的 worker handler：
-// 读源对象 → DocumentReader.Inspect → 写回解析产物（document/features）→ nil。
+// 读源对象 → DocumentReader.Inspect → 写回解析产物（document/features）→ 可选渲染页面 PNG。
 type ParseHandler struct {
-	objects objectstore.ObjectStore
-	reader  project.DocumentReader
+	objects  objectstore.ObjectStore
+	reader   project.DocumentReader
+	renderer render.SlideRenderer
+	steps    interface {
+		MarkStep(context.Context, pipeline.JobStep) error
+	}
 }
 
 // NewParseHandler 创建 handler。
 func NewParseHandler(objects objectstore.ObjectStore, reader project.DocumentReader) *ParseHandler {
 	return &ParseHandler{objects: objects, reader: reader}
+}
+
+// WithRenderer 注入渲染器；未注入（或渲染失败）时解析仍成功，仅缺页面图。
+func (h *ParseHandler) WithRenderer(r render.SlideRenderer) *ParseHandler {
+	h.renderer = r
+	return h
+}
+
+// WithSteps 注入步骤记录器，用于登记页面渲染结果。
+func (h *ParseHandler) WithSteps(s interface {
+	MarkStep(context.Context, pipeline.JobStep) error
+}) *ParseHandler {
+	h.steps = s
+	return h
 }
 
 // Handle 实现 pipeline.HandlerFunc。
@@ -140,16 +109,68 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	}); err != nil {
 		return fmt.Errorf("parse: write extracted document: %w", err)
 	}
+	h.renderPages(ctx, job, key, data, doc, snap)
 	return nil
 }
 
-func readAndHash(r io.Reader) ([]byte, string, error) {
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, "", err
+// renderPages 把源页面渲染为 PNG 并登记页序清单。页面图是可选增强：
+// 渲染器缺失/不可用或渲染失败都不会让解析任务失败，仅记录失败步骤。
+func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKey objectstore.ObjectKey, data []byte, doc *project.Document, snap ParseSnapshot) {
+	if h.renderer == nil || h.steps == nil {
+		return
 	}
-	sum := sha256.Sum256(data)
-	return data, hex.EncodeToString(sum[:]), nil
+	step := pipeline.JobStep{
+		JobID: job.ID, TenantID: job.TenantID, StepType: "pages",
+		StepKey: "pages:v1:" + srcKey.AssetID,
+	}
+	fail := func() {
+		step.State = pipeline.StepFailed
+		_ = h.steps.MarkStep(ctx, step)
+	}
+	res, err := h.renderer.Render(ctx, bytes.NewReader(data), int64(len(data)), render.RenderOptions{})
+	if err != nil || len(res.Pages) == 0 {
+		fail()
+		return
+	}
+	slideByIndex := make(map[int]string, len(doc.Pages))
+	for _, pg := range doc.Pages {
+		if pg != nil {
+			slideByIndex[pg.Index] = pg.SlideID
+		}
+	}
+	revision := srcRevString(snap.RevisionNo)
+	entries := make([]PageEntry, 0, len(res.Pages))
+	for _, page := range res.Pages {
+		key := objectstore.ObjectKey{
+			TenantID: srcKey.TenantID, ProjectID: snap.ProjectID, Revision: revision,
+			AssetType: "render", AssetID: fmt.Sprintf("page-%04d", page.Index+1), Ext: "png",
+		}
+		if err := h.objects.Put(ctx, key, bytes.NewReader(page.PNG), objectstore.ObjectMeta{
+			ContentType: "image/png", ContentHash: hashBytes(page.PNG), Size: int64(len(page.PNG)),
+		}); err != nil {
+			fail()
+			return
+		}
+		entries = append(entries, PageEntry{SlideID: slideByIndex[page.Index], Index: page.Index, Key: key.String()})
+	}
+	manifest := PageManifest{RevisionNo: snap.RevisionNo, Renderer: res.Report.Renderer, Pages: entries}
+	manifestBytes, err := json.Marshal(manifest)
+	if err != nil {
+		fail()
+		return
+	}
+	manifestKey := objectstore.ObjectKey{
+		TenantID: srcKey.TenantID, ProjectID: snap.ProjectID, Revision: revision,
+		AssetType: "render", AssetID: "pages", Ext: "json",
+	}
+	if err := h.objects.Put(ctx, manifestKey, bytes.NewReader(manifestBytes), objectstore.ObjectMeta{
+		ContentType: "application/json", ContentHash: hashBytes(manifestBytes), Size: int64(len(manifestBytes)),
+	}); err != nil {
+		fail()
+		return
+	}
+	step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
+	_ = h.steps.MarkStep(ctx, step)
 }
 
 func srcRevString(n int) string {

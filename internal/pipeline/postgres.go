@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/tenant"
+	"github.com/F31/ppts/internal/traceprop"
 )
 
 // PGStore 以 PostgreSQL 实现 Store（V4.0 §10.2）：
@@ -39,7 +40,7 @@ func (s *PGStore) Close() { s.pool.Close() }
 
 const jobSelectColumns = `id, tenant_id, project_id, kind, state, input_snapshot,
 	idempotency_key, attempt, lease_owner, lease_until, fencing_token,
-	run_at, progress, last_error, created_at, updated_at`
+	run_at, progress, last_error, created_at, updated_at, traceparent`
 
 func scanJob(row pgx.Row) (*Job, error) {
 	var j Job
@@ -50,7 +51,7 @@ func scanJob(row pgx.Row) (*Job, error) {
 	err := row.Scan(&j.ID, &j.TenantID, &j.ProjectID, &j.Kind, &j.State,
 		&j.InputSnapshot, &j.IDempotencyKey, &j.Attempt, &leaseOwner,
 		&leaseUntilPtr, &j.FencingToken, &runAtPtr, &j.Progress, &lastErr,
-		&createdAt, &updatedAt)
+		&createdAt, &updatedAt, &j.TraceParent)
 	if err != nil {
 		return nil, err
 	}
@@ -76,20 +77,20 @@ func (s *PGStore) Create(ctx context.Context, tenantID, projectID, kind, idemKey
 	var j *Job
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `INSERT INTO jobs
-			(id, tenant_id, project_id, kind, state, idempotency_key, input_snapshot, run_at)
-			VALUES (gen_random_uuid(),$1,$2,$3,'queued',$4,$5,$6)
+			(id, tenant_id, project_id, kind, state, idempotency_key, input_snapshot, run_at, traceparent)
+			VALUES (gen_random_uuid(),$1,$2,$3,'queued',$4,$5,$6,$7)
 			ON CONFLICT (tenant_id, idempotency_key, kind) DO NOTHING
 			RETURNING `+jobSelectColumns,
-			tenantID, projectID, kind, idemKey, snapshot, nullableTime(&runAt))
+			tenantID, projectID, kind, idemKey, snapshot, nullableTime(&runAt), traceprop.FromContext(ctx))
 		got, err := scanJob(row)
 		if err == nil {
 			j = got
-			return nil
+			return recordJobEvent(ctx, tx, j)
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		// 命中幂等约束：返回既有行。
+		// 命中幂等约束：返回既有行，不重复写事件。
 		got, err = scanJob(tx.QueryRow(ctx,
 			"SELECT "+jobSelectColumns+" FROM jobs WHERE tenant_id=$1 AND idempotency_key=$2 AND kind=$3",
 			tenantID, idemKey, kind))
@@ -154,7 +155,7 @@ func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, le
 		FROM candidate c WHERE j.id=c.id
 		RETURNING j.id, j.tenant_id, j.project_id, j.kind, j.state, j.input_snapshot,
 		          j.idempotency_key, j.attempt, j.lease_owner, j.lease_until,
-		          j.fencing_token, j.run_at, j.progress, j.last_error, j.created_at, j.updated_at`,
+		          j.fencing_token, j.run_at, j.progress, j.last_error, j.created_at, j.updated_at, j.traceparent`,
 			tenantID, leaseOwner, leaseFor)
 		got, err := scanJob(row)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -167,6 +168,65 @@ func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, le
 		return nil, err
 	}
 	return j, nil
+}
+
+// UpdateProgress 以 fencing 条件更新任务进度（state='running'）并记录事件。
+func (s *PGStore) UpdateProgress(ctx context.Context, id, owner string, fencing int64, progress int) error {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	return tenant.RunCtx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`UPDATE jobs SET progress=$4, updated_at=now()
+			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND state='running'
+			 RETURNING `+jobSelectColumns,
+			id, owner, fencing, progress)
+		got, err := scanJob(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLeaseMismatch
+		}
+		if err != nil {
+			return err
+		}
+		return recordJobEvent(ctx, tx, got)
+	})
+}
+
+// EventsSince 返回某项目在 afterSeq 之后的事件（seq 升序），供 WatchEvents 断点续传。
+func (s *PGStore) EventsSince(ctx context.Context, tenantID, projectID string, afterSeq int64, limit int) ([]JobEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	var out []JobEvent
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT seq, snapshot FROM job_events
+			 WHERE tenant_id=$1 AND project_id=$2 AND seq>$3
+			 ORDER BY seq ASC LIMIT $4`,
+			tenantID, projectID, afterSeq, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ev JobEvent
+			var snapshot []byte
+			if err := rows.Scan(&ev.Seq, &snapshot); err != nil {
+				return err
+			}
+			job := &Job{}
+			if err := json.Unmarshal(snapshot, job); err != nil {
+				return err
+			}
+			ev.Job = job
+			out = append(out, ev)
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // ClaimNextAny 通过受限调度函数跨租户领取一个可运行任务。
@@ -226,41 +286,79 @@ func (s *PGStore) Heartbeat(ctx context.Context, id, owner string, fencing int64
 	})
 }
 
-// Complete 以 fencing 条件置为终态。
+// Complete 以 fencing 条件置为终态或 unknown_provider_result（等待对账）。
 func (s *PGStore) Complete(ctx context.Context, id, owner string, fencing int64, state JobState, errMsg []byte) error {
 	return tenant.RunCtx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
+		row := tx.QueryRow(ctx,
 			`UPDATE jobs SET state=$4, lease_owner=NULL, lease_until=NULL,
 			   last_error=$5, progress=CASE WHEN $4='succeeded' THEN 100 ELSE progress END,
 			   updated_at=now()
 			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3
-			   AND state IN ('running','cancel_requested')`,
+			   AND state IN ('running','cancel_requested')
+			 RETURNING `+jobSelectColumns,
 			id, owner, fencing, string(state), nullableBytes(errMsg))
+		got, err := scanJob(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLeaseMismatch
+		}
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() != 1 {
+		return recordJobEvent(ctx, tx, got)
+	})
+}
+
+// CompleteWithStep 以 fencing 条件置为终态，并在同一事务 upsert 最终成功步骤（outbox，G3-5）。
+// 步骤与终态原子提交：任一步失败整体回滚，避免"步骤成功但任务未终态"的中间窗口。
+func (s *PGStore) CompleteWithStep(ctx context.Context, id, owner string, fencing int64, state JobState, errMsg []byte, step *JobStep) error {
+	return tenant.RunCtx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		row := tx.QueryRow(ctx,
+			`UPDATE jobs SET state=$4, lease_owner=NULL, lease_until=NULL,
+			   last_error=$5, progress=CASE WHEN $4='succeeded' THEN 100 ELSE progress END,
+			   updated_at=now()
+			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3
+			   AND state IN ('running','cancel_requested')
+			 RETURNING `+jobSelectColumns,
+			id, owner, fencing, string(state), nullableBytes(errMsg))
+		got, err := scanJob(row)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrLeaseMismatch
 		}
-		return nil
+		if err != nil {
+			return err
+		}
+		if step != nil {
+			_, err := tx.Exec(ctx,
+				`INSERT INTO job_steps (id, job_id, tenant_id, step_type, step_key, state, result_ref)
+				 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6)
+				 ON CONFLICT (job_id, step_key) DO UPDATE
+				   SET state=EXCLUDED.state, result_ref=EXCLUDED.result_ref, updated_at=now()`,
+				step.JobID, step.TenantID, step.StepType, step.StepKey, string(step.State), step.ResultRef)
+			if err != nil {
+				return err
+			}
+		}
+		return recordJobEvent(ctx, tx, got)
 	})
 }
 
 // ScheduleRetry 置 retry_wait 并带退避时间。
 func (s *PGStore) ScheduleRetry(ctx context.Context, id, owner string, fencing int64, runAt time.Time, errMsg []byte) error {
 	return tenant.RunCtx(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx,
+		row := tx.QueryRow(ctx,
 			`UPDATE jobs SET state='retry_wait', run_at=$4, lease_owner=NULL, lease_until=NULL,
 			   last_error=$5, updated_at=now()
-			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND state='running'`,
+			 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND state='running'
+			 RETURNING `+jobSelectColumns,
 			id, owner, fencing, runAt, nullableBytes(errMsg))
+		got, err := scanJob(row)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLeaseMismatch
+		}
 		if err != nil {
 			return err
 		}
-		if tag.RowsAffected() != 1 {
-			return ErrLeaseMismatch
-		}
-		return nil
+		return recordJobEvent(ctx, tx, got)
 	})
 }
 
@@ -302,7 +400,7 @@ func (s *PGStore) Cancel(ctx context.Context, id, tenantID string) (*Job, error)
 			return err
 		}
 		j = got
-		return nil
+		return recordJobEvent(ctx, tx, j)
 	})
 	if err != nil {
 		return nil, err
@@ -310,13 +408,13 @@ func (s *PGStore) Cancel(ctx context.Context, id, tenantID string) (*Job, error)
 	return j, nil
 }
 
-// RetryFailed 将 failed 任务重新入队（保留原行与 attempt，下次领取 fencing 递增）。
+// RetryFailed 将 failed/unknown_provider_result 任务重新入队（保留原行与 attempt，下次领取 fencing 递增）。
 func (s *PGStore) RetryFailed(ctx context.Context, id, tenantID string) (*Job, error) {
 	var j *Job
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		got, err := scanJob(tx.QueryRow(ctx,
 			`UPDATE jobs SET state='queued', run_at=NULL, lease_owner=NULL, lease_until=NULL, last_error=NULL, updated_at=now()
-			 WHERE id=$1 AND tenant_id=$2 AND state='failed'
+			 WHERE id=$1 AND tenant_id=$2 AND state IN ('failed','unknown_provider_result')
 			 RETURNING `+jobSelectColumns, id, tenantID))
 		if errors.Is(err, pgx.ErrNoRows) {
 			var state string
@@ -331,7 +429,7 @@ func (s *PGStore) RetryFailed(ctx context.Context, id, tenantID string) (*Job, e
 			return err
 		}
 		j = got
-		return nil
+		return recordJobEvent(ctx, tx, j)
 	})
 	if err != nil {
 		return nil, err
@@ -484,4 +582,21 @@ func nullableBytes(b []byte) any {
 		return nil
 	}
 	return b
+}
+
+// recordJobEvent 在事务内写入任务事件（WatchEvents 单调 seq，G3-9）。
+// 事务必须已处于租户上下文（tenant.Run/RunCtx）。
+func recordJobEvent(ctx context.Context, tx pgx.Tx, job *Job) error {
+	if job == nil {
+		return nil
+	}
+	snapshot, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
+		`INSERT INTO job_events (tenant_id, project_id, job_id, state, progress, snapshot)
+		 VALUES ($1,$2,$3,$4,$5,$6)`,
+		job.TenantID, job.ProjectID, job.ID, string(job.State), job.Progress, snapshot)
+	return err
 }

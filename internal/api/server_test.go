@@ -172,7 +172,7 @@ type jobCreatorStub struct {
 	activeCount    int
 	byIdem         *pipeline.Job
 	byIdemErr      error
-	watchJobs      []*pipeline.Job
+	watchEvents    []pipeline.JobEvent
 }
 
 type fakeArtifactStore struct {
@@ -260,14 +260,14 @@ func (s *jobCreatorStub) ByIdempotency(context.Context, string, string, string) 
 	return s.byIdem, nil
 }
 
-func (s *jobCreatorStub) UpdatedSince(_ context.Context, _, _ string, after time.Time, _ int) ([]*pipeline.Job, error) {
+func (s *jobCreatorStub) EventsSince(_ context.Context, _, _ string, afterSeq int64, _ int) ([]pipeline.JobEvent, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
-	var out []*pipeline.Job
-	for _, job := range s.watchJobs {
-		if job.UpdatedAt.After(after) {
-			out = append(out, job)
+	var out []pipeline.JobEvent
+	for _, ev := range s.watchEvents {
+		if ev.Seq > afterSeq {
+			out = append(out, ev)
 		}
 	}
 	return out, nil
@@ -358,7 +358,11 @@ func newTestRevision() *narration.Revision {
 		UpdatedAt: time.Unix(100, 0),
 		Segments: []*narration.Segment{{
 			SegmentID: "seg-1", DisplayText: "第一页", SpokenText: "第一页",
-			SourceRefs: []string{"slide-1/shape-1"}, Status: narration.StatusDraft,
+			SourceRefs: []string{"slide-1/shape-1"},
+			SourceAnchors: []narration.SourceAnchor{{
+				SlideID: "slide-1", ShapeID: "shape-1", Kind: "shape_text", Raw: "第一页", Confidence: 1,
+			}},
+			Status: narration.StatusDraft,
 		}},
 	}
 }
@@ -462,6 +466,10 @@ func TestScriptGetUsesAuthenticatedTenantAndLanguage(t *testing.T) {
 	}
 	if resp.Msg.GetRevision() != 3 || resp.Msg.GetSegments()[0].GetSlideId() != "slide-1" {
 		t.Fatalf("response = %+v", resp.Msg)
+	}
+	anchors := resp.Msg.GetSegments()[0].GetSourceAnchors()
+	if len(anchors) != 1 || anchors[0].GetShapeId() != "shape-1" || anchors[0].GetConfidence() != 1 {
+		t.Fatalf("anchors = %+v", anchors)
 	}
 }
 
@@ -798,12 +806,11 @@ func TestJobServiceCancelReleasesNarrationReservation(t *testing.T) {
 }
 
 func TestJobServiceWatchEventsStreamsUpdates(t *testing.T) {
-	updated := time.Unix(100, 0)
 	job := &pipeline.Job{
 		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
-		State: pipeline.StateRunning, Progress: 40, UpdatedAt: updated,
+		State: pipeline.StateRunning, Progress: 40,
 	}
-	jobs := &jobCreatorStub{watchJobs: []*pipeline.Job{job}}
+	jobs := &jobCreatorStub{watchEvents: []pipeline.JobEvent{{Seq: 7, Job: job}}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t)))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
@@ -819,7 +826,7 @@ func TestJobServiceWatchEventsStreamsUpdates(t *testing.T) {
 		t.Fatalf("Receive: %v", stream.Err())
 	}
 	ev := stream.Msg()
-	if ev.GetSeq() != updated.UnixNano() || ev.GetJob().GetJobId() != "job-1" ||
+	if ev.GetSeq() != 7 || ev.GetJob().GetJobId() != "job-1" ||
 		ev.GetJob().GetState() != pptsv1.JobState_JOB_STATE_RUNNING {
 		t.Fatalf("event = %+v", ev)
 	}
@@ -868,10 +875,11 @@ func TestJobServiceNotFoundAndNotCancelable(t *testing.T) {
 
 // fakeTenantUsage / fakeTenantPolicy 用于 TenantService 只读接口测试。
 type fakeTenantUsage struct {
-	quota   *usage.Quota
-	seconds float64
-	cost    float64
-	err     error
+	quota        *usage.Quota
+	seconds      float64
+	cost         float64
+	supplierCost float64
+	err          error
 }
 
 func (f *fakeTenantUsage) GetQuota(_ context.Context, tenantID string, kind usage.Kind) (*usage.Quota, error) {
@@ -884,12 +892,14 @@ func (f *fakeTenantUsage) GetQuota(_ context.Context, tenantID string, kind usag
 	return f.quota, nil
 }
 
-func (f *fakeTenantUsage) UsageSummary(context.Context, string, string) (float64, float64, error) {
+func (f *fakeTenantUsage) UsageSummary(context.Context, string, string) (float64, float64, float64, error) {
 	if f.err != nil {
-		return 0, 0, f.err
+		return 0, 0, 0, f.err
 	}
-	return f.seconds, f.cost, nil
+	return f.seconds, f.cost, f.supplierCost, nil
 }
+
+func (f *fakeTenantUsage) Currency() string { return "CNY" }
 
 func (f *fakeTenantUsage) ProjectUsage(context.Context, string, string) (usage.ProjectUsage, error) {
 	if f.err != nil {
@@ -1341,7 +1351,7 @@ func TestUploadAndExportWriteOperationsEnforceRoles(t *testing.T) {
 func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 	u := &fakeTenantUsage{
 		quota:   &usage.Quota{TenantID: "tenant-1", Kind: usage.KindGenSeconds, LimitUnits: 3600, ConsumedUnits: 120, ReservedUnits: 30},
-		seconds: 120, cost: 0,
+		seconds: 120, cost: 1.2, supplierCost: 0.48,
 	}
 	p := &fakeTenantPolicy{policy: &tenant.Policy{
 		StorageBackend: "s3", StorageRegion: "cn-north-1", SourceRetentionDays: 30,
@@ -1365,7 +1375,8 @@ func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Usage: %v", err)
 	}
-	if usageResp.Msg.GetSecondsUsed() != 120 {
+	if usageResp.Msg.GetSecondsUsed() != 120 || usageResp.Msg.GetUserAmount() != 1.2 ||
+		usageResp.Msg.GetSupplierCost() != 0.48 || usageResp.Msg.GetCurrency() != "CNY" {
 		t.Fatalf("usage = %+v", usageResp.Msg)
 	}
 
@@ -1563,11 +1574,54 @@ func TestPlaybackGetNarration(t *testing.T) {
 	}
 }
 
+func TestPlaybackGetNarrationIncludesPageKeys(t *testing.T) {
+	objects := testObjects(t)
+	timeline, err := media.BuildTimeline([]media.SlideInput{{
+		SlideID:  "slide-1",
+		Segments: []media.SegmentInput{{SegmentID: "seg-1", DisplayText: "字幕", AudioKey: "tenant-1/project-1/cache/audio/a.wav", DurationMS: 100}},
+	}}, media.Timing{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srtKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "subtitle", AssetID: "sub", Ext: "srt"}
+	vttKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "subtitle", AssetID: "sub", Ext: "vtt"}
+	timelineKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "timeline", AssetID: "tl", Ext: "json"}
+	pageKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "src-01", AssetType: "render", AssetID: "page-0001", Ext: "png"}
+	manifestKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "src-01", AssetType: "render", AssetID: "pages", Ext: "json"}
+	putAPIObject(t, objects, srtKey, []byte("srt"), "application/x-subrip")
+	putAPIObject(t, objects, vttKey, []byte("vtt"), "text/vtt")
+	putAPIObject(t, objects, pageKey, []byte("png"), "image/png")
+	bundle, _ := json.Marshal(app.TimelineAsset{Timeline: timeline, SRTKey: srtKey.String(), VTTKey: vttKey.String()})
+	putAPIObject(t, objects, timelineKey, bundle, "application/json")
+	manifest, _ := json.Marshal(app.PageManifest{RevisionNo: 1, Pages: []app.PageEntry{{SlideID: "slide-1", Index: 0, Key: pageKey.String()}}})
+	putAPIObject(t, objects, manifestKey, manifest, "application/json")
+
+	jobs := &narrationJobStub{
+		job:      &pipeline.Job{ID: "job-narr", Kind: pipeline.KindNarration},
+		stepRef:  timelineKey.String(),
+		parseJob: &pipeline.Job{ID: "job-parse", Kind: pipeline.KindParse},
+		pageRef:  manifestKey.String(),
+	}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
+
+	resp, err := client.GetNarration(context.Background(), authRequest(&pptsv1.GetNarrationRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("GetNarration: %v", err)
+	}
+	if !resp.Msg.GetReady() || len(resp.Msg.GetPagePngKeys()) != 1 || resp.Msg.GetPagePngKeys()[0] != pageKey.String() {
+		t.Fatalf("response = %+v", resp.Msg)
+	}
+}
+
 // narrationJobStub 是 GetNarration 专用 stub：精确控制最近成功任务与 timeline ref。
 type narrationJobStub struct {
 	job         *pipeline.Job
 	stepRef     string
 	jobNotFound bool
+	parseJob    *pipeline.Job
+	pageRef     string
 }
 
 func (s *narrationJobStub) Create(_ context.Context, tenantID, projectID, _ string, idemKey, snapshot string, _ time.Time) (*pipeline.Job, error) {
@@ -1578,14 +1632,23 @@ func (s *narrationJobStub) Create(_ context.Context, tenantID, projectID, _ stri
 	return job, nil
 }
 
-func (s *narrationJobStub) LatestSucceededJob(context.Context, string, string, string) (*pipeline.Job, error) {
+func (s *narrationJobStub) LatestSucceededJob(_ context.Context, _, _, kind string) (*pipeline.Job, error) {
+	if kind == string(pipeline.KindParse) {
+		if s.parseJob == nil {
+			return nil, pipeline.ErrNoSucceededJob
+		}
+		return s.parseJob, nil
+	}
 	if s.jobNotFound || s.job == nil {
 		return nil, pipeline.ErrNoSucceededJob
 	}
 	return s.job, nil
 }
 
-func (s *narrationJobStub) StepResultRef(context.Context, string, string) (string, error) {
+func (s *narrationJobStub) StepResultRef(_ context.Context, _ string, stepType string) (string, error) {
+	if stepType == "pages" {
+		return s.pageRef, nil
+	}
 	return s.stepRef, nil
 }
 
@@ -1675,14 +1738,33 @@ func TestGenerateDraftEnqueuesOriginalModeJob(t *testing.T) {
 		t.Fatalf("response = %+v", resp.Msg)
 	}
 
-	// polish 模式在 G1 未实现 → Unimplemented。
+	// polish 模式进入 G2：允许入队，由 worker 侧 LLM 配置决定执行能力。
 	polishReq := authRequest(&pptsv1.GenerateDraftRequest{
 		ProjectId: "project-1", Mode: pptsv1.ScriptMode_SCRIPT_MODE_POLISH,
 	})
 	polishReq.Header().Set("Idempotency-Key", "draft-2")
-	_, err = client.GenerateDraft(context.Background(), polishReq)
-	if connect.CodeOf(err) != connect.CodeUnimplemented {
-		t.Fatalf("polish mode code = %v, err=%v", connect.CodeOf(err), err)
+	if _, err = client.GenerateDraft(context.Background(), polishReq); err != nil {
+		t.Fatalf("GenerateDraft polish: %v", err)
+	}
+	if err := json.Unmarshal([]byte(jobs.inputSnapshot), &snap); err != nil {
+		t.Fatalf("polish snapshot: %v", err)
+	}
+	if snap.Mode != "polish" {
+		t.Fatalf("polish snapshot = %+v", snap)
+	}
+
+	aiReq := authRequest(&pptsv1.GenerateDraftRequest{
+		ProjectId: "project-1", Mode: pptsv1.ScriptMode_SCRIPT_MODE_AI_GENERATED,
+	})
+	aiReq.Header().Set("Idempotency-Key", "draft-3")
+	if _, err = client.GenerateDraft(context.Background(), aiReq); err != nil {
+		t.Fatalf("GenerateDraft ai_generated: %v", err)
+	}
+	if err := json.Unmarshal([]byte(jobs.inputSnapshot), &snap); err != nil {
+		t.Fatalf("ai snapshot: %v", err)
+	}
+	if snap.Mode != "ai_generated" {
+		t.Fatalf("ai snapshot = %+v", snap)
 	}
 }
 

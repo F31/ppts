@@ -92,6 +92,9 @@ message GetUsageRequest {
 message GetUsageResponse {
   int64 seconds_used = 1;
   int64 cost_units = 2; // 账本原始数量
+  double user_amount = 3;   // 用户计费金额（按定价表，G3-2）
+  double supplier_cost = 4; // 供应商成本（与用户计费分账）
+  string currency = 5;
 }
 
 message GetProjectUsageRequest {
@@ -100,8 +103,11 @@ message GetProjectUsageRequest {
 
 message GetProjectUsageResponse {
   string project_id = 1;
-  int64 seconds = 2; // 生成秒数（G3-8 每项目用量，成本待定价表）
+  int64 seconds = 2; // 生成秒数（G3-8 每项目用量）
   int64 job_count = 3;
+  double user_amount = 4;   // 用户计费金额（G3-2 分账）
+  double supplier_cost = 5; // 供应商成本
+  string currency = 6;
 }
 
 message GetStorageUsageRequest {}

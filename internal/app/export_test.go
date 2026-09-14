@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"testing"
 	"time"
 
@@ -76,9 +78,7 @@ func TestExportHandlerPublishesSRTArtifact(t *testing.T) {
 	if artifacts.created == nil || artifacts.created.Format != artifact.FormatSRT || artifacts.created.SizeBytes == 0 {
 		t.Fatalf("artifact = %+v", artifacts.created)
 	}
-	if step := steps.latest["export:srt:"+artifacts.created.SnapshotHash]; step.State != pipeline.StepSuccess || step.ResultRef != "artifact-1" {
-		t.Fatalf("step = %+v", step)
-	}
+	// 最终成功步骤改为随任务终态原子提交（outbox，G3-5），由 PG 测试覆盖原子性。
 	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
 	r, _, err := objects.Get(context.Background(), key)
 	if err != nil {
@@ -110,6 +110,41 @@ func TestExportHandlerPublishesMP4Artifact(t *testing.T) {
 	if artifacts.created == nil || artifacts.created.Format != artifact.FormatMP4 || artifacts.created.SizeBytes <= 0 {
 		t.Fatalf("artifact = %+v", artifacts.created)
 	}
+}
+
+type failArtifactPutStore struct {
+	objectstore.ObjectStore
+	err error
+}
+
+func (s failArtifactPutStore) Put(ctx context.Context, key objectstore.ObjectKey, r io.Reader, meta objectstore.ObjectMeta) error {
+	if key.AssetType == "artifact" {
+		return s.err
+	}
+	return s.ObjectStore.Put(ctx, key, r, meta)
+}
+
+func TestExportHandlerObjectWriteFailureDoesNotCreateArtifact(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	_, bundleKey := seedTimelineBundle(t, objects)
+	artifacts := &artifactStoreStub{}
+	steps := &stepRecorder{}
+	wantErr := errors.New("disk full")
+	handler := NewExportHandler(artifacts, steps, failArtifactPutStore{ObjectStore: objects, err: wantErr}, nil)
+
+	err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{Format: artifact.FormatSRT, TimelineKey: bundleKey.String()}))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Handle err = %v want %v", err, wantErr)
+	}
+	if artifacts.created != nil {
+		t.Fatalf("artifact created after object write failure: %+v", artifacts.created)
+	}
+	for _, step := range steps.latest {
+		if step.StepType == "export" && step.State == pipeline.StepFailed {
+			return
+		}
+	}
+	t.Fatalf("failed export step not recorded: %+v", steps.latest)
 }
 
 func putObject(t *testing.T, objects objectstore.ObjectStore, key objectstore.ObjectKey, data []byte, contentType string) {

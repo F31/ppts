@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,10 @@ func (r *ttsMetricsRecorder) SegmentSynthesized(_ *pipeline.Job, retryable, thro
 	}
 	r.retryable = r.retryable || retryable
 	r.throttled = r.throttled || throttled
+}
+
+func (r *ttsMetricsRecorder) SegmentCacheHit(_ *pipeline.Job, _ string) {
+	r.total++
 }
 
 type httpStatusErr struct{ status int }
@@ -139,7 +144,8 @@ func TestNarrationHandlerPublishesAndReusesSegments(t *testing.T) {
 	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
 		t.Fatalf("first Handle: %v", err)
 	}
-	if provider.calls != 2 || len(steps.latest) != 3 {
+	// G2-7 内容哈希去重：两段文本相同，第二段命中租户共享缓存，只合成一次。
+	if provider.calls != 1 || len(steps.latest) != 3 {
 		t.Fatalf("calls=%d steps=%d", provider.calls, len(steps.latest))
 	}
 	manifestRefs := make(map[string]struct{}, 2)
@@ -212,15 +218,54 @@ func TestNarrationHandlerPublishesAndReusesSegments(t *testing.T) {
 	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
 		t.Fatalf("second Handle: %v", err)
 	}
-	if provider.calls != 2 {
+	// 幂等重跑命中 per-project manifest 缓存，不再调用供应商。
+	if provider.calls != 1 {
 		t.Fatalf("cached run called provider: calls=%d", provider.calls)
 	}
 	store.revision.Revision = 5
 	if err := handler.Handle(context.Background(), narrationJobAt(t, "job-2", 5)); err != nil {
 		t.Fatalf("new revision Handle: %v", err)
 	}
-	if provider.calls != 2 {
+	// 跨讲稿 revision 复用未修改分段音频（G2-7 共享缓存）。
+	if provider.calls != 1 {
 		t.Fatalf("unchanged segments were not reused across script revisions: calls=%d", provider.calls)
+	}
+}
+
+func TestNarrationHandlerDedupsAcrossProjects(t *testing.T) {
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "第一段", SpokenText: "相同文本"},
+	)}
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := providerForTests()
+	handler := NewNarrationHandler(store, steps, objects, provider)
+
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("first project Handle: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("first project calls=%d", provider.calls)
+	}
+
+	// G2-7 跨项目去重：同租户、同合成配置 → 命中共享缓存，零供应商调用。
+	job2 := narrationJobAt(t, "job-2", 4)
+	job2.ProjectID = "project-2"
+	if err := handler.Handle(context.Background(), job2); err != nil {
+		t.Fatalf("second project Handle: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("cross-project dedup failed: calls=%d", provider.calls)
+	}
+	// project-2 的 per-project manifest 已写入。
+	var found bool
+	for _, step := range steps.latest {
+		if step.StepType == "tts_segment" && strings.Contains(step.ResultRef, "project-2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("project-2 manifest not written: %+v", steps.latest)
 	}
 }
 

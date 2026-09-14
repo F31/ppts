@@ -5,6 +5,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"testing"
@@ -47,7 +49,7 @@ func setupApp(t *testing.T) *appEnv {
 	}
 	t.Cleanup(pool.Close)
 	if _, err := pool.Exec(context.Background(),
-		"TRUNCATE uploads, jobs, job_steps, source_revisions, projects, tenants RESTART IDENTITY CASCADE"); err != nil {
+		"TRUNCATE uploads, jobs, job_steps, narration_segments, narration_scripts, source_revisions, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, q := range []struct {
@@ -105,44 +107,66 @@ func deckBytes(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+// uploadDeck 走真实上传链路（CreateUpload → Put → CompleteUpload）入库，
+// 返回源版本与解析任务。
+func uploadDeck(t *testing.T, env *appEnv, revisionNo int, data []byte) (*project.SourceRevision, *pipeline.Job) {
+	t.Helper()
+	ctx := context.Background()
+	svc := NewUploadService(env.uploads, env.projects, env.jobs, env.objects)
+	res, err := svc.CreateUpload(ctx, appTenant, UploadRequest{
+		ProjectID: appProject, Filename: "deck.pptx", SizeBytes: int64(len(data)),
+	})
+	if err != nil {
+		t.Fatalf("CreateUpload: %v", err)
+	}
+	key, err := objectstore.Parse(res.ObjectKey)
+	if err != nil {
+		t.Fatalf("parse key: %v", err)
+	}
+	if err := env.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{ContentType: "application/octet-stream"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	sum := sha256.Sum256(data)
+	_, jobID, err := svc.CompleteUpload(ctx, appTenant, res.Session.ID, hex.EncodeToString(sum[:]), int64(len(data)))
+	if err != nil {
+		t.Fatalf("CompleteUpload: %v", err)
+	}
+	rev, err := env.projects.GetSourceRevision(ctx, appTenant, appProject, revisionNo)
+	if err != nil {
+		t.Fatalf("GetSourceRevision: %v", err)
+	}
+	job, err := env.jobs.Get(ctx, jobID, appTenant)
+	if err != nil {
+		t.Fatalf("Get job: %v", err)
+	}
+	return rev, job
+}
+
 func TestIngestCreatesRevisionAndJob(t *testing.T) {
 	env := setupApp(t)
-	ctx := context.Background()
-	svc := NewIngestService(env.projects, env.jobs, env.objects)
+	data := deckBytes(t)
 
-	res, err := svc.Ingest(ctx, appTenant, appProject, bytes.NewReader(deckBytes(t)))
-	if err != nil {
-		t.Fatalf("Ingest: %v", err)
+	rev, job := uploadDeck(t, env, 1, data)
+	if rev.RevisionNo != 1 || job.Kind != pipeline.KindParse {
+		t.Fatalf("result: %+v %+v", rev, job)
 	}
-	if res.SourceRevision.RevisionNo != 1 || res.ParseJob.Kind != pipeline.KindParse {
-		t.Fatalf("result: %+v", res.SourceRevision)
+	if job.State != pipeline.StateQueued {
+		t.Fatalf("job not queued: %+v", job)
 	}
-	if res.ParseJob.State != pipeline.StateQueued {
-		t.Fatalf("job not queued: %+v", res.ParseJob)
+	// 再次入库同源数据：新会话创建新版本，解析任务可独立发现。
+	rev2, job2 := uploadDeck(t, env, 2, data)
+	if rev2.RevisionNo != 2 {
+		t.Fatalf("re-upload did not bump revision: rev=%d", rev2.RevisionNo)
 	}
-	// 幂等：同源数据再次入队 → 复用同一 parse 任务（按源哈希），源版本递增。
-	res2, err := svc.Ingest(ctx, appTenant, appProject, bytes.NewReader(deckBytes(t)))
-	if err != nil {
-		t.Fatalf("Ingest#2: %v", err)
-	}
-	if res2.ParseJob.ID == res.ParseJob.ID {
-		if res2.SourceRevision.RevisionNo != 2 {
-			t.Fatalf("same-hash parse job reused but revision not bumped: rev=%d", res2.SourceRevision.RevisionNo)
-		}
-	} else {
-		t.Fatalf("same-hash re-ingest created a different parse job (idempotency lost): %s vs %s",
-			res.ParseJob.ID, res2.ParseJob.ID)
+	if job2.ID == job.ID {
+		t.Fatalf("re-upload reused parse job id: %s", job2.ID)
 	}
 }
 
 func TestIngestParseVertical(t *testing.T) {
 	env := setupApp(t)
 	ctx := context.Background()
-	svc := NewIngestService(env.projects, env.jobs, env.objects)
-	res, err := svc.Ingest(ctx, appTenant, appProject, bytes.NewReader(deckBytes(t)))
-	if err != nil {
-		t.Fatalf("Ingest: %v", err)
-	}
+	_, parseJob := uploadDeck(t, env, 1, deckBytes(t))
 
 	parse := NewParseHandler(env.objects, project.NewGoPPTXReader(project.Limits{}))
 	worker := pipeline.NewWorker(env.jobs, "app-wk-1", appTenant, parse.Handle, pipeline.WorkerOptions{Poll: 20 * time.Millisecond})
@@ -150,7 +174,7 @@ func TestIngestParseVertical(t *testing.T) {
 	defer cancel()
 	_ = worker.Run(runCtx)
 
-	done, err := env.jobs.Get(ctx, res.ParseJob.ID, appTenant)
+	done, err := env.jobs.Get(ctx, parseJob.ID, appTenant)
 	if err != nil {
 		t.Fatalf("Get job: %v", err)
 	}
