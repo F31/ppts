@@ -1,0 +1,195 @@
+/* ============================================================
+   主题切换：默认深色，浅色为可选（决策 C-3）
+   - 深色令牌沿用 styles.css 原有字面量，本文件只以
+     `html[data-theme="light"]` 覆盖集落地浅色，零侵入原样式。
+   - 后续视觉基线专项将统一收敛为单令牌系统。
+   ============================================================ */
+
+html[data-theme="light"] { color-scheme: light; }
+
+html[data-theme="light"] body {
+  background: radial-gradient(circle at 10% 0%, #dbe4f5 0, transparent 32rem), #eef1f6;
+  color: #0f172a;
+}
+html[data-theme="light"] .app-shell { background: #eef1f6; }
+
+/* ---- 控制台侧栏 ---- */
+html[data-theme="light"] .console-sidebar {
+  border-right-color: rgba(15, 23, 42, .1);
+  background: linear-gradient(180deg, #ffffff, #f3f5fa);
+}
+html[data-theme="light"] .brand-mark { color: #4f46e5; }
+html[data-theme="light"] .brand-tenant { color: #64748b; }
+html[data-theme="light"] .nav-item { color: #334155; }
+html[data-theme="light"] .nav-item:hover { background: rgba(15, 23, 42, .05); }
+html[data-theme="light"] .nav-item.selected {
+  background: linear-gradient(135deg, rgba(79, 70, 229, .16), rgba(13, 148, 136, .1));
+  color: #0f172a;
+}
+html[data-theme="light"] .secondary-nav { border-left-color: rgba(15, 23, 42, .12); }
+html[data-theme="light"] .nav-sub { color: #64748b; }
+html[data-theme="light"] .nav-sub:hover { color: #0f172a; background: rgba(15, 23, 42, .04); }
+html[data-theme="light"] .nav-sub.selected { color: #4f46e5; background: rgba(79, 70, 229, .1); }
+
+/* ---- 顶栏 ---- */
+html[data-theme="light"] .console-topbar {
+  border-bottom-color: rgba(15, 23, 42, .1);
+  background: rgba(255, 255, 255, .9);
+}
+html[data-theme="light"] .breadcrumb-sep { color: #94a3b8; }
+html[data-theme="light"] .eyebrow { color: #64748b; }
+html[data-theme="light"] .topbar-action-btn + .topbar-action-btn { color: #0f172a; background: rgba(15, 23, 42, .06); }
+html[data-theme="light"] .lang-toggle {
+  color: #0f172a; border-color: rgba(15, 23, 42, .16); background: rgba(15, 23, 42, .05);
+}
+html[data-theme="light"] .lang-toggle:hover { background: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .user-trigger {
+  color: #0f172a; border-color: rgba(15, 23, 42, .14); background: rgba(255, 255, 255, .8);
+}
+html[data-theme="light"] .user-meta strong { color: #0f172a; }
+html[data-theme="light"] .user-meta small { color: #64748b; }
+html[data-theme="light"] .user-menu { background: #ffffff; border-color: rgba(15, 23, 42, .12); }
+html[data-theme="light"] .user-menu button,
+html[data-theme="light"] .user-menu-link { color: #334155; }
+html[data-theme="light"] .user-menu button:hover,
+html[data-theme="light"] .user-menu-link:hover { background: rgba(15, 23, 42, .06); }
+
+/* ---- 面板 / 通用控件 ---- */
+html[data-theme="light"] .panel {
+  background: #ffffff; border-color: rgba(15, 23, 42, .1);
+  box-shadow: 0 22px 60px rgba(15, 23, 42, .1);
+}
+html[data-theme="light"] .panel.nested { background: #f5f7fb; }
+html[data-theme="light"] .page-sub { color: #64748b; }
+html[data-theme="light"] button { color: #0f172a; background: rgba(15, 23, 42, .06); }
+html[data-theme="light"] .button-ghost { color: #0f172a; background: rgba(15, 23, 42, .06); }
+html[data-theme="light"] button.danger,
+html[data-theme="light"] .button-ghost.danger { background: rgba(220, 38, 38, .12); color: #dc2626; }
+html[data-theme="light"] input,
+html[data-theme="light"] select { color: #0f172a; background: #ffffff; border-color: rgba(15, 23, 42, .16); }
+html[data-theme="light"] input::placeholder { color: #94a3b8; }
+
+/* ---- 数据表 ---- */
+html[data-theme="light"] .data-table th { color: #64748b; }
+html[data-theme="light"] .data-table td { border-bottom-color: rgba(15, 23, 42, .08); }
+html[data-theme="light"] .data-table tbody tr:hover { background: rgba(15, 23, 42, .03); }
+html[data-theme="light"] .cell-sub { color: #94a3b8; }
+html[data-theme="light"] .link-more,
+html[data-theme="light"] .back-link,
+html[data-theme="light"] .cell-project { color: #4f46e5; }
+html[data-theme="light"] .project-name { color: #0f172a; }
+
+/* ---- 模态 / 弹窗 ---- */
+html[data-theme="light"] .modal-backdrop { background: rgba(15, 23, 42, .4); }
+html[data-theme="light"] .modal-card {
+  background: linear-gradient(160deg, #ffffff, #f5f7fb);
+  border-color: rgba(15, 23, 42, .12); box-shadow: 0 24px 60px rgba(15, 23, 42, .25);
+}
+html[data-theme="light"] .modal-card header button { color: #0f172a; border-color: rgba(15, 23, 42, .16); }
+
+/* ---- 登录页 ---- */
+html[data-theme="light"] .login-brand {
+  background: radial-gradient(circle at 20% 10%, #dbe4f5 0, transparent 34rem), linear-gradient(160deg, #f3f5fb, #e7ecf5);
+}
+html[data-theme="light"] .login-brand p { color: #64748b; }
+html[data-theme="light"] .login-card label { color: #64748b; }
+html[data-theme="light"] .login-divider { color: #94a3b8; }
+html[data-theme="light"] .login-divider::before,
+html[data-theme="light"] .login-divider::after { background: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .dev-login-note { color: #64748b; }
+html[data-theme="light"] .login-unconfigured { color: #dc2626; border-color: rgba(220, 38, 38, .2); }
+html[data-theme="light"] .splash-screen { color: #64748b; }
+
+/* ---- 首页 Dashboard ---- */
+html[data-theme="light"] .home-hero p { color: #64748b; }
+html[data-theme="light"] .stat-card { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .stat-label { color: #64748b; }
+html[data-theme="light"] .stat-value { color: #0f172a; }
+html[data-theme="light"] .stat-note,
+html[data-theme="light"] .stats-note { color: #94a3b8; }
+html[data-theme="light"] .project-card { background: #ffffff; border-color: rgba(15, 23, 42, .1); color: #0f172a; }
+html[data-theme="light"] .project-card span,
+html[data-theme="light"] .project-card em { color: #64748b; }
+html[data-theme="light"] .job-row { background: #ffffff; border-color: rgba(15, 23, 42, .08); color: #334155; }
+html[data-theme="light"] .job-row small { color: #64748b; }
+html[data-theme="light"] .job-progress { color: #64748b; }
+html[data-theme="light"] .first-run { border-color: rgba(79, 70, 229, .4); }
+
+/* ---- 工作台（三栏） ---- */
+html[data-theme="light"] .slide-rail-v2 { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .slide-rail-v2 button { color: #334155; }
+html[data-theme="light"] .slide-rail-v2 button:hover,
+html[data-theme="light"] .slide-rail-v2 button.selected {
+  background: linear-gradient(135deg, rgba(79, 70, 229, .16), rgba(13, 148, 136, .1));
+}
+html[data-theme="light"] .slide-rail-v2 span,
+html[data-theme="light"] .slide-rail-v2 em { color: #64748b; }
+html[data-theme="light"] .field-label { color: #64748b; }
+html[data-theme="light"] .page-preview-text { color: #334155; }
+html[data-theme="light"] .page-preview-text.muted { color: #94a3b8; }
+html[data-theme="light"] .narration-note { color: #334155; }
+html[data-theme="light"] .status-marker { color: #334155; border-color: rgba(15, 23, 42, .14); }
+html[data-theme="light"] .status-marker.muted { opacity: .6; }
+
+/* ---- 播放器 / 资产 / 审计面板 ---- */
+html[data-theme="light"] .player-card,
+html[data-theme="light"] .asset-panel,
+html[data-theme="light"] .audit-panel { background: #ffffff; border-color: rgba(15, 23, 42, .1); color: #334155; }
+html[data-theme="light"] .player-controls { color: #334155; }
+html[data-theme="light"] .slide-map button { color: #334155; background: rgba(15, 23, 42, .06); }
+html[data-theme="light"] .slide-map button.active { background: #25d3a7; color: #04110d; }
+html[data-theme="light"] .anchor-strip { color: #64748b; }
+html[data-theme="light"] .anchor-strip strong { color: #4f46e5; }
+
+/* ---- 对照 / 表单 / 设置 ---- */
+html[data-theme="light"] .compare-panel { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .compare-columns pre { background: #f5f7fb; color: #0f172a; border-color: rgba(15, 23, 42, .12); }
+html[data-theme="light"] .gateway-item { background: rgba(15, 23, 42, .03); border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .gateway-form { background: rgba(15, 23, 42, .03); border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .gateway-form label { color: #64748b; }
+html[data-theme="light"] .detail-grid dt { color: #64748b; }
+html[data-theme="light"] .detail-grid dd { color: #0f172a; }
+html[data-theme="light"] .profile-dl dt { color: #64748b; }
+html[data-theme="light"] .profile-dl dd { color: #0f172a; }
+html[data-theme="light"] .audit-list article { background: rgba(15, 23, 42, .03); border-color: rgba(15, 23, 42, .09); }
+html[data-theme="light"] .audit-list article p { color: #64748b; }
+html[data-theme="light"] .audit-list article small,
+html[data-theme="light"] .audit-list article span { color: #7b8aa3; }
+html[data-theme="light"] .form-error { color: #dc2626; background: rgba(220, 38, 38, .1); }
+
+/* ---- 旧版编辑器（保留兼容） ---- */
+html[data-theme="light"] .editor-card { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .editor-card textarea { background: #f5f7fb; color: #0f172a; border-color: rgba(15, 23, 42, .16); }
+html[data-theme="light"] .editor-card textarea:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .18); }
+html[data-theme="light"] .editor-card footer { color: #64748b; }
+html[data-theme="light"] .slide-rail { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .slide-rail button { color: #334155; }
+html[data-theme="light"] .slide-rail span,
+html[data-theme="light"] .slide-rail em { color: #64748b; }
+html[data-theme="light"] .upload-entry { border-color: rgba(79, 70, 229, .4); color: #4f46e5; }
+html[data-theme="light"] .create-project input { background: #ffffff; border-color: rgba(15, 23, 42, .16); color: #0f172a; }
+html[data-theme="light"] .draft-options label { background: rgba(15, 23, 42, .03); border-color: rgba(15, 23, 42, .12); }
+html[data-theme="light"] .draft-options label.selected { border-color: rgba(103, 232, 249, .7); background: rgba(103, 232, 249, .1); }
+html[data-theme="light"] .project-list small { color: #dc2626; }
+
+/* ============================================================
+   主题切换按钮（深/浅通用，位置：顶栏右上角）
+   ============================================================ */
+.theme-toggle {
+  border: 1px solid rgba(255, 255, 255, .16);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 15px;
+  line-height: 1;
+  background: rgba(255, 255, 255, .06);
+  color: #e6eefc;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.theme-toggle:hover { background: rgba(255, 255, 255, .14); }
+html[data-theme="light"] .theme-toggle {
+  border-color: rgba(15, 23, 42, .16);
+  background: rgba(15, 23, 42, .05);
+  color: #0f172a;
+}
+html[data-theme="light"] .theme-toggle:hover { background: rgba(15, 23, 42, .1); }

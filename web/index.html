@@ -3,7 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PPTS Web</title>
+    <title>智讲 PPT · 智能语音讲解平台</title>
+    <meta name="description" content="智讲 PPT —— 把 PPT 变成带真人语音讲解的演示。上传幻灯片，自动生成逐页讲稿与配音，一键导出视频或在线播放。" />
+    <meta property="og:title" content="智讲 PPT · 智能语音讲解平台" />
+    <meta property="og:description" content="上传 PPT，自动生成逐页讲稿与真人语音讲解，导出视频或在线播放。" />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#10131a" />
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('ppts-theme');
+          if (t !== 'dark' && t !== 'light') t = 'dark';
+          document.documentElement.dataset.theme = t;
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

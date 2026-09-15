@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useRoute } from './router';
 import { useSession } from './session';
 import { useI18n } from './i18n';
+import { useTheme } from './ThemeContext';
 import { roleKey, type Role } from './types';
 
 export type NavItem = { key: string; to: string; labelKey: string; icon: string };
@@ -37,6 +38,7 @@ export function AppShell({ children, role }: { children: React.ReactNode; role?:
   const route = useRoute();
   const { identity, logout } = useSession();
   const { t, lang, toggle } = useI18n();
+  const { theme, toggle: toggleTheme } = useTheme();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const active = activeKey(route.parts);
@@ -77,6 +79,9 @@ export function AppShell({ children, role }: { children: React.ReactNode; role?:
             <span>{t(primaryNav.find((item) => item.key === active)?.labelKey ?? 'shell.console')}</span>
           </div>
           <div className="topbar-actions">
+            <button type="button" className="theme-toggle" onClick={toggleTheme} title={t('shell.themeToggle')} aria-label={t('shell.themeToggle')}>
+              {theme === 'dark' ? '☀️' : '🌙'}
+            </button>
             <button type="button" className="lang-toggle" onClick={toggle} title={t('shell.languageToggle')}>
               {lang === 'zh' ? t('lang.en') : t('lang.zh')}
             </button>
