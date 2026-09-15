@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { cancelJob, listJobsPage, retryFailedJob, type ClientIdentity, type JobPage } from '../api';
+import { cancelJob, listJobsPage, retryFailedJob, watchJobEvents, type ClientIdentity, type JobEventMessage, type JobPage } from '../api';
 import { useI18n } from '../i18n';
 import { Link, useRoute } from '../router';
 import { jobKindKey, jobStateKey, type Job, type JobState } from '../types';
@@ -27,6 +27,7 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Job | null>(null);
+  const [live, setLive] = useState(false);
 
   const currentPage = pages[pageIndex];
   const currentJobs = currentPage?.jobs ?? [];
@@ -70,12 +71,78 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
     }
   }, [identity, pageIndex, pageSize, t]);
 
-  // 每 5 秒轮询活跃任务（后台压低频率由文档说明，这里统一 5s）。
+  // 将 WatchEvents 推送的单个任务更新合并进已加载的分页（按 jobId 定位），未在当前页的任务忽略（下次轮询会补齐）。
+  const applyJobUpdate = useCallback((updated: Job) => {
+    setPages((prev) =>
+      prev.map((page) => {
+        const idx = page.jobs.findIndex((j) => j.jobId === updated.jobId);
+        if (idx === -1) return page;
+        const jobs = page.jobs.slice();
+        jobs[idx] = updated;
+        return { ...page, jobs };
+      })
+    );
+  }, []);
+
+  // 每 5 秒轮询活跃任务（后台压低频率由文档说明，这里统一 5s）。WatchEvents 流优先，此为断线兜底。
   useEffect(() => {
     if (!allJobs.some((job) => activeStates.includes(job.state))) return;
     const timer = window.setInterval(() => void refreshLoaded(), 5000);
     return () => window.clearInterval(timer);
   }, [allJobs, refreshLoaded]);
+
+  // 接入 WatchEvents 服务端流：按项目维度开流，逐条合并更新；任一项目流失败则按 seq 续接重连（最多 3 次），
+  // 仍失败则彻底回退到上面的 5s 轮询（断线回退轮询）。无活跃任务时不持有流。
+  // watchKey 仅随「项目集合」变化（与任务数据无关），避免每次流式更新都重开流。
+  const watchKey = useMemo(
+    () => Array.from(new Set(allJobs.map((j) => j.projectId))).filter(Boolean).sort().join(','),
+    [allJobs]
+  );
+  useEffect(() => {
+    const pids = watchKey ? watchKey.split(',') : [];
+    if (pids.length === 0) {
+      setLive(false);
+      return;
+    }
+    const controllers: AbortController[] = [];
+    const lastSeq: Record<string, number> = {};
+    for (const pid of pids) {
+      const ac = new AbortController();
+      controllers.push(ac);
+      const open = (afterSeq: number, attempt: number) => {
+        if (ac.signal.aborted) return;
+        watchJobEvents(
+          identity,
+          pid,
+          afterSeq,
+          {
+            onEvent: (ev: JobEventMessage) => {
+              lastSeq[pid] = ev.seq;
+              setLive(true);
+              applyJobUpdate(ev.job);
+            },
+            onError: (err: unknown) => {
+              if (ac.signal.aborted) return;
+              const code = (err as { code?: string }).code;
+              if (code === 'unimplemented') return; // 后端不支持 → 永久回退轮询
+              if (attempt >= 3) {
+                setLive(false);
+                return;
+              }
+              const delay = Math.min(1000 * 2 ** attempt, 8000);
+              window.setTimeout(() => open(lastSeq[pid] ?? afterSeq, attempt + 1), delay);
+            }
+          },
+          ac.signal
+        );
+      };
+      open(0, 0);
+    }
+    return () => {
+      controllers.forEach((c) => c.abort());
+      setLive(false);
+    };
+  }, [watchKey, identity, applyJobUpdate]);
 
   // 深链接选中任务的详情（可能不在当前页）。
   useEffect(() => {
@@ -141,6 +208,7 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
           <h1>{t('jobs.title')}</h1>
           <small className="page-sub">
             {activeCount > 0 ? t('jobs.active', { count: activeCount }) : t('jobs.idle')}
+            {live && <span className="live-dot" title={t('jobs.live')} />}
           </small>
         </div>
         <div className="page-actions">
@@ -319,7 +387,12 @@ function JobDetail({
         {job.lastError && (
           <div className="full-row">
             <dt>{t('jobs.fieldLastError')}</dt>
-            <dd className="error-text">({job.lastError.code}) {job.lastError.message}</dd>
+            <dd className="error-text">
+              ({job.lastError.code}) {job.lastError.message}
+              {job.lastError.traceId && (
+                <small className="cell-sub block-sub">trace: {job.lastError.traceId}</small>
+              )}
+            </dd>
           </div>
         )}
       </dl>

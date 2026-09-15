@@ -370,6 +370,8 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
 .job-row:hover { border-color: rgba(103,232,249,.35); }
 .job-row small { color: #8aa1c4; }
 .job-progress { color: #8aa1c4; font-size: 12px; }
+.live-dot { display: inline-block; width: 8px; height: 8px; margin-left: 8px; border-radius: 50%; background: #25d3a7; box-shadow: 0 0 0 0 rgba(37,211,167,.6); animation: live-pulse 1.6s infinite; vertical-align: middle; }
+@keyframes live-pulse { 0% { box-shadow: 0 0 0 0 rgba(37,211,167,.55); } 70% { box-shadow: 0 0 0 6px rgba(37,211,167,0); } 100% { box-shadow: 0 0 0 0 rgba(37,211,167,0); } }
 .first-run { display: grid; gap: 10px; justify-items: start; border: 1px dashed rgba(103,232,249,.4); border-radius: 18px; margin: 8px 0; }
 
 /* ============ 工作台（三栏） ============ */

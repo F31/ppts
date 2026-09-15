@@ -199,6 +199,7 @@
   "jobs.title": "Jobs",
   "jobs.active": "{count} job(s) in progress, auto-refreshing.",
   "jobs.idle": "No jobs in progress.",
+  "jobs.live": "Live push connected",
   "jobs.listTitle": "Job list",
   "jobs.empty": "No jobs. Parsing, script generation, narration and export jobs will appear here.",
   "jobs.colType": "Type",

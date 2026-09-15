@@ -390,6 +390,11 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - i18n 中英文各 5 键（speed/fullscreen/exitFullscreen/buffering/noAudio）；`styles.css` + `theme.css`(light) 缓冲/倍速/全屏/提示样式；切换 `manifest` 时复位播放状态避免串音。
   - 验收：A21。注：后端 `playback` 已在 B3 地基补全 `AUDIO` 资源（`signManifestResources`），本里程碑纯前端；本机需 `go build ./...` + `npm run build` 终验。
 
+- **B3-M3 任务实时反馈 WatchEvents【已实施】**：
+  - 后端：`WatchEvents`（internal/api/job.go:142）已就绪，`pipeline.PGStore.EventsSince`（postgres.go:199）已实现单调 seq 事件表，流可用（非 Unimplemented）。本里程碑无需后端改动。
+  - 前端：`api.ts` 新增 `watchJobEvents`（解析 Connect 协议 streaming 信封：1 字节 flag + 4 字节大端长度 + JSON 消息）；`Jobs.tsx` 按项目维度开流、逐条合并更新（按 jobId 定位），任一项目流失败则按 seq 续接重连（最多 3 次、指数退避），仍失败彻底回退到既有 5s 轮询（断线回退轮询）；无活跃任务时不持有流。顶部"实时推送"绿点指示连接状态；任务详情补 `lastError.traceId`（proto 已带）。
+  - 验收：A16、A17、A18、A19。注：范围/阶段/步骤/受影响页/traceId 列属 B4-⑥（见 §5 B4 前端⑥），不在本里程碑；流式仅推送 Job 基础字段。本机需 `npm run build` 终验（沙箱无法 tsc）。
+
 ### B4 管理与适配
 
 | 项 | 内容 |

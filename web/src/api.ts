@@ -585,6 +585,80 @@ export async function retryFailedJob(identity: ClientIdentity, jobId: string): P
   return connectJSON<Job>(identity, '/ppts.v1.JobService/RetryFailed', { jobId });
 }
 
+export type JobEventMessage = { seq: number; job: Job };
+
+// watchJobEvents 接入 WatchEvents 服务端流（Connect 协议 JSON 信封）。
+// 解析「1 字节 flag + 4 字节大端长度 + JSON 消息」的信封流，逐条回调 onEvent。
+// 任一错误（HTTP 非 2xx、信封解析失败、网络中断）均回调 onError，由调用方决定回退轮询；
+// 调用方应传入 AbortSignal 以便在组件卸载时取消。
+export function watchJobEvents(
+  identity: ClientIdentity,
+  projectId: string,
+  afterSeq: number,
+  handlers: { onEvent: (ev: JobEventMessage) => void; onError?: (err: unknown) => void },
+  signal?: AbortSignal
+): void {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/connect+json',
+    Accept: 'application/connect+json',
+    ...identityHeaders(identity)
+  };
+  void fetch('/ppts.v1.JobService/WatchEvents', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ projectId, afterSeq }),
+    signal
+  })
+    .then(async (response) => {
+      if (!response.ok || !response.body) {
+        handlers.onError?.(new ConnectError(`http_${response.status}`, `WatchEvents failed: HTTP ${response.status}`));
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = new Uint8Array(0);
+      const append = (chunk: Uint8Array) => {
+        const next = new Uint8Array(buffer.length + chunk.length);
+        next.set(buffer);
+        next.set(chunk, buffer.length);
+        buffer = next;
+      };
+      const readFrame = (): JobEventMessage | null => {
+        if (buffer.length < 5) return null;
+        const flag = buffer[0];
+        if (flag !== 0x00) {
+          // 仅支持未压缩信封（connect-go 对短消息不压缩）；压缩/未知 → 交给调用方回退。
+          throw new Error('unexpected envelope flag');
+        }
+        const len = ((buffer[1] << 24) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4]) >>> 0;
+        if (len < 0 || buffer.length < 5 + len) return null;
+        const data = buffer.slice(5, 5 + len);
+        buffer = buffer.slice(5 + len);
+        const text = decoder.decode(data);
+        return JSON.parse(text) as JobEventMessage;
+      };
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) append(value);
+        try {
+          for (;;) {
+            const frame = readFrame();
+            if (!frame) break;
+            handlers.onEvent(frame);
+          }
+        } catch (e) {
+          handlers.onError?.(e);
+          return;
+        }
+      }
+    })
+    .catch((err) => {
+      if ((err as Error).name === 'AbortError') return;
+      handlers.onError?.(err);
+    });
+}
+
 // ---- 租户（TenantService） ----
 
 export async function listMembers(identity: ClientIdentity): Promise<Member[]> {

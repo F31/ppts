@@ -141,7 +141,7 @@ export type Job = {
   state: JobState;
   attempt: number;
   progressPercent: number;
-  lastError?: { code: string; message: string };
+  lastError?: { code: string; message: string; traceId?: string };
   inputSnapshot: string;
   createdAtUnix: number;
   updatedAtUnix: number;
