@@ -59,7 +59,7 @@ type Options struct {
 // all RPC routes are protected by AuthMiddlewareWithOptions. When objects is the local
 // backend, signed object endpoints under /ppts/object serve direct reads/writes
 // for local:// presigned URLs (single-node development).
-func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts narration.Store, jobs JobStore, artifacts artifact.Store, objects objectstore.ObjectStore, opts ...Options) http.Handler {
+func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts narration.Store, jobs JobStore, artifacts artifact.Store, objects objectstore.ObjectStore, pool *pgxpool.Pool, opts ...Options) http.Handler {
 	var opt Options
 	if len(opts) > 0 {
 		opt = opts[0]

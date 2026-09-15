@@ -96,7 +96,7 @@ func run() error {
 		Handler: observability.RequestLogger(
 			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
-				objects,
+				objects, pool,
 				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore, Auth: authenticator, DevHeaders: os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true", Pronunciation: pronunciation.NewPGStore(pool), Gateway: gatewayStore}),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
