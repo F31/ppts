@@ -153,6 +153,25 @@ button, textarea, input { font: inherit; }
 .test-result { margin: 8px 0 0; font-size: 12px; }
 .test-result.ok { color: #86efac; }
 .test-result.fail { color: #fca5a5; }
+/* B4-M2：网关健康态徽标（已停用/未配置密钥/未检测/检测通过/当前不可用）。 */
+.health-tag { border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 700; }
+.health-tag.ok { color: #86efac; background: rgba(134,239,172,.12); }
+.health-tag.unavailable { color: #fca5a5; background: rgba(252,165,165,.14); }
+.health-tag.noKey { color: #fcd34d; background: rgba(252,211,77,.14); }
+.health-tag.untested { color: #9fb1cf; background: rgba(159,177,207,.14); }
+.health-tag.disabled { color: #94a3b8; background: rgba(148,163,184,.14); }
+/* B4-M2：服务可用性提示条（A23：提示作用与修复入口准确，不渲染内部枚举）。 */
+.service-banner { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 8px 0; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); font-size: 13px; line-height: 1.55; }
+.service-banner strong { font-size: 12px; letter-spacing: .04em; }
+.service-banner span { color: #c7d5ea; }
+.service-banner.ready { border-color: rgba(134,239,172,.35); background: rgba(134,239,172,.08); }
+.service-banner.ready strong { color: #86efac; }
+.service-banner.untested { border-color: rgba(252,211,77,.32); background: rgba(252,211,77,.08); }
+.service-banner.untested strong { color: #fcd34d; }
+.service-banner.unavailable, .service-banner.unconfigured { border-color: rgba(252,165,165,.35); background: rgba(252,165,165,.08); }
+.service-banner.unavailable strong, .service-banner.unconfigured strong { color: #fca5a5; }
+.test-fix { margin: 4px 0 0; font-size: 12px; color: #fcd34d; }
+.test-hint { margin: 4px 0 0; font-size: 12px; color: #9fb1cf; }
 .player-card { padding: 16px; }
 .viewport { position: relative; overflow: hidden; min-height: 430px; border-radius: 20px; background: linear-gradient(160deg, #1e293b, #0f172a); }
 .viewport img { width: 100%; height: 100%; object-fit: contain; display: block; }

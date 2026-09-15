@@ -10,11 +10,13 @@ import {
   type GatewayTestResult,
   type ModelGateway
 } from './api';
+import { gatewayHealth, gatewayKey, healthKeySuffix, serviceKeySuffix, serviceState } from './gatewayState';
 import { useI18n } from './i18n';
 
 type FormState = {
   kind: 'tts' | 'llm';
   name: string;
+  provider: string;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -23,9 +25,12 @@ type FormState = {
   isDefault: boolean;
 };
 
+const defaultProvider = 'openai_compatible';
+
 const emptyForm: FormState = {
   kind: 'tts',
   name: '',
+  provider: defaultProvider,
   baseUrl: 'https://api.siliconflow.cn',
   apiKey: '',
   model: 'FunAudioLLM/CosyVoice2-0.5B',
@@ -84,6 +89,7 @@ export function GatewaySettings({
         await updateGateway(identity, editing.name, {
           kind: form.kind,
           version: editing.version,
+          provider: form.provider || undefined,
           baseUrl: form.baseUrl,
           apiKey: form.apiKey,
           model: form.model,
@@ -95,6 +101,7 @@ export function GatewaySettings({
         await createGateway(identity, {
           kind: form.kind,
           name: form.name || 'gateway',
+          provider: form.provider || undefined,
           baseUrl: form.baseUrl,
           apiKey: form.apiKey,
           model: form.model,
@@ -117,6 +124,7 @@ export function GatewaySettings({
     setForm({
       kind: gw.kind,
       name: gw.name,
+      provider: gw.provider,
       baseUrl: gw.baseUrl,
       apiKey: '',
       model: gw.model,
@@ -127,7 +135,7 @@ export function GatewaySettings({
   };
 
   const runTest = async (gw: ModelGateway) => {
-    const key = `${gw.kind}:${gw.name}`;
+    const key = gatewayKey(gw);
     setTesting(key);
     try {
       const result = await testGateway(identity, gw.name, gw.kind);
@@ -153,6 +161,9 @@ export function GatewaySettings({
     }
   };
 
+  // 语音合成服务的总体可用性（A23）：未配置 / 当前不可用 / 未检测 / 可用。
+  const ttsState = serviceState(gateways, 'tts', testResult);
+
   const content = (
     <>
       <header>
@@ -167,30 +178,40 @@ export function GatewaySettings({
         )}
       </header>
         {error && <p className="form-error">{error}</p>}
+        {!loading && !error && (
+          <div className={`service-banner ${ttsState}`} role="status">
+            <strong>{t('gateway.serviceTitle')}</strong>
+            <span>{t(`gateway.service${serviceKeySuffix[ttsState]}`)}</span>
+          </div>
+        )}
         {loading ? (
           <p className="empty-state">{t('common.loading')}</p>
         ) : (
           <ul className="gateway-list">
             {gateways.length === 0 && <li className="empty-state">{t('gateway.empty')}</li>}
             {gateways.map((gw) => {
-              const key = `${gw.kind}:${gw.name}`;
+              const key = gatewayKey(gw);
               const result = testResult[key];
+              const health = gatewayHealth(gw, result);
               return (
                 <li key={key} className="gateway-item">
                   <div className="gateway-head">
                     <strong>{gw.name}</strong>
                     <span className={`kind-tag ${gw.kind}`}>{gw.kind === 'tts' ? t('gateway.kindTts') : t('gateway.kindLlm')}</span>
                     {gw.isDefault && <span className="default-tag">{t('gateway.default')}</span>}
-                    {!gw.enabled && <span className="disabled-tag">{t('gateway.disabled')}</span>}
+                    <span className={`health-tag ${health}`}>{t(`gateway.health${healthKeySuffix[health]}`)}</span>
                     <small>
                       {gw.baseUrl} · {gw.model}
                       {gw.visionModel ? ` · ${gw.visionModel}` : ''}
+                    </small>
+                    <small>
+                      {t('gateway.providerLabel')}: {gw.provider || defaultProvider}
                     </small>
                     <small>{gw.hasKey ? t('gateway.keyMasked', { masked: gw.keyMasked }) : t('gateway.noKey')}</small>
                   </div>
                   <div className="draft-actions">
                     <button type="button" disabled={testing === key} onClick={() => void runTest(gw)}>
-                      {testing === key ? t('gateway.testing') : t('gateway.test')}
+                      {testing === key ? t('gateway.testing') : health === 'untested' ? t('gateway.testNow') : t('gateway.test')}
                     </button>
                     <button type="button" onClick={() => startEdit(gw)}>
                       {t('common.edit')}
@@ -216,9 +237,15 @@ export function GatewaySettings({
                     </button>
                   </div>
                   {result && (
-                    <p className={`test-result ${result.ok ? 'ok' : 'fail'}`}>
-                      {result.ok ? t('gateway.testOk', { ms: result.latencyMs }) : t('gateway.testFail', { error: result.error ?? '' })}
-                    </p>
+                    <>
+                      <p className={`test-result ${result.ok ? 'ok' : 'fail'}`}>
+                        {result.ok ? t('gateway.testOk', { ms: result.latencyMs }) : t('gateway.testFail', { error: result.error ?? '' })}
+                      </p>
+                      {!result.ok && <p className="test-fix">{t('gateway.fixHint')}</p>}
+                    </>
+                  )}
+                  {!result && gw.enabled && gw.hasKey && (
+                    <p className="test-hint">{t('gateway.untestedNote')}</p>
                   )}
                 </li>
               );
@@ -277,6 +304,14 @@ export function GatewaySettings({
             </div>
             <div className="form-row">
               <label>
+                {t('gateway.providerLabel')}
+                <input
+                  value={form.provider}
+                  placeholder={defaultProvider}
+                  onChange={(e) => setForm((f) => f && { ...f, provider: e.target.value })}
+                />
+              </label>
+              <label>
                 {t('gateway.baseUrlLabel')}
                 <input
                   value={form.baseUrl}
@@ -285,6 +320,8 @@ export function GatewaySettings({
                   required
                 />
               </label>
+            </div>
+            <div className="form-row">
               <label>
                 {t('gateway.apiKeyLabel')}
                 <input
@@ -294,8 +331,6 @@ export function GatewaySettings({
                   onChange={(e) => setForm((f) => f && { ...f, apiKey: e.target.value })}
                 />
               </label>
-            </div>
-            <div className="form-row">
               <label>
                 {t('gateway.modelLabel')}
                 <input
@@ -304,6 +339,8 @@ export function GatewaySettings({
                   required
                 />
               </label>
+            </div>
+            <div className="form-row">
               {form.kind === 'llm' ? (
                 <label>
                   {t('gateway.visionLabel')}

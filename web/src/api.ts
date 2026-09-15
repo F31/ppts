@@ -518,7 +518,7 @@ export async function listGateways(identity: ClientIdentity, kind?: 'tts' | 'llm
 
 export async function createGateway(
   identity: ClientIdentity,
-  input: { kind: 'tts' | 'llm'; name: string; baseUrl: string; apiKey: string; model: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean }
+  input: { kind: 'tts' | 'llm'; name: string; baseUrl: string; apiKey: string; model: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean }
 ): Promise<ModelGateway> {
   const data = (await gatewayPath(identity, 'POST', '/api/model-gateways', input)) as { gateway?: ModelGateway };
   return data.gateway!;
@@ -527,7 +527,7 @@ export async function createGateway(
 export async function updateGateway(
   identity: ClientIdentity,
   name: string,
-  input: { kind: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean }
+  input: { kind: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean }
 ): Promise<ModelGateway> {
   const data = (await gatewayPath(identity, 'PUT', `/api/model-gateways/${encodeURIComponent(name)}`, input)) as { gateway?: ModelGateway };
   return data.gateway!;
