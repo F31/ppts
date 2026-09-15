@@ -351,7 +351,11 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **重大修复（M2 前置）**：提交 `d1f49ba` 修复 `internal/api` 自 B3 起完全无法编译的两处错误——① pronunciation.go 与 public.go 重复声明 `writeJSON`（redeclared）；② `loadPageManifest`/`loadBundle`/`statTenantObject` 被当作包级函数调用却只定义为 `*PlaybackService` 方法。改为包级函数（新增 `objects` 参数）并修正 4 处调用点。此后所有 B3/M1/网关提交在本机均无法 `go build`，需本地重新编译验证。
 - **M2 编辑器骨架（① + ⑧）【已实施】**：编辑器重构为三栏（缩略图列表[真实渲染 PNG] + PPT 预览 + 讲稿），属性面板改为右上角按钮唤出的抽屉（①）；新增后端原生端点 `GET /projects/{pid}/slides/render`（复用解析 pages 清单 + 对象存储签名）产出每页渲染图短期可读 URL，缩略图与预览据此展示，缺失时降级为序号/标题（② 真实渲染图落地）。讲稿编辑接入 Ctrl/Cmd+S 立即保存、离开页面前未保存提示、切换页面前先 flush 当前页待保存队列（⑧）；ScriptEditor 改为 forwardRef 暴露 flush/isDirty 并上报五态（saved/dirty/saving/error/conflict），同时补齐中文输入法组合期不误存（A10 顺带）。
   - 配套：api.ts 增 `getJSON` GET 辅助 + `getSlideRenderURLs`；i18n 增 editor.properties/unsaved/slidePreview/renderPending、script.saveError/conflict；styles.css 三栏布局 + 缩略图 + 预览 + 抽屉 + 未保存标记，收敛响应式断点。
-- **M3 讲稿编辑增强（② + ③ + ⑥）**：分段编辑 + 段落工具栏（缩短/润色/衔接/发音/停顿）；Approve/Lock 按钮与状态接入；无备注页显式选择讲稿来源。
+- **M3 讲稿编辑增强（② + ③ + ⑥）【已实施】**：
+  - ② 分段编辑：ScriptEditor 改为按 segment 渲染独立可编辑卡片（各自 textarea + 状态徽标 + 复选选择），保留 Ctrl+S/flush/IME/五态；段落工具栏 缩短/润色/衔接 → `RegenerateSegments`（M1 已落地，局部重生成，轮询 revision 刷新），发音/停顿 → 在 spokenText 插入朗读标记（正式发音词典为 M4 ⑤）。
+  - ③ Approve/Lock：前端封装 `approveScript`/`lockScript`（复用既有 ScriptService RPC），编辑器在 `canReview`（role≠viewer）时显示确认/锁定按钮；锁定后编辑只读、锁定按钮禁用（后端不支持解锁）。
+  - ⑥ 无备注页来源：生成草稿面板对 `hasNotes===false` 的页显式展示来源选择（版式正文/仅标题/仅正文/仅备注/自定义），经原生端点 `PUT /projects/{pid}/slides/{sid}/source` 持久化（迁移 0025 + `slide_script_sources` 表 + RLS）；`GET /projects/{pid}/slides/sources` 回读；GenerateDraft handler 注入已存来源到 `ScriptDraftSnapshot.Sources/CustomSources`，`script_draft` worker 在 `pgText`/`pgAnchors` 中尊重该来源。
+  - 配套：api.ts 增 approveScript/lockScript/regenerateSegments/setSlideScriptSource/getSlideScriptSources + putJSON；i18n 增 editor.toolbar/shorten/polish/transition/pronounce/pause/approve/lock/source.* 等；styles.css 段落工具栏/分段卡片/来源选择/状态徽标。
 - **M4 生成与语音（④ + ⑤ + ⑦）**：音色选择器（属性筛选 + 样例试听 + 项目默认/单页覆盖）；读音调整 popover（本处/本项目 + 当前租户词典，C-6 收窄）；生成面板补范围/待确认稿数/需新生成/用量，**未确认稿默认阻止正式生成（C-5 强制）**。
 - **C-7 收尾**：检查设置菜单，隐藏/移除个人设置入口（若已存在）。
 

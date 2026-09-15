@@ -26,6 +26,11 @@ type ScriptDraftSnapshot struct {
 	Language   string   `json:"language"`
 	Mode       string   `json:"mode"`               // original / polish / ai_generated
 	SlideIDs   []string `json:"slideIds,omitempty"` // 空 = 全部页面
+	// Sources 是"无备注页"显式指定的讲稿来源（slideID → kind：layout/title/body/notes/custom）。
+	// 由 GenerateDraft handler 注入已存选择；script_draft worker 在 pgText/pgAnchors 中尊重。
+	Sources map[string]string `json:"sources,omitempty"`
+	// CustomSources 携带 kind=custom 时的自定义文本（slideID → 文本）。
+	CustomSources map[string]string `json:"customSources,omitempty"`
 }
 
 // ScriptDraftHandler 是 script_draft 任务的 worker handler：
@@ -136,7 +141,9 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 		if len(want) > 0 && !want[pg.SlideID] {
 			continue
 		}
-		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg); err != nil {
+		source := snap.Sources[pg.SlideID]
+		custom := snap.CustomSources[pg.SlideID]
+		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom); err != nil {
 			return err
 		}
 	}
@@ -185,7 +192,8 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 }
 
 // ensureDraft 为单个页面生成草稿。已存在讲稿（含占位或用户已编辑）则跳过，不覆盖。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage) error {
+// source/custom 为该页显式选择的讲稿来源（无备注页）；为空时回退默认行为。
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string) error {
 	slideID := pg.SlideID
 	if slideID == "" {
 		return nil
@@ -196,7 +204,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		return err
 	}
 
-	text := pgText(pg)
+	text := pgText(pg, source, custom)
 	if text == "" {
 		return nil // 无正文/备注，不生成空讲稿。
 	}
@@ -204,7 +212,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if v, err := h.visionForTenant(ctx, tenantID); err == nil {
 		vision = v
 	}
-	anchors := pgAnchors(pg)
+	anchors := pgAnchors(pg, source)
 	anchors = append(anchors, h.visualAnchors(ctx, vision, tenantID, projectID, revisionNo, language, pg)...)
 	refs := sourceRefsFromAnchors(slideID, anchors)
 	if len(refs) == 0 {
@@ -375,9 +383,20 @@ func classifyLLMError(err error) error {
 	return retry
 }
 
-func pgAnchors(pg parsedPage) []narration.SourceAnchor {
+// pgAnchors 收集页面形状文本作为来源锚点；无形状时回退到备注。
+// source 指定时只收集该来源对应的形状（notes 时回退备注锚点）。
+func pgAnchors(pg parsedPage, source string) []narration.SourceAnchor {
 	anchors := make([]narration.SourceAnchor, 0, len(pg.Shapes))
 	for _, sh := range pg.Shapes {
+		if source == "title" && !strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+			continue
+		}
+		if source == "body" && strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+			continue
+		}
+		if source == "notes" {
+			break
+		}
 		text := strings.TrimSpace(sh.Text)
 		if text == "" {
 			continue
@@ -418,9 +437,25 @@ func sourceRefsFromAnchors(slideID string, anchors []narration.SourceAnchor) []s
 }
 
 // pgText 拼接页面形状文本；为空时回退到备注。
-func pgText(pg parsedPage) string {
+// source 指定时只取该来源对应文本；source=custom 时使用 custom 文本；source=notes 时仅用备注。
+func pgText(pg parsedPage, source, custom string) string {
+	switch source {
+	case "notes":
+		return strings.TrimSpace(pg.NotesText)
+	case "custom":
+		if t := strings.TrimSpace(custom); t != "" {
+			return t
+		}
+		return strings.TrimSpace(pg.NotesText)
+	}
 	var parts []string
 	for _, sh := range pg.Shapes {
+		if source == "title" && !strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+			continue
+		}
+		if source == "body" && strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+			continue
+		}
 		if t := strings.TrimSpace(sh.Text); t != "" {
 			parts = append(parts, t)
 		}

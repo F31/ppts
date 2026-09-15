@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ConnectError,
+  approveScript,
   createExport,
   createGeneration,
   estimateNarration,
@@ -10,16 +11,21 @@ import {
   getProjectSlides,
   getScript,
   getSlideRenderURLs,
+  getSlideScriptSources,
   listGateways,
-  updateScript as updateScriptApi,
+  lockScript,
   publishWork,
-  type ClientIdentity
+  regenerateSegments,
+  setSlideScriptSource,
+  updateScript as updateScriptApi,
+  type ClientIdentity,
+  type SlideScriptSource
 } from '../api';
 import { Player } from '../Player';
 import { ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
-import type { PlaybackManifest, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 
 type SlidesState =
   | { mode: 'loading' }
@@ -42,7 +48,7 @@ const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve
 
 const devNarrationVoiceID = 'fake-voice-1';
 
-export function ProjectEditor({ identity, projectId, draftRequested }: { identity: ClientIdentity; projectId: string; draftRequested?: boolean }) {
+export function ProjectEditor({ identity, projectId, draftRequested, role }: { identity: ClientIdentity; projectId: string; draftRequested?: boolean; role?: Role }) {
   const { t } = useI18n();
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   const [activeSlideID, setActiveSlideID] = useState('');
@@ -66,6 +72,12 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
   const [propsOpen, setPropsOpen] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
+  // M3 ③：确认/锁定需 REVIEWER 及以上（rank>=1，即 reviewer/editor/admin/owner）。
+  const canReview = role !== undefined && role !== 'ROLE_VIEWER';
+  // M3 ②：正在局部重生成的段落（按当前页 segmentId）。
+  const [regeneratingIds, setRegeneratingIds] = useState<string[]>([]);
+  // M3 ⑥：无备注页讲稿来源选择（持久化）。
+  const [slideSources, setSlideSources] = useState<Record<string, SlideScriptSource>>({});
 
   // 页面列表
   useEffect(() => {
@@ -105,6 +117,28 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
       })
       .catch(() => {
         // 渲染图不可用（解析未完成 / 端点未就绪），保持空映射，前端降级展示。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slidesState, identity, projectId]);
+
+  // M3 ⑥：加载项目内"无备注页讲稿来源"选择（持久化，供生成草稿时 Worker 尊重）。
+  useEffect(() => {
+    if (slidesState.mode !== 'real') {
+      setSlideSources({});
+      return;
+    }
+    let cancelled = false;
+    getSlideScriptSources(identity, projectId)
+      .then((res) => {
+        if (cancelled) return;
+        const map: Record<string, SlideScriptSource> = {};
+        for (const item of res.sources) map[item.slideId] = item;
+        setSlideSources(map);
+      })
+      .catch(() => {
+        // 端点未就绪（store 未配置）或权限不足，保持空映射，来源选择降级为不可见。
       });
     return () => {
       cancelled = true;
@@ -217,6 +251,72 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
     scriptEditorRef.current?.flush();
     setActiveSlideID(slideId);
   };
+
+  // M3 ③：确认当前页讲稿（REVIEWER 及以上）。
+  const approveActive = useCallback(async () => {
+    if (!isReady || !activeRealScript) return;
+    try {
+      const rev = await approveScript(identity, projectId, activeSlideID);
+      setRealScripts((current) => ({ ...current, [activeSlideID]: rev }));
+    } catch (error) {
+      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.approveFailed') });
+    }
+  }, [identity, projectId, activeSlideID, isReady, activeRealScript, t]);
+
+  // M3 ③：锁定当前页讲稿（后端不支持解锁）。
+  const lockActive = useCallback(async () => {
+    if (!isReady || !activeRealScript) return;
+    try {
+      const rev = await lockScript(identity, projectId, activeSlideID);
+      setRealScripts((current) => ({ ...current, [activeSlideID]: rev }));
+    } catch (error) {
+      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.lockFailed') });
+    }
+  }, [identity, projectId, activeSlideID, isReady, activeRealScript, t]);
+
+  // M3 ②：局部重生成选中分段（RegenerateSegments）。轮询讲稿直到 revision 变化或超时后刷新。
+  const regenerateActive = useCallback(
+    async (segmentIds: string[]) => {
+      if (!isReady || !activeRealScript || segmentIds.length === 0) return;
+      setRegeneratingIds(segmentIds);
+      try {
+        await regenerateSegments(identity, projectId, activeSlideID, segmentIds, voiceId || undefined);
+        const deadline = Date.now() + 120_000;
+        let refreshed: ScriptRevision | undefined;
+        while (Date.now() < deadline) {
+          await sleep(1500);
+          try {
+            const rev = await getScript(identity, projectId, activeSlideID);
+            if (rev.revision !== activeRealScript.revision) {
+              refreshed = rev;
+              break;
+            }
+          } catch {
+            // 尚未就绪，继续轮询。
+          }
+        }
+        if (refreshed) setRealScripts((current) => ({ ...current, [activeSlideID]: refreshed }));
+      } catch (error) {
+        setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.regenerateFailed') });
+      } finally {
+        setRegeneratingIds([]);
+      }
+    },
+    [identity, projectId, activeSlideID, isReady, activeRealScript, voiceId, t]
+  );
+
+  // M3 ⑥：保存单页讲稿来源选择（无备注页显式指定驱动草稿来源）。
+  const saveSlideSource = useCallback(
+    async (slideId: string, source: string, customText = '') => {
+      try {
+        const saved = await setSlideScriptSource(identity, projectId, slideId, source, customText);
+        setSlideSources((current) => ({ ...current, [slideId]: saved }));
+      } catch (error) {
+        setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.sourceSaveFailed') });
+      }
+    },
+    [identity, projectId, t]
+  );
 
   const handleScriptStatus = useCallback((status: ScriptEditorStatus) => {
     setUnsaved(status !== 'saved');
@@ -364,6 +464,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
   };
 
   const pageCount = isReady ? slidesState.slides.length : 0;
+  const noNotesSlides = isReady ? slidesState.slides.filter((slide) => !slide.hasNotes) : [];
   const scriptReadyCount = isReady ? Object.keys(realScripts).length : 0;
   const statusMarker = useMemo(() => {
     if (!isReady) return t('editor.status.waitingParse');
@@ -481,6 +582,11 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
               commit={commitRealScript}
               onCommitError={commitError}
               onStatusChange={handleScriptStatus}
+              canReview={canReview}
+              onApprove={approveActive}
+              onLock={lockActive}
+              regeneratingIds={regeneratingIds}
+              onRegenerate={regenerateActive}
             />
           ) : (
             <section className="editor-card">
@@ -502,6 +608,57 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
                       </label>
                     ))}
                   </div>
+                  {/* M3 ⑥：无备注页显式选择讲稿来源（生成草稿前设置，持久化后由 Worker 尊重）。 */}
+                  {noNotesSlides.length > 0 && (
+                    <div className="source-selector" aria-label={t('editor.noNotesSource')}>
+                      <span className="eyebrow">{t('editor.chooseSource')}</span>
+                      {noNotesSlides.map((slide) => {
+                        const src = slideSources[slide.slideId]?.source ?? 'layout';
+                        const custom = slideSources[slide.slideId]?.customText ?? '';
+                        return (
+                          <div key={slide.slideId} className="source-row">
+                            <strong className="nowrap-ellipsis" title={slide.slideId}>
+                              {slide.title || slide.slideId}
+                            </strong>
+                            <select
+                              value={src}
+                              onChange={(e) => {
+                                const value = e.currentTarget.value;
+                                if (value === 'custom') {
+                                  // 自定义来源需先有文本再持久化（后端校验 customText 非空）；
+                                  // 此处仅本地切换为 custom 以展示输入框，输入后由下方 onChange 持久化。
+                                  setSlideSources((current) => ({
+                                    ...current,
+                                    [slide.slideId]: { slideId: slide.slideId, source: 'custom', customText: custom }
+                                  }));
+                                } else {
+                                  saveSlideSource(slide.slideId, value);
+                                }
+                              }}
+                            >
+                              <option value="layout">{t('editor.sourceLayout')}</option>
+                              <option value="title">{t('editor.sourceTitle')}</option>
+                              <option value="body">{t('editor.sourceBody')}</option>
+                              <option value="notes">{t('editor.sourceNotes')}</option>
+                              <option value="custom">{t('editor.sourceCustom')}</option>
+                            </select>
+                            {src === 'custom' && (
+                              <input
+                                className="source-custom"
+                                placeholder={t('editor.customSourcePlaceholder')}
+                                value={custom}
+                                onChange={(e) => {
+                                  const text = e.currentTarget.value;
+                                  if (text.trim() !== '') saveSlideSource(slide.slideId, 'custom', text);
+                                  else setSlideSources((current) => ({ ...current, [slide.slideId]: { slideId: slide.slideId, source: 'custom', customText: '' } }));
+                                }}
+                              />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   <div className="draft-actions">
                     <button type="button" disabled={draftStatus.phase === 'generating'} onClick={() => void generateAll()}>
                       {draftStatus.phase === 'generating'

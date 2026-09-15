@@ -80,7 +80,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members), handlerOpts...)
+	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members, scriptSources), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -105,10 +105,15 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	if pool != nil {
 		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth)
 	}
+	// M3 ⑥：无备注页讲稿来源存储（pool 可用时启用；nil 时端点返回 feature_disabled）。
+	var scriptSources app.ScriptSourceStore
+	if pool != nil {
+		scriptSources = app.NewScriptSourceStore(pool)
+	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
 	registerNarrationRoutes(mux, scripts, opt.Members, auth)
-	// 核心创作编辑器辅助路由（真实渲染缩略图/预览），B2 M2。
-	registerEditorRoutes(mux, jobs, objects, auth)
+	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
+	registerEditorRoutes(mux, jobs, objects, scriptSources, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

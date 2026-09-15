@@ -128,7 +128,7 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
         const projectId = parts[1];
         if (projectId && parts[2] === 'artifacts') return <ProjectArtifacts identity={identity} projectId={projectId} />;
         if (projectId && parts[2] === 'editor' || (projectId && !parts[2])) {
-          return <ProjectEditor identity={identity} projectId={projectId} draftRequested={query.get('draft') === '1'} />;
+          return <ProjectEditor identity={identity} projectId={projectId} draftRequested={query.get('draft') === '1'} role={role} />;
         }
         return <Projects identity={identity} />;
       }

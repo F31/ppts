@@ -118,6 +118,28 @@ async function getJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
   return (await response.json()) as T;
 }
 
+// putJSON 调用后端原生 HTTP PUT 端点（用于来源选择等轻量原生接口）。
+async function putJSON<T>(identity: ClientIdentity, path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(path, {
+    method: 'PUT',
+    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let code = `http_${response.status}`;
+    let message = `${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      // 非 Connect 错误体，保留默认 message。
+    }
+    throw new ConnectError(code, message);
+  }
+  return (await response.json()) as T;
+}
+
 export async function listProjects(identity: ClientIdentity): Promise<Project[]> {
   const data = await connectJSON<{ projects?: Project[] }>(identity, '/ppts.v1.ProjectService/List', { pageSize: 20 });
   return data.projects ?? [];
@@ -154,6 +176,31 @@ export async function getSlideRenderURLs(
   return getJSON<{ slides: SlideRenderURL[] }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/render`);
 }
 
+export type SlideScriptSource = { slideId: string; source: string; customText: string };
+
+// setSlideScriptSource 持久化单页讲稿来源选择（M3 ⑥，无备注页显式指定驱动草稿来源）。
+export async function setSlideScriptSource(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string,
+  source: string,
+  customText = ''
+): Promise<SlideScriptSource> {
+  return putJSON<SlideScriptSource>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/source`,
+    { source, customText }
+  );
+}
+
+// getSlideScriptSources 读取项目内所有页的讲稿来源选择（M3 ⑥）。
+export async function getSlideScriptSources(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ sources: SlideScriptSource[] }> {
+  return getJSON<{ sources: SlideScriptSource[] }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/sources`);
+}
+
 export async function getScript(
   identity: ClientIdentity,
   projectId: string,
@@ -180,6 +227,33 @@ export async function updateScript(
     slideId,
     expectedRevision,
     segments
+  });
+}
+
+// approveScript 将单页讲稿置为已确认（需 REVIEWER 角色）。后端 ScriptService.Approve。
+export async function approveScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
+  return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Approve', { projectId, slideId });
+}
+
+// lockScript 将单页讲稿锁定（需 REVIEWER 角色；后端不支持解锁）。后端 ScriptService.Lock。
+export async function lockScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
+  return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Lock', { projectId, slideId, lock: true });
+}
+
+// regenerateSegments 局部重生成选中分段（M2 M1 落地的 RegenerateSegments RPC）。
+// 返回 jobId；生成完成后需重新拉取讲稿。后端 NarrationService.RegenerateSegments。
+export async function regenerateSegments(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string,
+  segmentIds: string[],
+  voiceId?: string
+): Promise<{ jobId: string }> {
+  return connectJSON<{ jobId: string }>(identity, '/ppts.v1.NarrationService/RegenerateSegments', {
+    projectId,
+    slideId,
+    segmentIds,
+    voiceId: voiceId ?? ''
   });
 }
 

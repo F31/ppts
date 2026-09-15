@@ -21,14 +21,15 @@ const defaultLanguage = "zh-CN"
 // ScriptService exposes the narration revision domain over Connect.
 type ScriptService struct {
 	pptsv1connect.UnimplementedScriptServiceHandler
-	store   narration.Store
-	jobs    JobCreator
-	members membership.Reader
+	store    narration.Store
+	jobs     JobCreator
+	members  membership.Reader
+	srcStore app.ScriptSourceStore
 }
 
-// NewScriptService creates a ScriptService.
-func NewScriptService(store narration.Store, jobs JobCreator, members membership.Reader) *ScriptService {
-	return &ScriptService{store: store, jobs: jobs, members: members}
+// NewScriptService creates a ScriptService. srcStore 承载"无备注页讲稿来源"选择（M3 ⑥），可为 nil（不注入来源）。
+func NewScriptService(store narration.Store, jobs JobCreator, members membership.Reader, srcStore app.ScriptSourceStore) *ScriptService {
+	return &ScriptService{store: store, jobs: jobs, members: members, srcStore: srcStore}
 }
 
 func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.GetScriptRequest]) (*connect.Response[pptsv1.ScriptRevision], error) {
@@ -130,6 +131,21 @@ func (s *ScriptService) GenerateDraft(ctx context.Context, req *connect.Request[
 	mode := toDomainMode(req.Msg.GetMode())
 	snapshot := app.ScriptDraftSnapshot{
 		ProjectID: projectID, Language: requestLanguage(req.Header()), Mode: string(mode),
+	}
+	// M3 ⑥：注入已存的"无备注页讲稿来源"选择，使 worker 在 pgText/pgAnchors 中尊重用户显式来源。
+	if s.srcStore != nil {
+		if choices, lerr := s.srcStore.List(ctx, p.TenantID, projectID); lerr == nil && len(choices) > 0 {
+			sources := make(map[string]string, len(choices))
+			customs := make(map[string]string, len(choices))
+			for slideID, choice := range choices {
+				sources[slideID] = string(choice.Kind)
+				if choice.Kind == app.ScriptSourceCustom {
+					customs[slideID] = choice.CustomText
+				}
+			}
+			snapshot.Sources = sources
+			snapshot.CustomSources = customs
+		}
 	}
 	for _, rawSlideID := range req.Msg.GetSlideIds() {
 		slideID := strings.TrimSpace(rawSlideID)

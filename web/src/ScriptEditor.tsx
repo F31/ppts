@@ -17,43 +17,59 @@ type Props = {
   commit?: (segments: ScriptSegment[], expectedRevision: number) => Promise<ScriptRevision>;
   onCommitError?: (message: string) => void;
   onStatusChange?: (status: ScriptEditorStatus) => void;
+  // canReview：当前用户具 REVIEWER 及以上角色时显示确认/锁定按钮。
+  canReview?: boolean;
+  onApprove?: () => void;
+  onLock?: () => void;
+  // regeneratingIds：后端正在局部重生成的段落（显示占位、禁用编辑）。
+  regeneratingIds?: string[];
+  // onRegenerate：段落工具栏"缩短/润色/衔接"触发（M1 RegenerateSegments）。
+  onRegenerate?: (segmentIds: string[]) => void;
 };
 
+// 发音/停顿标记：插入到 spokenText 的朗读提示（M4 ⑤ 将接入正式发音词典与停顿控制）。
+const PAUSE_MARKER = '‖';
+const PRONUNCIATION_MARKER = '〔读：〕';
+
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, onChange, commit, onCommitError, onStatusChange },
+  { script, onChange, commit, onCommitError, onStatusChange, canReview, onApprove, onLock, regeneratingIds, onRegenerate },
   ref
 ) {
   const { t } = useI18n();
-  const [draft, setDraft] = useState(script.segments.map((segment) => segment.displayText).join('\n\n'));
+  // 各分段展示文本（display==spoken，编辑同步）。
+  const [texts, setTexts] = useState<Record<string, string>>(() => initialTexts(script));
   const [saveState, setSaveState] = useState<ScriptEditorStatus>('saved');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [focusedId, setFocusedId] = useState<string | null>(script.segments[0]?.segmentId ?? null);
   const composingRef = useRef(false);
   const timerRef = useRef<number | undefined>(undefined);
+  const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const caretRef = useRef<number>(0);
   const saveStateRef = useRef<ScriptEditorStatus>(saveState);
   saveStateRef.current = saveState;
 
-  const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
-  const visualCount = anchors.filter((anchor) => anchor.kind.startsWith('visual_')).length;
+  // 仅在切换页面或服务器落库（revision 变化）时重置文本，避免每次按键被父级 onChange 回写冲刷光标。
+  useEffect(() => {
+    setTexts(initialTexts(script));
+    setSaveState('saved');
+    setSelected(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [script.slideId, script.revision]);
 
   // 向父组件上报保存状态（用于未保存提示 / Ctrl+S 指示）。
   useEffect(() => {
     onStatusChange?.(saveState);
   }, [saveState, onStatusChange]);
 
-  // 切换讲稿时重置草稿与状态。
-  useEffect(() => {
-    setDraft(script.segments.map((segment) => segment.displayText).join('\n\n'));
-    setSaveState('saved');
-  }, [script.slideId, script.revision, script.segments]);
-
-  const splitSegments = (): ScriptSegment[] =>
-    script.segments.map((segment, index) => ({
+  const buildSegments = (): ScriptSegment[] =>
+    script.segments.map((segment) => ({
       ...segment,
-      displayText: draft.split(/\n{2,}/)[index] ?? draft,
-      spokenText: draft.split(/\n{2,}/)[index] ?? draft
+      displayText: texts[segment.segmentId] ?? segment.displayText,
+      spokenText: texts[segment.segmentId] ?? segment.spokenText
     }));
 
   const runCommit = () => {
-    const segments = splitSegments();
+    const segments = buildSegments();
     setSaveState('saving');
     if (!commit) {
       onChange({ ...script, revision: script.revision + 1, segments });
@@ -83,13 +99,12 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       timerRef.current = window.setTimeout(() => runCommitRef.current(), 220);
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [draft, saveState]);
+  }, [texts, saveState]);
 
   useImperativeHandle(
     ref,
     () => ({
       flush: () => {
-        // dirty 或 error 都触发提交（error 视为重试保存）。
         if (saveStateRef.current === 'dirty' || saveStateRef.current === 'error') {
           window.clearTimeout(timerRef.current);
           runCommitRef.current();
@@ -100,48 +115,177 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     []
   );
 
+  const editSegment = (segmentId: string, value: string) => {
+    setTexts((current) => ({ ...current, [segmentId]: value }));
+    setSaveState('dirty');
+  };
+
+  const toggleSelect = (segmentId: string) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(segmentId)) next.delete(segmentId);
+      else next.add(segmentId);
+      return next;
+    });
+  };
+
+  // 工具栏目标段落：显式选中的优先；否则取当前聚焦段。
+  const targetIds = (): string[] => {
+    if (selected.size > 0) return [...selected];
+    if (focusedId) return [focusedId];
+    return [];
+  };
+
+  const handleRegenerate = () => {
+    const ids = targetIds().filter((id) => !(regeneratingIds ?? []).includes(id));
+    if (ids.length === 0 || !onRegenerate) return;
+    onRegenerate(ids);
+  };
+
+  // 在目标段光标处插入朗读标记（发音/停顿）。
+  const insertMarker = (marker: string) => {
+    const ids = targetIds();
+    if (ids.length === 0) return;
+    const id = ids[0];
+    const el = textareaRefs.current[id];
+    const base = texts[id] ?? '';
+    const pos = el ? el.selectionStart : base.length;
+    const next = base.slice(0, pos) + marker + base.slice(pos);
+    editSegment(id, next);
+    requestAnimationFrame(() => {
+      const fresh = textareaRefs.current[id];
+      if (fresh) {
+        fresh.focus();
+        const caret = pos + marker.length;
+        fresh.setSelectionRange(caret, caret);
+      }
+    });
+  };
+
+  const locked = script.status === 'locked';
+  const regenSet = new Set(regeneratingIds ?? []);
+  const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
+  const visualCount = anchors.filter((anchor) => anchor.kind.startsWith('visual_')).length;
+
   return (
-    <section className="editor-card" aria-label={t('script.aria')}>
+    <section className="editor-card script-editor" aria-label={t('script.aria')}>
       <header>
         <div>
           <span className="eyebrow">{t('script.currentSlide')}</span>
           <h2>{script.slideId}</h2>
         </div>
-        <span className={`save-state ${saveState}`}>
-          {saveState === 'saved'
-            ? t('script.saved')
-            : saveState === 'saving'
-              ? t('script.saving')
-              : saveState === 'error'
-                ? t('script.saveError')
-                : saveState === 'conflict'
-                  ? t('script.conflict')
-                  : t('script.dirty')}
-        </span>
+        <div className="script-header-right">
+          <span className={`save-state ${saveState}`}>
+            {saveState === 'saved'
+              ? t('script.saved')
+              : saveState === 'saving'
+                ? t('script.saving')
+                : saveState === 'error'
+                  ? t('script.saveError')
+                  : saveState === 'conflict'
+                    ? t('script.conflict')
+                    : t('script.dirty')}
+          </span>
+          <span className={`status-marker ${script.status}`}>
+            {script.status === 'locked' ? t('editor.locked') : script.status === 'approved' ? t('editor.approved') : t('editor.draft')}
+          </span>
+        </div>
       </header>
-      <textarea
-        value={draft}
-        readOnly={script.status === 'locked'}
-        onChange={(event) => {
-          setDraft(event.currentTarget.value);
-          setSaveState('dirty');
-        }}
-        onCompositionStart={() => {
-          composingRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-          // 组合结束且存在未保存内容时，补一次防抖保存（组合期间未调度）。
-          if (saveStateRef.current === 'dirty') {
-            window.clearTimeout(timerRef.current);
-            timerRef.current = window.setTimeout(() => runCommitRef.current(), 500 + 220);
-          }
-        }}
-      />
-      <footer>
-        <span>{t('script.revision', { revision: script.revision, mode: modeLabel(script.mode, t) })}</span>
-        <span>{script.status === 'locked' ? t('script.locked') : script.status === 'approved' ? t('script.approved') : t('script.draft')}</span>
-      </footer>
+
+      {/* 段落工具栏（M3 ②）：缩短/润色/衔接 → 局部重生成；发音/停顿 → 插入朗读标记。 */}
+      <div className="paragraph-toolbar" role="toolbar" aria-label={t('editor.toolbar')}>
+        <button type="button" disabled={targetIds().length === 0} onClick={handleRegenerate} title={t('editor.shortenHint')}>
+          {t('editor.shorten')}
+        </button>
+        <button type="button" disabled={targetIds().length === 0} onClick={handleRegenerate} title={t('editor.polishHint')}>
+          {t('editor.polish')}
+        </button>
+        <button type="button" disabled={targetIds().length === 0} onClick={handleRegenerate} title={t('editor.transitionHint')}>
+          {t('editor.transition')}
+        </button>
+        <span className="toolbar-sep" />
+        <button type="button" disabled={targetIds().length === 0 || locked} onClick={() => insertMarker(PRONUNCIATION_MARKER)} title={t('editor.pronounceHint')}>
+          {t('editor.pronounce')}
+        </button>
+        <button type="button" disabled={targetIds().length === 0 || locked} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
+          {t('editor.pause')}
+        </button>
+        {selected.size > 0 && (
+          <button type="button" className="toolbar-clear" onClick={() => setSelected(new Set())}>
+            {t('editor.clearSelection', { count: selected.size })}
+          </button>
+        )}
+      </div>
+
+      {/* 分段编辑（M3 ②）：每段独立卡片，可勾选、独立状态徽标。 */}
+      <div className="segment-list">
+        {script.segments.map((segment, index) => {
+          const segRegen = regenSet.has(segment.segmentId);
+          return (
+            <article key={segment.segmentId} className={`segment-card ${selected.has(segment.segmentId) ? 'selected' : ''} ${segRegen ? 'regenerating' : ''}`}>
+              <label className="segment-head">
+                <input
+                  type="checkbox"
+                  checked={selected.has(segment.segmentId)}
+                  disabled={segRegen}
+                  onChange={() => toggleSelect(segment.segmentId)}
+                />
+                <span className="segment-index">{index + 1}</span>
+                {segment.status === 'approved' && <span className="seg-badge approved">{t('editor.approved')}</span>}
+                {segment.status === 'locked' && <span className="seg-badge locked">{t('editor.locked')}</span>}
+                {segRegen && <span className="seg-badge regen">{t('editor.regenerating')}</span>}
+              </label>
+              <textarea
+                ref={(el) => {
+                  textareaRefs.current[segment.segmentId] = el;
+                }}
+                value={texts[segment.segmentId] ?? ''}
+                readOnly={locked || segRegen}
+                onFocus={() => setFocusedId(segment.segmentId)}
+                onClick={(e) => {
+                  setFocusedId(segment.segmentId);
+                  caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
+                }}
+                onKeyUp={(e) => {
+                  caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
+                }}
+                onSelect={(e) => {
+                  caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
+                }}
+                onChange={(event) => editSegment(segment.segmentId, event.currentTarget.value)}
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  composingRef.current = false;
+                  if (saveStateRef.current === 'dirty') {
+                    window.clearTimeout(timerRef.current);
+                    timerRef.current = window.setTimeout(() => runCommitRef.current(), 500 + 220);
+                  }
+                }}
+              />
+            </article>
+          );
+        })}
+      </div>
+
+      {/* ③ 确认 / 锁定（需 REVIEWER）。已锁定后编辑只读、锁定按钮禁用。 */}
+      {canReview && (
+        <footer className="review-actions">
+          <button
+            type="button"
+            className="button-ghost"
+            disabled={locked || script.status === 'approved'}
+            onClick={() => onApprove?.()}
+          >
+            {t('editor.approve')}
+          </button>
+          <button type="button" className="button-ghost" disabled={locked} onClick={() => onLock?.()} title={locked ? t('editor.lockedHint') : ''}>
+            {t('editor.lock')}
+          </button>
+        </footer>
+      )}
+
       {anchors.length > 0 && (
         <div className="anchor-strip" aria-label={t('script.currentSlide')}>
           <strong>{t('script.anchors', { count: anchors.length })}</strong>
@@ -157,13 +301,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   );
 });
 
-function modeLabel(mode: ScriptRevision['mode'], t: (key: string) => string) {
-  switch (mode) {
-    case 'SCRIPT_MODE_POLISH':
-      return t('editor.modes.polish');
-    case 'SCRIPT_MODE_AI_GENERATED':
-      return t('editor.modes.ai');
-    default:
-      return t('editor.modes.original');
-  }
+function initialTexts(script: ScriptRevision): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const segment of script.segments) out[segment.segmentId] = segment.displayText;
+  return out;
 }

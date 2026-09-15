@@ -63,6 +63,41 @@ button, textarea, input { font: inherit; }
 .anchor-strip strong, .anchor-strip span, .anchor-strip em { border: 1px solid rgba(255,255,255,.1); border-radius: 999px; padding: 6px 8px; background: rgba(255,255,255,.05); font-style: normal; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .anchor-strip strong { color: #67e8f9; }
 
+/* M3 ② 段落工具栏 */
+.paragraph-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 4px; }
+.paragraph-toolbar button { border: 1px solid rgba(255, 255, 255, .14); border-radius: 999px; padding: 7px 13px; background: rgba(255, 255, 255, .06); color: #c9d6ea; cursor: pointer; }
+.paragraph-toolbar button:hover:not(:disabled) { border-color: #67e8f9; color: #eaf6ff; }
+.paragraph-toolbar button:disabled { opacity: .45; cursor: not-allowed; }
+.paragraph-toolbar .toolbar-sep { width: 1px; height: 18px; background: rgba(255, 255, 255, .14); }
+.paragraph-toolbar .toolbar-clear { background: transparent; border-color: rgba(255, 184, 120, .4); color: #ffd9a8; }
+
+/* M3 ② 分段卡片 */
+.segment-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; overflow: auto; flex: 1; }
+.segment-card { display: grid; grid-template-columns: auto 1fr; gap: 10px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 16px; padding: 12px; background: rgba(255, 255, 255, .03); }
+.segment-card.selected { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .14); }
+.segment-card.regenerating { opacity: .7; }
+.segment-head { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; }
+.segment-index { font-weight: 700; color: #9fb1cf; min-width: 20px; }
+.seg-badge { font-size: 11px; border-radius: 999px; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, .14); }
+.seg-badge.approved { color: #9bf6c0; border-color: rgba(120, 246, 180, .5); }
+.seg-badge.locked { color: #ffd9a8; border-color: rgba(255, 184, 120, .5); }
+.seg-badge.regen { color: #a9e7ff; }
+.segment-card textarea { width: 100%; min-height: 92px; margin: 0; resize: vertical; border: 1px solid rgba(255, 255, 255, .12); border-radius: 14px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); line-height: 1.7; outline: none; }
+.segment-card textarea:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .16); }
+
+/* M3 ③ 确认/锁定 */
+.review-actions { display: flex; gap: 10px; margin-top: 12px; }
+.script-header-right { display: flex; align-items: center; gap: 8px; }
+.status-marker.approved { color: #9bf6c0; border-color: rgba(120, 246, 180, .5); }
+.status-marker.locked { color: #ffd9a8; border-color: rgba(255, 184, 120, .5); }
+.status-marker.draft { opacity: .7; }
+
+/* M3 ⑥ 无备注页来源选择 */
+.source-selector { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
+.source-row { display: grid; grid-template-columns: 1fr 150px; gap: 8px; align-items: center; }
+.source-row .source-custom { grid-column: 1 / -1; }
+.source-row select, .source-row .source-custom { border: 1px solid rgba(255, 255, 255, .12); border-radius: 12px; padding: 8px 10px; color: #edf1f7; background: rgba(5, 10, 20, .7); }
+
 .preview-column { min-width: 0; display: grid; gap: 16px; }
 .compare-panel { padding: 16px; }
 .compare-panel h3 { margin: 6px 0 12px; }
