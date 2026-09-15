@@ -556,6 +556,11 @@
   "player.play": "播放",
   "player.restart": "回到开头",
   "player.progress": "播放进度",
+  "player.speed": "倍速",
+  "player.fullscreen": "全屏",
+  "player.exitFullscreen": "退出全屏",
+  "player.buffering": "缓冲中…",
+  "player.noAudio": "本作品暂无配音音频，仅展示字幕与画面",
 
   "artifacts.eyebrow": "项目成品与版本",
   "artifacts.subtitle": "成品绑定固定生成快照；当前草稿更新会在播放器提示「此前版本」。",

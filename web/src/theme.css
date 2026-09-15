@@ -139,6 +139,11 @@ html[data-theme="light"] .player-controls { color: #334155; }
 html[data-theme="light"] .slide-map button { color: #334155; background: rgba(15, 23, 42, .06); }
 html[data-theme="light"] .slide-map button.active { background: #25d3a7; color: #04110d; }
 html[data-theme="light"] .anchor-strip { color: #64748b; }
+html[data-theme="light"] .player-buffering { background: rgba(15,23,42,.1); color: #0891b2; }
+html[data-theme="light"] .player-speed { color: #334155; }
+html[data-theme="light"] .player-speed select { border-color: rgba(15,23,42,.14); background: #fff; color: #334155; }
+html[data-theme="light"] .player-fullscreen { color: #334155; background: rgba(15,23,42,.06); }
+html[data-theme="light"] .player-note { color: #b45309; }
 html[data-theme="light"] .anchor-strip strong { color: #4f46e5; }
 
 /* ---- 对照 / 表单 / 设置 ---- */

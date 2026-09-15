@@ -556,6 +556,11 @@
   "player.play": "Play",
   "player.restart": "Restart",
   "player.progress": "Playback progress",
+  "player.speed": "Speed",
+  "player.fullscreen": "Fullscreen",
+  "player.exitFullscreen": "Exit fullscreen",
+  "player.buffering": "Buffering…",
+  "player.noAudio": "No narration audio for this work; showing subtitles and slides only.",
 
   "artifacts.eyebrow": "Project artifacts & versions",
   "artifacts.subtitle": "Artifacts bind a fixed generation snapshot; newer drafts are flagged as \"previous version\" in the player.",

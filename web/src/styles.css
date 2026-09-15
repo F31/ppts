@@ -167,6 +167,13 @@ button, textarea, input { font: inherit; }
 .slide-map { display: flex; gap: 4px; margin-top: 12px; }
 .slide-map button { min-width: 44px; border: 0; border-radius: 10px; padding: 7px 6px; color: #c9d6ea; background: rgba(255,255,255,.08); cursor: pointer; }
 .slide-map button.active { background: #25d3a7; color: #04110d; }
+.player-buffering { position: absolute; top: 16px; right: 16px; padding: 6px 12px; border-radius: 999px; background: rgba(0,0,0,.62); color: #67e8f9; font-size: 13px; }
+.player-speed { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #c9d6ea; }
+.player-speed select { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 6px 8px; background: rgba(5,10,20,.7); color: #edf1f7; font-size: 13px; }
+.player-fullscreen { border: 0; border-radius: 999px; padding: 10px 15px; cursor: pointer; color: #edf1f7; background: rgba(255,255,255,.08); }
+.player-note { margin: 10px 0 0; font-size: 13px; color: #fbbf24; }
+.player-card.is-fullscreen { max-width: 100%; border-radius: 0; }
+.player-card.is-fullscreen .viewport { min-height: calc(100vh - 180px); }
 .asset-panel { padding: 16px 18px; color: #c9d6ea; }
 .asset-panel ul { margin: 12px 0 0; padding-left: 18px; line-height: 1.8; }
 .audit-panel { padding: 16px 18px; color: #c9d6ea; }

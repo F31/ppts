@@ -384,6 +384,12 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - 前端：api.ts 增 `getProjectArtifacts` + `ProjectArtifact` 类型；ProjectArtifacts.tsx 重写为按 snapshotHash 分组列出成品（格式徽标/导出时间/大小/下载按钮，调 createDownload 取限时直链并触发下载）；i18n 中英文各 13 键（含格式标签与下载态）；styles.css 列表/分组/徽标/下载样式。
   - 验收：A20。注：模型缺 duration 字段，时长列未展示（需迁移补列，列入后续）。
 
+- **B3-M2 播放器真实音频 + 倍速/全屏/缓冲（合并 D0-5）【已实施】**：
+  - 前端 `Player.tsx` 重写为接入 `<audio>`：从 `manifest.resources` 抽取 `AUDIO` 资源，与 timeline 段按 `(slideId#segmentId)` / `audioKey` 关联、按时间排序；按段顺序拼接播放，进度以 `audio.currentTime` 为准（替代原合成 rAF 时钟）；`ended` 自动续播下一段；`seek` 经 `seekingRef` 同步音频偏移；无音频时回退原 rAF 墙钟（保留画面+字幕）。
+  - 新增倍速（0.5/1/1.25/1.5/2，绑定 `audio.playbackRate`）、全屏（`requestFullscreen` + `fullscreenchange` 同步）、缓冲指示（`waiting`→`canplay/playing`）；恢复播放不重置第一页（`play` 不清零 `positionUs`）。
+  - i18n 中英文各 5 键（speed/fullscreen/exitFullscreen/buffering/noAudio）；`styles.css` + `theme.css`(light) 缓冲/倍速/全屏/提示样式；切换 `manifest` 时复位播放状态避免串音。
+  - 验收：A21。注：后端 `playback` 已在 B3 地基补全 `AUDIO` 资源（`signManifestResources`），本里程碑纯前端；本机需 `go build ./...` + `npm run build` 终验。
+
 ### B4 管理与适配
 
 | 项 | 内容 |
