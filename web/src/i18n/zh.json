@@ -473,6 +473,13 @@
   "editor.viewArtifacts": "查看成品与版本",
   "editor.playerPreview": "播放器预览",
   "editor.playerHint": "生成配音后即可在此试听音频与字幕；页面图渲染就绪时同时展示幻灯片。",
+  "editor.properties": "属性",
+  "editor.propertiesTitle": "打开属性面板",
+  "editor.unsaved": "未保存",
+  "editor.slidePreview": "幻灯片预览",
+  "editor.renderPending": "渲染图就绪后展示当前页预览。",
+  "script.saveError": "保存失败",
+  "script.conflict": "冲突",
 
   "script.aria": "讲稿编辑",
   "script.currentSlide": "当前页讲稿",

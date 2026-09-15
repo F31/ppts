@@ -473,6 +473,13 @@
   "editor.viewArtifacts": "View artifacts & versions",
   "editor.playerPreview": "Player preview",
   "editor.playerHint": "After generating narration, preview audio and subtitles here; slides appear once page renders are ready.",
+  "editor.properties": "Properties",
+  "editor.propertiesTitle": "Open properties panel",
+  "editor.unsaved": "Unsaved",
+  "editor.slidePreview": "Slide preview",
+  "editor.renderPending": "Shown when the page render is ready.",
+  "script.saveError": "Save failed",
+  "script.conflict": "Conflict",
 
   "script.aria": "Script editor",
   "script.currentSlide": "Current slide script",

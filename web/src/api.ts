@@ -97,6 +97,27 @@ async function connectJSON<T>(identity: ClientIdentity, procedure: string, body:
   return (await response.json()) as T;
 }
 
+// getJSON 调用后端原生 HTTP GET 端点（不走 Connect RPC），用于公开区/创作辅助等无法经 proto 生成的接口。
+async function getJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
+  const response = await fetch(path, {
+    method: 'GET',
+    headers: { ...identityHeaders(identity) }
+  });
+  if (!response.ok) {
+    let code = `http_${response.status}`;
+    let message = `${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      // 非 Connect 错误体，保留默认 message。
+    }
+    throw new ConnectError(code, message);
+  }
+  return (await response.json()) as T;
+}
+
 export async function listProjects(identity: ClientIdentity): Promise<Project[]> {
   const data = await connectJSON<{ projects?: Project[] }>(identity, '/ppts.v1.ProjectService/List', { pageSize: 20 });
   return data.projects ?? [];
@@ -120,6 +141,17 @@ export async function getProjectSlides(
     '/ppts.v1.ProjectService/GetSlides',
     { projectId }
   );
+}
+
+export type SlideRenderURL = { slideId: string; url: string };
+
+// getSlideRenderURLs 返回每页渲染 PNG 的短期签名可读 URL（按 slideId 对齐），供编辑器缩略图与 PPT 预览使用。
+// 解析未完成或页面图缺失时返回空列表，前端优雅降级为序号/标题缩略图。
+export async function getSlideRenderURLs(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ slides: SlideRenderURL[] }> {
+  return getJSON<{ slides: SlideRenderURL[] }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/render`);
 }
 
 export async function getScript(

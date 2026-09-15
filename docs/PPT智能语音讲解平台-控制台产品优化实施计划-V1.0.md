@@ -348,7 +348,9 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - stale 语义：新增 `narration_scripts.audio_revision` 列（迁移 0009）+ `MarkAudioRevision`（配音任务完成回写）+ `ListByProject`；原生 HTTP `GET /projects/{pid}/narration/stale` 返回每页 `audioRevision < revision` 的过期信号。
   - **关键修复**：server.go 此前漏挂 `registerPublicRoutes`（仅加了 import 未调用），导致公开区/B3 音频端点从未生效且 `go build` 报 import 未使用；本轮补上挂载（同时挂载 `registerNarrationRoutes`）。
   - 门控：`gofmt` 通过 + 逐文件类型复核 + 测试 fake 同步实现接口新增方法；最终需本地 `go build ./...` + `go test ./...` 确认（沙箱无法编译）。
-- **M2 编辑器骨架（① + ⑧）**：三栏布局（真实渲染缩略图 + PPT 预览 + 讲稿），属性改页签/抽屉；Ctrl/Cmd+S 保存、离开前未保存提示、页面切换刷新待保存队列。
+  - **重大修复（M2 前置）**：提交 `d1f49ba` 修复 `internal/api` 自 B3 起完全无法编译的两处错误——① pronunciation.go 与 public.go 重复声明 `writeJSON`（redeclared）；② `loadPageManifest`/`loadBundle`/`statTenantObject` 被当作包级函数调用却只定义为 `*PlaybackService` 方法。改为包级函数（新增 `objects` 参数）并修正 4 处调用点。此后所有 B3/M1/网关提交在本机均无法 `go build`，需本地重新编译验证。
+- **M2 编辑器骨架（① + ⑧）【已实施】**：编辑器重构为三栏（缩略图列表[真实渲染 PNG] + PPT 预览 + 讲稿），属性面板改为右上角按钮唤出的抽屉（①）；新增后端原生端点 `GET /projects/{pid}/slides/render`（复用解析 pages 清单 + 对象存储签名）产出每页渲染图短期可读 URL，缩略图与预览据此展示，缺失时降级为序号/标题（② 真实渲染图落地）。讲稿编辑接入 Ctrl/Cmd+S 立即保存、离开页面前未保存提示、切换页面前先 flush 当前页待保存队列（⑧）；ScriptEditor 改为 forwardRef 暴露 flush/isDirty 并上报五态（saved/dirty/saving/error/conflict），同时补齐中文输入法组合期不误存（A10 顺带）。
+  - 配套：api.ts 增 `getJSON` GET 辅助 + `getSlideRenderURLs`；i18n 增 editor.properties/unsaved/slidePreview/renderPending、script.saveError/conflict；styles.css 三栏布局 + 缩略图 + 预览 + 抽屉 + 未保存标记，收敛响应式断点。
 - **M3 讲稿编辑增强（② + ③ + ⑥）**：分段编辑 + 段落工具栏（缩短/润色/衔接/发音/停顿）；Approve/Lock 按钮与状态接入；无备注页显式选择讲稿来源。
 - **M4 生成与语音（④ + ⑤ + ⑦）**：音色选择器（属性筛选 + 样例试听 + 项目默认/单页覆盖）；读音调整 popover（本处/本项目 + 当前租户词典，C-6 收窄）；生成面板补范围/待确认稿数/需新生成/用量，**未确认稿默认阻止正式生成（C-5 强制）**。
 - **C-7 收尾**：检查设置菜单，隐藏/移除个人设置入口（若已存在）。

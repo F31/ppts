@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ConnectError,
   createExport,
@@ -9,13 +9,14 @@ import {
   getPlaybackManifest,
   getProjectSlides,
   getScript,
+  getSlideRenderURLs,
   listGateways,
   updateScript as updateScriptApi,
   publishWork,
   type ClientIdentity
 } from '../api';
 import { Player } from '../Player';
-import { ScriptEditor } from '../ScriptEditor';
+import { ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
 import type { PlaybackManifest, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
@@ -60,6 +61,11 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
   const [pubTitle, setPubTitle] = useState('');
   const [pubSummary, setPubSummary] = useState('');
   const [pubStatus, setPubStatus] = useState<{ phase: 'idle' | 'submitting' | 'done' | 'error'; message: string }>({ phase: 'idle', message: '' });
+  // B2 M2：真实渲染缩略图 / 属性抽屉 / 未保存状态。
+  const [renderUrls, setRenderUrls] = useState<Record<string, string>>({});
+  const [propsOpen, setPropsOpen] = useState(false);
+  const [unsaved, setUnsaved] = useState(false);
+  const scriptEditorRef = useRef<ScriptEditorHandle>(null);
 
   // 页面列表
   useEffect(() => {
@@ -82,6 +88,28 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
       cancelled = true;
     };
   }, [identity, projectId]);
+
+  // 真实渲染缩略图 / 预览图：读取每页渲染 PNG 的短期签名 URL（按 slideId 对齐）；失败则降级为序号/标题缩略图。
+  useEffect(() => {
+    if (slidesState.mode !== 'real') {
+      setRenderUrls({});
+      return;
+    }
+    let cancelled = false;
+    getSlideRenderURLs(identity, projectId)
+      .then((res) => {
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const item of res.slides) map[item.slideId] = item.url;
+        setRenderUrls(map);
+      })
+      .catch(() => {
+        // 渲染图不可用（解析未完成 / 端点未就绪），保持空映射，前端降级展示。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slidesState, identity, projectId]);
 
   // 已有讲稿
   useEffect(() => {
@@ -137,8 +165,35 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
     };
   }, [identity]);
 
+  // B2 M2 ⑧：Ctrl/Cmd+S 立即保存当前页草稿（阻止浏览器保存网页）。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && (event.key === 's' || event.key === 'S')) {
+        event.preventDefault();
+        scriptEditorRef.current?.flush();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // B2 M2 ⑧：存在未保存稿时，离开页面前提示。
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (unsaved) {
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [unsaved]);
+
   const isReady = slidesState.mode === 'real';
+  const activeSlide = isReady ? slidesState.slides.find((slide) => slide.slideId === activeSlideID) : undefined;
+  const activeRenderURL = activeSlide ? renderUrls[activeSlide.slideId] : undefined;
   const activeRealScript = isReady ? realScripts[activeSlideID] : undefined;
+  const activeIndex = isReady ? slidesState.slides.findIndex((slide) => slide.slideId === activeSlideID) : -1;
 
   const commitRealScript = useCallback(
     async (segments: ScriptSegment[], expectedRevision: number): Promise<ScriptRevision> => {
@@ -155,6 +210,17 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
     },
     [identity, projectId, activeSlideID, t]
   );
+
+  // B2 M2 ⑧：切换页面前先刷新（提交）当前页待保存队列，避免丢失未保存编辑。
+  const handleSlideSelect = (slideId: string) => {
+    if (slideId === activeSlideID) return;
+    scriptEditorRef.current?.flush();
+    setActiveSlideID(slideId);
+  };
+
+  const handleScriptStatus = useCallback((status: ScriptEditorStatus) => {
+    setUnsaved(status !== 'saved');
+  }, []);
 
   const acceptLatest = () => {
     if (!conflict) return;
@@ -343,7 +409,12 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
           </div>
         </div>
         <div className="editor-header-right">
-          <span className={`status-marker ${isReady ? '' : 'muted'}`}>{statusMarker}</span>
+          <span className={`status-marker ${unsaved ? 'unsaved' : ''} ${isReady ? '' : 'muted'}`}>
+            {unsaved ? t('editor.unsaved') : statusMarker}
+          </span>
+          <button type="button" className="button-ghost" onClick={() => setPropsOpen(true)} title={t('editor.propertiesTitle')}>
+            {t('editor.properties')}
+          </button>
           <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title={t('editor.artifactsTitle')}>
             {t('editor.artifacts')}
           </Link>
@@ -353,7 +424,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         </div>
       </header>
 
-      <div className="editor-layout">
+      <div className="editor-layout editor-layout-3col">
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
             {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
@@ -361,28 +432,55 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
           {!isReady ? (
             <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : t('editor.noSlides')}</p>
           ) : (
-            slidesState.slides.map((slide, index) => (
-              <button
-                key={slide.slideId}
-                type="button"
-                className={slide.slideId === activeSlideID ? 'selected' : ''}
-                onClick={() => setActiveSlideID(slide.slideId)}
-              >
-                <span>{String(index + 1).padStart(2, '0')}</span>
-                <strong className="nowrap-ellipsis">{slide.title || slide.slideId}</strong>
-                <em className="nowrap-ellipsis">{slide.preview || (slide.hasNotes ? t('editor.hasNotes') : '')}</em>
-              </button>
-            ))
+            slidesState.slides.map((slide, index) => {
+              const thumb = renderUrls[slide.slideId];
+              return (
+                <button
+                  key={slide.slideId}
+                  type="button"
+                  className={slide.slideId === activeSlideID ? 'selected' : ''}
+                  onClick={() => handleSlideSelect(slide.slideId)}
+                >
+                  <span className="thumb">
+                    {thumb ? (
+                      <img src={thumb} alt={slide.title || slide.slideId} loading="lazy" />
+                    ) : (
+                      String(index + 1).padStart(2, '0')
+                    )}
+                  </span>
+                  <span className="thumb-meta">
+                    <strong className="nowrap-ellipsis">{slide.title || slide.slideId}</strong>
+                    <em className="nowrap-ellipsis">{slide.preview || (slide.hasNotes ? t('editor.hasNotes') : '')}</em>
+                  </span>
+                </button>
+              );
+            })
           )}
         </aside>
+
+        <section className="slide-preview" aria-label={t('editor.slidePreview')}>
+          {activeRenderURL ? (
+            <img className="slide-preview-img" src={activeRenderURL} alt={activeSlide?.title ?? activeSlideID} />
+          ) : (
+            <div className="slide-preview-empty">{t('editor.renderPending')}</div>
+          )}
+          <div className="slide-preview-caption">
+            <span>
+              {activeIndex >= 0 ? `${activeIndex + 1} / ${pageCount}` : ''}
+            </span>
+            <strong className="nowrap-ellipsis">{activeSlide?.title}</strong>
+          </div>
+        </section>
 
         <section className="script-column">
           {activeRealScript ? (
             <ScriptEditor
+              ref={scriptEditorRef}
               script={activeRealScript}
               onChange={(next) => setRealScripts((current) => ({ ...current, [next.slideId]: next }))}
               commit={commitRealScript}
               onCommitError={commitError}
+              onStatusChange={handleScriptStatus}
             />
           ) : (
             <section className="editor-card">
@@ -394,9 +492,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
               </header>
               {isReady ? (
                 <>
-                  <p className="empty-state">
-                    {draftStatus.message || t('editor.draftHint')}
-                  </p>
+                  <p className="empty-state">{draftStatus.message || t('editor.draftHint')}</p>
                   <div className="draft-options" aria-label={t('editor.scriptMode')}>
                     {scriptModeOptions.map((option) => (
                       <label key={option.value} className={draftMode === option.value ? 'selected' : ''}>
@@ -422,62 +518,73 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
             </section>
           )}
         </section>
+      </div>
 
-        <aside className="properties-column">
-          <section className="panel nested">
-            <span className="eyebrow">{t('editor.narrationProps')}</span>
-            <label className="field-label">
-              {t('editor.voice')}
-              <select value={voiceId} onChange={(e) => setVoiceId(e.currentTarget.value)}>
-                {voiceOptions.map((voice) => (
-                  <option key={voice} value={voice}>
-                    {voice}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field-label">
-              {t('editor.rate', { percent: ratePercent })}
-              <select value={ratePercent} onChange={(e) => setRatePercent(Number(e.currentTarget.value))}>
-                {[75, 90, 100, 110, 125, 150].map((rate) => (
-                  <option key={rate} value={rate}>
-                    {rate === 100 ? t('editor.rateStandard') : `${rate}%`}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="draft-actions">
-              <button
-                type="button"
-                className="primary"
-                disabled={!isReady || narrationStatus.phase === 'generating'}
-                onClick={() => void generateNarration()}
-              >
-                {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
+      {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
+      {propsOpen && (
+        <div className="drawer-backdrop" onClick={() => setPropsOpen(false)}>
+          <aside className="properties-drawer" role="dialog" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()}>
+            <header>
+              <span className="eyebrow">{t('editor.properties')}</span>
+              <button type="button" onClick={() => setPropsOpen(false)}>
+                {t('common.close')}
               </button>
-            </div>
-            {narrationStatus.message && (
-              <p className={`narration-note ${narrationStatus.phase === 'error' ? 'error' : ''}`}>{narrationStatus.message}</p>
-            )}
-            {narrationEstimate != null && (
-              <p className="narration-note">{t('editor.estimatedDuration', { minutes: Math.round(narrationEstimate / 60) })}</p>
-            )}
-          </section>
-
-          {isReady && (
+            </header>
             <section className="panel nested">
-              <span className="eyebrow">{t('editor.pagePreview')}</span>
-              {activeRealScript ? (
-                <p className="page-preview-text">{activeRealScript.segments.map((segment) => segment.displayText).join('\n\n')}</p>
-              ) : (
-                <p className="page-preview-text muted">
-                  {(slidesState.mode === 'real' && slidesState.slides.find((slide) => slide.slideId === activeSlideID)?.preview) ?? t('editor.previewPending')}
-                </p>
+              <span className="eyebrow">{t('editor.narrationProps')}</span>
+              <label className="field-label">
+                {t('editor.voice')}
+                <select value={voiceId} onChange={(e) => setVoiceId(e.currentTarget.value)}>
+                  {voiceOptions.map((voice) => (
+                    <option key={voice} value={voice}>
+                      {voice}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.rate', { percent: ratePercent })}
+                <select value={ratePercent} onChange={(e) => setRatePercent(Number(e.currentTarget.value))}>
+                  {[75, 90, 100, 110, 125, 150].map((rate) => (
+                    <option key={rate} value={rate}>
+                      {rate === 100 ? t('editor.rateStandard') : `${rate}%`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="draft-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={!isReady || narrationStatus.phase === 'generating'}
+                  onClick={() => void generateNarration()}
+                >
+                  {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
+                </button>
+              </div>
+              {narrationStatus.message && (
+                <p className={`narration-note ${narrationStatus.phase === 'error' ? 'error' : ''}`}>{narrationStatus.message}</p>
+              )}
+              {narrationEstimate != null && (
+                <p className="narration-note">{t('editor.estimatedDuration', { minutes: Math.round(narrationEstimate / 60) })}</p>
               )}
             </section>
-          )}
-        </aside>
-      </div>
+
+            {isReady && (
+              <section className="panel nested">
+                <span className="eyebrow">{t('editor.pagePreview')}</span>
+                {activeRealScript ? (
+                  <p className="page-preview-text">{activeRealScript.segments.map((segment) => segment.displayText).join('\n\n')}</p>
+                ) : (
+                  <p className="page-preview-text muted">
+                    {(slidesState.mode === 'real' && slidesState.slides.find((slide) => slide.slideId === activeSlideID)?.preview) ?? t('editor.previewPending')}
+                  </p>
+                )}
+              </section>
+            )}
+          </aside>
+        </div>
+      )}
 
       <section className="playback-column">
         {conflict && (
@@ -508,7 +615,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         )}
         {realManifest ? (
           <>
-            <Player manifest={realManifest} onSlideChange={setActiveSlideID} />
+            <Player manifest={realManifest} onSlideChange={handleSlideSelect} />
             <div className="export-row">
               <button type="button" className="button-primary" disabled={exporting} onClick={() => void exportManifest()}>
                 {exporting ? t('editor.exporting') : t('editor.exportWeb')}
@@ -521,9 +628,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         ) : (
           <section className="player-card">
             <span className="eyebrow">{t('editor.playerPreview')}</span>
-            <p className="empty-state">
-              {narrationStatus.message || t('editor.playerHint')}
-            </p>
+            <p className="empty-state">{narrationStatus.message || t('editor.playerHint')}</p>
           </section>
         )}
       </section>
