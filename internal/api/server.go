@@ -4,6 +4,9 @@ import (
 	"context"
 	"expvar"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -107,5 +110,41 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			objHandler.serve(objectstore.OpDelete, w, r)
 		})
 	}
+	// 可选 SPA 兜底（history 路由）：仅当配置了 PPTS_WEB_ROOT 时启用。
+	// 单二进制/反代场景下，Go 直接托管前端构建产物并兜底返回 index.html；
+	// 未配置时（前端由 nginx/CDN 托管）不注册，行为与历史一致。
+	if root := os.Getenv("PPTS_WEB_ROOT"); root != "" {
+		mux.HandleFunc("GET /{path...}", spaFallbackHandler(root))
+	}
 	return mux
+}
+
+// spaFallbackHandler 在 PPTS_WEB_ROOT 指向前端构建目录时，为 SPA 提供 history 路由兜底：
+// 真实静态资源（带扩展名）命中则返回、未命中 404；其余 GET 请求返回 index.html 交由客户端路由接管。
+// 系统/API/对象存储前缀一律放行 404，避免与已注册路由冲突。
+func spaFallbackHandler(webRoot string) http.HandlerFunc {
+	fileServer := http.FileServer(http.Dir(webRoot))
+	indexHTML := filepath.Join(webRoot, "index.html")
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/ppts/object") || strings.HasPrefix(p, "/healthz") || strings.HasPrefix(p, "/debug") {
+			http.NotFound(w, r)
+			return
+		}
+		if ext := filepath.Ext(p); ext != "" {
+			f := filepath.Join(webRoot, filepath.Clean(p))
+			if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
+				fileServer.ServeHTTP(w, r)
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeFile(w, r, indexHTML)
+	}
 }
