@@ -169,6 +169,8 @@ button, textarea, input { font: inherit; }
 .topbar-actions { display: flex; align-items: center; gap: 10px; }
 .topbar-action-btn { border-radius: 999px; padding: 8px 14px; text-decoration: none; font-weight: 700; color: #07111f; background: #67e8f9; white-space: nowrap; }
 .topbar-action-btn + .topbar-action-btn { color: #e6eefc; background: rgba(255,255,255,.08); }
+.lang-toggle { border: 1px solid rgba(255,255,255,.16); border-radius: 999px; padding: 7px 14px; font-weight: 700; color: #e6eefc; background: rgba(255,255,255,.06); cursor: pointer; white-space: nowrap; }
+.lang-toggle:hover { background: rgba(255,255,255,.14); }
 
 .user-area { position: relative; }
 .user-trigger { display: flex; align-items: center; gap: 8px; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; padding: 5px 12px 5px 5px; background: rgba(255,255,255,.05); color: #e6eefc; cursor: pointer; }
@@ -193,6 +195,11 @@ button, textarea, input { font: inherit; }
 .panel.nested { background: rgba(7,12,24,.6); border-radius: 16px; padding: 14px; box-shadow: none; }
 .table-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .table-head h2 { margin: 6px 0 18px; }
+.pagination { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.pagination .page-size { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #9fb0c8; }
+.pagination .page-size select { width: auto; }
+.pagination .page-indicator { font-size: 13px; color: #c7d3e4; min-width: 64px; text-align: center; }
+.pagination button { white-space: nowrap; }
 
 .button-primary { border: 0; border-radius: 999px; padding: 9px 16px; color: #07111f; background: #67e8f9; font-weight: 800; text-decoration: none; cursor: pointer; white-space: nowrap; }
 .button-ghost { border: 0; border-radius: 999px; padding: 9px 16px; color: #e6eefc; background: rgba(255,255,255,.08); text-decoration: none; cursor: pointer; font-weight: 700; white-space: nowrap; }

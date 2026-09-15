@@ -77,7 +77,7 @@ func (s *UploadService) CompleteUpload(ctx context.Context, req *connect.Request
 		return nil, uploadError(err)
 	}
 	return connect.NewResponse(&pptsv1.CompleteUploadResponse{
-		SourceRevisionId: srcRevID, JobId: jobID,
+		SourceRevisionId: srcRevID, JobId: jobID, Warnings: []string{},
 	}), nil
 }
 

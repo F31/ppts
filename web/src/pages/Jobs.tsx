@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
-import { cancelJob, listJobs, retryFailedJob, type ClientIdentity } from '../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { cancelJob, listJobsPage, retryFailedJob, type ClientIdentity, type JobPage } from '../api';
+import { useI18n } from '../i18n';
 import { Link, useRoute } from '../router';
-import { jobKindLabel, jobStateLabel, type Job, type JobState } from '../types';
+import { jobKindKey, jobStateKey, type Job, type JobState } from '../types';
 
 const activeStates: JobState[] = [
   'JOB_STATE_QUEUED',
@@ -14,77 +15,137 @@ const activeStates: JobState[] = [
 const canCancel: JobState[] = [...activeStates];
 const canRetry: JobState[] = ['JOB_STATE_FAILED', 'JOB_STATE_UNKNOWN_PROVIDER_RESULT', 'JOB_STATE_CANCELED'];
 
+const PAGE_SIZES = [10, 20, 30];
+
 export function Jobs({ identity }: { identity: ClientIdentity }) {
   const route = useRoute();
+  const { t } = useI18n();
   const selectedJobId = route.query.get('job');
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [pages, setPages] = useState<JobPage[]>([]);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Job | null>(null);
 
-  const load = useCallback(async () => {
+  const currentPage = pages[pageIndex];
+  const currentJobs = currentPage?.jobs ?? [];
+  const allJobs = useMemo(() => pages.flatMap((page) => page.jobs), [pages]);
+
+  // 加载第一页（初始化 / 切换每页数量时重置分页）。
+  const loadFirst = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const list = await listJobs(identity);
-      setJobs(list);
-      if (selectedJobId) {
-        setSelected(list.find((job) => job.jobId === selectedJobId) ?? null);
-      }
+      const page = await listJobsPage(identity, { pageSize });
+      setPages([page]);
+      setPageIndex(0);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '任务列表加载失败');
+      setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [identity, selectedJobId]);
+  }, [identity, pageSize, t]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadFirst();
+  }, [loadFirst]);
+
+  // 重新拉取当前已加载的所有页（保持分页位置），用于轮询与手动刷新。
+  const refreshLoaded = useCallback(async () => {
+    setError('');
+    try {
+      const result: JobPage[] = [];
+      let cursor = '';
+      for (let i = 0; i <= pageIndex; i++) {
+        const page = await listJobsPage(identity, { cursor, pageSize });
+        result.push(page);
+        cursor = page.nextCursor;
+        if (!cursor) break;
+      }
+      setPages(result);
+      setPageIndex((current) => Math.min(current, Math.max(result.length - 1, 0)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
+    }
+  }, [identity, pageIndex, pageSize, t]);
 
   // 每 5 秒轮询活跃任务（后台压低频率由文档说明，这里统一 5s）。
   useEffect(() => {
-    if (!jobs.some((job) => activeStates.includes(job.state))) return;
-    const timer = window.setInterval(() => void load(), 5000);
+    if (!allJobs.some((job) => activeStates.includes(job.state))) return;
+    const timer = window.setInterval(() => void refreshLoaded(), 5000);
     return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobs]);
+  }, [allJobs, refreshLoaded]);
+
+  // 深链接选中任务的详情（可能不在当前页）。
+  useEffect(() => {
+    if (!selectedJobId) {
+      setSelected(null);
+      return;
+    }
+    const found = allJobs.find((job) => job.jobId === selectedJobId);
+    if (found) setSelected(found);
+  }, [selectedJobId, allJobs]);
+
+  const goNext = async () => {
+    if (!currentPage?.nextCursor || loading) return;
+    const nextIndex = pageIndex + 1;
+    if (nextIndex < pages.length) {
+      setPageIndex(nextIndex);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const page = await listJobsPage(identity, { cursor: currentPage.nextCursor, pageSize });
+      setPages((prev) => [...prev, page]);
+      setPageIndex(nextIndex);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const goPrev = () => {
+    if (pageIndex > 0) setPageIndex(pageIndex - 1);
+  };
 
   const onCancel = async (job: Job) => {
     try {
       await cancelJob(identity, job.jobId);
       setError('');
-      void load();
+      void refreshLoaded();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '取消失败');
+      setError(err instanceof Error ? err.message : t('jobs.cancelFailed'));
     }
   };
 
   const onRetry = async (job: Job) => {
     try {
       await retryFailedJob(identity, job.jobId);
-      void load();
+      void refreshLoaded();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '重试失败');
+      setError(err instanceof Error ? err.message : t('jobs.retryFailed'));
     }
   };
 
-  const activeCount = jobs.filter((job) => activeStates.includes(job.state)).length;
-  const selectedJob = selectedJobId ? (selected ?? jobs.find((job) => job.jobId === selectedJobId) ?? null) : null;
+  const activeCount = allJobs.filter((job) => activeStates.includes(job.state)).length;
+  const selectedJob = selectedJobId ? (selected ?? allJobs.find((job) => job.jobId === selectedJobId) ?? null) : null;
 
   return (
     <div className="page-stack">
       <section className="page-header-row">
         <div>
-          <span className="eyebrow">任务中心</span>
-          <h1>任务</h1>
+          <span className="eyebrow">{t('jobs.eyebrow')}</span>
+          <h1>{t('jobs.title')}</h1>
           <small className="page-sub">
-            {activeCount > 0 ? `${activeCount} 个任务进行中，页面自动刷新。` : '当前没有进行中的任务。'}
+            {activeCount > 0 ? t('jobs.active', { count: activeCount }) : t('jobs.idle')}
           </small>
         </div>
         <div className="page-actions">
-          <button type="button" className="button-primary" onClick={() => void load()}>
-            刷新
+          <button type="button" className="button-primary" onClick={() => void refreshLoaded()}>
+            {t('common.refresh')}
           </button>
         </div>
       </section>
@@ -103,35 +164,54 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
 
       <section className="panel">
         <header className="table-head">
-          <h2>任务列表</h2>
+          <h2>{t('jobs.listTitle')}</h2>
+          <div className="pagination">
+            <label className="page-size">
+              {t('jobs.pageSize')}
+              <select value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+                {PAGE_SIZES.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button type="button" disabled={pageIndex === 0 || loading} onClick={goPrev}>
+              {t('jobs.prevPage')}
+            </button>
+            <span className="page-indicator">{t('jobs.pageOf', { page: pageIndex + 1 })}</span>
+            <button type="button" disabled={!currentPage?.nextCursor || loading} onClick={() => void goNext()}>
+              {t('jobs.nextPage')}
+            </button>
+          </div>
         </header>
-        {loading ? (
-          <p className="empty-state">加载中…</p>
-        ) : jobs.length === 0 ? (
-          <p className="empty-state">暂无任务。上传解析、讲稿生成、配音与导出的任务会出现在这里。</p>
+        {loading && currentJobs.length === 0 ? (
+          <p className="empty-state">{t('common.loading')}</p>
+        ) : currentJobs.length === 0 ? (
+          <p className="empty-state">{t('jobs.empty')}</p>
         ) : (
           <table className="data-table">
             <thead>
               <tr>
-                <th>类型</th>
-                <th>状态</th>
-                <th>进度</th>
-                <th>项目</th>
-                <th>尝试</th>
-                <th>提交时间</th>
-                <th className="col-actions">操作</th>
+                <th>{t('jobs.colType')}</th>
+                <th>{t('jobs.colState')}</th>
+                <th>{t('jobs.colProgress')}</th>
+                <th>{t('jobs.colProject')}</th>
+                <th>{t('jobs.colAttempt')}</th>
+                <th>{t('jobs.colSubmitted')}</th>
+                <th className="col-actions">{t('jobs.colActions')}</th>
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job) => (
+              {currentJobs.map((job) => (
                 <tr key={job.jobId} className={job.state === 'JOB_STATE_SUCCEEDED' ? 'row-muted' : ''}>
                   <td>
-                    <strong className="nowrap-ellipsis">{jobKindLabel[job.kind] ?? job.kind}</strong>
+                    <strong className="nowrap-ellipsis">{jobKindKey[job.kind] ? t(jobKindKey[job.kind]) : job.kind}</strong>
                     <small className="cell-sub block-sub">{job.jobId.slice(0, 12)}</small>
                   </td>
                   <td>
-                    <span className={`state-tag ${job.state.toLowerCase()}`}>{jobStateLabel[job.state]}</span>
-                    {job.lastError && <small className="cell-sub block-sub">失败原因：{job.lastError.message}</small>}
+                    <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
+                    {job.lastError && <small className="cell-sub block-sub">{t('jobs.failureReason', { msg: job.lastError.message })}</small>}
                   </td>
                   <td>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '—'}</td>
                   <td>
@@ -140,20 +220,20 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
                     </Link>
                   </td>
                   <td>{job.attempt}</td>
-                  <td>{new Date(job.createdAtUnix * 1000).toLocaleString('zh-CN')}</td>
+                  <td>{new Date(job.createdAtUnix * 1000).toLocaleString()}</td>
                   <td className="col-actions">
                     <div className="row-actions">
-                      <Link to={`/jobs?job=${job.jobId}`} className="button-ghost" title="任务详情">
-                        详情
+                      <Link to={`/jobs?job=${job.jobId}`} className="button-ghost" title={t('jobs.detail')}>
+                        {t('common.details')}
                       </Link>
                       {canCancel.includes(job.state) && (
-                        <button type="button" onClick={() => void onCancel(job)} title="取消任务">
-                          取消
+                        <button type="button" onClick={() => void onCancel(job)} title={t('jobs.cancelJob')}>
+                          {t('jobs.cancel')}
                         </button>
                       )}
                       {canRetry.includes(job.state) && (
-                        <button type="button" onClick={() => void onRetry(job)} title="重试失败任务">
-                          重试
+                        <button type="button" onClick={() => void onRetry(job)} title={t('jobs.retryJob')}>
+                          {t('jobs.retry')}
                         </button>
                       )}
                     </div>
@@ -181,63 +261,64 @@ function JobDetail({
   canCancelJob: boolean;
   canRetryJob: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <section className="panel job-detail">
       <header className="table-head">
         <div>
-          <span className="eyebrow">任务详情</span>
-          <h2>{(jobKindLabel[job.kind] ?? job.kind) + ' · ' + job.jobId}</h2>
+          <span className="eyebrow">{t('jobs.detailEyebrow')}</span>
+          <h2>{(jobKindKey[job.kind] ? t(jobKindKey[job.kind]) : job.kind) + ' · ' + job.jobId}</h2>
         </div>
         <div className="row-actions">
           <Link to={`/projects/${job.projectId}/editor`} className="button-ghost">
-            返回项目
+            {t('jobs.backToProject')}
           </Link>
           {canCancelJob && (
             <button type="button" onClick={onCancel}>
-              取消任务
+              {t('jobs.cancelJob')}
             </button>
           )}
           {canRetryJob && (
             <button type="button" onClick={onRetry}>
-              重试任务
+              {t('jobs.retryJob')}
             </button>
           )}
         </div>
       </header>
       <dl className="detail-grid">
         <div>
-          <dt>状态</dt>
+          <dt>{t('jobs.fieldState')}</dt>
           <dd>
-            <span className={`state-tag ${job.state.toLowerCase()}`}>{jobStateLabel[job.state]}</span>
+            <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
           </dd>
         </div>
         <div>
-          <dt>进度</dt>
-          <dd>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '未知（阶段型任务）'}</dd>
+          <dt>{t('jobs.fieldProgress')}</dt>
+          <dd>{job.progressPercent >= 0 ? `${job.progressPercent}%` : t('jobs.phaseUnknown')}</dd>
         </div>
         <div>
-          <dt>项目</dt>
+          <dt>{t('jobs.fieldProject')}</dt>
           <dd>{job.projectId}</dd>
         </div>
         <div>
-          <dt>输入快照</dt>
+          <dt>{t('jobs.fieldInput')}</dt>
           <dd>{job.inputSnapshot || '—'}</dd>
         </div>
         <div>
-          <dt>尝试次数</dt>
+          <dt>{t('jobs.fieldAttempt')}</dt>
           <dd>{job.attempt}</dd>
         </div>
         <div>
-          <dt>创建时间</dt>
-          <dd>{new Date(job.createdAtUnix * 1000).toLocaleString('zh-CN')}</dd>
+          <dt>{t('jobs.fieldCreated')}</dt>
+          <dd>{new Date(job.createdAtUnix * 1000).toLocaleString()}</dd>
         </div>
         <div>
-          <dt>更新时间</dt>
-          <dd>{new Date(job.updatedAtUnix * 1000).toLocaleString('zh-CN')}</dd>
+          <dt>{t('jobs.fieldUpdated')}</dt>
+          <dd>{new Date(job.updatedAtUnix * 1000).toLocaleString()}</dd>
         </div>
         {job.lastError && (
           <div className="full-row">
-            <dt>最后错误</dt>
+            <dt>{t('jobs.fieldLastError')}</dt>
             <dd className="error-text">({job.lastError.code}) {job.lastError.message}</dd>
           </div>
         )}

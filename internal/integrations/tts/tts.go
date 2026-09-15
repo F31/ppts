@@ -7,8 +7,19 @@ package tts
 
 import (
 	"context"
+	"strings"
 	"time"
 )
+
+// DefaultSiliconFlowVoice 返回给定模型对应的系统预置音色。
+// SiliconFlow 的系统预置音色需带模型前缀（如 FunAudioLLM/CosyVoice2-0.5B:alex）。
+func DefaultSiliconFlowVoice(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "FunAudioLLM/CosyVoice2-0.5B"
+	}
+	return model + ":alex"
+}
 
 // TTSProvider 语音合成供应商端口（V4.0 §8.1）。
 type TTSProvider interface {

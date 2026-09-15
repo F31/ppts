@@ -8,8 +8,9 @@ import {
   listProjects,
   type ClientIdentity
 } from '../api';
+import { useI18n } from '../i18n';
 import { Link } from '../router';
-import { jobKindLabel, jobStateLabel, type Job, type JobState, type Project } from '../types';
+import { jobKindKey, jobStateKey, type Job, type JobState, type Project } from '../types';
 
 const activeStates: JobState[] = ['JOB_STATE_QUEUED', 'JOB_STATE_RUNNING', 'JOB_STATE_RETRY_WAIT', 'JOB_STATE_CANCEL_REQUESTED', 'JOB_STATE_UNKNOWN_PROVIDER_RESULT'];
 
@@ -25,13 +26,8 @@ function fmtBytes(bytes: number): string {
   return `${value.toFixed(value >= 100 ? 0 : 1)} ${units[unit]}`;
 }
 
-function fmtSeconds(seconds: number): string {
-  if (seconds < 60) return `${seconds} 秒`;
-  const minutes = Math.round((seconds / 60) * 10) / 10;
-  return `${minutes} 分钟`;
-}
-
 export function Home({ identity }: { identity: ClientIdentity }) {
+  const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [voiceReady, setVoiceReady] = useState<Record<string, boolean>>({});
@@ -41,7 +37,6 @@ export function Home({ identity }: { identity: ClientIdentity }) {
     ttsConfigured: false,
     llmConfigured: false
   });
-  const [statsNote, setStatsNote] = useState('');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -84,7 +79,6 @@ export function Home({ identity }: { identity: ClientIdentity }) {
         })
       );
       setVoiceReady(readyMap);
-      setStatsNote('统计基于当前已加载数据，未做全量遍历。');
       setLoading(false);
     } finally {
       setLoading(false);
@@ -97,49 +91,44 @@ export function Home({ identity }: { identity: ClientIdentity }) {
 
   const activeJobCount = jobs.filter((job) => activeStates.includes(job.state)).length;
   const voicedCount = Object.values(voiceReady).filter(Boolean).length;
+  const fmtSeconds = (seconds: number) =>
+    seconds < 60 ? t('home.seconds', { n: seconds }) : t('home.minutes', { n: Math.round((seconds / 60) * 10) / 10 });
 
   return (
     <div className="page-stack">
       <section className="home-hero">
         <div>
-          <span className="eyebrow">控制台首页</span>
-          <h1>欢迎回来，{(identity.userId ?? '用户').slice(0, 24)}</h1>
-          <p>继续你的讲解创作，或从上传一份新的 PPT 开始。</p>
-        </div>
-        <div className="home-actions">
-          <Link to="/projects" className="button-primary">
-            新建讲解
-          </Link>
-          <Link to="/settings/models" className="button-ghost">
-            模型服务
-          </Link>
-          <Link to="/jobs" className="button-ghost">
-            任务中心
-          </Link>
+          <span className="eyebrow">{t('home.eyebrow')}</span>
+          <h1>{t('home.welcome', { name: (identity.userId ?? t('home.user')).slice(0, 24) })}</h1>
+          <p>{t('home.subtitle')}</p>
         </div>
       </section>
 
-      <section className="stat-grid" aria-label="概览统计">
-        <StatCard label="讲解项目" value={String(projects.length)} note="当前已加载" />
-        <StatCard label="已配音项目" value={String(voicedCount)} note="数据来源：最近 6 个项目探活" />
-        <StatCard label="进行中任务" value={String(activeJobCount)} note="已加载任务范围内" />
-        <StatCard label="本月生成时长" value={fmtSeconds(stats.usageSeconds)} note="月用量口径" />
-        <StatCard label="存储占用" value={fmtBytes(stats.storageBytes)} note="对象存储汇总" />
-        <StatCard label="模型服务" value={stats.ttsConfigured && stats.llmConfigured ? '已配置' : stats.ttsConfigured || stats.llmConfigured ? '部分配置' : '未配置'} note="详见系统设置 · 模型服务" />
+      <section className="stat-grid" aria-label={t('home.eyebrow')}>
+        <StatCard label={t('home.stat.projects')} value={String(projects.length)} note={t('home.stat.projectsNote')} />
+        <StatCard label={t('home.stat.voiced')} value={String(voicedCount)} note={t('home.stat.voicedNote')} />
+        <StatCard label={t('home.stat.activeJobs')} value={String(activeJobCount)} note={t('home.stat.activeJobsNote')} />
+        <StatCard label={t('home.stat.usage')} value={fmtSeconds(stats.usageSeconds)} note={t('home.stat.usageNote')} />
+        <StatCard label={t('home.stat.storage')} value={fmtBytes(stats.storageBytes)} note={t('home.stat.storageNote')} />
+        <StatCard
+          label={t('home.stat.models')}
+          value={stats.ttsConfigured && stats.llmConfigured ? t('home.models.configured') : stats.ttsConfigured || stats.llmConfigured ? t('home.models.partial') : t('home.models.none')}
+          note={t('home.stat.modelsNote')}
+        />
       </section>
-      {statsNote && <p className="stats-note">{statsNote}</p>}
+      {!loading && <p className="stats-note">{t('home.statsNote')}</p>}
 
       <section className="panel home-section">
         <header>
-          <h2>最近项目</h2>
-          <Link to="/projects" className="link-more">查看全部 →</Link>
+          <h2>{t('home.recentProjects')}</h2>
+          <Link to="/projects" className="link-more">{t('home.viewAll')}</Link>
         </header>
         {loading ? (
-          <p className="empty-state">加载中…</p>
+          <p className="empty-state">{t('common.loading')}</p>
         ) : projects.length === 0 ? (
           <div className="empty-state first-run">
-            <p>还没有讲解项目。上传第一份 PPT 开始：导入后将自动解析页面，生成讲稿并试听配音。</p>
-            <Link to="/projects" className="button-primary">导入第一份 PPT</Link>
+            <p>{t('home.noProjects')}</p>
+            <Link to="/projects" className="button-primary">{t('home.importFirst')}</Link>
           </div>
         ) : (
           <div className="recent-projects">
@@ -147,7 +136,7 @@ export function Home({ identity }: { identity: ClientIdentity }) {
               <Link key={project.id} to={`/projects/${project.id}/editor`} className="project-card">
                 <strong>{project.title}</strong>
                 <span>rev {project.currentRevision}</span>
-                <em>{voiceReady[project.id] ? '已配音，可播放' : '暂无配音'}</em>
+                <em>{voiceReady[project.id] ? t('home.voicedPlayable') : t('home.noVoice')}</em>
               </Link>
             ))}
           </div>
@@ -156,21 +145,21 @@ export function Home({ identity }: { identity: ClientIdentity }) {
 
       <section className="panel home-section">
         <header>
-          <h2>最近任务</h2>
-          <Link to="/jobs" className="link-more">任务中心 →</Link>
+          <h2>{t('home.recentJobs')}</h2>
+          <Link to="/jobs" className="link-more">{t('home.jobsCenter')}</Link>
         </header>
         {loading ? (
-          <p className="empty-state">加载中…</p>
+          <p className="empty-state">{t('common.loading')}</p>
         ) : jobs.length === 0 ? (
-          <p className="empty-state">暂无任务。</p>
+          <p className="empty-state">{t('home.noJobs')}</p>
         ) : (
           <div className="jobs-compact">
             {jobs.slice(0, 6).map((job) => (
               <Link key={job.jobId} to={`/jobs?job=${job.jobId}`} className="job-row">
-                <span className={`state-tag ${job.state.toLowerCase()}`}>{jobStateLabel[job.state]}</span>
-                <strong>{jobKindLabel[job.kind] ?? job.kind}</strong>
-                <span className="job-progress">{job.progressPercent >= 0 ? `进度 ${job.progressPercent}%` : ''}</span>
-                <small>{new Date(job.updatedAtUnix * 1000).toLocaleString('zh-CN')}</small>
+                <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
+                <strong>{jobKindKey[job.kind] ? t(jobKindKey[job.kind]) : job.kind}</strong>
+                <span className="job-progress">{job.progressPercent >= 0 ? t('home.progress', { percent: job.progressPercent }) : ''}</span>
+                <small>{new Date(job.updatedAtUnix * 1000).toLocaleString()}</small>
               </Link>
             ))}
           </div>

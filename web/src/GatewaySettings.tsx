@@ -5,10 +5,12 @@ import {
   listGateways,
   setDefaultGateway,
   testGateway,
+  updateGateway,
   type ClientIdentity,
   type GatewayTestResult,
   type ModelGateway
 } from './api';
+import { useI18n } from './i18n';
 
 type FormState = {
   kind: 'tts' | 'llm';
@@ -43,10 +45,12 @@ export function GatewaySettings({
   onClose?: () => void;
   inline?: boolean;
 }) {
+  const { t } = useI18n();
   const [gateways, setGateways] = useState<ModelGateway[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [form, setForm] = useState<FormState | null>(null);
+  const [editing, setEditing] = useState<{ name: string; version: number } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, GatewayTestResult>>({});
 
@@ -56,11 +60,11 @@ export function GatewaySettings({
     try {
       setGateways(await listGateways(identity));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '加载网关失败');
+      setError(err instanceof Error ? err.message : t('gateway.errLoad'));
     } finally {
       setLoading(false);
     }
-  }, [identity]);
+  }, [identity, t]);
 
   useEffect(() => {
     void load();
@@ -70,22 +74,50 @@ export function GatewaySettings({
     if (!form) return;
     setError('');
     try {
-      await createGateway(identity, {
-        kind: form.kind,
-        name: form.name || 'gateway',
-        baseUrl: form.baseUrl,
-        apiKey: form.apiKey,
-        model: form.model,
-        visionModel: form.visionModel || undefined,
-        voice: form.voice || undefined,
-        isDefault: form.isDefault
-      });
+      if (editing) {
+        await updateGateway(identity, editing.name, {
+          kind: form.kind,
+          version: editing.version,
+          baseUrl: form.baseUrl,
+          apiKey: form.apiKey,
+          model: form.model,
+          visionModel: form.visionModel || undefined,
+          voice: form.voice || undefined,
+          isDefault: form.isDefault
+        });
+      } else {
+        await createGateway(identity, {
+          kind: form.kind,
+          name: form.name || 'gateway',
+          baseUrl: form.baseUrl,
+          apiKey: form.apiKey,
+          model: form.model,
+          visionModel: form.visionModel || undefined,
+          voice: form.voice || undefined,
+          isDefault: form.isDefault
+        });
+      }
       setForm(null);
+      setEditing(null);
       await load();
       await onSaved?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存失败');
+      setError(err instanceof Error ? err.message : t('gateway.errSave'));
     }
+  };
+
+  const startEdit = (gw: ModelGateway) => {
+    setEditing({ name: gw.name, version: gw.version });
+    setForm({
+      kind: gw.kind,
+      name: gw.name,
+      baseUrl: gw.baseUrl,
+      apiKey: '',
+      model: gw.model,
+      visionModel: gw.visionModel,
+      voice: gw.voice,
+      isDefault: gw.isDefault
+    });
   };
 
   const runTest = async (gw: ModelGateway) => {
@@ -97,7 +129,7 @@ export function GatewaySettings({
     } catch (err) {
       setTestResult((current) => ({
         ...current,
-        [key]: { ok: false, latencyMs: 0, error: err instanceof Error ? err.message : '探活失败' }
+        [key]: { ok: false, latencyMs: 0, error: err instanceof Error ? err.message : t('gateway.errTest') }
       }));
     } finally {
       setTesting(null);
@@ -105,13 +137,13 @@ export function GatewaySettings({
   };
 
   const remove = async (gw: ModelGateway) => {
-    if (!window.confirm(`删除网关 ${gw.name}（${gw.kind}）？`)) return;
+    if (!window.confirm(t('gateway.deleteConfirm', { name: gw.name, kind: gw.kind }))) return;
     try {
       await deleteGateway(identity, gw.name, gw.kind);
       await load();
       await onSaved?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败');
+      setError(err instanceof Error ? err.message : t('gateway.errDelete'));
     }
   };
 
@@ -119,21 +151,21 @@ export function GatewaySettings({
     <>
       <header>
         <div>
-          <span className="eyebrow">模型网关</span>
-          <h2>TTS / LLM 接入配置</h2>
+          <span className="eyebrow">{t('gateway.eyebrow')}</span>
+          <h2>{t('gateway.title')}</h2>
         </div>
         {onClose && !inline && (
           <button type="button" onClick={onClose}>
-            关闭
+            {t('common.close')}
           </button>
         )}
       </header>
         {error && <p className="form-error">{error}</p>}
         {loading ? (
-          <p className="empty-state">加载中…</p>
+          <p className="empty-state">{t('common.loading')}</p>
         ) : (
           <ul className="gateway-list">
-            {gateways.length === 0 && <li className="empty-state">尚无网关：点击下方"新建网关"接入 TTS / LLM 供应商。</li>}
+            {gateways.length === 0 && <li className="empty-state">{t('gateway.empty')}</li>}
             {gateways.map((gw) => {
               const key = `${gw.kind}:${gw.name}`;
               const result = testResult[key];
@@ -141,18 +173,21 @@ export function GatewaySettings({
                 <li key={key} className="gateway-item">
                   <div className="gateway-head">
                     <strong>{gw.name}</strong>
-                    <span className={`kind-tag ${gw.kind}`}>{gw.kind === 'tts' ? '语音合成' : '文本/视觉'}</span>
-                    {gw.isDefault && <span className="default-tag">默认</span>}
-                    {!gw.enabled && <span className="disabled-tag">已停用</span>}
+                    <span className={`kind-tag ${gw.kind}`}>{gw.kind === 'tts' ? t('gateway.kindTts') : t('gateway.kindLlm')}</span>
+                    {gw.isDefault && <span className="default-tag">{t('gateway.default')}</span>}
+                    {!gw.enabled && <span className="disabled-tag">{t('gateway.disabled')}</span>}
                     <small>
                       {gw.baseUrl} · {gw.model}
                       {gw.visionModel ? ` · ${gw.visionModel}` : ''}
                     </small>
-                    <small>{gw.hasKey ? `key: ${gw.keyMasked}` : '未配置 key'}</small>
+                    <small>{gw.hasKey ? t('gateway.keyMasked', { masked: gw.keyMasked }) : t('gateway.noKey')}</small>
                   </div>
                   <div className="draft-actions">
                     <button type="button" disabled={testing === key} onClick={() => void runTest(gw)}>
-                      {testing === key ? '测试中…' : '测试连接'}
+                      {testing === key ? t('gateway.testing') : t('gateway.test')}
+                    </button>
+                    <button type="button" onClick={() => startEdit(gw)}>
+                      {t('common.edit')}
                     </button>
                     {!gw.isDefault && (
                       <button
@@ -163,20 +198,20 @@ export function GatewaySettings({
                             await load();
                             await onSaved?.();
                           } catch (err) {
-                            setError(err instanceof Error ? err.message : '设置默认失败');
+                            setError(err instanceof Error ? err.message : t('gateway.errSetDefault'));
                           }
                         }}
                       >
-                        设为默认
+                        {t('gateway.setDefault')}
                       </button>
                     )}
                     <button type="button" className="danger" onClick={() => void remove(gw)}>
-                      删除
+                      {t('common.delete')}
                     </button>
                   </div>
                   {result && (
                     <p className={`test-result ${result.ok ? 'ok' : 'fail'}`}>
-                      {result.ok ? `连通正常，延迟 ${result.latencyMs}ms` : `连通失败：${result.error}`}
+                      {result.ok ? t('gateway.testOk', { ms: result.latencyMs }) : t('gateway.testFail', { error: result.error ?? '' })}
                     </p>
                   )}
                 </li>
@@ -186,8 +221,14 @@ export function GatewaySettings({
         )}
         {form === null ? (
           <div className="draft-actions">
-            <button type="button" onClick={() => setForm({ ...emptyForm })}>
-              新建网关
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(null);
+                setForm({ ...emptyForm });
+              }}
+            >
+              {t('gateway.new')}
             </button>
           </div>
         ) : (
@@ -200,9 +241,10 @@ export function GatewaySettings({
           >
             <div className="form-row">
               <label>
-                类型
+                {t('gateway.typeLabel')}
                 <select
                   value={form.kind}
+                  disabled={!!editing}
                   onChange={(e) => {
                     const kind = e.target.value as 'tts' | 'llm';
                     setForm((f) => f && {
@@ -212,15 +254,16 @@ export function GatewaySettings({
                     });
                   }}
                 >
-                  <option value="tts">TTS 语音合成</option>
-                  <option value="llm">LLM 文本/视觉</option>
+                  <option value="tts">{t('gateway.kindTtsFull')}</option>
+                  <option value="llm">{t('gateway.kindLlmFull')}</option>
                 </select>
               </label>
               <label>
-                名称
+                {t('gateway.nameLabel')}
                 <input
                   value={form.name}
-                  placeholder="如 siliconflow"
+                  placeholder={t('gateway.namePlaceholder')}
+                  disabled={!!editing}
                   onChange={(e) => setForm((f) => f && { ...f, name: e.target.value })}
                   required
                 />
@@ -228,7 +271,7 @@ export function GatewaySettings({
             </div>
             <div className="form-row">
               <label>
-                网关地址（OpenAI 兼容）
+                {t('gateway.baseUrlLabel')}
                 <input
                   value={form.baseUrl}
                   placeholder="https://api.siliconflow.cn"
@@ -237,7 +280,7 @@ export function GatewaySettings({
                 />
               </label>
               <label>
-                API Key（留空=不变，新建必填）
+                {t('gateway.apiKeyLabel')}
                 <input
                   type="password"
                   value={form.apiKey}
@@ -248,7 +291,7 @@ export function GatewaySettings({
             </div>
             <div className="form-row">
               <label>
-                模型
+                {t('gateway.modelLabel')}
                 <input
                   value={form.model}
                   onChange={(e) => setForm((f) => f && { ...f, model: e.target.value })}
@@ -257,7 +300,7 @@ export function GatewaySettings({
               </label>
               {form.kind === 'llm' ? (
                 <label>
-                  视觉模型（可选）
+                  {t('gateway.visionLabel')}
                   <input
                     value={form.visionModel}
                     onChange={(e) => setForm((f) => f && { ...f, visionModel: e.target.value })}
@@ -265,9 +308,10 @@ export function GatewaySettings({
                 </label>
               ) : (
                 <label>
-                  音色（可选，格式 模型:音色）
+                  {t('gateway.voiceLabel')}
                   <input
                     value={form.voice}
+                    placeholder={t('gateway.voicePlaceholder')}
                     onChange={(e) => setForm((f) => f && { ...f, voice: e.target.value })}
                   />
                 </label>
@@ -279,12 +323,18 @@ export function GatewaySettings({
                 checked={form.isDefault}
                 onChange={(e) => setForm((f) => f && { ...f, isDefault: e.target.checked })}
               />
-              设为该类型的默认网关
+              {t('gateway.setAsDefault')}
             </label>
             <div className="draft-actions">
-              <button type="submit">保存</button>
-              <button type="button" onClick={() => setForm(null)}>
-                取消
+              <button type="submit">{editing ? t('gateway.saveEdit') : t('gateway.save')}</button>
+              <button
+                type="button"
+                onClick={() => {
+                  setForm(null);
+                  setEditing(null);
+                }}
+              >
+                {t('common.cancel')}
               </button>
             </div>
           </form>
@@ -296,7 +346,7 @@ export function GatewaySettings({
     return <section className="panel gateway-panel">{content}</section>;
   }
   return (
-    <div className="modal-backdrop" role="dialog" aria-label="模型网关配置">
+    <div className="modal-backdrop" role="dialog" aria-label={t('gateway.eyebrow')}>
       <section className="modal-card gateway-panel">{content}</section>
     </div>
   );

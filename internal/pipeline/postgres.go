@@ -445,11 +445,17 @@ func (s *PGStore) List(ctx context.Context, tenantID, projectID, state, cursor s
 	var out []*Job
 	next := ""
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		args := []any{tenantID, projectID, pageSize + 1}
-		where := "tenant_id=$1 AND project_id=$2"
+		args := []any{tenantID}
+		where := "tenant_id=$1"
+		if projectID != "" {
+			args = append(args, projectID)
+			where += " AND project_id=$" + strconv.Itoa(len(args))
+		}
+		args = append(args, pageSize+1)
+		limit := "$" + strconv.Itoa(len(args))
 		if state != "" {
 			args = append(args, state)
-			where += " AND state=$4"
+			where += " AND state=$" + strconv.Itoa(len(args))
 		}
 		if cursor != "" {
 			createdBefore, perr := time.Parse(time.RFC3339Nano, cursor)
@@ -460,7 +466,7 @@ func (s *PGStore) List(ctx context.Context, tenantID, projectID, state, cursor s
 			where += " AND created_at < $" + strconv.Itoa(len(args))
 		}
 		rows, err := tx.Query(ctx,
-			"SELECT "+jobSelectColumns+" FROM jobs WHERE "+where+" ORDER BY created_at DESC LIMIT $3", args...)
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE "+where+" ORDER BY created_at DESC LIMIT "+limit, args...)
 		if err != nil {
 			return err
 		}

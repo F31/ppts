@@ -65,6 +65,9 @@ func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisReque
 	if strings.TrimSpace(voice) == "" {
 		voice = p.cfg.Voice
 	}
+	if strings.TrimSpace(voice) == "" {
+		voice = DefaultSiliconFlowVoice(p.cfg.Model)
+	}
 	payload := map[string]any{
 		"model":           p.cfg.Model,
 		"input":           req.Text,

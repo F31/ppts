@@ -99,6 +99,30 @@ func TestSiliconFlowSynthesizeSuccess(t *testing.T) {
 	}
 }
 
+func TestSiliconFlowSynthesizeDefaultsVoice(t *testing.T) {
+	var gotVoice string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Voice string `json:"voice"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotVoice = body.Voice
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(smallWAV(t))
+	}))
+	defer srv.Close()
+
+	p := NewSiliconFlowProvider(SiliconFlowConfig{
+		BaseURL: srv.URL, APIKey: "sk-test", Model: "FunAudioLLM/CosyVoice2-0.5B",
+	})
+	if _, err := p.Synthesize(context.Background(), SynthesisRequest{Text: "你好", VoiceID: ""}); err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if gotVoice != "FunAudioLLM/CosyVoice2-0.5B:alex" {
+		t.Fatalf("voice = %q, want model:alex", gotVoice)
+	}
+}
+
 func TestSiliconFlowRetries429(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)

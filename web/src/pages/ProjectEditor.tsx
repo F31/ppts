@@ -15,6 +15,7 @@ import {
 } from '../api';
 import { Player } from '../Player';
 import { ScriptEditor } from '../ScriptEditor';
+import { useI18n } from '../i18n';
 import { Link } from '../router';
 import type { PlaybackManifest, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 
@@ -26,19 +27,21 @@ type SlidesState =
 type DraftStatus = { phase: 'idle' | 'generating' | 'ready' | 'error'; message: string };
 type ConflictState = { slideId: string; localText: string; latest: ScriptRevision } | null;
 
-const scriptModeOptions: Array<{ value: ScriptMode; label: string; description: string }> = [
-  { value: 'SCRIPT_MODE_ORIGINAL', label: '原文朗读', description: '保留原文，最快生成' },
-  { value: 'SCRIPT_MODE_POLISH', label: '润色讲解', description: '更自然的演示口播' },
-  { value: 'SCRIPT_MODE_AI_GENERATED', label: 'AI 生成讲解', description: '补足衔接与解释' }
+const scriptModeOptions: Array<{ value: ScriptMode; labelKey: string; descKey: string }> = [
+  { value: 'SCRIPT_MODE_ORIGINAL', labelKey: 'editor.modes.original', descKey: 'editor.modes.originalDesc' },
+  { value: 'SCRIPT_MODE_POLISH', labelKey: 'editor.modes.polish', descKey: 'editor.modes.polishDesc' },
+  { value: 'SCRIPT_MODE_AI_GENERATED', labelKey: 'editor.modes.ai', descKey: 'editor.modes.aiDesc' }
 ];
 
-const modeLabel = (mode?: ScriptMode) => scriptModeOptions.find((item) => item.value === mode)?.label ?? '原文朗读';
+const modeLabel = (mode: ScriptMode | undefined, t: (key: string) => string) =>
+  t(scriptModeOptions.find((item) => item.value === mode)?.labelKey ?? 'editor.modes.original');
 
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 const devNarrationVoiceID = 'fake-voice-1';
 
 export function ProjectEditor({ identity, projectId, draftRequested }: { identity: ClientIdentity; projectId: string; draftRequested?: boolean }) {
+  const { t } = useI18n();
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   const [activeSlideID, setActiveSlideID] = useState('');
   const [realScripts, setRealScripts] = useState<Record<string, ScriptRevision>>({});
@@ -141,11 +144,11 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
           localText: segments.map((segment) => segment.displayText).join('\n\n'),
           latest: result.latest
         });
-        throw new Error('讲稿已在别处修改，已进入对比视图。');
+        throw new Error(t('editor.conflict.default'));
       }
       return result.revision;
     },
-    [identity, projectId, activeSlideID]
+    [identity, projectId, activeSlideID, t]
   );
 
   const acceptLatest = () => {
@@ -170,7 +173,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
       setRealScripts((current) => ({ ...current, [conflict.slideId]: result.revision }));
       setConflict(null);
     } catch (error) {
-      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : '讲稿保存失败' });
+      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.saveFailed') });
     }
   };
 
@@ -180,7 +183,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
 
   const generateAll = async () => {
     if (!isReady || draftStatus.phase === 'generating') return;
-    setDraftStatus({ phase: 'generating', message: `${modeLabel(draftMode)}任务已入队…` });
+    setDraftStatus({ phase: 'generating', message: t('editor.generateQueued', { mode: modeLabel(draftMode, t) }) });
     try {
       await generateDraft(identity, projectId, slidesState.slides.map((slide) => slide.slideId), draftMode);
       const deadline = Date.now() + 120_000;
@@ -203,22 +206,22 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
       const ready = slidesState.slides.every((slide) => found[slide.slideId]);
       setDraftStatus(
         ready
-          ? { phase: 'ready', message: `讲稿生成完成：${slidesState.slides.length} 页` }
-          : { phase: 'error', message: '讲稿仍在后台生成，可稍后刷新查看。' }
+          ? { phase: 'ready', message: t('editor.generateDone', { count: slidesState.slides.length }) }
+          : { phase: 'error', message: t('editor.generateBackground') }
       );
     } catch (error) {
-      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : '讲稿生成失败' });
+      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.generateFailed') });
     }
   };
 
   const generateNarration = async () => {
     if (!isReady || narrationStatus.phase === 'generating') return;
     if (Object.keys(realScripts).length < slidesState.slides.length) {
-      setNarrationStatus({ phase: 'error', message: '请先生成全部页面的讲稿再配音。' });
+      setNarrationStatus({ phase: 'error', message: t('editor.needAllScripts') });
       return;
     }
     const selectedVoice = voiceId || devNarrationVoiceID;
-    setNarrationStatus({ phase: 'generating', message: '配音任务已入队…' });
+    setNarrationStatus({ phase: 'generating', message: t('editor.narrationQueued') });
     try {
       const slideIds = slidesState.slides.map((slide) => slide.slideId);
       try {
@@ -226,7 +229,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         setNarrationEstimate(est.estimatedSeconds);
         setNarrationStatus({
           phase: 'generating',
-          message: `预计生成时长 ${Math.round(est.estimatedSeconds / 60)} 分钟，配音任务已入队…`
+          message: t('editor.narrationEstimate', { minutes: Math.round(est.estimatedSeconds / 60) })
         });
       } catch {
         // 预估失败不阻塞生成。
@@ -241,7 +244,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         if (status.ready) break;
       }
       if (!status || !status.ready) {
-        setNarrationStatus({ phase: 'error', message: '配音仍在后台生成，可稍后点击重新获取。' });
+        setNarrationStatus({ phase: 'error', message: t('editor.narrationBackground') });
         return;
       }
       const manifest = await getPlaybackManifest({
@@ -254,15 +257,13 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
       setRealManifest(manifest);
       setNarrationStatus({
         phase: 'ready',
-        message: `配音已就绪：${status.pagePngKeys.length > 0 ? '含页面图' : '页面渲染未就绪（音频+字幕可播）'}`
+        message: status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
       });
     } catch (error) {
-      let message = error instanceof Error ? error.message : '配音生成失败';
+      let message = error instanceof Error ? error.message : t('editor.narrationFailed');
       if (error instanceof ConnectError && error.code === 'resource_exhausted') {
         const est = narrationEstimate != null ? Math.round(narrationEstimate / 60) : null;
-        message = est
-          ? `生成额度不足（预计还需 ${est} 分钟）。可减少页面后重试，或联系管理员调整额度。`
-          : '生成额度不足。可减少页面后重试，或联系管理员调整额度。';
+        message = est ? t('editor.quotaShort', { minutes: est }) : t('editor.quotaShortNoEst');
       }
       setNarrationStatus({ phase: 'error', message });
     }
@@ -271,7 +272,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
   const exportManifest = async () => {
     if (!realManifest || exporting) return;
     setExporting(true);
-    setNarrationStatus({ phase: 'idle', message: '导出为异步任务：创建导出任务后可在任务中心查看进度。' });
+    setNarrationStatus({ phase: 'idle', message: t('editor.exportQueued') });
     try {
       const pagePngKeys = realManifest.resources
         .filter((resource) => resource.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG')
@@ -283,9 +284,9 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         pagePngKeys,
         includeNotes: true
       });
-      setNarrationStatus({ phase: 'ready', message: `导出任务已入队：${result.jobId}。完成后可在任务中心下载。` });
+      setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });
     } catch (error) {
-      setNarrationStatus({ phase: 'error', message: error instanceof Error ? error.message : '导出失败' });
+      setNarrationStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.exportFailed') });
     } finally {
       setExporting(false);
     }
@@ -294,38 +295,42 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
   const pageCount = isReady ? slidesState.slides.length : 0;
   const scriptReadyCount = isReady ? Object.keys(realScripts).length : 0;
   const statusMarker = useMemo(() => {
-    if (!isReady) return '等待解析';
-    if (scriptReadyCount < pageCount) return `${scriptReadyCount}/${pageCount} 页讲稿`;
-    return narrationStatus.phase === 'ready' ? '配音已就绪' : narrationStatus.phase === 'generating' ? '配音生成中' : '讲稿就绪，可配音';
-  }, [isReady, scriptReadyCount, pageCount, narrationStatus]);
+    if (!isReady) return t('editor.status.waitingParse');
+    if (scriptReadyCount < pageCount) return t('editor.status.scripts', { ready: scriptReadyCount, total: pageCount });
+    return narrationStatus.phase === 'ready'
+      ? t('editor.status.narrationReady')
+      : narrationStatus.phase === 'generating'
+        ? t('editor.status.narrationGenerating')
+        : t('editor.status.scriptReady');
+  }, [isReady, scriptReadyCount, pageCount, narrationStatus, t]);
 
   return (
     <div className="workspace-v2">
       <header className="editor-header">
         <div className="editor-header-left">
-          <Link to="/projects" className="back-link" title="返回项目列表">
-            ← 项目列表
+          <Link to="/projects" className="back-link" title={t('editor.backToProjectsTitle')}>
+            {t('editor.backToProjects')}
           </Link>
           <div>
-            <span className="eyebrow">项目工程</span>
+            <span className="eyebrow">{t('editor.project')}</span>
             <h1 title={projectId}>{projectId.slice(0, 12)}</h1>
           </div>
         </div>
         <div className="editor-header-right">
           <span className={`status-marker ${isReady ? '' : 'muted'}`}>{statusMarker}</span>
-          <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title="项目成品与版本">
-            成品
+          <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title={t('editor.artifactsTitle')}>
+            {t('editor.artifacts')}
           </Link>
         </div>
       </header>
 
       <div className="editor-layout">
-        <aside className="slide-rail-v2" aria-label="页面列表">
+        <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
-            页面 <span className="muted-count">{pageCount || ''}</span>
+            {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
           </div>
           {!isReady ? (
-            <p className="empty-state">{slidesState.mode === 'loading' ? '加载中…' : '尚未解析页面：请先导入 PPTX，处理完成后自动出现页面列表。'}</p>
+            <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : t('editor.noSlides')}</p>
           ) : (
             slidesState.slides.map((slide, index) => (
               <button
@@ -336,7 +341,7 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
               >
                 <span>{String(index + 1).padStart(2, '0')}</span>
                 <strong className="nowrap-ellipsis">{slide.title || slide.slideId}</strong>
-                <em className="nowrap-ellipsis">{slide.preview || (slide.hasNotes ? '有备注' : '')}</em>
+                <em className="nowrap-ellipsis">{slide.preview || (slide.hasNotes ? t('editor.hasNotes') : '')}</em>
               </button>
             ))
           )}
@@ -354,36 +359,36 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
             <section className="editor-card">
               <header>
                 <div>
-                  <span className="eyebrow">讲稿</span>
-                  <h2>{activeSlideID || '讲稿'}</h2>
+                  <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
+                  <h2>{activeSlideID || t('editor.scriptEyebrow')}</h2>
                 </div>
               </header>
               {isReady ? (
                 <>
                   <p className="empty-state">
-                    {draftStatus.message || '解析完成。选择讲稿模式后生成逐页讲稿，生成后可直接在此编辑。'}
+                    {draftStatus.message || t('editor.draftHint')}
                   </p>
-                  <div className="draft-options" aria-label="讲稿模式">
+                  <div className="draft-options" aria-label={t('editor.scriptMode')}>
                     {scriptModeOptions.map((option) => (
                       <label key={option.value} className={draftMode === option.value ? 'selected' : ''}>
                         <input type="radio" name="draft-mode" value={option.value} checked={draftMode === option.value} onChange={() => setDraftMode(option.value)} />
-                        <span>{option.label}</span>
-                        <small>{option.description}</small>
+                        <span>{t(option.labelKey)}</span>
+                        <small>{t(option.descKey)}</small>
                       </label>
                     ))}
                   </div>
                   <div className="draft-actions">
                     <button type="button" disabled={draftStatus.phase === 'generating'} onClick={() => void generateAll()}>
                       {draftStatus.phase === 'generating'
-                        ? '生成中…'
+                        ? t('editor.generating')
                         : draftRequested
-                          ? '开始生成讲稿'
-                          : `生成${modeLabel(draftMode)}`}
+                          ? t('editor.startGenerate')
+                          : t('editor.generateMode', { mode: modeLabel(draftMode, t) })}
                     </button>
                   </div>
                 </>
               ) : (
-                <p className="empty-state">尚未完成解析，无法生成讲稿。</p>
+                <p className="empty-state">{t('editor.notParsed')}</p>
               )}
             </section>
           )}
@@ -391,9 +396,9 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
 
         <aside className="properties-column">
           <section className="panel nested">
-            <span className="eyebrow">配音属性</span>
+            <span className="eyebrow">{t('editor.narrationProps')}</span>
             <label className="field-label">
-              音色
+              {t('editor.voice')}
               <select value={voiceId} onChange={(e) => setVoiceId(e.currentTarget.value)}>
                 {voiceOptions.map((voice) => (
                   <option key={voice} value={voice}>
@@ -403,11 +408,11 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
               </select>
             </label>
             <label className="field-label">
-              语速 · {ratePercent}%
+              {t('editor.rate', { percent: ratePercent })}
               <select value={ratePercent} onChange={(e) => setRatePercent(Number(e.currentTarget.value))}>
                 {[75, 90, 100, 110, 125, 150].map((rate) => (
                   <option key={rate} value={rate}>
-                    {rate === 100 ? '标准 100%' : `${rate}%`}
+                    {rate === 100 ? t('editor.rateStandard') : `${rate}%`}
                   </option>
                 ))}
               </select>
@@ -419,25 +424,25 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
                 disabled={!isReady || narrationStatus.phase === 'generating'}
                 onClick={() => void generateNarration()}
               >
-                {narrationStatus.phase === 'generating' ? '配音生成中…' : realManifest ? '重新生成配音' : '生成配音'}
+                {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
               </button>
             </div>
             {narrationStatus.message && (
               <p className={`narration-note ${narrationStatus.phase === 'error' ? 'error' : ''}`}>{narrationStatus.message}</p>
             )}
             {narrationEstimate != null && (
-              <p className="narration-note">预计生成时长 ≈ {Math.round(narrationEstimate / 60)} 分钟。</p>
+              <p className="narration-note">{t('editor.estimatedDuration', { minutes: Math.round(narrationEstimate / 60) })}</p>
             )}
           </section>
 
           {isReady && (
             <section className="panel nested">
-              <span className="eyebrow">页面预览</span>
+              <span className="eyebrow">{t('editor.pagePreview')}</span>
               {activeRealScript ? (
                 <p className="page-preview-text">{activeRealScript.segments.map((segment) => segment.displayText).join('\n\n')}</p>
               ) : (
                 <p className="page-preview-text muted">
-                  {(slidesState.mode === 'real' && slidesState.slides.find((slide) => slide.slideId === activeSlideID)?.preview) ?? '预览渲染图就绪后展示。'}
+                  {(slidesState.mode === 'real' && slidesState.slides.find((slide) => slide.slideId === activeSlideID)?.preview) ?? t('editor.previewPending')}
                 </p>
               )}
             </section>
@@ -447,27 +452,27 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
 
       <section className="playback-column">
         {conflict && (
-          <section className="compare-panel" aria-label="讲稿冲突对比">
+          <section className="compare-panel" aria-label={t('editor.conflictAria')}>
             <header>
-              <span className="eyebrow">冲突对比</span>
+              <span className="eyebrow">{t('editor.conflictEyebrow')}</span>
               <h3>{conflict.slideId}</h3>
             </header>
             <div className="compare-columns">
               <div>
-                <h4>我的修改</h4>
+                <h4>{t('editor.myChanges')}</h4>
                 <pre>{conflict.localText}</pre>
               </div>
               <div>
-                <h4>服务器最新版（revision {conflict.latest.revision}）</h4>
+                <h4>{t('editor.serverLatest', { revision: conflict.latest.revision })}</h4>
                 <pre>{conflict.latest.segments.map((segment) => segment.displayText).join('\n\n')}</pre>
               </div>
             </div>
             <div className="draft-actions">
               <button type="button" onClick={() => void retryWithLatest()}>
-                以我的修改重试保存
+                {t('editor.retryMine')}
               </button>
               <button type="button" onClick={acceptLatest}>
-                采用服务器最新版
+                {t('editor.acceptServer')}
               </button>
             </div>
           </section>
@@ -477,18 +482,18 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
             <Player manifest={realManifest} onSlideChange={setActiveSlideID} />
             <div className="export-row">
               <button type="button" className="button-primary" disabled={exporting} onClick={() => void exportManifest()}>
-                {exporting ? '创建导出任务中…' : '导出为 Web 工程'}
+                {exporting ? t('editor.exporting') : t('editor.exportWeb')}
               </button>
               <Link to={`/projects/${projectId}/artifacts`} className="button-ghost">
-                查看成品与版本
+                {t('editor.viewArtifacts')}
               </Link>
             </div>
           </>
         ) : (
           <section className="player-card">
-            <span className="eyebrow">播放器预览</span>
+            <span className="eyebrow">{t('editor.playerPreview')}</span>
             <p className="empty-state">
-              {narrationStatus.message || '生成配音后即可在此试听音频与字幕；页面图渲染就绪时同时展示幻灯片。'}
+              {narrationStatus.message || t('editor.playerHint')}
             </p>
           </section>
         )}

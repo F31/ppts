@@ -530,6 +530,42 @@ func TestListJobsFiltersAndPaginates(t *testing.T) {
 	}
 }
 
+func TestListJobsAcrossProjectsIsTenantScoped(t *testing.T) {
+	s := testStore(t)
+	ctx := tenant.WithContext(context.Background(), testTenant)
+	secondProject := "00000000-0000-0000-0000-000000000103"
+	if _, err := s.Create(ctx, testTenant, testProject, string(KindParse), "tp-1", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create project job: %v", err)
+	}
+	if _, err := s.Create(ctx, testTenant, secondProject, string(KindNarration), "tp-2", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create second project job: %v", err)
+	}
+	if _, err := s.Create(ctx, testOtherTenant, testOtherProject, string(KindParse), "tp-3", "snap", time.Time{}); err != nil {
+		t.Fatalf("Create other tenant job: %v", err)
+	}
+	// 空 project_id = 租户全局：包含两个项目、排除其他租户。
+	all, _, err := s.List(ctx, testTenant, "", "", "", 10)
+	if err != nil {
+		t.Fatalf("List tenant-wide: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("tenant-wide jobs = %d want 2", len(all))
+	}
+	for _, job := range all {
+		if job.TenantID != testTenant {
+			t.Fatalf("tenant-wide leaked other tenant job: %+v", job)
+		}
+	}
+	// 非空 project_id 仍按项目过滤。
+	one, _, err := s.List(ctx, testTenant, secondProject, "", "", 10)
+	if err != nil {
+		t.Fatalf("List by project: %v", err)
+	}
+	if len(one) != 1 || one[0].ProjectID != secondProject {
+		t.Fatalf("project filter = %+v", one)
+	}
+}
+
 func TestCrossTenantIsolation(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

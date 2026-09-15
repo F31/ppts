@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import type { ClientIdentity } from '../api';
 import { oidcConfigured, isDevIdentityEnabled, startOIDCLogin } from '../auth';
+import { useI18n } from '../i18n';
 import { useSession } from '../session';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
 
 export function Login() {
   const { loginDev, loginOIDC } = useSession();
+  const { t } = useI18n();
   const [tenantId, setTenantId] = useState(defaultTenantId);
   const [userId, setUserId] = useState('dev-user');
   const [submitting, setSubmitting] = useState(false);
@@ -19,7 +21,7 @@ export function Login() {
     const trimmedTenant = tenantId.trim();
     const trimmedUser = userId.trim();
     if (!trimmedTenant || !trimmedUser) {
-      setError('租户 ID 与用户 ID 不能为空');
+      setError(t('login.required'));
       setSubmitting(false);
       return;
     }
@@ -35,7 +37,7 @@ export function Login() {
     try {
       await startOIDCLogin();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '企业账号登录失败');
+      setError(err instanceof Error ? err.message : t('login.oidcFailed'));
       setSubmitting(false);
     }
   };
@@ -46,40 +48,40 @@ export function Login() {
   return (
     <main className="login-page">
       <aside className="login-brand">
-        <span className="brand-mark">智讲 PPT</span>
-        <h1>让每一页 PPT，都有清晰的讲解</h1>
-        <p>导入 PPT → 校对讲稿 → 试听调整 → 生成配音 → 播放与导出。</p>
+        <span className="brand-mark">{t('shell.brand')}</span>
+        <h1>{t('login.tagline')}</h1>
+        <p>{t('login.flow')}</p>
       </aside>
       <section className="login-card">
-        <span className="eyebrow">智讲 PPT 控制台</span>
-        <h2>登录控制台</h2>
+        <span className="eyebrow">{t('login.eyebrow')}</span>
+        <h2>{t('login.title')}</h2>
         {showOIDC && (
           <>
             <button type="button" className="primary-login" disabled={submitting} onClick={() => void onOIDC()}>
-              {submitting ? '跳转中…' : '企业账号登录'}
+              {submitting ? t('login.redirecting') : t('login.oidc')}
             </button>
             <div className="login-divider">
-              <span>或</span>
+              <span>{t('login.or')}</span>
             </div>
           </>
         )}
         {showDev ? (
           <>
             <label>
-              租户 ID
+              {t('login.tenantId')}
               <input value={tenantId} onChange={(e) => setTenantId(e.currentTarget.value)} placeholder={defaultTenantId} />
             </label>
             <label>
-              用户 ID
+              {t('login.userId')}
               <input value={userId} onChange={(e) => setUserId(e.currentTarget.value)} placeholder="dev-user" />
             </label>
             <button type="button" className="dev-login" disabled={submitting} onClick={() => void submitDev()}>
-              {submitting ? '登录中…' : '开发身份进入'}
+              {submitting ? t('login.loggingIn') : t('login.dev')}
             </button>
-            <p className="dev-login-note">开发身份前后端需同时开启（API 需配置 PPTS_AUTH_DEV_HEADERS=true）。</p>
+            <p className="dev-login-note">{t('login.devNote')}</p>
           </>
         ) : !showOIDC ? (
-          <p className="login-unconfigured">登录服务尚未配置，请联系管理员。</p>
+          <p className="login-unconfigured">{t('login.unconfigured')}</p>
         ) : null}
         {error && <p className="form-error">{error}</p>}
       </section>

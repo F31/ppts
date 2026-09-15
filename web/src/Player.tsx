@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useI18n } from './i18n';
 import type { PlaybackManifest, Timeline } from './types';
 import { progress, slideAt, subtitleAt, usecToClock } from './playerClock';
 
@@ -8,6 +9,7 @@ type PlayerProps = {
 };
 
 export function Player({ manifest, onSlideChange }: PlayerProps) {
+  const { t } = useI18n();
   const timeline = useMemo(() => JSON.parse(manifest.timelineJson) as Timeline, [manifest.timelineJson]);
   const [playing, setPlaying] = useState(false);
   const [positionUs, setPositionUs] = useState(0);
@@ -47,21 +49,21 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
   };
 
   return (
-    <section className="player-card" aria-label="播放器预览">
+    <section className="player-card" aria-label={t('player.aria')}>
       <div className="viewport">
         {pageResource?.signedUrl ? (
           <img src={pageResource.signedUrl} alt={activeSlide.slideId} />
         ) : (
           <div className="slide-fallback">
             <span>{activeSlide.slideId}</span>
-            <strong>{activeSubtitle?.text ?? '等待字幕时间点'}</strong>
+            <strong>{activeSubtitle?.text ?? t('player.waitingSubtitle')}</strong>
           </div>
         )}
         <div className="subtitle-strip">{activeSubtitle?.text ?? ' '}</div>
       </div>
       <div className="player-controls">
-        <button type="button" onClick={() => setPlaying((value) => !value)}>{playing ? '暂停' : '播放'}</button>
-        <button type="button" onClick={() => setPositionUs(0)}>回到开头</button>
+        <button type="button" onClick={() => setPlaying((value) => !value)}>{playing ? t('player.pause') : t('player.play')}</button>
+        <button type="button" onClick={() => setPositionUs(0)}>{t('player.restart')}</button>
         <span>{usecToClock(positionUs)} / {usecToClock(timeline.durationUs)}</span>
       </div>
       <input
@@ -71,7 +73,7 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
         max={1000}
         value={Math.round(progress(positionUs, timeline.durationUs) * 1000)}
         onChange={(event) => seek(Number(event.currentTarget.value) / 1000)}
-        aria-label="播放进度"
+        aria-label={t('player.progress')}
       />
       <div className="slide-map">
         {timeline.slides.map((slide) => (

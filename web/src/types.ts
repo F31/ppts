@@ -147,36 +147,36 @@ export type Job = {
   updatedAtUnix: number;
 };
 
-export const jobStateLabel: Record<JobState, string> = {
-  JOB_STATE_QUEUED: '排队中',
-  JOB_STATE_RUNNING: '处理中',
-  JOB_STATE_RETRY_WAIT: '等待重试',
-  JOB_STATE_WAITING_REVIEW: '待审阅',
-  JOB_STATE_SUCCEEDED: '已完成',
-  JOB_STATE_FAILED: '失败',
-  JOB_STATE_CANCEL_REQUESTED: '正在取消',
-  JOB_STATE_CANCELED: '已取消',
-  JOB_STATE_UNKNOWN_PROVIDER_RESULT: '结果待核实'
+export const jobStateKey: Record<JobState, string> = {
+  JOB_STATE_QUEUED: 'enum.jobState.queued',
+  JOB_STATE_RUNNING: 'enum.jobState.running',
+  JOB_STATE_RETRY_WAIT: 'enum.jobState.retryWait',
+  JOB_STATE_WAITING_REVIEW: 'enum.jobState.waitingReview',
+  JOB_STATE_SUCCEEDED: 'enum.jobState.succeeded',
+  JOB_STATE_FAILED: 'enum.jobState.failed',
+  JOB_STATE_CANCEL_REQUESTED: 'enum.jobState.cancelRequested',
+  JOB_STATE_CANCELED: 'enum.jobState.canceled',
+  JOB_STATE_UNKNOWN_PROVIDER_RESULT: 'enum.jobState.unknownProviderResult'
 };
 
-export const jobKindLabel: Record<string, string> = {
-  parse: '解析',
-  render: '页面渲染',
-  script_draft: '讲稿生成',
-  narration: '配音生成',
-  export: '导出'
+export const jobKindKey: Record<string, string> = {
+  parse: 'enum.jobKind.parse',
+  render: 'enum.jobKind.render',
+  script_draft: 'enum.jobKind.scriptDraft',
+  narration: 'enum.jobKind.narration',
+  export: 'enum.jobKind.export'
 };
 
 // ---- 租户（TenantService） ----
 
 export type Role = 'ROLE_OWNER' | 'ROLE_ADMIN' | 'ROLE_EDITOR' | 'ROLE_REVIEWER' | 'ROLE_VIEWER';
 
-export const roleLabel: Record<Role, string> = {
-  ROLE_OWNER: '所有者',
-  ROLE_ADMIN: '管理员',
-  ROLE_EDITOR: '编辑',
-  ROLE_REVIEWER: '审阅',
-  ROLE_VIEWER: '只读'
+export const roleKey: Record<Role, string> = {
+  ROLE_OWNER: 'enum.role.owner',
+  ROLE_ADMIN: 'enum.role.admin',
+  ROLE_EDITOR: 'enum.role.editor',
+  ROLE_REVIEWER: 'enum.role.reviewer',
+  ROLE_VIEWER: 'enum.role.viewer'
 };
 
 export type Member = { userId: string; role: Role };

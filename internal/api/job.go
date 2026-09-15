@@ -67,15 +67,14 @@ func (s *JobService) Get(ctx context.Context, req *connect.Request[pptsv1.GetJob
 	return connect.NewResponse(toProtoJob(job)), nil
 }
 
+// List 返回租户任务；project_id 为空时列出该租户全部项目（任务中心全局视图），
+// 非空时仅列指定项目。租户隔离由 RLS 与 store 的 tenant_id 条件保证。
 func (s *JobService) List(ctx context.Context, req *connect.Request[pptsv1.ListJobsRequest]) (*connect.Response[pptsv1.ListJobsResponse], error) {
 	p, err := requirePrincipal(ctx)
 	if err != nil {
 		return nil, err
 	}
 	projectID := strings.TrimSpace(req.Msg.GetProjectId())
-	if projectID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
-	}
 	state := jobStateString(req.Msg.GetState())
 	cursor := ""
 	if req.Msg.GetCursor() != nil {

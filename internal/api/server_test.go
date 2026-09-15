@@ -786,6 +786,26 @@ func TestJobServiceGetListCancelRetry(t *testing.T) {
 	}
 }
 
+func TestJobServiceListWithoutProjectReturnsTenantJobs(t *testing.T) {
+	job := &pipeline.Job{
+		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1",
+		Kind: pipeline.KindParse, State: pipeline.StateQueued,
+	}
+	jobs := &jobCreatorStub{listJobs: []*pipeline.Job{job}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t)))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
+
+	// 任务中心全局视图：不带 project_id 也应返回租户任务，而非报 invalid_argument。
+	list, err := client.List(context.Background(), authRequest(&pptsv1.ListJobsRequest{PageSize: 20}))
+	if err != nil {
+		t.Fatalf("List without project: %v", err)
+	}
+	if len(list.Msg.GetJobs()) != 1 || list.Msg.GetJobs()[0].GetJobId() != "job-1" {
+		t.Fatalf("list = %+v", list.Msg)
+	}
+}
+
 func TestJobServiceCancelReleasesNarrationReservation(t *testing.T) {
 	job := &pipeline.Job{
 		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,

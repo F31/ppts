@@ -109,12 +109,8 @@ func Probe(ctx context.Context, cfg *Config) (latencyMS int64, err error) {
 
 func probeTTS(ctx context.Context, cfg *Config) error {
 	provider := NewTTSProvider(cfg)
-	voice := cfg.Voice
-	if voice == "" {
-		voice = "default"
-	}
 	_, err := provider.Synthesize(ctx, tts.SynthesisRequest{
-		LogicalOpID: "gateway-probe:llm-tts", VoiceID: voice, Text: "网关连通性测试。", Language: "zh-CN",
+		LogicalOpID: "gateway-probe:llm-tts", VoiceID: cfg.Voice, Text: "网关连通性测试。", Language: "zh-CN",
 	})
 	return err
 }

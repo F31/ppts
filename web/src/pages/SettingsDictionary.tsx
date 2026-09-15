@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createDictionary, deleteDictionary, listDictionaries, updateDictionary, type ClientIdentity } from '../api';
+import { useI18n } from '../i18n';
 import type { PronunciationDictionary, PronunciationRule } from '../types';
 
 type EditorState = {
@@ -11,6 +12,7 @@ type EditorState = {
 const emptyRule: PronunciationRule = { pattern: '', replacement: '', enabled: true };
 
 export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
+  const { t } = useI18n();
   const [dictionaries, setDictionaries] = useState<PronunciationDictionary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -23,11 +25,11 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
     try {
       setDictionaries(await listDictionaries(identity));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '词典列表加载失败');
+      setError(err instanceof Error ? err.message : t('dict.loadFailed'));
     } finally {
       setLoading(false);
     }
-  }, [identity]);
+  }, [identity, t]);
 
   useEffect(() => {
     void load();
@@ -48,34 +50,34 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
     const name = editor.name.trim();
     const rules = editor.rules.filter((rule) => rule.pattern.trim() && rule.replacement.trim());
     if (!name || rules.length === 0) {
-      setError('需填写词典名称，且至少一条有效的「读法→替代发音」规则。');
+      setError(t('dict.invalid'));
       return;
     }
     setError('');
     try {
       if (editor.id) {
         await updateDictionary(identity, editor.id, { name, rules });
-        setNotice('词典已更新。');
+        setNotice(t('dict.updated'));
       } else {
         await createDictionary(identity, { name, rules });
-        setNotice('词典已创建。');
+        setNotice(t('dict.created'));
       }
       setEditor(null);
       void load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存失败');
+      setError(err instanceof Error ? err.message : t('dict.saveFailed'));
     }
   };
 
   const onDelete = async (dict: PronunciationDictionary) => {
-    if (!window.confirm(`删除词典「${dict.name}」？`)) return;
+    if (!window.confirm(t('dict.deleteConfirm', { name: dict.name }))) return;
     setError('');
     try {
       await deleteDictionary(identity, dict.id);
-      setNotice('词典已删除。');
+      setNotice(t('dict.deleted'));
       void load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : '删除失败');
+      setError(err instanceof Error ? err.message : t('dict.deleteFailed'));
     }
   };
 
@@ -91,18 +93,16 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
     <div className="page-stack">
       <section className="page-header-row">
         <div>
-          <span className="eyebrow">设置 · 发音词典</span>
-          <h1>发音词典</h1>
-          <small className="page-sub">
-            解决专有名词误读（如 CUDA、MySQL、Kubernetes）。规则按「读法 → 替代发音」在合成前应用到讲稿。
-          </small>
+          <span className="eyebrow">{t('dict.eyebrow')}</span>
+          <h1>{t('dict.title')}</h1>
+          <small className="page-sub">{t('dict.subtitle')}</small>
         </div>
         <div className="page-actions">
           <button type="button" className="button-primary" onClick={startNew}>
-            新建词典
+            {t('dict.new')}
           </button>
           <button type="button" onClick={() => void load()}>
-            刷新
+            {t('common.refresh')}
           </button>
         </div>
       </section>
@@ -113,39 +113,39 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
       {editor && (
         <section className="panel editor-form">
           <header className="table-head">
-            <h2>{editor.id ? '编辑词典' : '新建词典'}</h2>
+            <h2>{editor.id ? t('dict.editorEdit') : t('dict.editorNew')}</h2>
           </header>
           <div className="form-stack">
             <label className="field-label">
-              名称
+              {t('dict.nameLabel')}
               <input
                 value={editor.name}
-                placeholder="如 产品专有名词"
+                placeholder={t('dict.namePlaceholder')}
                 onChange={(e) => setEditor((c) => (c ? { ...c, name: e.currentTarget.value } : c))}
               />
             </label>
             {editor.rules.map((rule, index) => (
               <div key={index} className="dict-rule-row">
-                <input value={rule.pattern} placeholder="原文（如 CUDA）" onChange={(e) => setRule(index, { pattern: e.currentTarget.value })} />
-                <input value={rule.replacement} placeholder="替代发音（如 库达）" onChange={(e) => setRule(index, { replacement: e.currentTarget.value })} />
+                <input value={rule.pattern} placeholder={t('dict.patternPlaceholder')} onChange={(e) => setRule(index, { pattern: e.currentTarget.value })} />
+                <input value={rule.replacement} placeholder={t('dict.replacementPlaceholder')} onChange={(e) => setRule(index, { replacement: e.currentTarget.value })} />
                 <label className="check-inline">
                   <input type="checkbox" checked={rule.enabled} onChange={(e) => setRule(index, { enabled: e.currentTarget.checked })} />
-                  启用
+                  {t('common.enable')}
                 </label>
                 <button type="button" className="danger" onClick={() => setEditor((c) => (c ? { ...c, rules: c.rules.filter((_, i) => i !== index) } : c))}>
-                  删除行
+                  {t('dict.deleteRow')}
                 </button>
               </div>
             ))}
             <div className="row-actions">
               <button type="button" onClick={() => setEditor((c) => (c ? { ...c, rules: [...c.rules, { ...emptyRule }] } : c))}>
-                添加规则
+                {t('dict.addRule')}
               </button>
               <button type="button" className="button-primary" onClick={() => void save()}>
-                保存
+                {t('common.save')}
               </button>
               <button type="button" onClick={() => setEditor(null)}>
-                取消
+                {t('common.cancel')}
               </button>
             </div>
           </div>
@@ -154,20 +154,20 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
 
       <section className="panel">
         <header className="table-head">
-          <h2>词典列表</h2>
+          <h2>{t('dict.listTitle')}</h2>
         </header>
         {loading ? (
-          <p className="empty-state">加载中…</p>
+          <p className="empty-state">{t('common.loading')}</p>
         ) : dictionaries.length === 0 ? (
-          <p className="empty-state">暂无词典。新建后就可在合成前生效（更新后合成缓存自动失效）。</p>
+          <p className="empty-state">{t('dict.empty')}</p>
         ) : (
           <table className="data-table">
             <thead>
               <tr>
-                <th>名称</th>
-                <th>规则数</th>
-                <th>启用规则</th>
-                <th className="col-actions">操作</th>
+                <th>{t('dict.colName')}</th>
+                <th>{t('dict.colRules')}</th>
+                <th>{t('dict.colEnabled')}</th>
+                <th className="col-actions">{t('dict.colActions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -176,7 +176,7 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
                 return (
                   <tr key={dict.id}>
                     <td>
-                      <strong>{dict.name || '(未命名)'}</strong>
+                      <strong>{dict.name || t('dict.unnamed')}</strong>
                       <small className="cell-sub block-sub">{dict.id}</small>
                     </td>
                     <td>{dict.rules.length}</td>
@@ -184,10 +184,10 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
                     <td className="col-actions">
                       <div className="row-actions">
                         <button type="button" onClick={() => startEdit(dict)}>
-                          编辑
+                          {t('common.edit')}
                         </button>
                         <button type="button" className="danger" onClick={() => void onDelete(dict)}>
-                          删除
+                          {t('common.delete')}
                         </button>
                       </div>
                     </td>

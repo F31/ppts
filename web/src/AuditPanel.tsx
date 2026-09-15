@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ConnectError, listAuditArchives, listAuditEvents, type ClientIdentity } from './api';
+import { useI18n } from './i18n';
 import type { AuditArchiveFile, AuditEvent } from './types';
 
 type Props = {
@@ -15,9 +16,9 @@ type AuditState = {
 
 const emptyState: AuditState = { loading: false, error: '', events: [], archives: [] };
 
-function formatTime(unix: number) {
+function formatTime(unix: number, locale: string) {
   if (!unix) return '-';
-  return new Date(unix * 1000).toLocaleString('zh-CN', { hour12: false });
+  return new Date(unix * 1000).toLocaleString(locale, { hour12: false });
 }
 
 function formatSize(bytes: number) {
@@ -27,6 +28,8 @@ function formatSize(bytes: number) {
 }
 
 export function AuditPanel({ identity }: Props) {
+  const { t, lang } = useI18n();
+  const locale = lang === 'zh' ? 'zh-CN' : 'en-US';
   const [action, setAction] = useState('');
   const [resourceType, setResourceType] = useState('');
   const [sinceHours, setSinceHours] = useState('24');
@@ -46,7 +49,7 @@ export function AuditPanel({ identity }: Props) {
       const denied = error instanceof ConnectError && error.code === 'permission_denied';
       setState({
         loading: false,
-        error: denied ? '当前用户需要 admin 或 owner 角色才能查看审计。' : error instanceof Error ? error.message : '审计加载失败',
+        error: denied ? t('audit.denied') : error instanceof Error ? error.message : t('audit.loadFailed'),
         events: [],
         archives: []
       });
@@ -58,36 +61,36 @@ export function AuditPanel({ identity }: Props) {
   }, []);
 
   return (
-    <section className="audit-panel" aria-label="租户审计">
+    <section className="audit-panel" aria-label={t('audit.aria')}>
       <header>
         <div>
-          <span className="eyebrow">Tenant Audit</span>
-          <h2>审计与归档</h2>
+          <span className="eyebrow">{t('audit.eyebrow')}</span>
+          <h2>{t('audit.title')}</h2>
         </div>
         <button type="button" disabled={state.loading} onClick={() => void load()}>
-          {state.loading ? '刷新中…' : '刷新'}
+          {state.loading ? t('audit.refreshing') : t('common.refresh')}
         </button>
       </header>
       <div className="audit-filters">
-        <input value={action} onChange={(event) => setAction(event.target.value)} placeholder="action 过滤" />
-        <input value={resourceType} onChange={(event) => setResourceType(event.target.value)} placeholder="resource_type" />
+        <input value={action} onChange={(event) => setAction(event.target.value)} placeholder={t('audit.filterAction')} />
+        <input value={resourceType} onChange={(event) => setResourceType(event.target.value)} placeholder={t('audit.filterResource')} />
         <select value={sinceHours} onChange={(event) => setSinceHours(event.target.value)}>
-          <option value="1">近 1 小时</option>
-          <option value="24">近 24 小时</option>
-          <option value="168">近 7 天</option>
-          <option value="0">全部</option>
+          <option value="1">{t('audit.last1h')}</option>
+          <option value="24">{t('audit.last24h')}</option>
+          <option value="168">{t('audit.last7d')}</option>
+          <option value="0">{t('audit.all')}</option>
         </select>
       </div>
       {state.error && <p className="api-status error">{state.error}</p>}
       <div className="audit-list">
         {state.events.length === 0 && !state.error ? (
-          <p className="empty-state">暂无匹配审计事件。</p>
+          <p className="empty-state">{t('audit.empty')}</p>
         ) : (
           state.events.map((event) => (
             <article key={event.id}>
               <div>
                 <strong>{event.action}</strong>
-                <span>{formatTime(event.createdAtUnix)}</span>
+                <span>{formatTime(event.createdAtUnix, locale)}</span>
               </div>
               <p>{event.resourceType} · {event.resourceId || '-'}</p>
               <small>{event.actorUser || 'system'}</small>
@@ -96,14 +99,14 @@ export function AuditPanel({ identity }: Props) {
         )}
       </div>
       <div className="archive-list">
-        <strong>归档文件</strong>
+        <strong>{t('audit.archives')}</strong>
         {state.archives.length === 0 ? (
-          <p>暂无归档。</p>
+          <p>{t('audit.noArchives')}</p>
         ) : (
           state.archives.map((file) => (
             <div key={file.objectKey}>
               <span>{file.objectKey}</span>
-              <small>{formatSize(file.sizeBytes)} · {formatTime(file.updatedAtUnix)}</small>
+              <small>{formatSize(file.sizeBytes)} · {formatTime(file.updatedAtUnix, locale)}</small>
             </div>
           ))
         )}

@@ -234,7 +234,7 @@ export type UploadSession = {
 export type CompletedUpload = {
   sourceRevisionId: string;
   jobId: string;
-  warnings: string[];
+  warnings?: string[];
 };
 
 export async function createUpload(
@@ -393,6 +393,24 @@ export async function listJobs(identity: ClientIdentity, projectId?: string): Pr
     pageSize: 50
   });
   return data.jobs ?? [];
+}
+
+export type JobPage = { jobs: Job[]; nextCursor: string };
+
+export async function listJobsPage(
+  identity: ClientIdentity,
+  params: { projectId?: string; cursor?: string; pageSize: number }
+): Promise<JobPage> {
+  const data = await connectJSON<{ jobs?: Job[]; nextCursor?: { value?: string } }>(
+    identity,
+    '/ppts.v1.JobService/List',
+    {
+      projectId: params.projectId ?? '',
+      pageSize: params.pageSize,
+      ...(params.cursor ? { cursor: { value: params.cursor } } : {})
+    }
+  );
+  return { jobs: data.jobs ?? [], nextCursor: data.nextCursor?.value ?? '' };
 }
 
 export async function getJob(identity: ClientIdentity, jobId: string): Promise<Job> {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useI18n } from './i18n';
 import type { ScriptRevision, ScriptSegment } from './types';
 
 type Props = {
@@ -9,6 +10,7 @@ type Props = {
 };
 
 export function ScriptEditor({ script, onChange, commit, onCommitError }: Props) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState(script.segments.map((segment) => segment.displayText).join('\n\n'));
   const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving'>('saved');
   const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
@@ -48,7 +50,7 @@ export function ScriptEditor({ script, onChange, commit, onCommitError }: Props)
           })
           .catch((error) => {
             setSaveState('saved');
-            onCommitError?.(error instanceof Error ? error.message : '讲稿保存失败');
+            onCommitError?.(error instanceof Error ? error.message : t('script.saveFailed'));
           });
       }, 220);
     }, 500);
@@ -56,13 +58,13 @@ export function ScriptEditor({ script, onChange, commit, onCommitError }: Props)
   }, [draft, onChange, commit, saveState, script]);
 
   return (
-    <section className="editor-card" aria-label="讲稿编辑">
+    <section className="editor-card" aria-label={t('script.aria')}>
       <header>
         <div>
-          <span className="eyebrow">当前页讲稿</span>
+          <span className="eyebrow">{t('script.currentSlide')}</span>
           <h2>{script.slideId}</h2>
         </div>
-        <span className={`save-state ${saveState}`}>{saveState === 'saved' ? '已保存' : saveState === 'saving' ? '保存中' : '未保存'}</span>
+        <span className={`save-state ${saveState}`}>{saveState === 'saved' ? t('script.saved') : saveState === 'saving' ? t('script.saving') : t('script.dirty')}</span>
       </header>
       <textarea
         value={draft}
@@ -73,16 +75,16 @@ export function ScriptEditor({ script, onChange, commit, onCommitError }: Props)
         }}
       />
       <footer>
-        <span>revision {script.revision} · {modeLabel(script.mode)}</span>
-        <span>{script.status === 'locked' ? '已锁定' : script.status === 'approved' ? '已审核' : '草稿'}</span>
+        <span>{t('script.revision', { revision: script.revision, mode: modeLabel(script.mode, t) })}</span>
+        <span>{script.status === 'locked' ? t('script.locked') : script.status === 'approved' ? t('script.approved') : t('script.draft')}</span>
       </footer>
       {anchors.length > 0 && (
-        <div className="anchor-strip" aria-label="来源锚点">
-          <strong>{anchors.length} 个来源锚点</strong>
-          <span>{visualCount > 0 ? `含 ${visualCount} 个视觉锚点` : '结构锚点'}</span>
+        <div className="anchor-strip" aria-label={t('script.currentSlide')}>
+          <strong>{t('script.anchors', { count: anchors.length })}</strong>
+          <span>{visualCount > 0 ? t('script.visualAnchors', { count: visualCount }) : t('script.structuralAnchors')}</span>
           {anchors.slice(0, 3).map((anchor, index) => (
             <em key={`${anchor.slideId}-${anchor.shapeId}-${index}`}>
-              {anchor.kind.startsWith('visual_') ? '视觉' : '结构'} {Math.round(anchor.confidence * 100)}% · {anchor.raw}
+              {anchor.kind.startsWith('visual_') ? t('script.visual') : t('script.structural')} {Math.round(anchor.confidence * 100)}% · {anchor.raw}
             </em>
           ))}
         </div>
@@ -91,13 +93,13 @@ export function ScriptEditor({ script, onChange, commit, onCommitError }: Props)
   );
 }
 
-function modeLabel(mode: ScriptRevision['mode']) {
+function modeLabel(mode: ScriptRevision['mode'], t: (key: string) => string) {
   switch (mode) {
     case 'SCRIPT_MODE_POLISH':
-      return '润色讲解';
+      return t('editor.modes.polish');
     case 'SCRIPT_MODE_AI_GENERATED':
-      return 'AI 生成讲解';
+      return t('editor.modes.ai');
     default:
-      return '原文朗读';
+      return t('editor.modes.original');
   }
 }

@@ -8,6 +8,7 @@ import {
   type ClientIdentity
 } from '../api';
 import { ImportDialog } from '../components/ImportDialog';
+import { useI18n } from '../i18n';
 import { Link } from '../router';
 import { type Project } from '../types';
 
@@ -18,6 +19,7 @@ type RowMeta = {
 };
 
 export function Projects({ identity }: { identity: ClientIdentity }) {
+  const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [meta, setMeta] = useState<Record<string, RowMeta>>({});
   const [title, setTitle] = useState('');
@@ -67,12 +69,12 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
         setProjects(list);
         await refreshMeta(list);
       } catch (err) {
-        setError(err instanceof Error ? err.message : '项目加载失败');
+        setError(err instanceof Error ? err.message : t('projects.loadFailed'));
       } finally {
         setLoading(false);
       }
     },
-    [identity, refreshMeta]
+    [identity, refreshMeta, t]
   );
 
   useEffect(() => {
@@ -87,22 +89,22 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
       const project = await createProject(identity, trimmed);
       setProjects((current) => [project, ...current]);
       setTitle('');
-      pushNotice(`项目「${project.title}」已创建，可导入 PPTX。`);
+      pushNotice(t('projects.created', { title: project.title }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '项目创建失败');
+      setError(err instanceof Error ? err.message : t('projects.createFailed'));
     } finally {
       setCreating(false);
     }
   };
 
   const archive = async (project: Project) => {
-    if (!window.confirm(`归档项目「${project.title}」？归档不等于删除；成品与配音记录仍按策略保留。`)) return;
+    if (!window.confirm(t('projects.archiveConfirm', { title: project.title }))) return;
     try {
       await archiveProject(identity, project.id);
       setProjects((current) => current.filter((item) => item.id !== project.id));
-      pushNotice(`项目「${project.title}」已归档。`);
+      pushNotice(t('projects.archived', { title: project.title }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : '归档失败');
+      setError(err instanceof Error ? err.message : t('projects.archiveFailed'));
     }
   };
 
@@ -110,18 +112,18 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
     <div className="page-stack">
       <section className="page-header-row">
         <div>
-          <span className="eyebrow">讲解项目</span>
-          <h1>PPT 资源</h1>
+          <span className="eyebrow">{t('projects.eyebrow')}</span>
+          <h1>{t('projects.title')}</h1>
         </div>
         <div className="page-actions">
           <div className="create-inline">
-            <input value={title} placeholder="新项目标题" onChange={(e) => setTitle(e.currentTarget.value)} />
+            <input value={title} placeholder={t('projects.newTitle')} onChange={(e) => setTitle(e.currentTarget.value)} />
             <button type="button" onClick={() => void create()} disabled={creating}>
-              {creating ? '创建中…' : '新建项目'}
+              {creating ? t('projects.creating') : t('projects.newProject')}
             </button>
           </div>
-          <button type="button" className="button-primary" onClick={() => void load(true)} title="刷新列表">
-            刷新
+          <button type="button" className="button-primary" onClick={() => void load(true)} title={t('common.refresh')}>
+            {t('common.refresh')}
           </button>
         </div>
       </section>
@@ -135,27 +137,27 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
 
       <section className="panel">
         <header className="table-head">
-          <h2>项目与导入</h2>
+          <h2>{t('projects.listTitle')}</h2>
         </header>
         {loading ? (
-          <p className="empty-state">加载中…</p>
+          <p className="empty-state">{t('common.loading')}</p>
         ) : projects.length === 0 ? (
           <div className="empty-state first-run">
-            <p>还没有讲解项目。先创建一个项目，再导入第一份 PPT（PPTX，云端处理）。</p>
+            <p>{t('projects.empty')}</p>
             <button type="button" className="button-primary" onClick={() => void create()}>
-              创建第一个项目
+              {t('projects.createFirst')}
             </button>
           </div>
         ) : (
           <table className="data-table">
             <thead>
               <tr>
-                <th>PPT 名称</th>
-                <th>页数</th>
-                <th>版本</th>
-                <th>配音状态</th>
-                <th>创建时间</th>
-                <th className="col-actions">操作</th>
+                <th>{t('projects.colName')}</th>
+                <th>{t('projects.colSlides')}</th>
+                <th>{t('projects.colRevision')}</th>
+                <th>{t('projects.colVoice')}</th>
+                <th>{t('projects.colCreated')}</th>
+                <th className="col-actions">{t('projects.colActions')}</th>
               </tr>
             </thead>
             <tbody>
@@ -164,7 +166,7 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
                 return (
                   <tr key={project.id}>
                     <td>
-                      <Link to={`/projects/${project.id}/editor`} className="project-name" title="进入工作台">
+                      <Link to={`/projects/${project.id}/editor`} className="project-name" title={t('projects.enter')}>
                         {project.title}
                       </Link>
                       <small className="cell-sub">{project.id}</small>
@@ -173,23 +175,23 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
                     <td>{project.currentRevision}</td>
                     <td>
                       <span className={`state-tag ${row?.voiced ? 'succeeded' : 'empty'}`}>
-                        {row ? (row.voiced ? '已配音' : '未配音') : '…'}
+                        {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
                       </span>
                     </td>
-                    <td>{new Date(project.createdAtUnix * 1000).toLocaleDateString('zh-CN')}</td>
+                    <td>{new Date(project.createdAtUnix * 1000).toLocaleDateString()}</td>
                     <td className="col-actions">
                       <div className="row-actions">
                         <Link to={`/projects/${project.id}/editor`} className="button-ghost">
-                          查看
+                          {t('projects.view')}
                         </Link>
                         <Link to={`/projects/${project.id}/editor?draft=1`} className="button-ghost">
-                          配音
+                          {t('projects.dub')}
                         </Link>
-                        <button type="button" onClick={() => setImportTarget(project)} title="导入 PPTX">
-                          导入
+                        <button type="button" onClick={() => setImportTarget(project)} title={t('projects.import')}>
+                          {t('projects.import')}
                         </button>
-                        <button type="button" className="danger" onClick={() => void archive(project)} title="归档">
-                          归档
+                        <button type="button" className="danger" onClick={() => void archive(project)} title={t('projects.archive')}>
+                          {t('projects.archive')}
                         </button>
                       </div>
                     </td>
@@ -207,7 +209,7 @@ export function Projects({ identity }: { identity: ClientIdentity }) {
           project={importTarget}
           onClose={() => setImportTarget(null)}
           onCompleted={() => {
-            pushNotice(`已入队解析，处理完成后可在工作台编辑。`);
+            pushNotice(t('projects.queued'));
             void load(true);
           }}
         />

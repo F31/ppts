@@ -15,10 +15,12 @@ import { SettingsMembers } from './pages/SettingsMembers';
 import { SettingsModels } from './pages/SettingsModels';
 import { SettingsUsage } from './pages/SettingsUsage';
 import { SessionContext, type Session } from './session';
+import { useI18n } from './i18n';
 import type { Role } from './types';
 
 function AppContent() {
   const route = useRoute();
+  const { t } = useI18n();
   const [identity, setIdentity] = useState<ClientIdentity | null>(() => {
     const dev = storedDevIdentity();
     const token = storedAccessToken();
@@ -78,7 +80,7 @@ function AppContent() {
 
   // 未完成 OIDC 回调判定前不闪登录页（深链接登录 A05）。
   if (!oidcDone) {
-    return <div className="splash-screen">正在恢复会话…</div>;
+    return <div className="splash-screen">{t('app.restoring')}</div>;
   }
   if (!identity) {
     return (
