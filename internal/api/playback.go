@@ -73,11 +73,11 @@ func resolvePagePngKeys(ctx context.Context, jobs JobStore, objects objectstore.
 	if err != nil || ref == "" {
 		return nil, err
 	}
-	manifest, err := loadPageManifest(ctx, tenantID, ref)
+	manifest, err := loadPageManifest(ctx, objects, tenantID, ref)
 	if err != nil {
 		return nil, err
 	}
-	bundle, _, err := loadBundle(ctx, tenantID, timelineKey)
+	bundle, _, err := loadBundle(ctx, objects, tenantID, timelineKey)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +150,7 @@ func signManifestResources(ctx context.Context, objects objectstore.ObjectStore,
 	return resources, nil
 }
 
-func (s *PlaybackService) loadPageManifest(ctx context.Context, tenantID, rawKey string) (*app.PageManifest, error) {
+func loadPageManifest(ctx context.Context, objects objectstore.ObjectStore, tenantID, rawKey string) (*app.PageManifest, error) {
 	key, err := objectstore.Parse(rawKey)
 	if err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ func (s *PlaybackService) loadPageManifest(ctx context.Context, tenantID, rawKey
 	if err := key.EnsureTenant(tenantID); err != nil {
 		return nil, err
 	}
-	r, _, err := s.objects.Get(ctx, key)
+	r, _, err := objects.Get(ctx, key)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +186,7 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 	if ttl <= 0 || ttl > 24*time.Hour {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("ttl_seconds must be between 1 and 86400"))
 	}
-	bundle, _, err := s.loadBundle(ctx, p.TenantID, req.Msg.GetTimelineKey())
+	bundle, _, err := loadBundle(ctx, s.objects, p.TenantID, req.Msg.GetTimelineKey())
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -197,7 +197,7 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 	expires := time.Now().Add(ttl).Unix()
 	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(pagePNGKeys)+len(bundle.Timeline.Slides))
 	appendSigned := func(rawKey string, typ pptsv1.PlaybackResourceType, slideID, segmentID string) error {
-		key, meta, err := s.statTenantObject(ctx, p.TenantID, rawKey)
+		key, meta, err := statTenantObject(ctx, s.objects, p.TenantID, rawKey)
 		if err != nil {
 			return err
 		}
@@ -248,12 +248,12 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 	}), nil
 }
 
-func (s *PlaybackService) loadBundle(ctx context.Context, tenantID, rawKey string) (*app.TimelineAsset, objectstore.ObjectMeta, error) {
-	key, meta, err := s.statTenantObject(ctx, tenantID, rawKey)
+func loadBundle(ctx context.Context, objects objectstore.ObjectStore, tenantID, rawKey string) (*app.TimelineAsset, objectstore.ObjectMeta, error) {
+	key, meta, err := statTenantObject(ctx, objects, tenantID, rawKey)
 	if err != nil {
 		return nil, objectstore.ObjectMeta{}, err
 	}
-	r, _, err := s.objects.Get(ctx, key)
+	r, _, err := objects.Get(ctx, key)
 	if err != nil {
 		return nil, objectstore.ObjectMeta{}, err
 	}
@@ -269,7 +269,7 @@ func (s *PlaybackService) loadBundle(ctx context.Context, tenantID, rawKey strin
 	return &bundle, meta, nil
 }
 
-func (s *PlaybackService) statTenantObject(ctx context.Context, tenantID, rawKey string) (objectstore.ObjectKey, objectstore.ObjectMeta, error) {
+func statTenantObject(ctx context.Context, objects objectstore.ObjectStore, tenantID, rawKey string) (objectstore.ObjectKey, objectstore.ObjectMeta, error) {
 	key, err := objectstore.Parse(rawKey)
 	if err != nil {
 		return objectstore.ObjectKey{}, objectstore.ObjectMeta{}, err
@@ -277,7 +277,7 @@ func (s *PlaybackService) statTenantObject(ctx context.Context, tenantID, rawKey
 	if err := key.EnsureTenant(tenantID); err != nil {
 		return objectstore.ObjectKey{}, objectstore.ObjectMeta{}, err
 	}
-	r, meta, err := s.objects.Get(ctx, key)
+	r, meta, err := objects.Get(ctx, key)
 	if err != nil {
 		return objectstore.ObjectKey{}, objectstore.ObjectMeta{}, err
 	}

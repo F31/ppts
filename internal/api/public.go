@@ -147,7 +147,7 @@ func publicGetManifest(w http.ResponseWriter, r *http.Request, store public.Stor
 	}
 	// 页面 PNG 为可选项：获取失败则优雅降级为音频+字幕。
 	pagePngKeys, _ := resolvePagePngKeys(ctx, jobs, objects, pub.TenantID, pub.ProjectID, timelineKey)
-	bundle, _, err := loadBundle(ctx, pub.TenantID, timelineKey)
+	bundle, _, err := loadBundle(ctx, objects, pub.TenantID, timelineKey)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
