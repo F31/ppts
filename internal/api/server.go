@@ -80,6 +80,11 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
+	// M3 ⑥：无备注页讲稿来源存储（pool 可用时启用；nil 时端点返回 feature_disabled）。
+	var scriptSources app.ScriptSourceStore
+	if pool != nil {
+		scriptSources = app.NewScriptSourceStore(pool)
+	}
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members, scriptSources), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy, opt.Members), handlerOpts...)
@@ -104,11 +109,6 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
 	if pool != nil {
 		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth)
-	}
-	// M3 ⑥：无备注页讲稿来源存储（pool 可用时启用；nil 时端点返回 feature_disabled）。
-	var scriptSources app.ScriptSourceStore
-	if pool != nil {
-		scriptSources = app.NewScriptSourceStore(pool)
 	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
 	registerNarrationRoutes(mux, scripts, opt.Members, auth)

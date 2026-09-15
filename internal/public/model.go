@@ -89,5 +89,9 @@ type Store interface {
 	// Review 由管理员审核：approve=true 置 approved，否则置 rejected。
 	Review(ctx context.Context, tenantID, id string, approve bool, reviewer string) (*Publication, error)
 	// Delete 由管理员删除公开作品。
+	// ListMine 列出某租户某用户的全部发布（含未批准），供"我的发布"页使用。
+	ListMine(ctx context.Context, tenantID, createdBy string, status Status) ([]*Publication, error)
+	// ListPending 列出某租户待审核的发布，供审核队列使用。
+	ListPending(ctx context.Context, tenantID string, kind Kind) ([]*Publication, error)
 	Delete(ctx context.Context, tenantID, id string) error
 }

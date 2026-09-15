@@ -61,7 +61,7 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 
 // resolvePagePngKeys 按 timeline 页序返回页面 PNG 键；解析阶段未渲染或页数不齐时返回空（优雅降级为音频+字幕）。
 // 供控制台 GetNarration 与公开区匿名清单复用。
-func resolvePagePngKeys(ctx context.Context, jobs JobStore, objects objectstore.ObjectStore, tenantID, projectID, timelineKey string) ([]string, error) {
+func resolvePagePngKeys(ctx context.Context, jobs JobCreator, objects objectstore.ObjectStore, tenantID, projectID, timelineKey string) ([]string, error) {
 	parseJob, err := jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
 	if errors.Is(err, pipeline.ErrNoSucceededJob) {
 		return nil, nil
@@ -106,7 +106,7 @@ func signManifestResources(ctx context.Context, objects objectstore.ObjectStore,
 	}
 	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(pagePngKeys)+len(bundle.Timeline.Slides))
 	appendSigned := func(rawKey string, typ pptsv1.PlaybackResourceType, slideID, segmentID string) error {
-		key, meta, err := statTenantObject(ctx, tenantID, rawKey)
+		key, meta, err := statTenantObject(ctx, objects, tenantID, rawKey)
 		if err != nil {
 			return err
 		}

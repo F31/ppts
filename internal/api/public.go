@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
