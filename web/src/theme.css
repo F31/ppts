@@ -144,6 +144,12 @@ html[data-theme="light"] .player-speed { color: #334155; }
 html[data-theme="light"] .player-speed select { border-color: rgba(15,23,42,.14); background: #fff; color: #334155; }
 html[data-theme="light"] .player-fullscreen { color: #334155; background: rgba(15,23,42,.06); }
 html[data-theme="light"] .player-note { color: #b45309; }
+/* B4-M4（A25）：底部吸附条在浅色下必须是浅底深字——控件与服务状态在浅色下也要可读。 */
+html[data-theme="light"] .player-dock { background: linear-gradient(180deg, rgba(255,255,255,0), rgba(255,255,255,.94) 34%); }
+html[data-theme="light"] .player-shortcuts { color: #64748b; }
+@media (max-width: 767px) {
+  html[data-theme="light"] .player-dock { background: rgba(255,255,255,.97); border-top-color: rgba(15,23,42,.12); }
+}
 html[data-theme="light"] .anchor-strip strong { color: #4f46e5; }
 html[data-theme="light"] .snapshot-banner { background: rgba(8,145,178,.08); border-color: rgba(8,145,178,.3); }
 html[data-theme="light"] .snapshot-dot { background: #0891b2; box-shadow: 0 0 0 4px rgba(8,145,178,.18); }

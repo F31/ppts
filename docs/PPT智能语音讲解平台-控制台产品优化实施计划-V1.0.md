@@ -470,7 +470,12 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **配套修复（编译阻塞）**：`c5a723e`（B3-M5）引入 `activeGenJobs` 时**漏声明 state**、`NarrationEstimate` **漏导入**，`tsc -b` 必失败；`Watch.tsx` 从 `../api` 导入了未再导出的 `PlaybackManifest`；`scopeSlideIds` 闭包内未收窄可辨识联合。均已修复。
   - **i18n**：中英各 23 键（`err.*`×5、`app.roleLoadFailed`、`public.queueLoadFailed`/`audioFailed`、`usage.storageFailed`/`policyFailed`、`home.loadFailed*`×3、`home.stat.unavailable`、`editor.simulatedVoice*`×2/`fixVoice`、`artifacts.download*`×3、`members.*`×3、`gateway.immutableWhenEditing`）；`styles.css` 新增 `.load-failure` 失败态容器与 `.narration-note.warn`，`theme.css` 补浅色覆盖（错误在浅色下也必须可读）。
   - **验收**：A26（同时消除 A22 的"闪现有权限、请求必 403"一类假能力）。附：本轮首次打通沙箱内真实验证——`npm run build`（tsc -b + vite build）与 `go build ./...` 均通过，见「验证回路」小节。
-- **B4-M4 移动端单列 + 底部播放器 + 播放快捷键【待实施】**（A25）：编辑器/播放器单列化，播放器底部吸附；空格/方向键控制播放且**不抢占输入焦点**。
+- **B4-M4 移动端单列 + 底部播放器 + 播放快捷键【已实施】**（A25）：
+  - **播放快捷键**（`Player.tsx`）：空格 播放/暂停、← → 快退/快进 5 秒、↑ ↓ 上一页/下一页。**不抢占输入**——焦点位于 `input`（含进度条滑块）/ `select` / `textarea` / `button` / `a` / `contenteditable` 时一律让位，对齐 V1_6 §397「空格仅在非文本输入焦点时控制播放；方向键不抢占文本编辑」。用 latest-ref 承载最新状态，监听器只挂一次（避免 rAF 每帧重挂）；播放器内新增快捷键说明行。
+  - **底部播放器**（`styles.css`）：控制条 + 进度条收进 `.player-dock`；<768px 时 `position: fixed` 吸附视口底部（含 `env(safe-area-inset-bottom)`），卡片补 `padding-bottom` 避免遮挡；`index.html` 加 `viewport-fit=cover` 使安全区生效；桌面端为 `sticky`。
+  - **响应式断点对齐设计稿**（V1_6 §379）：≥1200px 三栏；768–1199px 缩略图横排 + 两区；<768px 单列 + 底部操作（原为 1280/1040/860 三档）。触控目标按 V1_6 §395 收紧到 ≈44px（播放控制、页选择、主导航、顶栏按钮）。
+  - **浅色主题**：`theme.css` 为 `.player-dock`/`.player-shortcuts` 补浅色覆盖，避免底部吸附条在浅色下变深色（A26 同源要求：错误与控件在浅色下也要可读）。
+  - **i18n**：中英各 2 键（`player.dock`、`player.shortcutsHint`）。验证：`tsc -b` + `vite build` 通过。
 - **B4-M5 首页待处理事项与最近完成成品【待实施】**（配 A23/A26 语义）：首页补"待处理事项"（待确认稿、待审核作品、失败/待重试任务）与"最近完成成品"，均以真实接口为准。
 - **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。

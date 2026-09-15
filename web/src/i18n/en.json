@@ -609,6 +609,8 @@
   "player.exitFullscreen": "Exit fullscreen",
   "player.buffering": "Buffering…",
   "player.noAudio": "No narration audio for this work; showing subtitles and slides only.",
+  "player.dock": "Playback controls",
+  "player.shortcutsHint": "Shortcuts: Space play/pause · ← → seek 5s · ↑ ↓ previous/next slide (inactive while the focus is in a form field)",
 
   "artifacts.eyebrow": "Project artifacts & versions",
   "artifacts.subtitle": "Artifacts bind a fixed generation snapshot; newer drafts are flagged as \"previous version\" in the player.",

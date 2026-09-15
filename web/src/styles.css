@@ -191,6 +191,9 @@ button, textarea, input { font: inherit; }
 .player-speed select { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 6px 8px; background: rgba(5,10,20,.7); color: #edf1f7; font-size: 13px; }
 .player-fullscreen { border: 0; border-radius: 999px; padding: 10px 15px; cursor: pointer; color: #edf1f7; background: rgba(255,255,255,.08); }
 .player-note { margin: 10px 0 0; font-size: 13px; color: #fbbf24; }
+/* B4-M4（A25）：控制条 + 进度条的容器；移动端吸附到视口底部（见文件末响应式段）。 */
+.player-dock { position: sticky; bottom: 0; z-index: 10; margin-top: 4px; padding: 6px 0 2px; background: linear-gradient(180deg, rgba(13,17,26,0), rgba(13,17,26,.92) 34%); }
+.player-shortcuts { margin: 10px 0 0; font-size: 12px; color: #8aa1c4; }
 .player-card.is-fullscreen { max-width: 100%; border-radius: 0; }
 .player-card.is-fullscreen .viewport { min-height: calc(100vh - 180px); }
 .asset-panel { padding: 16px 18px; color: #c9d6ea; }
@@ -478,15 +481,22 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
 .job-detail { margin-bottom: 0; }
 
 /* ============ 响应式 ============ */
-@media (max-width: 1280px) {
-  .editor-layout { grid-template-columns: 180px minmax(280px, 1fr) minmax(320px, 1fr); }
+/* 断点对齐设计方案 V1_6 §379：≥1200px 完整三栏；768–1199px 缩略图横排 + 两区；<768px 单列 + 底部操作。
+   触控目标以 ~44px 为设计目标（V1_6 §395）。 */
+@media (max-width: 1199px) {
+  /* 缩略图 rail 收成横排条（占满整行），编辑区与播放器并排 → 两区。 */
+  .editor-layout, .editor-layout-3col { grid-template-columns: minmax(240px, 1fr) minmax(300px, 1fr); }
+  .slide-rail-v2 { grid-column: 1 / -1; display: flex; gap: 6px; overflow-x: auto; max-height: none; }
+  .slide-rail-v2 button { width: auto; min-width: 132px; margin-bottom: 0; }
 }
 @media (max-width: 1040px) {
   .app-shell { grid-template-columns: 200px 1fr; }
+  .editor-layout, .editor-layout-3col { grid-template-columns: 1fr; }
 }
-@media (max-width: 860px) {
+@media (max-width: 767px) {
+  /* <768px：单列 + 底部操作（B4-M4 / A25）。 */
   .app-shell { grid-template-columns: 1fr; }
-  .console-sidebar { flex-direction: row; align-items: center; overflow-x: auto; padding: 10px 14px; }
+  .console-sidebar { flex-direction: row; align-items: center; overflow-x: auto; padding: calc(10px + env(safe-area-inset-top, 0px)) 14px 10px; }
   .primary-nav { display: flex; }
   .nav-item { white-space: nowrap; }
   .secondary-nav { display: none; }
@@ -495,10 +505,22 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
   .login-page { grid-template-columns: 1fr; }
   .login-brand { padding: 32px 20px; }
   .login-card { max-width: 100%; }
-  .editor-layout { grid-template-columns: 1fr; }
-  .slide-rail-v2 { display: flex; gap: 6px; overflow-x: auto; }
-  .slide-rail-v2 button { min-width: 140px; }
+  .editor-layout, .editor-layout-3col { grid-template-columns: 1fr; }
+  .slide-rail-v2 { grid-column: auto; display: flex; gap: 6px; overflow-x: auto; max-height: none; }
+  .slide-rail-v2 button { min-width: 132px; }
   .dict-rule-row { grid-template-columns: 1fr; }
+  .viewport, .slide-fallback { min-height: 240px; height: 240px; }
+  .subtitle-strip { left: 12px; right: 12px; font-size: 16px; }
+  /* 播放器底部吸附：控制条 + 进度条固定在视口底部；卡片留出等高位避免遮挡。 */
+  .player-card { padding-bottom: 108px; }
+  .player-dock { position: fixed; left: 0; right: 0; bottom: 0; margin: 0; padding: 8px 14px calc(8px + env(safe-area-inset-bottom, 0px)); background: rgba(9,13,21,.97); border-top: 1px solid rgba(255,255,255,.12); backdrop-filter: blur(10px); }
+  .player-controls { flex-wrap: wrap; gap: 8px; margin: 0 0 6px; }
+  .player-controls button, .player-fullscreen { min-height: 44px; min-width: 44px; padding: 10px 16px; }
+  .slide-map button { min-height: 44px; }
+  .player-shortcuts { display: none; }
+  /* 触控目标 ≈44px（V1_6 §395）：移动端其余主要点击区。 */
+  .nav-item, .nav-sub { min-height: 44px; }
+  .topbar-actions button { min-height: 44px; min-width: 44px; }
 }
 
 /* B4-M3（A26）：失败态区块——"明确不可用 + 原因 + 修复入口"的统一外观。

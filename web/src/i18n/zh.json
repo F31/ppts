@@ -609,6 +609,8 @@
   "player.exitFullscreen": "退出全屏",
   "player.buffering": "缓冲中…",
   "player.noAudio": "本作品暂无配音音频，仅展示字幕与画面",
+  "player.dock": "播放控制",
+  "player.shortcutsHint": "快捷键：空格 播放/暂停 · ← → 快退/快进 5 秒 · ↑ ↓ 上一页/下一页（光标在输入框内时不生效）",
 
   "artifacts.eyebrow": "项目成品与版本",
   "artifacts.subtitle": "成品绑定固定生成快照；当前草稿更新会在播放器提示「此前版本」。",

@@ -9,6 +9,8 @@ type PlayerProps = {
 };
 
 const SPEEDS = [0.5, 1, 1.25, 1.5, 2];
+// B4-M4（A25）：方向键快进/快退步长。
+const SEEK_STEP_US = 5_000_000;
 
 type AudioSegment = { startUs: number; endUs: number; url: string };
 
@@ -207,6 +209,55 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
     }
   };
 
+  // B4-M4（A25）：空格/方向键控制播放。
+  // **不抢占输入**：焦点位于 input（含进度条滑块）/ select / textarea / button / a /
+  // contenteditable 时一律让位——这样方向键在文本里正常移动光标、空格正常激活聚焦的按钮，
+  // 只有焦点落在普通容器（如正文）上时才由播放器接管。
+  // 用 latest-ref 承载最新状态，保证监听器只挂一次（避免每帧 rAF 更新都重挂）。
+  const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  keyHandlerRef.current = (event) => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+    const active = document.activeElement;
+    if (active) {
+      const tag = active.tagName.toLowerCase();
+      const ownsKeyboard =
+        tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'button' || tag === 'a';
+      if (ownsKeyboard || (active as HTMLElement).isContentEditable) return;
+    }
+    switch (event.key) {
+      case ' ':
+      case 'Spacebar':
+        event.preventDefault();
+        setPlaying((value) => !value);
+        return;
+      case 'ArrowLeft':
+      case 'ArrowRight': {
+        event.preventDefault();
+        const delta = event.key === 'ArrowLeft' ? -SEEK_STEP_US : SEEK_STEP_US;
+        const target = Math.min(timeline.durationUs, Math.max(0, positionUs + delta));
+        if (hasAudio) seekingRef.current = true;
+        setPositionUs(target);
+        return;
+      }
+      case 'ArrowUp':
+      case 'ArrowDown': {
+        event.preventDefault();
+        const index = timeline.slides.findIndex((slide) => slide.slideId === activeSlide.slideId);
+        const next = timeline.slides[index + (event.key === 'ArrowUp' ? -1 : 1)];
+        if (next) seek(progress(next.startUs, timeline.durationUs));
+        return;
+      }
+      default:
+        return;
+    }
+  };
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => keyHandlerRef.current(event);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
+
   return (
     <section
       className={`player-card${fullscreen ? ' is-fullscreen' : ''}`}
@@ -226,44 +277,47 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
         <div className="subtitle-strip">{activeSubtitle?.text ?? ' '}</div>
         {buffering && <div className="player-buffering">{t('player.buffering')}</div>}
       </div>
-      <div className="player-controls">
-        <button type="button" onClick={() => setPlaying((value) => !value)}>
-          {playing ? t('player.pause') : t('player.play')}
-        </button>
-        <button type="button" onClick={() => seek(0)}>
-          {t('player.restart')}
-        </button>
-        <span>
-          {usecToClock(positionUs)} / {usecToClock(timeline.durationUs)}
-        </span>
-        {hasAudio && (
-          <label className="player-speed">
-            <span>{t('player.speed')}</span>
-            <select
-              value={String(speed)}
-              onChange={(event) => setSpeed(Number(event.currentTarget.value))}
-            >
-              {SPEEDS.map((s) => (
-                <option key={String(s)} value={String(s)}>
-                  {s}×
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <button type="button" className="player-fullscreen" onClick={toggleFullscreen}>
-          {fullscreen ? t('player.exitFullscreen') : t('player.fullscreen')}
-        </button>
+      {/* B4-M4（A25）：控制条 + 进度条收进 .player-dock，移动端吸附到视口底部（<768px）。 */}
+      <div className="player-dock" aria-label={t('player.dock')}>
+        <div className="player-controls">
+          <button type="button" onClick={() => setPlaying((value) => !value)}>
+            {playing ? t('player.pause') : t('player.play')}
+          </button>
+          <button type="button" onClick={() => seek(0)}>
+            {t('player.restart')}
+          </button>
+          <span>
+            {usecToClock(positionUs)} / {usecToClock(timeline.durationUs)}
+          </span>
+          {hasAudio && (
+            <label className="player-speed">
+              <span>{t('player.speed')}</span>
+              <select
+                value={String(speed)}
+                onChange={(event) => setSpeed(Number(event.currentTarget.value))}
+              >
+                {SPEEDS.map((s) => (
+                  <option key={String(s)} value={String(s)}>
+                    {s}×
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button type="button" className="player-fullscreen" onClick={toggleFullscreen}>
+            {fullscreen ? t('player.exitFullscreen') : t('player.fullscreen')}
+          </button>
+        </div>
+        <input
+          className="timeline-range"
+          type="range"
+          min={0}
+          max={1000}
+          value={Math.round(progress(positionUs, timeline.durationUs) * 1000)}
+          onChange={(event) => seek(Number(event.currentTarget.value) / 1000)}
+          aria-label={t('player.progress')}
+        />
       </div>
-      <input
-        className="timeline-range"
-        type="range"
-        min={0}
-        max={1000}
-        value={Math.round(progress(positionUs, timeline.durationUs) * 1000)}
-        onChange={(event) => seek(Number(event.currentTarget.value) / 1000)}
-        aria-label={t('player.progress')}
-      />
       <div className="slide-map">
         {timeline.slides.map((slide) => (
           <button
@@ -277,6 +331,7 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
           </button>
         ))}
       </div>
+      <p className="player-shortcuts">{t('player.shortcutsHint')}</p>
       {!hasAudio && <p className="player-note">{t('player.noAudio')}</p>}
     </section>
   );
