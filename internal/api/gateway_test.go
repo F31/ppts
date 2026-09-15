@@ -100,7 +100,7 @@ var _ gateway.StoreResolver = (*fakeGatewayStore)(nil)
 
 func gwHandler(t *testing.T, store *fakeGatewayStore, role membership.Role) http.Handler {
 	t.Helper()
-	return NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t),
+	return NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
 		Options{Members: &fakeRoleReader{role: role}, Gateway: store})
 }
 

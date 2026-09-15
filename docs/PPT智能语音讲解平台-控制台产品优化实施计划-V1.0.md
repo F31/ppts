@@ -424,7 +424,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 > - **前端**：`cd web && node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build`（等价 `npm run build`）。前置：`web/node_modules` 是在 Linux 环境安装的，只含 linux 原生包，Windows 上会报 `Unable to resolve @typescript/typescript-win32-x64` / `Cannot find module '@rolldown/binding-win32-x64-msvc'` / `lightningcss.win32-x64-msvc`。修复方式二选一：本机重跑 `npm install`，或按 `optionalDependencies` 版本从 registry 下载对应 win32 包解压进 `node_modules/`（本次已就地补齐 `@typescript/typescript-win32-x64@7.0.2`、`@rolldown/binding-win32-x64-msvc@1.2.8`、`lightningcss-win32-x64-msvc@1.33.0`）。
 > - **后端**：`GOPROXY=https://goproxy.cn,direct GOSUMDB=off go build ./...`（`proxy.golang.org` 走 IPv6 不可达；模块缓存原本为空，需指定可达代理首次拉取）。
 > - **静态检查/测试**：`GOPROXY=https://goproxy.cn,direct GOSUMDB=off go vet ./internal/...`、`go test ./internal/...`。
-> - **已知前置缺陷**：`go vet` 目前会报 `internal/api` 与 `internal/app` 测试桩未同步 `artifact.Store.ListByProject`（B3-M1 接口新增的连带影响），以及 `NewHandler` 自 `63ede93` 起新增 `pool *pgxpool.Pool` 形参后 `server_test.go` 的 ~48 处调用未同步 → 测试包长期不可编译。修复属独立事项，见「遗留与后续」。
+> - **前置缺陷已修复（R-9，2026-09-16）**：`internal/api` 47 处 `NewHandler` 调用补 `pool` 实参、`internal/app` 测试桩补 `ListByProject`、`internal/integrations/render` 的 poppler 用例补 Skip 守卫（对齐同文件 LibreOffice 用例），另修 `internal/api/narration.go` 既存 import 乱序。**`go vet ./internal/...` 与 `go test ./internal/...` 现已全绿**（`internal/api` 45 个用例通过；14 项 Skip 全为环境依赖型：PG / ffmpeg / S3 / LLM·TTS 凭据 / LibreOffice / poppler），后续每个里程碑以此为回归基线。
 > 勘察结论（2026-09-16，逐文件核实）：① 角色由 `TenantService.Members` 读取后以 props 下传（`App.tsx:104-121`），**全仓无路由守卫**，仅两处 ad-hoc 角色分支（`ProjectEditor.canReview`、`PublicAdmin.isAdmin`）；② 模型服务仅"已配置 + 本次测试"两态，后端无持久化测试状态（`0023_model_gateways.sql` 无 tested_at/status 列）；③ 无 fake provider，`web/src/mockData.ts` 为死文件；④ Player 无任何键盘处理，无底部固定播放条；⑤ 首页为 hero/统计/最近项目/最近任务，无"待处理事项/最近成品"；⑥ 任务列表缺 范围/阶段/步骤/受影响页；`job_steps` 表**已存在但无任何 RPC 暴露**，`jobs.traceparent` 存在但未进 proto；⑦ **无**"我的租户列表"RPC，**无**任何 per-user 偏好存储（migrations 无偏好表）。
 
 - **B4-M1 权限边界组件（PermissionBoundary）【已实施】**：
@@ -518,7 +518,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-6 | 后端 `RegenerateSegments` 未实现成为 B2 关键路径 | 高 | 中 | 排在 B2 首位；若延期则暂以"整页重生成 + 明确影响范围"降级并标注 |
 | R-7 | 工作区存在大量未提交改动，与并行开发冲突 | 高 | 中 | 开工前先提交/整理当前控制台改动并建分支 |
 | R-8 | A04/A06 类口径与作用域缺陷易被反复遗漏 | 中 | 中 | 把 A01–A29 打成验收清单，每批次出口逐条勾选 |
-| R-9 | **后端测试包长期不可编译**（`NewHandler` 于 `63ede93` 加 `pool` 形参后 `server_test.go` ~48 处调用未同步；B3-M1 新增 `artifact.Store.ListByProject` 后 `internal/api`/`internal/app` 测试桩未实现） | 已发生 | 高 | 因 `go build` 不编译 `_test.go`，长期未被发现；B4-M3 期间经 `go vet` 暴露。修复=机械补形参与桩方法，随后 `go test ./internal/...` 建立基线 |
+| R-9 | ~~后端测试包长期不可编译~~ **【已解决 2026-09-16】**（`NewHandler` 于 `63ede93` 加 `pool` 形参后 `server_test.go` 未同步；B3-M1 新增 `artifact.Store.ListByProject` 后测试桩未实现） | 已发生 | 高 | 因 `go build` 不编译 `_test.go`，长期未被发现；B4-M3 期间经 `go vet` 暴露。**修复完成**：47 处调用补 `nil` 实参（`server_test.go` 45 + `gateway_test.go` 1 + `e2e_test.go` 1）、`internal/app` 桩补 `ListByProject`、poppler 用例补 Skip；`go vet` + `go test ./internal/...` 全绿 |
 | R-10 | 里程碑交付只做"单文件类型复核+`gofmt` 兜底"就提交，缺陷（编译阻塞、吞错假状态、未挂载路由）会跨里程碑累积 | 高 | 高 | 按「验证回路更新」在沙箱内跑通 `tsc -b` + `vite build` + `go build ./...` + `go vet ./internal/...` 后才提交；新增后端路由须核对**注册表**而非仅核对处理器函数 |
 
 ---

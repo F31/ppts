@@ -36,6 +36,15 @@ func (s *artifactStoreStub) Get(context.Context, string, string) (*artifact.Arti
 	return s.created, nil
 }
 
+// ListByProject 对应 B3-M1 新增的产物列表能力（artifact.Store 接口新增方法）。
+// 桩只保存单条产物：按租户 + 项目过滤后返回，无匹配返回空列表（与 PGStore 语义一致）。
+func (s *artifactStoreStub) ListByProject(_ context.Context, tenantID, projectID string) ([]*artifact.Artifact, error) {
+	if s.created == nil || s.created.TenantID != tenantID || s.created.ProjectID != projectID {
+		return nil, nil
+	}
+	return []*artifact.Artifact{s.created}, nil
+}
+
 func exportJob(t *testing.T, snapshot ExportSnapshot) *pipeline.Job {
 	t.Helper()
 	b, err := json.Marshal(snapshot)

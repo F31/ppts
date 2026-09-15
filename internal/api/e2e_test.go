@@ -158,7 +158,7 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 	usageStore := usage.NewPGStore(pool)
 	server := httptest.NewServer(NewHandler(
 		project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
-		narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool), objects,
+		narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool), objects, nil,
 		Options{Quota: usageStore, Usage: usageStore, Policy: tenant.NewPGStore(pool)},
 	))
 	t.Cleanup(server.Close)

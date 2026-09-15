@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"testing"
 
@@ -55,8 +56,14 @@ func TestPNGSize(t *testing.T) {
 }
 
 // TestPopplerRasterize 在不依赖 LibreOffice 的情况下验证 poppler 链路
-// （pdfinfo 页数/尺寸 + pdftoppm 栅格化 + pngSize 校验）。依赖 pdftoppm/pdfinfo。
+// （pdfinfo 页数/尺寸 + pdftoppm 栅格化 + pngSize 校验）。依赖 pdftoppm/pdfinfo，二者缺席时 Skip。
 func TestPopplerRasterize(t *testing.T) {
+	// 与同文件 LibreOffice 用例一致：外部工具缺席即 Skip，避免在未装 poppler 的机器上假失败。
+	for _, bin := range []string{"pdfinfo", "pdftoppm"} {
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Skipf("poppler unavailable (%s): %v", bin, err)
+		}
+	}
 	r := &SofficeRenderer{pdftoppm: "pdftoppm", pdfinfo: "pdfinfo"}
 	// 通过文档信息与栅格化方法直接驱动最小 PDF。
 	pdf := writePDF(t)
