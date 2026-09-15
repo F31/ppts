@@ -374,6 +374,7 @@
   "gateway.saveEdit": "保存修改",
   "gateway.deleteConfirm": "删除模型 {name}（{kind}）？",
   "gateway.errLoad": "加载网关失败",
+  "gateway.featureDisabled": "模型网关功能未启用：服务端未配置 AES 密钥（PPTS_GATEWAY_AES_KEY_BASE64），请联系管理员或参见部署文档开启。",
   "gateway.errSave": "保存失败",
   "gateway.errDelete": "删除失败",
   "gateway.errSetDefault": "设置默认失败",

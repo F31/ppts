@@ -26,6 +26,23 @@ func NewGatewayHandler(store gateway.StoreResolver, members membership.Reader, a
 }
 
 func (h *GatewayHandler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
+	// 网关经 AES 密钥启用；未配置密钥时 store 为 nil，路由仍注册但统一返回
+	// 明确的 503 feature_disabled，避免静默 404（此前 if opt.Gateway!=nil 漏挂导致 404）。
+	if h.store == nil {
+		disabled := auth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+				"code":    "feature_disabled",
+				"message": "model gateway disabled: set PPTS_GATEWAY_AES_KEY_BASE64 (32-byte base64 AES-256 key) to enable",
+			})
+		}))
+		mux.Handle("GET /api/model-gateways", disabled)
+		mux.Handle("POST /api/model-gateways", disabled)
+		mux.Handle("PUT /api/model-gateways/{name}", disabled)
+		mux.Handle("DELETE /api/model-gateways/{name}", disabled)
+		mux.Handle("POST /api/model-gateways/{name}/set-default", disabled)
+		mux.Handle("POST /api/model-gateways/{name}/test", disabled)
+		return
+	}
 	mux.Handle("GET /api/model-gateways", auth(http.HandlerFunc(h.list)))
 	mux.Handle("POST /api/model-gateways", auth(http.HandlerFunc(h.create)))
 	mux.Handle("PUT /api/model-gateways/{name}", auth(http.HandlerFunc(h.update)))

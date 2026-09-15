@@ -97,9 +97,9 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	if opt.Pronunciation != nil {
 		NewPronunciationHandler(opt.Pronunciation).Register(mux, auth)
 	}
-	if opt.Gateway != nil {
-		NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)
-	}
+	// 网关路由始终注册：未配置 AES 密钥时 store 为 nil，handler 返回明确 503 feature_disabled，
+	// 避免此前漏挂导致的静默 404。
+	NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)
 	// 公开区路由（匿名只读 + 受保护写/审核）；B3 播放清单依赖 jobs。
 	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
 	if pool != nil {

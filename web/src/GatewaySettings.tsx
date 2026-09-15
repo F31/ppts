@@ -60,7 +60,13 @@ export function GatewaySettings({
     try {
       setGateways(await listGateways(identity));
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('gateway.errLoad'));
+      const msg = err instanceof Error ? err.message : '';
+      // 网关功能在后端未启用（缺 AES 密钥）时返回 503 feature_disabled，给出友好提示而非原始报错。
+      if (msg.includes('feature_disabled') || msg.includes('model gateway disabled')) {
+        setError(t('gateway.featureDisabled'));
+      } else {
+        setError(msg || t('gateway.errLoad'));
+      }
     } finally {
       setLoading(false);
     }

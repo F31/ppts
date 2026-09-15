@@ -374,6 +374,7 @@
   "gateway.saveEdit": "Save changes",
   "gateway.deleteConfirm": "Delete model {name} ({kind})?",
   "gateway.errLoad": "Failed to load gateways",
+  "gateway.featureDisabled": "Model gateway feature is disabled: the server has no AES key configured (PPTS_GATEWAY_AES_KEY_BASE64). Contact an admin or see the deployment docs to enable it.",
   "gateway.errSave": "Failed to save",
   "gateway.errDelete": "Failed to delete",
   "gateway.errSetDefault": "Failed to set default",
