@@ -147,6 +147,48 @@ func (s *PGStore) Delete(ctx context.Context, tenantID, id string) error {
 	})
 }
 
+func (s *PGStore) ListMine(ctx context.Context, tenantID, createdBy string, status Status) ([]*Publication, error) {
+	var items []*Publication
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		q := `SELECT ` + selectCols + ` FROM publications WHERE tenant_id = $1 AND created_by = $2`
+		args := []any{tenantID, createdBy}
+		if status != "" {
+			q += ` AND status = $3`
+			args = append(args, status)
+		}
+		q += ` ORDER BY created_at DESC`
+		rows, e := tx.Query(ctx, q, args...)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		items, e = scanPublications(rows)
+		return e
+	})
+	return items, err
+}
+
+func (s *PGStore) ListPending(ctx context.Context, tenantID string, kind Kind) ([]*Publication, error) {
+	var items []*Publication
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		q := `SELECT ` + selectCols + ` FROM publications WHERE tenant_id = $1 AND status = 'pending'`
+		args := []any{tenantID}
+		if kind != "" {
+			q += ` AND kind = $2`
+			args = append(args, kind)
+		}
+		q += ` ORDER BY created_at ASC`
+		rows, e := tx.Query(ctx, q, args...)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		items, e = scanPublications(rows)
+		return e
+	})
+	return items, err
+}
+
 func scanPublication(row pgx.Row) (*Publication, error) {
 	var p Publication
 	err := row.Scan(&p.ID, &p.TenantID, &p.ProjectID, &p.Kind, &p.Status, &p.Title, &p.Summary,

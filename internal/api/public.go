@@ -242,6 +242,35 @@ func requireAdmin(ctx context.Context, members membership.Reader, w http.Respons
 	return principal, true
 }
 
+func publicListMine(w http.ResponseWriter, r *http.Request, store public.Store) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	status := public.Status(r.URL.Query().Get("status"))
+	items, err := store.ListMine(r.Context(), principal.TenantID, principal.UserID, status)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func publicReviewQueue(w http.ResponseWriter, r *http.Request, store public.Store, members membership.Reader) {
+	principal, ok := requireAdmin(r.Context(), members, w)
+	if !ok {
+		return
+	}
+	kind := public.Kind(r.URL.Query().Get("kind"))
+	items, err := store.ListPending(r.Context(), principal.TenantID, kind)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
