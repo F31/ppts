@@ -283,12 +283,21 @@ export async function createGeneration(
   projectId: string,
   slideIds: string[],
   voiceId: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  opts: { ratePercent?: number; lockConfirmedOnly?: boolean } = {}
 ): Promise<{ jobId: string; withinBudget: boolean }> {
+  // D0-1：前端此前漏传 ratePercent / lockConfirmedOnly，导致后端 C-5 强制阻止未确认稿与
+  // 配额预占比例从未生效。这里补全：ratePercent 默认 100（全速），lockConfirmedOnly 默认 false。
   return connectJSON<{ jobId: string; withinBudget: boolean }>(
     identity,
     '/ppts.v1.NarrationService/CreateGeneration',
-    { projectId, slideIds, voiceId },
+    {
+      projectId,
+      slideIds,
+      voiceId,
+      ratePercent: opts.ratePercent ?? 100,
+      lockConfirmedOnly: opts.lockConfirmedOnly ?? false
+    },
     { 'Idempotency-Key': idempotencyKey }
   );
 }
@@ -304,12 +313,13 @@ export async function estimateNarration(
   identity: ClientIdentity,
   projectId: string,
   slideIds: string[],
-  voiceId: string
+  voiceId: string,
+  ratePercent = 100
 ): Promise<NarrationEstimate> {
   const data = await connectJSON<{ currency?: string; costMin?: number; costMax?: number; estimatedSeconds?: number }>(
     identity,
     '/ppts.v1.NarrationService/Estimate',
-    { projectId, slideIds, voiceId }
+    { projectId, slideIds, voiceId, ratePercent }
   );
   return {
     currency: data.currency ?? '',
@@ -317,6 +327,15 @@ export async function estimateNarration(
     costMax: data.costMax ?? 0,
     estimatedSeconds: data.estimatedSeconds ?? 0
   };
+}
+
+// getNarrationDraftCount 读取项目内仍处于 draft 状态的讲稿分段总数（M1 端点，C-5 生成前置检查用）。
+// 返回 { draftSegments }，>0 表示存在未确认讲稿，正式生成应被阻止。
+export async function getNarrationDraftCount(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ draftSegments: number }> {
+  return getJSON<{ draftSegments: number }>(identity, `/projects/${encodeURIComponent(projectId)}/narration/draft-count`);
 }
 
 export type NarrationStatus = {

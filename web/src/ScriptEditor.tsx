@@ -25,14 +25,15 @@ type Props = {
   regeneratingIds?: string[];
   // onRegenerate：段落工具栏"缩短/润色/衔接"触发（M1 RegenerateSegments）。
   onRegenerate?: (segmentIds: string[]) => void;
+  // onAddToDictionary：M4 ⑤ 读音调整弹窗"添加到租户词典"（pattern=原词, replacement=读音）。
+  onAddToDictionary?: (word: string, reading: string) => void;
 };
 
-// 发音/停顿标记：插入到 spokenText 的朗读提示（M4 ⑤ 将接入正式发音词典与停顿控制）。
+// 停顿标记：插入到 spokenText 的朗读提示；发音由 M4 ⑤ 读音 popover 经 〔读：x〕 标记处理。
 const PAUSE_MARKER = '‖';
-const PRONUNCIATION_MARKER = '〔读：〕';
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, onChange, commit, onCommitError, onStatusChange, canReview, onApprove, onLock, regeneratingIds, onRegenerate },
+  { script, onChange, commit, onCommitError, onStatusChange, canReview, onApprove, onLock, regeneratingIds, onRegenerate, onAddToDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -41,6 +42,11 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [saveState, setSaveState] = useState<ScriptEditorStatus>('saved');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusedId, setFocusedId] = useState<string | null>(script.segments[0]?.segmentId ?? null);
+  // M4 ⑤ 读音调整 popover 状态。
+  const [popoverOpen, setPopoverOpen] = useState(false);
+  const [popoverWord, setPopoverWord] = useState('');
+  const [popoverReading, setPopoverReading] = useState('');
+  const [affectedCount, setAffectedCount] = useState(0);
   const composingRef = useRef(false);
   const timerRef = useRef<number | undefined>(undefined);
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
@@ -142,6 +148,17 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     onRegenerate(ids);
   };
 
+  // M4 ⑤：打开读音调整 popover（预填当前目标段文本为原词，影响范围实时估算）。
+  const openPronounce = () => {
+    const ids = targetIds();
+    if (ids.length === 0) return;
+    const base = texts[ids[0]] ?? '';
+    setPopoverWord(base);
+    setPopoverReading('');
+    setAffectedCount(0);
+    setPopoverOpen(true);
+  };
+
   // 在目标段光标处插入朗读标记（发音/停顿）。
   const insertMarker = (marker: string) => {
     const ids = targetIds();
@@ -204,7 +221,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           {t('editor.transition')}
         </button>
         <span className="toolbar-sep" />
-        <button type="button" disabled={targetIds().length === 0 || locked} onClick={() => insertMarker(PRONUNCIATION_MARKER)} title={t('editor.pronounceHint')}>
+        <button type="button" disabled={targetIds().length === 0 || locked} onClick={openPronounce} title={t('editor.pronounceHint')}>
           {t('editor.pronounce')}
         </button>
         <button type="button" disabled={targetIds().length === 0 || locked} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
@@ -216,6 +233,38 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           </button>
         )}
       </div>
+
+      {/* M4 ⑤ 读音调整 popover：原词 + 读音 + 本处插入 / 添加到租户词典 + 影响范围回执。 */}
+      {popoverOpen && (
+        <div className="pronounce-popover" role="dialog" aria-label={t('editor.pronouncePopover')}>
+          <label className="field-label">
+            {t('editor.pronounceWord')}
+            <input
+              value={popoverWord}
+              onChange={(e) => {
+                const word = e.currentTarget.value;
+                setPopoverWord(word);
+                setAffectedCount(word ? script.segments.filter((s) => (texts[s.segmentId] ?? '').includes(word)).length : 0);
+              }}
+            />
+          </label>
+          <label className="field-label">
+            {t('editor.pronounceReading')}
+            <input value={popoverReading} onChange={(e) => setPopoverReading(e.currentTarget.value)} placeholder={t('editor.pronounceReadingPlaceholder')} />
+          </label>
+          <div className="popover-actions">
+            <button type="button" disabled={!popoverReading} onClick={() => { insertMarker(`〔读：${popoverReading}〕`); setPopoverOpen(false); }}>
+              {t('editor.insertHere')}
+            </button>
+            <button type="button" disabled={!popoverWord || !popoverReading} onClick={() => { onAddToDictionary?.(popoverWord, popoverReading); setPopoverOpen(false); }}>
+              {t('editor.addToDictionary')}
+            </button>
+          </div>
+          {popoverWord && (
+            <p className="popover-hint">{t('editor.affectedSegments', { count: affectedCount })}</p>
+          )}
+        </div>
+      )}
 
       {/* 分段编辑（M3 ②）：每段独立卡片，可勾选、独立状态徽标。 */}
       <div className="segment-list">

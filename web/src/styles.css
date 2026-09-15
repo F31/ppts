@@ -98,6 +98,31 @@ button, textarea, input { font: inherit; }
 .source-row .source-custom { grid-column: 1 / -1; }
 .source-row select, .source-row .source-custom { border: 1px solid rgba(255, 255, 255, .12); border-radius: 12px; padding: 8px 10px; color: #edf1f7; background: rgba(5, 10, 20, .7); }
 
+/* M4 ④ 音色卡片选择器（样例试听因后端无 voice catalog 而禁用） */
+.voice-selector { display: grid; gap: 8px; }
+.voice-cards { display: flex; flex-wrap: wrap; gap: 8px; }
+.voice-card { display: flex; align-items: center; gap: 6px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 12px; padding: 4px 4px 4px 10px; background: rgba(255, 255, 255, .04); }
+.voice-card.selected { border-color: #67e8f9; box-shadow: 0 0 0 1px rgba(103, 232, 249, .35); }
+.voice-name { border: 0; background: transparent; color: #dce6f8; cursor: pointer; padding: 6px 4px; font: inherit; }
+.voice-try { border: 1px solid rgba(255, 255, 255, .12); border-radius: 999px; padding: 4px 10px; color: #8aa1c4; background: rgba(255, 255, 255, .05); cursor: not-allowed; }
+
+/* M4 ⑦ 生成面板：范围 / 待确认稿数 / 需新生成 / 用量 / C-5 阻止 */
+.gen-panel { display: grid; gap: 10px; margin-top: 6px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, .08); }
+.scope-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.scope-options label { display: inline-flex; align-items: center; gap: 6px; border: 1px solid rgba(255, 255, 255, .12); border-radius: 999px; padding: 6px 12px; cursor: pointer; }
+.scope-options label.selected { border-color: #67e8f9; background: rgba(103, 232, 249, .12); }
+.gen-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 0; }
+.gen-stats div { background: rgba(255, 255, 255, .04); border: 1px solid rgba(255, 255, 255, .08); border-radius: 12px; padding: 8px; text-align: center; }
+.gen-stats dt { color: #8aa1c4; font-size: 12px; margin: 0; }
+.gen-stats dd { margin: 4px 0 0; font-weight: 700; font-size: 18px; }
+.gen-stats dd.warn { color: #fbbf24; }
+.gen-blocked { margin: 0; }
+
+/* M4 ⑤ 读音调整 popover */
+.pronounce-popover { display: grid; gap: 8px; margin: 8px 0; padding: 12px; border: 1px solid rgba(103, 232, 249, .3); border-radius: 14px; background: rgba(5, 10, 20, .6); }
+.pronounce-popover .popover-actions { display: flex; gap: 8px; }
+.pronounce-popover .popover-hint { margin: 0; color: #8aa1c4; font-size: 12px; }
+
 .preview-column { min-width: 0; display: grid; gap: 16px; }
 .compare-panel { padding: 16px; }
 .compare-panel h3 { margin: 6px 0 12px; }

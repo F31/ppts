@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ConnectError,
   approveScript,
+  createDictionary,
   createExport,
   createGeneration,
   estimateNarration,
   generateDraft,
   getNarration,
+  getNarrationDraftCount,
   getPlaybackManifest,
   getProjectSlides,
   getScript,
@@ -58,10 +60,13 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
   const [narrationStatus, setNarrationStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
   const [realManifest, setRealManifest] = useState<PlaybackManifest | null>(null);
   const [conflict, setConflict] = useState<ConflictState>(null);
-  const [narrationEstimate, setNarrationEstimate] = useState<number | null>(null);
+  const [narrationEstimate, setNarrationEstimate] = useState<NarrationEstimate | null>(null);
   const [voiceOptions, setVoiceOptions] = useState<string[]>([]);
   const [voiceId, setVoiceId] = useState('');
   const [ratePercent, setRatePercent] = useState(100);
+  // M4 ⑦：生成范围 + 待确认稿数（C-5 前置检查）。
+  const [genScope, setGenScope] = useState<'all' | 'pending' | 'current'>('all');
+  const [draftSegments, setDraftSegments] = useState(0);
   const [exporting, setExporting] = useState(false);
   const [pubOpen, setPubOpen] = useState(false);
   const [pubTitle, setPubTitle] = useState('');
@@ -78,6 +83,7 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
   const [regeneratingIds, setRegeneratingIds] = useState<string[]>([]);
   // M3 ⑥：无备注页讲稿来源选择（持久化）。
   const [slideSources, setSlideSources] = useState<Record<string, SlideScriptSource>>({});
+  const [dictNotice, setDictNotice] = useState<string>('');
 
   // 页面列表
   useEffect(() => {
@@ -139,6 +145,25 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
       })
       .catch(() => {
         // 端点未就绪（store 未配置）或权限不足，保持空映射，来源选择降级为不可见。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [slidesState, identity, projectId]);
+
+  // M4 ⑦：拉取待确认稿数（draft 状态分段总数），供生成面板 C-5 前置检查。
+  useEffect(() => {
+    if (slidesState.mode !== 'real') {
+      setDraftSegments(0);
+      return;
+    }
+    let cancelled = false;
+    getNarrationDraftCount(identity, projectId)
+      .then((res) => {
+        if (!cancelled) setDraftSegments(res.draftSegments);
+      })
+      .catch(() => {
+        // 端点未就绪，保持 0（不阻止生成）。
       });
     return () => {
       cancelled = true;
@@ -318,6 +343,23 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
     [identity, projectId, t]
   );
 
+  // M4 ⑤：读音调整弹窗「添加到租户词典」——构造单条规则（原词→读音）并写入当前租户发音词典。
+  const addToDictionary = useCallback(
+    async (word: string, reading: string) => {
+      try {
+        await createDictionary(identity, {
+          name: t('editor.dictName', { word }),
+          rules: [{ pattern: word, replacement: reading, enabled: true }]
+        });
+        setDictNotice(t('editor.dictAdded', { word }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setDictNotice(`${t('editor.dictAddFailed')}：${message}`);
+      }
+    },
+    [identity, t]
+  );
+
   const handleScriptStatus = useCallback((status: ScriptEditorStatus) => {
     setUnsaved(status !== 'saved');
   }, []);
@@ -385,19 +427,30 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
     }
   };
 
+  // M4 ⑦：按范围计算参与配音的页（仅已有讲稿的页）。
+  const scopeSlideIds = (): string[] => {
+    if (genScope === 'current') return activeRealScript ? [activeSlideID] : [];
+    return slidesState.slides.filter((slide) => realScripts[slide.slideId]).map((slide) => slide.slideId);
+  };
+
   const generateNarration = async () => {
     if (!isReady || narrationStatus.phase === 'generating') return;
-    if (Object.keys(realScripts).length < slidesState.slides.length) {
-      setNarrationStatus({ phase: 'error', message: t('editor.needAllScripts') });
+    // C-5 强制：存在未确认（draft）讲稿时阻止正式生成（后端亦校验 RequireConfirmed）。
+    if (draftSegments > 0) {
+      setNarrationStatus({ phase: 'error', message: t('editor.blockedByDraft', { count: draftSegments }) });
+      return;
+    }
+    const slideIds = scopeSlideIds();
+    if (slideIds.length === 0) {
+      setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
       return;
     }
     const selectedVoice = voiceId || devNarrationVoiceID;
     setNarrationStatus({ phase: 'generating', message: t('editor.narrationQueued') });
     try {
-      const slideIds = slidesState.slides.map((slide) => slide.slideId);
       try {
-        const est = await estimateNarration(identity, projectId, slideIds, selectedVoice);
-        setNarrationEstimate(est.estimatedSeconds);
+        const est = await estimateNarration(identity, projectId, slideIds, selectedVoice, ratePercent);
+        setNarrationEstimate(est);
         setNarrationStatus({
           phase: 'generating',
           message: t('editor.narrationEstimate', { minutes: Math.round(est.estimatedSeconds / 60) })
@@ -406,7 +459,10 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
         // 预估失败不阻塞生成。
       }
       const idempotencyKey = `narration-${projectId}-${Date.now()}`;
-      await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey);
+      await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey, {
+        ratePercent,
+        lockConfirmedOnly: true
+      });
       const deadline = Date.now() + 120_000;
       let status;
       while (Date.now() < deadline) {
@@ -433,8 +489,8 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
     } catch (error) {
       let message = error instanceof Error ? error.message : t('editor.narrationFailed');
       if (error instanceof ConnectError && error.code === 'resource_exhausted') {
-        const est = narrationEstimate != null ? Math.round(narrationEstimate / 60) : null;
-        message = est ? t('editor.quotaShort', { minutes: est }) : t('editor.quotaShortNoEst');
+        const estSec = narrationEstimate != null ? Math.round(narrationEstimate.estimatedSeconds / 60) : null;
+        message = estSec ? t('editor.quotaShort', { minutes: estSec }) : t('editor.quotaShortNoEst');
       }
       setNarrationStatus({ phase: 'error', message });
     }
@@ -587,6 +643,7 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
               onLock={lockActive}
               regeneratingIds={regeneratingIds}
               onRegenerate={regenerateActive}
+              onAddToDictionary={addToDictionary}
             />
           ) : (
             <section className="editor-card">
@@ -689,16 +746,24 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
             </header>
             <section className="panel nested">
               <span className="eyebrow">{t('editor.narrationProps')}</span>
-              <label className="field-label">
-                {t('editor.voice')}
-                <select value={voiceId} onChange={(e) => setVoiceId(e.currentTarget.value)}>
+
+              {/* M4 ④ 音色选择器（降级：后端无 voice catalog，无样例/语言/风格元数据；试听按钮禁用并提示）。 */}
+              <div className="voice-selector" aria-label={t('editor.voiceSelector')}>
+                <span className="field-label">{t('editor.voice')}</span>
+                <div className="voice-cards">
                   {voiceOptions.map((voice) => (
-                    <option key={voice} value={voice}>
-                      {voice}
-                    </option>
+                    <div key={voice} className={`voice-card ${voice === voiceId ? 'selected' : ''}`}>
+                      <button type="button" className="voice-name" onClick={() => setVoiceId(voice)} title={voice}>
+                        {voice}
+                      </button>
+                      <button type="button" className="voice-try" disabled title={t('editor.sampleUnavailable')}>
+                        {t('editor.trySample')}
+                      </button>
+                    </div>
                   ))}
-                </select>
-              </label>
+                </div>
+              </div>
+
               <label className="field-label">
                 {t('editor.rate', { percent: ratePercent })}
                 <select value={ratePercent} onChange={(e) => setRatePercent(Number(e.currentTarget.value))}>
@@ -709,21 +774,64 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
                   ))}
                 </select>
               </label>
-              <div className="draft-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={!isReady || narrationStatus.phase === 'generating'}
-                  onClick={() => void generateNarration()}
-                >
-                  {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
-                </button>
+
+              {/* M4 ⑦ 生成面板：范围 / 待确认稿数 / 需新生成 / 用量 / C-5 阻止。 */}
+              <div className="gen-panel" aria-label={t('editor.generatePanel')}>
+                <span className="field-label">{t('editor.genScope')}</span>
+                <div className="scope-options">
+                  {(['all', 'current'] as const).map((scope) => (
+                    <label key={scope} className={genScope === scope ? 'selected' : ''}>
+                      <input type="radio" name="gen-scope" value={scope} checked={genScope === scope} onChange={() => setGenScope(scope)} />
+                      <span>{t(`editor.scope.${scope}`)}</span>
+                    </label>
+                  ))}
+                </div>
+
+                <dl className="gen-stats">
+                  <div>
+                    <dt>{t('editor.draftCount')}</dt>
+                    <dd className={draftSegments > 0 ? 'warn' : ''}>{draftSegments}</dd>
+                  </div>
+                  <div>
+                    <dt>{t('editor.pendingCount')}</dt>
+                    <dd>{Math.max(0, pageCount - scriptReadyCount)}</dd>
+                  </div>
+                  <div>
+                    <dt>{t('editor.needGenerate')}</dt>
+                    <dd>{genScope === 'current' ? (activeRealScript ? 0 : 1) : Math.max(0, pageCount - scriptReadyCount)}</dd>
+                  </div>
+                </dl>
+
+                {narrationEstimate != null && (
+                  <p className="narration-note">
+                    {t('editor.estimatedDuration', { minutes: Math.round(narrationEstimate.estimatedSeconds / 60) })}
+                    {' · '}
+                    {t('editor.costRange', { min: narrationEstimate.costMin, max: narrationEstimate.costMax })}
+                  </p>
+                )}
+
+                {draftSegments > 0 && (
+                  <p className="form-error gen-blocked">{t('editor.blockedByDraftHint', { count: draftSegments })}</p>
+                )}
+
+                {dictNotice && (
+                  <p className="narration-note dict-notice" role="status">{dictNotice}</p>
+                )}
+
+                <div className="draft-actions">
+                  <button
+                    type="button"
+                    className="primary"
+                    disabled={!isReady || narrationStatus.phase === 'generating' || draftSegments > 0}
+                    onClick={() => void generateNarration()}
+                  >
+                    {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
+                  </button>
+                </div>
               </div>
+
               {narrationStatus.message && (
                 <p className={`narration-note ${narrationStatus.phase === 'error' ? 'error' : ''}`}>{narrationStatus.message}</p>
-              )}
-              {narrationEstimate != null && (
-                <p className="narration-note">{t('editor.estimatedDuration', { minutes: Math.round(narrationEstimate / 60) })}</p>
               )}
             </section>
 

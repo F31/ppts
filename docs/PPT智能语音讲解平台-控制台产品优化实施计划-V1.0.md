@@ -356,7 +356,11 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - ③ Approve/Lock：前端封装 `approveScript`/`lockScript`（复用既有 ScriptService RPC），编辑器在 `canReview`（role≠viewer）时显示确认/锁定按钮；锁定后编辑只读、锁定按钮禁用（后端不支持解锁）。
   - ⑥ 无备注页来源：生成草稿面板对 `hasNotes===false` 的页显式展示来源选择（版式正文/仅标题/仅正文/仅备注/自定义），经原生端点 `PUT /projects/{pid}/slides/{sid}/source` 持久化（迁移 0025 + `slide_script_sources` 表 + RLS）；`GET /projects/{pid}/slides/sources` 回读；GenerateDraft handler 注入已存来源到 `ScriptDraftSnapshot.Sources/CustomSources`，`script_draft` worker 在 `pgText`/`pgAnchors` 中尊重该来源。
   - 配套：api.ts 增 approveScript/lockScript/regenerateSegments/setSlideScriptSource/getSlideScriptSources + putJSON；i18n 增 editor.toolbar/shorten/polish/transition/pronounce/pause/approve/lock/source.* 等；styles.css 段落工具栏/分段卡片/来源选择/状态徽标。
-- **M4 生成与语音（④ + ⑤ + ⑦）**：音色选择器（属性筛选 + 样例试听 + 项目默认/单页覆盖）；读音调整 popover（本处/本项目 + 当前租户词典，C-6 收窄）；生成面板补范围/待确认稿数/需新生成/用量，**未确认稿默认阻止正式生成（C-5 强制）**。
+- **M4 生成与语音（④ + ⑤ + ⑦）【已实施】**：
+  - ⑦ 生成面板增强：属性抽屉新增范围选择（全部已生成页 / 仅当前页）、待确认稿数（拉 M1 端点 `GET /projects/{pid}/narration/draft-count` 的 `draftSegments`）、需新生成数（前端按范围+已生成稿估算）、用量（`estimateNarration` 的 `costMin/costMax` + 时长）；**C-5 强制阻止**：`draftSegments>0` 时正式生成按钮禁用并提示，且 `generateNarration` 传 `lockConfirmedOnly=true`（后端 `CreateGeneration` 的 `RequireConfirmed` 校验，未确认稿返回 `FailedPrecondition`）。**D0-1 真缺陷修复**：`createGeneration`/`estimateNarration` 此前漏传 `rate_percent`/`lock_confirmed_only`，本次补全（后端早就读这两字段，前端未传导致语速/仅确认参与从未生效）。
+  - ④ 音色选择器（降级务实）：属性抽屉 voice 下拉升级为音色卡片选择器（点击选中设为项目默认）；**样例试听按钮因后端无 voice catalog（无样例 URL/语言/风格元数据）而禁用并 tooltip 说明**；单页覆盖（per-slide voice）后端 `ScriptRevision` 无 schema 支持，降级为段落工具栏"读音"标记（最轻量 per-segment 覆盖）；语言/风格筛选因无元数据未显示。
+  - ⑤ 读音调整 popover：段落工具栏"读音"按钮升级为弹窗——原词(pattern, 预填当前段文本) + 读音(replacement) + 「本处插入」（`〔读：读音〕` 标记写入 spokenText）+ 「添加到租户词典」（调 `POST /api/pronunciation`，复用既有 tenant 级 CRUD，C-6 收窄为当前租户）+ 影响范围回执（实时估算本项目含该词的段数）。
+  - 纯前端里程碑：C-5 后端校验、draft-count 端点、发音词典 CRUD 均早已具备，无后端改动。
 - **C-7 收尾**：检查设置菜单，隐藏/移除个人设置入口（若已存在）。
 
 > 顺序 M1→M2→M3→M4，每里程碑一个 commit；任一里程碑本地验证失败则回退该里程碑不合并。
