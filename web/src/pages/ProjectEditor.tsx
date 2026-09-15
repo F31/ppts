@@ -11,6 +11,7 @@ import {
   getScript,
   listGateways,
   updateScript as updateScriptApi,
+  publishWork,
   type ClientIdentity
 } from '../api';
 import { Player } from '../Player';
@@ -55,6 +56,10 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
   const [voiceId, setVoiceId] = useState('');
   const [ratePercent, setRatePercent] = useState(100);
   const [exporting, setExporting] = useState(false);
+  const [pubOpen, setPubOpen] = useState(false);
+  const [pubTitle, setPubTitle] = useState('');
+  const [pubSummary, setPubSummary] = useState('');
+  const [pubStatus, setPubStatus] = useState<{ phase: 'idle' | 'submitting' | 'done' | 'error'; message: string }>({ phase: 'idle', message: '' });
 
   // 页面列表
   useEffect(() => {
@@ -304,6 +309,27 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
         : t('editor.status.scriptReady');
   }, [isReady, scriptReadyCount, pageCount, narrationStatus, t]);
 
+  const submitPublish = async () => {
+    const title = pubTitle.trim();
+    if (!title) {
+      setPubStatus({ phase: 'error', message: t('public.publishTitleRequired') });
+      return;
+    }
+    setPubStatus({ phase: 'submitting', message: '' });
+    try {
+      await publishWork(identity, { projectId, title, summary: pubSummary.trim() });
+      setPubStatus({ phase: 'done', message: '' });
+      setPubOpen(false);
+      setPubTitle('');
+      setPubSummary('');
+    } catch (err) {
+      setPubStatus({
+        phase: 'error',
+        message: err instanceof Error ? err.message : t('public.publishFailed')
+      });
+    }
+  };
+
   return (
     <div className="workspace-v2">
       <header className="editor-header">
@@ -321,6 +347,9 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
           <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title={t('editor.artifactsTitle')}>
             {t('editor.artifacts')}
           </Link>
+          <button type="button" className="button-ghost" onClick={() => setPubOpen(true)}>
+            {t('public.publish')}
+          </button>
         </div>
       </header>
 
@@ -498,6 +527,39 @@ export function ProjectEditor({ identity, projectId, draftRequested }: { identit
           </section>
         )}
       </section>
+      {pubOpen && (
+        <div className="modal-backdrop" role="dialog" aria-label={t('public.publishTitle')}>
+          <section className="modal-card">
+            <header>
+              <div>
+                <span className="eyebrow">{t('public.publish')}</span>
+                <h2>{t('public.publishTitle')}</h2>
+              </div>
+              <button type="button" onClick={() => setPubOpen(false)}>
+                {t('common.close')}
+              </button>
+            </header>
+            <p className="muted">{t('public.publishSummary')}</p>
+            <label className="field-label">
+              {t('public.publishTitleLabel')}
+              <input value={pubTitle} onChange={(e) => setPubTitle(e.currentTarget.value)} placeholder={t('public.publishTitleLabel')} />
+            </label>
+            <label className="field-label">
+              {t('public.publishSummaryLabel')}
+              <textarea value={pubSummary} onChange={(e) => setPubSummary(e.currentTarget.value)} rows={3} />
+            </label>
+            {pubStatus.phase === 'error' && <p className="form-error">{pubStatus.message}</p>}
+            <div className="draft-actions">
+              <button type="button" className="primary" disabled={pubStatus.phase === 'submitting'} onClick={() => void submitPublish()}>
+                {pubStatus.phase === 'submitting' ? `${t('public.publishSubmit')}…` : t('public.publishSubmit')}
+              </button>
+              <button type="button" onClick={() => setPubOpen(false)}>
+                {t('public.publishCancel')}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

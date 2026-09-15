@@ -35,7 +35,7 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 ### 1.2 前端：控制台骨架已成型
 
 - 技术栈：React + TypeScript + Vite，**手写 `fetch` 调 Connect JSON**（`api.ts`），未使用生成的 Connect 客户端。
-- 路由：**自研 hash 路由**（`router.tsx`，`#/projects/...`）。
+- 路由：**History API 路由**（`router.tsx`；原 hash 路由 `#/projects/...` 已在挂载时改写为 `/projects/...`，dev 由 Vite SPA fallback 兜底，prod 由 Go catch-all 经 `PPTS_WEB_ROOT` 启用）。**【已实施，提交 b96352b / e1e6169】**
 - Shell：单一 `AppShell`（侧栏品牌+租户短 ID / 主导航 / 顶栏面包屑+语言+用户菜单）。
 - 页面：Login、Home、Projects、ProjectEditor、ProjectArtifacts、Jobs、Settings×(Models/Members/Dictionary/Usage/Audit)。
 - 组件：ScriptEditor（textarea 整体编辑）、Player（模拟时钟）、ImportDialog（点击选文件）、GatewaySettings、AuditPanel。
@@ -304,7 +304,25 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | 出口 | 刷新深链接可恢复；权限不越界；**匿名访问不触发任何需认证请求**；真实导入产生解析报告 |
 | 验收 | A01、A03、A05、A07、A27、A28 |
 
-**决策依赖（须先定）**：公开区数据来源与"官方精选"内容归属；SEO 策略（预渲染 vs 纯 CSR + 元数据）；是否引入分离构建。
+> **路由改造已提前完成（独立于 B1 其余项）**：`router.tsx` 由 hash 改为 History API，`main.tsx` 挂载前执行 `migrateLegacyHash()` 将遗留 `#/path` 改写为 `/path`；`server.go` 新增可选 SPA 兜底（设 `PPTS_WEB_ROOT` 时注册 `GET /{path...}` 返回 `index.html`，并放行 `/ppts/object`、`/healthz`、`/debug` 前缀）。提交 `b96352b`（前端）、`e1e6169`（后端）。
+>
+> **公开区双 Tab（C-1）已实现**：后端 `publications` 表 + RLS 双策略（`public_read` 仅放行 `status='approved'` 匿名跨租户只读 / `tenant_write` 租户内写），状态机 `draft→pending→approved/rejected`，精选发布 `POST /public/featured`（admin）；匿名只读 `GET /public/works`、`GET /public/works/{id}`（封面走 SignedURL）；受保护只读 `GET /public/works/mine`、`GET /public/works/queue`（admin 审核队列）。前端：浏览链路 `PublicShell` + 作品广场 `Explore`（featured/user 双 Tab）+ 匿名播放页 `Watch`（音频待 B3）+ 未登录放行 `/explore`、`/watch/:id`；控制台管理 `PublicAdmin`（我的发布 / 审核队列，admin 可见审核）+ 项目编辑器「发布到公开区」弹窗（`ProjectEditor`）。提交 `63ede93`、`cc506c7`（后端）、`279d820`（浏览前端）、`feat(web): 公开区管理`（管理前端，本轮）。**注**：本环境无法跑 `go build`/`tsc`（依赖未缓存 / 缺原生二进制），改动经 `gofmt` 与逐文件类型复核，最终需本地 `go build ./...` + `npm run build` 确认。导入增强（B1 第⑦项）与公开区音频播放（B3）仍待做。
+
+**生产 SPA history 兜底（nginx 参考，前端由 nginx/CDN 托管时）**：
+```nginx
+# 前端静态资源与 SPA 路由兜底
+location / {
+  try_files $uri $uri/ /index.html;
+}
+# 以下前缀仍代理到 Go 后端（与 catch-all 放行的前缀一致）
+location /ppts.v1. { proxy_pass http://127.0.0.1:8080; }
+location /ppts/object { proxy_pass http://127.0.0.1:8080; }
+location /api { proxy_pass http://127.0.0.1:8080; }
+location /healthz { proxy_pass http://127.0.0.1:8080; }
+```
+> 注：若用 Go 单二进制托管前端，设 `PPTS_WEB_ROOT=/path/to/web/dist` 即可，无需 nginx 上述 `location /` 兜底。
+
+**决策依赖**：C-1（公开区双 Tab）、C-2（SEO 元数据 + CSR）、C-3（深色默认 + 浅色切换）、C-4（history + 服务端 fallback）**均已拍板并实施**（见上方 callout 与各 C-* 行状态）。剩余未定项见 §6（C-5 生成口径、C-6 切租户、C-7 个人设置）。分离构建按 C-2 维持「暂不做」。
 
 ### B2 核心创作
 
@@ -355,10 +373,10 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 
 | 编号 | 决策点 | 可选路径 | 影响 |
 |---|---|---|---|
-| C-1 | 公开区内容来源 | **【已定】双 Tab**：①「官方精选」= 管理员在控制台上传并发布到精选目录（需后端 curated/featured 存储 + 管理端 CRUD）；②「用户作品」= 用户主动发布，经管理员审核通过后公开展示（需发布动作 + 审核状态机 pending/approved/rejected + 公开只读接口仅读取 approved 集） | B1 后端扩为：精选目录 CRUD + 用户发布/审核流；公开列表/详情只读 approved |
+| C-1 | 公开区内容来源 | **【已定 + 已实施】双 Tab**：①「官方精选」= 管理员在控制台上传并发布到精选目录（`POST /public/featured`，admin）；②「用户作品」= 用户主动发布（`POST /public/works` → `pending`），经管理员审核通过（`PUT /public/works/{id}/review` → `approved`）后公开展示。后端 `publications` 表 + RLS 双策略，公开只读接口仅读取 `approved` 集（`63ede93`/`cc506c7`/`279d820`/本轮管理前端）。音频播放（Watch 页）按设计延后至 B3 | B1 后端扩为：精选目录 CRUD + 用户发布/审核流；公开列表/详情只读 approved |
 | C-2 | SEO 策略 | **【已定】A（元数据 + CSR）**：先落地 title/description/OG + 干净 URL（history 路由），预渲染/SSR 延后，待 SEO 需求明确再评估 | 本轮不引入预渲染与分离构建；公开区可发现性以元数据满足 A27 |
 | C-3 | 主题基线 | **【已定】保留深色为默认，新增浅色切换**：顶栏右上角太阳/月亮按钮切换深/浅；浅色以浅灰工作区 + 白色面板 + 蓝紫主色为基调（非全量改 §14） | 视觉基线专项改为"主题令牌 + 切换"，不再做深→浅整体重构 |
-| C-4 | 路由形态 | **【已定】A（history + 服务端 fallback）**：改自研 hash 路由为 History API；dev 由 Vite SPA fallback 兜底，prod 由 Go 后端 catch-all 返回 index.html（非 /api、非 /assets 路径）；保留深链接回跳 | 公开区可访问性与所有既有链接需重测；B1 含路由改造 |
+| C-4 | 路由形态 | **【已定 + 已实施】A（history + 服务端 fallback）**：自研 hash 路由已改为 History API（`b96352b`）；dev 由 Vite SPA fallback 兜底，prod 由 Go 后端 catch-all 经 `PPTS_WEB_ROOT` 返回 index.html（`e1e6169`）；遗留 `#/path` 深链接在挂载时改写为 `/path` | 公开区可访问性与所有既有链接需重测；B1 其余项待做 |
 | C-5 | 生成口径 | 是否强制"未确认稿禁止正式生成"（A09） | 影响 B2 出口条件与用户流程 |
 | C-6 | 切租户 | 本轮做 or 明确不做并隐藏入口 | 决定是否需新增租户列表接口 |
 | C-7 | 个人设置 | 本轮做 or 明确不做并移除入口 | 避免"有入口无能力"违反 §1.2 第 3 条 |

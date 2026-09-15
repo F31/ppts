@@ -608,4 +608,19 @@ export async function deleteWork(identity: ClientIdentity, id: string): Promise<
   await authedJSON<Record<string, never>>(identity, 'DELETE', `/public/works/${encodeURIComponent(id)}`);
 }
 
+// 受保护只读：我的发布（按创建者）/ 审核队列（admin，pending）。
+export async function listMyPublications(identity: ClientIdentity, params: { status?: PublicationStatus } = {}): Promise<PublicWorkPage> {
+  const qs = new URLSearchParams();
+  if (params.status) qs.set('status', params.status);
+  const q = qs.toString();
+  return (await authedJSON<PublicWorkPage>(identity, 'GET', `/public/works/mine${q ? `?${q}` : ''}`)) as PublicWorkPage;
+}
+
+export async function listReviewQueue(identity: ClientIdentity, params: { kind?: PublicationKind } = {}): Promise<PublicWorkPage> {
+  const qs = new URLSearchParams();
+  if (params.kind) qs.set('kind', params.kind);
+  const q = qs.toString();
+  return (await authedJSON<PublicWorkPage>(identity, 'GET', `/public/works/queue${q ? `?${q}` : ''}`)) as PublicWorkPage;
+}
+
 

@@ -20,6 +20,7 @@ import type { Role } from './types';
 import { PublicShell } from './PublicShell';
 import { Explore } from './pages/Explore';
 import { Watch } from './pages/Watch';
+import { PublicAdmin } from './pages/PublicAdmin';
 
 function AppContent() {
   const route = useRoute();
@@ -143,6 +144,8 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
             return <SettingsUsage identity={identity} />;
           case 'audit':
             return <SettingsAudit identity={identity} />;
+          case 'public':
+            return <PublicAdmin identity={identity} role={role} />;
           default:
             return <SettingsModels identity={identity} />;
         }

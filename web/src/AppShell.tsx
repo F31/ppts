@@ -20,7 +20,8 @@ const settingsMenus: Array<{ key: string; to: string; labelKey: string }> = [
   { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers' },
   { key: 'dictionary', to: '/settings/dictionary', labelKey: 'nav.settingsDictionary' },
   { key: 'usage', to: '/settings/usage', labelKey: 'nav.settingsUsage' },
-  { key: 'audit', to: '/settings/audit', labelKey: 'nav.settingsAudit' }
+  { key: 'audit', to: '/settings/audit', labelKey: 'nav.settingsAudit' },
+  { key: 'public', to: '/settings/public', labelKey: 'nav.settingsPublic' }
 ];
 
 function activeKey(parts: string[]): string {
