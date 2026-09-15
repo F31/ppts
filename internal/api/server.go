@@ -21,7 +21,9 @@ import (
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/pronunciation"
+	"github.com/F31/ppts/internal/public"
 	"github.com/F31/ppts/internal/upload"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // handlerOpts 为所有 Connect handler 注入 RPC span（G3-8 OTel；未配置导出器时 no-op）。

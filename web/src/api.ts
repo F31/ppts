@@ -571,6 +571,12 @@ export async function getPublicWork(id: string): Promise<PublicWork> {
   return publicGet<PublicWork>(`/public/works/${encodeURIComponent(id)}`);
 }
 
+// getPublicManifest 拉取已批准公开作品的匿名可播放讲解清单（B3 音频播放接入）。
+// 与控制台 getPlaybackManifest 同构，但走原生 HTTP 匿名端点、无需鉴权；narration 未就绪时返回 404。
+export async function getPublicManifest(id: string): Promise<PlaybackManifest> {
+  return publicGet<PlaybackManifest>(`/public/works/${encodeURIComponent(id)}/manifest`);
+}
+
 export async function publishWork(
   identity: ClientIdentity,
   input: { projectId: string; title: string; summary?: string; coverObjectKey?: string }

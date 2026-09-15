@@ -57,6 +57,7 @@
   "public.notFound": "作品不存在或已下架",
   "public.backToExplore": "返回作品广场",
   "public.audioComingSoon": "音频播放将在后续版本接入",
+  "public.audioNotReady": "该作品暂未生成语音讲解",
   "public.myWorks": "我的发布",
   "public.reviewQueue": "审核队列",
   "public.reviewQueueHint": "用户提交的作品待审核",

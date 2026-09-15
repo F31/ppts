@@ -8,9 +8,12 @@ import (
 	"strconv"
 	"time"
 
+	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
+	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/public"
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // registerPublicRoutes 挂载公开区 HTTP 端点（V1.6 C-1）。
@@ -22,12 +25,15 @@ import (
 //     DELETE /public/works/{id}   管理员删除
 //
 // 与 SPA catch-all（GET /{path...}）共存：精确 /public/works* 路由优先于通配。
-func registerPublicRoutes(mux *http.ServeMux, store public.Store, objects objectstore.ObjectStore, members membership.Reader, auth func(http.Handler) http.Handler) {
+func registerPublicRoutes(mux *http.ServeMux, store public.Store, objects objectstore.ObjectStore, members membership.Reader, jobs JobStore, auth func(http.Handler) http.Handler) {
 	mux.HandleFunc("GET /public/works", func(w http.ResponseWriter, r *http.Request) {
 		publicListWorks(w, r, store)
 	})
 	mux.HandleFunc("GET /public/works/{id}", func(w http.ResponseWriter, r *http.Request) {
 		publicGetWork(w, r, store, objects)
+	})
+	mux.HandleFunc("GET /public/works/{id}/manifest", func(w http.ResponseWriter, r *http.Request) {
+		publicGetManifest(w, r, store, jobs, objects)
 	})
 	mux.Handle("POST /public/works", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicPublish(w, r, store)
@@ -87,6 +93,97 @@ func publicGetWork(w http.ResponseWriter, r *http.Request, store public.Store, o
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// publicManifestResource / publicManifest 是与前端 Player（types.PlaybackManifest）同构的匿名清单 JSON。
+// 枚举以 .String() 名称字符串输出（与 Connect protojson 一致），确保 Player 的 resource.type 字符串比较成立。
+type publicManifestResource struct {
+	Type        string `json:"type"`
+	Key         string `json:"key"`
+	SignedUrl   string `json:"signedUrl"`
+	ContentType string `json:"contentType,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes,omitempty"`
+	ContentHash string `json:"contentHash,omitempty"`
+	SlideId     string `json:"slideId,omitempty"`
+	SegmentId   string `json:"segmentId,omitempty"`
+}
+
+type publicManifest struct {
+	ProjectId     string                   `json:"projectId"`
+	TimelineKey   string                   `json:"timelineKey"`
+	TimelineJson  string                   `json:"timelineJson"`
+	Resources     []publicManifestResource `json:"resources"`
+	ExpiresAtUnix int64                    `json:"expiresAtUnix"`
+}
+
+// publicGetManifest 为已批准公开作品生成匿名可播放的讲解清单（B3 音频播放接入）。
+// 仅放行 approved 作品；复用既有 timeline 打包与签名逻辑，音频/字幕/页面 PNG 均签发短期匿名可读 URL。
+// 作品若无成功配音任务（narration 未就绪），返回 404，前端优雅降级为「暂未生成语音讲解」。
+func publicGetManifest(w http.ResponseWriter, r *http.Request, store public.Store, jobs JobStore, objects objectstore.ObjectStore) {
+	id := r.PathValue("id")
+	pub, err := store.GetApproved(r.Context(), id)
+	if errors.Is(err, public.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	ctx := r.Context()
+	job, err := jobs.LatestSucceededJob(ctx, pub.TenantID, pub.ProjectID, string(pipeline.KindNarration))
+	if errors.Is(err, pipeline.ErrNoSucceededJob) {
+		http.Error(w, "narration not ready", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	timelineKey, err := jobs.StepResultRef(tenant.WithContext(ctx, pub.TenantID), job.ID, "timeline")
+	if err != nil || timelineKey == "" {
+		http.Error(w, "narration not ready", http.StatusNotFound)
+		return
+	}
+	// 页面 PNG 为可选项：获取失败则优雅降级为音频+字幕。
+	pagePngKeys, _ := resolvePagePngKeys(ctx, jobs, objects, pub.TenantID, pub.ProjectID, timelineKey)
+	bundle, _, err := loadBundle(ctx, pub.TenantID, timelineKey)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	parser, _ := objects.(signedURLParser)
+	ttl := time.Hour
+	resources, err := signManifestResources(ctx, objects, parser, pub.TenantID, timelineKey, bundle, pagePngKeys, ttl)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	out := make([]publicManifestResource, 0, len(resources))
+	for _, res := range resources {
+		out = append(out, publicManifestResource{
+			Type:        res.Type.String(),
+			Key:         res.Key,
+			SignedUrl:   res.SignedUrl,
+			ContentType: res.ContentType,
+			SizeBytes:   res.SizeBytes,
+			ContentHash: res.ContentHash,
+			SlideId:     res.SlideId,
+			SegmentId:   res.SegmentId,
+		})
+	}
+	timelineJSON, err := json.Marshal(bundle.Timeline)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, publicManifest{
+		ProjectId:     pub.ProjectID,
+		TimelineKey:   timelineKey,
+		TimelineJson:  string(timelineJSON),
+		Resources:     out,
+		ExpiresAtUnix: time.Now().Add(ttl).Unix(),
+	})
 }
 
 func publicPublish(w http.ResponseWriter, r *http.Request, store public.Store) {

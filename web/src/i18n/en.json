@@ -57,6 +57,7 @@
   "public.notFound": "Work not found or removed",
   "public.backToExplore": "Back to showcase",
   "public.audioComingSoon": "Audio playback arrives in a later release",
+  "public.audioNotReady": "Voice narration is not ready for this work yet",
   "public.myWorks": "My publications",
   "public.reviewQueue": "Review queue",
   "public.reviewQueueHint": "User-submitted works pending review",

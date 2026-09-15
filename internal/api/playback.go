@@ -53,30 +53,31 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 		return connect.NewResponse(&pptsv1.GetNarrationResponse{Ready: false}), nil
 	}
 	resp := &pptsv1.GetNarrationResponse{Ready: true, TimelineKey: timelineKey}
-	if pages, err := s.pagePngKeys(ctx, p.TenantID, projectID, timelineKey); err == nil {
+	if pages, err := resolvePagePngKeys(ctx, s.jobs, s.objects, p.TenantID, projectID, timelineKey); err == nil {
 		resp.PagePngKeys = pages
 	}
 	return connect.NewResponse(resp), nil
 }
 
-// pagePngKeys 按 timeline 页序返回页面 PNG 键；解析阶段未渲染或页数不齐时返回空（优雅降级为音频+字幕）。
-func (s *PlaybackService) pagePngKeys(ctx context.Context, tenantID, projectID, timelineKey string) ([]string, error) {
-	parseJob, err := s.jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
+// resolvePagePngKeys 按 timeline 页序返回页面 PNG 键；解析阶段未渲染或页数不齐时返回空（优雅降级为音频+字幕）。
+// 供控制台 GetNarration 与公开区匿名清单复用。
+func resolvePagePngKeys(ctx context.Context, jobs JobStore, objects objectstore.ObjectStore, tenantID, projectID, timelineKey string) ([]string, error) {
+	parseJob, err := jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
 	if errors.Is(err, pipeline.ErrNoSucceededJob) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	ref, err := s.jobs.StepResultRef(tenant.WithContext(ctx, tenantID), parseJob.ID, "pages")
+	ref, err := jobs.StepResultRef(tenant.WithContext(ctx, tenantID), parseJob.ID, "pages")
 	if err != nil || ref == "" {
 		return nil, err
 	}
-	manifest, err := s.loadPageManifest(ctx, tenantID, ref)
+	manifest, err := loadPageManifest(ctx, tenantID, ref)
 	if err != nil {
 		return nil, err
 	}
-	bundle, _, err := s.loadBundle(ctx, tenantID, timelineKey)
+	bundle, _, err := loadBundle(ctx, tenantID, timelineKey)
 	if err != nil {
 		return nil, err
 	}
@@ -95,6 +96,58 @@ func (s *PlaybackService) pagePngKeys(ctx context.Context, tenantID, projectID, 
 		out = append(out, key)
 	}
 	return out, nil
+}
+
+// signManifestResources 为 timeline 清单生成签名资源列表（timeline 包、SRT/VTT 字幕、页面 PNG、去重音频段）。
+// 控制台 GetManifest 与公开区匿名清单共用，保证前端 Player 拿到的资源结构完全一致。
+func signManifestResources(ctx context.Context, objects objectstore.ObjectStore, parser signedURLParser, tenantID, timelineKey string, bundle *app.TimelineAsset, pagePngKeys []string, ttl time.Duration) ([]*pptsv1.PlaybackResource, error) {
+	if len(pagePngKeys) != 0 && len(pagePngKeys) != len(bundle.Timeline.Slides) {
+		return nil, errors.New("page_png_keys count must match timeline slides when provided")
+	}
+	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(pagePngKeys)+len(bundle.Timeline.Slides))
+	appendSigned := func(rawKey string, typ pptsv1.PlaybackResourceType, slideID, segmentID string) error {
+		key, meta, err := statTenantObject(ctx, tenantID, rawKey)
+		if err != nil {
+			return err
+		}
+		signed, err := objects.SignedURL(ctx, key, objectstore.OpRead, ttl)
+		if err != nil {
+			return err
+		}
+		resources = append(resources, &pptsv1.PlaybackResource{
+			Type: typ, Key: key.String(), SignedUrl: rewriteLocalSignedURL(parser, signed),
+			ContentType: meta.ContentType, SizeBytes: meta.Size, ContentHash: meta.ContentHash,
+			SlideId: slideID, SegmentId: segmentID,
+		})
+		return nil
+	}
+	if err := appendSigned(timelineKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_TIMELINE, "", ""); err != nil {
+		return nil, err
+	}
+	if err := appendSigned(bundle.SRTKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_SUBTITLE_SRT, "", ""); err != nil {
+		return nil, err
+	}
+	if err := appendSigned(bundle.VTTKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_SUBTITLE_VTT, "", ""); err != nil {
+		return nil, err
+	}
+	for i, rawKey := range pagePngKeys {
+		if err := appendSigned(rawKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG, bundle.Timeline.Slides[i].SlideID, ""); err != nil {
+			return nil, err
+		}
+	}
+	seenAudio := map[string]struct{}{}
+	for _, slide := range bundle.Timeline.Slides {
+		for _, segment := range slide.Segments {
+			if _, ok := seenAudio[segment.AudioKey]; ok {
+				continue
+			}
+			seenAudio[segment.AudioKey] = struct{}{}
+			if err := appendSigned(segment.AudioKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_AUDIO, slide.SlideID, segment.SegmentID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return resources, nil
 }
 
 func (s *PlaybackService) loadPageManifest(ctx context.Context, tenantID, rawKey string) (*app.PageManifest, error) {
