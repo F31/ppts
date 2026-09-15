@@ -347,6 +347,18 @@ func (s *fakeScriptStore) EnsureExists(context.Context, string, string, string, 
 	return nil, errors.New("not used")
 }
 
+func (*fakeScriptStore) CountDraftSegments(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+
+func (*fakeScriptStore) MarkAudioRevision(context.Context, string, string, string, string, int64) error {
+	return nil
+}
+
+func (*fakeScriptStore) ListByProject(context.Context, string, string, string) ([]*narration.Revision, error) {
+	return nil, nil
+}
+
 func newTestRevision() *narration.Revision {
 	return &narration.Revision{
 		ProjectID: "project-1",

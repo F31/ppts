@@ -37,6 +37,18 @@ func (*narrationStoreStub) EnsureExists(context.Context, string, string, string,
 	return nil, errors.New("not implemented")
 }
 
+func (*narrationStoreStub) CountDraftSegments(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+
+func (*narrationStoreStub) MarkAudioRevision(context.Context, string, string, string, string, int64) error {
+	return nil
+}
+
+func (*narrationStoreStub) ListByProject(context.Context, string, string, string) ([]*narration.Revision, error) {
+	return nil, nil
+}
+
 type stepRecorder struct {
 	latest  map[string]pipeline.JobStep
 	history []pipeline.JobStep

@@ -27,16 +27,17 @@ const (
 // Revision 是一份讲稿（每 (project, slide, language) 一份）的当前版本。
 // 已审核/锁定稿不可被后台或再生成覆盖（V4.0 §3.1 优先级）。
 type Revision struct {
-	ID        string
-	TenantID  string
-	ProjectID string
-	SlideID   string
-	Language  string
-	Mode      ScriptMode
-	Status    ScriptStatus
-	Revision  int64
-	Segments  []*Segment
-	UpdatedAt time.Time
+	ID            string
+	TenantID      string
+	ProjectID     string
+	SlideID       string
+	Language      string
+	Mode          ScriptMode
+	Status        ScriptStatus
+	Revision      int64
+	AudioRevision int64 // 最近一次配音对应的脚本修订号；< Revision 表示配音可能过期（stale）
+	Segments      []*Segment
+	UpdatedAt     time.Time
 }
 
 // Segment 是可复用最小单位（语音生成与字幕共用）。
@@ -84,4 +85,10 @@ type Store interface {
 	SetStatus(ctx context.Context, tenantID, projectID, slideID, language string, newStatus ScriptStatus) (*Revision, error)
 	// EnsureExists 在编辑前创建草稿占位（幂等）。
 	EnsureExists(ctx context.Context, tenantID, projectID, slideID, language string, mode ScriptMode) (*Revision, error)
+	// CountDraftSegments 返回项目内仍处于 draft 状态的讲稿分段总数（生成前置检查用）。
+	CountDraftSegments(ctx context.Context, tenantID, projectID string) (int, error)
+	// MarkAudioRevision 回写某讲稿最近一次成功配音对应的脚本修订号（配音任务完成时调用）。
+	MarkAudioRevision(ctx context.Context, tenantID, projectID, slideID, language string, revision int64) error
+	// ListByProject 返回项目下指定语言的全部讲稿（含 AudioRevision，供 stale 计算）。
+	ListByProject(ctx context.Context, tenantID, projectID, language string) ([]*Revision, error)
 }

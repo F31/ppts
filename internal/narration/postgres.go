@@ -199,15 +199,65 @@ func (s *PGStore) SetStatus(ctx context.Context, tenantID, projectID, slideID, l
 	return rev, nil
 }
 
+// CountDraftSegments 返回项目内仍处于 draft 状态的讲稿分段总数（生成前置检查用）。
+func (s *PGStore) CountDraftSegments(ctx context.Context, tenantID, projectID string) (int, error) {
+	var n int
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COUNT(*) FROM narration_segments seg
+			 JOIN narration_scripts n ON n.id = seg.script_id
+			 WHERE n.tenant_id=$1 AND n.project_id=$2 AND seg.status='draft'`,
+			tenantID, projectID).Scan(&n)
+	})
+	return n, err
+}
+
+// MarkAudioRevision 回写某讲稿最近一次成功配音对应的脚本修订号（配音任务完成时调用）。
+func (s *PGStore) MarkAudioRevision(ctx context.Context, tenantID, projectID, slideID, language string, revision int64) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE narration_scripts SET audio_revision=$5, updated_at=now()
+			 WHERE tenant_id=$1 AND project_id=$2 AND slide_id=$3 AND language=$4`,
+			tenantID, projectID, slideID, language, revision)
+		return err
+	})
+}
+
+// ListByProject 返回项目下指定语言的全部讲稿（含 AudioRevision，供 stale 计算）。
+func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID, language string) ([]*Revision, error) {
+	var revs []*Revision
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, qerr := tx.Query(ctx,
+			`SELECT id, tenant_id, project_id, slide_id, language, mode, status, revision, audio_revision, updated_at
+			 FROM narration_scripts WHERE tenant_id=$1 AND project_id=$2 AND language=$3
+			 ORDER BY slide_id`,
+			tenantID, projectID, language)
+		if qerr != nil {
+			return qerr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r Revision
+			if serr := rows.Scan(&r.ID, &r.TenantID, &r.ProjectID, &r.SlideID, &r.Language,
+				&r.Mode, &r.Status, &r.Revision, &r.AudioRevision, &r.UpdatedAt); serr != nil {
+				return serr
+			}
+			revs = append(revs, &r)
+		}
+		return rows.Err()
+	})
+	return revs, err
+}
+
 func loadScriptTx(ctx context.Context, tx pgx.Tx, tenantID, projectID, slideID, language string) (*Revision, error) {
 	row := tx.QueryRow(ctx,
-		`SELECT id, tenant_id, project_id, slide_id, language, mode, status, revision, updated_at
+		`SELECT id, tenant_id, project_id, slide_id, language, mode, status, revision, audio_revision, updated_at
 		 FROM narration_scripts
 		 WHERE tenant_id=$1 AND project_id=$2 AND slide_id=$3 AND language=$4`,
 		tenantID, projectID, slideID, language)
 	var r Revision
 	err := row.Scan(&r.ID, &r.TenantID, &r.ProjectID, &r.SlideID, &r.Language,
-		&r.Mode, &r.Status, &r.Revision, &r.UpdatedAt)
+		&r.Mode, &r.Status, &r.Revision, &r.AudioRevision, &r.UpdatedAt)
 	return &r, err
 }
 
@@ -266,10 +316,10 @@ func loadAnchorsTx(ctx context.Context, tx pgx.Tx, scriptID string) (map[string]
 func loadRevisionTx(ctx context.Context, tx pgx.Tx, scriptID string) *Revision {
 	var r Revision
 	row := tx.QueryRow(ctx,
-		`SELECT id, tenant_id, project_id, slide_id, language, mode, status, revision, updated_at
+		`SELECT id, tenant_id, project_id, slide_id, language, mode, status, revision, audio_revision, updated_at
 		 FROM narration_scripts WHERE id=$1`, scriptID)
 	if err := row.Scan(&r.ID, &r.TenantID, &r.ProjectID, &r.SlideID, &r.Language,
-		&r.Mode, &r.Status, &r.Revision, &r.UpdatedAt); err != nil {
+		&r.Mode, &r.Status, &r.Revision, &r.AudioRevision, &r.UpdatedAt); err != nil {
 		return nil
 	}
 	if segs, err := loadSegmentsTx(ctx, tx, scriptID); err == nil {

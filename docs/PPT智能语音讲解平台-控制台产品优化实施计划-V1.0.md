@@ -338,6 +338,23 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | 出口 | 不覆盖已确认稿；保存失败不丢输入；局部重生成只重做实际范围并显式声明 |
 | 验收 | A08、A09、A10、A11、A13、A14 |
 
+**执行计划（里程碑门控 + 验证回路）**
+> 约束：本环境 `buf`/`protoc` 不可用、`gen/` 为预生成代码不可重生成 → 任何新后端能力若需新增 Connect RPC 方法，须改为**原生 HTTP 端点**或**复用既有 RPC 字段**（优先确认 `GenerateNarrationRequest` 是否已含 `segment_ids` 字段）。沙箱无法 `go build`/`tsc`，每个里程碑交付后需在本地 `go build ./...` + `npm run build` 最终验证。
+> 决策已定：C-5 强制阻止未确认稿；C-6 本轮不做切租户（读音调整 popover 的"租户词典"收窄为当前租户）；C-7 明确不做个人设置并移除入口。
+
+- **M1 后端基础（R-6 首位）【已实施】**
+  - 分段重生成：proto 已有 `RegenerateSegments` RPC（`RegenerateSegmentsRequest` 含 `segment_ids`），故直接实现 `NarrationGenerationService.RegenerateSegments` handler，复用 `CreateGeneration` 的入队/并发限流/配额预占流程（无需新增 RPC）。
+  - 待确认稿聚合：新增 `narration.Store.CountDraftSegments` + 原生 HTTP `GET /projects/{pid}/narration/draft-count`（返回 `{draftSegments}`），供生成面板 C-5 前置检查。
+  - stale 语义：新增 `narration_scripts.audio_revision` 列（迁移 0009）+ `MarkAudioRevision`（配音任务完成回写）+ `ListByProject`；原生 HTTP `GET /projects/{pid}/narration/stale` 返回每页 `audioRevision < revision` 的过期信号。
+  - **关键修复**：server.go 此前漏挂 `registerPublicRoutes`（仅加了 import 未调用），导致公开区/B3 音频端点从未生效且 `go build` 报 import 未使用；本轮补上挂载（同时挂载 `registerNarrationRoutes`）。
+  - 门控：`gofmt` 通过 + 逐文件类型复核 + 测试 fake 同步实现接口新增方法；最终需本地 `go build ./...` + `go test ./...` 确认（沙箱无法编译）。
+- **M2 编辑器骨架（① + ⑧）**：三栏布局（真实渲染缩略图 + PPT 预览 + 讲稿），属性改页签/抽屉；Ctrl/Cmd+S 保存、离开前未保存提示、页面切换刷新待保存队列。
+- **M3 讲稿编辑增强（② + ③ + ⑥）**：分段编辑 + 段落工具栏（缩短/润色/衔接/发音/停顿）；Approve/Lock 按钮与状态接入；无备注页显式选择讲稿来源。
+- **M4 生成与语音（④ + ⑤ + ⑦）**：音色选择器（属性筛选 + 样例试听 + 项目默认/单页覆盖）；读音调整 popover（本处/本项目 + 当前租户词典，C-6 收窄）；生成面板补范围/待确认稿数/需新生成/用量，**未确认稿默认阻止正式生成（C-5 强制）**。
+- **C-7 收尾**：检查设置菜单，隐藏/移除个人设置入口（若已存在）。
+
+> 顺序 M1→M2→M3→M4，每里程碑一个 commit；任一里程碑本地验证失败则回退该里程碑不合并。
+
 ### B3 生成与交付
 
 | 项 | 内容 |
@@ -383,7 +400,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | C-4 | 路由形态 | **【已定 + 已实施】A（history + 服务端 fallback）**：自研 hash 路由已改为 History API（`b96352b`）；dev 由 Vite SPA fallback 兜底，prod 由 Go 后端 catch-all 经 `PPTS_WEB_ROOT` 返回 index.html（`e1e6169`）；遗留 `#/path` 深链接在挂载时改写为 `/path` | 公开区可访问性与所有既有链接需重测；B1 其余项待做 |
 | C-5 | 生成口径 | 是否强制"未确认稿禁止正式生成"（A09） | 影响 B2 出口条件与用户流程 |
 | C-6 | 切租户 | 本轮做 or 明确不做并隐藏入口 | 决定是否需新增租户列表接口 |
-| C-7 | 个人设置 | 本轮做 or 明确不做并移除入口 | 避免"有入口无能力"违反 §1.2 第 3 条 |
+| C-7 | 个人设置 | **【已定】明确不做并移除入口**：遵守 §1.2 第 3 条；若设置菜单已有个人设置入口则隐藏，本轮不实现个人设置页（留作后续 B4） | B4 ④ 顺延；当前不暴露虚假能力 |
 | C-8 | 公开作品发布 | 是否纳入本轮（P2） | 决定 B5 与 A29 |
 
 ---

@@ -100,6 +100,13 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	if opt.Gateway != nil {
 		NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)
 	}
+	// 公开区路由（匿名只读 + 受保护写/审核）；B3 播放清单依赖 jobs。
+	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
+	if pool != nil {
+		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth)
+	}
+	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
+	registerNarrationRoutes(mux, scripts, opt.Members, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

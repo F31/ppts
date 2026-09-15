@@ -156,6 +156,99 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 	return connect.NewResponse(&pptsv1.CreateGenerationResponse{JobId: job.ID, WithinBudget: true}), nil
 }
 
+// RegenerateSegments 以分段级重生成（G2-5）：仅对请求中的 segment_ids 重新合成，
+// 其余分段复用既有缓存；复用 CreateGeneration 的任务入队、并发限流与配额预占流程。
+func (s *NarrationGenerationService) RegenerateSegments(ctx context.Context, req *connect.Request[pptsv1.RegenerateSegmentsRequest]) (*connect.Response[pptsv1.RegenerateSegmentsResponse], error) {
+	principal, err := requirePrincipal(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireRole(ctx, s.members, membership.RoleEditor); err != nil {
+		return nil, err
+	}
+	projectID := strings.TrimSpace(req.Msg.GetProjectId())
+	slideID := strings.TrimSpace(req.Msg.GetSlideId())
+	voiceID := strings.TrimSpace(req.Msg.GetVoiceId())
+	if projectID == "" || slideID == "" || voiceID == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id, slide_id and voice_id are required"))
+	}
+	language := requestLanguage(req.Header())
+	revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, slideID, language)
+	if err != nil {
+		return nil, scriptError(err)
+	}
+	if len(revision.Segments) == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("slide has no segments to regenerate"))
+	}
+	snapshot := app.NarrationSnapshot{
+		Language:      language,
+		VoiceID:       voiceID,
+		SegmentIDs:    req.Msg.GetSegmentIds(),
+		SpeechControl: tts.SpeechControl{RatePercent: 100},
+		SampleRate:    16000,
+	}
+	filter := make(map[string]struct{}, len(req.Msg.GetSegmentIds()))
+	for _, id := range req.Msg.GetSegmentIds() {
+		if id != "" {
+			filter[id] = struct{}{}
+		}
+	}
+	totalRunes := 0
+	for _, seg := range revision.Segments {
+		if seg == nil {
+			continue
+		}
+		if len(filter) > 0 {
+			if _, ok := filter[seg.SegmentID]; !ok {
+				continue
+			}
+		}
+		totalRunes += utf8.RuneCountInString(seg.SpokenText)
+	}
+	snapshot.Slides = append(snapshot.Slides, app.NarrationSlideSnapshot{SlideID: slideID, ScriptRevision: revision.Revision})
+	snapshotBytes, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	idempotencyKey := strings.TrimSpace(req.Header().Get("Idempotency-Key"))
+	if idempotencyKey == "" {
+		// 未带幂等键时以请求内容派生，避免重复提交产生重复任务。
+		idempotencyKey = "regen:" + projectID + ":" + slideID + ":" + language + ":" + strings.Join(req.Msg.GetSegmentIds(), ",") + ":" + voiceID
+	}
+	if existing, err := s.enforceConcurrentLimit(ctx, principal.TenantID, idempotencyKey, string(snapshotBytes)); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return connect.NewResponse(&pptsv1.RegenerateSegmentsResponse{JobId: existing.ID}), nil
+	}
+	var reserved *usage.Reservation
+	if s.quota != nil {
+		units := usage.EstimateSeconds(totalRunes)
+		res, rerr := s.quota.Reserve(ctx, principal.TenantID, idempotencyKey, usage.KindGenSeconds, units)
+		if errors.Is(rerr, usage.ErrInsufficientQuota) {
+			return nil, connect.NewError(connect.CodeResourceExhausted, errors.New("quota exceeded for requested narration"))
+		}
+		if rerr != nil {
+			return nil, connect.NewError(connect.CodeInternal, rerr)
+		}
+		reserved = res
+	}
+	releaseReservation := func() {
+		if reserved != nil && reserved.Created {
+			_ = s.quota.Release(ctx, principal.TenantID, idempotencyKey, usage.KindGenSeconds)
+		}
+	}
+	job, err := s.jobs.Create(ctx, principal.TenantID, projectID, string(pipeline.KindNarration), idempotencyKey, string(snapshotBytes), time.Time{})
+	if err != nil {
+		releaseReservation()
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	if job.InputSnapshot != string(snapshotBytes) {
+		releaseReservation()
+		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
+	}
+	return connect.NewResponse(&pptsv1.RegenerateSegmentsResponse{JobId: job.ID}), nil
+}
+
 func (s *NarrationGenerationService) enforceConcurrentLimit(ctx context.Context, tenantID, idempotencyKey, snapshot string) (*pipeline.Job, error) {
 	if s.policy == nil {
 		return nil, nil
@@ -223,4 +316,81 @@ func (s *NarrationGenerationService) Estimate(ctx context.Context, req *connect.
 	return connect.NewResponse(&pptsv1.NarrationEstimateResponse{
 		EstimatedSeconds: int64(math.Ceil(usage.EstimateSeconds(totalRunes))),
 	}), nil
+}
+
+// registerNarrationRoutes 挂载核心创作辅助的原生 HTTP 端点（buf/protoc 不可用，不新增 Connect RPC）：
+// 待确认稿计数与 stale 信号，供生成面板前置检查（C-5 强制阻止 + 过期提示）。
+func registerNarrationRoutes(mux *http.ServeMux, scripts narration.Store, members membership.Reader, auth func(http.Handler) http.Handler) {
+	mux.Handle("GET /projects/{pid}/narration/draft-count", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicNarrationDraftCount(w, r, scripts, members)
+	})))
+	mux.Handle("GET /projects/{pid}/narration/stale", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicNarrationStale(w, r, scripts, members)
+	})))
+}
+
+func publicNarrationDraftCount(w http.ResponseWriter, r *http.Request, scripts narration.Store, members membership.Reader) {
+	principal, err := requirePrincipal(r.Context())
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	pid := r.PathValue("pid")
+	n, err := scripts.CountDraftSegments(r.Context(), principal.TenantID, pid)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"draftSegments": n})
+}
+
+func publicNarrationStale(w http.ResponseWriter, r *http.Request, scripts narration.Store, members membership.Reader) {
+	principal, err := requirePrincipal(r.Context())
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	pid := r.PathValue("pid")
+	language := requestLanguage(r.Header)
+	revs, err := scripts.ListByProject(r.Context(), principal.TenantID, pid, language)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	slides := make([]map[string]any, 0, len(revs))
+	for _, rev := range revs {
+		slides = append(slides, map[string]any{
+			"slideId": rev.SlideID,
+			"stale":   rev.AudioRevision < rev.Revision,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slides": slides})
+}
+
+// writeConnectError 将 Connect 错误映射为原生 HTTP 状态码与 JSON 错误体。
+func writeConnectError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	switch connect.CodeOf(err) {
+	case connect.CodeUnauthenticated:
+		status = http.StatusUnauthorized
+	case connect.CodePermissionDenied, connect.CodeFailedPrecondition:
+		status = http.StatusForbidden
+	case connect.CodeInvalidArgument:
+		status = http.StatusBadRequest
+	case connect.CodeNotFound:
+		status = http.StatusNotFound
+	case connect.CodeResourceExhausted:
+		status = http.StatusTooManyRequests
+	case connect.CodeAlreadyExists:
+		status = http.StatusConflict
+	}
+	writeJSON(w, status, map[string]string{"error": err.Error()})
 }
