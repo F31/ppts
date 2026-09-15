@@ -3,6 +3,7 @@ import { Link } from '../router';
 import { useI18n } from '../i18n';
 import type { ClientIdentity, PublicWork } from '../api';
 import { deleteWork, listMyPublications, listReviewQueue, reviewWork, type PublicationStatus } from '../api';
+import { can } from '../permissions';
 import type { Role } from '../types';
 
 const statusKey: Record<PublicationStatus, string> = {
@@ -20,7 +21,8 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
   const [queue, setQueue] = useState<PublicWork[]>([]);
   const [error, setError] = useState('');
 
-  const isAdmin = role === 'ROLE_ADMIN' || role === 'ROLE_OWNER';
+  // B4-M1：审核队列要求 ADMIN（服务端 requireAdmin，public.go:333），能力判定统一走 permissions。
+  const isAdmin = can(role, 'public.manage');
 
   const refresh = useCallback(() => {
     setError('');

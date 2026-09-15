@@ -435,6 +435,14 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
 .form-stack { display: grid; gap: 12px; }
 .form-error { color: #fca5a5; background: rgba(252,165,165,.1); border-radius: 10px; padding: 10px; font-size: 13px; }
 .floating-notice { color: #86efac; background: rgba(134,239,172,.1); border-radius: 10px; padding: 10px; font-size: 13px; }
+
+/* ============ B4-M1 权限边界（A22） ============ */
+.no-permission { display: grid; gap: 8px; max-width: 640px; }
+.no-permission h2 { margin: 0; }
+.no-permission p { color: #9fb1cf; line-height: 1.65; margin: 0; }
+.no-permission.muted-panel { color: #93a6c4; font-size: 13px; }
+.perm-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+.perm-hint { color: #ffd9a8; font-size: 12.5px; margin: 8px 0 0; }
 .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin: 0; }
 .detail-grid > div { display: grid; gap: 3px; }
 .detail-grid .full-row { grid-column: 1 / -1; }

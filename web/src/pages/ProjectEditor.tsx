@@ -25,6 +25,7 @@ import {
   type SlideScriptSource
 } from '../api';
 import { Player } from '../Player';
+import { can } from '../permissions';
 import { ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
@@ -62,7 +63,19 @@ const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve
 
 const devNarrationVoiceID = 'fake-voice-1';
 
-export function ProjectEditor({ identity, projectId, draftRequested, role }: { identity: ClientIdentity; projectId: string; draftRequested?: boolean; role?: Role }) {
+export function ProjectEditor({
+  identity,
+  projectId,
+  draftRequested,
+  role,
+  roleReady = true
+}: {
+  identity: ClientIdentity;
+  projectId: string;
+  draftRequested?: boolean;
+  role?: Role;
+  roleReady?: boolean;
+}) {
   const { t } = useI18n();
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   const [activeSlideID, setActiveSlideID] = useState('');
@@ -91,8 +104,13 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
   const [propsOpen, setPropsOpen] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
-  // M3 ③：确认/锁定需 REVIEWER 及以上（rank>=1，即 reviewer/editor/admin/owner）。
-  const canReview = role !== undefined && role !== 'ROLE_VIEWER';
+  // B4-M1 权限边界（A22）：能力判定统一走 permissions.can，逐条镜像服务端 requireRole。
+  // 角色未解析完成时不渲染需要权限的按钮（避免闪现假能力）。
+  const canReview = roleReady && can(role, 'script.review'); // 确认/锁定：REVIEWER+（script.go:81,99）
+  const canEditScript = roleReady && can(role, 'script.edit'); // 讲稿编辑：EDITOR+（script.go:55,120）
+  const canGenerate = roleReady && can(role, 'narration.generate'); // 配音生成：EDITOR+（narration.go:65,167）
+  const canExport = roleReady && can(role, 'export.create'); // 导出：EDITOR+（export.go:39）
+  const canListArtifacts = roleReady && can(role, 'artifact.list'); // 成品列表：EDITOR+（artifact.go:27）
   // M3 ②：正在局部重生成的段落（按当前页 segmentId）。
   const [regeneratingIds, setRegeneratingIds] = useState<string[]>([]);
   // M3 ⑥：无备注页讲稿来源选择（持久化）。
@@ -614,9 +632,12 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
           <button type="button" className="button-ghost" onClick={() => setPropsOpen(true)} title={t('editor.propertiesTitle')}>
             {t('editor.properties')}
           </button>
-          <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title={t('editor.artifactsTitle')}>
-            {t('editor.artifacts')}
-          </Link>
+          {/* B4-M1：成品列表端点要求 EDITOR，非编辑角色不渲染该入口（A22）。 */}
+          {canListArtifacts && (
+            <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title={t('editor.artifactsTitle')}>
+              {t('editor.artifacts')}
+            </Link>
+          )}
           <button type="button" className="button-ghost" onClick={() => setPubOpen(true)}>
             {t('public.publish')}
           </button>
@@ -694,6 +715,7 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
               onCommitError={commitError}
               onStatusChange={handleScriptStatus}
               canReview={canReview}
+              canEdit={canEditScript}
               onApprove={approveActive}
               onLock={lockActive}
               regeneratingIds={regeneratingIds}
@@ -877,12 +899,14 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
                   <button
                     type="button"
                     className="primary"
-                    disabled={!isReady || narrationStatus.phase === 'generating' || draftSegments > 0}
+                    disabled={!isReady || !canGenerate || narrationStatus.phase === 'generating' || draftSegments > 0}
                     onClick={() => void generateNarration()}
                   >
                     {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
                   </button>
                 </div>
+                {/* B4-M1：无生成权限（EDITOR 以下）时给出准确说明，而不是可点却 403 的假按钮（A22/A26）。 */}
+                {!canGenerate && <p className="perm-hint">{t('perm.needEditorGenerate')}</p>}
               </div>
 
               {narrationStatus.message && (
@@ -937,20 +961,26 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
           <>
             <Player manifest={realManifest} onSlideChange={handleSlideSelect} />
             <div className="export-row">
-              <button
-                type="button"
-                className="button-primary"
-                disabled={exporting}
-                onClick={() => {
-                  setExportError('');
-                  setExportOpen(true);
-                }}
-              >
-                {t('editor.export')}
-              </button>
-              <Link to={`/projects/${projectId}/artifacts`} className="button-ghost">
-                {t('editor.viewArtifacts')}
-              </Link>
+              {/* B4-M1：导出要求 EDITOR（export.go:39）；无权限时不渲染可点击入口。 */}
+              {canExport && (
+                <button
+                  type="button"
+                  className="button-primary"
+                  disabled={exporting}
+                  onClick={() => {
+                    setExportError('');
+                    setExportOpen(true);
+                  }}
+                >
+                  {t('editor.export')}
+                </button>
+              )}
+              {canListArtifacts && (
+                <Link to={`/projects/${projectId}/artifacts`} className="button-ghost">
+                  {t('editor.viewArtifacts')}
+                </Link>
+              )}
+              {!canExport && !canListArtifacts && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
             </div>
           </>
         ) : (

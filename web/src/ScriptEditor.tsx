@@ -19,6 +19,9 @@ type Props = {
   onStatusChange?: (status: ScriptEditorStatus) => void;
   // canReview：当前用户具 REVIEWER 及以上角色时显示确认/锁定按钮。
   canReview?: boolean;
+  // canEdit：当前用户具 EDITOR 及以上角色（服务端 ScriptService.Update 的最低要求，script.go:55）。
+  // 为 false 时段落只读、工具栏禁用，避免 Viewer/Reviewer 看到可写却必然 403 的假能力（A22）。
+  canEdit?: boolean;
   onApprove?: () => void;
   onLock?: () => void;
   // regeneratingIds：后端正在局部重生成的段落（显示占位、禁用编辑）。
@@ -33,7 +36,7 @@ type Props = {
 const PAUSE_MARKER = '‖';
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, onChange, commit, onCommitError, onStatusChange, canReview, onApprove, onLock, regeneratingIds, onRegenerate, onAddToDictionary },
+  { script, onChange, commit, onCommitError, onStatusChange, canReview, canEdit = true, onApprove, onLock, regeneratingIds, onRegenerate, onAddToDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -209,22 +212,26 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         </div>
       </header>
 
-      {/* 段落工具栏（M3 ②）：缩短/润色/衔接 → 局部重生成；发音/停顿 → 插入朗读标记。 */}
+      {/* B4-M1：只读说明（Viewer/Reviewer 可审阅但不可改稿，服务端 Update 要求 EDITOR）。 */}
+      {!canEdit && <p className="perm-hint">{t('script.readOnlyNote')}</p>}
+
+      {/* 段落工具栏（M3 ②）：缩短/润色/衔接 → 局部重生成；发音/停顿 → 插入朗读标记。
+          B4-M1：无编辑权限（EDITOR 以下）时整体禁用，避免出现必然 403 的假能力（A22）。 */}
       <div className="paragraph-toolbar" role="toolbar" aria-label={t('editor.toolbar')}>
-        <button type="button" disabled={targetIds().length === 0} onClick={handleRegenerate} title={t('editor.shortenHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={handleRegenerate} title={t('editor.shortenHint')}>
           {t('editor.shorten')}
         </button>
-        <button type="button" disabled={targetIds().length === 0} onClick={handleRegenerate} title={t('editor.polishHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={handleRegenerate} title={t('editor.polishHint')}>
           {t('editor.polish')}
         </button>
-        <button type="button" disabled={targetIds().length === 0} onClick={handleRegenerate} title={t('editor.transitionHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={handleRegenerate} title={t('editor.transitionHint')}>
           {t('editor.transition')}
         </button>
         <span className="toolbar-sep" />
-        <button type="button" disabled={targetIds().length === 0 || locked} onClick={openPronounce} title={t('editor.pronounceHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0 || locked} onClick={openPronounce} title={t('editor.pronounceHint')}>
           {t('editor.pronounce')}
         </button>
-        <button type="button" disabled={targetIds().length === 0 || locked} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0 || locked} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
           {t('editor.pause')}
         </button>
         {selected.size > 0 && (
@@ -276,7 +283,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 <input
                   type="checkbox"
                   checked={selected.has(segment.segmentId)}
-                  disabled={segRegen}
+                  disabled={!canEdit || segRegen}
                   onChange={() => toggleSelect(segment.segmentId)}
                 />
                 <span className="segment-index">{index + 1}</span>
@@ -289,7 +296,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   textareaRefs.current[segment.segmentId] = el;
                 }}
                 value={texts[segment.segmentId] ?? ''}
-                readOnly={locked || segRegen}
+                readOnly={!canEdit || locked || segRegen}
                 onFocus={() => setFocusedId(segment.segmentId)}
                 onClick={(e) => {
                   setFocusedId(segment.segmentId);

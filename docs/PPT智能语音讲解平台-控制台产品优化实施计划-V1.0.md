@@ -417,6 +417,28 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | 出口 | 按平台与角色通过验收；菜单与后端一致 |
 | 验收 | A22、A23、A24、A25、A26 |
 
+**执行计划（里程碑门控 + 验证回路）**
+> 约束同 B2/B3：本环境 buf/protoc 不可用 → 新后端能力走原生 HTTP 端点；沙箱无法 go build/tsc，每个里程碑交付后需本地 `go build ./...` + `npm run build` 验证。
+> 勘察结论（2026-09-16，逐文件核实）：① 角色由 `TenantService.Members` 读取后以 props 下传（`App.tsx:104-121`），**全仓无路由守卫**，仅两处 ad-hoc 角色分支（`ProjectEditor.canReview`、`PublicAdmin.isAdmin`）；② 模型服务仅"已配置 + 本次测试"两态，后端无持久化测试状态（`0023_model_gateways.sql` 无 tested_at/status 列）；③ 无 fake provider，`web/src/mockData.ts` 为死文件；④ Player 无任何键盘处理，无底部固定播放条；⑤ 首页为 hero/统计/最近项目/最近任务，无"待处理事项/最近成品"；⑥ 任务列表缺 范围/阶段/步骤/受影响页；`job_steps` 表**已存在但无任何 RPC 暴露**，`jobs.traceparent` 存在但未进 proto；⑦ **无**"我的租户列表"RPC，**无**任何 per-user 偏好存储（migrations 无偏好表）。
+
+- **B4-M1 权限边界组件（PermissionBoundary）【已实施】**：
+  - 新增 `web/src/permissions.ts`：能力模型逐条镜像服务端 `requireRole`（`roles.go` rank：viewer0 < reviewer1 < editor2 < admin3 < owner4）；16 项能力各注明服务端依据文件行号；`can(role, cap)` 在 `role === undefined`（成员体系未配置/读取失败）时放行，与服务端 `requireRole` 的 nil-reader 放行语义一致，避免"前端隐藏、后端放行"的新不一致。
+  - 新增 `components/PermissionBoundary.tsx`：`PermissionBoundary`（`ready`/`pendingFallback`/`fallback`）、`NoPermissionNotice`、`RolePendingNotice`。
+  - `App.tsx`：新增 `roleReady`；**路由级守卫**（成品列表=artifact.list、成员=member.manage、审计=audit.read、模型=gateway.manage）——直接输入 URL 也只能看到统一无权页。
+  - `AppShell.tsx`：设置子菜单按能力过滤；「设置」主入口与用户菜单「设置」改为落到第一个可见子页（原硬编码 `/settings/members` 对非管理员是假入口）。
+  - `ProjectEditor.tsx`：`canReview`/`canEditScript`/`canGenerate`/`canExport`/`canListArtifacts` 全部改走 `can()`；无生成/导出权限时按钮禁用并给出准确说明，成品入口直接不渲染。
+  - `ScriptEditor.tsx`：新增 `canEdit`——EDITOR 以下段落只读、工具栏与勾选禁用并显示只读说明。修复"Reviewer 可点保存、但服务端 `script.go:55` 要求 EDITOR → 必然 403"的越权假象。
+  - `PublicAdmin.tsx`：`isAdmin` 改走 `can(role,'public.manage')`。
+  - i18n 中英各 8 键（`perm.*` 7 项 + `script.readOnlyNote`）；`styles.css` + `theme.css`(light) 配套。
+  - 验收：A22（菜单与后端一致 + 直接 URL/请求不能越权），同时消除 A26 的一类"假能力"。注：纯前端；本机需 `npm run build` 终验。
+
+- **B4-M2 模型服务三态 + 演示模式标识【待实施】**（A23）：后端无持久化测试状态 → 三态限定为「已配置（无密钥/已禁用细分）／未检测（本次会话未测）／检测通过／当前不可用（最近一次失败，带错误与修复入口）」，并明确标注未检测不等于不可用；"演示模式"以显式标识标注模拟/未配置供应商，避免输出伪正式成品。
+- **B4-M3 无接口功能门禁收口【待实施】**（A26）：对已知无后端能力项（音频包 / 配音 PPTX 导出、样例试听、用量存储与策略）统一为"隐藏或明确不可用 + 修复入口"，逐项复核不留可点击的假按钮。
+- **B4-M4 移动端单列 + 底部播放器 + 播放快捷键【待实施】**（A25）：编辑器/播放器单列化，播放器底部吸附；空格/方向键控制播放且**不抢占输入焦点**。
+- **B4-M5 首页待处理事项与最近完成成品【待实施】**（配 A23/A26 语义）：首页补"待处理事项"（待确认稿、待审核作品、失败/待重试任务）与"最近完成成品"，均以真实接口为准。
+- **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
+- **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
+
 ### B5 可选增强（独立立项）
 
 全局成品库、命令面板、邮箱自助注册、**用户作品公开发布与撤回**（`publicId` 不可反推、撤回即失效含 CDN 清理、删除级联失效）。发布能力不完整则入口整体不上线。
