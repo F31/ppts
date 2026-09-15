@@ -23,6 +23,7 @@ import { PublicShell } from './PublicShell';
 import { Explore } from './pages/Explore';
 import { Watch } from './pages/Watch';
 import { PublicAdmin } from './pages/PublicAdmin';
+import { describeApiError } from './apiError';
 
 function AppContent() {
   const route = useRoute();
@@ -103,24 +104,34 @@ function AppContent() {
 }
 
 function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity; parts: string[]; query: URLSearchParams }) {
+  const { t } = useI18n();
   const [role, setRole] = useState<Role | undefined>(undefined);
   // B4-M1：角色是否已解析完成。未完成时不渲染越权路由的"无权"占位（避免闪现），
   // 也不提前暴露管理菜单，保证菜单与后端一致（A22）。
   const [roleReady, setRoleReady] = useState(false);
+  // A26：角色读取失败时必须显式告知（并给重试），不能静默把权限判定放宽——
+  // 否则会向低权限用户闪现管理入口，随后每个请求都 403。
+  const [roleError, setRoleError] = useState('');
+  const [roleReloadKey, setRoleReloadKey] = useState(0);
 
   // 角色从服务端授权读取（TenantService.Members）；失败不阻塞页面。
   // members 未配置时服务端返回 Unimplemented → role 保持 undefined，此时服务端 requireRole 放行，
   // 前端同样不隐藏（见 permissions.ts can()）。
   useEffect(() => {
     let cancelled = false;
+    setRoleError('');
+    setRoleReady(false);
     listMembers(identity)
       .then((members) => {
         if (cancelled) return;
         const mine = members.find((member) => member.userId === identity.userId);
         setRole(mine?.role ?? 'ROLE_VIEWER');
       })
-      .catch(() => {
-        if (!cancelled) setRole(undefined);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        // 保留 role=undefined（对齐服务端 nil-reader 放行语义），但把原因暴露到界面上。
+        setRole(undefined);
+        setRoleError(describeApiError(err, t('app.roleLoadFailed'), t));
       })
       .finally(() => {
         if (!cancelled) setRoleReady(true);
@@ -128,7 +139,7 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
     return () => {
       cancelled = true;
     };
-  }, [identity]);
+  }, [identity, t, roleReloadKey]);
 
   const section = parts[0] ?? 'home';
 
@@ -194,6 +205,13 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
   }
   return (
     <AppShell role={role} roleReady={roleReady}>
+      {/* A26：角色未解析成功时明确告知，并提供重试；不静默放宽权限判定。 */}
+      {roleError && (
+        <div className="load-failure" role="alert">
+          <p className="form-error">{roleError}</p>
+          <button type="button" onClick={() => setRoleReloadKey((key) => key + 1)}>{t('common.retry')}</button>
+        </div>
+      )}
       {content}
     </AppShell>
   );

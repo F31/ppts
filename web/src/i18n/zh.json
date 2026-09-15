@@ -655,5 +655,39 @@
   "jobs.pageSize": "每页",
   "jobs.prevPage": "上一页",
   "jobs.nextPage": "下一页",
-  "jobs.pageOf": "第 {page} 页"
+  "jobs.pageOf": "第 {page} 页",
+
+  "err.unimplemented": "服务端尚未提供该能力",
+  "err.notFound": "接口不存在（404）",
+  "err.unauthenticated": "登录已失效，请重新登录",
+  "err.forbidden": "当前角色没有该权限",
+  "err.unavailable": "服务暂时不可用（503）",
+
+  "app.roleLoadFailed": "角色信息读取失败，权限判定已临时放宽",
+  "app.roleRetry": "重新读取角色",
+
+  "public.queueLoadFailed": "审核队列加载失败",
+  "public.audioFailed": "讲解播放清单加载失败",
+
+  "usage.storageFailed": "存储用量加载失败",
+  "usage.policyFailed": "租户策略加载失败",
+
+  "home.loadFailed": "首页数据加载失败",
+  "home.loadFailedShort": "加载失败，请重试",
+  "home.statsFailed": "用量与存储数据加载失败，已显示为「—」",
+  "home.stat.unavailable": "暂不可用",
+
+  "editor.simulatedVoice": "模拟音色（开发用）",
+  "editor.simulatedVoiceNote": "本租户没有可用的语音合成服务，当前使用开发用模拟音色，生成的讲解语音可能不是正式产物。",
+  "editor.fixVoice": "接入模型",
+
+  "artifacts.downloadHint": "获取限时下载直链",
+  "artifacts.downloadBlocked": "该成品暂不可下载：文件尚未就绪或已被清理",
+  "artifacts.downloadBlockedShort": "暂不可下载",
+
+  "members.userIdImmutable": "成员标识创建后不可修改；如需变更请先移除再用新标识添加",
+  "members.ownerRoleNewOnly": "新增成员时不能直接指定 OWNER（需通过所有权转移）",
+  "members.removeHint": "从本租户移除该成员",
+
+  "gateway.immutableWhenEditing": "类型与名称在编辑状态下不可修改；如需变更请新建网关"
 }

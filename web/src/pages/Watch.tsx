@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link } from '../router';
 import { useI18n } from './../i18n';
-import { getPublicWork, getPublicManifest, type PublicWork, type PlaybackManifest } from '../api';
+import { getPublicWork, getPublicManifest, type PublicWork } from '../api';
+import { describeApiError, isNotFound, settle } from '../apiError';
+import type { PlaybackManifest } from '../types';
 import { Player } from '../Player';
 
 // Watch 是匿名作品播放页：展示封面与讲解概要，并复用控制台同款 Player 播放语音讲解（B3）。
@@ -12,27 +14,43 @@ export function Watch({ id }: { id: string }) {
   const [manifest, setManifest] = useState<PlaybackManifest | null>(null);
   const [error, setError] = useState('');
   const [audioMissing, setAudioMissing] = useState(false);
+  const [manifestError, setManifestError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     setError('');
     setAudioMissing(false);
+    setManifestError('');
     setWork(null);
     setManifest(null);
-    // 作品信息与播放清单并行拉取；清单缺失（narration 未就绪/404）不影响作品信息展示。
-    Promise.all([getPublicWork(id), getPublicManifest(id).catch(() => null)])
-      .then(([w, m]) => {
-        if (cancelled) return;
-        setWork(w);
-        if (m && m.resources && m.resources.length > 0) {
-          setManifest(m);
-        } else {
-          setAudioMissing(true);
+
+    // 两个请求的失败语义不同，必须分开处理（A26：不得用同一句"未就绪"掩盖 5xx）：
+    //   作品 404   → 作品不存在（正常业务结果）；作品其他错误 → 服务异常，显式报错；
+    //   清单 404   → 讲解尚未生成（正常降级为"讲解未就绪"）；清单其他错误 → 显式报错。
+    void (async () => {
+      let w: PublicWork;
+      try {
+        w = await getPublicWork(id);
+      } catch (err) {
+        if (!cancelled) {
+          setError(isNotFound(err) ? t('public.notFound') : describeApiError(err, t('public.loadFailed'), t));
         }
-      })
-      .catch(() => {
-        if (!cancelled) setError(t('public.notFound'));
-      });
+        return;
+      }
+      if (cancelled) return;
+      setWork(w);
+
+      const m = await settle(() => getPublicManifest(id));
+      if (cancelled) return;
+      if (m.data && m.data.resources && m.data.resources.length > 0) {
+        setManifest(m.data);
+      } else if (!m.error || isNotFound(m.error)) {
+        setAudioMissing(true);
+      } else {
+        setManifestError(describeApiError(m.error, t('public.audioFailed'), t));
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -70,6 +88,8 @@ export function Watch({ id }: { id: string }) {
         {work.summary ? <p className="watch-summary">{work.summary}</p> : null}
         {manifest ? (
           <Player manifest={manifest} />
+        ) : manifestError ? (
+          <p className="watch-note form-error" role="alert">{manifestError}</p>
         ) : audioMissing ? (
           <p className="watch-note">{t('public.audioNotReady')}</p>
         ) : (

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from '../router';
 import { useI18n } from '../i18n';
 import { listPublicWorks, type PublicWork, type PublicationKind } from '../api';
+import { describeApiError } from '../apiError';
 
 type Tab = Extract<PublicationKind, 'featured' | 'user'>;
 
@@ -12,16 +13,22 @@ export function Explore() {
   const [tab, setTab] = useState<Tab>('featured');
   const [works, setWorks] = useState<PublicWork[]>([]);
   const [loading, setLoading] = useState(true);
+  // A26：加载失败不能伪装成"暂无作品"，否则观众会以为广场是空的。
+  const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
+    setError('');
     listPublicWorks({ kind: tab, limit: 24 })
       .then((page) => {
         if (!cancelled) setWorks(page.items);
       })
-      .catch(() => {
-        if (!cancelled) setWorks([]);
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setWorks([]);
+          setError(describeApiError(err, t('public.loadFailed'), t));
+        }
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -29,7 +36,7 @@ export function Explore() {
     return () => {
       cancelled = true;
     };
-  }, [tab]);
+  }, [tab, t]);
 
   return (
     <div className="explore">

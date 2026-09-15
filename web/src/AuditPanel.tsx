@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { ConnectError, listAuditArchives, listAuditEvents, type ClientIdentity } from './api';
 import { useI18n } from './i18n';
 import type { AuditArchiveFile, AuditEvent } from './types';
@@ -35,7 +35,7 @@ export function AuditPanel({ identity }: Props) {
   const [sinceHours, setSinceHours] = useState('24');
   const [state, setState] = useState<AuditState>(emptyState);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: '' }));
     try {
       const hours = Number.parseInt(sinceHours, 10);
@@ -54,11 +54,16 @@ export function AuditPanel({ identity }: Props) {
         archives: []
       });
     }
-  };
+  }, [identity, action, resourceType, sinceHours, t]);
 
+  // 筛选条件变化即自动重查（文本输入防抖 300ms）。
+  // A26：此前筛选只改本地 state、必须另点"刷新"才生效，观感上像"筛选已应用"的假交互。
   useEffect(() => {
-    void load();
-  }, []);
+    const timer = window.setTimeout(() => {
+      void load();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   return (
     <section className="audit-panel" aria-label={t('audit.aria')}>

@@ -8,6 +8,7 @@ import {
   listProjects,
   type ClientIdentity
 } from '../api';
+import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
 import { jobKindKey, jobStateKey, type Job, type JobState, type Project } from '../types';
@@ -31,24 +32,35 @@ export function Home({ identity }: { identity: ClientIdentity }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [voiceReady, setVoiceReady] = useState<Record<string, boolean>>({});
-  const [stats, setStats] = useState<{ usageSeconds: number; storageBytes: number; ttsConfigured: boolean; llmConfigured: boolean }>({
-    usageSeconds: 0,
-    storageBytes: 0,
+  // A26：用量/存储用 null 表示"取数失败"，界面显示"—"并给出原因；
+  // 若沿用 0，会把"取不到数"伪装成"用量为 0"，属于误导性假数据。
+  const [stats, setStats] = useState<{
+    usageSeconds: number | null;
+    storageBytes: number | null;
+    ttsConfigured: boolean;
+    llmConfigured: boolean;
+  }>({
+    usageSeconds: null,
+    storageBytes: null,
     ttsConfigured: false,
     llmConfigured: false
   });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [statsError, setStatsError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
+    setError('');
+    setStatsError('');
     try {
       const [projectList, jobList] = await Promise.all([listProjects(identity), listJobs(identity)]);
       setProjects(projectList);
       setJobs(jobList);
 
-      const [usage, storage] = await Promise.all([
-        getUsage(identity).catch(() => ({ secondsUsed: 0 })),
-        getStorageUsage(identity).catch(() => ({ totalBytes: 0 }))
+      const [usageRes, storageRes] = await Promise.all([
+        settle(() => getUsage(identity)),
+        settle(() => getStorageUsage(identity))
       ]);
       let tts = false;
       let llm = false;
@@ -57,14 +69,17 @@ export function Home({ identity }: { identity: ClientIdentity }) {
         tts = gateways.some((g) => g.kind === 'tts' && g.enabled);
         llm = gateways.some((g) => g.kind === 'llm' && g.enabled);
       } catch {
-        // 非 admin 无法读取模型服务；不阻塞首页。
+        // 非 admin 无法读取模型服务；不阻塞首页，卡片显示"未配置/未知"。
       }
       setStats({
-        usageSeconds: usage.secondsUsed ?? 0,
-        storageBytes: storage.totalBytes ?? 0,
+        usageSeconds: usageRes.data?.secondsUsed ?? null,
+        storageBytes: storageRes.data?.totalBytes ?? null,
         ttsConfigured: tts,
         llmConfigured: llm
       });
+      if (usageRes.error || storageRes.error) {
+        setStatsError(describeApiError(usageRes.error ?? storageRes.error, t('home.statsFailed'), t));
+      }
 
       const readyMap: Record<string, boolean> = {};
       const recent = projectList.slice(0, 6);
@@ -74,16 +89,19 @@ export function Home({ identity }: { identity: ClientIdentity }) {
             const narration = await getNarration(identity, project.id);
             readyMap[project.id] = narration.ready;
           } catch {
+            // 单项目讲解状态读取失败按"未配音"降级，不影响首页整体渲染。
             readyMap[project.id] = false;
           }
         })
       );
       setVoiceReady(readyMap);
-      setLoading(false);
+    } catch (err) {
+      // A26：主数据（项目/任务）失败必须显式报错，否则页面会用"暂无项目"掩盖真实故障。
+      setError(describeApiError(err, t('home.loadFailed'), t));
     } finally {
       setLoading(false);
     }
-  }, [identity]);
+  }, [identity, t]);
 
   useEffect(() => {
     void load();
@@ -104,19 +122,35 @@ export function Home({ identity }: { identity: ClientIdentity }) {
         </div>
       </section>
 
+      {error && (
+        <div className="load-failure" role="alert">
+          <p className="form-error">{error}</p>
+          <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
+        </div>
+      )}
+      {statsError && !error && <p className="stats-note muted">{statsError}</p>}
+
       <section className="stat-grid" aria-label={t('home.eyebrow')}>
-        <StatCard label={t('home.stat.projects')} value={String(projects.length)} note={t('home.stat.projectsNote')} />
-        <StatCard label={t('home.stat.voiced')} value={String(voicedCount)} note={t('home.stat.voicedNote')} />
-        <StatCard label={t('home.stat.activeJobs')} value={String(activeJobCount)} note={t('home.stat.activeJobsNote')} />
-        <StatCard label={t('home.stat.usage')} value={fmtSeconds(stats.usageSeconds)} note={t('home.stat.usageNote')} />
-        <StatCard label={t('home.stat.storage')} value={fmtBytes(stats.storageBytes)} note={t('home.stat.storageNote')} />
+        <StatCard label={t('home.stat.projects')} value={error ? '—' : String(projects.length)} note={t('home.stat.projectsNote')} />
+        <StatCard label={t('home.stat.voiced')} value={error ? '—' : String(voicedCount)} note={t('home.stat.voicedNote')} />
+        <StatCard label={t('home.stat.activeJobs')} value={error ? '—' : String(activeJobCount)} note={t('home.stat.activeJobsNote')} />
+        <StatCard
+          label={t('home.stat.usage')}
+          value={stats.usageSeconds === null ? '—' : fmtSeconds(stats.usageSeconds)}
+          note={stats.usageSeconds === null ? t('home.stat.unavailable') : t('home.stat.usageNote')}
+        />
+        <StatCard
+          label={t('home.stat.storage')}
+          value={stats.storageBytes === null ? '—' : fmtBytes(stats.storageBytes)}
+          note={stats.storageBytes === null ? t('home.stat.unavailable') : t('home.stat.storageNote')}
+        />
         <StatCard
           label={t('home.stat.models')}
           value={stats.ttsConfigured && stats.llmConfigured ? t('home.models.configured') : stats.ttsConfigured || stats.llmConfigured ? t('home.models.partial') : t('home.models.none')}
           note={t('home.stat.modelsNote')}
         />
       </section>
-      {!loading && <p className="stats-note">{t('home.statsNote')}</p>}
+      {!loading && !error && <p className="stats-note">{t('home.statsNote')}</p>}
 
       <section className="panel home-section">
         <header>
@@ -125,6 +159,8 @@ export function Home({ identity }: { identity: ClientIdentity }) {
         </header>
         {loading ? (
           <p className="empty-state">{t('common.loading')}</p>
+        ) : error ? (
+          <p className="empty-state">{t('home.loadFailedShort')}</p>
         ) : projects.length === 0 ? (
           <div className="empty-state first-run">
             <p>{t('home.noProjects')}</p>

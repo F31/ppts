@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { getPolicy, getQuota, getStorageUsage, getUsage, type ClientIdentity } from '../api';
+import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import type { StorageUsage, TenantPolicy, TenantQuota, TenantUsage } from '../types';
 
@@ -27,27 +28,38 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
   const [policy, setPolicy] = useState<TenantPolicy | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  // A26：分区错误单独记录，失败时给出原因与重试，不再统一渲染成"暂不可用"。
+  const [coreError, setCoreError] = useState('');
+  const [storageError, setStorageError] = useState('');
+  const [policyError, setPolicyError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
     setError('');
-    try {
-      const month = new Date().toISOString().slice(0, 7);
-      const [quotaRes, usageRes, storageRes, policyRes] = await Promise.all([
-        getQuota(identity).catch(() => null),
-        getUsage(identity, month).catch(() => null),
-        getStorageUsage(identity).catch(() => null),
-        getPolicy(identity).catch(() => null)
-      ]);
-      setQuota(quotaRes);
-      setUsage(usageRes);
-      setStorage(storageRes);
-      setPolicy(policyRes);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('usage.loadFailed'));
-    } finally {
-      setLoading(false);
+    setCoreError('');
+    setStorageError('');
+    setPolicyError('');
+    const month = new Date().toISOString().slice(0, 7);
+    const [quotaRes, usageRes, storageRes, policyRes] = await Promise.all([
+      settle(() => getQuota(identity)),
+      settle(() => getUsage(identity, month)),
+      settle(() => getStorageUsage(identity)),
+      settle(() => getPolicy(identity))
+    ]);
+    setQuota(quotaRes.data);
+    setUsage(usageRes.data);
+    setStorage(storageRes.data);
+    setPolicy(policyRes.data);
+    if (quotaRes.error || usageRes.error) {
+      setCoreError(describeApiError(quotaRes.error ?? usageRes.error, t('usage.loadFailed'), t));
     }
+    if (storageRes.error) {
+      setStorageError(describeApiError(storageRes.error, t('usage.storageFailed'), t));
+    }
+    if (policyRes.error) {
+      setPolicyError(describeApiError(policyRes.error, t('usage.policyFailed'), t));
+    }
+    setLoading(false);
   }, [identity, t]);
 
   useEffect(() => {
@@ -99,7 +111,12 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
         <header className="table-head">
           <h2>{t('usage.storageTitle')}</h2>
         </header>
-        {!storage ? (
+        {storageError ? (
+          <div className="load-failure" role="alert">
+            <p className="form-error">{storageError}</p>
+            <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
+          </div>
+        ) : !storage ? (
           <p className="empty-state">{t('usage.storageUnavailable')}</p>
         ) : (
           <table className="data-table">
@@ -128,7 +145,12 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
         <header className="table-head">
           <h2>{t('usage.policyTitle')}</h2>
         </header>
-        {!policy ? (
+        {policyError ? (
+          <div className="load-failure" role="alert">
+            <p className="form-error">{policyError}</p>
+            <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
+          </div>
+        ) : !policy ? (
           <p className="empty-state">{t('usage.policyUnavailable')}</p>
         ) : (
           <dl className="detail-grid">

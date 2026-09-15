@@ -655,5 +655,39 @@
   "jobs.pageSize": "Per page",
   "jobs.prevPage": "Previous",
   "jobs.nextPage": "Next",
-  "jobs.pageOf": "Page {page}"
+  "jobs.pageOf": "Page {page}",
+
+  "err.unimplemented": "This capability is not provided by the server yet",
+  "err.notFound": "Endpoint not found (404)",
+  "err.unauthenticated": "Session expired, please sign in again",
+  "err.forbidden": "Your role does not have this permission",
+  "err.unavailable": "Service temporarily unavailable (503)",
+
+  "app.roleLoadFailed": "Failed to load your role; permission checks are temporarily permissive",
+  "app.roleRetry": "Reload role",
+
+  "public.queueLoadFailed": "Failed to load review queue",
+  "public.audioFailed": "Failed to load the narration manifest",
+
+  "usage.storageFailed": "Failed to load storage usage",
+  "usage.policyFailed": "Failed to load tenant policy",
+
+  "home.loadFailed": "Failed to load home data",
+  "home.loadFailedShort": "Failed to load, please retry",
+  "home.statsFailed": "Usage and storage data failed to load; shown as \u2014",
+  "home.stat.unavailable": "Unavailable",
+
+  "editor.simulatedVoice": "Simulated voice (dev)",
+  "editor.simulatedVoiceNote": "This tenant has no usable TTS service. A development placeholder voice is in use, so generated narration may not be a production artifact.",
+  "editor.fixVoice": "Configure models",
+
+  "artifacts.downloadHint": "Get a time-limited download link",
+  "artifacts.downloadBlocked": "Not downloadable yet: the file is not ready or has been cleaned up",
+  "artifacts.downloadBlockedShort": "Not downloadable",
+
+  "members.userIdImmutable": "The member id cannot be changed after creation; remove and re-add with the new id instead",
+  "members.ownerRoleNewOnly": "OWNER cannot be assigned when adding a member (use ownership transfer)",
+  "members.removeHint": "Remove this member from the tenant",
+
+  "gateway.immutableWhenEditing": "Type and name cannot be changed while editing; create a new gateway instead"
 }

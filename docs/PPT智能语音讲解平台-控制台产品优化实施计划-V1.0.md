@@ -418,7 +418,13 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | 验收 | A22、A23、A24、A25、A26 |
 
 **执行计划（里程碑门控 + 验证回路）**
-> 约束同 B2/B3：本环境 buf/protoc 不可用 → 新后端能力走原生 HTTP 端点；沙箱无法 go build/tsc，每个里程碑交付后需本地 `go build ./...` + `npm run build` 验证。
+> 约束同 B2/B3：本环境 buf/protoc 不可用 → 新后端能力走原生 HTTP 端点；每个里程碑交付后仍需本地 `go build ./...` + `npm run build` 验证。
+
+> **验证回路更新（2026-09-16，B4-M3 期间打通，重要）**：此前"沙箱无法 go build/tsc"的结论已被推翻，现可在沙箱内完成真实编译验证，**每个里程碑应直接跑通再提交**：
+> - **前端**：`cd web && node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build`（等价 `npm run build`）。前置：`web/node_modules` 是在 Linux 环境安装的，只含 linux 原生包，Windows 上会报 `Unable to resolve @typescript/typescript-win32-x64` / `Cannot find module '@rolldown/binding-win32-x64-msvc'` / `lightningcss.win32-x64-msvc`。修复方式二选一：本机重跑 `npm install`，或按 `optionalDependencies` 版本从 registry 下载对应 win32 包解压进 `node_modules/`（本次已就地补齐 `@typescript/typescript-win32-x64@7.0.2`、`@rolldown/binding-win32-x64-msvc@1.2.8`、`lightningcss-win32-x64-msvc@1.33.0`）。
+> - **后端**：`GOPROXY=https://goproxy.cn,direct GOSUMDB=off go build ./...`（`proxy.golang.org` 走 IPv6 不可达；模块缓存原本为空，需指定可达代理首次拉取）。
+> - **静态检查/测试**：`GOPROXY=https://goproxy.cn,direct GOSUMDB=off go vet ./internal/...`、`go test ./internal/...`。
+> - **已知前置缺陷**：`go vet` 目前会报 `internal/api` 与 `internal/app` 测试桩未同步 `artifact.Store.ListByProject`（B3-M1 接口新增的连带影响），以及 `NewHandler` 自 `63ede93` 起新增 `pool *pgxpool.Pool` 形参后 `server_test.go` 的 ~48 处调用未同步 → 测试包长期不可编译。修复属独立事项，见「遗留与后续」。
 > 勘察结论（2026-09-16，逐文件核实）：① 角色由 `TenantService.Members` 读取后以 props 下传（`App.tsx:104-121`），**全仓无路由守卫**，仅两处 ad-hoc 角色分支（`ProjectEditor.canReview`、`PublicAdmin.isAdmin`）；② 模型服务仅"已配置 + 本次测试"两态，后端无持久化测试状态（`0023_model_gateways.sql` 无 tested_at/status 列）；③ 无 fake provider，`web/src/mockData.ts` 为死文件；④ Player 无任何键盘处理，无底部固定播放条；⑤ 首页为 hero/统计/最近项目/最近任务，无"待处理事项/最近成品"；⑥ 任务列表缺 范围/阶段/步骤/受影响页；`job_steps` 表**已存在但无任何 RPC 暴露**，`jobs.traceparent` 存在但未进 proto；⑦ **无**"我的租户列表"RPC，**无**任何 per-user 偏好存储（migrations 无偏好表）。
 
 - **B4-M1 权限边界组件（PermissionBoundary）【已实施】**：
@@ -439,7 +445,31 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - 附带修复：前端 `createGateway`/`updateGateway` **从不发送 `provider`** → 后端只能取默认 `openai_compatible`，`provider` 在 UI 是死数据。现补透传 + 列表展示 + 表单可编辑。
   - i18n 中英各 14 键（`gateway.health*`×5、`gateway.service*`×5、`testNow`/`providerLabel`/`untestedNote`/`fixHint`）；`styles.css` + `theme.css`(light) 配套。
   - 验收：A23。注：纯前端；沙箱不能 `tsc`，本机需 `npm run build` 终验。
-- **B4-M3 无接口功能门禁收口【待实施】**（A26）：对已知无后端能力项（音频包 / 配音 PPTX 导出、样例试听、用量存储与策略）统一为"隐藏或明确不可用 + 修复入口"，逐项复核不留可点击的假按钮。
+- **B4-M3 无接口功能门禁收口【已实施】**（A26）：
+  - **验收口径**（`设计方案-V1_6.md:509`）：无接口功能 → 隐藏或明确不可用，无可点击的假保存/假导出。
+  - **逐项复核清单与结论**（本轮全仓扫描，含后端路由注册表核实）：
+    | 入口 | 复核结论 | 处置 |
+    |---|---|---|
+    | 导出类型：音频包 / 配音 PPTX（`ExportDialog.tsx`） | 后端 `export.go:124-137` 白名单仅 MP4/WEB_PROJECT/SRT/VTT，**确认无能力** | 维持 disabled + 「已门禁」标签 + 原因文案（原 B3-M4 已正确，仅复核） |
+    | 音色「试听」（`ProjectEditor.tsx:836`） | 后端无 voice catalog、无样例音频端点 | 维持 disabled + tooltip（原 B2 已正确，仅复核） |
+    | 用量页「存储用量 / 租户策略」 | `TenantService.Quota/StorageUsage/Policy` **已注册**（`server.go:99`），能力存在，原问题在**前端用 `.catch(() => null)` 吞错**，把 403/500 一律渲染成"暂不可用"且无原因无重试 | **改**：逐端点记录错误 + 原因 + 重试按钮 |
+    | **「我的发布」`GET /public/works/mine`** | 处理器 `public.go:341 publicListMine` **已写好但从未挂载**→ 被 `GET /public/works/{id}` 以 `id="mine"` 捕获，进 uuid 查询报 **500** | **修**：注册路由（后端能力齐备，无需改 proto） |
+    | **「审核队列」`GET /public/works/queue`** | 同上，`public.go:356 publicReviewQueue` 亦未挂载；且前端 `.catch(() => {})` **完全吞错**，渲染成"暂无待审核作品"——纯假状态 | **修**：注册路由（auth + requireAdmin）+ 前端错误态/重试 |
+    | 首页用量 / 存储卡片 | `.catch(() => ({secondsUsed:0}))` → 把"取数失败"伪装成"用量为 0"（误导性假数据）；且主数据请求无 catch，失败时页面用"暂无项目"掩盖 5xx | **改**：失败显示「—」+ 明确原因；主数据失败显式报错 + 重试 |
+    | 匿名播放页 `Watch`（讲解清单） | `.catch(() => null)` 把 403/500 与"讲解未生成(404)"压成同一句"讲解未就绪" | **改**：按 404 与其他错误分流 |
+    | 公开广场 `Explore` | `.catch(() => setWorks([]))` → 后端 500 显示"暂无作品" | **改**：空数据与加载失败可区分 |
+    | 成品列表下载按钮（`ProjectArtifacts.tsx:207`） | `disabled={!a.downloadable}` **无任何说明** | **改**：补 tooltip + 行内原因文案 |
+    | 审计筛选（`AuditPanel.tsx`） | 三个筛选只改本地 state、**必须另点"刷新"才生效**（观感像"已应用"的假筛选） | **改**：筛选变化自动重查（文本输入防抖 300ms） |
+    | 音色兜底 `fake-voice-1` | 本租户无可用 TTS 网关时，后端仍要求 `voice_id` 非空（`narration.go:70`），前端把**内部枚举当正常音色渲染**，可据此触发正式生成 | **改**：显式标注「模拟音色（开发用）」+ 声明可能非正式产物 + 修复入口（接入模型）；不再暴露枚举名 |
+    | 角色读取失败（`App.tsx`） | `.catch(() => setRole(undefined))` → `can(undefined,*)` 恒真 ⇒ 对**瞬时失败**也放宽，会闪现管理入口随后 403 | **改**：保留 `role=undefined` 的放行语义（对齐服务端 nil-reader），但**显式提示"权限判定已临时放宽"+ 重试** |
+    | `web/src/mockData.ts` | 全仓零引用的死文件（`demoTimeline/demoManifest/demoScripts`），从未渲染 | **删** |
+    | 禁用控件无说明（成员页 owner 行删除、编辑态成员标识、新建时 OWNER 选项、网关编辑态类型/名称） | 禁用但无原因 | **改**：统一补 tooltip |
+    | `POST /public/works`（发布） | 后端**确实存在**（`public.go:37`），发布弹窗入口真实可达 | 无需处理（非假功能） |
+  - **新增统一出口** `web/src/apiError.ts`：`describeApiError`（把错误码转成"明确不可用 + 原因"，替代各页 `.catch(() => null)`）、`isNotFound`（区分 404 业务语义与异常）、`settle`（把可能失败的取值变成显式结果）。约定：任何"失败会渲染成空态"的请求都必须走此出口并配重试入口。
+  - **后端**：`internal/api/public.go` 注册 `GET /public/works/mine`（auth）与 `GET /public/works/queue`（auth + `requireAdmin`），两条响应统一带 `next_cursor` 以对齐前端 `PublicWorkPage` 类型。
+  - **配套修复（编译阻塞）**：`c5a723e`（B3-M5）引入 `activeGenJobs` 时**漏声明 state**、`NarrationEstimate` **漏导入**，`tsc -b` 必失败；`Watch.tsx` 从 `../api` 导入了未再导出的 `PlaybackManifest`；`scopeSlideIds` 闭包内未收窄可辨识联合。均已修复。
+  - **i18n**：中英各 23 键（`err.*`×5、`app.roleLoadFailed`、`public.queueLoadFailed`/`audioFailed`、`usage.storageFailed`/`policyFailed`、`home.loadFailed*`×3、`home.stat.unavailable`、`editor.simulatedVoice*`×2/`fixVoice`、`artifacts.download*`×3、`members.*`×3、`gateway.immutableWhenEditing`）；`styles.css` 新增 `.load-failure` 失败态容器与 `.narration-note.warn`，`theme.css` 补浅色覆盖（错误在浅色下也必须可读）。
+  - **验收**：A26（同时消除 A22 的"闪现有权限、请求必 403"一类假能力）。附：本轮首次打通沙箱内真实验证——`npm run build`（tsc -b + vite build）与 `go build ./...` 均通过，见「验证回路」小节。
 - **B4-M4 移动端单列 + 底部播放器 + 播放快捷键【待实施】**（A25）：编辑器/播放器单列化，播放器底部吸附；空格/方向键控制播放且**不抢占输入焦点**。
 - **B4-M5 首页待处理事项与最近完成成品【待实施】**（配 A23/A26 语义）：首页补"待处理事项"（待确认稿、待审核作品、失败/待重试任务）与"最近完成成品"，均以真实接口为准。
 - **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
@@ -488,6 +518,8 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-6 | 后端 `RegenerateSegments` 未实现成为 B2 关键路径 | 高 | 中 | 排在 B2 首位；若延期则暂以"整页重生成 + 明确影响范围"降级并标注 |
 | R-7 | 工作区存在大量未提交改动，与并行开发冲突 | 高 | 中 | 开工前先提交/整理当前控制台改动并建分支 |
 | R-8 | A04/A06 类口径与作用域缺陷易被反复遗漏 | 中 | 中 | 把 A01–A29 打成验收清单，每批次出口逐条勾选 |
+| R-9 | **后端测试包长期不可编译**（`NewHandler` 于 `63ede93` 加 `pool` 形参后 `server_test.go` ~48 处调用未同步；B3-M1 新增 `artifact.Store.ListByProject` 后 `internal/api`/`internal/app` 测试桩未实现） | 已发生 | 高 | 因 `go build` 不编译 `_test.go`，长期未被发现；B4-M3 期间经 `go vet` 暴露。修复=机械补形参与桩方法，随后 `go test ./internal/...` 建立基线 |
+| R-10 | 里程碑交付只做"单文件类型复核+`gofmt` 兜底"就提交，缺陷（编译阻塞、吞错假状态、未挂载路由）会跨里程碑累积 | 高 | 高 | 按「验证回路更新」在沙箱内跑通 `tsc -b` + `vite build` + `go build ./...` + `go vet ./internal/...` 后才提交；新增后端路由须核对**注册表**而非仅核对处理器函数 |
 
 ---
 

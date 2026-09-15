@@ -297,6 +297,7 @@ export function GatewaySettings({
                   value={form.name}
                   placeholder={t('gateway.namePlaceholder')}
                   disabled={!!editing}
+                  title={editing ? t('gateway.immutableWhenEditing') : ''}
                   onChange={(e) => setForm((f) => f && { ...f, name: e.target.value })}
                   required
                 />

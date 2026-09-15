@@ -207,10 +207,13 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
                           <button
                             className="button-ghost artifact-download"
                             disabled={!a.downloadable || downloadingId === a.id}
+                            title={a.downloadable ? t('artifacts.downloadHint') : t('artifacts.downloadBlocked')}
                             onClick={() => void onDownload(a)}
                           >
                             {downloadingId === a.id ? t('artifacts.downloading') : t('artifacts.download')}
                           </button>
+                          {/* A26：不可下载时必须说明原因，不留"点了没反应"的假按钮。 */}
+                          {!a.downloadable && <span className="artifact-meta muted">{t('artifacts.downloadBlockedShort')}</span>}
                         </li>
                       ))}
                     </ul>

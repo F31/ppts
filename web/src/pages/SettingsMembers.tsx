@@ -108,6 +108,7 @@ export function SettingsMembers({ identity }: { identity: ClientIdentity }) {
                 value={form.userId}
                 placeholder={t('members.userIdPlaceholder')}
                 disabled={form.mode === 'edit'}
+                title={form.mode === 'edit' ? t('members.userIdImmutable') : ''}
                 onChange={(e) => setForm((c) => (c ? { ...c, userId: e.currentTarget.value } : c))}
               />
             </label>
@@ -170,7 +171,13 @@ export function SettingsMembers({ identity }: { identity: ClientIdentity }) {
                       >
                         {t('common.edit')}
                       </button>
-                      <button type="button" className="danger" onClick={() => void onRemove(member.userId)} disabled={member.role === 'ROLE_OWNER'}>
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() => void onRemove(member.userId)}
+                        disabled={member.role === 'ROLE_OWNER'}
+                        title={member.role === 'ROLE_OWNER' ? t('members.ownerLocked') : t('members.removeHint')}
+                      >
                         {t('common.remove')}
                       </button>
                     </div>

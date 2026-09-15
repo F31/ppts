@@ -221,6 +221,15 @@ func (s *fakeArtifactStore) Get(_ context.Context, tenantID, id string) (*artifa
 	return s.artifact, nil
 }
 
+// ListByProject 对应 B3-M1 新增的产物列表能力（GET /projects/{pid}/artifacts）。
+// 测试桩按租户 + 项目过滤单条产物，保持与 PGStore 一致的"无匹配即空列表"语义。
+func (s *fakeArtifactStore) ListByProject(_ context.Context, tenantID, projectID string) ([]*artifact.Artifact, error) {
+	if s.artifact == nil || s.artifact.TenantID != tenantID || s.artifact.ProjectID != projectID {
+		return nil, nil
+	}
+	return []*artifact.Artifact{s.artifact}, nil
+}
+
 func testObjects(t *testing.T) objectstore.ObjectStore {
 	t.Helper()
 	return objectstore.NewLocal(t.TempDir(), []byte("download-secret"))

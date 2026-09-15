@@ -223,3 +223,15 @@ html[data-theme="light"] .theme-toggle {
   color: #0f172a;
 }
 html[data-theme="light"] .theme-toggle:hover { background: rgba(15, 23, 42, .1); }
+
+/* B4-M3（A26）：失败态在浅色下必须保持可读——错误本来就该看得见。 */
+html[data-theme="light"] .form-error { color: #b42318; background: rgba(180, 35, 24, .08); }
+html[data-theme="light"] .load-failure button {
+  border-color: rgba(15, 23, 42, .18);
+  background: rgba(15, 23, 42, .05);
+  color: #0f172a;
+}
+html[data-theme="light"] .load-failure button:hover { background: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .narration-note { color: #334155; }
+html[data-theme="light"] .narration-note.error { color: #b42318; }
+html[data-theme="light"] .narration-note.warn { color: #92400e; }

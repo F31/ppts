@@ -22,6 +22,7 @@ import {
   setSlideScriptSource,
   updateScript as updateScriptApi,
   type ClientIdentity,
+  type NarrationEstimate,
   type SlideScriptSource
 } from '../api';
 import { Player } from '../Player';
@@ -88,10 +89,16 @@ export function ProjectEditor({
   const [narrationEstimate, setNarrationEstimate] = useState<NarrationEstimate | null>(null);
   const [voiceOptions, setVoiceOptions] = useState<string[]>([]);
   const [voiceId, setVoiceId] = useState('');
+  // A26/A23：true 表示当前音色是后端兜底的开发音色（本租户无可用 TTS 网关），需显式标注。
+  const [voiceSimulated, setVoiceSimulated] = useState(false);
   const [ratePercent, setRatePercent] = useState(100);
   // M4 ⑦：生成范围 + 待确认稿数（C-5 前置检查）。
   const [genScope, setGenScope] = useState<'all' | 'pending' | 'current'>('all');
   const [draftSegments, setDraftSegments] = useState(0);
+  // B3-M5：本项目活跃的生成任务（配音/讲稿），驱动顶部"生成中继续编辑"快照提示。
+  // 修正：c5a723e 引入 refreshActiveGenJobs 时漏声明该 state 与 NarrationEstimate 类型导入，
+  // 会导致 `npm run build`（tsc）失败，此处补齐。
+  const [activeGenJobs, setActiveGenJobs] = useState<Job[]>([]);
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportError, setExportError] = useState('');
@@ -265,9 +272,14 @@ export function ProjectEditor({
       if (cancelled) return;
       if (list.length > 0) {
         setVoiceOptions(list);
+        setVoiceSimulated(false);
         setVoiceId((current) => current || list[0]);
       } else {
+        // A26/A23：本租户没有「启用 + 配置了 voice」的 TTS 网关时，后端仍要求 voice_id 非空
+        // （narration.go:70），只能退到开发音色。此处必须显式标注为"模拟音色"，
+        // 不能把内部枚举 fake-voice-1 当作正常音色渲染——否则用户会误以为产出的是正式产物。
         setVoiceOptions([devNarrationVoiceID]);
+        setVoiceSimulated(true);
         setVoiceId(devNarrationVoiceID);
       }
     })();
@@ -482,6 +494,8 @@ export function ProjectEditor({
   // M4 ⑦：按范围计算参与配音的页（仅已有讲稿的页）。
   const scopeSlideIds = (): string[] => {
     if (genScope === 'current') return activeRealScript ? [activeSlideID] : [];
+    // 闭包内 TS 不会沿用 isReady 的别名收窄，需就地判别可辨识联合。
+    if (slidesState.mode !== 'real') return [];
     return slidesState.slides.filter((slide) => realScripts[slide.slideId]).map((slide) => slide.slideId);
   };
 

@@ -3,6 +3,7 @@ import { Link } from '../router';
 import { useI18n } from '../i18n';
 import type { ClientIdentity, PublicWork } from '../api';
 import { deleteWork, listMyPublications, listReviewQueue, reviewWork, type PublicationStatus } from '../api';
+import { describeApiError } from '../apiError';
 import { can } from '../permissions';
 import type { Role } from '../types';
 
@@ -20,22 +21,39 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
   const [mine, setMine] = useState<PublicWork[]>([]);
   const [queue, setQueue] = useState<PublicWork[]>([]);
   const [error, setError] = useState('');
+  const [queueError, setQueueError] = useState('');
+  const [mineLoading, setMineLoading] = useState(true);
+  const [queueLoading, setQueueLoading] = useState(false);
 
   // B4-M1：审核队列要求 ADMIN（服务端 requireAdmin，public.go:333），能力判定统一走 permissions。
   const isAdmin = can(role, 'public.manage');
 
+  // A26：两个列表都必须如实反映接口结果——加载中 / 失败（含原因＋重试）/ 空数据三者可区分，
+  // 绝不用"空列表"掩盖 4xx/5xx（此前审核队列的 .catch(() => {}) 正是这类假状态）。
   const refresh = useCallback(() => {
     setError('');
+    setMineLoading(true);
     listMyPublications(identity, {})
       .then((page) => setMine(page.items))
-      .catch(() => setError(t('public.loadFailed')));
-    if (isAdmin) {
-      listReviewQueue(identity, {})
-        .then((page) => setQueue(page.items))
-        .catch(() => {
-          /* 非 admin 忽略 */
-        });
+      .catch((e: unknown) => {
+        setMine([]);
+        setError(describeApiError(e, t('public.loadFailed'), t));
+      })
+      .finally(() => setMineLoading(false));
+
+    if (!isAdmin) {
+      setQueue([]);
+      return;
     }
+    setQueueError('');
+    setQueueLoading(true);
+    listReviewQueue(identity, {})
+      .then((page) => setQueue(page.items))
+      .catch((e: unknown) => {
+        setQueue([]);
+        setQueueError(describeApiError(e, t('public.queueLoadFailed'), t));
+      })
+      .finally(() => setQueueLoading(false));
   }, [identity, isAdmin, t]);
 
   useEffect(() => {
@@ -65,9 +83,19 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
       <section className="panel">
         <header className="panel-header">
           <h2>{t('public.myWorks')}</h2>
+          <button type="button" className="button-ghost" disabled={mineLoading} onClick={() => refresh()}>
+            {mineLoading ? t('common.loading') : t('common.refresh')}
+          </button>
         </header>
-        {error ? <div className="form-error">{error}</div> : null}
-        {mine.length === 0 ? (
+        {error ? (
+          <div className="load-failure" role="alert">
+            <p className="form-error">{error}</p>
+            <button type="button" onClick={() => refresh()}>{t('common.retry')}</button>
+          </div>
+        ) : null}
+        {error ? null : mineLoading ? (
+          <p className="muted">{t('common.loading')}</p>
+        ) : mine.length === 0 ? (
           <p className="muted">{t('public.noMyWorks')}</p>
         ) : (
           <ul className="pub-list">
@@ -100,7 +128,14 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
             <h2>{t('public.reviewQueue')}</h2>
             <span className="muted">{t('public.reviewQueueHint')}</span>
           </header>
-          {queue.length === 0 ? (
+          {queueError ? (
+            <div className="load-failure" role="alert">
+              <p className="form-error">{queueError}</p>
+              <button type="button" onClick={() => refresh()}>{t('common.retry')}</button>
+            </div>
+          ) : queueLoading ? (
+            <p className="muted">{t('common.loading')}</p>
+          ) : queue.length === 0 ? (
             <p className="muted">{t('public.queueEmpty')}</p>
           ) : (
             <ul className="pub-list">

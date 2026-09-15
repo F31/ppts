@@ -17,6 +17,9 @@ import (
 
 // registerPublicRoutes 挂载公开区 HTTP 端点（V1.6 C-1）。
 //   - 匿名只读：GET /public/works（列表）、GET /public/works/{id}（详情，附封面签名 URL）
+//   - 受保护读（auth 中间件）：
+//     GET  /public/works/mine     我的发布（含未批准，限本人）
+//     GET  /public/works/queue    待审核队列（管理员）
 //   - 受保护写（auth 中间件）：
 //     POST /public/works          用户发布自己项目（pending）
 //     POST /public/featured       管理员发布官方精选（approved）
@@ -24,10 +27,21 @@ import (
 //     DELETE /public/works/{id}   管理员删除
 //
 // 与 SPA catch-all（GET /{path...}）共存：精确 /public/works* 路由优先于通配。
+//
+// 注意：/public/works/mine 与 /public/works/queue 必须注册，否则会被
+// GET /public/works/{id} 捕获（id 取到 "mine"/"queue" 字面量）而进入 uuid 查询报 500，
+// 前端"我的发布/审核队列"就会退化为静默空态（A26 假列表）。
+// Go 1.22 ServeMux 按具体度择优（字面量 > 通配），故这里与之并列注册即可稳定生效。
 func registerPublicRoutes(mux *http.ServeMux, store public.Store, objects objectstore.ObjectStore, members membership.Reader, jobs JobStore, auth func(http.Handler) http.Handler) {
 	mux.HandleFunc("GET /public/works", func(w http.ResponseWriter, r *http.Request) {
 		publicListWorks(w, r, store)
 	})
+	mux.Handle("GET /public/works/mine", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicListMine(w, r, store)
+	})))
+	mux.Handle("GET /public/works/queue", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicReviewQueue(w, r, store, members)
+	})))
 	mux.HandleFunc("GET /public/works/{id}", func(w http.ResponseWriter, r *http.Request) {
 		publicGetWork(w, r, store, objects)
 	})
@@ -350,7 +364,8 @@ func publicListMine(w http.ResponseWriter, r *http.Request, store public.Store) 
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	// 与 GET /public/works 同构：始终带 next_cursor，避免前端 PublicWorkPage 类型出现 undefined。
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "next_cursor": ""})
 }
 
 func publicReviewQueue(w http.ResponseWriter, r *http.Request, store public.Store, members membership.Reader) {

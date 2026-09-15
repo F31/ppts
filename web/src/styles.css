@@ -500,3 +500,30 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
   .slide-rail-v2 button { min-width: 140px; }
   .dict-rule-row { grid-template-columns: 1fr; }
 }
+
+/* B4-M3（A26）：失败态区块——"明确不可用 + 原因 + 修复入口"的统一外观。
+   所有不再静默吞错的页面（首页/用量/公开区管理/审计/编辑器角色）共用此容器，
+   保证失败一定可见、且紧邻一个可点击的修复入口。 */
+.load-failure {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.load-failure .form-error { margin: 0; flex: 1 1 320px; }
+.load-failure button {
+  border: 1px solid rgba(148, 163, 184, .4);
+  background: rgba(148, 163, 184, .12);
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.load-failure button:hover { background: rgba(148, 163, 184, .2); }
+.load-failure button:disabled { opacity: .6; cursor: default; }
+
+/* 模拟音色提示（A23/A26）：需要比普通说明更醒目，但不与真错误混淆。 */
+.narration-note.warn { color: #fcd34d; }
+.narration-note.warn .link-more { margin-left: 8px; }
