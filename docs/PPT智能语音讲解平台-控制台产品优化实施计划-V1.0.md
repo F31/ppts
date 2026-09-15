@@ -375,6 +375,15 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | 出口 | 可重进恢复；旧成品与新稿区分清晰；下载链接可续期 |
 | 验收 | A15、A16、A17、A18、A19、A20、A21 |
 
+**执行计划（里程碑门控 + 验证回路）**
+> 约束同 B2：本环境 buf/protoc 不可用 → 新后端能力走原生 HTTP 端点；沙箱无法 go build/tsc，每个里程碑交付后需本地 go build ./... + npm run build 验证。
+> 决策已定：成品按 snapshotHash 分组展示（artifact 模型无 duration 字段，时长暂不展示，补列列入后续迁移）；下载复用既有 CreateDownload（前端 api.ts 已具备）。
+
+- **B3-M1 成品与版本列表 + 下载【已实施】**：
+  - 后端：`artifact.Store` 补 `ListByProject`（postgres.go，tenant.Run 前缀 + 倒序）；新增接口方法；原生 HTTP `GET /projects/{pid}/artifacts`（internal/api/artifact.go，复用 requirePrincipal/requireRole/writeJSON 与 narration 路由样板），server.go 挂载 `registerArtifactRoutes`；返回 `{artifacts:[{id,snapshotHash,format,sizeBytes,createdAt,downloadable}]}`。
+  - 前端：api.ts 增 `getProjectArtifacts` + `ProjectArtifact` 类型；ProjectArtifacts.tsx 重写为按 snapshotHash 分组列出成品（格式徽标/导出时间/大小/下载按钮，调 createDownload 取限时直链并触发下载）；i18n 中英文各 13 键（含格式标签与下载态）；styles.css 列表/分组/徽标/下载样式。
+  - 验收：A20。注：模型缺 duration 字段，时长列未展示（需迁移补列，列入后续）。
+
 ### B4 管理与适配
 
 | 项 | 内容 |

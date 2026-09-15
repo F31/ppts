@@ -48,6 +48,32 @@ func (s *PGStore) Get(ctx context.Context, tenantID, id string) (*Artifact, erro
 	return a, err
 }
 
+// ListByProject 返回项目下全部产物（按创建时间倒序），供成品与版本页按快照聚合展示（B3-M1）。
+func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID string) ([]*Artifact, error) {
+	items := []*Artifact{}
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, qErr := tx.Query(ctx, `SELECT id, tenant_id, project_id, snapshot_hash, format,
+			object_key, content_hash, size_bytes, created_at FROM artifacts
+			WHERE project_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`, projectID, tenantID)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var a Artifact
+			var format string
+			if sErr := rows.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
+				&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.CreatedAt); sErr != nil {
+				return sErr
+			}
+			a.Format = Format(format)
+			items = append(items, &a)
+		}
+		return rows.Err()
+	})
+	return items, err
+}
+
 func scan(row pgx.Row) (*Artifact, error) {
 	var a Artifact
 	var format string

@@ -338,6 +338,23 @@ export async function getNarrationDraftCount(
   return getJSON<{ draftSegments: number }>(identity, `/projects/${encodeURIComponent(projectId)}/narration/draft-count`);
 }
 
+export type ProjectArtifact = {
+  id: string;
+  snapshotHash: string;
+  format: 'mp4' | 'srt' | 'vtt' | 'web_project';
+  sizeBytes: number;
+  createdAt: string;
+  downloadable: boolean;
+};
+
+// getProjectArtifacts 读取项目下全部产物（B3-M1 原生端点，前端按 snapshotHash 分组展示与下载）。
+export async function getProjectArtifacts(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ artifacts: ProjectArtifact[] }> {
+  return getJSON<{ artifacts: ProjectArtifact[] }>(identity, `/projects/${encodeURIComponent(projectId)}/artifacts`);
+}
+
 export type NarrationStatus = {
   ready: boolean;
   timelineKey: string;

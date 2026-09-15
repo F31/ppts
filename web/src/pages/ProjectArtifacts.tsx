@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
-import { getNarration, getProjectSlides, type ClientIdentity } from '../api';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  getNarration,
+  getProjectSlides,
+  getProjectArtifacts,
+  createDownload,
+  type ClientIdentity,
+  type ProjectArtifact
+} from '../api';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
 
-type State = {
+type SnapshotState = {
   loading: boolean;
   slideCount: number;
   ready: boolean;
@@ -13,12 +20,35 @@ type State = {
   unavailReason?: string;
 };
 
+const FORMAT_KEY: Record<string, string> = {
+  mp4: 'artifacts.formatMp4',
+  srt: 'artifacts.formatSrt',
+  vtt: 'artifacts.formatVtt',
+  web_project: 'artifacts.formatWebProject'
+};
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function ProjectArtifacts({ identity, projectId }: { identity: ClientIdentity; projectId: string }) {
   const { t } = useI18n();
-  const [state, setState] = useState<State>({ loading: true, slideCount: 0, ready: false, timelineKey: '', pagePngCount: 0, revisionNo: 0 });
+  const [snap, setSnap] = useState<SnapshotState>({
+    loading: true,
+    slideCount: 0,
+    ready: false,
+    timelineKey: '',
+    pagePngCount: 0,
+    revisionNo: 0
+  });
+  const [artifacts, setArtifacts] = useState<ProjectArtifact[]>([]);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true }));
+    setSnap((c) => ({ ...c, loading: true }));
     try {
       let slideCount = 0;
       try {
@@ -28,7 +58,7 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
         // 解析未完成或不可用。
       }
       const narration = await getNarration(identity, projectId);
-      setState({
+      setSnap({
         loading: false,
         slideCount,
         ready: narration.ready,
@@ -36,8 +66,14 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
         pagePngCount: narration.pagePngKeys?.length ?? 0,
         revisionNo: narration.revisionNo ?? 0
       });
+      const list = await getProjectArtifacts(identity, projectId);
+      setArtifacts(list.artifacts ?? []);
     } catch (err) {
-      setState((current) => ({ ...current, loading: false, unavailReason: err instanceof Error ? err.message : t('artifacts.loadFailed') }));
+      setSnap((c) => ({
+        ...c,
+        loading: false,
+        unavailReason: err instanceof Error ? err.message : t('artifacts.loadFailed')
+      }));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity, projectId, t]);
@@ -45,6 +81,37 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
   useEffect(() => {
     void load();
   }, [load]);
+
+  const groups = useMemo(() => {
+    const m = new Map<string, ProjectArtifact[]>();
+    for (const a of artifacts) {
+      const arr = m.get(a.snapshotHash) ?? [];
+      arr.push(a);
+      m.set(a.snapshotHash, arr);
+    }
+    return [...m.entries()];
+  }, [artifacts]);
+
+  const onDownload = useCallback(
+    async (a: ProjectArtifact) => {
+      setDownloadingId(a.id);
+      setDownloadError(null);
+      try {
+        const { signedUrl } = await createDownload(identity, a.id);
+        const link = document.createElement('a');
+        link.href = signedUrl;
+        link.download = `${a.id}.${a.format === 'web_project' ? 'zip' : a.format}`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } catch (e) {
+        setDownloadError(e instanceof Error ? e.message : t('artifacts.downloadFailed'));
+      } finally {
+        setDownloadingId(null);
+      }
+    },
+    [identity, t]
+  );
 
   return (
     <div className="page-stack">
@@ -64,13 +131,13 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
         </div>
       </section>
 
-      {state.loading ? (
+      {snap.loading ? (
         <p className="empty-state">{t('common.loading')}</p>
       ) : (
         <>
           <section className="panel">
             <span className="eyebrow">{t('artifacts.snapshot')}</span>
-            {state.ready ? (
+            {snap.ready ? (
               <dl className="detail-grid">
                 <div>
                   <dt>{t('artifacts.status')}</dt>
@@ -80,26 +147,30 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
                 </div>
                 <div>
                   <dt>{t('artifacts.pageCount')}</dt>
-                  <dd>{state.slideCount}</dd>
+                  <dd>{snap.slideCount}</dd>
                 </div>
                 <div>
                   <dt>{t('artifacts.pageRenders')}</dt>
-                  <dd>{state.pagePngCount > 0 ? t('artifacts.pageCountValue', { count: state.pagePngCount }) : t('artifacts.notRendered')}</dd>
+                  <dd>
+                    {snap.pagePngCount > 0
+                      ? t('artifacts.pageCountValue', { count: snap.pagePngCount })
+                      : t('artifacts.notRendered')}
+                  </dd>
                 </div>
                 <div>
                   <dt>{t('artifacts.sourceRevision')}</dt>
-                  <dd>rev {state.revisionNo || t('artifacts.unknown')}</dd>
+                  <dd>rev {snap.revisionNo || t('artifacts.unknown')}</dd>
                 </div>
                 <div>
                   <dt>{t('artifacts.timeline')}</dt>
-                  <dd className="nowrap-ellipsis">{state.timelineKey}</dd>
+                  <dd className="nowrap-ellipsis">{snap.timelineKey}</dd>
                 </div>
               </dl>
             ) : (
               <div className="empty-state first-run">
                 <p>
-                  {state.unavailReason
-                    ? t('artifacts.unavailable', { reason: state.unavailReason })
+                  {snap.unavailReason
+                    ? t('artifacts.unavailable', { reason: snap.unavailReason })
                     : t('artifacts.none')}
                 </p>
                 <Link to={`/projects/${projectId}/editor`} className="button-primary">
@@ -111,9 +182,43 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
 
           <section className="panel">
             <span className="eyebrow">{t('artifacts.exports')}</span>
-            <p className="empty-state">
-              {t('artifacts.exportsNote')}
-            </p>
+            <p className="panel-note">{t('artifacts.exportsNote')}</p>
+            {artifacts.length === 0 ? (
+              <p className="empty-state">{t('artifacts.noArtifacts')}</p>
+            ) : (
+              <div className="artifact-groups">
+                {groups.map(([hash, items]) => (
+                  <div className="artifact-group" key={hash}>
+                    <h3 className="artifact-group-title">
+                      {t('artifacts.snapshotGroup', { hash: hash.slice(0, 8) })}
+                    </h3>
+                    <ul className="artifact-list">
+                      {items.map((a) => (
+                        <li className="artifact-row" key={a.id}>
+                          <span className={`artifact-badge artifact-${a.format}`}>
+                            {t(FORMAT_KEY[a.format] ?? a.format)}
+                          </span>
+                          <span className="artifact-meta">
+                            {t('artifacts.createdAt')}: {new Date(a.createdAt).toLocaleString()}
+                          </span>
+                          <span className="artifact-meta">
+                            {t('artifacts.size')}: {formatSize(a.sizeBytes)}
+                          </span>
+                          <button
+                            className="button-ghost artifact-download"
+                            disabled={!a.downloadable || downloadingId === a.id}
+                            onClick={() => void onDownload(a)}
+                          >
+                            {downloadingId === a.id ? t('artifacts.downloading') : t('artifacts.download')}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+            {downloadError && <p className="form-error">{downloadError}</p>}
           </section>
         </>
       )}

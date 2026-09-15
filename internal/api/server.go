@@ -112,6 +112,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
 	registerNarrationRoutes(mux, scripts, opt.Members, auth)
+	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
+	registerArtifactRoutes(mux, artifacts, opt.Members, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
 	registerEditorRoutes(mux, jobs, objects, scriptSources, auth)
 	if parser, ok := objects.(signedURLParser); ok {

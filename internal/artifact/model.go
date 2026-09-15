@@ -42,4 +42,5 @@ var ErrNotFound = errors.New("artifact: not found")
 type Store interface {
 	Create(ctx context.Context, tenantID string, in NewArtifact) (*Artifact, error)
 	Get(ctx context.Context, tenantID, id string) (*Artifact, error)
+	ListByProject(ctx context.Context, tenantID, projectID string) ([]*Artifact, error)
 }
