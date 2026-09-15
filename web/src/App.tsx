@@ -17,6 +17,9 @@ import { SettingsUsage } from './pages/SettingsUsage';
 import { SessionContext, type Session } from './session';
 import { useI18n } from './i18n';
 import type { Role } from './types';
+import { PublicShell } from './PublicShell';
+import { Explore } from './pages/Explore';
+import { Watch } from './pages/Watch';
 
 function AppContent() {
   const route = useRoute();
@@ -160,6 +163,21 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
       {content}
     </AppShell>
   );
+}
+
+function isPublicRoute(parts: string[]): boolean {
+  return parts[0] === 'explore' || (parts[0] === 'watch' && parts.length >= 2);
+}
+
+function PublicApp({ parts, query }: { parts: string[]; query: URLSearchParams }) {
+  const section = parts[0] ?? 'explore';
+  let content: React.ReactNode;
+  if (section === 'watch' && parts[1]) {
+    content = <Watch id={parts[1]} />;
+  } else {
+    content = <Explore />;
+  }
+  return <PublicShell>{content}</PublicShell>;
 }
 
 export function App() {

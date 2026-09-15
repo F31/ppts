@@ -6,6 +6,7 @@ import { ThemeProvider } from './ThemeContext';
 import { migrateLegacyHash } from './router';
 import './styles.css';
 import './theme.css';
+import './public.css';
 
 // 路由模式迁移：将遗留 #/path 深链接改写为 /path，须在 React 挂载前执行。
 migrateLegacyHash();

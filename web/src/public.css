@@ -1,0 +1,236 @@
+/* 公开区样式（V1.6 C-1）：PublicShell / Explore / Watch。
+   复用主题令牌（theme.css 提供深/浅变量覆盖），不依赖控制台侧边栏布局。 */
+
+.public-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #10131a);
+  color: var(--text, #e7ecf3);
+}
+
+.public-topbar {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 14px 28px;
+  border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  background: var(--surface, #161b26);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.public-brand {
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--text, #e7ecf3);
+  text-decoration: none;
+  letter-spacing: 0.2px;
+}
+
+.public-nav {
+  display: flex;
+  gap: 8px;
+}
+
+.public-nav-link {
+  padding: 6px 12px;
+  border-radius: 8px;
+  color: var(--text-muted, #9aa6b8);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.public-nav-link.selected {
+  background: var(--accent-soft, rgba(99, 132, 255, 0.16));
+  color: var(--accent, #6f8cff);
+}
+
+.public-topbar .topbar-actions {
+  margin-left: auto;
+}
+
+.public-content {
+  flex: 1;
+  width: 100%;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 32px 28px 56px;
+}
+
+.public-footer {
+  padding: 20px 28px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  color: var(--text-muted, #9aa6b8);
+  font-size: 13px;
+  text-align: center;
+}
+
+/* Explore 广场 */
+
+.explore-hero {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.explore-hero h1 {
+  font-size: 30px;
+  margin: 0 0 10px;
+}
+
+.explore-hero p {
+  color: var(--text-muted, #9aa6b8);
+  margin: 0;
+}
+
+.explore-tabs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 28px;
+}
+
+.explore-tabs .tab {
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: transparent;
+  color: var(--text-muted, #9aa6b8);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.explore-tabs .tab.selected {
+  background: var(--accent, #6f8cff);
+  border-color: var(--accent, #6f8cff);
+  color: #fff;
+}
+
+.explore-loading,
+.explore-empty {
+  text-align: center;
+  color: var(--text-muted, #9aa6b8);
+  padding: 48px 0;
+}
+
+.work-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 20px;
+}
+
+.work-card {
+  display: block;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface, #161b26);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.12s ease, border-color 0.12s ease;
+}
+
+.work-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent, #6f8cff);
+}
+
+.work-cover {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+  background: var(--surface-2, #1f2632);
+}
+
+.work-cover.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #9aa6b8);
+  font-size: 13px;
+}
+
+.work-meta {
+  padding: 14px 16px 16px;
+}
+
+.work-kind {
+  display: inline-block;
+  font-size: 12px;
+  color: var(--accent, #6f8cff);
+  margin-bottom: 6px;
+}
+
+.work-title {
+  font-size: 16px;
+  margin: 0 0 6px;
+  line-height: 1.35;
+}
+
+.work-summary {
+  font-size: 13px;
+  color: var(--text-muted, #9aa6b8);
+  margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Watch 播放页 */
+
+.watch-back {
+  display: inline-block;
+  margin-bottom: 18px;
+  color: var(--text-muted, #9aa6b8);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.watch-stage {
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--surface-2, #1f2632);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
+}
+
+.watch-cover {
+  width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
+  display: block;
+}
+
+.watch-info {
+  margin-top: 22px;
+}
+
+.watch-info h1 {
+  font-size: 24px;
+  margin: 8px 0 12px;
+}
+
+.watch-summary {
+  color: var(--text-muted, #9aa6b8);
+  line-height: 1.6;
+  max-width: 720px;
+}
+
+.watch-note {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--text-muted, #9aa6b8);
+}
+
+.watch-error,
+.watch-loading {
+  text-align: center;
+  padding: 56px 0;
+  color: var(--text-muted, #9aa6b8);
+}
+
+.watch-error .btn {
+  margin-top: 16px;
+}

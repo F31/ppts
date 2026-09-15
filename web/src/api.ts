@@ -505,4 +505,107 @@ export async function deleteDictionary(identity: ClientIdentity, id: string): Pr
   await gatewayPath(identity, 'DELETE', `/api/pronunciation/${encodeURIComponent(id)}`);
 }
 
+// ---- 公开区（/public/*，V1.6 C-1） ----
+// 匿名只读接口（list/get）无需身份；写接口（发布/精选/审核/删除）带身份头。
+
+export type PublicationKind = 'featured' | 'user';
+export type PublicationStatus = 'draft' | 'pending' | 'approved' | 'rejected';
+
+// PublicWork 字段名与后端 JSON（snake_case）一致，避免额外映射层。
+export type PublicWork = {
+  id: string;
+  tenant_id: string;
+  project_id: string;
+  kind: PublicationKind;
+  status: PublicationStatus;
+  title: string;
+  summary: string;
+  cover_object_key?: string;
+  cover_url?: string;
+  sort_order: number;
+  created_by: string;
+  created_at: string; // RFC3339
+  updated_at?: string;
+  reviewed_by?: string;
+  reviewed_at?: string;
+};
+
+export type PublicWorkPage = { items: PublicWork[]; next_cursor: string };
+
+async function publicGet<T>(path: string): Promise<T> {
+  const response = await fetch(path);
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: HTTP ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+export async function listPublicWorks(params: { kind?: PublicationKind; cursor?: string; limit?: number } = {}): Promise<PublicWorkPage> {
+  const qs = new URLSearchParams();
+  if (params.kind) qs.set('kind', params.kind);
+  if (params.cursor) qs.set('cursor', params.cursor);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const q = qs.toString();
+  return publicGet<PublicWorkPage>(`/public/works${q ? `?${q}` : ''}`);
+}
+
+export async function getPublicWork(id: string): Promise<PublicWork> {
+  return publicGet<PublicWork>(`/public/works/${encodeURIComponent(id)}`);
+}
+
+export async function publishWork(
+  identity: ClientIdentity,
+  input: { projectId: string; title: string; summary?: string; coverObjectKey?: string }
+): Promise<PublicWork> {
+  return connectJSON<PublicWork>(identity, '/public/works', {
+    project_id: input.projectId,
+    title: input.title,
+    summary: input.summary ?? '',
+    cover_object_key: input.coverObjectKey ?? ''
+  });
+}
+
+export async function featureWork(
+  identity: ClientIdentity,
+  input: { projectId: string; title: string; summary?: string; coverObjectKey?: string }
+): Promise<PublicWork> {
+  return connectJSON<PublicWork>(identity, '/public/featured', {
+    project_id: input.projectId,
+    title: input.title,
+    summary: input.summary ?? '',
+    cover_object_key: input.coverObjectKey ?? ''
+  });
+}
+
+// authedJSON 兼容非 POST 方法（审核用 PUT、删除用 DELETE）。
+async function authedJSON<T>(identity: ClientIdentity, method: string, path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...identityHeaders(identity) },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let code = `http_${response.status}`;
+    let message = `${method} ${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      // 保留默认 message。
+    }
+    throw new ConnectError(code, message);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+export async function reviewWork(identity: ClientIdentity, id: string, approve: boolean): Promise<PublicWork> {
+  return authedJSON<PublicWork>(identity, 'PUT', `/public/works/${encodeURIComponent(id)}/review`, { approve });
+}
+
+export async function deleteWork(identity: ClientIdentity, id: string): Promise<void> {
+  await authedJSON<Record<string, never>>(identity, 'DELETE', `/public/works/${encodeURIComponent(id)}`);
+}
+
 
