@@ -699,16 +699,29 @@ export async function getPolicy(identity: ClientIdentity): Promise<TenantPolicy>
 
 export async function createExport(
   identity: ClientIdentity,
-  params: { projectId: string; format: ArtifactFormat; timelineKey: string; pagePngKeys: string[]; burnSubtitles?: boolean; includeNotes?: boolean }
+  params: {
+    projectId: string;
+    format: ArtifactFormat;
+    timelineKey: string;
+    pagePngKeys: string[];
+    burnSubtitles?: boolean;
+    includeNotes?: boolean;
+    idempotencyKey: string;
+  }
 ): Promise<{ jobId: string }> {
-  return connectJSON<{ jobId: string }>(identity, '/ppts.v1.ExportService/CreateExport', {
-    projectId: params.projectId,
-    format: params.format,
-    timelineKey: params.timelineKey,
-    pagePngKeys: params.pagePngKeys,
-    burnSubtitles: params.burnSubtitles,
-    includeNotes: params.includeNotes
-  });
+  return connectJSON<{ jobId: string }>(
+    identity,
+    '/ppts.v1.ExportService/CreateExport',
+    {
+      projectId: params.projectId,
+      format: params.format,
+      timelineKey: params.timelineKey,
+      pagePngKeys: params.pagePngKeys,
+      burnSubtitles: params.burnSubtitles,
+      includeNotes: params.includeNotes
+    },
+    { 'Idempotency-Key': params.idempotencyKey }
+  );
 }
 
 export async function createDownload(identity: ClientIdentity, artifactId: string, ttlSeconds = 900): Promise<{ signedUrl: string; expiresAtUnix: number }> {

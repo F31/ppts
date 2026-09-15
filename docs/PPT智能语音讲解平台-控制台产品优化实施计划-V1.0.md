@@ -395,6 +395,14 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - 前端：`api.ts` 新增 `watchJobEvents`（解析 Connect 协议 streaming 信封：1 字节 flag + 4 字节大端长度 + JSON 消息）；`Jobs.tsx` 按项目维度开流、逐条合并更新（按 jobId 定位），任一项目流失败则按 seq 续接重连（最多 3 次、指数退避），仍失败彻底回退到既有 5s 轮询（断线回退轮询）；无活跃任务时不持有流。顶部"实时推送"绿点指示连接状态；任务详情补 `lastError.traceId`（proto 已带）。
   - 验收：A16、A17、A18、A19。注：范围/阶段/步骤/受影响页/traceId 列属 B4-⑥（见 §5 B4 前端⑥），不在本里程碑；流式仅推送 Job 基础字段。本机需 `npm run build` 终验（沙箱无法 tsc）。
 
+- **B3-M4 导出对话框 + 快照完整性【已实施】**：
+  - 后端（快照完整性修复）：`app.ExportSnapshot` 补 `BurnSubtitles`/`IncludeNotes` 字段；`CreateExport` 从请求（proto 已有 `burn_subtitles`/`include_notes`）写入快照。此前两选项被接收却未入快照，导致仅选项不同的导出得到相同 snapshotHash（快照不完整）。
+  - 前端（修复 D0 真缺陷）：`api.ts` `createExport` 此前**从不发送 `Idempotency-Key`**（后端强制要求，export.go:62-65），前端导出必然 InvalidArgument；现补 `idempotencyKey` 参数与请求头（沿用 `export-{projectId}-{ts}` 约定）。
+  - 前端（导出对话框）：新增 `components/ExportDialog.tsx`——类型选择（Web 工程 / MP4 / SRT / VTT 可用；音频包 / 配音 PPTX 显式门禁说明）；MP4 选项（字幕烧录复选框＋"已写入快照、服务端暂不烧录"说明＋分辨率 1920×1080·30fps 服务端固定说明＋无页面 PNG 时阻断）；保留备注元数据；快照绑定提示。ProjectEditor 导出按钮改为打开对话框。
+  - "新字幕不配旧音频"约束：一次导出仅加载**单一** timeline bundle（`loadTimelineBundle`），字幕与音频同源，天然满足，无需改动。
+  - i18n 中英各 22 键；styles.css 补对话框/选项/门禁/快照样式。
+  - 验收：A15、A19。注：音频包/配音 PPTX 后端未提供（`exportFormat` 仅 4 种），故门禁不上线；字幕烧录编码待后续接入。本机需 `go build ./...` + `npm run build` 终验。
+
 ### B4 管理与适配
 
 | 项 | 内容 |

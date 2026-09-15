@@ -25,9 +25,10 @@ import {
 } from '../api';
 import { Player } from '../Player';
 import { ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
+import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
-import type { PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { ArtifactFormat, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 
 type SlidesState =
   | { mode: 'loading' }
@@ -68,6 +69,8 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
   const [genScope, setGenScope] = useState<'all' | 'pending' | 'current'>('all');
   const [draftSegments, setDraftSegments] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportError, setExportError] = useState('');
   const [pubOpen, setPubOpen] = useState(false);
   const [pubTitle, setPubTitle] = useState('');
   const [pubSummary, setPubSummary] = useState('');
@@ -496,9 +499,10 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
     }
   };
 
-  const exportManifest = async () => {
+  const runExport = async (format: ArtifactFormat, options: ExportOptions) => {
     if (!realManifest || exporting) return;
     setExporting(true);
+    setExportError('');
     setNarrationStatus({ phase: 'idle', message: t('editor.exportQueued') });
     try {
       const pagePngKeys = realManifest.resources
@@ -506,14 +510,17 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
         .map((resource) => resource.key);
       const result = await createExport(identity, {
         projectId,
-        format: 'ARTIFACT_FORMAT_WEB_PROJECT',
+        format,
         timelineKey: realManifest.timelineKey,
-        pagePngKeys,
-        includeNotes: true
+        pagePngKeys: format === 'ARTIFACT_FORMAT_MP4' ? pagePngKeys : [],
+        burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
+        includeNotes: options.includeNotes,
+        idempotencyKey: `export-${projectId}-${Date.now()}`
       });
       setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });
+      setExportOpen(false);
     } catch (error) {
-      setNarrationStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.exportFailed') });
+      setExportError(error instanceof Error ? error.message : t('editor.exportFailed'));
     } finally {
       setExporting(false);
     }
@@ -882,8 +889,16 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
           <>
             <Player manifest={realManifest} onSlideChange={handleSlideSelect} />
             <div className="export-row">
-              <button type="button" className="button-primary" disabled={exporting} onClick={() => void exportManifest()}>
-                {exporting ? t('editor.exporting') : t('editor.exportWeb')}
+              <button
+                type="button"
+                className="button-primary"
+                disabled={exporting}
+                onClick={() => {
+                  setExportError('');
+                  setExportOpen(true);
+                }}
+              >
+                {t('editor.export')}
               </button>
               <Link to={`/projects/${projectId}/artifacts`} className="button-ghost">
                 {t('editor.viewArtifacts')}
@@ -897,6 +912,15 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
           </section>
         )}
       </section>
+      {exportOpen && realManifest && (
+        <ExportDialog
+          manifest={realManifest}
+          busy={exporting}
+          error={exportError}
+          onClose={() => setExportOpen(false)}
+          onSubmit={(format, options) => void runExport(format, options)}
+        />
+      )}
       {pubOpen && (
         <div className="modal-backdrop" role="dialog" aria-label={t('public.publishTitle')}>
           <section className="modal-card">

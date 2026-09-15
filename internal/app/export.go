@@ -19,13 +19,17 @@ import (
 )
 
 // ExportSnapshot fixes all inputs for an export job.
+// 快照必须完整记录影响产物的全部输入：除时间轴/页面图/编码参数外，
+// 亦包含 burnSubtitles 与 includeNotes，避免仅因这些选项不同却得到相同 snapshotHash。
 type ExportSnapshot struct {
-	Format      artifact.Format `json:"format"`
-	TimelineKey string          `json:"timelineKey"`
-	PagePNGKeys []string        `json:"pagePngKeys,omitempty"`
-	Width       int             `json:"width,omitempty"`
-	Height      int             `json:"height,omitempty"`
-	FPS         int             `json:"fps,omitempty"`
+	Format        artifact.Format `json:"format"`
+	TimelineKey   string          `json:"timelineKey"`
+	PagePNGKeys   []string        `json:"pagePngKeys,omitempty"`
+	Width         int             `json:"width,omitempty"`
+	Height        int             `json:"height,omitempty"`
+	FPS           int             `json:"fps,omitempty"`
+	BurnSubtitles bool            `json:"burnSubtitles,omitempty"`
+	IncludeNotes  bool            `json:"includeNotes,omitempty"`
 }
 
 type ExportHandler struct {

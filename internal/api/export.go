@@ -63,7 +63,11 @@ func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[p
 	if idempotencyKey == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("Idempotency-Key header is required"))
 	}
-	snapshot := app.ExportSnapshot{Format: format, TimelineKey: req.Msg.GetTimelineKey(), PagePNGKeys: pageKeys, FPS: 30, Width: 1920, Height: 1080}
+	snapshot := app.ExportSnapshot{
+		Format: format, TimelineKey: req.Msg.GetTimelineKey(), PagePNGKeys: pageKeys,
+		FPS: 30, Width: 1920, Height: 1080,
+		BurnSubtitles: req.Msg.GetBurnSubtitles(), IncludeNotes: req.Msg.GetIncludeNotes(),
+	}
 	snapshotBytes, err := json.Marshal(snapshot)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
