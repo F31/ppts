@@ -250,15 +250,33 @@ export async function createUpload(
   });
 }
 
-export async function uploadToURL(url: string, file: File): Promise<void> {
-  const response = await fetch(url, {
-    method: 'PUT',
-    headers: { 'Content-Type': file.type || 'application/octet-stream' },
-    body: file
+export async function uploadToURL(
+  url: string,
+  file: File,
+  opts: { onProgress?: (loaded: number, total: number) => void; signal?: AbortSignal } = {}
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url, true);
+    xhr.setRequestHeader('Content-Type', file.type || 'application/octet-stream');
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && opts.onProgress) opts.onProgress(event.loaded, event.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(`upload failed: HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('upload failed: network error'));
+    xhr.onabort = () => reject(new DOMException('upload canceled', 'AbortError'));
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        xhr.abort();
+        return;
+      }
+      opts.signal.addEventListener('abort', () => xhr.abort(), { once: true });
+    }
+    xhr.send(file);
   });
-  if (!response.ok) {
-    throw new Error(`upload failed: HTTP ${response.status}`);
-  }
 }
 
 export async function completeUpload(

@@ -306,7 +306,11 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 
 > **路由改造已提前完成（独立于 B1 其余项）**：`router.tsx` 由 hash 改为 History API，`main.tsx` 挂载前执行 `migrateLegacyHash()` 将遗留 `#/path` 改写为 `/path`；`server.go` 新增可选 SPA 兜底（设 `PPTS_WEB_ROOT` 时注册 `GET /{path...}` 返回 `index.html`，并放行 `/ppts/object`、`/healthz`、`/debug` 前缀）。提交 `b96352b`（前端）、`e1e6169`（后端）。
 >
-> **公开区双 Tab（C-1）已实现**：后端 `publications` 表 + RLS 双策略（`public_read` 仅放行 `status='approved'` 匿名跨租户只读 / `tenant_write` 租户内写），状态机 `draft→pending→approved/rejected`，精选发布 `POST /public/featured`（admin）；匿名只读 `GET /public/works`、`GET /public/works/{id}`（封面走 SignedURL）；受保护只读 `GET /public/works/mine`、`GET /public/works/queue`（admin 审核队列）。前端：浏览链路 `PublicShell` + 作品广场 `Explore`（featured/user 双 Tab）+ 匿名播放页 `Watch`（音频待 B3）+ 未登录放行 `/explore`、`/watch/:id`；控制台管理 `PublicAdmin`（我的发布 / 审核队列，admin 可见审核）+ 项目编辑器「发布到公开区」弹窗（`ProjectEditor`）。提交 `63ede93`、`cc506c7`（后端）、`279d820`（浏览前端）、`feat(web): 公开区管理`（管理前端，本轮）。**注**：本环境无法跑 `go build`/`tsc`（依赖未缓存 / 缺原生二进制），改动经 `gofmt` 与逐文件类型复核，最终需本地 `go build ./...` + `npm run build` 确认。导入增强（B1 第⑦项）与公开区音频播放（B3）仍待做。
+> **公开区双 Tab（C-1）已实现**：后端 `publications` 表 + RLS 双策略（`public_read` 仅放行 `status='approved'` 匿名跨租户只读 / `tenant_write` 租户内写），状态机 `draft→pending→approved/rejected`，精选发布 `POST /public/featured`（admin）；匿名只读 `GET /public/works`、`GET /public/works/{id}`（封面走 SignedURL）；受保护只读 `GET /public/works/mine`、`GET /public/works/queue`（admin 审核队列）。前端：浏览链路 `PublicShell` + 作品广场 `Explore`（featured/user 双 Tab）+ 匿名播放页 `Watch`（音频待 B3）+ 未登录放行 `/explore`、`/watch/:id`；控制台管理 `PublicAdmin`（我的发布 / 审核队列，admin 可见审核）+ 项目编辑器「发布到公开区」弹窗（`ProjectEditor`）。提交 `63ede93`、`cc506c7`（后端）、`279d820`（浏览前端）、`418d4e7`（管理前端）。
+>
+> **B1 导入增强（第⑦项）已实现**：`ImportDialog` 升级为拖拽上传 + 真实上传百分比进度条（`uploadToURL` 改 XHR 支持 `onProgress`）+ 上传中可取消（`AbortController` + `abortUpload`）+ 前端格式（.pptx）/大小（100MB）校验 + 结构化解析报告（warnings 列表）+「查看任务」跳转 `/jobs`；补充 i18n 与样式（提交本轮）。**注**：大小限制为前端校验，后端 `CreateUpload` 是否另强未核（沙箱无法编译）；公开区音频播放（B3）仍待做。
+>
+> **验证限制**：本环境无法跑 `go build`/`tsc`（依赖未缓存 / 缺原生二进制），改动经 `gofmt` 与逐文件类型复核，最终需本地 `go build ./...` + `npm run build` 确认。
 
 **生产 SPA history 兜底（nginx 参考，前端由 nginx/CDN 托管时）**：
 ```nginx

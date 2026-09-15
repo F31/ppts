@@ -37,6 +37,8 @@ button, textarea, input { font: inherit; }
 .project-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-list small { grid-column: 1 / -1; color: #ffb4b4; cursor: pointer; }
 .upload-entry { display: grid; place-items: center; border: 1px dashed rgba(103, 232, 249, .5); border-radius: 16px; padding: 12px; color: #a9e7ff; cursor: pointer; }
+.upload-entry.drag-over { border-color: #67e8f9; background: rgba(103, 232, 249, .08); }
+.upload-limit { margin-top: 6px; font-size: 12px; color: #7e8aa3; }
 .upload-entry input { display: none; }
 .upload-note, .api-status { margin: 8px 0 0; color: #9fb1cf; font-size: 12px; line-height: 1.45; }
 .api-status { color: #c9d6ea; }
@@ -115,6 +117,14 @@ button, textarea, input { font: inherit; }
 .audit-filters { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin: 14px 0; }
 .audit-filters input, .audit-filters select { min-width: 0; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: 9px; color: #edf1f7; background: rgba(255,255,255,.07); }
 .api-status.error { color: #ffb4b4; }
+.progress { position: relative; margin: 12px 0 0; height: 22px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+.progress-bar { height: 100%; background: linear-gradient(90deg, #67e8f9, #a78bfa); transition: width .2s ease; }
+.progress-label { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; color: #e8eef7; }
+.report { margin: 12px 0 0; }
+.report-title { margin: 0 0 4px; color: #9ff5c9; font-weight: 600; }
+.report-list { margin-top: 8px; }
+.report-list ul { margin: 4px 0 0; padding-left: 18px; color: #c9d6ea; font-size: 13px; }
+.report-list li { margin: 2px 0; }
 .audit-list { display: grid; gap: 8px; max-height: 280px; overflow: auto; padding-right: 4px; }
 .audit-list article { border: 1px solid rgba(255,255,255,.09); border-radius: 16px; padding: 10px 12px; background: rgba(255,255,255,.04); }
 .audit-list article div { display: flex; justify-content: space-between; gap: 8px; }
