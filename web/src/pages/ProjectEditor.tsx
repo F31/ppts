@@ -15,6 +15,7 @@ import {
   getSlideRenderURLs,
   getSlideScriptSources,
   listGateways,
+  listJobsPage,
   lockScript,
   publishWork,
   regenerateSegments,
@@ -28,7 +29,7 @@ import { ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '
 import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
-import type { ArtifactFormat, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { ArtifactFormat, Job, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 
 type SlidesState =
   | { mode: 'loading' }
@@ -37,6 +38,16 @@ type SlidesState =
 
 type DraftStatus = { phase: 'idle' | 'generating' | 'ready' | 'error'; message: string };
 type ConflictState = { slideId: string; localText: string; latest: ScriptRevision } | null;
+
+// B3-M5：生成类任务（配音生成 / 讲稿生成）的活跃态判定，用于"生成中继续编辑"顶部快照提示。
+const genJobKinds = ['narration', 'script_draft'];
+const genActiveStates = [
+  'JOB_STATE_QUEUED',
+  'JOB_STATE_RUNNING',
+  'JOB_STATE_RETRY_WAIT',
+  'JOB_STATE_CANCEL_REQUESTED',
+  'JOB_STATE_UNKNOWN_PROVIDER_RESULT'
+];
 
 const scriptModeOptions: Array<{ value: ScriptMode; labelKey: string; descKey: string }> = [
   { value: 'SCRIPT_MODE_ORIGINAL', labelKey: 'editor.modes.original', descKey: 'editor.modes.originalDesc' },
@@ -172,6 +183,26 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
       cancelled = true;
     };
   }, [slidesState, identity, projectId]);
+
+  // B3-M5：感知本项目活跃的生成任务（配音/讲稿），驱动"生成中继续编辑"顶部快照提示。
+  // 生成任务以创建时已确认的讲稿快照为输入（C-5：lockConfirmedOnly），故生成期间仍可继续编辑，
+  // 新改动需下一次生成才生效。此处用 5s 轮询（与任务中心断线回退频率一致），避免在编辑器内持有长连接。
+  const refreshActiveGenJobs = useCallback(async () => {
+    try {
+      const page = await listJobsPage(identity, { projectId, pageSize: 20 });
+      setActiveGenJobs(
+        page.jobs.filter((job) => genJobKinds.includes(job.kind) && genActiveStates.includes(job.state))
+      );
+    } catch {
+      // 任务服务不可用时保持上一次结果，不打扰编辑。
+    }
+  }, [identity, projectId]);
+
+  useEffect(() => {
+    void refreshActiveGenJobs();
+    const timer = window.setInterval(() => void refreshActiveGenJobs(), 5000);
+    return () => window.clearInterval(timer);
+  }, [refreshActiveGenJobs]);
 
   // 已有讲稿
   useEffect(() => {
@@ -466,6 +497,8 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
         ratePercent,
         lockConfirmedOnly: true
       });
+      // B3-M5：生成任务已创建，立即刷新活跃任务，让顶部快照提示尽快出现。
+      void refreshActiveGenJobs();
       const deadline = Date.now() + 120_000;
       let status;
       while (Date.now() < deadline) {
@@ -489,6 +522,8 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
         phase: 'ready',
         message: status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
       });
+      // B3-M5：生成完成后立即收敛提示（无需等下一次轮询）。
+      void refreshActiveGenJobs();
     } catch (error) {
       let message = error instanceof Error ? error.message : t('editor.narrationFailed');
       if (error instanceof ConnectError && error.code === 'resource_exhausted') {
@@ -587,6 +622,19 @@ export function ProjectEditor({ identity, projectId, draftRequested, role }: { i
           </button>
         </div>
       </header>
+
+      {activeGenJobs.length > 0 && (
+        <div className="snapshot-banner" role="status" aria-live="polite">
+          <span className="snapshot-dot" aria-hidden="true" />
+          <div className="snapshot-text">
+            <strong>{t('editor.genInProgress', { count: activeGenJobs.length })}</strong>
+            <span>{t('editor.genSnapshotNote')}</span>
+          </div>
+          <Link to="/jobs" className="button-ghost">
+            {t('editor.genViewJobs')}
+          </Link>
+        </div>
+      )}
 
       <div className="editor-layout editor-layout-3col">
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>

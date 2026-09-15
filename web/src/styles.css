@@ -405,6 +405,13 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
 .status-marker.unsaved { color: #ffd9a8; border-color: rgba(255,184,120,.5); }
 .field-label { display: grid; gap: 6px; font-size: 12px; color: #9fb1cf; margin-bottom: 10px; }
 .playback-column { display: grid; gap: 12px; }
+/* B3-M5：生成中继续编辑的顶部快照提示 */
+.snapshot-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 14px; border: 1px solid rgba(103,232,249,.35); border-radius: 12px; background: rgba(103,232,249,.08); }
+.snapshot-dot { width: 9px; height: 9px; border-radius: 50%; background: #67e8f9; box-shadow: 0 0 0 4px rgba(103,232,249,.18); animation: snapshot-pulse 1.6s ease-in-out infinite; flex: none; }
+@keyframes snapshot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.snapshot-text { display: grid; gap: 2px; flex: 1 1 320px; min-width: 0; }
+.snapshot-text strong { color: #e6eefc; font-size: 13px; }
+.snapshot-text span { color: #93a6c4; font-size: 12.5px; line-height: 1.5; }
 .export-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .form-hint { color: #93a6c4; font-size: 12.5px; margin: 6px 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }

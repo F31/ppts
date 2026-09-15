@@ -403,6 +403,11 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - i18n 中英各 22 键；styles.css 补对话框/选项/门禁/快照样式。
   - 验收：A15、A19。注：音频包/配音 PPTX 后端未提供（`exportFormat` 仅 4 种），故门禁不上线；字幕烧录编码待后续接入。本机需 `go build ./...` + `npm run build` 终验。
 
+- **B3-M5 生成中继续编辑的顶部快照提示【已实施】**：
+  - 前端（纯前端）：`ProjectEditor.tsx` 感知本项目活跃生成任务（`JobService/List` 过滤 kind∈{narration,script_draft} 且 state 属活跃态；5s 轮询，与任务中心断线回退频率一致，不在编辑器内额外持有长连接）；头部下方新增 `snapshot-banner` 提示条——「有 N 个生成任务进行中」＋快照语义说明（任务以创建时**已确认**的讲稿快照为输入，因此可继续编辑，新改动将在下一次生成生效）＋跳转任务中心入口。创建生成后与生成完成后各立即刷新一次，无需等待轮询。
+  - i18n 中英文各 3 键（`editor.genInProgress` / `genSnapshotNote` / `genViewJobs`）；`styles.css` 提示条与脉冲点样式 + `theme.css`(light) 覆盖。
+  - 验收：A15（与 M4 的 C-5「存在未确认稿即阻止生成」＋ `rate_percent`/`lock_confirmed_only` 实传共同覆盖 G-05）。注：本里程碑纯前端；本机需 `npm run build` 终验（沙箱无法 tsc）。
+
 ### B4 管理与适配
 
 | 项 | 内容 |
