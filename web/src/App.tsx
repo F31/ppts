@@ -193,7 +193,7 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
         }
       case 'home':
       default:
-        if (section === 'home') return <Home identity={identity} />;
+        if (section === 'home') return <Home identity={identity} role={role} roleReady={roleReady} />;
         // 未知路由回首页。
         navigate('/home');
         return null;

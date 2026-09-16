@@ -241,3 +241,13 @@ html[data-theme="light"] .load-failure button:hover { background: rgba(15, 23, 4
 html[data-theme="light"] .narration-note { color: #334155; }
 html[data-theme="light"] .narration-note.error { color: #b42318; }
 html[data-theme="light"] .narration-note.warn { color: #92400e; }
+
+/* B4-M5：首页待处理事项 / 最近完成成品在浅色下必须可读（A26 同源要求）。 */
+html[data-theme="light"] .todo-item { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
+html[data-theme="light"] .todo-text { color: #334155; }
+html[data-theme="light"] .todo-action { color: #0369a1; }
+html[data-theme="light"] .home-artifact-row { background: #ffffff; border-color: rgba(15, 23, 42, .08); color: #334155; }
+html[data-theme="light"] .home-artifact-format { background: rgba(3, 105, 161, .12); color: #075985; }
+html[data-theme="light"] .home-artifact-size,
+html[data-theme="light"] .home-artifact-row small { color: #64748b; }
+html[data-theme="light"] .warn-note { color: #92400e; }

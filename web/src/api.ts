@@ -145,6 +145,26 @@ export async function listProjects(identity: ClientIdentity): Promise<Project[]>
   return data.projects ?? [];
 }
 
+export type ProjectPage = { projects: Project[]; nextCursor: string };
+
+// listProjectsPage 带游标读取项目列表。
+// ListProjectsResponse 只返回 projects + next_cursor，**没有总数**（proto/ppts/v1/project.proto:68），
+// 因此 nextCursor 为空时才可把本页长度当作真实总数（D0-3，A04：分页 List 的本页长度不得当总数）。
+export async function listProjectsPage(
+  identity: ClientIdentity,
+  params: { cursor?: string; pageSize: number }
+): Promise<ProjectPage> {
+  const data = await connectJSON<{ projects?: Project[]; nextCursor?: { value?: string } }>(
+    identity,
+    '/ppts.v1.ProjectService/List',
+    {
+      pageSize: params.pageSize,
+      ...(params.cursor ? { cursor: { value: params.cursor } } : {})
+    }
+  );
+  return { projects: data.projects ?? [], nextCursor: data.nextCursor?.value ?? '' };
+}
+
 export async function createProject(identity: ClientIdentity, title: string): Promise<Project> {
   const data = await connectJSON<{ project: Project }>(identity, '/ppts.v1.ProjectService/Create', { title });
   return data.project;
@@ -353,6 +373,20 @@ export async function getProjectArtifacts(
   projectId: string
 ): Promise<{ artifacts: ProjectArtifact[] }> {
   return getJSON<{ artifacts: ProjectArtifact[] }>(identity, `/projects/${encodeURIComponent(projectId)}/artifacts`);
+}
+
+export type NarrationSlideStale = { slideId: string; stale: boolean };
+
+// getNarrationStale 读取项目内"讲稿已改、配音未重生成"的页（首页「音频需更新」的真实信号）。
+// 后端判定：audio_revision < revision（internal/api/narration.go:373），要求 editor 角色。
+export async function getNarrationStale(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ slides: NarrationSlideStale[] }> {
+  return getJSON<{ slides: NarrationSlideStale[] }>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/narration/stale`
+  );
 }
 
 export type NarrationStatus = {

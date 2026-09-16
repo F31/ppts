@@ -277,6 +277,9 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | D0-8 | 公共可发现性基线 | `web/index.html` | 标题改"智讲 PPT"、补 `description`/OG 标签、`lang` 与 favicon | A27 |
 | D0-9 | 死代码与样式残留 | `styles.css`（`.workspace`/`.project-panel`/`.slide-rail`） | 清理已删除组件 `ProjectPanel.tsx` 的残留样式 | 工程质量 |
 
+**D0 批次状态（2026-09-16 逐文件核实）**：D0-1 ✅（B3-M4 已修）、D0-5 ✅（B3-M2 已合并）、D0-6 ✅（`ScriptEditor` 五态 `saved/dirty/saving/error/conflict` 已实现）、D0-8 ✅（`index.html` 已含 `lang`/`title`/`description`/OG，仅缺 favicon）、**D0-3 ✅ / D0-4 ✅（本批次 B4-M5 一并修复）**；
+**仍未完成 3 项**：**D0-2（`auth.ts:26` 仍为 `!oidcConfigured() || import.meta.env.DEV` → 生产构建未配 OIDC 时暴露开发身份表单，属 A01/A02 安全项，最高优先）**、D0-7（`ScriptEditor.tsx` 无 `compositionstart/end` 处理，中文输入法组合期会触发保存，A10）、D0-9（残留样式未清理）。见 R-11。
+
 ---
 
 ## 5. 实施批次计划（B0–B5）
@@ -476,7 +479,25 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **响应式断点对齐设计稿**（V1_6 §379）：≥1200px 三栏；768–1199px 缩略图横排 + 两区；<768px 单列 + 底部操作（原为 1280/1040/860 三档）。触控目标按 V1_6 §395 收紧到 ≈44px（播放控制、页选择、主导航、顶栏按钮）。
   - **浅色主题**：`theme.css` 为 `.player-dock`/`.player-shortcuts` 补浅色覆盖，避免底部吸附条在浅色下变深色（A26 同源要求：错误与控件在浅色下也要可读）。
   - **i18n**：中英各 2 键（`player.dock`、`player.shortcutsHint`）。验证：`tsc -b` + `vite build` 通过。
-- **B4-M5 首页待处理事项与最近完成成品【待实施】**（配 A23/A26 语义）：首页补"待处理事项"（待确认稿、待审核作品、失败/待重试任务）与"最近完成成品"，均以真实接口为准。
+- **B4-M5 首页待处理事项与最近完成成品【已实施】**（含 D0-3/D0-4 收口）：
+  - **首页顺序对齐 V1_6 §6.1**：hero → 最近项目 → 待处理事项 → 紧凑统计 → 最近完成成品 → 最近任务（原为 hero → 统计 → 最近项目 → 最近任务，统计占据首屏，与 §6.1 及《UI 设计评审》"首屏应以'继续工作'为主、统计降权"相反）。hero 补「新建讲解」CTA，按 `can(role,'project.create')` 门控（服务端 `project.go:35` 要求 editor）。
+  - **待处理事项**（V1_6 §6.1-3，全部真实接口、无数据则不渲染区块）：
+    | 待办类型 | 数据来源 | 权限 |
+    |---|---|---|
+    | 讲稿待确认（N 段） | `GET /projects/{pid}/narration/draft-count`（`getNarrationDraftCount`） | editor（`narration.go:339`） |
+    | 音频需更新（N 页） | `GET /projects/{pid}/narration/stale`（**新增 `getNarrationStale`**）——该端点自 B3-M1 起就在 `registerNarrationRoutes` 挂载（`narration.go:328`），但**前端从未调用**，本次接入；后端判定 `audio_revision < revision` | editor（`narration.go:358`） |
+    | 任务失败 / 待重试 | `JobService.List` 中 `JOB_STATE_FAILED`（可**就地重试**，`RetryFailed` 要求 editor）与 `JOB_STATE_RETRY_WAIT` | 任务读取仅需已认证 |
+    | 待审核作品（N 个） | `GET /public/works/queue`（B4-M3 刚挂载的路由，此处首次真正消费） | admin（`public.go:333`） |
+    每项均带跳转（编辑器 / 任务详情 `?job=` / `/settings/public`）。注意 `publicListMine`/`publicReviewQueue` 后端**不加 LIMIT、不分页**（`internal/public/store.go:150,171`），故其 `items.length` 是精确条数，可直接展示。
+  - **最近完成成品**（V1_6 §6.1-5）：`GET /projects/{pid}/artifacts`（B3-M1 端点）跨最近 6 个项目聚合，按 `createdAt` 倒序取前 5，展示格式徽标 / 项目名 / 大小 / 导出时间，点击进入该项目成品页（`/projects/{id}/artifacts`，同样要求 editor）。有成品才渲染。
+  - **统计口径修复（D0-3 + D0-4，A04）**：
+    - D0-3：`ListProjectsResponse` **无总数**（`proto/ppts/v1/project.proto:68` 只有 `projects` + `next_cursor`），原实现把 `pageSize=20` 的**本页长度当"讲解项目"总数**。新增 `listProjectsPage`（带游标）：**游标为空（列表完整）才显示精确数**并注明"完整列表"；游标非空则显示 `≥ N`，并写明"仅最近一页 N 项·服务端不提供总数"。
+    - D0-4：「已配音项目」原实为**最近 6 项**中的数量却按全租户口径展示；现标签下写明"仅统计最近 {count} 个项目"，且非 editor 时该卡显示「—」+「需编辑及以上角色」（`narration.read` 门控），不再伪造 0。
+    - 附：用量显式传 **UTC 自然月**并展示周期（`getUsage` 原缺省依赖服务端 `monthRange` 的 UTC 兜底，`internal/usage/postgres.go:271`）；存储按 §202 标"取数于 {时刻}"（后端 `StorageUsage` **无统计时间字段**，见 R-12，不伪造）。模型服务卡片：非 admin 读不到时原显示"未配置"（把无权限伪装成没配），改为「—」+ 原因（A26 同源问题，与 B4-M2 一致）。
+  - **富化窗口与降级口径**：待办/可播放/成品只探测**最近 6 个项目**。服务端无「首页摘要」聚合接口（V1_6 §419 列为可选能力且"不遍历全量分页强算"），故按 §202「未取得聚合接口时展示真实最近列表」降级，并在待办区与成品区**显式标注统计范围**；首屏 `statsNote` 也改写为"各项已标注统计范围"。
+  - **A26 一致性**：全部富化请求走 `settle` → `describeApiError`（**无一处 `.catch(() => null)`**），失败原因去重后渲染在 `.load-failure.load-failure-stack` 中并附重试。角色未就绪（`roleReady=false`）时不下发角色受限请求——避免 A22「先闪现越权入口、再收 403」。
+  - **i18n**：中英各 26 键（`home.todo*`×13、`home.stat.*`×8、`home.newNarration`/`home.statsAria`/`home.atLeast`、`home.recentArtifacts`/`home.artifactsScope`/`home.artifactOpen`、`home.probeFailed`/`home.unknownProject`），并**删除已无引用的 `home.stat.projectsNote`**；中英键数校验 687/687 完全对齐。样式 `styles.css` 新增 `.todo-*`/`.home-artifact-*`/`.home-cta`/`.warn-note`/`.load-failure-stack` 与窄屏单列，`theme.css` 补浅色覆盖（**注意类名不能沿用成品页已有的 `.artifact-row`，否则覆盖其 flex 布局——已改为 `.home-artifact-row`**）。
+  - **验证**：`tsc --noEmit` + `tsc -b` + `vite build` ✅；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保持基线可信）。
 - **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
 
@@ -525,6 +546,8 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-8 | A04/A06 类口径与作用域缺陷易被反复遗漏 | 中 | 中 | 把 A01–A29 打成验收清单，每批次出口逐条勾选 |
 | R-9 | ~~后端测试包长期不可编译~~ **【已解决 2026-09-16】**（`NewHandler` 于 `63ede93` 加 `pool` 形参后 `server_test.go` 未同步；B3-M1 新增 `artifact.Store.ListByProject` 后测试桩未实现） | 已发生 | 高 | 因 `go build` 不编译 `_test.go`，长期未被发现；B4-M3 期间经 `go vet` 暴露。**修复完成**：47 处调用补 `nil` 实参（`server_test.go` 45 + `gateway_test.go` 1 + `e2e_test.go` 1）、`internal/app` 桩补 `ListByProject`、poppler 用例补 Skip；`go vet` + `go test ./internal/...` 全绿 |
 | R-10 | 里程碑交付只做"单文件类型复核+`gofmt` 兜底"就提交，缺陷（编译阻塞、吞错假状态、未挂载路由）会跨里程碑累积 | 高 | 高 | 按「验证回路更新」在沙箱内跑通 `tsc -b` + `vite build` + `go build ./...` + `go vet ./internal/...` 后才提交；新增后端路由须核对**注册表**而非仅核对处理器函数 |
+| R-11 | **D0 批次严重滞后**：D0 原定"B1 之前或并行完成"，实际到 B4-M5 时仍有 3 项未做，其中 **D0-2 为安全项**（生产构建未配 OIDC 时仍渲染开发身份表单，违反 A01/A02） | 已发生 | 高 | D0-1/5/6/8 已完成、D0-3/D0-4 由 B4-M5 一并修复；剩余 **D0-2（安全，最高优先）/ D0-7 输入法组合期 / D0-9 残留样式** 见「遗留与后续」，须在 B5 之前收口 |
+| R-12 | `TenantService.StorageUsage` 未返回统计时间字段，首页无法满足 V1_6 §202「存储必须标统计时间」 | 已发生 | 低 | 首页如实标注为"取数于 {时刻}"（不伪造服务端统计时间）；如需真实统计时间，须后端在 `tenant.StorageUsage` 增列并同步 `GetStorageUsageResponse`（proto 变更，本环境 protoc 不可用 → 需在具备 protoc 的环境补） |
 
 ---
 
