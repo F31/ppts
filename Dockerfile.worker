@@ -1,6 +1,7 @@
-FROM scratch
+FROM debian:bookworm-slim
 COPY ppts-worker.bin /ppts-worker
 ENV PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
     TZ=Asia/Shanghai
+EXPOSE 0
 ENTRYPOINT ["/ppts-worker"]
