@@ -1,20 +1,9 @@
-# ---- Builder ----
-FROM golang:1.25-bookworm AS builder
-ARG GOPROXY=https://goproxy.io,direct
-ARG GONOSUMCHECK=*
-ARG GONOSUMDB=*
-ARG GOPRIVATE=github.com/F31
-ENV GOPROXY=$GOPROXY GONOSUMCHECK=$GONOSUMCHECK GONOSUMDB=$GONOSUMDB GOPRIVATE=$GOPRIVATE
-WORKDIR /build
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOWORK=off go build -o ppts-api ./cmd/api
-
-# ---- Runtime ----
+# 运行时镜像：nginx:alpine + 预编译的 ppts-api 二进制
+# 注意：构建时需先在本机执行 GOWORK=off go build -o ppts-api ./cmd/api
 FROM nginx:alpine
-COPY --from=builder /build/ppts-api /usr/local/bin/ppts-api
-COPY --from=builder /build/web/dist /usr/share/nginx/html
+COPY ppts-api /usr/local/bin/ppts-api
+COPY web/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
 ENV PPTS_WEB_ROOT=/usr/share/nginx/html \
     PPTS_OBJECT_BACKEND=local \
