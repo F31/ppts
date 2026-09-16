@@ -170,6 +170,7 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | WatchEvents 服务端流 + 断线回退 | 后端已实现，前端未接 | ❌ |
 | 列表列：项目/类型/提交时间/**范围**/**阶段**/进度/状态 | **已补"范围""阶段"**（B4-M6a）；项目仍显示 id 前 12 位 | ✅ |
 | 详情：步骤(JobStep)/受影响页/输入版本/traceId | **已补**（B4-M6a，原生 HTTP `GET /jobs/{jid}/detail`） | ✅ |
+| 列表按 阶段/受影响页 **排序与筛选** | **已补**（B4-M6b，原生 HTTP `GET /jobs/page` + 列表筛选/排序控件，条件写 URL） | ✅ |
 | "正在取消" → 服务端确认后"已取消" | 有枚举与样式，无过渡文案 | ⚠️ |
 | 局部失败"重试失败部分" | RetryFailed 为任务级 | ⚠️ A18 |
 | 供应商结果未知"正在核实生成结果" | 有 `UNKNOWN_PROVIDER_RESULT` 枚举与文案 | ⚠️ |
@@ -538,7 +539,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
     | 步骤 | `job_steps` 表（迁移 `0001_init.sql:74-85`） | 表已存在但此前无任何端点暴露 |
 
     - **真正缺“列”的只有“阶段”**：库中无 phase 字段，故由 `job_steps` **最近更新的步骤类型**推导（`max(updated_at)` 对应的 `step_type`）；无步骤时留空、界面显示「—」而不伪造。
-    - 结论：**M6a 不需要迁移 0026**。“阶段/受影响页”升为**服务端持久化独立列**仍是 M6b（见下），但已非“前端无数据可用”。
+    - 结论：**M6a 不需要迁移 0026**。“阶段/受影响页”升为**服务端持久化独立列**由 **M6b 落地（见下，已实施）**；M6a 已非“前端无数据可用”。
   - **后端（原生 HTTP，protoc 不可用、不改 proto）** —— 新增 `internal/api/jobdetail.go`，在 `server.go` 的 `registerEditorRoutes` 之后挂载：
     - `GET /jobs/{jid}/detail` → `{jobId, kind, traceId, scope, steps[], stepCounts, stepTotal, stepsTruncated, stepsError?}`。
     - `GET /jobs/summary?ids=a,b,c` → `{jobs:{<id>:{scope, phase, stepTotal, stepCounts}}, stepsError?}`（列表页**单次批量取**，避免 N+1）。
@@ -556,7 +557,35 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
     - `web/src/api.ts` 新增 `getJobDetail`/`getJobsSummary` 及 `JobStep`/`JobScope`/`JobExtras`/`JobDetail` 类型；`web/src/types.ts` 新增 `jobStepTypeKey`/`jobStepStateKey`/`jobScopeKindKey`（`step_type` 为自由文本，未登记值原样显示）；`apiError.ts` 把 `http_501` 映射为 `err.unimplemented`。
     - i18n：中英各 38 键（键数校验 724/724 对齐）。
   - **验证**：`tsc -b` + `vite build` ✅（CSS 49.06 → 49.64 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（新增 `jobdetail_test.go` 11 例全 PASS；`steps_read_test.go` 带 `pg` tag，未设 `PPTS_TEST_DATABASE` 时 SKIP，符合仓库“环境依赖型测试必须 Skip”惯例）。
-- **B4-M6b 将“阶段/受影响页”升为服务端持久化列【待实施/可选增强】**：若后续需要按阶段/受影响页**排序、筛选或由 API 直接返回**，则需迁移 0026 新增 `jobs.phase`/`affected_pages`（或独立表）并先在 B5 前定口径。本轮 M6a 已用 `input_snapshot` + `job_steps` 覆盖**展示**需求，故 M6b 为**可选增强、非阻塞项**。
+- **B4-M6b 将“阶段/受影响页”升为服务端持久化列 + 排序/筛选【已实施】**（口径由用户裁定：**完整闭环 = 落列 + 排序筛选 UI**，不接受“只落列、无消费者”）：
+  - **口径与动机**：M6a 已用 `input_snapshot` + `job_steps` 覆盖**展示**，故 M6b 的价值只在“可由服务端**排序/筛选**”。若只加列而无人消费，就正是本仓库明令要主动扫的“后端有、前端没用”反模式（§1.1 遗留扫描口径）。因此本里程碑**同时**交付：迁移 0026 + 排序/筛选端点 + 任务列表 UI 控件。
+  - **迁移 `0026_jobs_phase_scope.sql`**（唯一 schema 变更）：
+    - 新增 `jobs.phase text NOT NULL DEFAULT ''`、`jobs.affected_pages jsonb NOT NULL DEFAULT '[]'::jsonb`。
+    - 回填（幂等，仅填空白）：`phase` = 每个任务 `job_steps` 中 `updated_at` 最新者对应的 `step_type`（`DISTINCT ON (job_id)`）；`affected_pages` 按 `kind` 从 `input_snapshot` 取 —— `narration` → `slides[].slideId`、`script_draft` → `slideIds`，全部以 `jsonb_typeof(...) = 'array'` 守卫，非 JSON 对象则跳过（`input_snapshot ~ '^[[:space:]]*\{'`）。
+    - **刻意与 Go 逐字一致**：`narration` 只取 `slides[].slideId`、**不用 `segmentIds`**（后者只决定 `Kind='segments'`）—— 否则“范围”列与“受影响页数”排序会互相矛盾。
+    - 索引 `idx_jobs_phase(tenant_id, phase, created_at DESC)`、`idx_jobs_pages(tenant_id, (jsonb_array_length(affected_pages)))`。
+    - **不并入核心投影**：`jobSelectColumns` 是单一共享列清单（8 处 SQL + `ppts_claim_next_job` 的 `RETURNS TABLE` 显式列举列共用），往里加列必须重建调度函数（先例：`0018_job_traceparent.sql`）→ 新列**只出现在列表查询**里（正是本里程碑的目的：排序/筛选所需的查询列本不必进核心投影）。
+    - 迁移验证：本机无 docker/psql/pg_ctl/initdb，无法真跑 → 用 `sqlglot` Postgres 方言做**语法校验**（6/6 通过），并以全量 28 个迁移做基线对比排除误报（`0013/0016/0017/0018` 的 FAIL 系 sqlglot 不支持 `LANGUAGE sql` 属性，属解析器限制而非真错）。
+  - **后端 `internal/pipeline`**：
+    - 新增 `scope.go`：`ScopeOf(kind, snapshot) Scope` / `AffectedPagesOf(...)` —— **快照解析的唯一实现**（自 `internal/api/jobdetail.go` 下沉；M6b 之后“落库”与“展示”必须同源）。`AffectedPages` 始终非 nil，**不设条数上限**（上限属传输层）。
+    - `model.go`：新增 `JobFilter{ProjectID,Phase,Sort,Desc}` / `JobPageRow{Job,Phase,PageCount}` / `ErrBadJobCursor`；**删除 `JobStepSummary{Phase,Total,Counts,LastAt}`**（阶段改由 `jobs.phase` 承担；`LastAt` 全仓无消费者，属死字段）。
+    - `postgres.go`：`Create` 写入 `affected_pages`（`mustJSONArray(AffectedPagesOf(...))`，`$8::jsonb`）；**`MarkStep` 在与步骤写入同一事务内**维护 `jobs.phase`（`UPDATE jobs SET phase=$3 WHERE id=$1 AND tenant_id=$2 AND phase <> $3`）；扫描侧抽 `jobScanBuf.dest()/job()` 供 `scanJob` 与 `scanJobPageRow` 复用，避免维护两份 17 列顺序。
+    - **`MarkStep` 刻意不更新 `jobs.updated_at`**：该列供 `EventsSince` 增量轮询，写阶段若连带改它会污染轮询游标。
+    - 新增 `ListPage(ctx, tenantID, f, cursor, pageSize) ([]JobPageRow, string, error)`：排序键**白名单** `created|updated|phase|pages` → `created_at`/`updated_at`/`phase`/`jsonb_array_length(affected_pages)`，未知值退回 `created_at`（防注入）；keyset 游标 `base64(值 \x1f id)`，行值比较含显式类型转换（`::timestamptz`/`::text`/`::int`/`::uuid`），`pageSize+1` 探测 next。另新增 `PhaseCounts`。
+  - **端点 `GET /jobs/page`**（`internal/api/joblist.go`，挂在 `server.go` 的 `registerJobDetailRoutes` 之后）：
+    - 参数 `phase`（筛）/`sort`/`dir`/`limit`/`cursor`；非法 `sort`/`dir`/`limit` → **400**；store 未实现 `JobPager` → **501**（A26）；非法游标 → **400**；其余 → 500。
+    - 每行 `{jobId, projectId, kind, state, attempt, progressPercent, createdAtUnix, updatedAtUnix, phase, inputSnapshot}`；另带 `phaseCounts`（读取失败只置 `phaseCountsError:"load_failed"`，**不拖垮列表**）。
+    - 上限 `maxJobPageSize=100` / 默认 20；沿用 M6a 口径**不透 `result_ref` 内部对象键**。
+    - **不加角色门禁**（与 `JobService.Get/List` 同级，避免 viewer“能进列表、点开必 403”的假能力 A22）。
+  - **前端**：
+    - `web/src/api.ts`：新增 `JobListSort`/`JobListRow`/`JobsPageResult`/`getJobsPage`；`JobExtras` **收窄为 `{scope}`**（`stepTotal`/`stepCounts`/`stepsError` 前端从未消费，随契约一并删除，消除 M6a 遗留的双份阶段推导）。
+    - `web/src/pages/Jobs.tsx`：数据源改 `getJobsPage`；新增 `.jobs-filters` 控件（阶段下拉**带计数**、排序下拉、升/降序切换），条件**写入 URL**（刷新/分享后视图一致，对齐设计方案 §206）；空态区分「无任务」与「筛选后无结果」；`applyJobUpdate` 改为**展开合并** `{...jobs[idx], ...updated}`（流式消息来自 proto `Job`、**不含 phase**，整行替换会清空阶段列）。
+    - **顺带修掉一个既有真缺陷**：`job.state.toLowerCase()` 得到 `'job_state_queued'`，而 CSS 变体是 `.state-tag.queued` → **状态标签配色从未生效**；新增 `stateClass()` 统一转换（`grep job_state styles.css theme.css` 无任何结果可证）。
+    - `jobs.extrasLoadFailed` 措辞改为「范围读取失败：{msg}」；中英各 **737** 键（双向 parity 校验通过）。
+    - 样式：`styles.css` 新增 `.jobs-filters`/`.filter-field`/`.filter-toggle`（紧随 `.pagination` 分组），`theme.css` 补浅色覆盖。
+  - **测试**：`internal/pipeline/scope_test.go`（**无 DB** 纯函数套件：`ScopeOf` 13 子用例含「narration 页列表只看 slides、不含 segmentIds」「slides 非数组退回 unknown（宁可不识别也不猜页数）」、250 页不被传输层截断、游标往返/拒垃圾、排序键映射不回声输入）；`steps_read_test.go`（`//go:build pg`）新增 `TestMarkStepMaintainsJobsPhase`/`TestCreateWritesAffectedPages`/`TestListPageFiltersSortsAndPaginates`/`TestPhaseCountsGroupsByPhase`；`internal/api/joblist_test.go` 新增 8 例（参数校验 400、默认/asc 方向透传、payload 形态、计数失败保留列表、非法游标 400、存储故障 500、未实现 501）；`jobdetail_test.go` 重写（`TestScopeFor*` 截断语义 + `publicJobsSummary` 契约收窄断言「顶层只应有 `jobs` 一个键」）。
+    - PG 相关用例按仓库惯例 `t.Skip`（未设 `PPTS_TEST_DATABASE` 时输出 skip 而非 FAIL）。
+  - **验证**：`tsc -b` ✅ + `vite build` ✅（55 modules，CSS 49.06 → 50.01 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（**0 FAIL**；全量 14 项 SKIP 仍全为环境依赖型，`internal/api` 0 SKIP）。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
 
 ### B5 可选增强（独立立项）

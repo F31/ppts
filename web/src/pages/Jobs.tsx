@@ -2,20 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   cancelJob,
   getJobDetail,
+  getJobsPage,
   getJobsSummary,
-  listJobsPage,
   retryFailedJob,
   watchJobEvents,
   type ClientIdentity,
   type JobDetail,
   type JobEventMessage,
   type JobExtras,
-  type JobPage,
-  type JobScope
+  type JobListRow,
+  type JobListSort,
+  type JobScope,
+  type JobsPageResult
 } from '../api';
 import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
-import { Link, useRoute } from '../router';
+import { Link, navigate, useRoute } from '../router';
 import { jobKindKey, jobScopeKindKey, jobStateKey, jobStepStateKey, jobStepTypeKey, type Job, type JobState } from '../types';
 
 const activeStates: JobState[] = [
@@ -31,25 +33,48 @@ const canRetry: JobState[] = ['JOB_STATE_FAILED', 'JOB_STATE_UNKNOWN_PROVIDER_RE
 
 const PAGE_SIZES = [10, 20, 30];
 
+// worker 实际写入的步骤类型（app/ingest.go "pages"、app/narration.go "tts_segment"/"timeline"、
+// app/export.go "export"）。step_type 在库内是自由文本，未登记的取值在筛选里按原文出现，不猜测翻译。
+const KNOWN_STEP_TYPES = ['pages', 'tts_segment', 'timeline', 'export'];
+
+const SORT_KEYS: JobListSort[] = ['created', 'updated', 'phase', 'pages'];
+
+// stateClass：'JOB_STATE_QUEUED' → 'queued'。
+// CSS 变体是 .state-tag.queued / .retry_wait / .unknown_provider_result 等；
+// 此前直接 `job.state.toLowerCase()` 会得到 'job_state_queued'，永远匹配不到任何规则，
+// 于是状态标签一直只有默认外观、没有任何状态配色。
+const stateClass = (state: JobState) => state.replace(/^JOB_STATE_/, '').toLowerCase();
+
 export function Jobs({ identity }: { identity: ClientIdentity }) {
   const route = useRoute();
   const { t } = useI18n();
   const selectedJobId = route.query.get('job');
-  const [pages, setPages] = useState<JobPage[]>([]);
+  const [pages, setPages] = useState<JobsPageResult[]>([]);
   const [pageIndex, setPageIndex] = useState(0);
   const [pageSize, setPageSize] = useState(10);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [selected, setSelected] = useState<Job | null>(null);
+  const [selected, setSelected] = useState<JobListRow | null>(null);
   const [live, setLive] = useState(false);
-  // B4-M6a：范围/阶段（批量 summary）与详情（步骤/traceId）。
+  // B4-M6a/M6b：范围（批量 summary）与阶段（列表行的 phase）、详情（步骤/traceId）。
   // 失败一律显式报错 + 重试入口，不落成"没有数据"（A26）。
   const [extras, setExtras] = useState<Record<string, JobExtras>>({});
   const [extrasError, setExtrasError] = useState('');
-  const [extrasNote, setExtrasNote] = useState('');
+  const [phaseCounts, setPhaseCounts] = useState<Record<string, number> | null>(null);
+  const [phaseCountsError, setPhaseCountsError] = useState('');
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [detailError, setDetailError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
+
+  // 筛选/排序条件写在 URL（对齐设计方案 §206「筛选条件写 URL」），因此刷新/分享链接能保持视图。
+  // 这里都收敛成原始字符串再使用：route.query 每次渲染都是新对象，直接作依赖会反复触发请求。
+  const phaseFilter = route.query.get('phase') ?? '';
+  const rawSort = route.query.get('sort') ?? '';
+  const sortKey: JobListSort = (SORT_KEYS as string[]).includes(rawSort) ? (rawSort as JobListSort) : 'created';
+  const rawDir = route.query.get('dir');
+  // 方向缺省值随排序键而变：时间类「新→旧」(desc)，阶段/页数类「小→大」(asc) 更符合直觉。
+  const sortDir: 'asc' | 'desc' =
+    rawDir === 'asc' || rawDir === 'desc' ? rawDir : sortKey === 'phase' || sortKey === 'pages' ? 'asc' : 'desc';
 
   const currentPage = pages[pageIndex];
   const currentJobs = currentPage?.jobs ?? [];
@@ -57,20 +82,44 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   // 依赖用「ID 串」而非数组：currentJobs 在无数据时是每渲染新建的空数组，直接作依赖会反复触发请求。
   const pageJobKey = useMemo(() => currentJobs.map((job) => job.jobId).join(','), [currentJobs]);
 
-  // 加载第一页（初始化 / 切换每页数量时重置分页）。
+  const updateQuery = (patch: Record<string, string>) => {
+    const query = new URLSearchParams(route.query);
+    Object.entries(patch).forEach(([key, value]) => {
+      if (value) query.set(key, value);
+      else query.delete(key);
+    });
+    const qs = query.toString();
+    navigate(qs ? `/jobs?${qs}` : '/jobs');
+  };
+
+  const fetchPage = useCallback(
+    (cursor?: string) =>
+      getJobsPage(identity, {
+        phase: phaseFilter || undefined,
+        sort: sortKey,
+        desc: sortDir === 'desc',
+        pageSize,
+        cursor
+      }),
+    [identity, phaseFilter, sortKey, sortDir, pageSize]
+  );
+
+  // 加载第一页（初始化 / 筛选、排序、每页数量变化时重置分页）。
   const loadFirst = useCallback(async () => {
     setLoading(true);
     setError('');
-    try {
-      const page = await listJobsPage(identity, { pageSize });
-      setPages([page]);
-      setPageIndex(0);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
-    } finally {
-      setLoading(false);
+    const { data, error: loadError } = await settle(() => fetchPage());
+    setLoading(false);
+    if (!data) {
+      setPages([]);
+      setError(describeApiError(loadError, t('jobs.loadFailed'), t));
+      return;
     }
-  }, [identity, pageSize, t]);
+    setPages([data]);
+    setPageIndex(0);
+    setPhaseCounts(data.phaseCounts ?? null);
+    setPhaseCountsError(data.phaseCountsError ? t('jobs.phaseCountsFailed') : '');
+  }, [fetchPage, t]);
 
   useEffect(() => {
     void loadFirst();
@@ -79,42 +128,42 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   // 重新拉取当前已加载的所有页（保持分页位置），用于轮询与手动刷新。
   const refreshLoaded = useCallback(async () => {
     setError('');
-    try {
-      const result: JobPage[] = [];
-      let cursor = '';
-      for (let i = 0; i <= pageIndex; i++) {
-        const page = await listJobsPage(identity, { cursor, pageSize });
-        result.push(page);
-        cursor = page.nextCursor;
-        if (!cursor) break;
+    const result: JobsPageResult[] = [];
+    let cursor: string | undefined;
+    for (let i = 0; i <= pageIndex; i++) {
+      const { data, error: loadError } = await settle(() => fetchPage(cursor));
+      if (!data) {
+        setError(describeApiError(loadError, t('jobs.loadFailed'), t));
+        return;
       }
-      setPages(result);
-      setPageIndex((current) => Math.min(current, Math.max(result.length - 1, 0)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
+      result.push(data);
+      cursor = data.nextCursor || undefined;
+      if (!cursor) break;
     }
-  }, [identity, pageIndex, pageSize, t]);
+    setPages(result);
+    setPageIndex((current) => Math.min(current, Math.max(result.length - 1, 0)));
+    if (result[0]) {
+      setPhaseCounts(result[0].phaseCounts ?? null);
+      setPhaseCountsError(result[0].phaseCountsError ? t('jobs.phaseCountsFailed') : '');
+    }
+  }, [fetchPage, pageIndex, t]);
 
-  // 批量取当前页任务的范围/阶段/步骤计数（单次请求，避免逐任务查询）。
+  // 批量取当前页任务的范围（单次请求，避免逐任务查询）。
   const loadExtras = useCallback(async () => {
     if (!pageJobKey) {
       setExtras({});
       setExtrasError('');
-      setExtrasNote('');
       return;
     }
     const { data, error: loadError } = await settle(() => getJobsSummary(identity, pageJobKey.split(',')));
     if (!data) {
-      // 三个状态必须可区分：加载失败（本分支）/ 范围缺失（单元格显示 —）/ 步骤读取失败（extrasNote）。
+      // 两种状态必须可区分：加载失败（本分支，显式报错 + 重试）/ 范围缺失（单元格显示 —）。
       setExtras({});
       setExtrasError(describeApiError(loadError, t('jobs.extrasLoadFailed'), t));
-      setExtrasNote('');
       return;
     }
     setExtrasError('');
     setExtras(data.jobs ?? {});
-    // summary 里 stepsError 表示"步骤聚合不可用"：阶段列会为空，界面须说明原因而不是留白。
-    setExtrasNote(data.stepsError ? t('jobs.stepsLoadFailed', { msg: t('err.unavailable') }) : '');
   }, [identity, pageJobKey, t]);
 
   useEffect(() => {
@@ -128,7 +177,8 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
         const idx = page.jobs.findIndex((j) => j.jobId === updated.jobId);
         if (idx === -1) return page;
         const jobs = page.jobs.slice();
-        jobs[idx] = updated;
+        // 展开顺序很重要：流式消息来自 proto Job，**不含 phase**；若整行替换会把阶段列清空。
+        jobs[idx] = { ...jobs[idx], ...updated };
         return { ...page, jobs };
       })
     );
@@ -192,7 +242,7 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
       controllers.forEach((c) => c.abort());
       setLive(false);
     };
-  }, [watchKey, identity, applyJobUpdate]);
+  }, [identity, watchKey, applyJobUpdate]);
 
   // 深链接选中任务的详情（可能不在当前页）。
   useEffect(() => {
@@ -245,15 +295,14 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
     }
     setLoading(true);
     setError('');
-    try {
-      const page = await listJobsPage(identity, { cursor: currentPage.nextCursor, pageSize });
-      setPages((prev) => [...prev, page]);
-      setPageIndex(nextIndex);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
-    } finally {
-      setLoading(false);
+    const { data, error: loadError } = await settle(() => fetchPage(currentPage.nextCursor));
+    setLoading(false);
+    if (!data) {
+      setError(describeApiError(loadError, t('jobs.loadFailed'), t));
+      return;
     }
+    setPages((prev) => [...prev, data]);
+    setPageIndex(nextIndex);
   };
 
   const goPrev = () => {
@@ -261,22 +310,22 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   };
 
   const onCancel = async (job: Job) => {
-    try {
-      await cancelJob(identity, job.jobId);
-      setError('');
-      void refreshLoaded();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('jobs.cancelFailed'));
+    const { error: cancelError } = await settle(() => cancelJob(identity, job.jobId));
+    if (cancelError) {
+      setError(describeApiError(cancelError, t('jobs.cancelFailed'), t));
+      return;
     }
+    setError('');
+    void refreshLoaded();
   };
 
   const onRetry = async (job: Job) => {
-    try {
-      await retryFailedJob(identity, job.jobId);
-      void refreshLoaded();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('jobs.retryFailed'));
+    const { error: retryError } = await settle(() => retryFailedJob(identity, job.jobId));
+    if (retryError) {
+      setError(describeApiError(retryError, t('jobs.retryFailed'), t));
+      return;
     }
+    void refreshLoaded();
   };
 
   const activeCount = allJobs.filter((job) => activeStates.includes(job.state)).length;
@@ -284,6 +333,17 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
 
   // 步骤类型是库内自由文本：未登记的类型显示原文（不做猜测性翻译）。
   const stepTypeLabel = (stepType: string) => (jobStepTypeKey[stepType] ? t(jobStepTypeKey[stepType]) : stepType);
+
+  // 阶段筛选项 = 已知取值 ∪ 后端实际统计到的取值（含空阶段），未登记的按原文出现。
+  const phaseOptions = (() => {
+    const values = new Set<string>(Object.keys(phaseCounts ?? {}));
+    KNOWN_STEP_TYPES.forEach((value) => values.add(value));
+    return Array.from(values).map((value) => ({
+      value,
+      label: value === '' ? t('jobs.phaseNone') : stepTypeLabel(value),
+      count: phaseCounts?.[value]
+    }));
+  })();
 
   // 范围摘要：以「性质 + 页数」表达，不把内部对象键或未识别的枚举当正常取值渲染。
   const scopeText = (scope: JobScope | undefined): string => {
@@ -362,7 +422,41 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
           </div>
         </header>
 
-        {/* 范围/阶段读取失败：显式报错 + 重试，不把失败渲染成空白单元格（A26）。 */}
+        {/* B4-M6b：阶段筛选 + 排序。条件写入 URL，刷新/分享后视图一致。 */}
+        <div className="jobs-filters">
+          <label className="filter-field">
+            <span>{t('jobs.filterPhase')}</span>
+            <select value={phaseFilter} onChange={(e) => updateQuery({ phase: e.target.value })}>
+              <option value="">{t('jobs.filterAllPhases')}</option>
+              {phaseOptions.map((option) => (
+                <option key={option.value || '__none__'} value={option.value}>
+                  {option.count === undefined ? option.label : `${option.label} (${option.count})`}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="filter-field">
+            <span>{t('jobs.sortBy')}</span>
+            <select value={sortKey} onChange={(e) => updateQuery({ sort: e.target.value, dir: '' })}>
+              <option value="created">{t('jobs.sortCreated')}</option>
+              <option value="updated">{t('jobs.sortUpdated')}</option>
+              <option value="phase">{t('jobs.sortPhase')}</option>
+              <option value="pages">{t('jobs.sortPages')}</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="filter-toggle"
+            title={t('jobs.sortDirHint')}
+            onClick={() => updateQuery({ dir: sortDir === 'desc' ? 'asc' : 'desc' })}
+          >
+            {sortDir === 'desc' ? t('jobs.sortDesc') : t('jobs.sortAsc')}
+          </button>
+          {/* 阶段计数读取失败不拖垮列表，但要明确说明（A26）。 */}
+          {phaseCountsError && <small className="warn-note">{phaseCountsError}</small>}
+        </div>
+
+        {/* 范围读取失败：显式报错 + 重试，不把失败渲染成空白单元格（A26）。 */}
         {extrasError && (
           <div className="load-failure">
             <p className="form-error">{extrasError}</p>
@@ -371,12 +465,11 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
             </button>
           </div>
         )}
-        {!extrasError && extrasNote && <p className="panel-note">{extrasNote}</p>}
 
         {loading && currentJobs.length === 0 ? (
           <p className="empty-state">{t('common.loading')}</p>
         ) : currentJobs.length === 0 ? (
-          <p className="empty-state">{t('jobs.empty')}</p>
+          <p className="empty-state">{jobsEmptyText(t, phaseFilter)}</p>
         ) : (
           <table className="data-table">
             <thead>
@@ -409,11 +502,11 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
                       )}
                     </td>
                     <td title={t('jobs.colPhaseHint')}>
-                      {/* 阶段由后端按「最近更新的步骤」推导；无步骤时为空（显示 —，不伪造阶段）。 */}
-                      {extra?.phase ? stepTypeLabel(extra.phase) : t('common.none')}
+                      {/* 阶段来自 jobs.phase（与后端排序/筛选同一来源）；尚无步骤时为空（显示 —，不伪造阶段）。 */}
+                      {job.phase ? stepTypeLabel(job.phase) : t('common.none')}
                     </td>
                     <td>
-                      <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
+                      <span className={`state-tag ${stateClass(job.state)}`}>{t(jobStateKey[job.state])}</span>
                       {job.attempt > 1 && <small className="cell-sub block-sub">{`${t('jobs.colAttempt')} ${job.attempt}`}</small>}
                       {job.lastError && <small className="cell-sub block-sub">{t('jobs.failureReason', { msg: job.lastError.message })}</small>}
                     </td>
@@ -450,6 +543,12 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
       </section>
     </div>
   );
+}
+
+// jobsEmptyText：区分「没有任务」与「筛选后没有结果」——后者必须提示是筛选造成的，
+// 否则用户会以为任务丢了。
+function jobsEmptyText(t: (key: string) => string, phaseFilter: string): string {
+  return phaseFilter ? t('jobs.emptyFiltered') : t('jobs.empty');
 }
 
 // JobDetailPanel 渲染单个任务详情（B4-M6a 扩充：范围/受影响页/输入版本/traceId/执行步骤）。
@@ -520,7 +619,7 @@ function JobDetailPanel({
         <div>
           <dt>{t('jobs.fieldState')}</dt>
           <dd>
-            <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
+            <span className={`state-tag ${stateClass(job.state)}`}>{t(jobStateKey[job.state])}</span>
           </dd>
         </div>
         <div>

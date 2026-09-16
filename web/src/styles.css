@@ -271,6 +271,13 @@ button, textarea, input { font: inherit; }
 .pagination .page-size select { width: auto; }
 .pagination .page-indicator { font-size: 13px; color: #c7d3e4; min-width: 64px; text-align: center; }
 .pagination button { white-space: nowrap; }
+/* 任务中心：阶段筛选 / 排序（B4-M6b）。条件写 URL，刷新与分享链接视图一致。 */
+.jobs-filters { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; }
+.filter-field { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #9fb0c8; white-space: nowrap; }
+.filter-field select { width: auto; padding: 6px 8px; }
+/* 升序/降序两段文案长度不一致，给个最小宽度免得切换时整行抖动。 */
+.filter-toggle { min-width: 92px; }
+.jobs-filters .warn-note { font-size: 12px; }
 
 .button-primary { border: 0; border-radius: 999px; padding: 9px 16px; color: #07111f; background: #67e8f9; font-weight: 800; text-decoration: none; cursor: pointer; white-space: nowrap; }
 .button-ghost { border: 0; border-radius: 999px; padding: 9px 16px; color: #e6eefc; background: rgba(255,255,255,.08); text-decoration: none; cursor: pointer; font-weight: 700; white-space: nowrap; }

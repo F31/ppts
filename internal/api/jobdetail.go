@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,7 +25,12 @@ import (
 //   - 执行步骤：`job_steps` 表（migrations/0001_init.sql:74）已存在，此前只有写入路径（MarkStep）
 //     与内部按 step_key 取 result_ref。
 //
-// 因此以上信息**全部可读、无需新增列或迁移 0026**（M6b 只保留真正没有数据的部分）。
+// 因此展示所需的字段**全部可读、当时无需新增列**。
+//
+// B4-M6b 的补充：展示之外还需要**按阶段/受影响页数排序与筛选**，而「受影响页」在 SQL 内无法从
+// text 快照解析，故迁移 0026 新增 jobs.phase 与 jobs.affected_pages 两列（MarkStep 同事务维护
+// phase、Create 提取 affected_pages）。两列是**查询用的投影**，展示仍以快照推导为准——
+// 二者共用 pipeline.ScopeOf / pipeline 的同一份解析逻辑，不会出现两个答案。
 //
 // 权限：与 `JobService.Get/List` 同级（任何已认证成员 + 租户隔离），**不加角色门禁**。
 // 任务中心本身属 project.read（viewer 可见），若此处要求 editor，会对 viewer 造出
@@ -42,25 +46,35 @@ const (
 	maxScopePages = 200
 )
 
-// jobScope 是从任务输入快照推导出的「范围」摘要。
-// 采用推导而非新增列：快照已是权威来源，新增列会与之双写并引入一致性风险。
-type jobScope struct {
-	// Kind：project=全篇 | pages=指定页 | segments=指定分段 | export=导出 | unknown=未识别
-	Kind          string   `json:"kind"`
-	PageCount     int      `json:"pageCount"`
-	AffectedPages []string `json:"affectedPages"`
-	// InputRevision 是快照记录的输入版本（讲稿 RevisionNo / 每页 scriptRevision），0 表示快照未记录。
-	InputRevision int64  `json:"inputRevision"`
-	Format        string `json:"format,omitempty"` // kind=export 时的产物格式
+// scopeFor 推导任务的「范围」，并按传输层上限截断受影响页数组（B4-M6b）。
+//
+// 推导本身在 pipeline.ScopeOf：落库的 jobs.affected_pages 与界面上的「范围」必须来自同一份解析
+// 逻辑，否则同一任务的范围列与「按受影响页数排序」会互相矛盾。
+// 截断只作用于返回的数组，PageCount 始终是完整计数——两者不一致即表示已截断，前端据此提示。
+func scopeFor(kind, snapshot string) pipeline.Scope {
+	s := pipeline.ScopeOf(pipeline.JobKind(kind), snapshot)
+	if len(s.AffectedPages) > maxScopePages {
+		s.AffectedPages = s.AffectedPages[:maxScopePages]
+	}
+	return s
 }
 
 // JobInspector 是任务扩展信息所需的读取能力（由 pipeline.PGStore 实现）。
 // store 未实现时端点返回明确的 Unimplemented / stepsError，而不是让界面显示
 // 「没有步骤」的空态（A26：失败必须可见且可解释）。
+//
+// 注意（B4-M6b）：这里**不含** StepSummaries——阶段已由 jobs.phase 承担（见 /jobs/page），
+// 保留一份「由 job_steps 推导阶段」的并行实现正是要避免的双源问题。
 type JobInspector interface {
 	ListSteps(ctx context.Context, tenantID, jobID string) ([]pipeline.JobStep, error)
-	StepSummaries(ctx context.Context, tenantID string, jobIDs []string) (map[string]pipeline.JobStepSummary, error)
 	GetMany(ctx context.Context, tenantID string, ids []string) ([]*pipeline.Job, error)
+}
+
+// JobPager 是任务列表的筛选/排序/分页能力（B4-M6b），由 pipeline.PGStore 实现。
+// 未实现时 /jobs/page 明确返回 501，而不是退化成「没有筛选这回事」（A26）。
+type JobPager interface {
+	ListPage(ctx context.Context, tenantID string, f pipeline.JobFilter, cursor string, pageSize int) ([]pipeline.JobPageRow, string, error)
+	PhaseCounts(ctx context.Context, tenantID, projectID string) (map[string]int, error)
 }
 
 // registerJobDetailRoutes 挂载任务详情/摘要原生 HTTP 端点（B4-M6a）。
@@ -97,7 +111,7 @@ func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 		"jobId":   job.ID,
 		"kind":    string(job.Kind),
 		"traceId": job.TraceParent,
-		"scope":   jobScopeFromSnapshot(string(job.Kind), job.InputSnapshot),
+		"scope":   scopeFor(string(job.Kind), job.InputSnapshot),
 	}
 	inspector, ok := jobs.(JobInspector)
 	if !ok {
@@ -139,7 +153,11 @@ func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 	writeJSON(w, http.StatusOK, body)
 }
 
-// publicJobsSummary 批量返回任务的「范围 + 阶段 + 步骤计数」，供任务列表的两列展示。
+// publicJobsSummary 批量返回任务的「范围」，供任务列表的「范围」列与详情面板回退使用（B4-M6a）。
+//
+// 契约收窄（B4-M6b）：原先还返回 phase / stepTotal / stepCounts，但前端从未消费这三项
+// （阶段改由 /jobs/page 提供；步骤计数只在任务详情里展示）。留着不消费的字段，等于把一个
+// 「看起来有、实际不用」的能力摆给调用方，故一并去掉。
 func publicJobsSummary(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
@@ -169,33 +187,9 @@ func publicJobsSummary(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 	}
 	out := make(map[string]any, len(list))
 	for _, job := range list {
-		out[job.ID] = map[string]any{
-			"scope":      jobScopeFromSnapshot(string(job.Kind), job.InputSnapshot),
-			"phase":      "",
-			"stepTotal":  0,
-			"stepCounts": map[string]int{},
-		}
+		out[job.ID] = map[string]any{"scope": scopeFor(string(job.Kind), job.InputSnapshot)}
 	}
 	// 请求但未返回的 ID（并发删除等）不补占位：前端按缺失显示「—」，不伪造范围。
-	steps, err := inspector.StepSummaries(r.Context(), principal.TenantID, ids)
-	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"jobs": out, "stepsError": "load_failed"})
-		return
-	}
-	for id, sum := range steps {
-		entry, ok := out[id].(map[string]any)
-		if !ok {
-			continue
-		}
-		// Phase 由「最近更新的步骤类型」推导（job_steps 无阶段列），无步骤时为空串。
-		entry["phase"] = sum.Phase
-		entry["stepTotal"] = sum.Total
-		counts := make(map[string]int, len(sum.Counts))
-		for state, n := range sum.Counts {
-			counts[string(state)] = n
-		}
-		entry["stepCounts"] = counts
-	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobs": out})
 }
 
@@ -221,109 +215,4 @@ func parseJobIDList(raw string) []string {
 		out = append(out, id)
 	}
 	return out
-}
-
-// jobScopeFromSnapshot 按任务种类解析输入快照，推导范围/受影响页/输入版本。
-// 解析失败或种类未知时返回 kind=unknown（**不报错**）：范围不可识别不应让整个详情接口失败，
-// 前端据此显示「—」而不是伪造范围。
-func jobScopeFromSnapshot(kind, snapshot string) jobScope {
-	out := jobScope{Kind: "unknown", AffectedPages: []string{}}
-	if strings.TrimSpace(snapshot) == "" {
-		return out
-	}
-	tally := newPageTally()
-	switch pipeline.JobKind(kind) {
-	case pipeline.KindNarration:
-		var snap struct {
-			Slides []struct {
-				SlideID        string `json:"slideId"`
-				ScriptRevision int64  `json:"scriptRevision"`
-			} `json:"slides"`
-			SegmentIDs []string `json:"segmentIds"`
-		}
-		if err := json.Unmarshal([]byte(snapshot), &snap); err != nil {
-			return out
-		}
-		// 局部重生成（segmentIds 非空）与按页生成是两种范围。
-		out.Kind = "pages"
-		if len(snap.SegmentIDs) > 0 {
-			out.Kind = "segments"
-		}
-		for _, s := range snap.Slides {
-			tally.add(s.SlideID)
-			if s.ScriptRevision > out.InputRevision {
-				out.InputRevision = s.ScriptRevision
-			}
-		}
-	case pipeline.KindScriptDraft:
-		var snap struct {
-			SlideIDs   []string `json:"slideIds"`
-			RevisionNo int64    `json:"revisionNo"`
-		}
-		if err := json.Unmarshal([]byte(snapshot), &snap); err != nil {
-			return out
-		}
-		out.InputRevision = snap.RevisionNo
-		if len(snap.SlideIDs) == 0 {
-			// 空 = 全部页面（app.ScriptDraftSnapshot.SlideIDs 注释）。
-			out.Kind = "project"
-			return out
-		}
-		out.Kind = "pages"
-		for _, id := range snap.SlideIDs {
-			tally.add(id)
-		}
-	case pipeline.KindParse:
-		var snap struct {
-			RevisionNo int64 `json:"revisionNo"`
-		}
-		if err := json.Unmarshal([]byte(snapshot), &snap); err != nil {
-			return out
-		}
-		// 解析面向整份源文件（全篇）。
-		out.Kind = "project"
-		out.InputRevision = snap.RevisionNo
-	case pipeline.KindExport:
-		var snap struct {
-			Format      string   `json:"format"`
-			PagePNGKeys []string `json:"pagePngKeys"`
-		}
-		if err := json.Unmarshal([]byte(snapshot), &snap); err != nil {
-			return out
-		}
-		out.Kind = "export"
-		out.Format = snap.Format
-		// pagePngKeys 是对象键（内部存储键），只用于计数，不作为页面 ID 透出。
-		out.PageCount = len(snap.PagePNGKeys)
-		return out
-	default:
-		return out
-	}
-	out.PageCount = tally.count
-	out.AffectedPages = tally.pages
-	return out
-}
-
-// pageTally 统计去重后的页面数，并按 maxScopePages 上限保留页面 ID；
-// count 始终为完整计数，故 pageCount > len(affectedPages) 即表示数组已截断。
-type pageTally struct {
-	seen  map[string]bool
-	pages []string
-	count int
-}
-
-func newPageTally() *pageTally {
-	return &pageTally{seen: make(map[string]bool), pages: []string{}}
-}
-
-func (t *pageTally) add(id string) {
-	id = strings.TrimSpace(id)
-	if id == "" || t.seen[id] {
-		return
-	}
-	t.seen[id] = true
-	t.count++
-	if len(t.pages) < maxScopePages {
-		t.pages = append(t.pages, id)
-	}
 }

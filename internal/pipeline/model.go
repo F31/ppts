@@ -147,16 +147,27 @@ type JobStep struct {
 	UpdatedAt time.Time
 }
 
-// JobStepSummary 是某任务内步骤的聚合视图（B4-M6a），供任务列表展示"阶段"与步骤计数。
+// JobFilter 是任务列表的筛选与排序条件（B4-M6b）。
 //
-// Phase 取**最近更新的步骤类型**：job_steps 只记录步骤的 pending/success/failed/skipped 状态，
-// 库里没有任何"当前阶段"列，故阶段只能由步骤时间序推导。无步骤时 Phase 为空串
-// （调用方应显示"—"，不要伪造成某个阶段）。
-type JobStepSummary struct {
-	Phase  string
-	Total  int
-	Counts map[JobStepState]int
-	LastAt time.Time
+// Sort 取值：created（默认）| updated | phase | pages（受影响页数）。
+// 未知取值退回 created：api 侧以白名单校验并返回 400，让用户看到明确反馈而不是被静默忽略。
+type JobFilter struct {
+	ProjectID string
+	// Phase 按 jobs.phase 精确匹配；空串表示不筛选。
+	Phase string
+	Sort  string
+	Desc  bool
+}
+
+// JobPageRow 是任务列表页的一行：核心 Job 投影 + 列表所需的派生列（B4-M6b）。
+//
+// Phase / PageCount 分别读自 jobs.phase 与 jobs.affected_pages，二者同属**控制台查询列**，
+// 刻意不并入 jobSelectColumns——把它加进核心投影会连带要求重建 0018 里的
+// ppts_claim_next_job 调度函数（见 0018 的教训），而调度侧根本不需要这两列。
+type JobPageRow struct {
+	Job       *Job
+	Phase     string
+	PageCount int // 受影响页/段数（affected_pages 的长度），用于排序与游标
 }
 
 // ErrNoJob 表示符合条件的可领取任务不存在。
@@ -173,6 +184,9 @@ var ErrCancelRequested = errors.New("pipeline: cancel requested")
 
 // ErrJobNotFound 表示任务不存在或越权。
 var ErrJobNotFound = errors.New("pipeline: job not found")
+
+// ErrBadJobCursor 表示列表游标非法（调用方应映射为 400，而不是笼统的 500）。
+var ErrBadJobCursor = errors.New("pipeline: invalid job cursor")
 
 // ErrJobNotCancelable 表示任务当前状态不可取消。
 var ErrJobNotCancelable = errors.New("pipeline: job not cancelable")

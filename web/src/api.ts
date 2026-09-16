@@ -639,12 +639,10 @@ export type JobScope = {
 };
 
 // JobExtras 是列表侧的单任务扩展信息（summary 端点）。
+// B4-M6b 收窄：只回范围。阶段改由 /jobs/page 的 jobs[].phase 提供（唯一来源 jobs.phase），
+// 步骤计数只在任务详情里展示——原先的 phase/stepTotal/stepCounts 前端从未消费，已一并去掉。
 export type JobExtras = {
   scope: JobScope;
-  // phase：后端按「最近更新的步骤类型」推导的阶段；空串表示该任务暂无步骤（界面显示「—」）。
-  phase: string;
-  stepTotal: number;
-  stepCounts: Record<string, number>;
 };
 
 export type JobDetail = {
@@ -668,11 +666,52 @@ export async function getJobDetail(identity: ClientIdentity, jobId: string): Pro
 export async function getJobsSummary(
   identity: ClientIdentity,
   jobIds: string[]
-): Promise<{ jobs: Record<string, JobExtras>; stepsError?: string }> {
-  return getJSON<{ jobs: Record<string, JobExtras>; stepsError?: string }>(
+): Promise<{ jobs: Record<string, JobExtras> }> {
+  return getJSON<{ jobs: Record<string, JobExtras> }>(
     identity,
     `/jobs/summary?ids=${encodeURIComponent(jobIds.join(','))}`
   );
+}
+
+// ---- B4-M6b：任务列表的筛选 / 排序 / 翻页（原生 HTTP 端点）----
+// 为什么不复用 listJobsPage（proto JobService.List）：本环境 protoc 不可用，无法为它加
+// sort/phase 参数；此端点还改用 (排序键, id) 的 keyset 游标，翻页不受并发插入影响。
+
+export type JobListSort = 'created' | 'updated' | 'phase' | 'pages';
+
+// JobListRow 是列表行：Job 的基本字段 + 阶段（来自 jobs.phase，空串=尚无步骤）。
+export type JobListRow = Job & { phase: string };
+
+export type JobsPageResult = {
+  jobs: JobListRow[];
+  nextCursor: string;
+  // phaseCounts：各阶段的任务数，用于筛选下拉展示可选值与数量；读取失败时给出 phaseCountsError。
+  phaseCounts?: Record<string, number>;
+  phaseCountsError?: string;
+};
+
+export async function getJobsPage(
+  identity: ClientIdentity,
+  params: { phase?: string; sort: JobListSort; desc: boolean; pageSize: number; cursor?: string }
+): Promise<JobsPageResult> {
+  const query = new URLSearchParams();
+  if (params.phase) query.set('phase', params.phase);
+  query.set('sort', params.sort);
+  query.set('dir', params.desc ? 'desc' : 'asc');
+  query.set('limit', String(params.pageSize));
+  if (params.cursor) query.set('cursor', params.cursor);
+  const data = await getJSON<{
+    jobs?: JobListRow[];
+    nextCursor?: string;
+    phaseCounts?: Record<string, number>;
+    phaseCountsError?: string;
+  }>(identity, `/jobs/page?${query.toString()}`);
+  return {
+    jobs: data.jobs ?? [],
+    nextCursor: data.nextCursor ?? '',
+    phaseCounts: data.phaseCounts,
+    phaseCountsError: data.phaseCountsError
+  };
 }
 
 export async function cancelJob(identity: ClientIdentity, jobId: string): Promise<Job> {

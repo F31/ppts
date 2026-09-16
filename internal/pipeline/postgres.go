@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -43,46 +44,82 @@ const jobSelectColumns = `id, tenant_id, project_id, kind, state, input_snapshot
 	idempotency_key, attempt, lease_owner, lease_until, fencing_token,
 	run_at, progress, last_error, created_at, updated_at, traceparent`
 
+// jobScanBuf 承载 jobSelectColumns 的扫描目标。
+// 抽成结构体是为了让「列清单 + 追加列」（如列表页需要 phase 与受影响页数）复用同一份扫描逻辑，
+// 避免并行维护两份 17 列顺序——列顺序一旦错位，错误会以「类型不匹配」的面目出现在很远的地方。
+type jobScanBuf struct {
+	j             Job
+	createdAt     time.Time
+	updatedAt     time.Time
+	leaseOwner    *string
+	runAtPtr      *time.Time
+	leaseUntilPtr *time.Time
+	lastErr       []byte
+}
+
+// dest 返回与 jobSelectColumns 严格同序的扫描目标；调用方可直接在其后追加额外列的指针。
+func (b *jobScanBuf) dest() []any {
+	return []any{
+		&b.j.ID, &b.j.TenantID, &b.j.ProjectID, &b.j.Kind, &b.j.State,
+		&b.j.InputSnapshot, &b.j.IDempotencyKey, &b.j.Attempt, &b.leaseOwner,
+		&b.leaseUntilPtr, &b.j.FencingToken, &b.runAtPtr, &b.j.Progress, &b.lastErr,
+		&b.createdAt, &b.updatedAt, &b.j.TraceParent,
+	}
+}
+
+// job 把扫描到的原始值整理成 *Job（可空列合并、last_error 反序列化）。
+func (b *jobScanBuf) job() *Job {
+	if b.leaseOwner != nil {
+		b.j.LeaseOwner = *b.leaseOwner
+	}
+	if b.leaseUntilPtr != nil {
+		b.j.LeaseUntil = *b.leaseUntilPtr
+	}
+	if b.runAtPtr != nil {
+		b.j.RunAt = *b.runAtPtr
+	}
+	b.j.CreatedAt, b.j.UpdatedAt = b.createdAt, b.updatedAt
+	if len(b.lastErr) > 0 {
+		b.j.LastError = &JobError{}
+		_ = json.Unmarshal(b.lastErr, b.j.LastError)
+	}
+	return &b.j
+}
+
 func scanJob(row pgx.Row) (*Job, error) {
-	var j Job
-	var createdAt, updatedAt time.Time
-	var leaseOwner *string
-	var runAtPtr, leaseUntilPtr *time.Time
-	var lastErr []byte
-	err := row.Scan(&j.ID, &j.TenantID, &j.ProjectID, &j.Kind, &j.State,
-		&j.InputSnapshot, &j.IDempotencyKey, &j.Attempt, &leaseOwner,
-		&leaseUntilPtr, &j.FencingToken, &runAtPtr, &j.Progress, &lastErr,
-		&createdAt, &updatedAt, &j.TraceParent)
-	if err != nil {
+	b := &jobScanBuf{}
+	if err := row.Scan(b.dest()...); err != nil {
 		return nil, err
 	}
-	if leaseOwner != nil {
-		j.LeaseOwner = *leaseOwner
+	return b.job(), nil
+}
+
+// scanJobPageRow 扫描「核心投影 + phase + 受影响页数」（B4-M6b 列表页专用列）。
+func scanJobPageRow(row pgx.Row) (JobPageRow, error) {
+	b := &jobScanBuf{}
+	var phase string
+	var pageCount int
+	if err := row.Scan(append(b.dest(), &phase, &pageCount)...); err != nil {
+		return JobPageRow{}, err
 	}
-	if leaseUntilPtr != nil {
-		j.LeaseUntil = *leaseUntilPtr
-	}
-	if runAtPtr != nil {
-		j.RunAt = *runAtPtr
-	}
-	j.CreatedAt, j.UpdatedAt = createdAt, updatedAt
-	if len(lastErr) > 0 {
-		j.LastError = &JobError{}
-		_ = json.Unmarshal(lastErr, j.LastError)
-	}
-	return &j, nil
+	return JobPageRow{Job: b.job(), Phase: phase, PageCount: pageCount}, nil
 }
 
 // Create idempotent：同 (tenant_id, idempotency_key, kind) 命中唯一约束时返回既有行。
+//
+// affected_pages（B4-M6b）在入队时由 input_snapshot 提取落库：快照一旦创建即不再变化，
+// 因此该列与之后由快照推导的范围**必然一致**；它的价值是让「按受影响页数排序/计数」可在 SQL 内完成
+// （input_snapshot 是 text 且字段名随 kind 变化，无法在 SQL 内解析）。
 func (s *PGStore) Create(ctx context.Context, tenantID, projectID, kind, idemKey, snapshot string, runAt time.Time) (*Job, error) {
 	var j *Job
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		row := tx.QueryRow(ctx, `INSERT INTO jobs
-			(id, tenant_id, project_id, kind, state, idempotency_key, input_snapshot, run_at, traceparent)
-			VALUES (gen_random_uuid(),$1,$2,$3,'queued',$4,$5,$6,$7)
+			(id, tenant_id, project_id, kind, state, idempotency_key, input_snapshot, run_at, traceparent, affected_pages)
+			VALUES (gen_random_uuid(),$1,$2,$3,'queued',$4,$5,$6,$7,$8::jsonb)
 			ON CONFLICT (tenant_id, idempotency_key, kind) DO NOTHING
 			RETURNING `+jobSelectColumns,
-			tenantID, projectID, kind, idemKey, snapshot, nullableTime(&runAt), traceprop.FromContext(ctx))
+			tenantID, projectID, kind, idemKey, snapshot, nullableTime(&runAt), traceprop.FromContext(ctx),
+			mustJSONArray(AffectedPagesOf(JobKind(kind), snapshot)))
 		got, err := scanJob(row)
 		if err == nil {
 			j = got
@@ -363,7 +400,12 @@ func (s *PGStore) ScheduleRetry(ctx context.Context, id, owner string, fencing i
 	})
 }
 
-// MarkStep 幂等记录步骤状态。
+// MarkStep 幂等记录步骤状态，并在**同一事务**内维护 jobs.phase（B4-M6b）。
+//
+// 阶段 = 最近写入的步骤类型。同事务写入是关键：任何已提交的步骤写入必然连带提交阶段，
+// 因此不存在「步骤已变、阶段未变」的漂移，jobs.phase 才敢用于列表排序/筛选。
+// 刻意**不**更新 jobs.updated_at：本方法原本就不动它（updated_at 供 EventsSince 的增量轮询使用，
+// 在此处推进会让轮询把未变更状态的任务误报为已变更）。
 func (s *PGStore) MarkStep(ctx context.Context, step JobStep) error {
 	return tenant.Run(ctx, s.pool, step.TenantID, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
@@ -372,6 +414,14 @@ func (s *PGStore) MarkStep(ctx context.Context, step JobStep) error {
 			 ON CONFLICT (job_id, step_key) DO UPDATE
 			   SET state=EXCLUDED.state, result_ref=EXCLUDED.result_ref, updated_at=now()`,
 			step.JobID, step.TenantID, step.StepType, step.StepKey, string(step.State), step.ResultRef)
+		if err != nil {
+			return err
+		}
+		// 值未变时不写（避免无谓的行更新与 WAL）；条件里带 tenant_id 以满足 RLS 的写检查。
+		_, err = tx.Exec(ctx,
+			`UPDATE jobs SET phase=$3
+			 WHERE id=$1 AND tenant_id=$2 AND phase <> $3`,
+			step.JobID, step.TenantID, step.StepType)
 		return err
 	})
 }
@@ -648,50 +698,162 @@ func (s *PGStore) ListSteps(ctx context.Context, tenantID, jobID string) ([]JobS
 	return out, nil
 }
 
-// StepSummaries 批量返回多个任务的步骤聚合（单次分组查询，供任务列表避免逐任务查询/N+1，B4-M6a）。
-// 阶段按"最近更新的步骤类型"推导（见 JobStepSummary 注释）。ids 为空返回空 map。
-// 调用方须限制 ids 规模（api 侧上限 maxJobSummaryIDs），以免 IN 列表过长。
-func (s *PGStore) StepSummaries(ctx context.Context, tenantID string, jobIDs []string) (map[string]JobStepSummary, error) {
-	out := make(map[string]JobStepSummary, len(jobIDs))
-	if len(jobIDs) == 0 {
-		return out, nil
+// mustJSONArray 把字符串切片序列化成 jsonb 参数文本（nil / 序列化失败退化为空数组）。
+// affected_pages 只是可查询投影，其解析失败不应让任务创建失败。
+func mustJSONArray(items []string) string {
+	if items == nil {
+		return "[]"
 	}
-	args := make([]any, 0, len(jobIDs)+1)
-	args = append(args, tenantID)
-	ph := make([]string, 0, len(jobIDs))
-	for i, id := range jobIDs {
-		ph = append(ph, "$"+strconv.Itoa(i+2))
-		args = append(args, id)
+	b, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
 	}
+	return string(b)
+}
+
+// jobSortSpec 把排序键映射为 SQL 表达式与其类型（后者用于 keyset 游标的显式类型转换）。
+// 未知取值退回 created：api 侧已做白名单校验并会返回 400，此处只是防御性兜底。
+func jobSortSpec(sort string) (expr, cast string) {
+	switch sort {
+	case "updated":
+		return "updated_at", "timestamptz"
+	case "phase":
+		return "phase", "text"
+	case "pages":
+		return "jsonb_array_length(affected_pages)", "int"
+	default:
+		return "created_at", "timestamptz"
+	}
+}
+
+// jobCursorSep 分隔「排序键值」与「任务 id」；用不可见字符避免与时间戳/阶段名冲突。
+const jobCursorSep = "\x1f"
+
+func encodeJobCursor(sortValue, id string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(sortValue + jobCursorSep + id))
+}
+
+func decodeJobCursor(cursor string) (sortValue, id string, err error) {
+	raw, derr := base64.RawURLEncoding.DecodeString(cursor)
+	if derr != nil {
+		return "", "", ErrBadJobCursor
+	}
+	parts := strings.SplitN(string(raw), jobCursorSep, 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", ErrBadJobCursor
+	}
+	return parts[0], parts[1], nil
+}
+
+// jobPageSortValue 取一行在当前排序键下的值（用于生成下一页游标）。
+func jobPageSortValue(f JobFilter, row JobPageRow) string {
+	switch f.Sort {
+	case "updated":
+		return row.Job.UpdatedAt.Format(time.RFC3339Nano)
+	case "phase":
+		return row.Phase
+	case "pages":
+		return strconv.Itoa(row.PageCount)
+	default:
+		return row.Job.CreatedAt.Format(time.RFC3339Nano)
+	}
+}
+
+// ListPage 按筛选/排序分页返回任务（B4-M6b），供控制台任务列表的「阶段筛选 + 排序 + 翻页」。
+//
+// 游标是 (排序键值, id) 的 keyset（base64）而非 offset：并发插入/删除不会造成翻页重复或漏项；
+// 排序键与 id 一同参与比较，保证排序键相同的多行之间也有确定顺序，翻页不会卡在同一处。
+func (s *PGStore) ListPage(ctx context.Context, tenantID string, f JobFilter, cursor string, pageSize int) ([]JobPageRow, string, error) {
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 20
+	}
+	sortExpr, sortCast := jobSortSpec(f.Sort)
+	dir, cmp := "DESC", "<"
+	if !f.Desc {
+		dir, cmp = "ASC", ">"
+	}
+	var out []JobPageRow
+	next := ""
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		out, next = nil, ""
+		args := []any{tenantID}
+		where := "tenant_id=$1"
+		if f.ProjectID != "" {
+			args = append(args, f.ProjectID)
+			where += " AND project_id=$" + strconv.Itoa(len(args))
+		}
+		if f.Phase != "" {
+			args = append(args, f.Phase)
+			where += " AND phase=$" + strconv.Itoa(len(args))
+		}
+		if cursor != "" {
+			key, id, cerr := decodeJobCursor(cursor)
+			if cerr != nil {
+				return cerr
+			}
+			args = append(args, key)
+			keyPH := "$" + strconv.Itoa(len(args))
+			args = append(args, id)
+			idPH := "$" + strconv.Itoa(len(args))
+			// 行值比较 (sortExpr, id) </> (key, id)：两侧类型必须显式转换。
+			where += fmt.Sprintf(" AND (%s, id) %s (%s::%s, %s::uuid)", sortExpr, cmp, keyPH, sortCast, idPH)
+		}
+		args = append(args, pageSize+1)
+		limitPH := "$" + strconv.Itoa(len(args))
 		rows, err := tx.Query(ctx,
-			`SELECT job_id, step_type, state, count(*), max(updated_at)
-			   FROM job_steps
-			  WHERE tenant_id=$1 AND job_id IN (`+strings.Join(ph, ",")+`)
-			  GROUP BY job_id, step_type, state`, args...)
+			"SELECT "+jobSelectColumns+", phase, jsonb_array_length(affected_pages) FROM jobs WHERE "+where+
+				" ORDER BY "+sortExpr+" "+dir+", id "+dir+" LIMIT "+limitPH, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		out = make([]JobPageRow, 0, pageSize)
+		for rows.Next() {
+			row, err := scanJobPageRow(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, row)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(out) > pageSize {
+			last := out[pageSize-1]
+			next = encodeJobCursor(jobPageSortValue(f, last), last.Job.ID)
+			out = out[:pageSize]
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return out, next, nil
+}
+
+// PhaseCounts 返回各阶段的任务数（可按项目过滤），供列表的阶段筛选项给出可选值与计数。
+// 尚无任何步骤的任务阶段为空串，以空串为键返回，由调用方决定如何展示（不在此处伪造成某个阶段）。
+func (s *PGStore) PhaseCounts(ctx context.Context, tenantID, projectID string) (map[string]int, error) {
+	out := map[string]int{}
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		args := []any{tenantID}
+		where := "tenant_id=$1"
+		if projectID != "" {
+			args = append(args, projectID)
+			where += " AND project_id=$" + strconv.Itoa(len(args))
+		}
+		rows, err := tx.Query(ctx, `SELECT phase, count(*) FROM jobs WHERE `+where+` GROUP BY phase`, args...)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var jobID, stepType string
-			var state JobStepState
-			var n int64
-			var lastAt time.Time
-			if err := rows.Scan(&jobID, &stepType, &state, &n, &lastAt); err != nil {
+			var phase string
+			var n int
+			if err := rows.Scan(&phase, &n); err != nil {
 				return err
 			}
-			sum := out[jobID]
-			if sum.Counts == nil {
-				sum.Counts = map[JobStepState]int{}
-			}
-			sum.Counts[state] += int(n)
-			sum.Total += int(n)
-			if lastAt.After(sum.LastAt) {
-				sum.LastAt = lastAt
-				sum.Phase = stepType
-			}
-			out[jobID] = sum
+			out[phase] = n
 		}
 		return rows.Err()
 	})

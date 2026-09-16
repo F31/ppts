@@ -118,6 +118,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerEditorRoutes(mux, jobs, objects, scriptSources, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。
 	registerJobDetailRoutes(mux, jobs, auth)
+	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。
+	registerJobListRoutes(mux, jobs, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

@@ -17,9 +17,12 @@ import (
 // errTestSteps 模拟步骤读取失败（真实存储故障）。
 var errTestSteps = errors.New("steps unavailable")
 
-// B4-M6a 测试：任务范围推导（纯函数）与 /jobs/{jid}/detail、/jobs/summary 端点行为。
+// B4-M6a/M6b 测试：/jobs/{jid}/detail 与 /jobs/summary 的端点行为。
+//
+// 范围推导（pipeline.ScopeOf）的用例在 internal/pipeline/scope_test.go：它是纯函数，
+// 放在 pipeline 里可以不依赖 HTTP 直接跑。此处只测「传输层」行为——上限截断、错误映射、字段裁剪。
 
-// jobDetailStub 只实现 JobStore（不含 JobInspector），用于验证"store 不支持步骤读取"的降级。
+// jobDetailStub 只实现 JobStore（不含 JobInspector），用于验证"store 不支持扩展读取"的降级。
 type jobDetailStub struct {
 	job    *pipeline.Job
 	getErr error
@@ -33,7 +36,9 @@ func (s *jobDetailStub) LatestSucceededJob(context.Context, string, string, stri
 	return nil, pipeline.ErrNoSucceededJob
 }
 
-func (s *jobDetailStub) StepResultRef(context.Context, string, string) (string, error) { return "", nil }
+func (s *jobDetailStub) StepResultRef(context.Context, string, string) (string, error) {
+	return "", nil
+}
 
 func (s *jobDetailStub) Get(context.Context, string, string) (*pipeline.Job, error) {
 	if s.getErr != nil {
@@ -57,14 +62,12 @@ func (s *jobDetailStub) RetryFailed(context.Context, string, string) (*pipeline.
 	return nil, pipeline.ErrJobNotFound
 }
 
-// jobDetailInspectorStub 在 JobStore 之上实现 JobInspector（步骤读取）。
+// jobDetailInspectorStub 在 JobStore 之上实现 JobInspector（步骤读取 + 批量取任务）。
 type jobDetailInspectorStub struct {
 	jobDetailStub
 	steps       []pipeline.JobStep
-	summaries   map[string]pipeline.JobStepSummary
 	many        []*pipeline.Job
 	stepsErr    error
-	summaryErr  error
 	manyErr     error
 	lastManyIDs []string
 }
@@ -74,13 +77,6 @@ func (s *jobDetailInspectorStub) ListSteps(context.Context, string, string) ([]p
 		return nil, s.stepsErr
 	}
 	return s.steps, nil
-}
-
-func (s *jobDetailInspectorStub) StepSummaries(_ context.Context, _ string, _ []string) (map[string]pipeline.JobStepSummary, error) {
-	if s.summaryErr != nil {
-		return nil, s.summaryErr
-	}
-	return s.summaries, nil
 }
 
 func (s *jobDetailInspectorStub) GetMany(_ context.Context, _ string, ids []string) ([]*pipeline.Job, error) {
@@ -127,18 +123,17 @@ type jobDetailResponse struct {
 	StepsError     string         `json:"stepsError"`
 }
 
+// jobSummaryResponse 只声明契约里**确实存在**的字段（B4-M6b 已裁掉 phase/stepTotal/stepCounts）。
 type jobSummaryResponse struct {
 	Jobs map[string]struct {
 		Scope struct {
-			Kind          string `json:"kind"`
-			PageCount     int    `json:"pageCount"`
-			InputRevision int64  `json:"inputRevision"`
+			Kind          string   `json:"kind"`
+			PageCount     int      `json:"pageCount"`
+			AffectedPages []string `json:"affectedPages"`
+			InputRevision int64    `json:"inputRevision"`
+			Format        string   `json:"format"`
 		} `json:"scope"`
-		Phase      string         `json:"phase"`
-		StepTotal  int            `json:"stepTotal"`
-		StepCounts map[string]int `json:"stepCounts"`
 	} `json:"jobs"`
-	StepsError string `json:"stepsError"`
 }
 
 func decodeDetail(t *testing.T, rec *httptest.ResponseRecorder) jobDetailResponse {
@@ -150,115 +145,8 @@ func decodeDetail(t *testing.T, rec *httptest.ResponseRecorder) jobDetailRespons
 	return out
 }
 
-func TestJobScopeFromSnapshot(t *testing.T) {
-	cases := []struct {
-		name          string
-		kind          string
-		snapshot      string
-		wantKind      string
-		wantPages     int
-		wantRevision  int64
-		wantPageIDs   []string
-		wantFormat    string
-		wantTruncated bool
-	}{
-		{
-			name: "narration 按页生成", kind: "narration",
-			snapshot:     `{"slides":[{"slideId":"s1","scriptRevision":3},{"slideId":"s2","scriptRevision":4}],"segmentIds":[],"language":"zh"}`,
-			wantKind:     "pages",
-			wantPages:    2,
-			wantRevision: 4,
-			wantPageIDs:  []string{"s1", "s2"},
-		},
-		{
-			name: "narration 局部重生成视为 segments", kind: "narration",
-			snapshot:     `{"slides":[{"slideId":"s1","scriptRevision":2}],"segmentIds":["seg-1"]}`,
-			wantKind:     "segments",
-			wantPages:    1,
-			wantRevision: 2,
-			wantPageIDs:  []string{"s1"},
-		},
-		{
-			name: "narration 重复与空页 ID 去重", kind: "narration",
-			snapshot:     `{"slides":[{"slideId":"s1"},{"slideId":" s1 "},{"slideId":""}],"segmentIds":[]}`,
-			wantKind:     "pages",
-			wantPages:    1,
-			wantPageIDs:  []string{"s1"},
-		},
-		{
-			name: "script_draft 空 slideIds 表示全篇", kind: "script_draft",
-			snapshot:     `{"projectId":"p1","revisionNo":7,"mode":"original"}`,
-			wantKind:     "project",
-			wantPages:    0,
-			wantRevision: 7,
-			wantPageIDs:  []string{},
-		},
-		{
-			name: "script_draft 指定页", kind: "script_draft",
-			snapshot:     `{"slideIds":["s9"],"revisionNo":2}`,
-			wantKind:     "pages",
-			wantPages:    1,
-			wantRevision: 2,
-			wantPageIDs:  []string{"s9"},
-		},
-		{
-			name: "parse 面向全篇并带输入版本", kind: "parse",
-			snapshot:     `{"sourceRevisionId":"rev-1","revisionNo":5,"parserVersion":"v1"}`,
-			wantKind:     "project",
-			wantPages:    0,
-			wantRevision: 5,
-			wantPageIDs:  []string{},
-		},
-		{
-			name: "export 只计数不暴露对象键", kind: "export",
-			snapshot:     `{"format":"mp4","pagePngKeys":["t/s1.png","t/s2.png","t/s3.png"]}`,
-			wantKind:     "export",
-			wantPages:    3,
-			wantPageIDs:  []string{},
-			wantFormat:   "mp4",
-		},
-		{
-			name: "空快照", kind: "narration", snapshot: "",
-			wantKind: "unknown", wantPageIDs: []string{},
-		},
-		{
-			name: "非法 JSON", kind: "narration", snapshot: `{"slides":`,
-			wantKind: "unknown", wantPageIDs: []string{},
-		},
-		{
-			name: "未知种类", kind: "render", snapshot: `{"slideId":"s1"}`,
-			wantKind: "unknown", wantPageIDs: []string{},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := jobScopeFromSnapshot(tc.kind, tc.snapshot)
-			if got.Kind != tc.wantKind {
-				t.Fatalf("kind = %q want %q", got.Kind, tc.wantKind)
-			}
-			if got.PageCount != tc.wantPages {
-				t.Fatalf("pageCount = %d want %d", got.PageCount, tc.wantPages)
-			}
-			if got.InputRevision != tc.wantRevision {
-				t.Fatalf("inputRevision = %d want %d", got.InputRevision, tc.wantRevision)
-			}
-			if got.Format != tc.wantFormat {
-				t.Fatalf("format = %q want %q", got.Format, tc.wantFormat)
-			}
-			if len(got.AffectedPages) != len(tc.wantPageIDs) {
-				t.Fatalf("affectedPages = %v want %v", got.AffectedPages, tc.wantPageIDs)
-			}
-			for i, id := range tc.wantPageIDs {
-				if got.AffectedPages[i] != id {
-					t.Fatalf("affectedPages[%d] = %q want %q", i, got.AffectedPages[i], id)
-				}
-			}
-		})
-	}
-}
-
 // 超出上限时 affectedPages 截断，但 pageCount 仍是完整计数（前端据此判断"已截断"）。
-func TestJobScopePageCountKeepsFullCountWhenTruncated(t *testing.T) {
+func TestScopeForTruncatesPagesButKeepsFullCount(t *testing.T) {
 	var b strings.Builder
 	b.WriteString(`{"slides":[`)
 	for i := 0; i <= maxScopePages; i++ {
@@ -270,12 +158,20 @@ func TestJobScopePageCountKeepsFullCountWhenTruncated(t *testing.T) {
 		b.WriteString(`"}`)
 	}
 	b.WriteString(`],"segmentIds":[]}`)
-	got := jobScopeFromSnapshot("narration", b.String())
+	got := scopeFor("narration", b.String())
 	if got.PageCount != maxScopePages+1 {
 		t.Fatalf("pageCount = %d want %d", got.PageCount, maxScopePages+1)
 	}
 	if len(got.AffectedPages) != maxScopePages {
 		t.Fatalf("affectedPages len = %d want %d", len(got.AffectedPages), maxScopePages)
+	}
+}
+
+// 未超上限时不应无谓改动（避免把「截断」误报出来）。
+func TestScopeForKeepsPagesWhenUnderLimit(t *testing.T) {
+	got := scopeFor("narration", `{"slides":[{"slideId":"s1"},{"slideId":"s2"}],"segmentIds":[]}`)
+	if len(got.AffectedPages) != 2 || got.PageCount != 2 {
+		t.Fatalf("scope = %+v", got)
 	}
 }
 
@@ -420,70 +316,46 @@ func TestPublicJobsSummaryValidation(t *testing.T) {
 	}
 }
 
-func TestPublicJobsSummaryAggregatesScopeAndPhase(t *testing.T) {
+// B4-M6b：/jobs/summary 的契约已收窄为「只回范围」——不再回 phase/stepTotal/stepCounts，
+// 因此这里同时断言「范围按 kind 正确推导」与「不再产出多余的步骤聚合字段」。
+func TestPublicJobsSummaryReturnsScopePerJob(t *testing.T) {
 	jobA := &pipeline.Job{ID: "job-a", Kind: pipeline.KindNarration, InputSnapshot: `{"slides":[{"slideId":"s1","scriptRevision":2}],"segmentIds":[]}`}
 	jobB := &pipeline.Job{ID: "job-b", Kind: pipeline.KindScriptDraft, InputSnapshot: `{"revisionNo":9}`}
-	store := &jobDetailInspectorStub{
-		many: []*pipeline.Job{jobA, jobB},
-		summaries: map[string]pipeline.JobStepSummary{
-			"job-a": {Phase: "tts_segment", Total: 3, Counts: map[pipeline.JobStepState]int{pipeline.StepSuccess: 2, pipeline.StepPending: 1}},
-		},
-	}
+	store := &jobDetailInspectorStub{many: []*pipeline.Job{jobA, jobB}}
 	rec := serveJobRoute(store, "/jobs/summary?ids=job-a,job-b,job-a")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d (body=%s)", rec.Code, rec.Body.String())
-	}
-	var got jobSummaryResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
 	}
 	// 去重后传给 store 的 ids 只有两个。
 	if len(store.lastManyIDs) != 2 {
 		t.Fatalf("ids passed to store = %v want 2 items", store.lastManyIDs)
 	}
-	if got.StepsError != "" {
-		t.Fatalf("stepsError = %q want empty", got.StepsError)
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	a, ok := got.Jobs["job-a"]
+	// 顶层只应有 jobs 一个键：StepsError 等字段已被裁掉。
+	if len(got) != 1 {
+		t.Fatalf("top-level keys = %v want only [jobs]", got)
+	}
+	var parsed jobSummaryResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode typed: %v", err)
+	}
+	a, ok := parsed.Jobs["job-a"]
 	if !ok {
-		t.Fatalf("job-a missing from summary: %+v", got.Jobs)
+		t.Fatalf("job-a missing from summary: %+v", parsed.Jobs)
 	}
-	if a.Phase != "tts_segment" || a.StepTotal != 3 || a.StepCounts["success"] != 2 {
-		t.Fatalf("job-a entry = %+v", a)
-	}
-	if a.Scope.Kind != "pages" || a.Scope.PageCount != 1 {
+	if a.Scope.Kind != "pages" || a.Scope.PageCount != 1 || a.Scope.InputRevision != 2 {
 		t.Fatalf("job-a scope = %+v", a.Scope)
 	}
-	b := got.Jobs["job-b"]
-	// 无步骤的任务：phase 为空串（界面显示"—"），不伪造阶段。
-	if b.Phase != "" || b.StepTotal != 0 {
-		t.Fatalf("job-b entry = %+v", b)
-	}
+	b := parsed.Jobs["job-b"]
 	if b.Scope.Kind != "project" || b.Scope.InputRevision != 9 {
 		t.Fatalf("job-b scope = %+v", b.Scope)
 	}
 }
 
-func TestPublicJobsSummaryReportsStepLoadFailure(t *testing.T) {
-	store := &jobDetailInspectorStub{
-		many:       []*pipeline.Job{{ID: "job-c", Kind: pipeline.KindParse, InputSnapshot: `{"revisionNo":1}`}},
-		summaryErr: errTestSteps,
-	}
-	rec := serveJobRoute(store, "/jobs/summary?ids=job-c")
-	var got jobSummaryResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.StepsError != "load_failed" {
-		t.Fatalf("stepsError = %q want load_failed", got.StepsError)
-	}
-	// 范围仍返回（部分可用），但阶段为空 —— 界面必须区分"无步骤"与"步骤读取失败"。
-	if got.Jobs["job-c"].Scope.Kind != "project" {
-		t.Fatalf("job-c scope = %+v", got.Jobs["job-c"].Scope)
-	}
-}
-
-// 未实现 JobInspector 的 store：整体不可用 → 501（前端据此回退为不显示这两列并给出原因）。
+// 未实现 JobInspector 的 store：整体不可用 → 501（前端据此回退为不显示范围列并给出原因）。
 func TestPublicJobsSummaryUnsupportedStore(t *testing.T) {
 	rec := serveJobRoute(&jobDetailStub{}, "/jobs/summary?ids=job-a")
 	if rec.Code != http.StatusNotImplemented {
