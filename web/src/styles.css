@@ -662,3 +662,25 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .health-tag.noKey { --glyph: "\26A0"; }               /* ⚠ 未配置密钥 */
 .health-tag.untested { --glyph: "\003F"; }           /* ? 未检测 */
 .health-tag.disabled { --glyph: "\2014"; }           /* — 已停用 */
+
+/* ============================================================
+   V-M5 桌面触控 44px：任何粗指针设备（含桌面触屏）统一触控目标 ≥44px。
+   与 max-width 媒体查询解耦，确保宽视口触屏也满足 WCAG 2.5.5（目标尺寸）。
+   ============================================================ */
+@media (pointer: coarse) {
+  button, .button-primary, .button-ghost, .topbar-action-btn, .lang-toggle, .user-trigger,
+  .modal-card header button, .player-controls button, .player-fullscreen, .audit-panel button,
+  .paragraph-toolbar button, .draft-actions button, .slide-map button, .slide-rail-v2 button,
+  .user-menu button, .user-menu-link, .player-speed select, .gateway-form input,
+  .gateway-form select, .audit-filters input, .audit-filters select, .source-row select,
+  .source-row .source-custom, .scope-options label, .draft-options label, .nav-item, .nav-sub,
+  input, select, textarea {
+    min-height: 44px;
+  }
+  .slide-map button, .player-controls button, .player-fullscreen, .topbar-actions button,
+  .user-trigger, .lang-toggle, .topbar-action-btn, .theme-toggle {
+    min-width: 44px;
+  }
+  /* 缩略图行按钮在触屏下最小点击区 */
+  .slide-rail-v2 button { min-height: 44px; }
+}

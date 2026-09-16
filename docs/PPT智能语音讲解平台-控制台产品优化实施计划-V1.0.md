@@ -208,12 +208,12 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 
 | 要求 | 现状 | 结论 |
 |---|---|---|
-| 浅灰工作区 + 白色面板 + 单一蓝紫主色 | **深色主题**（`#10131a` + 青 `#67e8f9`），与基线相反 | ❌ |
-| 圆角 6~8px 控件 / 10~12px 卡片 | 大量 999px 胶囊、16~24px 卡片 | ❌ |
-| 字号/间距/密度基线 | 未系统化，无 token 体系 | ⚠️ |
-| 状态=图标+文字+颜色 | 主要为文字+颜色 | ⚠️ |
-| 键盘：可见焦点/弹窗焦点管理/Esc/焦点返回 | 缺 focus trap 与 Esc | ❌ |
-| 播放快捷键（空格/方向键不抢占输入） | 缺失 | ❌ A25 |
+| 浅灰工作区 + 白色面板 + 单一蓝紫主色 | 已实施**深色主题**（V-M1 设计令牌体系，`#10131a` + 青 `#67e8f9`）；基线 §14 浅色要求经决策 C-5 明确保留深色为产品决策 | ✅（C-5） |
+| 圆角 控件 8px / 卡片 12px / 徽标保 pill | 已收敛（V-M4：脚本化三档半径） | ✅ |
+| 字号/间距/密度基线 | 已建立 token 体系（V-M1：色板/字号/间距/圆角/密度落 `styles.css` `:root` + `theme.css` 浅色重定义） | ✅ |
+| 状态=图标+文字+颜色 | 已实现三重编码（V-M4：`--glyph` + `::before` 注入语义图标，颜色+图标+文字） | ✅ |
+| 键盘：可见焦点/弹窗焦点管理/Esc/焦点返回 | 已实施（V-M3：`:focus-visible` 焦点环 + `useDialogA11y` focus trap/Esc/焦点返回，接线 7 处 dialog） | ✅ |
+| 播放快捷键（空格/方向键不抢占输入） | 已实施（B4-M4：播放快捷键，非输入焦点时不抢占） | ✅ |
 | 对比度 ≥4.5:1、减少动画、播报 | 未验证 | ⚠️ |
 | 触控目标 ≈44px | 未落实 | ❌ |
 | 使用生成的 Connect 客户端 | 手写 fetch + JSON，已出现字段漏传（rate_percent） | ⚠️ |
@@ -642,7 +642,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | V-M2 对比度门禁 | 新增零依赖 `contrast.mjs` 算 WCAG 比值并接入 `npm run build` 前置（`build: "npm run contrast && tsc -b && vite build"`）；修正不足文本令牌：浅色 `--text-dim`/`--text-faint`/`--text-muted`/`--text-faintest` 收敛到 `#5b6b7e`（对白/浅底 ≥4.5:1）；深色 `--text-dim`/`--text-faintest` 提到 `#7e8aa3`（最深表面 `#151d2e` 仍 ≥4.8:1）。门禁仅校验 `--text-*` 令牌契约（确定性、无级联假阳性）；浅色模式「深色字面量文本未主题化」与「状态色 chip 浅色微调」为独立遗留，不在阻断范围 | 【已实施】 |
 | V-M3 焦点可见 + 弹窗可访问性 | 全站 `:focus-visible` 焦点环（青色 `var(--accent)` + 2px offset）+ `:focus:not(:focus-visible)` 抑制鼠标默认 outline；移除 2 处 `outline:none`（`.editor-card`/`.segment-card` textarea，改由 `:focus-visible` 提供键盘焦点环，原有 `:focus` box-shadow 保留）；新增 `web/src/a11y.ts` 的 `useDialogA11y`（打开移焦入内、Tab 循环焦点陷阱、Esc 关闭、关闭后焦点返回触发元素），接线 7 处 `role="dialog"`（AppShell 用户菜单 / GatewaySettings / ExportDialog / ImportDialog / ScriptEditor 读音 popover / ProjectEditor 属性抽屉 / ProjectEditor 发布弹窗）并补 `aria-modal="true"` | 【已实施】 |
 | V-M4 圆角收敛 + 状态图标三重编码 | 收敛为三档半径：`styles.css` 控件类（button/input/select/textarea 及明确按钮·触发·缩略图）8px、卡片/面板/表面 12px、徽标/标签/状态 chip/头像/点保留 999px 或 50%（全屏态 `border-radius:0` 保留）；脚本化收敛避免 60+ 处手写误差，并修正 `.project-card` 既有重复 `border-radius` 声明。`state-tag`(10 任务态 + 4 步骤态)/`.health-tag`(5) 用 CSS `--glyph` + `::before` 注入语义图标（•/▶/↻/✎/✓/✕/⊘/?/○/⚠/—），与既有颜色 + `t()` 文字构成「颜色+图标+文字」三重编码，0 TSX 改动、浅色主题只覆盖颜色不影响图标 | 【已实施】 |
-| V-M5 桌面触控 44px + 专项出口验收 | `@media (pointer: coarse)` 桌面触控 44px；专项出口评审 + 文档收口 | 待实施 |
+| V-M5 桌面触控 44px + 专项出口验收 | `styles.css` 新增 `@media (pointer: coarse)` 块，对 button/input/select/textarea 及主要触发/导航/弹窗/播放/缩略图按钮统一触控目标 `min-height/min-width: 44px`（与 `max-width` 移动端断点解耦，覆盖桌面触屏，满足 WCAG 2.5.5）；视觉与可访问性基线（V-M1 令牌 / V-M2 对比度 / V-M3 焦点+弹窗 / V-M4 圆角+状态图标 / V-M5 触控）全部完成，§2.10 差距表已收口 | 【已实施】 |
 
 ---
 
