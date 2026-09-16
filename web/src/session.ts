@@ -5,6 +5,7 @@ export type Session = {
   identity: ClientIdentity | null;
   loginDev: (identity: ClientIdentity) => void;
   loginOIDC: () => void;
+  loginEmail: (identity: ClientIdentity) => void;
   logout: () => void;
 };
 

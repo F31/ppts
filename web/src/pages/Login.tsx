@@ -1,18 +1,41 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ClientIdentity } from '../api';
 import { oidcConfigured, isDevIdentityEnabled, startOIDCLogin } from '../auth';
+import { getAuthConfig, loginEmail, registerEmail } from '../api';
 import { useI18n } from '../i18n';
 import { useSession } from '../session';
+import { describeApiError } from '../apiError';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
+type EmailMode = 'signin' | 'register';
 
 export function Login() {
-  const { loginDev, loginOIDC } = useSession();
+  const { loginDev, loginOIDC, loginEmail: loginEmailSession } = useSession();
   const { t } = useI18n();
   const [tenantId, setTenantId] = useState(defaultTenantId);
   const [userId, setUserId] = useState('dev-user');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+
+  // 邮箱能力探测（B5 门控：能力未配置则隐藏入口，不做假登录）。
+  const [emailEnabled, setEmailEnabled] = useState<boolean | null>(null);
+  const [emailMode, setEmailMode] = useState<EmailMode>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    getAuthConfig()
+      .then((cfg) => {
+        if (!cancelled) setEmailEnabled(cfg.email_password);
+      })
+      .catch(() => {
+        if (!cancelled) setEmailEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const submitDev = async () => {
     if (submitting) return;
@@ -42,6 +65,34 @@ export function Login() {
     }
   };
 
+  const submitEmail = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError('');
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setError(t('login.emailRequired'));
+      setSubmitting(false);
+      return;
+    }
+    try {
+      const res =
+        emailMode === 'register'
+          ? await registerEmail({ email: trimmedEmail, password })
+          : await loginEmail({ email: trimmedEmail, password });
+      loginEmailSession({ tenantId: res.tenant_id, userId: res.user_id, accessToken: res.access_token });
+    } catch (err) {
+      setError(
+        describeApiError(
+          err,
+          emailMode === 'register' ? t('login.registerFailed') : t('login.invalidCredentials'),
+          t
+        )
+      );
+      setSubmitting(false);
+    }
+  };
+
   const showOIDC = oidcConfigured();
   const showDev = isDevIdentityEnabled();
 
@@ -65,6 +116,65 @@ export function Login() {
             </div>
           </>
         )}
+        {emailEnabled === true && (
+          <div className="email-auth">
+            <div className="email-tabs" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={emailMode === 'signin'}
+                className={emailMode === 'signin' ? 'tab active' : 'tab'}
+                disabled={submitting}
+                onClick={() => setEmailMode('signin')}
+              >
+                {t('login.signInTab')}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={emailMode === 'register'}
+                className={emailMode === 'register' ? 'tab active' : 'tab'}
+                disabled={submitting}
+                onClick={() => setEmailMode('register')}
+              >
+                {t('login.registerTab')}
+              </button>
+            </div>
+            <label>
+              {t('login.email')}
+              <input
+                type="email"
+                value={email}
+                autoComplete="email"
+                placeholder="you@example.com"
+                onChange={(e) => setEmail(e.currentTarget.value)}
+              />
+            </label>
+            <label>
+              {t('login.password')}
+              <input
+                type="password"
+                value={password}
+                autoComplete={emailMode === 'register' ? 'new-password' : 'current-password'}
+                onChange={(e) => setPassword(e.currentTarget.value)}
+              />
+            </label>
+            <button type="button" className="primary-login" disabled={submitting} onClick={() => void submitEmail()}>
+              {submitting ? t('login.submitting') : emailMode === 'register' ? t('login.register') : t('login.signIn')}
+            </button>
+            <p className="email-switch">
+              {emailMode === 'register' ? (
+                <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('signin')}>
+                  {t('login.alreadyHave')}
+                </button>
+              ) : (
+                <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('register')}>
+                  {t('login.needAccount')}
+                </button>
+              )}
+            </p>
+          </div>
+        )}
         {showDev ? (
           <>
             <label>
@@ -80,7 +190,7 @@ export function Login() {
             </button>
             <p className="dev-login-note">{t('login.devNote')}</p>
           </>
-        ) : !showOIDC ? (
+        ) : !showOIDC && emailEnabled === false ? (
           <p className="login-unconfigured">{t('login.unconfigured')}</p>
         ) : null}
         {error && <p className="form-error">{error}</p>}

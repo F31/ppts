@@ -1,3 +1,5 @@
+import type { ClientIdentity } from './api';
+
 const tokenKey = 'pptsAccessToken';
 const verifierKey = 'pptsPKCEVerifier';
 const stateKey = 'pptsOIDCState';
@@ -34,9 +36,29 @@ export function isDevIdentityEnabled() {
   return import.meta.env.DEV || import.meta.env.VITE_ALLOW_DEV_IDENTITY === 'true';
 }
 
+const identityKey = 'pptsIdentity';
+
+// 邮箱登录身份（含真实 tenantId/userId/accessToken）持久化，刷新后恢复真实身份。
+export function saveIdentity(identity: ClientIdentity) {
+  localStorage.setItem(identityKey, JSON.stringify(identity));
+}
+
+export function storedIdentity(): ClientIdentity | null {
+  const raw = localStorage.getItem(identityKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as ClientIdentity;
+    if (parsed.tenantId && parsed.userId && parsed.accessToken) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function clearAllIdentity() {
   localStorage.removeItem(tokenKey);
   localStorage.removeItem(devIdentityKey);
+  localStorage.removeItem(identityKey);
 }
 
 function base64URL(bytes: ArrayBuffer | Uint8Array) {

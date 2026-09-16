@@ -46,6 +46,54 @@ function identityHeaders(identity: ClientIdentity): Record<string, string> {
   };
 }
 
+// ---- 邮箱自助注册（B5-M4）----
+export type EmailAuthResult = {
+  access_token: string;
+  tenant_id: string;
+  user_id: string;
+};
+
+// getAuthConfig 探测后端认证能力（无认证端点）；登录页据此显隐邮箱入口，满足 B5 门控。
+export async function getAuthConfig(): Promise<{ email_password: boolean }> {
+  const response = await fetch('/auth/config');
+  if (!response.ok) {
+    throw new ConnectError(`http_${response.status}`, `auth config failed: HTTP ${response.status}`);
+  }
+  return (await response.json()) as { email_password: boolean };
+}
+
+// registerEmail 自助注册：后端创建个人租户并签发 JWT，无需邮件验证（决策 ②A）。
+export async function registerEmail(params: { email: string; password: string }): Promise<EmailAuthResult> {
+  return postAuth('/auth/register', params);
+}
+
+// loginEmail 邮箱登录：后端校验凭证并签发 JWT。
+export async function loginEmail(params: { email: string; password: string }): Promise<EmailAuthResult> {
+  return postAuth('/auth/email-login', params);
+}
+
+// postAuth 通用无认证 POST（注册/登录），解析后端 {code,message} 错误体。
+async function postAuth(path: string, body: { email: string; password: string }): Promise<EmailAuthResult> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let code = `http_${response.status}`;
+    let message = `${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      // 非 JSON 错误体，保留默认 message。
+    }
+    throw new ConnectError(code, message);
+  }
+  return (await response.json()) as EmailAuthResult;
+}
+
 export async function getPlaybackManifest(params: {
   identity: ClientIdentity;
   projectId: string;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listMembers, type ClientIdentity } from './api';
 import { AppShell } from './AppShell';
-import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, saveDevIdentity } from './auth';
+import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, saveDevIdentity, storedIdentity, saveIdentity } from './auth';
 import { navigate, useRoute } from './router';
 import { Home } from './pages/Home';
 import { Jobs } from './pages/Jobs';
@@ -30,6 +30,9 @@ function AppContent() {
   const route = useRoute();
   const { t } = useI18n();
   const [identity, setIdentity] = useState<ClientIdentity | null>(() => {
+    // 邮箱登录身份优先：含真实 tenantId/userId，刷新后直接恢复。
+    const email = storedIdentity();
+    if (email) return email;
     const dev = storedDevIdentity();
     const token = storedAccessToken();
     if (dev) {
@@ -71,6 +74,11 @@ function AppContent() {
     setIdentity({ tenantId: next.tenantId, userId: next.userId, accessToken: undefined });
   }, []);
 
+  const loginEmail = useCallback((next: ClientIdentity) => {
+    saveIdentity(next);
+    setIdentity(next);
+  }, []);
+
   const loginOIDC = useCallback(() => {
     // 由 Login 页触发 startOIDCLogin 跳转，授权码回调后 setIdentity。
   }, []);
@@ -82,8 +90,8 @@ function AppContent() {
   }, []);
 
   const session: Session = useMemo(
-    () => ({ identity, loginDev, loginOIDC, logout }),
-    [identity, loginDev, loginOIDC, logout]
+    () => ({ identity, loginDev, loginOIDC, loginEmail, logout }),
+    [identity, loginDev, loginOIDC, loginEmail, logout]
   );
 
   // 未完成 OIDC 回调判定前不闪登录页（深链接登录 A05）。

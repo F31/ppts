@@ -767,5 +767,17 @@
   "library.downloadFailed": "Failed to get download link",
   "public.statusWithdrawn": "Withdrawn",
   "public.recall": "Recall",
-  "public.recallFailed": "Recall failed"
+  "public.recallFailed": "Recall failed",
+  "login.email": "Email",
+  "login.password": "Password",
+  "login.emailRequired": "Enter your email and password",
+  "login.signInTab": "Sign in",
+  "login.registerTab": "Create account",
+  "login.signIn": "Sign in",
+  "login.register": "Create account",
+  "login.submitting": "Working…",
+  "login.registerFailed": "Registration failed, please try again",
+  "login.invalidCredentials": "Invalid email or password",
+  "login.alreadyHave": "Have an account? Sign in",
+  "login.needAccount": "No account? Create one"
 }

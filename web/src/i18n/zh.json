@@ -767,5 +767,17 @@
   "library.downloadFailed": "下载链接获取失败",
   "public.statusWithdrawn": "已撤回",
   "public.recall": "撤回",
-  "public.recallFailed": "撤回失败"
+  "public.recallFailed": "撤回失败",
+  "login.email": "邮箱",
+  "login.password": "密码",
+  "login.emailRequired": "请输入邮箱和密码",
+  "login.signInTab": "登录",
+  "login.registerTab": "创建账户",
+  "login.signIn": "登录",
+  "login.register": "创建账户",
+  "login.submitting": "处理中…",
+  "login.registerFailed": "注册失败，请稍后重试",
+  "login.invalidCredentials": "邮箱或密码不正确",
+  "login.alreadyHave": "已有账户？去登录",
+  "login.needAccount": "还没有账户？去注册"
 }
