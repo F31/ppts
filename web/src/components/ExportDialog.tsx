@@ -104,6 +104,8 @@ export function ExportDialog({
           />
           {t('editor.exportIncludeNotes')}
         </label>
+        {/* A26：该选项目前只改快照标识，不写进产物 —— 明说，避免"点了却看不到效果"的假能力。 */}
+        <p className="form-hint">{t('editor.exportIncludeNotesNote')}</p>
 
         <p className="export-snapshot">{t('editor.exportSnapshotNote', { snapshot: snapshotTail })}</p>
 

@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS job_steps (
     id           uuid PRIMARY KEY,
     job_id       uuid NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     tenant_id    uuid NOT NULL,
-    step_type    text NOT NULL, -- render/tts_segment/alignment/assembly/export
+    step_type    text NOT NULL, -- pages/tts_segment/timeline/export（实际取值见 internal/app/{ingest,narration,export}.go）
     step_key     text NOT NULL, -- snapshot+step_type+segment/config_hash
     state        text NOT NULL CHECK (state IN ('pending','success','skipped','failed')),
     result_ref   text NOT NULL DEFAULT '', -- 临时对象 ref；提交时与步骤事务一致

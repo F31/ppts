@@ -102,9 +102,16 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if err := h.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: int64(len(data))}); err != nil {
 		return failStep(fmt.Errorf("export job: publish artifact: %w", err))
 	}
+	// 成品时长 = 绑定时间轴的实际时长（迁移 0027）。四种格式同源：MP4 的画面长度由各页
+	// PageDurationsMS 决定，而它正是从这里的时间轴推出的，故与时间轴时长一致。
+	durationMS := int64(0)
+	if bundle.Timeline.DurationUS > 0 {
+		durationMS = bundle.Timeline.DurationUS / 1000
+	}
 	a, err := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
 		ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
 		ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: int64(len(data)),
+		DurationMS: durationMS,
 	})
 	if err != nil {
 		return failStep(err)
@@ -243,13 +250,37 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	for _, slide := range bundle.Timeline.Slides {
 		pageDurations = append(pageDurations, (slide.EndUS-slide.StartUS)/1000)
 	}
+	// 字幕烧录（设计方案 V1_6 §338）：复用时间轴产物里的 SRT —— 画面字幕与 SRT/VTT 产物同源，
+	// 不会出现"烧进视频的字幕和下载的 .srt 不一致"。
+	subtitleSRT, err := h.subtitleForBurning(ctx, job, snapshot, bundle)
+	if err != nil {
+		return nil, err
+	}
 	tmp := filepath.Join(os.TempDir(), "ppts-export-"+job.ID+".mp4")
 	defer os.Remove(tmp)
 	if _, err := h.encoder.Encode(ctx, media.MP4EncodeOptions{
 		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
 		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioWAV: audio,
+		BurnSubtitles: snapshot.BurnSubtitles, SubtitleSRT: subtitleSRT,
 	}); err != nil {
+		if errors.Is(err, media.ErrSubtitlesUnavailable) {
+			// A26：能力缺失必须明确说明原因，而不是静默产出一段没有字幕的视频。
+			return nil, fmt.Errorf("export job: burning subtitles is unavailable on this server: %w", err)
+		}
 		return nil, err
 	}
 	return os.ReadFile(tmp)
+}
+
+// subtitleForBurning 取烧录用字幕（UTF-8 SRT）。未勾选烧录时返回 nil（不读对象）。
+// 独立成方法是为了能在无 ffmpeg 的机器上单测「字幕取自同一时间轴产物」这条不变式。
+func (h *ExportHandler) subtitleForBurning(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset) ([]byte, error) {
+	if !snapshot.BurnSubtitles {
+		return nil, nil
+	}
+	data, err := h.readTenantObject(ctx, job.TenantID, bundle.SRTKey)
+	if err != nil {
+		return nil, fmt.Errorf("export job: read subtitles for burning: %w", err)
+	}
+	return data, nil
 }

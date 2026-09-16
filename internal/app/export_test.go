@@ -27,7 +27,7 @@ func (s *artifactStoreStub) Create(_ context.Context, tenantID string, in artifa
 	s.created = &artifact.Artifact{
 		ID: "artifact-1", TenantID: tenantID, ProjectID: in.ProjectID, SnapshotHash: in.SnapshotHash,
 		Format: in.Format, ObjectKey: in.ObjectKey, ContentHash: in.ContentHash,
-		SizeBytes: in.SizeBytes, CreatedAt: time.Unix(100, 0),
+		SizeBytes: in.SizeBytes, DurationMS: in.DurationMS, CreatedAt: time.Unix(100, 0),
 	}
 	return s.created, nil
 }
@@ -76,7 +76,7 @@ func seedTimelineBundle(t *testing.T, objects objectstore.ObjectStore) (Timeline
 
 func TestExportHandlerPublishesSRTArtifact(t *testing.T) {
 	objects := objectstore.NewLocal(t.TempDir(), nil)
-	_, bundleKey := seedTimelineBundle(t, objects)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
 	artifacts := &artifactStoreStub{}
 	steps := &stepRecorder{}
 	handler := NewExportHandler(artifacts, steps, objects, nil)
@@ -87,6 +87,14 @@ func TestExportHandlerPublishesSRTArtifact(t *testing.T) {
 	}
 	if artifacts.created == nil || artifacts.created.Format != artifact.FormatSRT || artifacts.created.SizeBytes == 0 {
 		t.Fatalf("artifact = %+v", artifacts.created)
+	}
+	// 成品时长（迁移 0027）必须来自绑定时间轴，且非 0 —— 否则成品页的「实际时长」会显示「—」。
+	wantMS := bundle.Timeline.DurationUS / 1000
+	if wantMS <= 0 {
+		t.Fatalf("seed timeline has no duration: %d", bundle.Timeline.DurationUS)
+	}
+	if artifacts.created.DurationMS != wantMS {
+		t.Fatalf("duration = %d ms, want %d ms (from timeline)", artifacts.created.DurationMS, wantMS)
 	}
 	// 最终成功步骤改为随任务终态原子提交（outbox，G3-5），由 PG 测试覆盖原子性。
 	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
@@ -155,6 +163,52 @@ func TestExportHandlerPublishesWebProjectArtifact(t *testing.T) {
 	}
 	if !names["audio/a.wav"] {
 		t.Fatalf("web project zip missing audio clip: entries=%v", names)
+	}
+}
+
+// TestSubtitleForBurningUsesTheSameTimelineBundle 覆盖烧录字幕的来源不变式：
+// 字幕必须取自**同一个时间轴产物**的 SRT（与下载的 .srt 同源），未勾选烧录时不得读对象。
+// 不需要 ffmpeg，因此在本机（无 ffmpeg）也会真正执行。
+func TestSubtitleForBurningUsesTheSameTimelineBundle(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, _ := seedTimelineBundle(t, objects)
+	handler := NewExportHandler(&artifactStoreStub{}, &stepRecorder{}, objects, nil)
+	job := exportJob(t, ExportSnapshot{Format: artifact.FormatMP4, TimelineKey: "unused"})
+
+	// 未勾选 → 不读对象、返回 nil。
+	got, err := handler.subtitleForBurning(context.Background(), job, ExportSnapshot{}, &bundle)
+	if err != nil {
+		t.Fatalf("subtitleForBurning: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("subtitle = %q, want nil when burning is off", got)
+	}
+
+	// 勾选 → 返回该时间轴产物里的 SRT 原文。
+	got, err = handler.subtitleForBurning(context.Background(), job, ExportSnapshot{BurnSubtitles: true}, &bundle)
+	if err != nil {
+		t.Fatalf("subtitleForBurning: %v", err)
+	}
+	srtKey, _ := objectstore.Parse(bundle.SRTKey)
+	if want := readAll(t, objects, srtKey); !bytes.Equal(got, want) {
+		t.Fatalf("subtitle mismatch\n got: %q\nwant: %q", got, want)
+	}
+	if !bytes.Contains(got, []byte("字幕")) {
+		t.Fatalf("subtitle should carry the narration text, got %q", got)
+	}
+}
+
+// TestSubtitleForBurningFailsWhenSRTIsMissing 确保字幕读取失败时明确报错，
+// 而不是让编码器拿到空字幕、静默产出无字幕视频（A26）。
+func TestSubtitleForBurningFailsWhenSRTIsMissing(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	handler := NewExportHandler(&artifactStoreStub{}, &stepRecorder{}, objects, nil)
+	job := exportJob(t, ExportSnapshot{Format: artifact.FormatMP4, TimelineKey: "unused"})
+	missing := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration-job", AssetType: "subtitle", AssetID: "nope", Ext: "srt"}
+	_, err := handler.subtitleForBurning(context.Background(), job, ExportSnapshot{BurnSubtitles: true},
+		&TimelineAsset{SRTKey: missing.String()})
+	if err == nil {
+		t.Fatal("missing SRT must fail the export rather than silently burn nothing")
 	}
 }
 

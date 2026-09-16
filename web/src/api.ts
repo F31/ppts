@@ -363,6 +363,8 @@ export type ProjectArtifact = {
   snapshotHash: string;
   format: 'mp4' | 'srt' | 'vtt' | 'web_project';
   sizeBytes: number;
+  // durationMs：成品所绑定时间轴的实际时长；0 = 未知/未记录（迁移 0027 之前的历史行），显示「—」。
+  durationMs: number;
   createdAt: string;
   downloadable: boolean;
 };

@@ -41,6 +41,8 @@ func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts ar
 			"snapshotHash": a.SnapshotHash,
 			"format":       string(a.Format),
 			"sizeBytes":    a.SizeBytes,
+			// durationMs = 0 表示未知/未记录（0027 之前落库的历史行），前端显示「—」不伪造。
+			"durationMs":   a.DurationMS,
 			"createdAt":    a.CreatedAt.Format(time.RFC3339),
 			"downloadable": a.ObjectKey != "",
 		})

@@ -33,6 +33,12 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// formatDuration 把毫秒渲染成「分:秒」（调用方保证 ms > 0；未知时长由调用方显示 t('common.none')）。
+function formatDuration(ms: number): string {
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
 export function ProjectArtifacts({ identity, projectId }: { identity: ClientIdentity; projectId: string }) {
   const { t } = useI18n();
   const [snap, setSnap] = useState<SnapshotState>({
@@ -197,6 +203,9 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
                         <li className="artifact-row" key={a.id}>
                           <span className={`artifact-badge artifact-${a.format}`}>
                             {t(FORMAT_KEY[a.format] ?? a.format)}
+                          </span>
+                          <span className="artifact-meta">
+                            {t('artifacts.duration')}: {a.durationMs > 0 ? formatDuration(a.durationMs) : t('common.none')}
                           </span>
                           <span className="artifact-meta">
                             {t('artifacts.createdAt')}: {new Date(a.createdAt).toLocaleString()}

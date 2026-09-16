@@ -588,6 +588,38 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **验证**：`tsc -b` ✅ + `vite build` ✅（55 modules，CSS 49.06 → 50.01 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（**0 FAIL**；全量 14 项 SKIP 仍全为环境依赖型，`internal/api` 0 SKIP）。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
 
+### 零散遗留收口（2026-09-16，非批次里程碑）
+
+按"先执行 B4-M6b、再执行零散遗留"的指令，逐项**按文件核实**后收口（R-8：清单会过时）。
+
+| 项 | 核实结论 | 处置 |
+|---|---|---|
+| D0-8 favicon | `web/` 下**无任何 favicon 资源**（无 `public/`、无 `.ico/.svg`），`index.html` 也无 `<link rel="icon">` | **已补**：新增 `web/public/favicon.svg`（深色底 + 青色播放键/屏幕语汇，与 `#10131a`/`#67e8f9` 一致）+ `index.html` 挂 `link`；`vite build` 后 `dist/favicon.svg` 存在（382 B） |
+| `theme-color` 不随主题 | 原值是硬编码 `#10131a`，浅色主题下浏览器 UI 与页面底色不一致 | **已补**：内联主题脚本按实际主题改写 `theme-color`（浅色 `#eef1f6`） |
+| `0001_init.sql` 的 `step_type` 注释 | 注释写 `render/tts_segment/alignment/assembly/export`，与 worker **实际写入**不符 | **已修**：改为 `pages/tts_segment/timeline/export` 并注明来源文件（`app/ingest.go:123`、`app/narration.go:331,475`、`app/export.go:64`）。无校验和机制，改注释不影响已迁移库 |
+| MP4 字幕烧录 | `ExportSnapshot.BurnSubtitles` 被 UI 收集、被 api 存入快照，但 `renderMP4` **完全忽略**；`MP4EncodeOptions` 无字幕项。**注意：UI 文案此前已如实标注"服务端暂不执行烧录"，故不构成 A26 假能力，而是"已披露且设计 §338 要求"的功能缺口** | **已接入**（见下） |
+| artifact 缺 `duration` | `Artifact`/`NewArtifact` 均无时长字段（设计 §332 要求成品展示"实际时长"），成品的时长列一直无法展示 | **已补**：迁移 0027 + 全链路（见下） |
+| R-12 `StorageUsage` 无统计时间 | 需改 proto（本环境 protoc 不可用） | **本轮不动**，维持"取数于 {时刻}"的如实标注 |
+| C-6 切租户 | 需后端新增"我的租户列表"RPC（proto）或明确"不做" | **本轮不动**，口径仍待定 |
+
+**MP4 字幕烧录（已接入）**：
+- **可测性重构**：`media.Encode` 里的 ffmpeg 参数构造抽成**纯函数** `compileEncodeArgs(opts, encodeInputs)` —— 不 IO、不 exec，因此**在没有 ffmpeg 的机器上也能单测滤镜链**（此前整条链只有被 Skip 的端到端用例覆盖）。新增 `internal/media/mp4_args_test.go` 11 例（含逐字符锁定的 filter_complex 断言）。
+- **接线**：字幕挂为**最后一级**滤镜 —— 变时长路径 `concat=...[vbase];[vbase]subtitles=...[vout]`（杜绝"烧录后仍映射旧标签"的静默失效），等时长路径追加到 `-vf`。
+- **路径转义**：字幕以**固定 basename**（`subtitles.srt`）引用 + `exec.Cmd.Dir = 工作目录`，规避 filtergraph 里 Windows 盘符冒号/反斜杠的转义坑。
+- **能力探测 + A26**：新增 `MP4Encoder.SupportsSubtitles`（`ffmpeg -filters` 是否含 `subtitles`，进程内缓存）；缺 **libass** 时返回哨兵错误 `ErrSubtitlesUnavailable`，由 `renderMP4` 转成**明确失败原因**——不静默产出一段没有字幕的视频。
+- **同源**：烧录用的 SRT 直接取自**同一条时间轴产物**（`bundle.SRTKey`），保证画面字幕与可下载的 `.srt` 一致；抽成 `subtitleForBurning` 以便无 ffmpeg 单测（新增 2 例：同源 + SRT 缺失必须失败）。
+- **UI 文案**：`editor.exportBurnNote` 从"暂不执行烧录"改为**真实行为**（含"服务端 ffmpeg 缺 libass 会明确失败"）；顺带为 `includeNotes` 补 `exportIncludeNotesNote` —— 核实发现该开关**只影响快照标识**（会多出一个内容相同的成品版本），不写进任何产物，按 A26 明说而非留白。
+- **部署前提（未在本机验证）**：烧录依赖 ffmpeg 带 libass，且 **libass 渲染中文需要 fontconfig 下有 CJK 字体**；本机无 ffmpeg，故端到端路径仅能靠上述单测 + 语法锁定保障，**需在具备 ffmpeg+libass+中文字体的环境做一次实机验收**（已登记为待验项）。
+
+**artifact 时长（已补）**：
+- 迁移 `0027_artifact_duration.sql`：`artifacts.duration_ms bigint NOT NULL DEFAULT 0`（**0 = 未知/未记录**，界面显示「—」不伪造；历史行保持默认值）。仅加列，表级授权已覆盖，无需新 GRANT/RLS。
+- 写入：`app.ExportHandler` 用 `bundle.Timeline.DurationUS / 1000` 落库 —— MP4 画面长度、SRT/VTT 字幕跨度、Web 工程总长**同源**，四种格式含义一致，无需按格式分支。
+- `internal/artifact/postgres.go`：抽出**单一列清单** `artifactColumns`（Create 的 RETURNING / Get / ListByProject / scan 共用），避免新增列时只改一处导致扫描错位（该错位编译期不可见）；`scan`/`scanRows` 收敛为同一实现。冲突分支顺带 `duration_ms=EXCLUDED.duration_ms`，让 0027 之前的历史行在重导出时自愈。
+- 端点 `GET /projects/{pid}/artifacts` 增加 `durationMs`；前端 `ProjectArtifacts.tsx` 增加「实际时长」列（`分:秒`，0 显示 `—`）。
+- 测试：`app/export_test.go` 的桩补 `DurationMS` 透传，并在无 ffmpeg 也会执行的 SRT 用例中断言"时长 == 时间轴时长且 > 0"。
+
+**验证**：`gofmt` 清白；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（22 包全绿、**0 FAIL**）；`tsc -b` ✅ + `vite build` ✅（CSS 50.01 kB、`dist/favicon.svg` 就位）；迁移以 `sqlglot` Postgres 方言校验（0027 单语句 OK）。
+
 ### B5 可选增强（独立立项）
 
 全局成品库、命令面板、邮箱自助注册、**用户作品公开发布与撤回**（`publicId` 不可反推、撤回即失效含 CDN 清理、删除级联失效）。发布能力不完整则入口整体不上线。

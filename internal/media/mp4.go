@@ -10,10 +10,20 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ErrFFmpegUnavailable 表示 FFmpeg/ffprobe 未安装。
 var ErrFFmpegUnavailable = errors.New("media: ffmpeg or ffprobe not found")
+
+// ErrSubtitlesUnavailable 表示本机 ffmpeg 未编译 libass（缺 subtitles 滤镜），无法烧录字幕。
+// 单独作为哨兵错误：调用方据此给出「明确不可用 + 原因」，而不是让用户拿到一段没有字幕的视频（A26）。
+var ErrSubtitlesUnavailable = errors.New("media: ffmpeg lacks the subtitles filter (libass)")
+
+// subtitleFileName 是烧录用字幕在工作目录内的固定文件名。
+// 以 basename（而非绝对路径）引用：filtergraph 中的路径转义（Windows 盘符冒号、反斜杠）极易出错，
+// 改用相对路径 + exec.Cmd.Dir 可完全规避。文件名由服务端生成，不含需转义字符。
+const subtitleFileName = "subtitles.srt"
 
 // MP4EncodeOptions 是 MP4 静态画面合成参数（G0-3 最小链路；G1 起由时间轴驱动）。
 // 结果 must 通过 ffprobe + 抽帧验证（V4.0 §9.2）。
@@ -27,6 +37,10 @@ type MP4EncodeOptions struct {
 	PageDurationsMS []int64
 	AudioWAV        []byte  // 可选：音频（WAV）；nil 时用静音轨填充
 	Totals          float64 // 总时长（秒）显式给定；0 = len(PagePNGs)/FPS
+	// BurnSubtitles 为 true 时把 SubtitleSRT 压进画面（设计方案 V1_6 §338「字幕烧录选项」）。
+	BurnSubtitles bool
+	// SubtitleSRT 为 UTF-8 编码的 SRT 内容；BurnSubtitles 为 true 时必填（缺失即报错，不静默降级）。
+	SubtitleSRT []byte
 }
 
 // MP4EncodeResult 是编码后的 ffprobe 验证结果。
@@ -52,6 +66,11 @@ type ffprobeStream struct {
 type MP4Encoder struct {
 	ffmpeg  string
 	ffprobe string
+
+	// subtitles 滤镜（libass）能力探测结果，进程内只探一次（本类型只以指针使用，不可复制）。
+	subOnce sync.Once
+	subOK   bool
+	subErr  error
 }
 
 // NewMP4Encoder 解析 ffmpeg/ffprobe 路径；缺失返回 ErrFFmpegUnavailable。
@@ -64,50 +83,62 @@ func NewMP4Encoder() (*MP4Encoder, error) {
 	return &MP4Encoder{ffmpeg: fm, ffprobe: fp}, nil
 }
 
-// Encode 由页面图序列合成 MP4。页面图写入临时目录以 img-%d.png 命名，
-// 经输入序列喂给 FFmpeg；画面在目标框内等比适配留边（不拉伸，V4.0 §3.4）。
-func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4EncodeResult, error) {
+// SupportsSubtitles 探测本机 ffmpeg 是否带 subtitles 滤镜（libass），结果进程内缓存。
+// 上报给调用方是为了让「烧录」在能力缺失时能被明确说明，而不是产出无字幕视频（A26）。
+func (e *MP4Encoder) SupportsSubtitles(ctx context.Context) (bool, error) {
+	e.subOnce.Do(func() {
+		out, err := exec.CommandContext(ctx, e.ffmpeg, "-hide_banner", "-filters").CombinedOutput()
+		if err != nil {
+			e.subErr = fmt.Errorf("media: probe ffmpeg filters: %w", err)
+			return
+		}
+		// 行格式： <flags> <name> <in->out> <description>
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && fields[1] == "subtitles" {
+				e.subOK = true
+				return
+			}
+		}
+	})
+	return e.subOK, e.subErr
+}
+
+// encodeInputs 是输入文件在工作目录内的落点，供 compileEncodeArgs 构造命令行。
+// 所有字段均为绝对路径（字幕除外 —— 它以固定 basename 相对工作目录引用）。
+type encodeInputs struct {
+	WorkDir string
+	// PageFiles 长度 = len(PagePNGs)，为各页 PNG 的绝对路径（可变时长时即输入顺序）。
+	PageFiles []string
+	// PagePattern 非空 = image2 序列输入（多页且等时长），值为含 %d 的绝对路径。
+	PagePattern string
+	// AudioFile 非空 = 使用该 WAV；空 = 由 lavfi 生成静音轨。
+	AudioFile string
+}
+
+// compileEncodeArgs 由编码选项与输入落点构造完整的 ffmpeg 参数与目标总时长。
+//
+// 纯函数：不做任何 IO、不 exec —— 因此滤镜链（含字幕烧录）可以在**没有 ffmpeg 的机器上**被单测覆盖，
+// 这正是本函数从 Encode 里抽出来的原因。
+func compileEncodeArgs(opts MP4EncodeOptions, in encodeInputs) ([]string, float64, error) {
 	if len(opts.PagePNGs) == 0 {
-		return nil, errors.New("media: no page images to encode")
+		return nil, 0, errors.New("media: no page images to encode")
 	}
 	variablePageTiming := len(opts.PageDurationsMS) > 0
 	if variablePageTiming && len(opts.PageDurationsMS) != len(opts.PagePNGs) {
-		return nil, errors.New("media: page duration count does not match page images")
+		return nil, 0, errors.New("media: page duration count does not match page images")
 	}
 	if variablePageTiming && opts.Totals > 0 {
-		return nil, errors.New("media: PageDurationsMS and Totals are mutually exclusive")
+		return nil, 0, errors.New("media: PageDurationsMS and Totals are mutually exclusive")
 	}
-	work, err := os.MkdirTemp("", "ppts-mp4-*")
-	if err != nil {
-		return nil, err
+	if opts.BurnSubtitles && len(opts.SubtitleSRT) == 0 {
+		return nil, 0, errors.New("media: burn subtitles requested without subtitle data")
 	}
-	defer os.RemoveAll(work)
-
-	var inputImages string
-	if variablePageTiming {
-		for i, png := range opts.PagePNGs {
-			name := "img-" + strconv.Itoa(i+1) + ".png"
-			if opts.PageDurationsMS[i] <= 0 {
-				return nil, errors.New("media: page durations must be positive")
-			}
-			if err := os.WriteFile(filepath.Join(work, name), png, 0o644); err != nil {
-				return nil, err
-			}
-		}
-	} else if len(opts.PagePNGs) > 1 {
-		for i, png := range opts.PagePNGs {
-			if err := os.WriteFile(filepath.Join(work, "img-"+strconv.Itoa(i+1)+".png"), png, 0o644); err != nil {
-				return nil, err
-			}
-		}
-		inputImages = filepath.Join(work, "img-%d.png")
-	} else {
-		// 单页：写成确定性单文件，FFmpeg 逐帧循环即可（image2 demuxer 的 -loop）。
-		single := filepath.Join(work, "single.png")
-		if err := os.WriteFile(single, opts.PagePNGs[0], 0o644); err != nil {
-			return nil, err
-		}
-		inputImages = single
+	if len(in.PageFiles) != len(opts.PagePNGs) {
+		return nil, 0, errors.New("media: page file count does not match page images")
+	}
+	if len(opts.PagePNGs) > 1 && !variablePageTiming && in.PagePattern == "" {
+		return nil, 0, errors.New("media: missing image sequence pattern")
 	}
 
 	fps := opts.FPS
@@ -130,8 +161,11 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 	if variablePageTiming {
 		var totalMS int64
 		for _, durationMS := range opts.PageDurationsMS {
+			if durationMS <= 0 {
+				return nil, 0, errors.New("media: page durations must be positive")
+			}
 			if totalMS > int64(^uint64(0)>>1)-durationMS {
-				return nil, errors.New("media: page duration overflow")
+				return nil, 0, errors.New("media: page duration overflow")
 			}
 			totalMS += durationMS
 		}
@@ -141,25 +175,22 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 	}
 
 	args := []string{"-y"}
-	if variablePageTiming {
+	switch {
+	case variablePageTiming:
 		for i, durationMS := range opts.PageDurationsMS {
 			args = append(args,
 				"-loop", "1", "-framerate", strconv.Itoa(fps),
 				"-t", millisecondsDecimal(durationMS),
-				"-i", filepath.Join(work, "img-"+strconv.Itoa(i+1)+".png"),
+				"-i", in.PageFiles[i],
 			)
 		}
-	} else if len(opts.PagePNGs) > 1 {
-		args = append(args, "-framerate", strconv.Itoa(fps), "-i", inputImages)
-	} else {
-		args = append(args, "-loop", "1", "-framerate", strconv.Itoa(fps), "-i", inputImages)
+	case len(opts.PagePNGs) > 1:
+		args = append(args, "-framerate", strconv.Itoa(fps), "-i", in.PagePattern)
+	default:
+		args = append(args, "-loop", "1", "-framerate", strconv.Itoa(fps), "-i", in.PageFiles[0])
 	}
-	if len(opts.AudioWAV) > 0 {
-		audio := filepath.Join(work, "audio.wav")
-		if err := os.WriteFile(audio, opts.AudioWAV, 0o644); err != nil {
-			return nil, err
-		}
-		args = append(args, "-i", audio)
+	if in.AudioFile != "" {
+		args = append(args, "-i", in.AudioFile)
 	} else {
 		args = append(args,
 			"-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
@@ -170,6 +201,11 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 		"-c:v", "libx264", "-pix_fmt", "yuv420p",
 		"-c:a", "aac", "-b:a", "128k",
 	)
+	subtitle := ""
+	if opts.BurnSubtitles {
+		// 相对 basename（cwd = in.WorkDir），规避 filtergraph 路径转义。
+		subtitle = "subtitles=filename=" + subtitleFileName
+	}
 	if variablePageTiming {
 		var filter strings.Builder
 		for i, durationMS := range opts.PageDurationsMS {
@@ -180,19 +216,106 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 		for i := range opts.PagePNGs {
 			fmt.Fprintf(&filter, "[v%d]", i)
 		}
-		fmt.Fprintf(&filter, "concat=n=%d:v=1:a=0[vout]", len(opts.PagePNGs))
+		fmt.Fprintf(&filter, "concat=n=%d:v=1:a=0", len(opts.PagePNGs))
+		if subtitle != "" {
+			// 字幕挂为最后一级：concat 先出 [vbase]，再烧录为 [vout]。
+			filter.WriteString("[vbase];[vbase]" + subtitle + "[vout]")
+		} else {
+			filter.WriteString("[vout]")
+		}
 		audioInput := len(opts.PagePNGs)
 		args = append(args,
 			"-filter_complex", filter.String(),
 			"-map", "[vout]", "-map", fmt.Sprintf("%d:a:0", audioInput),
 		)
 	} else {
-		args = append(args, "-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2", w, h, w, h))
+		vf := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2", w, h, w, h)
+		if subtitle != "" {
+			vf += "," + subtitle
+		}
+		args = append(args, "-vf", vf)
 	}
 	args = append(args, "-t", strconv.FormatFloat(total, 'f', 6, 64))
 	args = append(args, opts.OutPath)
+	return args, total, nil
+}
 
+// Encode 由页面图序列合成 MP4。页面图写入临时目录以 img-%d.png 命名，
+// 经输入序列喂给 FFmpeg；画面在目标框内等比适配留边（不拉伸，V4.0 §3.4）。
+// BurnSubtitles 为 true 时把 SubtitleSRT 压进画面（ffmpeg 需带 libass）。
+func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4EncodeResult, error) {
+	if len(opts.PagePNGs) == 0 {
+		return nil, errors.New("media: no page images to encode")
+	}
+	if opts.BurnSubtitles {
+		if len(opts.SubtitleSRT) == 0 {
+			return nil, errors.New("media: burn subtitles requested without subtitle data")
+		}
+		// 能力前置校验：缺 libass 时明确失败，不产出无字幕的视频（A26）。
+		ok, err := e.SupportsSubtitles(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrSubtitlesUnavailable
+		}
+	}
+	work, err := os.MkdirTemp("", "ppts-mp4-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(work)
+
+	variablePageTiming := len(opts.PageDurationsMS) > 0
+	in := encodeInputs{WorkDir: work}
+	switch {
+	case variablePageTiming:
+		in.PageFiles = make([]string, len(opts.PagePNGs))
+		for i, png := range opts.PagePNGs {
+			name := "img-" + strconv.Itoa(i+1) + ".png"
+			if err := os.WriteFile(filepath.Join(work, name), png, 0o644); err != nil {
+				return nil, err
+			}
+			in.PageFiles[i] = filepath.Join(work, name)
+		}
+	case len(opts.PagePNGs) > 1:
+		in.PageFiles = make([]string, len(opts.PagePNGs))
+		for i, png := range opts.PagePNGs {
+			name := "img-" + strconv.Itoa(i+1) + ".png"
+			if err := os.WriteFile(filepath.Join(work, name), png, 0o644); err != nil {
+				return nil, err
+			}
+			in.PageFiles[i] = filepath.Join(work, name)
+		}
+		in.PagePattern = filepath.Join(work, "img-%d.png")
+	default:
+		// 单页：写成确定性单文件，FFmpeg 逐帧循环即可（image2 demuxer 的 -loop）。
+		single := filepath.Join(work, "single.png")
+		if err := os.WriteFile(single, opts.PagePNGs[0], 0o644); err != nil {
+			return nil, err
+		}
+		in.PageFiles = []string{single}
+	}
+	if len(opts.AudioWAV) > 0 {
+		audio := filepath.Join(work, "audio.wav")
+		if err := os.WriteFile(audio, opts.AudioWAV, 0o644); err != nil {
+			return nil, err
+		}
+		in.AudioFile = audio
+	}
+	if opts.BurnSubtitles {
+		if err := os.WriteFile(filepath.Join(work, subtitleFileName), opts.SubtitleSRT, 0o644); err != nil {
+			return nil, err
+		}
+	}
+
+	args, _, err := compileEncodeArgs(opts, in)
+	if err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, e.ffmpeg, args...)
+	// 工作目录 = work：字幕滤镜以相对 basename 引用（见 subtitleFileName 注释）。
+	cmd.Dir = work
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("media: ffmpeg encode failed: %w\n%s", err, string(out))
 	}
