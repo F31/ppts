@@ -15,7 +15,7 @@ export function describeApiError(error: unknown, fallback: string, t?: Translato
   if (error instanceof ConnectError) {
     // ConnectError 的 code 对原生 HTTP 端点是 `http_<status>`，对 Connect RPC 是标准码。
     if (t) {
-      if (error.code === 'unimplemented') return t('err.unimplemented');
+      if (error.code === 'unimplemented' || error.code === 'http_501') return t('err.unimplemented');
       if (error.code === 'http_404' || error.code === 'not_found') return t('err.notFound');
       if (error.code === 'http_401' || error.code === 'unauthenticated') return t('err.unauthenticated');
       if (error.code === 'http_403' || error.code === 'permission_denied') return t('err.forbidden');

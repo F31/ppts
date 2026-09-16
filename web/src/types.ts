@@ -167,6 +167,32 @@ export const jobKindKey: Record<string, string> = {
   export: 'enum.jobKind.export'
 };
 
+// B4-M6a：任务步骤类型/状态与范围种类（原生端点 /jobs/{id}/detail、/jobs/summary 的取值）。
+// 步骤类型在库里是自由文本（migrations/0001_init.sql:78），此处只登记**当前 handler 实际写入**的取值
+// （app/ingest.go:123 "pages"、app/narration.go:331 "tts_segment"、app/narration.go:475 "timeline"、
+// app/export.go:64 "export"）；未登记的值界面直接显示原文，不做猜测性翻译。
+export const jobStepTypeKey: Record<string, string> = {
+  pages: 'enum.jobStepType.pages',
+  tts_segment: 'enum.jobStepType.ttsSegment',
+  timeline: 'enum.jobStepType.timeline',
+  export: 'enum.jobStepType.export'
+};
+
+export const jobStepStateKey: Record<string, string> = {
+  pending: 'enum.jobStepState.pending',
+  success: 'enum.jobStepState.success',
+  skipped: 'enum.jobStepState.skipped',
+  failed: 'enum.jobStepState.failed'
+};
+
+export const jobScopeKindKey: Record<string, string> = {
+  project: 'enum.jobScope.project',
+  pages: 'enum.jobScope.pages',
+  segments: 'enum.jobScope.segments',
+  export: 'enum.jobScope.export',
+  unknown: 'enum.jobScope.unknown'
+};
+
 // ---- 租户（TenantService） ----
 
 export type Role = 'ROLE_OWNER' | 'ROLE_ADMIN' | 'ROLE_EDITOR' | 'ROLE_REVIEWER' | 'ROLE_VIEWER';

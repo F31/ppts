@@ -168,8 +168,8 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | 列表 + 详情 + 取消 + 重试 | 已实现 | ✅ |
 | 轮询（活跃 2~3s / 后台 10~15s） | 统一 5s | ⚠️ |
 | WatchEvents 服务端流 + 断线回退 | 后端已实现，前端未接 | ❌ |
-| 列表列：项目/类型/提交时间/**范围**/**阶段**/进度/状态 | 缺"范围""阶段"，项目只显示 id 前 12 位 | ⚠️ |
-| 详情：步骤(JobStep)/受影响页/输入版本/traceId | 缺步骤、受影响页、traceId | ❌ |
+| 列表列：项目/类型/提交时间/**范围**/**阶段**/进度/状态 | **已补"范围""阶段"**（B4-M6a）；项目仍显示 id 前 12 位 | ✅ |
+| 详情：步骤(JobStep)/受影响页/输入版本/traceId | **已补**（B4-M6a，原生 HTTP `GET /jobs/{jid}/detail`） | ✅ |
 | "正在取消" → 服务端确认后"已取消" | 有枚举与样式，无过渡文案 | ⚠️ |
 | 局部失败"重试失败部分" | RetryFailed 为任务级 | ⚠️ A18 |
 | 供应商结果未知"正在核实生成结果" | 有 `UNKNOWN_PROVIDER_RESULT` 枚举与文案 | ⚠️ |
@@ -428,7 +428,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 > - **后端**：`GOPROXY=https://goproxy.cn,direct GOSUMDB=off go build ./...`（`proxy.golang.org` 走 IPv6 不可达；模块缓存原本为空，需指定可达代理首次拉取）。
 > - **静态检查/测试**：`GOPROXY=https://goproxy.cn,direct GOSUMDB=off go vet ./internal/...`、`go test ./internal/...`。
 > - **前置缺陷已修复（R-9，2026-09-16）**：`internal/api` 47 处 `NewHandler` 调用补 `pool` 实参、`internal/app` 测试桩补 `ListByProject`、`internal/integrations/render` 的 poppler 用例补 Skip 守卫（对齐同文件 LibreOffice 用例），另修 `internal/api/narration.go` 既存 import 乱序。**`go vet ./internal/...` 与 `go test ./internal/...` 现已全绿**（`internal/api` 45 个用例通过；14 项 Skip 全为环境依赖型：PG / ffmpeg / S3 / LLM·TTS 凭据 / LibreOffice / poppler），后续每个里程碑以此为回归基线。
-> 勘察结论（2026-09-16，逐文件核实）：① 角色由 `TenantService.Members` 读取后以 props 下传（`App.tsx:104-121`），**全仓无路由守卫**，仅两处 ad-hoc 角色分支（`ProjectEditor.canReview`、`PublicAdmin.isAdmin`）；② 模型服务仅"已配置 + 本次测试"两态，后端无持久化测试状态（`0023_model_gateways.sql` 无 tested_at/status 列）；③ 无 fake provider，`web/src/mockData.ts` 为死文件；④ Player 无任何键盘处理，无底部固定播放条；⑤ 首页为 hero/统计/最近项目/最近任务，无"待处理事项/最近成品"；⑥ 任务列表缺 范围/阶段/步骤/受影响页；`job_steps` 表**已存在但无任何 RPC 暴露**，`jobs.traceparent` 存在但未进 proto；⑦ **无**"我的租户列表"RPC，**无**任何 per-user 偏好存储（migrations 无偏好表）。
+> 勘察结论（2026-09-16，逐文件核实）：① 角色由 `TenantService.Members` 读取后以 props 下传（`App.tsx:104-121`），**全仓无路由守卫**，仅两处 ad-hoc 角色分支（`ProjectEditor.canReview`、`PublicAdmin.isAdmin`）；② 模型服务仅"已配置 + 本次测试"两态，后端无持久化测试状态（`0023_model_gateways.sql` 无 tested_at/status 列）；③ 无 fake provider，`web/src/mockData.ts` 为死文件；④ Player 无任何键盘处理，无底部固定播放条；⑤ 首页为 hero/统计/最近项目/最近任务，无"待处理事项/最近成品"；⑥ 任务列表缺 范围/阶段/步骤/受影响页；`job_steps` 表**已存在但无任何 RPC 暴露**，`jobs.traceparent` 存在但未进 proto（→ **B4-M6a 已以原生 HTTP 端点暴露，见 §5；且范围/受影响页/输入版本经核实已存于 `input_snapshot`，无需迁移**）；⑦ **无**"我的租户列表"RPC，**无**任何 per-user 偏好存储（migrations 无偏好表）。
 
 - **B4-M1 权限边界组件（PermissionBoundary）【已实施】**：
   - 新增 `web/src/permissions.ts`：能力模型逐条镜像服务端 `requireRole`（`roles.go` rank：viewer0 < reviewer1 < editor2 < admin3 < owner4）；16 项能力各注明服务端依据文件行号；`can(role, cap)` 在 `role === undefined`（成员体系未配置/读取失败）时放行，与服务端 `requireRole` 的 nil-reader 放行语义一致，避免"前端隐藏、后端放行"的新不一致。
@@ -522,7 +522,36 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
     - **顺带修掉相邻缺陷**：同页 `revision` 推进不再清空段落选择集（旧实现每次自动保存都会清掉用户为工具栏选中的段落）。
     - **验证**：`tsc -b` + `vite build` ✅ + `go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅。该缺陷无自动化 UI 测试覆盖（仓库无前端测试基建），修法以"状态机三条不变式"逐条对照源码复核：①切页必重置；②服务端落库不得覆盖未提交编辑；③同一 `expectedRevision` 不得并发提交。
   - **验证**：`tsc -b` + `vite build` ✅（55 modules；D0-9 后 CSS 49.06 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保基线可信）。
-- **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
+- **B4-M6a 任务列表/详情补 范围/阶段/步骤/受影响页/traceId【已实施】**（B4-⑥ 的可实施部分；“范围/受影响页服务端完全不存在”的旧结论已更正）：
+  - **更正勘察结论（R-8「缺失项要按文件核实」）**：原记录称“范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026”。**逐字段核实后不成立** —— 任务快照 `input_snapshot` 已含全部所需信息：
+
+    | 展示项 | 权威来源 | 说明 |
+    |---|---|---|
+    | 范围（kind / 页数 / 受影响页） | `NarrationSnapshot.Slides[]`+`SegmentIDs`、`ScriptDraftSnapshot.SlideIDs[]`、`ParseSnapshot.RevisionNo`、`ExportSnapshot.Format`+`PagePNGKeys` | 按任务种类解析快照即得，**无需新列** |
+    | 输入版本 | 上述快照的 `RevisionNo` / `ScriptRevision` | 同上 |
+    | traceId | `jobs.traceparent`（迁移 `0018_job_traceparent.sql`） | 列已存在 |
+    | 步骤 | `job_steps` 表（迁移 `0001_init.sql:74-85`） | 表已存在但此前无任何端点暴露 |
+
+    - **真正缺“列”的只有“阶段”**：库中无 phase 字段，故由 `job_steps` **最近更新的步骤类型**推导（`max(updated_at)` 对应的 `step_type`）；无步骤时留空、界面显示「—」而不伪造。
+    - 结论：**M6a 不需要迁移 0026**。“阶段/受影响页”升为**服务端持久化独立列**仍是 M6b（见下），但已非“前端无数据可用”。
+  - **后端（原生 HTTP，protoc 不可用、不改 proto）** —— 新增 `internal/api/jobdetail.go`，在 `server.go` 的 `registerEditorRoutes` 之后挂载：
+    - `GET /jobs/{jid}/detail` → `{jobId, kind, traceId, scope, steps[], stepCounts, stepTotal, stepsTruncated, stepsError?}`。
+    - `GET /jobs/summary?ids=a,b,c` → `{jobs:{<id>:{scope, phase, stepTotal, stepCounts}}, stepsError?}`（列表页**单次批量取**，避免 N+1）。
+    - 上限：`maxJobSummaryIDs=100`、`maxJobSteps=500`、`maxScopePages=200`；步骤超限保留**最近** N 条并置 `stepsTruncated=true`（`stepCounts`/`stepTotal` 仍为全量），受影响页超限则截断列表但 `pageCount` 保持完整（界面据 `pageCount > len(affectedPages)` 提示“已截断”）。
+    - **不透内部对象键**：每步只回 `stepType/state/updatedAtUnix/hasResult`，`result_ref`（内部对象键）不外泄；`ExportSnapshot.PagePNGKeys` 只计数、不返回键。
+    - **权限与 `JobService.Get/List` 同级（仅需已认证）**，不加角色门禁 —— 避免 viewer「能进列表、点详情必 403」的假能力（A22）；理由已写入源码注释。
+    - **A26 降级**：store 未实现 `JobInspector` → `stepsError:"unsupported"`（501）；步骤读取失败 → `stepsError:"load_failed"`（部分数据仍返回，不压成空态）。
+    - `internal/pipeline`：`PGStore` 新增 `GetMany`/`ListSteps`/`StepSummaries`；新增 `JobStepSummary{Phase,Total,Counts,LastAt}`；**`Get` 现包裹 `ErrJobNotFound`**（此前未包裹 → api 侧 `jobError` 映射成 500，修为 404）。
+    - 修复 `writeConnectError`（`narration.go`）缺失的 `CodeUnimplemented → 501` 映射（此前返回 500）；该缺口由新测试 `TestPublicJobsSummaryUnsupportedStore` 暴露。
+  - **前端** —— `web/src/pages/Jobs.tsx`（列表 + 详情面板）：
+    - 列表新增「范围」「阶段」两列，经 `getJobsSummary` 按当前页 ID 批量取；取数失败显式报错 + 重试（`.load-failure`），**不落成空白单元格**；`stepsError` 单独提示原因。
+    - 详情面板新增「范围 / 受影响页 / 输入版本 / traceId」与「执行步骤」表格；原始 `inputSnapshot` 改为可折叠 `<details>`（调试/审计用）。
+    - 步骤不可用区分 `unsupported`（无重试，能力未实现）与 `load_failed`（带重试）——A26。
+    - 详情重取用请求序号 `detailSeqRef` 丢弃过期响应（快速切任务 / 连点重试时，慢响应不得覆盖新结果）。
+    - `web/src/api.ts` 新增 `getJobDetail`/`getJobsSummary` 及 `JobStep`/`JobScope`/`JobExtras`/`JobDetail` 类型；`web/src/types.ts` 新增 `jobStepTypeKey`/`jobStepStateKey`/`jobScopeKindKey`（`step_type` 为自由文本，未登记值原样显示）；`apiError.ts` 把 `http_501` 映射为 `err.unimplemented`。
+    - i18n：中英各 38 键（键数校验 724/724 对齐）。
+  - **验证**：`tsc -b` + `vite build` ✅（CSS 49.06 → 49.64 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（新增 `jobdetail_test.go` 11 例全 PASS；`steps_read_test.go` 带 `pg` tag，未设 `PPTS_TEST_DATABASE` 时 SKIP，符合仓库“环境依赖型测试必须 Skip”惯例）。
+- **B4-M6b 将“阶段/受影响页”升为服务端持久化列【待实施/可选增强】**：若后续需要按阶段/受影响页**排序、筛选或由 API 直接返回**，则需迁移 0026 新增 `jobs.phase`/`affected_pages`（或独立表）并先在 B5 前定口径。本轮 M6a 已用 `input_snapshot` + `job_steps` 覆盖**展示**需求，故 M6b 为**可选增强、非阻塞项**。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
 
 ### B5 可选增强（独立立项）

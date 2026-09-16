@@ -392,6 +392,10 @@ func writeConnectError(w http.ResponseWriter, err error) {
 		status = http.StatusTooManyRequests
 	case connect.CodeAlreadyExists:
 		status = http.StatusConflict
+	case connect.CodeUnimplemented:
+		// 能力未配置/后端不支持（如 store 未实现可选读取能力）：语义上是 501，
+		// 与 Internal 区分开，前端才能给出"该能力不可用"而非"服务异常"的提示。
+		status = http.StatusNotImplemented
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

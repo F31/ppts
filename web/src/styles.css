@@ -468,6 +468,16 @@ input { border: 1px solid rgba(255,255,255,.14); border-radius: 10px; padding: 9
 .profile-dl dt { color: #8aa1c4; }
 .profile-dl dd { margin: 0; color: #e6eefc; overflow-wrap: anywhere; }
 .job-detail { margin-bottom: 0; }
+/* B4-M6a：任务详情——执行步骤区、步骤状态徽标与原始快照折叠块。 */
+.steps-section { margin-top: 18px; }
+.steps-section .table-head h2 { margin: 6px 0 10px; }
+.steps-scroll { max-height: 340px; overflow: auto; }
+.snapshot-raw { margin: 8px 0 0; padding: 12px; max-height: 240px; overflow: auto; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(5, 10, 20, .72); color: #edf1f7; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.6; }
+/* 步骤状态色与任务状态色分开命名（step-*），避免与 .state-tag.success 之类的既有语义混淆。 */
+.state-tag.step-pending { color: #67e8f9; background: rgba(103,232,249,.12); }
+.state-tag.step-success { color: #86efac; background: rgba(134,239,172,.12); }
+.state-tag.step-skipped { color: #9fb1cf; background: rgba(159,177,207,.12); }
+.state-tag.step-failed { color: #fca5a5; background: rgba(252,165,165,.12); }
 
 /* ============ 响应式 ============ */
 /* 断点对齐设计方案 V1_6 §379：≥1200px 完整三栏；768–1199px 缩略图横排 + 两区；<768px 单列 + 底部操作。

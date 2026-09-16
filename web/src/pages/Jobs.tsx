@@ -1,8 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { cancelJob, listJobsPage, retryFailedJob, watchJobEvents, type ClientIdentity, type JobEventMessage, type JobPage } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  cancelJob,
+  getJobDetail,
+  getJobsSummary,
+  listJobsPage,
+  retryFailedJob,
+  watchJobEvents,
+  type ClientIdentity,
+  type JobDetail,
+  type JobEventMessage,
+  type JobExtras,
+  type JobPage,
+  type JobScope
+} from '../api';
+import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import { Link, useRoute } from '../router';
-import { jobKindKey, jobStateKey, type Job, type JobState } from '../types';
+import { jobKindKey, jobScopeKindKey, jobStateKey, jobStepStateKey, jobStepTypeKey, type Job, type JobState } from '../types';
 
 const activeStates: JobState[] = [
   'JOB_STATE_QUEUED',
@@ -28,10 +42,20 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   const [error, setError] = useState('');
   const [selected, setSelected] = useState<Job | null>(null);
   const [live, setLive] = useState(false);
+  // B4-M6a：范围/阶段（批量 summary）与详情（步骤/traceId）。
+  // 失败一律显式报错 + 重试入口，不落成"没有数据"（A26）。
+  const [extras, setExtras] = useState<Record<string, JobExtras>>({});
+  const [extrasError, setExtrasError] = useState('');
+  const [extrasNote, setExtrasNote] = useState('');
+  const [detail, setDetail] = useState<JobDetail | null>(null);
+  const [detailError, setDetailError] = useState('');
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const currentPage = pages[pageIndex];
   const currentJobs = currentPage?.jobs ?? [];
   const allJobs = useMemo(() => pages.flatMap((page) => page.jobs), [pages]);
+  // 依赖用「ID 串」而非数组：currentJobs 在无数据时是每渲染新建的空数组，直接作依赖会反复触发请求。
+  const pageJobKey = useMemo(() => currentJobs.map((job) => job.jobId).join(','), [currentJobs]);
 
   // 加载第一页（初始化 / 切换每页数量时重置分页）。
   const loadFirst = useCallback(async () => {
@@ -70,6 +94,32 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
       setError(err instanceof Error ? err.message : t('jobs.loadFailed'));
     }
   }, [identity, pageIndex, pageSize, t]);
+
+  // 批量取当前页任务的范围/阶段/步骤计数（单次请求，避免逐任务查询）。
+  const loadExtras = useCallback(async () => {
+    if (!pageJobKey) {
+      setExtras({});
+      setExtrasError('');
+      setExtrasNote('');
+      return;
+    }
+    const { data, error: loadError } = await settle(() => getJobsSummary(identity, pageJobKey.split(',')));
+    if (!data) {
+      // 三个状态必须可区分：加载失败（本分支）/ 范围缺失（单元格显示 —）/ 步骤读取失败（extrasNote）。
+      setExtras({});
+      setExtrasError(describeApiError(loadError, t('jobs.extrasLoadFailed'), t));
+      setExtrasNote('');
+      return;
+    }
+    setExtrasError('');
+    setExtras(data.jobs ?? {});
+    // summary 里 stepsError 表示"步骤聚合不可用"：阶段列会为空，界面须说明原因而不是留白。
+    setExtrasNote(data.stepsError ? t('jobs.stepsLoadFailed', { msg: t('err.unavailable') }) : '');
+  }, [identity, pageJobKey, t]);
+
+  useEffect(() => {
+    void loadExtras();
+  }, [loadExtras]);
 
   // 将 WatchEvents 推送的单个任务更新合并进已加载的分页（按 jobId 定位），未在当前页的任务忽略（下次轮询会补齐）。
   const applyJobUpdate = useCallback((updated: Job) => {
@@ -154,6 +204,38 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
     if (found) setSelected(found);
   }, [selectedJobId, allJobs]);
 
+  // 详情扩展信息（步骤/traceId/范围）：选中任务时拉取；失败时保留基于 Job 的字段并显式报错（A26）。
+  // 用请求序号丢弃过期响应：快速切换任务（或反复点重试）时，先发出的慢响应不得覆盖后发出的结果。
+  const detailSeqRef = useRef(0);
+  const loadDetail = useCallback(
+    async (jobId: string) => {
+      const seq = (detailSeqRef.current += 1);
+      setDetailLoading(true);
+      setDetailError('');
+      const { data, error: loadError } = await settle(() => getJobDetail(identity, jobId));
+      if (seq !== detailSeqRef.current) return; // 已有更新的请求在途 → 丢弃本次结果
+      setDetailLoading(false);
+      if (!data) {
+        setDetail(null);
+        setDetailError(describeApiError(loadError, t('jobs.detailLoadFailed'), t));
+        return;
+      }
+      setDetail(data);
+    },
+    [identity, t]
+  );
+
+  useEffect(() => {
+    if (!selectedJobId) {
+      detailSeqRef.current += 1; // 取消在途请求的写入权
+      setDetail(null);
+      setDetailError('');
+      setDetailLoading(false);
+      return;
+    }
+    void loadDetail(selectedJobId);
+  }, [selectedJobId, loadDetail]);
+
   const goNext = async () => {
     if (!currentPage?.nextCursor || loading) return;
     const nextIndex = pageIndex + 1;
@@ -200,6 +282,25 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   const activeCount = allJobs.filter((job) => activeStates.includes(job.state)).length;
   const selectedJob = selectedJobId ? (selected ?? allJobs.find((job) => job.jobId === selectedJobId) ?? null) : null;
 
+  // 步骤类型是库内自由文本：未登记的类型显示原文（不做猜测性翻译）。
+  const stepTypeLabel = (stepType: string) => (jobStepTypeKey[stepType] ? t(jobStepTypeKey[stepType]) : stepType);
+
+  // 范围摘要：以「性质 + 页数」表达，不把内部对象键或未识别的枚举当正常取值渲染。
+  const scopeText = (scope: JobScope | undefined): string => {
+    if (!scope) return t('common.none');
+    switch (scope.kind) {
+      case 'project':
+        return t('enum.jobScope.project');
+      case 'pages':
+      case 'segments':
+        return `${t(jobScopeKindKey[scope.kind])} · ${t('jobs.scopePages', { count: scope.pageCount })}`;
+      case 'export':
+        return scope.format ? t('jobs.scopeExport', { format: scope.format }) : t('enum.jobScope.export');
+      default:
+        return t('enum.jobScope.unknown');
+    }
+  };
+
   return (
     <div className="page-stack">
       <section className="page-header-row">
@@ -221,8 +322,15 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
       {error && <p className="form-error">{error}</p>}
 
       {selectedJob ? (
-        <JobDetail
+        <JobDetailPanel
           job={selectedJob}
+          detail={detail}
+          loading={detailLoading}
+          loadError={detailError}
+          scope={detail?.scope ?? extras[selectedJob.jobId]?.scope}
+          stepTypeLabel={stepTypeLabel}
+          scopeText={scopeText}
+          onRetryLoad={() => void loadDetail(selectedJob.jobId)}
           onCancel={() => void onCancel(selectedJob)}
           onRetry={() => void onRetry(selectedJob)}
           canCancelJob={canCancel.includes(selectedJob.state)}
@@ -253,6 +361,18 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
             </button>
           </div>
         </header>
+
+        {/* 范围/阶段读取失败：显式报错 + 重试，不把失败渲染成空白单元格（A26）。 */}
+        {extrasError && (
+          <div className="load-failure">
+            <p className="form-error">{extrasError}</p>
+            <button type="button" onClick={() => void loadExtras()}>
+              {t('common.retry')}
+            </button>
+          </div>
+        )}
+        {!extrasError && extrasNote && <p className="panel-note">{extrasNote}</p>}
+
         {loading && currentJobs.length === 0 ? (
           <p className="empty-state">{t('common.loading')}</p>
         ) : currentJobs.length === 0 ? (
@@ -262,52 +382,68 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
             <thead>
               <tr>
                 <th>{t('jobs.colType')}</th>
+                <th>{t('jobs.colScope')}</th>
+                <th title={t('jobs.colPhaseHint')}>{t('jobs.colPhase')}</th>
                 <th>{t('jobs.colState')}</th>
                 <th>{t('jobs.colProgress')}</th>
                 <th>{t('jobs.colProject')}</th>
-                <th>{t('jobs.colAttempt')}</th>
                 <th>{t('jobs.colSubmitted')}</th>
                 <th className="col-actions">{t('jobs.colActions')}</th>
               </tr>
             </thead>
             <tbody>
-              {currentJobs.map((job) => (
-                <tr key={job.jobId} className={job.state === 'JOB_STATE_SUCCEEDED' ? 'row-muted' : ''}>
-                  <td>
-                    <strong className="nowrap-ellipsis">{jobKindKey[job.kind] ? t(jobKindKey[job.kind]) : job.kind}</strong>
-                    <small className="cell-sub block-sub">{job.jobId.slice(0, 12)}</small>
-                  </td>
-                  <td>
-                    <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
-                    {job.lastError && <small className="cell-sub block-sub">{t('jobs.failureReason', { msg: job.lastError.message })}</small>}
-                  </td>
-                  <td>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '—'}</td>
-                  <td>
-                    <Link to={`/projects/${job.projectId}/editor`} className="cell-project">
-                      {job.projectId.slice(0, 12)}
-                    </Link>
-                  </td>
-                  <td>{job.attempt}</td>
-                  <td>{new Date(job.createdAtUnix * 1000).toLocaleString()}</td>
-                  <td className="col-actions">
-                    <div className="row-actions">
-                      <Link to={`/jobs?job=${job.jobId}`} className="button-ghost" title={t('jobs.detail')}>
-                        {t('common.details')}
+              {currentJobs.map((job) => {
+                const extra = extras[job.jobId];
+                return (
+                  <tr key={job.jobId} className={job.state === 'JOB_STATE_SUCCEEDED' ? 'row-muted' : ''}>
+                    <td>
+                      <strong className="nowrap-ellipsis">{jobKindKey[job.kind] ? t(jobKindKey[job.kind]) : job.kind}</strong>
+                      <small className="cell-sub block-sub">{job.jobId.slice(0, 12)}</small>
+                    </td>
+                    <td>
+                      {scopeText(extra?.scope)}
+                      {extra?.scope && extra.scope.pageCount > extra.scope.affectedPages.length && (
+                        <small className="cell-sub block-sub">
+                          {t('jobs.pagesTruncated', { count: extra.scope.affectedPages.length, total: extra.scope.pageCount })}
+                        </small>
+                      )}
+                    </td>
+                    <td title={t('jobs.colPhaseHint')}>
+                      {/* 阶段由后端按「最近更新的步骤」推导；无步骤时为空（显示 —，不伪造阶段）。 */}
+                      {extra?.phase ? stepTypeLabel(extra.phase) : t('common.none')}
+                    </td>
+                    <td>
+                      <span className={`state-tag ${job.state.toLowerCase()}`}>{t(jobStateKey[job.state])}</span>
+                      {job.attempt > 1 && <small className="cell-sub block-sub">{`${t('jobs.colAttempt')} ${job.attempt}`}</small>}
+                      {job.lastError && <small className="cell-sub block-sub">{t('jobs.failureReason', { msg: job.lastError.message })}</small>}
+                    </td>
+                    <td>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '—'}</td>
+                    <td>
+                      <Link to={`/projects/${job.projectId}/editor`} className="cell-project">
+                        {job.projectId.slice(0, 12)}
                       </Link>
-                      {canCancel.includes(job.state) && (
-                        <button type="button" onClick={() => void onCancel(job)} title={t('jobs.cancelJob')}>
-                          {t('jobs.cancel')}
-                        </button>
-                      )}
-                      {canRetry.includes(job.state) && (
-                        <button type="button" onClick={() => void onRetry(job)} title={t('jobs.retryJob')}>
-                          {t('jobs.retry')}
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td>{new Date(job.createdAtUnix * 1000).toLocaleString()}</td>
+                    <td className="col-actions">
+                      <div className="row-actions">
+                        <Link to={`/jobs?job=${job.jobId}`} className="button-ghost" title={t('jobs.detail')}>
+                          {t('common.details')}
+                        </Link>
+                        {canCancel.includes(job.state) && (
+                          <button type="button" onClick={() => void onCancel(job)} title={t('jobs.cancelJob')}>
+                            {t('jobs.cancel')}
+                          </button>
+                        )}
+                        {canRetry.includes(job.state) && (
+                          <button type="button" onClick={() => void onRetry(job)} title={t('jobs.retryJob')}>
+                            {t('jobs.retry')}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -316,20 +452,37 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   );
 }
 
-function JobDetail({
+// JobDetailPanel 渲染单个任务详情（B4-M6a 扩充：范围/受影响页/输入版本/traceId/执行步骤）。
+function JobDetailPanel({
   job,
+  detail,
+  loading,
+  loadError,
+  scope,
+  stepTypeLabel,
+  scopeText,
+  onRetryLoad,
   onCancel,
   onRetry,
   canCancelJob,
   canRetryJob
 }: {
   job: Job;
+  detail: JobDetail | null;
+  loading: boolean;
+  loadError: string;
+  scope: JobScope | undefined;
+  stepTypeLabel: (stepType: string) => string;
+  scopeText: (scope: JobScope | undefined) => string;
+  onRetryLoad: () => void;
   onCancel: () => void;
   onRetry: () => void;
   canCancelJob: boolean;
   canRetryJob: boolean;
 }) {
   const { t } = useI18n();
+  const pages = scope?.affectedPages ?? [];
+  const truncated = !!scope && scope.pageCount > pages.length;
   return (
     <section className="panel job-detail">
       <header className="table-head">
@@ -353,6 +506,16 @@ function JobDetail({
           )}
         </div>
       </header>
+
+      {loadError && (
+        <div className="load-failure">
+          <p className="form-error">{loadError}</p>
+          <button type="button" onClick={onRetryLoad}>
+            {t('common.retry')}
+          </button>
+        </div>
+      )}
+
       <dl className="detail-grid">
         <div>
           <dt>{t('jobs.fieldState')}</dt>
@@ -369,8 +532,25 @@ function JobDetail({
           <dd>{job.projectId}</dd>
         </div>
         <div>
-          <dt>{t('jobs.fieldInput')}</dt>
-          <dd>{job.inputSnapshot || '—'}</dd>
+          <dt>{t('jobs.fieldScope')}</dt>
+          <dd>{loading && !detail ? t('common.loading') : scopeText(scope)}</dd>
+        </div>
+        <div>
+          <dt>{t('jobs.fieldPages')}</dt>
+          <dd>
+            {pages.length === 0
+              ? t('common.none')
+              : `${pages.join('、')}${truncated ? ` ${t('jobs.pagesTruncated', { count: pages.length, total: scope?.pageCount ?? 0 })}` : ''}`}
+          </dd>
+        </div>
+        <div>
+          <dt>{t('jobs.fieldInputRevision')}</dt>
+          {/* 快照未记录输入版本时为 0：显示 — 而不是伪造版本号。 */}
+          <dd>{scope && scope.inputRevision > 0 ? scope.inputRevision : t('common.none')}</dd>
+        </div>
+        <div>
+          <dt>{t('jobs.fieldTrace')}</dt>
+          <dd>{detail?.traceId || t('common.none')}</dd>
         </div>
         <div>
           <dt>{t('jobs.fieldAttempt')}</dt>
@@ -389,13 +569,81 @@ function JobDetail({
             <dt>{t('jobs.fieldLastError')}</dt>
             <dd className="error-text">
               ({job.lastError.code}) {job.lastError.message}
-              {job.lastError.traceId && (
-                <small className="cell-sub block-sub">trace: {job.lastError.traceId}</small>
-              )}
+              {job.lastError.traceId && <small className="cell-sub block-sub">trace: {job.lastError.traceId}</small>}
+            </dd>
+          </div>
+        )}
+        {/* 原始快照折叠保留：详情页以可读摘要为主，原始 JSON 仍可追溯（不再作为主字段直接铺开）。 */}
+        {job.inputSnapshot && (
+          <div className="full-row">
+            <dt>{t('jobs.fieldSnapshotRaw')}</dt>
+            <dd>
+              <details>
+                <summary>{t('common.view')}</summary>
+                <pre className="snapshot-raw">{job.inputSnapshot}</pre>
+              </details>
             </dd>
           </div>
         )}
       </dl>
+
+      <section className="steps-section">
+        <header className="table-head">
+          <h2>{t('jobs.stepsTitle')}</h2>
+          <small className="page-sub">
+            {detail && detail.stepTotal > 0 ? t('jobs.stepsTotal', { total: detail.stepTotal }) : ''}
+            {detail?.stepsTruncated
+              ? ` · ${t('jobs.stepsTruncated', { count: detail.steps.length, total: detail.stepTotal })}`
+              : ''}
+          </small>
+        </header>
+
+        {loading && !detail ? (
+          <p className="empty-state">{t('common.loading')}</p>
+        ) : detail?.stepsError ? (
+          // 步骤不可用：「后端未提供该能力」与「读取失败」必须可区分，且都给重试入口。
+          <div className="load-failure load-failure-stack">
+            <p className="form-error">
+              {detail.stepsError === 'unsupported' ? t('jobs.stepsUnsupported') : t('jobs.stepsLoadFailed', { msg: t('err.unavailable') })}
+            </p>
+            {detail.stepsError !== 'unsupported' && (
+              <button type="button" onClick={onRetryLoad}>
+                {t('common.retry')}
+              </button>
+            )}
+          </div>
+        ) : !detail || detail.steps.length === 0 ? (
+          <p className="empty-state">{t('jobs.stepsEmpty')}</p>
+        ) : (
+          <div className="steps-scroll">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>{t('jobs.stepsColType')}</th>
+                  <th>{t('jobs.stepsColState')}</th>
+                  <th>{t('jobs.stepsColUpdated')}</th>
+                  <th>{t('jobs.stepsColResult')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.steps.map((step, index) => (
+                  <tr key={`${step.stepType}-${step.updatedAtUnix}-${index}`}>
+                    <td>{stepTypeLabel(step.stepType)}</td>
+                    <td>
+                      <span className={`state-tag step-${step.state}`}>
+                        {jobStepStateKey[step.state] ? t(jobStepStateKey[step.state]) : step.state}
+                      </span>
+                    </td>
+                    <td>{new Date(step.updatedAtUnix * 1000).toLocaleString()}</td>
+                    {/* result_ref 是内部对象键，后端只回是否已产出。 */}
+                    <td>{step.hasResult ? t('jobs.stepsHasResult') : t('common.none')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </section>
   );
 }

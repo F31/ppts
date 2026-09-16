@@ -147,6 +147,18 @@ type JobStep struct {
 	UpdatedAt time.Time
 }
 
+// JobStepSummary 是某任务内步骤的聚合视图（B4-M6a），供任务列表展示"阶段"与步骤计数。
+//
+// Phase 取**最近更新的步骤类型**：job_steps 只记录步骤的 pending/success/failed/skipped 状态，
+// 库里没有任何"当前阶段"列，故阶段只能由步骤时间序推导。无步骤时 Phase 为空串
+// （调用方应显示"—"，不要伪造成某个阶段）。
+type JobStepSummary struct {
+	Phase  string
+	Total  int
+	Counts map[JobStepState]int
+	LastAt time.Time
+}
+
 // ErrNoJob 表示符合条件的可领取任务不存在。
 var ErrNoJob = errors.New("pipeline: no claimable job")
 

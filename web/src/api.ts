@@ -611,6 +611,70 @@ export async function getJob(identity: ClientIdentity, jobId: string): Promise<J
   return connectJSON<Job>(identity, '/ppts.v1.JobService/Get', { jobId });
 }
 
+// ---- 任务扩展详情（B4-M6a：原生 HTTP 端点；本环境 protoc 不可用，故不改 proto）----
+//
+// 后端 internal/api/jobdetail.go：
+//   GET /jobs/{jid}/detail  —— traceId + 范围（由 input_snapshot 推导）+ 执行步骤
+//   GET /jobs/summary?ids=… —— 批量「范围 / 阶段 / 步骤计数」，供任务列表两列（避免逐任务查询）
+// 权限与 JobService.Get/List 同级（viewer 可见，租户隔离），无需额外能力判定。
+
+export type JobStepState = 'pending' | 'success' | 'skipped' | 'failed';
+
+// JobStep 是一步执行记录；resultRef 属内部对象键，后端只回 hasResult。
+export type JobStep = {
+  stepType: string;
+  state: JobStepState;
+  updatedAtUnix: number;
+  hasResult: boolean;
+};
+
+// JobScope 是任务范围摘要：kind 为范围性质，pageCount 为受影响页数；
+// pageCount > affectedPages.length 表示页面数组被后端截断（计数仍完整）。
+export type JobScope = {
+  kind: 'project' | 'pages' | 'segments' | 'export' | 'unknown';
+  pageCount: number;
+  affectedPages: string[];
+  inputRevision: number;
+  format?: string;
+};
+
+// JobExtras 是列表侧的单任务扩展信息（summary 端点）。
+export type JobExtras = {
+  scope: JobScope;
+  // phase：后端按「最近更新的步骤类型」推导的阶段；空串表示该任务暂无步骤（界面显示「—」）。
+  phase: string;
+  stepTotal: number;
+  stepCounts: Record<string, number>;
+};
+
+export type JobDetail = {
+  jobId: string;
+  kind: string;
+  traceId: string;
+  scope: JobScope;
+  steps: JobStep[];
+  stepCounts: Record<string, number>;
+  stepTotal: number;
+  stepsTruncated: boolean;
+  // stepsError：'unsupported'（后端 store 未提供步骤读取能力）| 'load_failed'（读取失败）。
+  // 非空时 steps 必为空数组，界面必须显示原因，不得显示成"没有步骤"。
+  stepsError?: string;
+};
+
+export async function getJobDetail(identity: ClientIdentity, jobId: string): Promise<JobDetail> {
+  return getJSON<JobDetail>(identity, `/jobs/${encodeURIComponent(jobId)}/detail`);
+}
+
+export async function getJobsSummary(
+  identity: ClientIdentity,
+  jobIds: string[]
+): Promise<{ jobs: Record<string, JobExtras>; stepsError?: string }> {
+  return getJSON<{ jobs: Record<string, JobExtras>; stepsError?: string }>(
+    identity,
+    `/jobs/summary?ids=${encodeURIComponent(jobIds.join(','))}`
+  );
+}
+
 export async function cancelJob(identity: ClientIdentity, jobId: string): Promise<Job> {
   return connectJSON<Job>(identity, '/ppts.v1.JobService/Cancel', { jobId });
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -524,6 +525,9 @@ func (s *PGStore) UpdatedSince(ctx context.Context, tenantID, projectID string, 
 }
 
 // Get 按 ID + 租户查询。
+// Get 按 ID 查任务。
+// 缺失时返回包裹了 ErrJobNotFound 的错误：调用方（api.jobError）据此映射 404，
+// 而非此前未包裹时被当成内部错误返回 500。
 func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Job, error) {
 	var j *Job
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -533,9 +537,45 @@ func (s *PGStore) Get(ctx context.Context, id, tenantID string) (*Job, error) {
 		return e
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("pipeline: job %s not found", id)
+		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, id)
 	}
 	return j, err
+}
+
+// GetMany 批量按 ID 查任务（单次查询），供任务列表批量补齐范围/阶段等扩展信息（B4-M6a）。
+// 不存在或越权的 ID 不会出现在结果里（不报错，由调用方按 ID 对齐）；ids 为空返回 nil。
+func (s *PGStore) GetMany(ctx context.Context, tenantID string, ids []string) ([]*Job, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, tenantID)
+	ph := make([]string, 0, len(ids))
+	for i, id := range ids {
+		ph = append(ph, "$"+strconv.Itoa(i+2))
+		args = append(args, id)
+	}
+	var out []*Job
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE tenant_id=$1 AND id IN ("+strings.Join(ph, ",")+")", args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			j, err := scanJob(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, j)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // LatestSucceededJob 返回某项目最近一次成功的指定类型任务；
@@ -574,6 +614,91 @@ func (s *PGStore) StepResultRef(ctx context.Context, jobID, stepType string) (st
 		return "", err
 	}
 	return ref, nil
+}
+
+// ListSteps 返回某任务的全部步骤，按更新时间升序（同刻按 step_type/step_key 稳定排序），
+// 供任务详情展示执行步骤（B4-M6a）。此前 job_steps 只有写入路径（MarkStep）与内部按 step_key
+// 取 result_ref，没有任何对外读取。
+// 注意：result_ref 是内部对象键，调用方不应直接透出给最终用户（api 层只回 hasResult 布尔）。
+func (s *PGStore) ListSteps(ctx context.Context, tenantID, jobID string) ([]JobStep, error) {
+	var out []JobStep
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT id, job_id, tenant_id, step_type, step_key, state, result_ref, updated_at
+			   FROM job_steps
+			  WHERE job_id=$1 AND tenant_id=$2
+			  ORDER BY updated_at, step_type, step_key`, jobID, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var st JobStep
+			if err := rows.Scan(&st.ID, &st.JobID, &st.TenantID, &st.StepType, &st.StepKey,
+				&st.State, &st.ResultRef, &st.UpdatedAt); err != nil {
+				return err
+			}
+			out = append(out, st)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// StepSummaries 批量返回多个任务的步骤聚合（单次分组查询，供任务列表避免逐任务查询/N+1，B4-M6a）。
+// 阶段按"最近更新的步骤类型"推导（见 JobStepSummary 注释）。ids 为空返回空 map。
+// 调用方须限制 ids 规模（api 侧上限 maxJobSummaryIDs），以免 IN 列表过长。
+func (s *PGStore) StepSummaries(ctx context.Context, tenantID string, jobIDs []string) (map[string]JobStepSummary, error) {
+	out := make(map[string]JobStepSummary, len(jobIDs))
+	if len(jobIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(jobIDs)+1)
+	args = append(args, tenantID)
+	ph := make([]string, 0, len(jobIDs))
+	for i, id := range jobIDs {
+		ph = append(ph, "$"+strconv.Itoa(i+2))
+		args = append(args, id)
+	}
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT job_id, step_type, state, count(*), max(updated_at)
+			   FROM job_steps
+			  WHERE tenant_id=$1 AND job_id IN (`+strings.Join(ph, ",")+`)
+			  GROUP BY job_id, step_type, state`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var jobID, stepType string
+			var state JobStepState
+			var n int64
+			var lastAt time.Time
+			if err := rows.Scan(&jobID, &stepType, &state, &n, &lastAt); err != nil {
+				return err
+			}
+			sum := out[jobID]
+			if sum.Counts == nil {
+				sum.Counts = map[JobStepState]int{}
+			}
+			sum.Counts[state] += int(n)
+			sum.Total += int(n)
+			if lastAt.After(sum.LastAt) {
+				sum.LastAt = lastAt
+				sum.Phase = stepType
+			}
+			out[jobID] = sum
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func nullableTime(t *time.Time) any {
