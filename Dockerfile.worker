@@ -1,10 +1,6 @@
-FROM ppts-api:latest AS base
-# Worker 不需要 nginx 和 web-dist，但复用同一基础镜像
-USER root
-WORKDIR /app
-COPY ppts-worker.bin /app/ppts-worker
+FROM scratch
+COPY ppts-worker.bin /ppts-worker
 ENV PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
     TZ=Asia/Shanghai
-EXPOSE 0
-ENTRYPOINT ["/app/ppts-worker"]
+ENTRYPOINT ["/ppts-worker"]
