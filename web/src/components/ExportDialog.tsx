@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useI18n } from '../i18n';
 import type { ArtifactFormat, PlaybackManifest } from '../types';
+import { useDialogA11y } from '../a11y';
 
 export type ExportOptions = { burnSubtitles: boolean; includeNotes: boolean };
 
@@ -36,6 +37,7 @@ export function ExportDialog({
   onSubmit: (format: ArtifactFormat, options: ExportOptions) => void;
 }) {
   const { t } = useI18n();
+  const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
   const [format, setFormat] = useState<ArtifactFormat>('ARTIFACT_FORMAT_WEB_PROJECT');
   const [burnSubtitles, setBurnSubtitles] = useState(false);
   const [includeNotes, setIncludeNotes] = useState(true);
@@ -45,7 +47,7 @@ export function ExportDialog({
   const snapshotTail = manifest.timelineKey.split('/').slice(-1)[0] || manifest.timelineKey;
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-label={t('editor.exportTitle')}>
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('editor.exportTitle')} ref={dialogRef}>
       <section className="modal-card export-dialog">
         <header>
           <div>

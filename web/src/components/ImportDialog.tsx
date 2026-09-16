@@ -11,6 +11,7 @@ import {
 import { useI18n } from '../i18n';
 import { navigate } from '../router';
 import type { Project } from '../types';
+import { useDialogA11y } from '../a11y';
 
 // 导入限制（前端校验；后端亦可另行强制）。
 const MAX_BYTES = 100 * 1024 * 1024; // 100 MB
@@ -37,6 +38,7 @@ type Props = {
 
 export function ImportDialog({ identity, project, onClose, onCompleted }: Props) {
   const { t } = useI18n();
+  const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
   const [phase, setPhase] = useState<Phase>('idle');
   const [fileName, setFileName] = useState('');
   const [progress, setProgress] = useState(0);
@@ -138,7 +140,7 @@ export function ImportDialog({ identity, project, onClose, onCompleted }: Props)
   const isDone = phase === 'done' || phase === 'doneWithWarnings';
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-label={t('import.aria', { title: project.title })}>
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('import.aria', { title: project.title })} ref={dialogRef}>
       <section className="modal-card import-modal">
         <header>
           <div>

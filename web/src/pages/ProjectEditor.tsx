@@ -32,6 +32,7 @@ import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import { useDialogA11y } from '../a11y';
 
 type SlidesState =
   | { mode: 'loading' }
@@ -103,12 +104,14 @@ export function ProjectEditor({
   const [exportOpen, setExportOpen] = useState(false);
   const [exportError, setExportError] = useState('');
   const [pubOpen, setPubOpen] = useState(false);
+  const pubDialogRef = useDialogA11y<HTMLDivElement>(() => setPubOpen(false));
   const [pubTitle, setPubTitle] = useState('');
   const [pubSummary, setPubSummary] = useState('');
   const [pubStatus, setPubStatus] = useState<{ phase: 'idle' | 'submitting' | 'done' | 'error'; message: string }>({ phase: 'idle', message: '' });
   // B2 M2：真实渲染缩略图 / 属性抽屉 / 未保存状态。
   const [renderUrls, setRenderUrls] = useState<Record<string, string>>({});
   const [propsOpen, setPropsOpen] = useState(false);
+  const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [unsaved, setUnsaved] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
   // B4-M1 权限边界（A22）：能力判定统一走 permissions.can，逐条镜像服务端 requireRole。
@@ -833,7 +836,7 @@ export function ProjectEditor({
       {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
       {propsOpen && (
         <div className="drawer-backdrop" onClick={() => setPropsOpen(false)}>
-          <aside className="properties-drawer" role="dialog" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()}>
+          <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()} ref={propsDialogRef}>
             <header>
               <span className="eyebrow">{t('editor.properties')}</span>
               <button type="button" onClick={() => setPropsOpen(false)}>
@@ -1019,7 +1022,7 @@ export function ProjectEditor({
         />
       )}
       {pubOpen && (
-        <div className="modal-backdrop" role="dialog" aria-label={t('public.publishTitle')}>
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('public.publishTitle')} ref={pubDialogRef}>
           <section className="modal-card">
             <header>
               <div>

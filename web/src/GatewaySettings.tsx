@@ -10,6 +10,7 @@ import {
   type GatewayTestResult,
   type ModelGateway
 } from './api';
+import { useDialogA11y } from './a11y';
 import { gatewayHealth, gatewayKey, healthKeySuffix, serviceKeySuffix, serviceState } from './gatewayState';
 import { useI18n } from './i18n';
 
@@ -53,6 +54,7 @@ export function GatewaySettings({
   const { t } = useI18n();
   const [gateways, setGateways] = useState<ModelGateway[]>([]);
   const [loading, setLoading] = useState(true);
+  const dialogRef = useDialogA11y<HTMLDivElement>(() => onClose?.());
   const [error, setError] = useState('');
   const [form, setForm] = useState<FormState | null>(null);
   const [editing, setEditing] = useState<{ name: string; version: number } | null>(null);
@@ -390,7 +392,7 @@ export function GatewaySettings({
     return <section className="panel gateway-panel">{content}</section>;
   }
   return (
-    <div className="modal-backdrop" role="dialog" aria-label={t('gateway.eyebrow')}>
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('gateway.eyebrow')} ref={dialogRef}>
       <section className="modal-card gateway-panel">{content}</section>
     </div>
   );

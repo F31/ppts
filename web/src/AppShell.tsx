@@ -5,6 +5,7 @@ import { useI18n } from './i18n';
 import { useTheme } from './ThemeContext';
 import { roleKey, type Role } from './types';
 import { can, type Capability } from './permissions';
+import { useDialogA11y } from './a11y';
 
 export type NavItem = { key: string; to: string; labelKey: string; icon: string };
 
@@ -44,6 +45,7 @@ export function AppShell({ children, role, roleReady = true }: { children: React
   const { theme, toggle: toggleTheme } = useTheme();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const profileDialogRef = useDialogA11y<HTMLDivElement>(() => setProfileOpen(false));
   const active = activeKey(route.parts);
   const tenantShort = identity ? identity.tenantId.split('-').pop() ?? identity.tenantId : '-';
 
@@ -126,7 +128,7 @@ export function AppShell({ children, role, roleReady = true }: { children: React
         <main className="console-content">{children}</main>
       </div>
       {profileOpen && identity && (
-        <div className="modal-backdrop" role="dialog" aria-label={t('user.title')}>
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('user.title')} ref={profileDialogRef}>
           <section className="modal-card profile-modal">
             <header>
               <div>

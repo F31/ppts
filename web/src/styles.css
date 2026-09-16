@@ -72,6 +72,10 @@
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--grad-body); }
 button, textarea, input { font: inherit; }
 
+/* V-M3 焦点可见性：键盘焦点显示清晰焦点环；鼠标焦点不显示默认 outline（避免双重描边）。 */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+
 .app-shell { min-height: 100vh; padding: 28px; }
 .topbar { display: flex; justify-content: space-between; gap: 18px; align-items: flex-end; margin-bottom: 22px; }
 .topbar h1, .editor-card h2 { margin: 4px 0 0; }
@@ -103,7 +107,7 @@ button, textarea, input { font: inherit; }
 .editor-card header, .editor-card footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .save-state.dirty { color: #ffd89b; }
 .save-state.saving { color: #a9e7ff; }
-.editor-card textarea { flex: 1; margin: 18px 0; width: 100%; resize: none; border: 1px solid rgba(255,255,255,.12); border-radius: 18px; padding: 18px; color: var(--text-strong); background: var(--bg-input-2); line-height: 1.75; outline: none; }
+.editor-card textarea { flex: 1; margin: 18px 0; width: 100%; resize: none; border: 1px solid rgba(255,255,255,.12); border-radius: 18px; padding: 18px; color: var(--text-strong); background: var(--bg-input-2); line-height: 1.75; }
 .editor-card textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(103, 232, 249, .16); }
 .editor-card footer { color: var(--text-muted); }
 .anchor-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; color: var(--text-muted); font-size: 12px; }
@@ -129,7 +133,7 @@ button, textarea, input { font: inherit; }
 .seg-badge.approved { color: #9bf6c0; border-color: rgba(120, 246, 180, .5); }
 .seg-badge.locked { color: #ffd9a8; border-color: rgba(255, 184, 120, .5); }
 .seg-badge.regen { color: #a9e7ff; }
-.segment-card textarea { width: 100%; min-height: 92px; margin: 0; resize: vertical; border: 1px solid rgba(255, 255, 255, .12); border-radius: 14px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); line-height: 1.7; outline: none; }
+.segment-card textarea { width: 100%; min-height: 92px; margin: 0; resize: vertical; border: 1px solid rgba(255, 255, 255, .12); border-radius: 14px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); line-height: 1.7; }
 .segment-card textarea:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .16); }
 
 /* M3 ③ 确认/锁定 */

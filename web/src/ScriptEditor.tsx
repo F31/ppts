@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useI18n } from './i18n';
 import type { ScriptRevision, ScriptSegment } from './types';
+import { useDialogA11y } from './a11y';
 
 export type ScriptEditorStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
 
@@ -63,6 +64,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [focusedId, setFocusedId] = useState<string | null>(script.segments[0]?.segmentId ?? null);
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
+  const popoverRef = useDialogA11y<HTMLDivElement>(() => setPopoverOpen(false));
   const [popoverWord, setPopoverWord] = useState('');
   const [popoverReading, setPopoverReading] = useState('');
   const [affectedCount, setAffectedCount] = useState(0);
@@ -377,7 +379,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
 
       {/* M4 ⑤ 读音调整 popover：原词 + 读音 + 本处插入 / 添加到租户词典 + 影响范围回执。 */}
       {popoverOpen && (
-        <div className="pronounce-popover" role="dialog" aria-label={t('editor.pronouncePopover')}>
+        <div className="pronounce-popover" role="dialog" aria-modal="true" aria-label={t('editor.pronouncePopover')} ref={popoverRef}>
           <label className="field-label">
             {t('editor.pronounceWord')}
             <input
