@@ -1,11 +1,23 @@
-FROM ppts-worker:latest
-COPY ppts-api /app/ppts-api
-COPY web/dist /app/web-dist
-WORKDIR /app
-ENV PPTS_WEB_ROOT=/app/web-dist \
+# ---- Builder ----
+FROM golang:1.25-bookworm AS builder
+ARG GOPROXY=https://goproxy.io,direct
+ARG GONOSUMCHECK=*
+ARG GONOSUMDB=*
+ARG GOPRIVATE=github.com/F31
+ENV GOPROXY=$GOPROXY GONOSUMCHECK=$GONOSUMCHECK GONOSUMDB=$GONOSUMDB GOPRIVATE=$GOPRIVATE
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOWORK=off go build -o ppts-api ./cmd/api
+
+# ---- Runtime ----
+FROM nginx:alpine
+COPY --from=builder /build/ppts-api /usr/local/bin/ppts-api
+COPY --from=builder /build/web/dist /usr/share/nginx/html
+EXPOSE 80
+ENV PPTS_WEB_ROOT=/usr/share/nginx/html \
     PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
     TZ=Asia/Shanghai
-EXPOSE 8080
-USER root
-ENTRYPOINT ["/app/ppts-api"]
+ENTRYPOINT ["sh", "-c", "ppts-api & nginx -g 'daemon off;'"]

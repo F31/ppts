@@ -16,7 +16,7 @@ services:
     volumes:
       - ppts-objects:/data/objects
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      test: ["CMD", "curl", "-sf", "http://localhost:80/"]
       interval: 30s
       timeout: 5s
       retries: 3
