@@ -1,0 +1,9 @@
+FROM ppts-api:latest AS base
+WORKDIR /app
+COPY ppts-worker.bin /app/ppts-worker
+ENV PPTS_OBJECT_BACKEND=local \
+    PPTS_OBJECT_ROOT=/data/objects \
+    TZ=Asia/Shanghai
+EXPOSE 0
+USER root
+ENTRYPOINT ["/app/ppts-worker"]

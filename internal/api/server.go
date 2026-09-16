@@ -132,12 +132,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			objHandler.serve(objectstore.OpDelete, w, r)
 		})
 	}
-	// 可选 SPA 兜底（history 路由）：仅当配置了 PPTS_WEB_ROOT 时启用。
-	// 单二进制/反代场景下，Go 直接托管前端构建产物并兜底返回 index.html；
-	// 未配置时（前端由 nginx/CDN 托管）不注册，行为与历史一致。
-	if root := os.Getenv("PPTS_WEB_ROOT"); root != "" {
-		mux.HandleFunc("GET /{path...}", spaFallbackHandler(root))
-	}
+	// 可选 SPA 兜底：由外部反代（nginx/Caddy）或前端 dev server 处理，
+	// 单二进制部署时可通过 nginx location / { try_files $uri $uri /index.html; } 实现。
 	return mux
 }
 

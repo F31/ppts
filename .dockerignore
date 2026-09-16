@@ -1,0 +1,11 @@
+.git
+.github
+node_modules
+web/node_modules
+.DS_Store
+*.log
+.tmp
+workbuddy
+.commitmsg_*
+.commitmsg_m4.txt
+docs/*.pptx

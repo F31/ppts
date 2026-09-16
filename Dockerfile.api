@@ -1,0 +1,11 @@
+FROM ppts-worker:latest
+COPY ppts-api /app/ppts-api
+COPY web/dist /app/web-dist
+WORKDIR /app
+ENV PPTS_WEB_ROOT=/app/web-dist \
+    PPTS_OBJECT_BACKEND=local \
+    PPTS_OBJECT_ROOT=/data/objects \
+    TZ=Asia/Shanghai
+EXPOSE 8080
+USER root
+ENTRYPOINT ["/app/ppts-api"]
