@@ -133,7 +133,6 @@ html[data-theme="light"] .status-marker.muted { opacity: .6; }
 
 /* ---- 播放器 / 资产 / 审计面板 ---- */
 html[data-theme="light"] .player-card,
-html[data-theme="light"] .asset-panel,
 html[data-theme="light"] .audit-panel { background: #ffffff; border-color: rgba(15, 23, 42, .1); color: #334155; }
 html[data-theme="light"] .player-controls { color: #334155; }
 html[data-theme="light"] .slide-map button { color: #334155; background: rgba(15, 23, 42, .06); }
@@ -193,20 +192,14 @@ html[data-theme="light"] .audit-list article small,
 html[data-theme="light"] .audit-list article span { color: #7b8aa3; }
 html[data-theme="light"] .form-error { color: #dc2626; background: rgba(220, 38, 38, .1); }
 
-/* ---- 旧版编辑器（保留兼容） ---- */
+/* ---- 编辑器 / 导入 / 草稿选项 ---- */
 html[data-theme="light"] .editor-card { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
 html[data-theme="light"] .editor-card textarea { background: #f5f7fb; color: #0f172a; border-color: rgba(15, 23, 42, .16); }
 html[data-theme="light"] .editor-card textarea:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .18); }
 html[data-theme="light"] .editor-card footer { color: #64748b; }
-html[data-theme="light"] .slide-rail { background: #ffffff; border-color: rgba(15, 23, 42, .1); }
-html[data-theme="light"] .slide-rail button { color: #334155; }
-html[data-theme="light"] .slide-rail span,
-html[data-theme="light"] .slide-rail em { color: #64748b; }
 html[data-theme="light"] .upload-entry { border-color: rgba(79, 70, 229, .4); color: #4f46e5; }
-html[data-theme="light"] .create-project input { background: #ffffff; border-color: rgba(15, 23, 42, .16); color: #0f172a; }
 html[data-theme="light"] .draft-options label { background: rgba(15, 23, 42, .03); border-color: rgba(15, 23, 42, .12); }
 html[data-theme="light"] .draft-options label.selected { border-color: rgba(103, 232, 249, .7); background: rgba(103, 232, 249, .1); }
-html[data-theme="light"] .project-list small { color: #dc2626; }
 
 /* ============================================================
    主题切换按钮（深/浅通用，位置：顶栏右上角）

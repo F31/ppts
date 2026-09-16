@@ -275,9 +275,9 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | D0-6 | 保存态缺 error/conflict | `ScriptEditor.tsx:15,67` | 五态显示；失败/冲突保留输入并可重试 | A11、A12 |
 | D0-7 | 中文输入法组合期提交 | `ScriptEditor` 保存调度 | `compositionstart/end` + 组合期不调度；**保存收敛为单一定时器**（原防抖 effect 的定时器与组合结束的定时器互相不可见，组合确认时会并发两次提交同一 revision） | A10 |
 | D0-8 | 公共可发现性基线 | `web/index.html` | 标题改"智讲 PPT"、补 `description`/OG 标签、`lang` 与 favicon | A27 |
-| D0-9 | 死代码与样式残留 | `styles.css`（`.workspace`/`.project-panel`/`.slide-rail`） | 清理已删除组件 `ProjectPanel.tsx` 的残留样式 | 工程质量 |
+| D0-9 | 死代码与样式残留 | `styles.css` / `theme.css`：`.workspace`/`.slide-rail`/`.project-panel`/`.panel-row`/`.create-project`/`.project-list`/`.asset-panel`/`.preview-column` | 清理 `ProjectPanel.tsx` 时代的残留样式（含**共享规则内的死选择器**、`1040px`/`720px` 媒体查询里的死规则、`theme.css` 浅色覆盖）；**保留 `.rail-title`**（`slide-rail-v2` 复用同名类，仍生效） | 工程质量 |
 
-**D0 批次状态（2026-09-16 逐文件核实 + 当日收口）**：D0-1 ✅（B3-M4 已修）、D0-5 ✅（B3-M2 已合并）、D0-6 ✅（`ScriptEditor` 五态 `saved/dirty/saving/error/conflict` 已实现）、D0-8 ✅（`index.html` 已含 `lang`/`title`/`description`/OG，仅缺 favicon）、D0-3 ✅ / D0-4 ✅（B4-M5 修复）、**D0-2 ✅ / D0-7 ✅（本日「D0 收口」，见 B4 章节）**；**仅剩 D0-9（`styles.css` 残留 `ProjectPanel` 样式）**。
+**D0 批次状态（2026-09-16 收口完成）**：**9 项全部完成 —— D0 批次归零**。D0-1 ✅（B3-M4）、D0-5 ✅（B3-M2）、D0-6 ✅（`ScriptEditor` 五态 `saved/dirty/saving/error/conflict`）、D0-8 ✅（`index.html` 已含 `lang`/`title`/`description`/OG，仅缺 favicon）、D0-3 ✅ / D0-4 ✅（B4-M5）、D0-2 ✅ / D0-7 ✅ / D0-9 ✅（本日「D0 收口」，见 B4 章节）。
 > **复核纠正**：D0-7 原记为"`ScriptEditor.tsx` 无 `compositionstart/end` 处理"**与仓库不符**——该处理在 B2-M2（`4192e21`）已加入（`composingRef` 守卫）。真实缺陷是**保存定时器不唯一**：防抖 effect 的 500ms 定时器与 `onCompositionEnd` 另起的 720ms 定时器互不可见，中文输入法确认时会并发两次提交同一 `expectedRevision` → 服务端冲突。本轮按 A10 收口为单调度器。
 
 ---
@@ -498,7 +498,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **A26 一致性**：全部富化请求走 `settle` → `describeApiError`（**无一处 `.catch(() => null)`**），失败原因去重后渲染在 `.load-failure.load-failure-stack` 中并附重试。角色未就绪（`roleReady=false`）时不下发角色受限请求——避免 A22「先闪现越权入口、再收 403」。
   - **i18n**：中英各 26 键（`home.todo*`×13、`home.stat.*`×8、`home.newNarration`/`home.statsAria`/`home.atLeast`、`home.recentArtifacts`/`home.artifactsScope`/`home.artifactOpen`、`home.probeFailed`/`home.unknownProject`），并**删除已无引用的 `home.stat.projectsNote`**；中英键数校验 687/687 完全对齐。样式 `styles.css` 新增 `.todo-*`/`.home-artifact-*`/`.home-cta`/`.warn-note`/`.load-failure-stack` 与窄屏单列，`theme.css` 补浅色覆盖（**注意类名不能沿用成品页已有的 `.artifact-row`，否则覆盖其 flex 布局——已改为 `.home-artifact-row`**）。
   - **验证**：`tsc --noEmit` + `tsc -b` + `vite build` ✅；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保持基线可信）。
-- **D0 收口：D0-2 开发身份门控 + D0-7 输入法组合期提交【已实施】**（补齐 R-11：B5 之前必须收口的安全项与输入类缺陷）：
+- **D0 收口：D0-2 开发身份门控 + D0-7 输入法组合期提交 + D0-9 样式残留清理【已实施】**（补齐 R-11，**D0 批次就此归零**）：
   - **D0-2（A01/A02，安全项，最高优先）** —— `web/src/auth.ts`、`web/src/vite-env.d.ts`：
     - `isDevIdentityEnabled()`：`!oidcConfigured() || import.meta.env.DEV` → `import.meta.env.DEV || import.meta.env.VITE_ALLOW_DEV_IDENTITY === 'true'`。生产构建默认关闭；确需开发身份（如离线端到端验收）必须在构建时显式声明 `VITE_ALLOW_DEV_IDENTITY=true`，使"开放"成为一次**可审计的显式决定**，而非"未配置 OIDC"的隐式回退。类型声明补进 `vite-env.d.ts`（原 `vite/client` 的索引签名会让任意 `VITE_*` 静默通过）。
     - **读侧同步门控**（`storedDevIdentity()`）：未开放该能力的构建里，**即使浏览器残留 `pptsDevIdentity` 也不采纳**。否则 `App.tsx:31-41` 会把它当身份，经 `api.ts:43-46` 发出无 token 的 `X-PPTS-Tenant-ID`/`X-PPTS-User-ID`——这正是 A02「测试身份不混入生产」要堵的后门（只改 UI 门控不足以堵住它）。
@@ -507,8 +507,14 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **D0-7（A10，输入法）** —— `web/src/ScriptEditor.tsx`：
     - 保存时序收敛为**单一入口 `scheduleSave` + 唯一句柄 `saveTimerRef`**：任何触发点（编辑、组合结束）都先清掉上一个待提交任务；`composingRef` 为真时**绝不提交且不重排**（由 `onCompositionEnd` 统一补一次）；`saving` 态按 `SAVE_RETRY_MS=300` 退避重排（本次编辑不丢），`saved/error/conflict` 不重复提交（保持"error 需人工重试"原语义）。防抖由原 500+220 两段式改为单段 `SAVE_DEBOUNCE_MS=700`。
     - `editSegment` 在组合期不调度；`flush`（Ctrl+S / 切页前）在组合期直接返回，避免把拼音半成品写进讲稿；复位 effect（`slideId`/`revision` 变化）增加 `clearTimeout` + 清组合态，防止旧稿的待提交任务写进新页。
+  - **D0-9（工程质量）** —— `web/src/styles.css`、`web/src/theme.css`：
+    - 清除 `ProjectPanel` 时代（`0486203` 之前）三栏布局的残留样式：`.workspace`（含 `1040px`/`720px` 两个媒体查询里的死规则——`1040px` 块删空后整体移除）、`.slide-rail`（及其 `button`/`hover`/`span`/`em` 与 `.slide-rail .project-list button` 组合选择器）、`.project-panel`、`.panel-row`、`.create-project`、`.project-list`、`.asset-panel`、`.preview-column`；`theme.css` 同步删除对应浅色覆盖（`.slide-rail`×3、`.create-project input`、`.project-list small`、`.asset-panel`）。
+    - **共享规则只摘选择器、不删整条**：`styles.css:21` 的卡片外观同时服务 `.editor-card`/`.player-card`/`.audit-panel`（均在用），因此只摘除 `.slide-rail`/`.asset-panel`/`.project-panel` 三个选择器；`theme.css:135-137` 同理。
+    - **必须保留 `.rail-title`**：`ProjectEditor.tsx:676` 的 `slide-rail-v2` **复用同名类**，故 `styles.css:23` 与 `720px` 媒体里的 `.rail-title { display: none }` 仍然生效 —— **这类清理不能按块删除，要按"类名是否被 v2 复用"逐个核对**（这是本轮唯一的真实误删风险点）。
+    - 核对方法：对每个候选类名在 `web/src` 全量（含 `.ts`/`.tsx` 与模板串拼接）验证无引用，另做一次宽口径 `className=[^>]*(panel|column)` 扫描排除拼接式用法；改后 `grep` 复检，仅余 `-v2` 活类。
+    - **产物级验证**：`vite build` 成功且 CSS 体积 **51.44 kB → 49.06 kB**（gzip 9.94 → 9.59 kB），证明删除生效且样式表语法有效。
   - **登记新风险 R-13**（本轮发现，**先于本轮存在**，不属 A10 范围故未改）：`saving` 期间用户继续输入时，`runCommit` 成功回调的 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`，**静默丢弃在途编辑**。建议与 A11/A15 一并处理。
-  - **验证**：`tsc -b` + `vite build` ✅（55 modules / 1.91s）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保基线可信）。
+  - **验证**：`tsc -b` + `vite build` ✅（55 modules；D0-9 后 CSS 49.06 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保基线可信）。
 - **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
 
@@ -557,7 +563,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-8 | A04/A06 类口径与作用域缺陷易被反复遗漏 | 中 | 中 | 把 A01–A29 打成验收清单，每批次出口逐条勾选 |
 | R-9 | ~~后端测试包长期不可编译~~ **【已解决 2026-09-16】**（`NewHandler` 于 `63ede93` 加 `pool` 形参后 `server_test.go` 未同步；B3-M1 新增 `artifact.Store.ListByProject` 后测试桩未实现） | 已发生 | 高 | 因 `go build` 不编译 `_test.go`，长期未被发现；B4-M3 期间经 `go vet` 暴露。**修复完成**：47 处调用补 `nil` 实参（`server_test.go` 45 + `gateway_test.go` 1 + `e2e_test.go` 1）、`internal/app` 桩补 `ListByProject`、poppler 用例补 Skip；`go vet` + `go test ./internal/...` 全绿 |
 | R-10 | 里程碑交付只做"单文件类型复核+`gofmt` 兜底"就提交，缺陷（编译阻塞、吞错假状态、未挂载路由）会跨里程碑累积 | 高 | 高 | 按「验证回路更新」在沙箱内跑通 `tsc -b` + `vite build` + `go build ./...` + `go vet ./internal/...` 后才提交；新增后端路由须核对**注册表**而非仅核对处理器函数 |
-| R-11 | **D0 批次严重滞后**：D0 原定"B1 之前或并行完成"，实际到 B4-M5 时仍有 3 项未做，其中 **D0-2 为安全项**（生产构建未配 OIDC 时仍渲染开发身份表单，违反 A01/A02） | 已发生 | 高 | D0-1/5/6/8 已完成、D0-3/D0-4 由 B4-M5 修复；**D0-2 ✅ / D0-7 ✅ 已于 2026-09-16「D0 收口」完成**（含产物级双向验证：默认构建门控折叠为 `return!1`）。**仅剩 D0-9（`styles.css` 残留 `ProjectPanel` 样式）**，须在 B5 之前收口 |
+| R-11 | ~~**D0 批次严重滞后**~~ **【已解决 2026-09-16】**：D0 原定"B1 之前或并行完成"，实际拖到 B4-M5 时仍有 3 项未做，其中 **D0-2 为安全项**（生产构建未配 OIDC 时仍渲染开发身份表单，违反 A01/A02） | 已发生 | 高 | **D0 九项全部收口、批次归零**：D0-1/5/6/8 早前完成、D0-3/D0-4 由 B4-M5 修复、**D0-2 + D0-7 + D0-9 由 2026-09-16「D0 收口」完成**（D0-2 含产物级双向验证 `return!1`/`return!0`；D0-9 使 CSS 51.44→49.06 kB）。教训：**缺失项要按文件核实、不要沿用清单描述**（D0-7 的清单描述与仓库实际不符），并坚持每批次出口逐条勾选（R-8） |
 | R-12 | `TenantService.StorageUsage` 未返回统计时间字段，首页无法满足 V1_6 §202「存储必须标统计时间」 | 已发生 | 低 | 首页如实标注为"取数于 {时刻}"（不伪造服务端统计时间）；如需真实统计时间，须后端在 `tenant.StorageUsage` 增列并同步 `GetStorageUsageResponse`（proto 变更，本环境 protoc 不可用 → 需在具备 protoc 的环境补） |
 | R-13 | **提交在途期间的编辑被静默丢弃**：`ScriptEditor` 处于 `saving` 时用户继续输入，`runCommit` 的 `.then` 调 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`（并把 `saveState` 置回 `saved`），用户新输入既无"未保存"提示也无恢复入口 | 中 | 高 | D0-7 收口时发现，**先于本轮存在**、不属 A10 范围故本轮未改。修法方向：复位 effect 区分"`slideId` 变化"（必须重置）与"`revision` 推进"（本地仍有未提交编辑时保留 `texts` 并维持 `dirty`）。建议与 A11（五态保存语义）/A15（生成中继续编辑）一并处理 |
 
