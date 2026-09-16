@@ -62,7 +62,7 @@ func run() error {
 	if err := pool.Ping(ctx); err != nil {
 		return err
 	}
-	authenticator, err := oidcAuthenticatorFromEnv(ctx)
+	authenticator, err := authFromEnv(ctx)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func run() error {
 			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
 				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
 				objects, pool,
-				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore, Auth: authenticator, DevHeaders: os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true", Pronunciation: pronunciation.NewPGStore(pool), Gateway: gatewayStore}),
+				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore, Auth: authenticator, DevHeaders: os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true", Pronunciation: pronunciation.NewPGStore(pool), Gateway: gatewayStore, JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER")}),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -133,7 +133,7 @@ func gatewayStoreFromEnv(ctx context.Context, logger *slog.Logger, pool *pgxpool
 	return store
 }
 
-func oidcAuthenticatorFromEnv(ctx context.Context) (api.Authenticator, error) {
+func oidcAuthenticatorFromEnv(ctx context.Context) (*api.OIDCAuthenticator, error) {
 	issuer := os.Getenv("PPTS_OIDC_ISSUER")
 	if issuer == "" {
 		return nil, nil
@@ -144,4 +144,22 @@ func oidcAuthenticatorFromEnv(ctx context.Context) (api.Authenticator, error) {
 		TenantClaim: os.Getenv("PPTS_OIDC_TENANT_CLAIM"),
 		UserClaim:   os.Getenv("PPTS_OIDC_USER_CLAIM"),
 	})
+}
+
+// authFromEnv 组合 OIDC（external IdP bearer）与自签名 JWT（邮箱注册，HS256）。
+// 两者皆未配置时返回 nil（退化为开发头，行为同前）。
+func authFromEnv(ctx context.Context) (api.Authenticator, error) {
+	oidc, err := oidcAuthenticatorFromEnv(ctx)
+	if err != nil {
+		return nil, err
+	}
+	secret := os.Getenv("PPTS_JWT_SECRET")
+	var jwtAuth *api.JWTAuthenticator
+	if secret != "" {
+		jwtAuth = api.NewJWTAuthenticator(secret)
+	}
+	if oidc == nil && jwtAuth == nil {
+		return nil, nil
+	}
+	return api.NewCombinedAuthenticator(oidc, jwtAuth), nil
 }

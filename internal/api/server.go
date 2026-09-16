@@ -55,6 +55,9 @@ type Options struct {
 	DevHeaders    bool
 	Pronunciation pronunciation.Store
 	Gateway       gateway.StoreResolver
+	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
+	JWTSecret    string
+	PasswordPepper string
 }
 
 // NewHandler builds the HTTP surface. Health checks intentionally bypass auth;
@@ -109,6 +112,10 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
 	if pool != nil {
 		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth)
+	}
+	// 邮箱自助注册（B5-M4）：注册/登录/能力探测端点。pool 为 nil 时不挂载（测试桩）。
+	if pool != nil {
+		registerAuthRoutes(mux, pool, opt.JWTSecret, opt.PasswordPepper)
 	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
 	registerNarrationRoutes(mux, scripts, opt.Members, auth)
