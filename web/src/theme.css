@@ -305,10 +305,10 @@ html[data-theme="light"] {
   --shadow-modal: 0 24px 60px rgba(15,23,42,.25);
   --shadow-panel: 0 22px 60px rgba(15,23,42,.1);
   --text-body: #334155;
-  --text-dim: #94a3b8;
-  --text-faint: #64748b;
-  --text-faintest: #94a3b8;
-  --text-muted: #64748b;
+  --text-dim: #5b6b7e;
+  --text-faint: #5b6b7e;
+  --text-faintest: #5b6b7e;
+  --text-muted: #5b6b7e;
   --text-strong: #0f172a;
   --warn: #b45309;
   --warn-bg-soft: rgba(251,191,36,.1);

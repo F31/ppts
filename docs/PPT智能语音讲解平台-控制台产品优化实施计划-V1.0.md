@@ -639,7 +639,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | V-M1 设计令牌体系 | `styles.css :root` 定义深色令牌集、`theme.css` 同令牌名浅色重定义；`styles.css` 颜色/渐变/阴影字面量按 `(选择器,属性)→浅色覆盖` 驱动替换为 `var(--token)`（仅令牌化、主题不变更、深色/浅色视觉等价） | 【已实施】 |
-| V-M2 对比度门禁 | 新增零依赖 `contrast.mjs` 算 WCAG 比值并接入 `npm run build` 前置；修正不足色对（浅色 `#94a3b8` on `#fff`≈2.56:1、深色 `#5b6b84` on `#0d111a`≈3.49:1、`#6f809e`≈4.73:1） | 待实施 |
+| V-M2 对比度门禁 | 新增零依赖 `contrast.mjs` 算 WCAG 比值并接入 `npm run build` 前置（`build: "npm run contrast && tsc -b && vite build"`）；修正不足文本令牌：浅色 `--text-dim`/`--text-faint`/`--text-muted`/`--text-faintest` 收敛到 `#5b6b7e`（对白/浅底 ≥4.5:1）；深色 `--text-dim`/`--text-faintest` 提到 `#7e8aa3`（最深表面 `#151d2e` 仍 ≥4.8:1）。门禁仅校验 `--text-*` 令牌契约（确定性、无级联假阳性）；浅色模式「深色字面量文本未主题化」与「状态色 chip 浅色微调」为独立遗留，不在阻断范围 | 【已实施】 |
 | V-M3 焦点可见 + 弹窗可访问性 | 全站 `:focus-visible` + 移除 2 处 `outline:none`；抽 focus trap hook 接线 7 处 `role="dialog"`（Esc 关闭、`aria-modal`、关闭后焦点返回触发元素） | 待实施 |
 | V-M4 圆角收敛 + 状态图标三重编码 | 按钮/输入类 999px→8px、卡片→12px、徽标保 pill；`.state-tag`(10)/`.health-tag`(5) 加图标（颜色+图标+文字 三重编码） | 待实施 |
 | V-M5 桌面触控 44px + 专项出口验收 | `@media (pointer: coarse)` 桌面触控 44px；专项出口评审 + 文档收口 | 待实施 |
