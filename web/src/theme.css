@@ -207,7 +207,7 @@ html[data-theme="light"] .draft-options label.selected { border-color: rgba(103,
    ============================================================ */
 .theme-toggle {
   border: 1px solid rgba(255, 255, 255, .16);
-  border-radius: 999px;
+  border-radius: 8px;
   padding: 7px 12px;
   font-size: 15px;
   line-height: 1;

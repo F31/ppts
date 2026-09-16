@@ -641,7 +641,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | V-M1 设计令牌体系 | `styles.css :root` 定义深色令牌集、`theme.css` 同令牌名浅色重定义；`styles.css` 颜色/渐变/阴影字面量按 `(选择器,属性)→浅色覆盖` 驱动替换为 `var(--token)`（仅令牌化、主题不变更、深色/浅色视觉等价） | 【已实施】 |
 | V-M2 对比度门禁 | 新增零依赖 `contrast.mjs` 算 WCAG 比值并接入 `npm run build` 前置（`build: "npm run contrast && tsc -b && vite build"`）；修正不足文本令牌：浅色 `--text-dim`/`--text-faint`/`--text-muted`/`--text-faintest` 收敛到 `#5b6b7e`（对白/浅底 ≥4.5:1）；深色 `--text-dim`/`--text-faintest` 提到 `#7e8aa3`（最深表面 `#151d2e` 仍 ≥4.8:1）。门禁仅校验 `--text-*` 令牌契约（确定性、无级联假阳性）；浅色模式「深色字面量文本未主题化」与「状态色 chip 浅色微调」为独立遗留，不在阻断范围 | 【已实施】 |
 | V-M3 焦点可见 + 弹窗可访问性 | 全站 `:focus-visible` 焦点环（青色 `var(--accent)` + 2px offset）+ `:focus:not(:focus-visible)` 抑制鼠标默认 outline；移除 2 处 `outline:none`（`.editor-card`/`.segment-card` textarea，改由 `:focus-visible` 提供键盘焦点环，原有 `:focus` box-shadow 保留）；新增 `web/src/a11y.ts` 的 `useDialogA11y`（打开移焦入内、Tab 循环焦点陷阱、Esc 关闭、关闭后焦点返回触发元素），接线 7 处 `role="dialog"`（AppShell 用户菜单 / GatewaySettings / ExportDialog / ImportDialog / ScriptEditor 读音 popover / ProjectEditor 属性抽屉 / ProjectEditor 发布弹窗）并补 `aria-modal="true"` | 【已实施】 |
-| V-M4 圆角收敛 + 状态图标三重编码 | 按钮/输入类 999px→8px、卡片→12px、徽标保 pill；`.state-tag`(10)/`.health-tag`(5) 加图标（颜色+图标+文字 三重编码） | 待实施 |
+| V-M4 圆角收敛 + 状态图标三重编码 | 收敛为三档半径：`styles.css` 控件类（button/input/select/textarea 及明确按钮·触发·缩略图）8px、卡片/面板/表面 12px、徽标/标签/状态 chip/头像/点保留 999px 或 50%（全屏态 `border-radius:0` 保留）；脚本化收敛避免 60+ 处手写误差，并修正 `.project-card` 既有重复 `border-radius` 声明。`state-tag`(10 任务态 + 4 步骤态)/`.health-tag`(5) 用 CSS `--glyph` + `::before` 注入语义图标（•/▶/↻/✎/✓/✕/⊘/?/○/⚠/—），与既有颜色 + `t()` 文字构成「颜色+图标+文字」三重编码，0 TSX 改动、浅色主题只覆盖颜色不影响图标 | 【已实施】 |
 | V-M5 桌面触控 44px + 专项出口验收 | `@media (pointer: coarse)` 桌面触控 44px；专项出口评审 + 文档收口 | 待实施 |
 
 ---
