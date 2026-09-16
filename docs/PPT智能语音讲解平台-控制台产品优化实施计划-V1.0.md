@@ -622,7 +622,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 
 ### B5 可选增强（独立立项，2026-09-16 范围裁定）
 
-**范围裁定（B5-C1）**：本轮做 **3 块**——命令面板、全局成品库、**用户作品公开发布与撤回（A29）**；**邮箱自助注册延后到下一轮单独立项**（自注册用户如何归属租户尚未设计、风险最高，C-8 原计划 4 块中的该块移出本轮）。
+**范围裁定（B5-C1）**：本轮原定做 **3 块**——命令面板、全局成品库、**用户作品公开发布与撤回（A29）**；**邮箱自助注册**原延后立项（自注册用户如何归属租户风险最高，C-8 原计划 4 块中的该块）。**现已单独立项 B5-M4 并实施**（决策 ①A 自注册创建个人租户/首个用户为 owner、②A 注册即信任不做邮件验证、③A HS256 自签名 JWT 与 OIDC 并存），详见下方里程碑表与 C-8。
 
 **CDN 清理决策（B5-C2）**：A29 要求「撤回即失效含 CDN 清理」，但 `objectstore` 接口无 `Invalidate/Purge`（local/s3 仅 Put/Get/SignedURL/Delete/ApplyLifecycle）。裁定：**撤回 = DB 置 `withdrawn` 状态立即拒匿名读 + 公开资源走现状 1h TTL 签名 URL 自然失效**；环境无 CDN 故「CDN 清理」项豁免并注明。满足「立即失效」，不满足字面 CDN purge（环境不可达）。
 
@@ -635,6 +635,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | B5-M1 命令面板（Cmd/Ctrl+K） | 纯前端：AppShell 全局 Cmd/Ctrl+K 监听 + 顶栏 ⌘K 按钮；`CommandPalette` 复用 `useDialogA11y`（Esc/焦点陷阱/焦点返回），命令由 `primaryNav`/`settingsMenus` 按角色过滤（导航+设置子页）+「新建讲解」/「公开区」操作；方向键选择、回车执行、输入过滤；i18n 中英、样式入 styles.css | 【已实施】 |
 | B5-M2 全局成品库 | 后端 `GET /artifacts`（`artifact.Store.ListAll` 跨项目 JOIN projects 取项目名，`tenant.Run` 多租户；`requireRole(RoleOwner)` 门控，高于单项目 `artifact.list` 的 editor）+ 前端 `/library` 页（`library.view`=ROLE_OWNER 能力；侧栏入口带 `need` 过滤保持菜单与后端一致；按格式/项目/时间筛选、下载、跳转项目成品页）；i18n 中英 + 样式入 styles.css。原生 HTTP 端点，不改 proto | 【已实施】 |
 | B5-M3 公开发布与撤回（A29） | 迁移 `0028` 加 `publications.public_id`(32 字符 base62 不可反推，由 `genPublicID`/`ppts_gen_public_id` 生成) + `status` 加 `withdrawn`/`withdrawn_at`；匿名读从内部 `id` 切到 `GET /showcase/{publicId}`（含 `/manifest`），后端 `GetApprovedByPublicID`；新增 `POST /public/works/{publicId}/recall`（复用 `requireAdmin`→owner/admin 置 withdrawn，RLS `status='approved'` 立即拒匿名读）；删除级联失效（删除即行消失，匿名 URL 失效）；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免。验收 A29 达成。**门控**：能力齐备已上线（C-8） | 【已实施】 |
+| B5-M4 邮箱自助注册（①A/②A/③A） | 迁移 `0029` 加 `users`(全局邮箱注册表)+`credentials`(租户 RLS，email 全局唯一)+`auth_lookup_credential`(SECURITY DEFINER 登录定位)；后端 `POST /auth/register`（事务内建个人租户+owner 成员+用户+凭证，bcrypt+全局 pepper）、`POST /auth/email-login`（恒定耗时比对、统一 401 文案防枚举 R-16）、`GET /auth/config`（能力探测）；HS256 自签名 JWT 签发/校验（手动实现无新依赖，显式拒非 HS256 alg），`CombinedAuthenticator` 优先 JWT 再回退 OIDC；前端登录页邮箱 tab（运行时探测 `/auth/config`，能力未配置隐藏入口）。原生 HTTP 端点，不改 proto | 【已实施】 |
 
 **验证回路**：`contrast.mjs` 0 失败 → `tsc -b` → `vite build`；后端 `go build ./...` + `go vet ./internal/...` + `go test ./internal/...`；每里程碑一 commit 一 push；匿名发布/撤回须独立最小字段集 + 越权测试（R-15/R-2）。
 
@@ -675,7 +676,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | C-5 | 生成口径 | **【已定 + 已实施】强制阻止未确认稿正式生成（A09）**：`draftSegments>0` 时前端禁用正式生成按钮并提示，生成请求传 `lockConfirmedOnly=true`；后端 `CreateGeneration` 的 `RequireConfirmed` 校验未确认稿即返回 `FailedPrecondition` | 已落地，不再待定 |
 | C-6 | 切租户 | **【已定：不做】**本轮明确不做切租户；**2026-09-16 按文件核实**：后端 `TenantService` 无租户列表 RPC、前端无切租户入口，不存在假能力/死入口，无需隐藏动作 | 无需新增接口；本项关闭 |
 | C-7 | 个人设置 | **【已定】明确不做并移除入口**：遵守 §1.2 第 3 条；若设置菜单已有个人设置入口则隐藏，本轮不实现个人设置页（留作后续 B4） | B4 ④ 顺延；当前不暴露虚假能力 |
-| C-8 | 公开作品发布 | **【已定 + 已立项 2026-09-16】**归入 B5 可选增强，范围裁定为 3 块（命令面板+全局成品库+公开发布 A29），邮箱注册延后；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免；发布能力不完整则入口整体不上线（B5 门控） | B5-M3 已实施，A29 已验收 |
+| C-8 | 公开作品发布 + 邮箱自助注册 | **【已定 + 已立项 2026-09-16】**归入 B5 可选增强，范围裁定 4 块（命令面板+全局成品库+公开发布 A29+邮箱自助注册 B5-M4）；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免；发布/注册能力不完整则入口整体不上线（B5 门控）。B5-M4 决策 ①A 自注册建个人租户/首个用户 owner、②A 不做邮件验证、③A HS256 自签名 JWT 与 OIDC 并存 | B5-M3 已实施（A29 已验收）；B5-M4 已实施（注册/登录/能力探测端点 + 前端邮箱 tab，能力未配置则入口隐藏） |
 
 ---
 
@@ -698,6 +699,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-13 | ~~**提交在途期间的编辑被静默丢弃**~~ **【已解决 2026-09-16】**：`ScriptEditor` 处于 `saving` 时用户继续输入，`runCommit` 的 `.then` 调 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`（并把 `saveState` 置回 `saved`），用户新输入既无"未保存"提示也无恢复入口；同源缺陷还包括**在途期间以同一 `expectedRevision` 并发提交**（必判 conflict） | 已发生 | 高 | D0-7 收口时发现、**先于本轮存在**，2026-09-16 单独收口。修法：复位 effect 用 `slideIdRef` 区分"切页"（必须重置）与"revision 推进"（保留本地未提交文本）；在途判定改用按 slideId 记名的 `inFlightRef`（不再复用会被新编辑置回 `dirty` 的 `saveState`），在途时 `scheduleSave`/`flush` 一律退避重排；提交返回用 `editSeqRef` 识别"在途期间又有新编辑"，不置回 `saved` 而是立即重排。`error` 保留对齐分支以兼容冲突对话框。**第二轮收口 2026-09-16**：第一轮修法只覆盖"同一页内"的三条不变式 —— 在「提交在途 + 用户切页」这条同源路径上仍会**静默丢失原页编辑**（切页的 `clearTimeout` 清掉了为原页排的退避重排，且 `texts` 被新页文本覆盖，编辑既未提交也未回到父级）。已按"页"重构保存机（草案表 + 按页在途/定时器 + 可提交任意页的 commit 通道 + 冲突哨兵），详见 B4 章节「R-13 修复」 |
 | R-14 | **把"文档已登记已解决"当成"代码已无同类残留"**：R-13 第一轮修法未推演同源路径（切页）即被标【已解决】，残留漏洞会以"已修项"身份长期潜伏（同类教训见 R-8/R-10） | 中 | 高 | 修复结论须按「不变式 + 全路径推演」给出，并在风险表区分"第一轮/第二轮"；凡涉及跨页/跨组件状态，必须逐一列出该状态在**切页 / 回包 / 冲突 / 卸载**四条时序下的行为，再判定是否已解决 |
 | R-15 | **匿名公开接口越权（R-2 同源）**：B5-M3 发布/撤回在公开区新增写/状态变更，若复用租户上下文接口会把内部 `id`/租户字段回带，导致字段越权泄露或撤回绕过 | 中 | 高 | 强制独立最小字段集 + 独立路由（`POST /public/works/:publicId/recall` 仅持 `public_id`+principal，不回带租户内部 `id`）；对匿名读/撤回单独写越权测试；`withdrawn` 状态即拒匿名读且不清内部资源 |
+| R-16 | **邮箱枚举 / 计时攻击**：`POST /auth/email-login` 与 `POST /auth/register` 若区分"用户不存在/密码错误"或响应耗时随是否存在而变，攻击者可枚举有效邮箱 | 中 | 高 | 登录未命中也与静态 dummy hash 做一次 bcrypt 比对以恒定耗时；所有失败统一 401 "invalid email or password"，不区分用户是否存在；注册重复邮箱返回统一 `registration_failed` 不泄露是否已注册；密码哈希用 bcrypt+全局 pepper（环境变量，不落库） |
 
 ---
 
