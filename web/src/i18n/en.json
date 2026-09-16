@@ -768,5 +768,14 @@
   "members.ownerRoleNewOnly": "OWNER cannot be assigned when adding a member (use ownership transfer)",
   "members.removeHint": "Remove this member from the tenant",
 
-  "gateway.immutableWhenEditing": "Type and name cannot be changed while editing; create a new gateway instead"
+  "gateway.immutableWhenEditing": "Type and name cannot be changed while editing; create a new gateway instead",
+
+  "palette.title": "Command palette",
+  "palette.placeholder": "Search commands…",
+  "palette.empty": "No matching commands",
+  "palette.nav": "Navigation",
+  "palette.actions": "Actions",
+  "palette.newProject": "New narration",
+  "palette.explore": "Public gallery",
+  "palette.trigger": "Open command palette"
 }

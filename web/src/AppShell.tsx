@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useRoute } from './router';
 import { useSession } from './session';
 import { useI18n } from './i18n';
@@ -6,10 +6,11 @@ import { useTheme } from './ThemeContext';
 import { roleKey, type Role } from './types';
 import { can, type Capability } from './permissions';
 import { useDialogA11y } from './a11y';
+import { CommandPalette } from './components/CommandPalette';
 
 export type NavItem = { key: string; to: string; labelKey: string; icon: string };
 
-const primaryNav: NavItem[] = [
+export const primaryNav: NavItem[] = [
   { key: 'home', to: '/home', labelKey: 'nav.home', icon: '🏠' },
   { key: 'projects', to: '/projects', labelKey: 'nav.projects', icon: '📊' },
   { key: 'jobs', to: '/jobs', labelKey: 'nav.jobs', icon: '⚙️' },
@@ -18,7 +19,7 @@ const primaryNav: NavItem[] = [
 
 // 设置子菜单（作用域分组：个人不占本轮——C-7 已定不做并移除入口；租户项按方案 §12）。
 // B4-M1：每项声明所需能力，菜单按角色过滤，做到「菜单与后端一致」（A22）。
-const settingsMenus: Array<{ key: string; to: string; labelKey: string; need: Capability }> = [
+export const settingsMenus: Array<{ key: string; to: string; labelKey: string; need: Capability }> = [
   { key: 'models', to: '/settings/models', labelKey: 'nav.settingsModels', need: 'gateway.manage' },
   { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers', need: 'member.manage' },
   { key: 'dictionary', to: '/settings/dictionary', labelKey: 'nav.settingsDictionary', need: 'project.read' },
@@ -46,6 +47,18 @@ export function AppShell({ children, role, roleReady = true }: { children: React
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialogRef = useDialogA11y<HTMLDivElement>(() => setProfileOpen(false));
+  // B5-M1：命令面板开关 + 全局 Cmd/Ctrl+K 唤起。
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const active = activeKey(route.parts);
   const tenantShort = identity ? identity.tenantId.split('-').pop() ?? identity.tenantId : '-';
 
@@ -94,6 +107,16 @@ export function AppShell({ children, role, roleReady = true }: { children: React
             <span>{t(primaryNav.find((item) => item.key === active)?.labelKey ?? 'shell.console')}</span>
           </div>
           <div className="topbar-actions">
+            <button
+              type="button"
+              className="palette-trigger"
+              onClick={() => setPaletteOpen(true)}
+              title={t('palette.trigger')}
+              aria-label={t('palette.trigger')}
+              aria-keyshortcuts="Meta+K Control+K"
+            >
+              ⌘K
+            </button>
             <button type="button" className="theme-toggle" onClick={toggleTheme} title={t('shell.themeToggle')} aria-label={t('shell.themeToggle')}>
               {theme === 'dark' ? '☀️' : '🌙'}
             </button>
@@ -157,6 +180,9 @@ export function AppShell({ children, role, roleReady = true }: { children: React
             </dl>
           </section>
         </div>
+      )}
+      {paletteOpen && (
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} role={role} roleReady={roleReady} />
       )}
     </div>
   );

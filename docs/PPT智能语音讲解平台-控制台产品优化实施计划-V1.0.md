@@ -620,9 +620,25 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 
 **验证**：`gofmt` 清白；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（22 包全绿、**0 FAIL**）；`tsc -b` ✅ + `vite build` ✅（CSS 50.01 kB、`dist/favicon.svg` 就位）；迁移以 `sqlglot` Postgres 方言校验（0027 单语句 OK）。
 
-### B5 可选增强（独立立项）
+### B5 可选增强（独立立项，2026-09-16 范围裁定）
 
-全局成品库、命令面板、邮箱自助注册、**用户作品公开发布与撤回**（`publicId` 不可反推、撤回即失效含 CDN 清理、删除级联失效）。发布能力不完整则入口整体不上线。
+**范围裁定（B5-C1）**：本轮做 **3 块**——命令面板、全局成品库、**用户作品公开发布与撤回（A29）**；**邮箱自助注册延后到下一轮单独立项**（自注册用户如何归属租户尚未设计、风险最高，C-8 原计划 4 块中的该块移出本轮）。
+
+**CDN 清理决策（B5-C2）**：A29 要求「撤回即失效含 CDN 清理」，但 `objectstore` 接口无 `Invalidate/Purge`（local/s3 仅 Put/Get/SignedURL/Delete/ApplyLifecycle）。裁定：**撤回 = DB 置 `withdrawn` 状态立即拒匿名读 + 公开资源走现状 1h TTL 签名 URL 自然失效**；环境无 CDN 故「CDN 清理」项豁免并注明。满足「立即失效」，不满足字面 CDN purge（环境不可达）。
+
+**约束**：protoc 不可用 → 全部走原生 HTTP（`mux.Handle`/`writeJSON`/`requireRole`/`tenant.Run` 样板）；强多租户 RLS 双策略；新增后端路由须核对注册表（R-10）。
+
+**里程碑拆分（独立验收，每里程碑一 commit）**：
+
+| 里程碑 | 内容 | 状态 |
+|---|---|---|
+| B5-M1 命令面板（Cmd/Ctrl+K） | 纯前端：AppShell 全局 Cmd/Ctrl+K 监听 + 顶栏 ⌘K 按钮；`CommandPalette` 复用 `useDialogA11y`（Esc/焦点陷阱/焦点返回），命令由 `primaryNav`/`settingsMenus` 按角色过滤（导航+设置子页）+「新建讲解」/「公开区」操作；方向键选择、回车执行、输入过滤；i18n 中英、样式入 styles.css | 【已实施】 |
+| B5-M2 全局成品库 | 后端 `GET /artifacts`（跨租户聚合，owner 级读权限设计，`tenant.Run` 多租户）+ 前端 `/library` 页（按格式/项目/时间筛选）；i18n + 样式 | 待实施 |
+| B5-M3 公开发布与撤回（A29） | 迁移加 `publications.public_id`(32B 随机 base62 不可反推) + `status` 加 `withdrawn`/`withdrawn_at`；匿名读从内部 `id` 切到 `/showcase/:publicId`；新增 `POST /public/works/:publicId/recall`（owner/admin 置 withdrawn 立即拒读）；删除级联失效（artifact 删→publication 连带 withdrawn）；验收 A29。**门控**：能力不完整则入口整体不上线（C-8） | 待实施 |
+
+**验证回路**：`contrast.mjs` 0 失败 → `tsc -b` → `vite build`；后端 `go build ./...` + `go vet ./internal/...` + `go test ./internal/...`；每里程碑一 commit 一 push；匿名发布/撤回须独立最小字段集 + 越权测试（R-15/R-2）。
+
+**出口**：B5-M1/M2/M3 三项验收通过；发布入口能力完整才上线，否则整体隐藏（C-8 门控）。
 
 ### 视觉基线专项（建议与 B1 并行，独立验收）
 
@@ -659,7 +675,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | C-5 | 生成口径 | **【已定 + 已实施】强制阻止未确认稿正式生成（A09）**：`draftSegments>0` 时前端禁用正式生成按钮并提示，生成请求传 `lockConfirmedOnly=true`；后端 `CreateGeneration` 的 `RequireConfirmed` 校验未确认稿即返回 `FailedPrecondition` | 已落地，不再待定 |
 | C-6 | 切租户 | **【已定：不做】**本轮明确不做切租户；**2026-09-16 按文件核实**：后端 `TenantService` 无租户列表 RPC、前端无切租户入口，不存在假能力/死入口，无需隐藏动作 | 无需新增接口；本项关闭 |
 | C-7 | 个人设置 | **【已定】明确不做并移除入口**：遵守 §1.2 第 3 条；若设置菜单已有个人设置入口则隐藏，本轮不实现个人设置页（留作后续 B4） | B4 ④ 顺延；当前不暴露虚假能力 |
-| C-8 | 公开作品发布 | **【已定：延后至 B5 独立立项】**不纳入 B0–B4 本轮；发布能力（`publicId` 不可反推、撤回即失效含 CDN 清理、删除级联失效）不完整则入口整体不上线 | 归入 B5 可选增强；A29 随之延后 |
+| C-8 | 公开作品发布 | **【已定 + 已立项 2026-09-16】**归入 B5 可选增强，范围裁定为 3 块（命令面板+全局成品库+公开发布 A29），邮箱注册延后；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免；发布能力不完整则入口整体不上线（B5 门控） | B5-M3 实施中；A29 随 B5-M3 验收 |
 
 ---
 
@@ -681,6 +697,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-12 | `TenantService.StorageUsage` 未返回统计时间字段，首页无法满足 V1_6 §202「存储必须标统计时间」 | 已发生 | 低 | 首页如实标注为"取数于 {时刻}"（不伪造服务端统计时间）；如需真实统计时间，须后端在 `tenant.StorageUsage` 增列并同步 `GetStorageUsageResponse`（proto 变更，本环境 protoc 不可用 → 需在具备 protoc 的环境补） |
 | R-13 | ~~**提交在途期间的编辑被静默丢弃**~~ **【已解决 2026-09-16】**：`ScriptEditor` 处于 `saving` 时用户继续输入，`runCommit` 的 `.then` 调 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`（并把 `saveState` 置回 `saved`），用户新输入既无"未保存"提示也无恢复入口；同源缺陷还包括**在途期间以同一 `expectedRevision` 并发提交**（必判 conflict） | 已发生 | 高 | D0-7 收口时发现、**先于本轮存在**，2026-09-16 单独收口。修法：复位 effect 用 `slideIdRef` 区分"切页"（必须重置）与"revision 推进"（保留本地未提交文本）；在途判定改用按 slideId 记名的 `inFlightRef`（不再复用会被新编辑置回 `dirty` 的 `saveState`），在途时 `scheduleSave`/`flush` 一律退避重排；提交返回用 `editSeqRef` 识别"在途期间又有新编辑"，不置回 `saved` 而是立即重排。`error` 保留对齐分支以兼容冲突对话框。**第二轮收口 2026-09-16**：第一轮修法只覆盖"同一页内"的三条不变式 —— 在「提交在途 + 用户切页」这条同源路径上仍会**静默丢失原页编辑**（切页的 `clearTimeout` 清掉了为原页排的退避重排，且 `texts` 被新页文本覆盖，编辑既未提交也未回到父级）。已按"页"重构保存机（草案表 + 按页在途/定时器 + 可提交任意页的 commit 通道 + 冲突哨兵），详见 B4 章节「R-13 修复」 |
 | R-14 | **把"文档已登记已解决"当成"代码已无同类残留"**：R-13 第一轮修法未推演同源路径（切页）即被标【已解决】，残留漏洞会以"已修项"身份长期潜伏（同类教训见 R-8/R-10） | 中 | 高 | 修复结论须按「不变式 + 全路径推演」给出，并在风险表区分"第一轮/第二轮"；凡涉及跨页/跨组件状态，必须逐一列出该状态在**切页 / 回包 / 冲突 / 卸载**四条时序下的行为，再判定是否已解决 |
+| R-15 | **匿名公开接口越权（R-2 同源）**：B5-M3 发布/撤回在公开区新增写/状态变更，若复用租户上下文接口会把内部 `id`/租户字段回带，导致字段越权泄露或撤回绕过 | 中 | 高 | 强制独立最小字段集 + 独立路由（`POST /public/works/:publicId/recall` 仅持 `public_id`+principal，不回带租户内部 `id`）；对匿名读/撤回单独写越权测试；`withdrawn` 状态即拒匿名读且不清内部资源 |
 
 ---
 

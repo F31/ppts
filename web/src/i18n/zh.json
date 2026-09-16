@@ -768,5 +768,14 @@
   "members.ownerRoleNewOnly": "新增成员时不能直接指定 OWNER（需通过所有权转移）",
   "members.removeHint": "从本租户移除该成员",
 
-  "gateway.immutableWhenEditing": "类型与名称在编辑状态下不可修改；如需变更请新建网关"
+  "gateway.immutableWhenEditing": "类型与名称在编辑状态下不可修改；如需变更请新建网关",
+
+  "palette.title": "命令面板",
+  "palette.placeholder": "搜索命令…",
+  "palette.empty": "无匹配命令",
+  "palette.nav": "导航",
+  "palette.actions": "操作",
+  "palette.newProject": "新建讲解",
+  "palette.explore": "公开区",
+  "palette.trigger": "打开命令面板"
 }

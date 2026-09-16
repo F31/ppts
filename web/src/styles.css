@@ -684,3 +684,62 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
   /* 缩略图行按钮在触屏下最小点击区 */
   .slide-rail-v2 button { min-height: 44px; }
 }
+
+/* ============================================================
+   B5-M1 命令面板（Cmd/Ctrl+K）
+   ============================================================ */
+.palette-trigger {
+  font: inherit;
+  border: 1px solid var(--bg-row);
+  background: var(--bg-row);
+  color: var(--text-dim);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  min-width: 44px;
+}
+.palette-trigger:hover { color: var(--text-body); }
+
+.command-palette {
+  width: min(560px, 92vw);
+  max-height: 72vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.palette-header { padding: 10px 12px; border-bottom: 1px solid var(--bg-row); }
+.palette-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--bg-row);
+  background: var(--bg-input);
+  color: var(--text-body);
+  border-radius: 8px;
+}
+.palette-input::placeholder { color: var(--text-faint); }
+.palette-list { overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.palette-group {
+  font-size: 12px;
+  color: var(--text-faint);
+  padding: 8px 12px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.palette-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: var(--text-body);
+  cursor: pointer;
+}
+.palette-item.selected, .palette-item:hover { background: var(--bg-row); color: var(--text-strong); }
+.palette-icon { width: 20px; text-align: center; flex: none; }
+.palette-label { flex: 1; }
+.palette-empty { padding: 18px; color: var(--text-dim); text-align: center; }
