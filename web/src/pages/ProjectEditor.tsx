@@ -27,7 +27,7 @@ import {
 } from '../api';
 import { Player } from '../Player';
 import { can } from '../permissions';
-import { ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
+import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
@@ -303,7 +303,8 @@ export function ProjectEditor({
   // B2 M2 ⑧：存在未保存稿时，离开页面前提示。
   useEffect(() => {
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
-      if (unsaved) {
+      // isDirty() 还覆盖"已切走的页仍有未落库草案"（R-13）：父级的 unsaved 只反映当前显示页的状态。
+      if (unsaved || scriptEditorRef.current?.isDirty()) {
         event.preventDefault();
         event.returnValue = '';
       }
@@ -318,20 +319,24 @@ export function ProjectEditor({
   const activeRealScript = isReady ? realScripts[activeSlideID] : undefined;
   const activeIndex = isReady ? slidesState.slides.findIndex((slide) => slide.slideId === activeSlideID) : -1;
 
+  // 提交通道：**按传入的 slideId** 提交（不再闭包 activeSlideID）——
+  // 提交在途时用户可能已切页，原页在途期间的编辑仍须能落库（R-13，见 ScriptEditor 草案表）。
   const commitRealScript = useCallback(
-    async (segments: ScriptSegment[], expectedRevision: number): Promise<ScriptRevision> => {
-      const result = await updateScriptApi(identity, projectId, activeSlideID, expectedRevision, segments);
+    async (slideId: string, segments: ScriptSegment[], expectedRevision: number): Promise<ScriptRevision> => {
+      const result = await updateScriptApi(identity, projectId, slideId, expectedRevision, segments);
       if (result.conflict && result.latest) {
         setConflict({
-          slideId: activeSlideID,
+          slideId,
           localText: segments.map((segment) => segment.displayText).join('\n\n'),
           latest: result.latest
         });
-        throw new Error(t('editor.conflict.default'));
+        // 抛哨兵错误：编辑器据此**放弃**本地草案（本地文本已存进 conflict.localText，
+        // 两条出口都在本组件的对照面板里），避免把用户明确放弃的文本自动写回去。
+        throw new ScriptConflictError(t('editor.conflict.default'));
       }
       return result.revision;
     },
-    [identity, projectId, activeSlideID, t]
+    [identity, projectId, t]
   );
 
   // B2 M2 ⑧：切换页面前先刷新（提交）当前页待保存队列，避免丢失未保存编辑。
