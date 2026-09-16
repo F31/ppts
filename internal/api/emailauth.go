@@ -192,8 +192,12 @@ func precomputeDummyHash() string {
 // ---------------------------------------------------------------------------
 
 func registerAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, jwtSecret, pepper string) {
+	dummy := precomputeDummyHash()
 	mux.HandleFunc("POST /auth/register", func(w http.ResponseWriter, r *http.Request) {
 		authRegister(w, r, pool, jwtSecret, pepper)
+	})
+	mux.HandleFunc("POST /auth/email-login", func(w http.ResponseWriter, r *http.Request) {
+		authEmailLogin(w, r, pool, jwtSecret, pepper, dummy)
 	})
 	mux.HandleFunc("GET /auth/config", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"email_password": jwtSecret != ""})
@@ -294,6 +298,60 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
+		"access_token": token,
+		"tenant_id":    tenantID,
+		"user_id":      userID,
+	})
+}
+
+// authEmailLogin 邮箱登录：auth_lookup_credential 跨租户定位凭证（SECURITY DEFINER 绕过 RLS）。
+// 未命中也做一次 bcrypt 比对以恒定耗时；所有失败统一 401 文案，不区分用户是否存在（R-16）。
+func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jwtSecret, pepper, dummyHash string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	email := strings.TrimSpace(strings.ToLower(body.Email))
+	if !validEmail(email) {
+		http.Error(w, "invalid email", http.StatusBadRequest)
+		return
+	}
+	if jwtSecret == "" {
+		http.Error(w, "email authentication is not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	ctx := r.Context()
+	var tenantID, userID, hash string
+	err := pool.QueryRow(ctx, `SELECT tenant_id, user_id, password_hash FROM auth_lookup_credential($1)`, email).
+		Scan(&tenantID, &userID, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 未命中：仍做一次 bcrypt 比对以恒定耗时，防止通过响应时间/状态枚举邮箱（R-16）。
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(body.Password+pepper))
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid email or password"})
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !verifyPassword(hash, body.Password, pepper) {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid email or password"})
+		return
+	}
+	token, err := issueToken(tenantID, userID, jwtSecret)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": token,
 		"tenant_id":    tenantID,
 		"user_id":      userID,
