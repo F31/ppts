@@ -330,7 +330,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 ```
 > 注：若用 Go 单二进制托管前端，设 `PPTS_WEB_ROOT=/path/to/web/dist` 即可，无需 nginx 上述 `location /` 兜底。
 
-**决策依赖**：C-1（公开区双 Tab）、C-2（SEO 元数据 + CSR）、C-3（深色默认 + 浅色切换）、C-4（history + 服务端 fallback）**均已拍板并实施**（见上方 callout 与各 C-* 行状态）。剩余未定项见 §6（C-5 生成口径、C-6 切租户、C-7 个人设置）。分离构建按 C-2 维持「暂不做」。
+**决策依赖**：C-1（公开区双 Tab）、C-2（SEO 元数据 + CSR）、C-3（深色默认 + 浅色切换）、C-4（history + 服务端 fallback）**均已拍板并实施**（见上方 callout 与各 C-* 行状态）。**C-5/C-6/C-7 亦已定案**（C-5 强制阻止未确认稿·已实施；C-6 明确不做切租户；C-7 明确不做个人设置），§6 决策点表已同步；C-8 延后至 B5 立项。分离构建按 C-2 维持「暂不做」。
 
 ### B2 核心创作
 
@@ -586,7 +586,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **测试**：`internal/pipeline/scope_test.go`（**无 DB** 纯函数套件：`ScopeOf` 13 子用例含「narration 页列表只看 slides、不含 segmentIds」「slides 非数组退回 unknown（宁可不识别也不猜页数）」、250 页不被传输层截断、游标往返/拒垃圾、排序键映射不回声输入）；`steps_read_test.go`（`//go:build pg`）新增 `TestMarkStepMaintainsJobsPhase`/`TestCreateWritesAffectedPages`/`TestListPageFiltersSortsAndPaginates`/`TestPhaseCountsGroupsByPhase`；`internal/api/joblist_test.go` 新增 8 例（参数校验 400、默认/asc 方向透传、payload 形态、计数失败保留列表、非法游标 400、存储故障 500、未实现 501）；`jobdetail_test.go` 重写（`TestScopeFor*` 截断语义 + `publicJobsSummary` 契约收窄断言「顶层只应有 `jobs` 一个键」）。
     - PG 相关用例按仓库惯例 `t.Skip`（未设 `PPTS_TEST_DATABASE` 时输出 skip 而非 FAIL）。
   - **验证**：`tsc -b` ✅ + `vite build` ✅（55 modules，CSS 49.06 → 50.01 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（**0 FAIL**；全量 14 项 SKIP 仍全为环境依赖型，`internal/api` 0 SKIP）。
-- **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
+- **C-6（已定案：不做）**：切租户本轮**不做**（与 §3 决策行、§6 表一致）。**2026-09-16 按文件核实**（R-8）：后端 `proto/ppts/v1/tenant.proto` 的 `TenantService` 13 个方法中**无任何租户列表 RPC**（`Members`/`Roles`/`SetMemberRole`/`RemoveMember`/`ExportTenant`/`PurgeTenant`/`Quota`/`Usage`/`ProjectUsage`/`StorageUsage`/`Policy`/`ListAuditEvents`/`ListAuditArchives`），前端 `web/src/` 亦**无切租户入口**（`tenantId` 仅出现在开发身份表单 `Login.tsx`/`auth.ts` 与只读展示 `AppShell.tsx`）。故**不存在"假能力"或"死入口"**，无需隐藏动作；本节此前"决策待定"的表述已作废。
 
 ### 零散遗留收口（2026-09-16，非批次里程碑）
 
@@ -599,8 +599,8 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | `0001_init.sql` 的 `step_type` 注释 | 注释写 `render/tts_segment/alignment/assembly/export`，与 worker **实际写入**不符 | **已修**：改为 `pages/tts_segment/timeline/export` 并注明来源文件（`app/ingest.go:123`、`app/narration.go:331,475`、`app/export.go:64`）。无校验和机制，改注释不影响已迁移库 |
 | MP4 字幕烧录 | `ExportSnapshot.BurnSubtitles` 被 UI 收集、被 api 存入快照，但 `renderMP4` **完全忽略**；`MP4EncodeOptions` 无字幕项。**注意：UI 文案此前已如实标注"服务端暂不执行烧录"，故不构成 A26 假能力，而是"已披露且设计 §338 要求"的功能缺口** | **已接入**（见下） |
 | artifact 缺 `duration` | `Artifact`/`NewArtifact` 均无时长字段（设计 §332 要求成品展示"实际时长"），成品的时长列一直无法展示 | **已补**：迁移 0027 + 全链路（见下） |
-| R-12 `StorageUsage` 无统计时间 | 需改 proto（本环境 protoc 不可用） | **本轮不动**，维持"取数于 {时刻}"的如实标注 |
-| C-6 切租户 | 需后端新增"我的租户列表"RPC（proto）或明确"不做" | **本轮不动**，口径仍待定 |
+| R-12 `StorageUsage` 无统计时间 | 需改 proto（本环境 protoc 不可用） | **环境阻塞**（本环境 `protoc` 不可用，须在具备 `protoc` 的环境补 `tenant.proto` 增列 + 同步 `GetStorageUsageResponse`），维持"取数于 {时刻}"的如实标注 |
+| C-6 切租户 | 需后端新增"我的租户列表"RPC（proto）或明确"不做" | **已定案：不做**（2026-09-16 按文件核实：后端 `TenantService` 无租户列表 RPC、前端无切租户入口，不存在假能力/死入口，无需隐藏动作；详见上「C-6（已定案：不做）」） |
 
 **MP4 字幕烧录（已接入）**：
 - **可测性重构**：`media.Encode` 里的 ffmpeg 参数构造抽成**纯函数** `compileEncodeArgs(opts, encodeInputs)` —— 不 IO、不 exec，因此**在没有 ffmpeg 的机器上也能单测滤镜链**（此前整条链只有被 Skip 的端到端用例覆盖）。新增 `internal/media/mp4_args_test.go` 11 例（含逐字符锁定的 filter_complex 断言）。
@@ -636,7 +636,9 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 
 ---
 
-## 6. 需确认的决策点（阻塞 B1/B2 启动）
+## 6. 决策点（2026-09-16 全部定案）
+
+> **状态**：C-1–C-7 均已定案（C-1/C-4/C-5 已实施；C-2/C-3/C-7 为口径决策；C-6 明确不做，已按文件核实无入口），C-8 延后至 B5 独立立项。**本表已无待定项**。
 
 | 编号 | 决策点 | 可选路径 | 影响 |
 |---|---|---|---|
@@ -644,10 +646,10 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | C-2 | SEO 策略 | **【已定】A（元数据 + CSR）**：先落地 title/description/OG + 干净 URL（history 路由），预渲染/SSR 延后，待 SEO 需求明确再评估 | 本轮不引入预渲染与分离构建；公开区可发现性以元数据满足 A27 |
 | C-3 | 主题基线 | **【已定】保留深色为默认，新增浅色切换**：顶栏右上角太阳/月亮按钮切换深/浅；浅色以浅灰工作区 + 白色面板 + 蓝紫主色为基调（非全量改 §14） | 视觉基线专项改为"主题令牌 + 切换"，不再做深→浅整体重构 |
 | C-4 | 路由形态 | **【已定 + 已实施】A（history + 服务端 fallback）**：自研 hash 路由已改为 History API（`b96352b`）；dev 由 Vite SPA fallback 兜底，prod 由 Go 后端 catch-all 经 `PPTS_WEB_ROOT` 返回 index.html（`e1e6169`）；遗留 `#/path` 深链接在挂载时改写为 `/path` | 公开区可访问性与所有既有链接需重测；B1 其余项待做 |
-| C-5 | 生成口径 | 是否强制"未确认稿禁止正式生成"（A09） | 影响 B2 出口条件与用户流程 |
-| C-6 | 切租户 | 本轮做 or 明确不做并隐藏入口 | 决定是否需新增租户列表接口 |
+| C-5 | 生成口径 | **【已定 + 已实施】强制阻止未确认稿正式生成（A09）**：`draftSegments>0` 时前端禁用正式生成按钮并提示，生成请求传 `lockConfirmedOnly=true`；后端 `CreateGeneration` 的 `RequireConfirmed` 校验未确认稿即返回 `FailedPrecondition` | 已落地，不再待定 |
+| C-6 | 切租户 | **【已定：不做】**本轮明确不做切租户；**2026-09-16 按文件核实**：后端 `TenantService` 无租户列表 RPC、前端无切租户入口，不存在假能力/死入口，无需隐藏动作 | 无需新增接口；本项关闭 |
 | C-7 | 个人设置 | **【已定】明确不做并移除入口**：遵守 §1.2 第 3 条；若设置菜单已有个人设置入口则隐藏，本轮不实现个人设置页（留作后续 B4） | B4 ④ 顺延；当前不暴露虚假能力 |
-| C-8 | 公开作品发布 | 是否纳入本轮（P2） | 决定 B5 与 A29 |
+| C-8 | 公开作品发布 | **【已定：延后至 B5 独立立项】**不纳入 B0–B4 本轮；发布能力（`publicId` 不可反推、撤回即失效含 CDN 清理、删除级联失效）不完整则入口整体不上线 | 归入 B5 可选增强；A29 随之延后 |
 
 ---
 
