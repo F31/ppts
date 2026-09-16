@@ -513,7 +513,14 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
     - **必须保留 `.rail-title`**：`ProjectEditor.tsx:676` 的 `slide-rail-v2` **复用同名类**，故 `styles.css:23` 与 `720px` 媒体里的 `.rail-title { display: none }` 仍然生效 —— **这类清理不能按块删除，要按"类名是否被 v2 复用"逐个核对**（这是本轮唯一的真实误删风险点）。
     - 核对方法：对每个候选类名在 `web/src` 全量（含 `.ts`/`.tsx` 与模板串拼接）验证无引用，另做一次宽口径 `className=[^>]*(panel|column)` 扫描排除拼接式用法；改后 `grep` 复检，仅余 `-v2` 活类。
     - **产物级验证**：`vite build` 成功且 CSS 体积 **51.44 kB → 49.06 kB**（gzip 9.94 → 9.59 kB），证明删除生效且样式表语法有效。
-  - **登记新风险 R-13**（本轮发现，**先于本轮存在**，不属 A10 范围故未改）：`saving` 期间用户继续输入时，`runCommit` 成功回调的 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`，**静默丢弃在途编辑**。建议与 A11/A15 一并处理。
+  - **R-13（提交在途期间的编辑被静默丢弃）修复【已实施】**（D0 收口时登记、2026-09-16 单独收口） —— `web/src/ScriptEditor.tsx`：
+    - **缺陷链**：`saving` 期间用户继续输入 → `runCommit` 成功回调 `onChange(saved)` 推进 `revision` → 复位 effect 无条件 `setTexts(initialTexts(script))` + `setSaveState('saved')` → 用户新输入被服务端文本覆盖、且保存状态被置回 saved（既无"未保存"提示也无恢复入口，属 A11/A15 语义）。
+    - **修复①「复位」区分两件事**：新增 `slideIdRef`，`slideId` 变化（切页）才重置选择集 / 待提交定时器 / 组合态 / `keepLocalRef`；`revision` 推进（服务端落库）时，若本次落库正是"在途期间有更新编辑"的那次提交（`keepLocalRef` 标记）或本地仍有未提交编辑（`dirty`/`saving`），则**保留本地文本**，交给其自身的提交继续推进 revision。
+    - **修复②「在途」判定不再复用 `saveState`**：新增 `inFlightRef`（**按 `slideId` 记名**，而非布尔）。用户继续输入会把 `saveState` 置回 `dirty`，旧实现据 `saveState === 'saving'` 判断在途 → 实为「在途期间仍会以同一 `expectedRevision` **并发提交**」，服务端必判 conflict（`ProjectEditor.tsx:324-331` 会弹冲突框）。现 `scheduleSave` 与 `flush`（Ctrl+S/切页前）统一改为在途时退避 `SAVE_RETRY_MS` 重排，等 `props.revision` 跟上再提交。按 slideId 记名还使切页后旧页的在途请求不再阻塞新页自动保存。
+    - **修复③「提交返回」识别新编辑**：新增 `editSeqRef` 编辑序号，提交发出时记下、返回时比对：序号已变 → 不置回 `saved`，改置 `dirty` 并立即重排一次提交（此时 revision 已是服务端新值，不会自撞 conflict）。
+    - **`error` 仍走对齐分支（有意保留）**：冲突对话框的「采用服务端版本 / 以最新版本重试」（`ProjectEditor.tsx:431-444`）正是依赖这次对齐把服务端文本写进编辑器，故保留条件只覆盖 `dirty`/`saving`、**不含 `error`**。
+    - **顺带修掉相邻缺陷**：同页 `revision` 推进不再清空段落选择集（旧实现每次自动保存都会清掉用户为工具栏选中的段落）。
+    - **验证**：`tsc -b` + `vite build` ✅ + `go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅。该缺陷无自动化 UI 测试覆盖（仓库无前端测试基建），修法以"状态机三条不变式"逐条对照源码复核：①切页必重置；②服务端落库不得覆盖未提交编辑；③同一 `expectedRevision` 不得并发提交。
   - **验证**：`tsc -b` + `vite build` ✅（55 modules；D0-9 后 CSS 49.06 kB）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保基线可信）。
 - **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
@@ -565,7 +572,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-10 | 里程碑交付只做"单文件类型复核+`gofmt` 兜底"就提交，缺陷（编译阻塞、吞错假状态、未挂载路由）会跨里程碑累积 | 高 | 高 | 按「验证回路更新」在沙箱内跑通 `tsc -b` + `vite build` + `go build ./...` + `go vet ./internal/...` 后才提交；新增后端路由须核对**注册表**而非仅核对处理器函数 |
 | R-11 | ~~**D0 批次严重滞后**~~ **【已解决 2026-09-16】**：D0 原定"B1 之前或并行完成"，实际拖到 B4-M5 时仍有 3 项未做，其中 **D0-2 为安全项**（生产构建未配 OIDC 时仍渲染开发身份表单，违反 A01/A02） | 已发生 | 高 | **D0 九项全部收口、批次归零**：D0-1/5/6/8 早前完成、D0-3/D0-4 由 B4-M5 修复、**D0-2 + D0-7 + D0-9 由 2026-09-16「D0 收口」完成**（D0-2 含产物级双向验证 `return!1`/`return!0`；D0-9 使 CSS 51.44→49.06 kB）。教训：**缺失项要按文件核实、不要沿用清单描述**（D0-7 的清单描述与仓库实际不符），并坚持每批次出口逐条勾选（R-8） |
 | R-12 | `TenantService.StorageUsage` 未返回统计时间字段，首页无法满足 V1_6 §202「存储必须标统计时间」 | 已发生 | 低 | 首页如实标注为"取数于 {时刻}"（不伪造服务端统计时间）；如需真实统计时间，须后端在 `tenant.StorageUsage` 增列并同步 `GetStorageUsageResponse`（proto 变更，本环境 protoc 不可用 → 需在具备 protoc 的环境补） |
-| R-13 | **提交在途期间的编辑被静默丢弃**：`ScriptEditor` 处于 `saving` 时用户继续输入，`runCommit` 的 `.then` 调 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`（并把 `saveState` 置回 `saved`），用户新输入既无"未保存"提示也无恢复入口 | 中 | 高 | D0-7 收口时发现，**先于本轮存在**、不属 A10 范围故本轮未改。修法方向：复位 effect 区分"`slideId` 变化"（必须重置）与"`revision` 推进"（本地仍有未提交编辑时保留 `texts` 并维持 `dirty`）。建议与 A11（五态保存语义）/A15（生成中继续编辑）一并处理 |
+| R-13 | ~~**提交在途期间的编辑被静默丢弃**~~ **【已解决 2026-09-16】**：`ScriptEditor` 处于 `saving` 时用户继续输入，`runCommit` 的 `.then` 调 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`（并把 `saveState` 置回 `saved`），用户新输入既无"未保存"提示也无恢复入口；同源缺陷还包括**在途期间以同一 `expectedRevision` 并发提交**（必判 conflict） | 已发生 | 高 | D0-7 收口时发现、**先于本轮存在**，2026-09-16 单独收口。修法：复位 effect 用 `slideIdRef` 区分"切页"（必须重置）与"revision 推进"（保留本地未提交文本）；在途判定改用按 slideId 记名的 `inFlightRef`（不再复用会被新编辑置回 `dirty` 的 `saveState`），在途时 `scheduleSave`/`flush` 一律退避重排；提交返回用 `editSeqRef` 识别"在途期间又有新编辑"，不置回 `saved` 而是立即重排。`error` 保留对齐分支以兼容冲突对话框。详见 B4 章节「R-13 修复」 |
 
 ---
 

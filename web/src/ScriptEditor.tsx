@@ -57,18 +57,46 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const composingRef = useRef(false);
   const saveTimerRef = useRef<number | undefined>(undefined);
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  // inFlightRef：在途提交所属的 slideId（null 表示无在途）。
+  // 不能用 saveState 判定：用户继续输入会把 saveState 置回 dirty，仅看 saveState 会在在途期间
+  // 以同一 expectedRevision 并发提交（服务端必判 conflict）。按 slideId 记名还能让切页后
+  // 旧页的在途请求不再阻塞新页的自动保存。
+  const inFlightRef = useRef<string | null>(null);
+  // editSeqRef：本地编辑序号。提交发出时记下序号，返回时序号已变 → 在途期间用户又编辑过（R-13）。
+  const editSeqRef = useRef(0);
+  // keepLocalRef：服务端落库（revision 推进）时是否需要保留本地文本（R-13 用）。
+  const keepLocalRef = useRef(false);
   const caretRef = useRef<number>(0);
   const saveStateRef = useRef<ScriptEditorStatus>(saveState);
   saveStateRef.current = saveState;
 
   // 仅在切换页面或服务器落库（revision 变化）时重置文本，避免每次按键被父级 onChange 回写冲刷光标。
+  // R-13：这两件事必须分开处理 —— 切页必须重置；服务端落库不能无条件覆盖本地文本。
+  // 旧实现无条件 `setTexts(initialTexts(script))` + `setSaveState('saved')`：提交在途时用户继续输入的编辑
+  // 会在提交成功回调推进 revision 后被服务端文本覆盖，且保存状态被置回 saved，**在途编辑静默丢失**。
+  const slideIdRef = useRef(script.slideId);
   useEffect(() => {
+    const switchedSlide = slideIdRef.current !== script.slideId;
+    slideIdRef.current = script.slideId;
+    if (!switchedSlide) {
+      // ① 本次 revision 推进正是"在途期间有更新编辑"的那次提交产生的 → 本地文本必须保留（其自身的提交会再推进 revision）。
+      if (keepLocalRef.current) {
+        keepLocalRef.current = false;
+        return;
+      }
+      // ② 兜底：仍有未提交编辑（提交在途 / 已 dirty）时不覆盖，避免丢掉刚敲下的字符。
+      //    注意 'error' 走下面的对齐分支：冲突对话框的「采用服务端版本/以最新版本重试」正是靠这次对齐生效。
+      if (saveStateRef.current === 'dirty' || saveStateRef.current === 'saving') return;
+    }
     setTexts(initialTexts(script));
     setSaveState('saved');
-    setSelected(new Set());
-    // 切页 / 服务端落库后，丢弃针对旧稿的待提交任务与组合态，避免把旧文本写进新页。
-    window.clearTimeout(saveTimerRef.current);
-    composingRef.current = false;
+    if (switchedSlide) {
+      // 切页：丢弃针对旧稿的待提交任务、组合态、选择集与 R-13 标记（新页一切从头开始）。
+      window.clearTimeout(saveTimerRef.current);
+      composingRef.current = false;
+      setSelected(new Set());
+      keepLocalRef.current = false;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.slideId, script.revision]);
 
@@ -92,12 +120,26 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       setSaveState('saved');
       return;
     }
+    // R-13：记下发出时的本地编辑序号，返回时据此判断"在途期间是否又有新编辑"。
+    const slideId = script.slideId;
+    const seq = editSeqRef.current;
+    inFlightRef.current = slideId;
     commit(segments, script.revision)
       .then((saved) => {
+        if (inFlightRef.current === slideId) inFlightRef.current = null;
         onChange(saved);
+        if (editSeqRef.current !== seq) {
+          // 在途期间用户又编辑过：不能置回 saved（否则紧随的 revision 推进会用服务端文本覆盖在途编辑）。
+          // 标记保留本地文本，并立即重排一次提交 —— 此时 props.revision 已是服务端新值，不会再撞 conflict。
+          keepLocalRef.current = true;
+          setSaveState('dirty');
+          scheduleSaveRef.current();
+          return;
+        }
         setSaveState('saved');
       })
       .catch((error) => {
+        if (inFlightRef.current === slideId) inFlightRef.current = null;
         setSaveState('error');
         onCommitError?.(error instanceof Error ? error.message : t('script.saveFailed'));
       });
@@ -117,11 +159,13 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     saveTimerRef.current = window.setTimeout(() => {
       // 组合期绝不提交（A10）；此处不重排，由 onCompositionEnd 统一补一次。
       if (composingRef.current) return;
-      if (saveStateRef.current !== 'dirty') {
-        // 提交在途：本次编辑不能丢，退避后重排；saved/error/conflict 则无需再提交（error 保持人工重试）。
-        if (saveStateRef.current === 'saving') scheduleSaveRef.current(SAVE_RETRY_MS);
+      // 本页已有提交在途：本次编辑不能丢，退避后重排（等 props.revision 跟上再提交，避免并发撞 conflict）。
+      if (inFlightRef.current === slideIdRef.current) {
+        scheduleSaveRef.current(SAVE_RETRY_MS);
         return;
       }
+      // saved/conflict 无需提交；error 保持人工重试（原语义不变）。
+      if (saveStateRef.current !== 'dirty') return;
       runCommitRef.current();
     }, delay);
   };
@@ -134,6 +178,11 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         // A10：组合未结束（拼音候选未确认）不强制提交，避免把半成品写进讲稿；
         // 组合结束后 onCompositionEnd 会自动补一次提交。
         if (composingRef.current) return;
+        // 本页已有提交在途：不并发发起第二次提交（同一 expectedRevision 必冲突），交给调度器退避重排。
+        if (inFlightRef.current === slideIdRef.current) {
+          scheduleSaveRef.current(SAVE_RETRY_MS);
+          return;
+        }
         if (saveStateRef.current === 'dirty' || saveStateRef.current === 'error') {
           window.clearTimeout(saveTimerRef.current);
           runCommitRef.current();
@@ -145,6 +194,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   );
 
   const editSegment = (segmentId: string, value: string) => {
+    // R-13：编辑序号用于让在途提交的返回结果识别"已有更新编辑"（不置回 saved、不覆盖本地文本）。
+    editSeqRef.current += 1;
     setTexts((current) => ({ ...current, [segmentId]: value }));
     setSaveState('dirty');
     // A10：中文输入法组合期间（拼音串/候选未确认）不调度保存，待 onCompositionEnd 再落库。
