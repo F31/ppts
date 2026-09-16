@@ -20,6 +20,9 @@ type Artifact struct {
 	ID           string
 	TenantID     string
 	ProjectID    string
+	// ProjectName 是跨项目成品库（GET /artifacts，B5-M2）所需的冗余展示字段：
+	// 由 ListAll 经 LEFT JOIN projects 填充；Get/ListByProject 不填充（空串）。
+	ProjectName  string
 	SnapshotHash string
 	Format       Format
 	ObjectKey    string
@@ -48,4 +51,7 @@ type Store interface {
 	Create(ctx context.Context, tenantID string, in NewArtifact) (*Artifact, error)
 	Get(ctx context.Context, tenantID, id string) (*Artifact, error)
 	ListByProject(ctx context.Context, tenantID, projectID string) ([]*Artifact, error)
+	// ListAll 返回租户内全部项目成品（按创建时间倒序），供跨项目成品库（B5-M2）。
+	// ProjectName 经 LEFT JOIN projects 填充；owner 级读权限由 api 层 requireRole 控制。
+	ListAll(ctx context.Context, tenantID string) ([]*Artifact, error)
 }

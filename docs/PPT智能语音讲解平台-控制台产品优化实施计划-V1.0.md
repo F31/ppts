@@ -633,7 +633,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | B5-M1 命令面板（Cmd/Ctrl+K） | 纯前端：AppShell 全局 Cmd/Ctrl+K 监听 + 顶栏 ⌘K 按钮；`CommandPalette` 复用 `useDialogA11y`（Esc/焦点陷阱/焦点返回），命令由 `primaryNav`/`settingsMenus` 按角色过滤（导航+设置子页）+「新建讲解」/「公开区」操作；方向键选择、回车执行、输入过滤；i18n 中英、样式入 styles.css | 【已实施】 |
-| B5-M2 全局成品库 | 后端 `GET /artifacts`（跨租户聚合，owner 级读权限设计，`tenant.Run` 多租户）+ 前端 `/library` 页（按格式/项目/时间筛选）；i18n + 样式 | 待实施 |
+| B5-M2 全局成品库 | 后端 `GET /artifacts`（`artifact.Store.ListAll` 跨项目 JOIN projects 取项目名，`tenant.Run` 多租户；`requireRole(RoleOwner)` 门控，高于单项目 `artifact.list` 的 editor）+ 前端 `/library` 页（`library.view`=ROLE_OWNER 能力；侧栏入口带 `need` 过滤保持菜单与后端一致；按格式/项目/时间筛选、下载、跳转项目成品页）；i18n 中英 + 样式入 styles.css。原生 HTTP 端点，不改 proto | 【已实施】 |
 | B5-M3 公开发布与撤回（A29） | 迁移加 `publications.public_id`(32B 随机 base62 不可反推) + `status` 加 `withdrawn`/`withdrawn_at`；匿名读从内部 `id` 切到 `/showcase/:publicId`；新增 `POST /public/works/:publicId/recall`（owner/admin 置 withdrawn 立即拒读）；删除级联失效（artifact 删→publication 连带 withdrawn）；验收 A29。**门控**：能力不完整则入口整体不上线（C-8） | 待实施 |
 
 **验证回路**：`contrast.mjs` 0 失败 → `tsc -b` → `vite build`；后端 `go build ./...` + `go vet ./internal/...` + `go test ./internal/...`；每里程碑一 commit 一 push；匿名发布/撤回须独立最小字段集 + 越权测试（R-15/R-2）。

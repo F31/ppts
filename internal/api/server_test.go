@@ -230,6 +230,15 @@ func (s *fakeArtifactStore) ListByProject(_ context.Context, tenantID, projectID
 	return []*artifact.Artifact{s.artifact}, nil
 }
 
+// ListAll 对应 B5-M2 跨项目成品库（artifact.Store 接口新增方法）。
+// 桩按租户过滤单条产物；无匹配返回空列表（与 PGStore 语义一致）。
+func (s *fakeArtifactStore) ListAll(_ context.Context, tenantID string) ([]*artifact.Artifact, error) {
+	if s.artifact == nil || s.artifact.TenantID != tenantID {
+		return nil, nil
+	}
+	return []*artifact.Artifact{s.artifact}, nil
+}
+
 func testObjects(t *testing.T) objectstore.ObjectStore {
 	t.Helper()
 	return objectstore.NewLocal(t.TempDir(), []byte("download-secret"))

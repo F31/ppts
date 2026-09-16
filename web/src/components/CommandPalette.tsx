@@ -18,6 +18,8 @@ function buildCommands(role: Role | undefined, roleReady: boolean, t: (key: stri
   const cmds: Command[] = [];
   const settingsHome = settingsMenus.find((m) => can(role, m.need))?.to ?? '/settings/usage';
   for (const item of primaryNav) {
+    // B5-M2：侧栏主导航的 need 同样适用于命令面板，owner 才见 library 命令（与后端一致）。
+    if (item.need && !(roleReady && can(role, item.need))) continue;
     const to = item.key === 'settings' ? settingsHome : item.to;
     cmds.push({ id: `nav:${item.key}`, label: t(item.labelKey), to, section: 'nav', icon: item.icon });
   }

@@ -45,6 +45,14 @@ func (s *artifactStoreStub) ListByProject(_ context.Context, tenantID, projectID
 	return []*artifact.Artifact{s.created}, nil
 }
 
+// ListAll 对应 B5-M2 跨项目成品库（artifact.Store 接口新增方法）。
+func (s *artifactStoreStub) ListAll(_ context.Context, tenantID string) ([]*artifact.Artifact, error) {
+	if s.created == nil || s.created.TenantID != tenantID {
+		return nil, nil
+	}
+	return []*artifact.Artifact{s.created}, nil
+}
+
 func exportJob(t *testing.T, snapshot ExportSnapshot) *pipeline.Job {
 	t.Helper()
 	b, err := json.Marshal(snapshot)

@@ -685,6 +685,36 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
   .slide-rail-v2 button { min-height: 44px; }
 }
 
+/* B5-M2 跨项目成品库（/library） */
+.library-filters .filter-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+.filter-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
+.library-select {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-body);
+  min-height: 38px;
+}
+.library-count { margin-left: auto; align-self: center; color: var(--text-faint); font-size: 13px; }
+.library-grid { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.library-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.4fr) auto auto auto minmax(160px, 1.4fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-row);
+}
+.library-proj-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+.library-proj-link:hover { text-decoration: underline; }
+@media (max-width: 720px) {
+  .library-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+}
+
 /* ============================================================
    B5-M1 命令面板（Cmd/Ctrl+K）
    ============================================================ */

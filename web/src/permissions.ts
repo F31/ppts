@@ -30,7 +30,8 @@ export type Capability =
   | 'audit.read'
   | 'public.publish'
   | 'public.manage'
-  | 'tenant.danger';
+  | 'tenant.danger'
+  | 'library.view';
 
 // minRole：每项能力的最低角色，逐条对齐服务端校验点。
 // | capability          | 最低角色 | 服务端依据                                                        |
@@ -52,6 +53,7 @@ export type Capability =
 // | public.publish      | viewer   | public.go:37（POST /public/works 仅要求已认证）                     |
 // | public.manage       | admin    | public.go:333（requireAdmin：featured/review/delete）              |
 // | tenant.danger       | owner    | tenant.go:388、tenant.go:414（requireOwner）                      |
+// | library.view        | owner    | artifact.go GET /artifacts requireRole RoleOwner（B5-M2 跨项目成品库）|
 export const minRole: Record<Capability, Role> = {
   'project.read': 'ROLE_VIEWER',
   'project.create': 'ROLE_EDITOR',
@@ -69,7 +71,8 @@ export const minRole: Record<Capability, Role> = {
   'audit.read': 'ROLE_ADMIN',
   'public.publish': 'ROLE_VIEWER',
   'public.manage': 'ROLE_ADMIN',
-  'tenant.danger': 'ROLE_OWNER'
+  'tenant.danger': 'ROLE_OWNER',
+  'library.view': 'ROLE_OWNER'
 };
 
 export function roleRank(role: Role | undefined): number {

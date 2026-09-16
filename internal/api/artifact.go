@@ -49,3 +49,37 @@ func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts ar
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": out})
 }
+
+// globalArtifacts 返回当前租户全部项目的成品（B5-M2 跨项目成品库）。
+// 权限：owner（跨项目曝光，高于单项目 artifact.list 的 editor）；按创建时间倒序。
+func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, members membership.Store) {
+	principal, err := requirePrincipal(r.Context())
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleOwner); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	list, err := artifacts.ListAll(r.Context(), principal.TenantID)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, a := range list {
+		out = append(out, map[string]any{
+			"id":           a.ID,
+			"projectId":    a.ProjectID,
+			"projectName":  a.ProjectName,
+			"snapshotHash": a.SnapshotHash,
+			"format":       string(a.Format),
+			"sizeBytes":    a.SizeBytes,
+			"durationMs":   a.DurationMS,
+			"createdAt":    a.CreatedAt.Format(time.RFC3339),
+			"downloadable": a.ObjectKey != "",
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"artifacts": out})
+}

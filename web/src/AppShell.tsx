@@ -8,12 +8,14 @@ import { can, type Capability } from './permissions';
 import { useDialogA11y } from './a11y';
 import { CommandPalette } from './components/CommandPalette';
 
-export type NavItem = { key: string; to: string; labelKey: string; icon: string };
+export type NavItem = { key: string; to: string; labelKey: string; icon: string; need?: Capability };
 
 export const primaryNav: NavItem[] = [
   { key: 'home', to: '/home', labelKey: 'nav.home', icon: '🏠' },
   { key: 'projects', to: '/projects', labelKey: 'nav.projects', icon: '📊' },
   { key: 'jobs', to: '/jobs', labelKey: 'nav.jobs', icon: '⚙️' },
+  // B5-M2：跨项目成品库（owner 级），带 need 由侧栏按角色过滤，保持「菜单与后端一致」（A22）。
+  { key: 'library', to: '/library', labelKey: 'nav.library', icon: '🗃️', need: 'library.view' },
   { key: 'settings', to: '/settings/models', labelKey: 'nav.settings', icon: '🔧' }
 ];
 
@@ -65,6 +67,8 @@ export function AppShell({ children, role, roleReady = true }: { children: React
   // B4-M1：只渲染当前角色确实可用的设置项（菜单与后端一致，A22）。
   // 角色解析中先按"零权限"处理，避免向 Viewer 闪现管理菜单。
   const visibleSettings = settingsMenus.filter((item) => roleReady && can(role, item.need));
+  // B5-M2：侧栏主导航同样按 need 过滤（library 仅 owner 可见），保持「菜单与后端一致」（A22）。
+  const visiblePrimary = primaryNav.filter((item) => !item.need || (roleReady && can(role, item.need)));
   // 「设置」入口落到第一个可见子页；解析中先落用量页（仅需已认证，对任何角色都安全）。
   const settingsHome = visibleSettings[0]?.to ?? '/settings/usage';
 
@@ -78,7 +82,7 @@ export function AppShell({ children, role, roleReady = true }: { children: React
           </span>
         </Link>
         <nav className="primary-nav" aria-label={t('shell.mainNav')}>
-          {primaryNav.map((item) => (
+          {visiblePrimary.map((item) => (
             <Link
               key={item.key}
               to={item.key === 'settings' ? settingsHome : item.to}

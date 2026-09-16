@@ -76,6 +76,45 @@ func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID string)
 	return items, err
 }
 
+// ListAll 返回租户内全部项目成品（按创建时间倒序），供跨项目成品库（B5-M2）。
+// 列顺序必须与 artifactColumns 完全一致，仅表别名 a. 前缀区别；project_title 附在其后，
+// 由 scanRowsWithProject 按相同顺序扫描（同 jobSelectColumns/artifactColumns 的单一列清单原则，
+// 避免顺序错位这类编译期不可见的运行期故障）。
+func (s *PGStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact, error) {
+	items := []*Artifact{}
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, qErr := tx.Query(ctx, `SELECT `+artifactColumns+`,
+			COALESCE(p.title, '') AS project_title
+			FROM artifacts a
+			LEFT JOIN projects p ON p.id = a.project_id AND p.tenant_id = a.tenant_id
+			WHERE a.tenant_id=$1 ORDER BY a.created_at DESC`, tenantID)
+		if qErr != nil {
+			return qErr
+		}
+		defer rows.Close()
+		for rows.Next() {
+			a, sErr := scanRowsWithProject(rows)
+			if sErr != nil {
+				return sErr
+			}
+			items = append(items, a)
+		}
+		return rows.Err()
+	})
+	return items, err
+}
+
+func scanRowsWithProject(row rowScanner) (*Artifact, error) {
+	var a Artifact
+	var format string
+	if err := row.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
+		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.CreatedAt, &a.ProjectName); err != nil {
+		return nil, err
+	}
+	a.Format = Format(format)
+	return &a, nil
+}
+
 // rowScanner 覆盖 pgx.Row 与 pgx.Rows 共有的 Scan，使单行与多行读取共用同一列顺序。
 type rowScanner interface {
 	Scan(dest ...any) error

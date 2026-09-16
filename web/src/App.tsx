@@ -7,6 +7,7 @@ import { Home } from './pages/Home';
 import { Jobs } from './pages/Jobs';
 import { Login } from './pages/Login';
 import { ProjectArtifacts } from './pages/ProjectArtifacts';
+import { Library } from './pages/Library';
 import { ProjectEditor } from './pages/ProjectEditor';
 import { Projects } from './pages/Projects';
 import { SettingsAudit } from './pages/SettingsAudit';
@@ -168,6 +169,9 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
         }
         return <Projects identity={identity} />;
       }
+      case 'library':
+        // B5-M2 跨项目成品库：owner 级（与后端 GET /artifacts requireRole RoleOwner 一致）。
+        return guard('library.view', <Library identity={identity} />);
       case 'jobs':
         return <Jobs identity={identity} />;
       case 'settings':

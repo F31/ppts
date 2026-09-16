@@ -377,6 +377,25 @@ export async function getProjectArtifacts(
   return getJSON<{ artifacts: ProjectArtifact[] }>(identity, `/projects/${encodeURIComponent(projectId)}/artifacts`);
 }
 
+// getLibraryArtifacts 读取租户内全部项目的成品（B5-M2 跨项目成品库，owner 级）。
+// 返回项含 projectId / projectName，前端按格式 / 项目 / 时间筛选，并可跳转项目成品页。
+export type LibraryArtifact = {
+  id: string;
+  projectId: string;
+  projectName: string;
+  snapshotHash: string;
+  format: 'mp4' | 'srt' | 'vtt' | 'web_project';
+  sizeBytes: number;
+  // durationMs：0 = 未知/未记录（迁移 0027 之前的历史行），显示「—」。
+  durationMs: number;
+  createdAt: string;
+  downloadable: boolean;
+};
+
+export async function getLibraryArtifacts(identity: ClientIdentity): Promise<{ artifacts: LibraryArtifact[] }> {
+  return getJSON<{ artifacts: LibraryArtifact[] }>(identity, '/artifacts');
+}
+
 export type NarrationSlideStale = { slideId: string; stale: boolean };
 
 // getNarrationStale 读取项目内"讲稿已改、配音未重生成"的页（首页「音频需更新」的真实信号）。
