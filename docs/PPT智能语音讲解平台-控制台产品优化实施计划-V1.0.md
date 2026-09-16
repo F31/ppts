@@ -75,8 +75,8 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | 展示位为空时隐藏网格不渲染假卡片 | 全缺 | ❌ |
 | 公共播放页 + 底部转化区 + 悬停不自动播放 | 全缺 | ❌ |
 | 登录页左右分栏、品牌文案、企业认证入口 | 已实现 | ✅ |
-| 开发身份仅显式门控 | `isDevIdentityEnabled() = !oidcConfigured() \|\| DEV`，**生产构建未配 OIDC 时会暴露开发身份表单** | ❌ A01 |
-| 正式环境未配认证 → "登录服务尚未配置"且不回退 | 回退到开发身份表单 | ❌ |
+| 开发身份仅显式门控 | 已改为仅 `DEV`（或构建期显式 `VITE_ALLOW_DEV_IDENTITY=true`）开放，且**读侧同步门控**（D0-2 ✅） | ✅ A01 |
+| 正式环境未配认证 → "登录服务尚未配置"且不回退 | 生产构建渲染 `login.unconfigured`，不再回退到开发身份表单（D0-2 ✅） | ✅ |
 | 公开区"注册"按钮（P2 未开放前 → "申请试用"或隐藏） | 无任何注册/试用入口 | ❌ |
 | 多租户选择（多项时显示可搜索列表） | 无 | ❌ |
 | 401 重新认证 / 403 无权访问（非无限跳登录） | 无全局拦截器，无 403 页 | ⚠️ |
@@ -138,7 +138,7 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | 三类按钮区分（试听样例/本页试听/播放已有） | 全缺；无"本页试听" | ❌ |
 | **确认 / 锁定 UI** | **后端已实现 Approve/Lock，前端 API 层未封装、UI 无入口** | ❌ A09 |
 | 保存 800ms 防抖 + 五态显示 | 500+220ms 防抖；状态仅 saved/dirty/saving，**无 error/conflict 态** | ⚠️ |
-| 中文输入法组合期不提交 | 无 composition 处理 | ❌ A10 |
+| 中文输入法组合期不提交 | 组合期不调度、不提交（`composingRef` 守卫 + 单调度器，D0-7 ✅） | ✅ A10 |
 | 页面切换刷新待保存队列 / Ctrl+S / 离开提示 | 全缺 | ❌ |
 | 冲突对照 + 保留本地稿 + 不最后写入覆盖 | 有简单对照弹窗 | ✅ A12 |
 | 未决冲突不允许生成最新稿 | 无阻断 | ❌ |
@@ -268,17 +268,17 @@ V1.6 §17 的 29 条验收条款现状：**通过 2 条、部分达成 9 条、�
 | 编号 | 缺陷 | 位置 | 修复动作 | 验收 |
 |---|---|---|---|---|
 | D0-1 | 语速/仅锁定参与未生效 | `api.ts:175-188` | `createGeneration`/`estimateNarration` 补 `ratePercent`、`lockConfirmedOnly`、`mode` 入参，编辑器透传 | 生成请求含真实字段；A09 |
-| D0-2 | 开发身份门控 | `auth.ts:24-27` | 改为"仅 `import.meta.env.DEV` 显式开放"，生产构建未配 OIDC 时渲染"登录服务尚未配置"文案 | A01、A02 |
+| D0-2 | 开发身份门控 | `auth.ts`（`isDevIdentityEnabled`/`storedDevIdentity`） | 改为"仅 `import.meta.env.DEV` 或构建期显式 `VITE_ALLOW_DEV_IDENTITY=true` 开放"；**读侧同步门控**（残留 localStorage 的 dev identity 不被采纳）；生产构建未配 OIDC 时只渲染"登录服务尚未配置"、不回退 | A01、A02 |
 | D0-3 | 首页项目总数口径 | `Home.tsx:108` | 改用真实聚合能力或标"暂无统计"；统计卡标签写明计数对象 | A04 |
 | D0-4 | 可播放项目统计失真 | `Home.tsx:69-81,109` | 明确"最近 N 项中可播放数"或改由聚合接口给出 | A04 |
 | D0-5 | 播放器无音频 | `Player.tsx:19-36` | 引入 `<audio>` 播放 manifest 中 AUDIO 资源，进度以 `timeupdate` 为准；保留无音频降级 | A21 |
 | D0-6 | 保存态缺 error/conflict | `ScriptEditor.tsx:15,67` | 五态显示；失败/冲突保留输入并可重试 | A11、A12 |
-| D0-7 | 中文输入法组合期提交 | `ScriptEditor.tsx:69-76` | 处理 `compositionstart/end`，组合期不触发保存 | A10 |
+| D0-7 | 中文输入法组合期提交 | `ScriptEditor` 保存调度 | `compositionstart/end` + 组合期不调度；**保存收敛为单一定时器**（原防抖 effect 的定时器与组合结束的定时器互相不可见，组合确认时会并发两次提交同一 revision） | A10 |
 | D0-8 | 公共可发现性基线 | `web/index.html` | 标题改"智讲 PPT"、补 `description`/OG 标签、`lang` 与 favicon | A27 |
 | D0-9 | 死代码与样式残留 | `styles.css`（`.workspace`/`.project-panel`/`.slide-rail`） | 清理已删除组件 `ProjectPanel.tsx` 的残留样式 | 工程质量 |
 
-**D0 批次状态（2026-09-16 逐文件核实）**：D0-1 ✅（B3-M4 已修）、D0-5 ✅（B3-M2 已合并）、D0-6 ✅（`ScriptEditor` 五态 `saved/dirty/saving/error/conflict` 已实现）、D0-8 ✅（`index.html` 已含 `lang`/`title`/`description`/OG，仅缺 favicon）、**D0-3 ✅ / D0-4 ✅（本批次 B4-M5 一并修复）**；
-**仍未完成 3 项**：**D0-2（`auth.ts:26` 仍为 `!oidcConfigured() || import.meta.env.DEV` → 生产构建未配 OIDC 时暴露开发身份表单，属 A01/A02 安全项，最高优先）**、D0-7（`ScriptEditor.tsx` 无 `compositionstart/end` 处理，中文输入法组合期会触发保存，A10）、D0-9（残留样式未清理）。见 R-11。
+**D0 批次状态（2026-09-16 逐文件核实 + 当日收口）**：D0-1 ✅（B3-M4 已修）、D0-5 ✅（B3-M2 已合并）、D0-6 ✅（`ScriptEditor` 五态 `saved/dirty/saving/error/conflict` 已实现）、D0-8 ✅（`index.html` 已含 `lang`/`title`/`description`/OG，仅缺 favicon）、D0-3 ✅ / D0-4 ✅（B4-M5 修复）、**D0-2 ✅ / D0-7 ✅（本日「D0 收口」，见 B4 章节）**；**仅剩 D0-9（`styles.css` 残留 `ProjectPanel` 样式）**。
+> **复核纠正**：D0-7 原记为"`ScriptEditor.tsx` 无 `compositionstart/end` 处理"**与仓库不符**——该处理在 B2-M2（`4192e21`）已加入（`composingRef` 守卫）。真实缺陷是**保存定时器不唯一**：防抖 effect 的 500ms 定时器与 `onCompositionEnd` 另起的 720ms 定时器互不可见，中文输入法确认时会并发两次提交同一 `expectedRevision` → 服务端冲突。本轮按 A10 收口为单调度器。
 
 ---
 
@@ -498,6 +498,17 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   - **A26 一致性**：全部富化请求走 `settle` → `describeApiError`（**无一处 `.catch(() => null)`**），失败原因去重后渲染在 `.load-failure.load-failure-stack` 中并附重试。角色未就绪（`roleReady=false`）时不下发角色受限请求——避免 A22「先闪现越权入口、再收 403」。
   - **i18n**：中英各 26 键（`home.todo*`×13、`home.stat.*`×8、`home.newNarration`/`home.statsAria`/`home.atLeast`、`home.recentArtifacts`/`home.artifactsScope`/`home.artifactOpen`、`home.probeFailed`/`home.unknownProject`），并**删除已无引用的 `home.stat.projectsNote`**；中英键数校验 687/687 完全对齐。样式 `styles.css` 新增 `.todo-*`/`.home-artifact-*`/`.home-cta`/`.warn-note`/`.load-failure-stack` 与窄屏单列，`theme.css` 补浅色覆盖（**注意类名不能沿用成品页已有的 `.artifact-row`，否则覆盖其 flex 布局——已改为 `.home-artifact-row`**）。
   - **验证**：`tsc --noEmit` + `tsc -b` + `vite build` ✅；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保持基线可信）。
+- **D0 收口：D0-2 开发身份门控 + D0-7 输入法组合期提交【已实施】**（补齐 R-11：B5 之前必须收口的安全项与输入类缺陷）：
+  - **D0-2（A01/A02，安全项，最高优先）** —— `web/src/auth.ts`、`web/src/vite-env.d.ts`：
+    - `isDevIdentityEnabled()`：`!oidcConfigured() || import.meta.env.DEV` → `import.meta.env.DEV || import.meta.env.VITE_ALLOW_DEV_IDENTITY === 'true'`。生产构建默认关闭；确需开发身份（如离线端到端验收）必须在构建时显式声明 `VITE_ALLOW_DEV_IDENTITY=true`，使"开放"成为一次**可审计的显式决定**，而非"未配置 OIDC"的隐式回退。类型声明补进 `vite-env.d.ts`（原 `vite/client` 的索引签名会让任意 `VITE_*` 静默通过）。
+    - **读侧同步门控**（`storedDevIdentity()`）：未开放该能力的构建里，**即使浏览器残留 `pptsDevIdentity` 也不采纳**。否则 `App.tsx:31-41` 会把它当身份，经 `api.ts:43-46` 发出无 token 的 `X-PPTS-Tenant-ID`/`X-PPTS-User-ID`——这正是 A02「测试身份不混入生产」要堵的后门（只改 UI 门控不足以堵住它）。
+    - 登录页无需改动：`Login.tsx:83-84` 的 `!showOIDC` 分支在 `showDev=false` 时本就渲染 `login.unconfigured`（"登录服务尚未配置，请联系管理员。"），满足 A02「提示配置问题且不回退」。
+    - **产物级双向验证**（`vite build` 后直接读 `dist/assets/index-*.js`）：默认生产构建门控折叠为 `function Mt(){return!1}`（**恒关闭**）；以 `VITE_ALLOW_DEV_IDENTITY=true` 构建则折叠为 `return!0`（开放）。同时确认产物中 `import.meta.env` 字面**零残留**，证明 env 访问全部被构建期静态替换、不存在运行期回退。
+  - **D0-7（A10，输入法）** —— `web/src/ScriptEditor.tsx`：
+    - 保存时序收敛为**单一入口 `scheduleSave` + 唯一句柄 `saveTimerRef`**：任何触发点（编辑、组合结束）都先清掉上一个待提交任务；`composingRef` 为真时**绝不提交且不重排**（由 `onCompositionEnd` 统一补一次）；`saving` 态按 `SAVE_RETRY_MS=300` 退避重排（本次编辑不丢），`saved/error/conflict` 不重复提交（保持"error 需人工重试"原语义）。防抖由原 500+220 两段式改为单段 `SAVE_DEBOUNCE_MS=700`。
+    - `editSegment` 在组合期不调度；`flush`（Ctrl+S / 切页前）在组合期直接返回，避免把拼音半成品写进讲稿；复位 effect（`slideId`/`revision` 变化）增加 `clearTimeout` + 清组合态，防止旧稿的待提交任务写进新页。
+  - **登记新风险 R-13**（本轮发现，**先于本轮存在**，不属 A10 范围故未改）：`saving` 期间用户继续输入时，`runCommit` 成功回调的 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`，**静默丢弃在途编辑**。建议与 A11/A15 一并处理。
+  - **验证**：`tsc -b` + `vite build` ✅（55 modules / 1.91s）；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（本轮无后端改动，仍跑以保基线可信）。
 - **B4-M6 任务列表补 范围/阶段/步骤/受影响页/traceId【待实施】**：步骤数据（`job_steps`）与 traceparent 已存在，可经**原生 HTTP 端点**暴露（protoc 不可用，不改 proto）；范围/阶段/受影响页服务端**完全不存在**，需新增列 + 迁移 0026，建议拆为独立里程碑并先确认口径。
 - **C-6（决策待定）**：切租户本轮做 or 明确不做并隐藏入口 → 决定是否需要新增"我的租户列表"接口（后端①）。当前后端无该 RPC，维持"不做"则同步确认入口已隐藏。
 
@@ -546,8 +557,9 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | R-8 | A04/A06 类口径与作用域缺陷易被反复遗漏 | 中 | 中 | 把 A01–A29 打成验收清单，每批次出口逐条勾选 |
 | R-9 | ~~后端测试包长期不可编译~~ **【已解决 2026-09-16】**（`NewHandler` 于 `63ede93` 加 `pool` 形参后 `server_test.go` 未同步；B3-M1 新增 `artifact.Store.ListByProject` 后测试桩未实现） | 已发生 | 高 | 因 `go build` 不编译 `_test.go`，长期未被发现；B4-M3 期间经 `go vet` 暴露。**修复完成**：47 处调用补 `nil` 实参（`server_test.go` 45 + `gateway_test.go` 1 + `e2e_test.go` 1）、`internal/app` 桩补 `ListByProject`、poppler 用例补 Skip；`go vet` + `go test ./internal/...` 全绿 |
 | R-10 | 里程碑交付只做"单文件类型复核+`gofmt` 兜底"就提交，缺陷（编译阻塞、吞错假状态、未挂载路由）会跨里程碑累积 | 高 | 高 | 按「验证回路更新」在沙箱内跑通 `tsc -b` + `vite build` + `go build ./...` + `go vet ./internal/...` 后才提交；新增后端路由须核对**注册表**而非仅核对处理器函数 |
-| R-11 | **D0 批次严重滞后**：D0 原定"B1 之前或并行完成"，实际到 B4-M5 时仍有 3 项未做，其中 **D0-2 为安全项**（生产构建未配 OIDC 时仍渲染开发身份表单，违反 A01/A02） | 已发生 | 高 | D0-1/5/6/8 已完成、D0-3/D0-4 由 B4-M5 一并修复；剩余 **D0-2（安全，最高优先）/ D0-7 输入法组合期 / D0-9 残留样式** 见「遗留与后续」，须在 B5 之前收口 |
+| R-11 | **D0 批次严重滞后**：D0 原定"B1 之前或并行完成"，实际到 B4-M5 时仍有 3 项未做，其中 **D0-2 为安全项**（生产构建未配 OIDC 时仍渲染开发身份表单，违反 A01/A02） | 已发生 | 高 | D0-1/5/6/8 已完成、D0-3/D0-4 由 B4-M5 修复；**D0-2 ✅ / D0-7 ✅ 已于 2026-09-16「D0 收口」完成**（含产物级双向验证：默认构建门控折叠为 `return!1`）。**仅剩 D0-9（`styles.css` 残留 `ProjectPanel` 样式）**，须在 B5 之前收口 |
 | R-12 | `TenantService.StorageUsage` 未返回统计时间字段，首页无法满足 V1_6 §202「存储必须标统计时间」 | 已发生 | 低 | 首页如实标注为"取数于 {时刻}"（不伪造服务端统计时间）；如需真实统计时间，须后端在 `tenant.StorageUsage` 增列并同步 `GetStorageUsageResponse`（proto 变更，本环境 protoc 不可用 → 需在具备 protoc 的环境补） |
+| R-13 | **提交在途期间的编辑被静默丢弃**：`ScriptEditor` 处于 `saving` 时用户继续输入，`runCommit` 的 `.then` 调 `onChange(saved)` 推进 `revision` → 复位 effect 用服务端文本覆盖 `texts`（并把 `saveState` 置回 `saved`），用户新输入既无"未保存"提示也无恢复入口 | 中 | 高 | D0-7 收口时发现，**先于本轮存在**、不属 A10 范围故本轮未改。修法方向：复位 effect 区分"`slideId` 变化"（必须重置）与"`revision` 推进"（本地仍有未提交编辑时保留 `texts` 并维持 `dirty`）。建议与 A11（五态保存语义）/A15（生成中继续编辑）一并处理 |
 
 ---
 

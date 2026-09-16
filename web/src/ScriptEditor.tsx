@@ -35,6 +35,10 @@ type Props = {
 // 停顿标记：插入到 spokenText 的朗读提示；发音由 M4 ⑤ 读音 popover 经 〔读：x〕 标记处理。
 const PAUSE_MARKER = '‖';
 
+// A10 自动保存时序：停止输入 SAVE_DEBOUNCE_MS 后落库；若上次提交仍在途，退避 SAVE_RETRY_MS 后重排。
+const SAVE_DEBOUNCE_MS = 700;
+const SAVE_RETRY_MS = 300;
+
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
   { script, onChange, commit, onCommitError, onStatusChange, canReview, canEdit = true, onApprove, onLock, regeneratingIds, onRegenerate, onAddToDictionary },
   ref
@@ -51,7 +55,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [popoverReading, setPopoverReading] = useState('');
   const [affectedCount, setAffectedCount] = useState(0);
   const composingRef = useRef(false);
-  const timerRef = useRef<number | undefined>(undefined);
+  const saveTimerRef = useRef<number | undefined>(undefined);
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const caretRef = useRef<number>(0);
   const saveStateRef = useRef<ScriptEditorStatus>(saveState);
@@ -62,6 +66,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     setTexts(initialTexts(script));
     setSaveState('saved');
     setSelected(new Set());
+    // 切页 / 服务端落库后，丢弃针对旧稿的待提交任务与组合态，避免把旧文本写进新页。
+    window.clearTimeout(saveTimerRef.current);
+    composingRef.current = false;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.slideId, script.revision]);
 
@@ -96,26 +103,39 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       });
   };
 
-  // runCommit 每次渲染重建，存入 ref 供 flush / 组合结束回调取用最新闭包。
+  // runCommit 每次渲染重建，存入 ref 供 flush / 保存调度器取用最新闭包。
   const runCommitRef = useRef(runCommit);
   runCommitRef.current = runCommit;
 
-  // 防抖自动保存（500ms + 220ms）；组合输入期间不调度，待组合结束再提交。
-  useEffect(() => {
-    if (saveState !== 'dirty') return;
-    const timer = window.setTimeout(() => {
+  // A10：自动保存只有一个调度入口、只保留一个待提交定时器。
+  // 原实现里"防抖 effect 的定时器"与"组合结束另起的定时器"互相独立、彼此不可见，
+  // 中文输入法确认时会并发两次提交（同一 expectedRevision）→ 服务端冲突/重复写。
+  // 现统一为 saveTimerRef，任何触发点都先清掉上一个待提交任务。
+  const scheduleSaveRef = useRef<(delay?: number) => void>(() => {});
+  const scheduleSave = (delay = SAVE_DEBOUNCE_MS) => {
+    window.clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = window.setTimeout(() => {
+      // 组合期绝不提交（A10）；此处不重排，由 onCompositionEnd 统一补一次。
       if (composingRef.current) return;
-      timerRef.current = window.setTimeout(() => runCommitRef.current(), 220);
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [texts, saveState]);
+      if (saveStateRef.current !== 'dirty') {
+        // 提交在途：本次编辑不能丢，退避后重排；saved/error/conflict 则无需再提交（error 保持人工重试）。
+        if (saveStateRef.current === 'saving') scheduleSaveRef.current(SAVE_RETRY_MS);
+        return;
+      }
+      runCommitRef.current();
+    }, delay);
+  };
+  scheduleSaveRef.current = scheduleSave;
 
   useImperativeHandle(
     ref,
     () => ({
       flush: () => {
+        // A10：组合未结束（拼音候选未确认）不强制提交，避免把半成品写进讲稿；
+        // 组合结束后 onCompositionEnd 会自动补一次提交。
+        if (composingRef.current) return;
         if (saveStateRef.current === 'dirty' || saveStateRef.current === 'error') {
-          window.clearTimeout(timerRef.current);
+          window.clearTimeout(saveTimerRef.current);
           runCommitRef.current();
         }
       },
@@ -127,6 +147,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const editSegment = (segmentId: string, value: string) => {
     setTexts((current) => ({ ...current, [segmentId]: value }));
     setSaveState('dirty');
+    // A10：中文输入法组合期间（拼音串/候选未确认）不调度保存，待 onCompositionEnd 再落库。
+    if (composingRef.current) return;
+    scheduleSaveRef.current();
   };
 
   const toggleSelect = (segmentId: string) => {
@@ -314,10 +337,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 }}
                 onCompositionEnd={() => {
                   composingRef.current = false;
-                  if (saveStateRef.current === 'dirty') {
-                    window.clearTimeout(timerRef.current);
-                    timerRef.current = window.setTimeout(() => runCommitRef.current(), 500 + 220);
-                  }
+                  // 组合确认后文本才算最终：补齐组合期被跳过的调度（沿用统一防抖窗口，连续输入只提交一次）。
+                  if (saveStateRef.current === 'dirty') scheduleSaveRef.current();
                 }}
               />
             </article>

@@ -6,6 +6,9 @@ const devIdentityKey = 'pptsDevIdentity';
 export type DevIdentity = { tenantId: string; userId: string };
 
 export function storedDevIdentity(): DevIdentity | null {
+  // A02：开发身份不得混入生产。未开放该能力的构建里，即使浏览器残留 pptsDevIdentity
+  // 也不采纳（否则会在无 token 的情况下继续发 X-PPTS-Tenant-ID / X-PPTS-User-ID）。
+  if (!isDevIdentityEnabled()) return null;
   const raw = localStorage.getItem(devIdentityKey);
   if (!raw) return null;
   try {
@@ -21,9 +24,14 @@ export function saveDevIdentity(identity: DevIdentity) {
   localStorage.setItem(devIdentityKey, JSON.stringify(identity));
 }
 
+// 开发身份（无 token 的 X-PPTS-Tenant-ID / X-PPTS-User-ID）是**显式门控**能力（A01/A02）。
+// 生产构建默认关闭：登录页不渲染开发身份表单，已存的 dev identity 也不被采纳，
+// 未配置 OIDC 时只提示「登录服务尚未配置」，不回退。
+// 本地开发（import.meta.env.DEV）默认开放；生产构建确需（如离线端到端验收）时，
+// 必须在构建时显式声明 VITE_ALLOW_DEV_IDENTITY=true —— 让开放成为一次可审计的显式决定，
+// 而不是"未配置 OIDC"的隐式回退。
 export function isDevIdentityEnabled() {
-  // 开发身份进入需显式门控：仅本地开发或未配置 OIDC 时开放。
-  return !oidcConfigured() || import.meta.env.DEV;
+  return import.meta.env.DEV || import.meta.env.VITE_ALLOW_DEV_IDENTITY === 'true';
 }
 
 export function clearAllIdentity() {
