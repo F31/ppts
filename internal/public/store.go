@@ -2,6 +2,7 @@ package public
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"time"
 
@@ -12,7 +13,8 @@ import (
 )
 
 const selectCols = `id, tenant_id, project_id, kind, status, title, summary,
-  cover_object_key, sort_order, created_by, reviewed_by, reviewed_at, created_at, updated_at`
+  cover_object_key, sort_order, created_by, reviewed_by, reviewed_at, created_at, updated_at,
+  public_id, withdrawn_at`
 
 // PGStore 以 PostgreSQL 实现 Store。匿名只读方法直接走 pgxpool（不设 tenant 上下文），
 // 由 RLS 的 publications_public_read 策略仅放行 status='approved'；写方法经 tenant.Run，
@@ -39,10 +41,10 @@ func (s *PGStore) insert(ctx context.Context, tenantID string, in NewPublication
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		pub, e = scanPublication(tx.QueryRow(ctx,
-			`INSERT INTO publications (id, tenant_id, project_id, kind, status, title, summary, cover_object_key, created_by)
-			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8)
+			`INSERT INTO publications (id, tenant_id, project_id, kind, status, title, summary, cover_object_key, created_by, public_id)
+			 VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9)
 			 RETURNING `+selectCols,
-			tenantID, in.ProjectID, in.Kind, status, in.Title, in.Summary, in.CoverObjectKey, in.CreatedBy))
+			tenantID, in.ProjectID, in.Kind, status, in.Title, in.Summary, in.CoverObjectKey, in.CreatedBy, genPublicID()))
 		return e
 	})
 	return pub, err
@@ -76,9 +78,9 @@ func (s *PGStore) ListApproved(ctx context.Context, kind Kind, cursor string, pa
 	return items, next, nil
 }
 
-// GetApproved 匿名获取单条已批准作品。
-func (s *PGStore) GetApproved(ctx context.Context, id string) (*Publication, error) {
-	row := s.pool.QueryRow(ctx, `SELECT `+selectCols+` FROM publications WHERE id = $1 AND status = 'approved'`, id)
+// GetApprovedByPublicID 匿名获取单条已批准作品（按不可反推的 public_id）。B5-M3。
+func (s *PGStore) GetApprovedByPublicID(ctx context.Context, publicID string) (*Publication, error) {
+	row := s.pool.QueryRow(ctx, `SELECT `+selectCols+` FROM publications WHERE public_id = $1 AND status = 'approved'`, publicID)
 	pub, err := scanPublication(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -128,6 +130,31 @@ func (s *PGStore) Review(ctx context.Context, tenantID, id string, approve bool,
 		pub.Status = newStatus
 		pub.ReviewedBy = reviewer
 		pub.ReviewedAt = time.Now()
+		return nil
+	})
+	return pub, err
+}
+
+// Recall 由 owner/admin 撤回已发布作品：置 withdrawn 状态，匿名只读策略（status='approved'）立即拒绝。
+func (s *PGStore) Recall(ctx context.Context, tenantID, publicID, by string) (*Publication, error) {
+	var pub *Publication
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		pub, e = scanPublication(tx.QueryRow(ctx,
+			`SELECT `+selectCols+` FROM publications WHERE public_id = $1 AND tenant_id = $2`, publicID, tenantID))
+		if errors.Is(e, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		if e != nil {
+			return e
+		}
+		if _, e := tx.Exec(ctx,
+			`UPDATE publications SET status = $1, withdrawn_at = now(), updated_at = now()
+			 WHERE public_id = $2 AND tenant_id = $3`, StatusWithdrawn, publicID, tenantID); e != nil {
+			return e
+		}
+		pub.Status = StatusWithdrawn
+		pub.WithdrawnAt = time.Now()
 		return nil
 	})
 	return pub, err
@@ -192,7 +219,8 @@ func (s *PGStore) ListPending(ctx context.Context, tenantID string, kind Kind) (
 func scanPublication(row pgx.Row) (*Publication, error) {
 	var p Publication
 	err := row.Scan(&p.ID, &p.TenantID, &p.ProjectID, &p.Kind, &p.Status, &p.Title, &p.Summary,
-		&p.CoverObjectKey, &p.SortOrder, &p.CreatedBy, &p.ReviewedBy, &p.ReviewedAt, &p.CreatedAt, &p.UpdatedAt)
+		&p.CoverObjectKey, &p.SortOrder, &p.CreatedBy, &p.ReviewedBy, &p.ReviewedAt, &p.CreatedAt, &p.UpdatedAt,
+		&p.PublicID, &p.WithdrawnAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -212,4 +240,21 @@ func scanPublications(rows pgx.Rows) ([]*Publication, error) {
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// genPublicID 生成 32 字符 base62 随机串（与迁移 0028 回填同源语义），不可反推。
+func genPublicID() string {
+	const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// 加密随机不可用时退化（极端情况）：以时间戳混合兜底，唯一约束由 DB 兜底重试。
+		for i := range b {
+			b[i] = byte(time.Now().UnixNano() + int64(i))
+		}
+	}
+	out := make([]byte, 32)
+	for i, x := range b {
+		out[i] = chars[int(x)%62]
+	}
+	return string(out)
 }

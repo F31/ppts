@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link } from '../router';
 import { useI18n } from './../i18n';
-import { getPublicWork, getPublicManifest, type PublicWork } from '../api';
+import { getShowcaseWork, getShowcaseManifest, type PublicWork } from '../api';
 import { describeApiError, isNotFound, settle } from '../apiError';
 import type { PlaybackManifest } from '../types';
 import { Player } from '../Player';
 
 // Watch 是匿名作品播放页：展示封面与讲解概要，并复用控制台同款 Player 播放语音讲解（B3）。
-// 讲解清单来自原生 HTTP 匿名端点 GET /public/works/{id}/manifest，与 PlaybackManifest 同构。
-export function Watch({ id }: { id: string }) {
+// 讲解清单来自原生 HTTP 匿名端点 GET /showcase/{publicId}/manifest（B5-M3 改用不可反推的 public_id）。
+export function Watch({ publicId }: { publicId: string }) {
   const { t } = useI18n();
   const [work, setWork] = useState<PublicWork | null>(null);
   const [manifest, setManifest] = useState<PlaybackManifest | null>(null);
@@ -30,7 +30,7 @@ export function Watch({ id }: { id: string }) {
     void (async () => {
       let w: PublicWork;
       try {
-        w = await getPublicWork(id);
+        w = await getShowcaseWork(publicId);
       } catch (err) {
         if (!cancelled) {
           setError(isNotFound(err) ? t('public.notFound') : describeApiError(err, t('public.loadFailed'), t));
@@ -40,7 +40,7 @@ export function Watch({ id }: { id: string }) {
       if (cancelled) return;
       setWork(w);
 
-      const m = await settle(() => getPublicManifest(id));
+      const m = await settle(() => getShowcaseManifest(publicId));
       if (cancelled) return;
       if (m.data && m.data.resources && m.data.resources.length > 0) {
         setManifest(m.data);
@@ -54,7 +54,7 @@ export function Watch({ id }: { id: string }) {
     return () => {
       cancelled = true;
     };
-  }, [id, t]);
+  }, [publicId, t]);
 
   if (error) {
     return (

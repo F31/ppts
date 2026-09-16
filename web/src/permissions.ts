@@ -30,6 +30,7 @@ export type Capability =
   | 'audit.read'
   | 'public.publish'
   | 'public.manage'
+  | 'public.recall'
   | 'tenant.danger'
   | 'library.view';
 
@@ -52,6 +53,7 @@ export type Capability =
 // | audit.read          | admin    | tenant.go:326、tenant.go:370                                      |
 // | public.publish      | viewer   | public.go:37（POST /public/works 仅要求已认证）                     |
 // | public.manage       | admin    | public.go:333（requireAdmin：featured/review/delete）              |
+// | public.recall       | admin    | public.go recall 复用 requireAdmin（owner/admin 均放行，B5-M3 C-8） |
 // | tenant.danger       | owner    | tenant.go:388、tenant.go:414（requireOwner）                      |
 // | library.view        | owner    | artifact.go GET /artifacts requireRole RoleOwner（B5-M2 跨项目成品库）|
 export const minRole: Record<Capability, Role> = {
@@ -71,6 +73,7 @@ export const minRole: Record<Capability, Role> = {
   'audit.read': 'ROLE_ADMIN',
   'public.publish': 'ROLE_VIEWER',
   'public.manage': 'ROLE_ADMIN',
+  'public.recall': 'ROLE_ADMIN',
   'tenant.danger': 'ROLE_OWNER',
   'library.view': 'ROLE_OWNER'
 };

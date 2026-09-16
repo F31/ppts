@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link } from '../router';
 import { useI18n } from '../i18n';
 import type { ClientIdentity, PublicWork } from '../api';
-import { deleteWork, listMyPublications, listReviewQueue, reviewWork, type PublicationStatus } from '../api';
+import { deleteWork, listMyPublications, listReviewQueue, recallWork, reviewWork, type PublicationStatus } from '../api';
 import { describeApiError } from '../apiError';
 import { can } from '../permissions';
 import type { Role } from '../types';
@@ -11,7 +11,8 @@ const statusKey: Record<PublicationStatus, string> = {
   draft: 'public.statusDraft',
   pending: 'public.statusPending',
   approved: 'public.statusApproved',
-  rejected: 'public.statusRejected'
+  rejected: 'public.statusRejected',
+  withdrawn: 'public.statusWithdrawn'
 };
 
 // PublicAdmin 是控制台内的公开区管理：普通成员可见"我的发布"，
@@ -25,8 +26,10 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
   const [mineLoading, setMineLoading] = useState(true);
   const [queueLoading, setQueueLoading] = useState(false);
 
-  // B4-M1：审核队列要求 ADMIN（服务端 requireAdmin，public.go:333），能力判定统一走 permissions。
+  // B4-M1：审核队列要求 ADMIN（服务端 requireAdmin，public.go）。能力判定统一走 permissions。
   const isAdmin = can(role, 'public.manage');
+  // B5-M3：撤回要求 owner/admin（服务端 recall 复用 requireAdmin，C-8）。
+  const canRecall = can(role, 'public.recall');
 
   // A26：两个列表都必须如实反映接口结果——加载中 / 失败（含原因＋重试）/ 空数据三者可区分，
   // 绝不用"空列表"掩盖 4xx/5xx（此前审核队列的 .catch(() => {}) 正是这类假状态）。
@@ -78,6 +81,16 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
     }
   };
 
+  // onRecall 由 owner/admin 撤回已发布作品：置 withdrawn 立即失效（含匿名读），B5-M3。
+  const onRecall = async (publicId: string) => {
+    try {
+      await recallWork(identity, publicId);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('public.recallFailed'));
+    }
+  };
+
   return (
     <div className="public-admin">
       <section className="panel">
@@ -108,9 +121,14 @@ export function PublicAdmin({ identity, role }: { identity: ClientIdentity; role
                 </div>
                 <div className="pub-item-actions">
                   {w.status === 'approved' ? (
-                    <Link to={`/watch/${w.id}`} className="btn btn-ghost">
+                    <Link to={`/watch/${w.public_id}`} className="btn btn-ghost">
                       {t('public.view')}
                     </Link>
+                  ) : null}
+                  {w.status === 'approved' && canRecall ? (
+                    <button type="button" className="btn btn-warning" onClick={() => onRecall(w.public_id ?? w.id)}>
+                      {t('public.recall')}
+                    </button>
                   ) : null}
                   <button type="button" className="btn btn-danger" onClick={() => onDelete(w.id)}>
                     {t('public.delete')}

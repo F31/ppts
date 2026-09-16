@@ -1,7 +1,6 @@
 {
   "lang.en": "EN",
   "lang.zh": "中文",
-
   "common.loading": "Loading…",
   "common.refresh": "Refresh",
   "common.save": "Save",
@@ -19,9 +18,7 @@
   "common.actions": "Actions",
   "common.enable": "Enable",
   "common.none": "—",
-
   "app.restoring": "Restoring session…",
-
   "nav.home": "Home",
   "nav.projects": "Projects",
   "nav.jobs": "Jobs",
@@ -103,7 +100,6 @@
   "user.loginMethod": "Sign-in method",
   "user.oidc": "Enterprise account (OIDC)",
   "user.dev": "Developer identity",
-
   "enum.jobState.queued": "Queued",
   "enum.jobState.running": "Running",
   "enum.jobState.retryWait": "Waiting to retry",
@@ -136,7 +132,6 @@
   "enum.role.editor": "Editor",
   "enum.role.reviewer": "Reviewer",
   "enum.role.viewer": "Viewer",
-
   "login.tagline": "Clear narration for every slide",
   "login.flow": "Import PPT → Proofread script → Preview & adjust → Generate voiceover → Play & export.",
   "login.eyebrow": "ZhiJiang PPT Console",
@@ -152,7 +147,6 @@
   "login.unconfigured": "Sign-in service is not configured. Please contact your administrator.",
   "login.required": "Tenant ID and User ID are required",
   "login.oidcFailed": "Enterprise sign-in failed",
-
   "home.eyebrow": "Console home",
   "home.welcome": "Welcome back, {name}",
   "home.subtitle": "Continue your narration work, or start by uploading a new PPT.",
@@ -210,7 +204,6 @@
   "home.progress": "Progress {percent}%",
   "home.seconds": "{n}s",
   "home.minutes": "{n} min",
-
   "projects.eyebrow": "Projects",
   "projects.title": "PPT resources",
   "projects.newTitle": "New project title",
@@ -239,7 +232,6 @@
   "projects.loadFailed": "Failed to load projects",
   "projects.createFailed": "Failed to create project",
   "projects.archiveFailed": "Failed to archive",
-
   "jobs.eyebrow": "Jobs",
   "jobs.title": "Jobs",
   "jobs.active": "{count} job(s) in progress, auto-refreshing.",
@@ -312,7 +304,6 @@
   "jobs.stepsColUpdated": "Updated",
   "jobs.stepsColResult": "Output",
   "jobs.stepsHasResult": "Produced",
-
   "members.eyebrow": "Settings · Members",
   "members.title": "Members & permissions",
   "members.subtitle": "Roles are decided by server authorization; operations are validated by the backend.",
@@ -329,7 +320,6 @@
   "members.loadFailed": "Failed to load members",
   "members.updateFailed": "Failed to update role",
   "members.removeFailed": "Failed to remove",
-
   "dict.eyebrow": "Settings · Pronunciation",
   "dict.title": "Pronunciation dictionary",
   "dict.subtitle": "Fixes mispronounced proper nouns (e.g. CUDA, MySQL, Kubernetes). Rules map \"text → phonetic replacement\" applied before synthesis.",
@@ -357,7 +347,6 @@
   "dict.loadFailed": "Failed to load dictionaries",
   "dict.saveFailed": "Failed to save",
   "dict.deleteFailed": "Failed to delete",
-
   "usage.eyebrow": "Settings · Usage & storage",
   "usage.title": "Usage & storage",
   "usage.subtitle": "Data from TenantService (quota / usage / storage / policy).",
@@ -399,15 +388,12 @@
   "usage.disabled": "Disabled",
   "usage.minutes": "{n} min",
   "usage.loadFailed": "Failed to load usage",
-
   "models.eyebrow": "Settings · Model services",
   "models.title": "Model services",
   "models.subtitle": "TTS / LLM provider configuration (endpoint, API key, model, voice). Changes hot-reload in the worker within 30s.",
-
   "settingsAudit.eyebrow": "Settings · Audit log",
   "settingsAudit.title": "Audit log",
   "settingsAudit.subtitle": "Records job cancel/retry, retention deletions, model gateway changes and more; visible to admins.",
-
   "audit.aria": "Tenant audit",
   "audit.eyebrow": "Tenant Audit",
   "audit.title": "Audit & archives",
@@ -423,7 +409,6 @@
   "audit.noArchives": "No archives.",
   "audit.denied": "Viewing audit requires the admin or owner role.",
   "audit.loadFailed": "Failed to load audit",
-
   "gateway.eyebrow": "Model gateway",
   "gateway.title": "TTS / LLM configuration",
   "gateway.loading": "Loading…",
@@ -476,7 +461,6 @@
   "gateway.serviceUnavailable": "No TTS provider is currently available: the most recent connectivity tests all failed. Check the API key and base URL, then run \"Test connection\" again.",
   "gateway.serviceUntested": "A TTS provider is configured, but connectivity has not been tested in this session. Untested is not the same as unavailable — run \"Test connection\" before relying on it for real delivery.",
   "gateway.serviceReady": "The TTS provider passed a connectivity test and can be used for production generation.",
-
   "import.aria": "Import {title}",
   "import.eyebrow": "Import project",
   "import.cloudNote": "Processing: in the cloud. Pages are parsed automatically after upload; you can open the workspace as pages become available.",
@@ -502,7 +486,6 @@
   "import.report": "Parse notes",
   "import.viewTask": "View task",
   "import.success": "Import complete",
-
   "editor.modes.original": "Read original",
   "editor.modes.originalDesc": "Keep the original, fastest",
   "editor.modes.polish": "Polished narration",
@@ -656,7 +639,6 @@
   "editor.dictAddFailed": "Failed to add dictionary entry",
   "script.saveError": "Save failed",
   "script.conflict": "Conflict",
-
   "script.aria": "Script editor",
   "script.currentSlide": "Current slide script",
   "script.saved": "Saved",
@@ -673,7 +655,6 @@
   "script.visual": "Visual",
   "script.structural": "Structural",
   "script.saveFailed": "Failed to save script",
-
   "player.aria": "Player preview",
   "player.waitingSubtitle": "Waiting for subtitle cue",
   "player.pause": "Pause",
@@ -687,7 +668,6 @@
   "player.noAudio": "No narration audio for this work; showing subtitles and slides only.",
   "player.dock": "Playback controls",
   "player.shortcutsHint": "Shortcuts: Space play/pause · ← → seek 5s · ↑ ↓ previous/next slide (inactive while the focus is in a form field)",
-
   "artifacts.eyebrow": "Project artifacts & versions",
   "artifacts.subtitle": "Artifacts bind a fixed generation snapshot; newer drafts are flagged as \"previous version\" in the player.",
   "artifacts.back": "Back to workspace",
@@ -721,7 +701,6 @@
   "artifacts.formatVtt": "VTT subtitles",
   "artifacts.formatWebProject": "Web project",
   "artifacts.loadFailed": "Failed to query status",
-
   "members.add": "Add member",
   "members.editorNew": "Add member",
   "members.editorEdit": "Edit member",
@@ -730,46 +709,35 @@
   "members.role": "Role",
   "members.invalidUser": "Please enter a user ID.",
   "members.added": "Added member {user} (role: {role}).",
-
   "jobs.pageSize": "Per page",
   "jobs.prevPage": "Previous",
   "jobs.nextPage": "Next",
   "jobs.pageOf": "Page {page}",
-
   "err.unimplemented": "This capability is not provided by the server yet",
   "err.notFound": "Endpoint not found (404)",
   "err.unauthenticated": "Session expired, please sign in again",
   "err.forbidden": "Your role does not have this permission",
   "err.unavailable": "Service temporarily unavailable (503)",
-
   "app.roleLoadFailed": "Failed to load your role; permission checks are temporarily permissive",
   "app.roleRetry": "Reload role",
-
   "public.queueLoadFailed": "Failed to load review queue",
   "public.audioFailed": "Failed to load the narration manifest",
-
   "usage.storageFailed": "Failed to load storage usage",
   "usage.policyFailed": "Failed to load tenant policy",
-
   "home.loadFailed": "Failed to load home data",
   "home.loadFailedShort": "Failed to load, please retry",
-  "home.statsFailed": "Usage and storage data failed to load; shown as \u2014",
+  "home.statsFailed": "Usage and storage data failed to load; shown as —",
   "home.stat.unavailable": "Unavailable",
-
   "editor.simulatedVoice": "Simulated voice (dev)",
   "editor.simulatedVoiceNote": "This tenant has no usable TTS service. A development placeholder voice is in use, so generated narration may not be a production artifact.",
   "editor.fixVoice": "Configure models",
-
   "artifacts.downloadHint": "Get a time-limited download link",
   "artifacts.downloadBlocked": "Not downloadable yet: the file is not ready or has been cleaned up",
   "artifacts.downloadBlockedShort": "Not downloadable",
-
   "members.userIdImmutable": "The member id cannot be changed after creation; remove and re-add with the new id instead",
   "members.ownerRoleNewOnly": "OWNER cannot be assigned when adding a member (use ownership transfer)",
   "members.removeHint": "Remove this member from the tenant",
-
   "gateway.immutableWhenEditing": "Type and name cannot be changed while editing; create a new gateway instead",
-
   "palette.title": "Command palette",
   "palette.placeholder": "Search commands…",
   "palette.empty": "No matching commands",
@@ -796,5 +764,8 @@
   "library.count": "{count} artifacts",
   "library.noArtifacts": "No artifacts match the filters.",
   "library.loadFailed": "Failed to load the library",
-  "library.downloadFailed": "Failed to get download link"
+  "library.downloadFailed": "Failed to get download link",
+  "public.statusWithdrawn": "Withdrawn",
+  "public.recall": "Recall",
+  "public.recallFailed": "Recall failed"
 }

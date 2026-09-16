@@ -773,3 +773,7 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .palette-icon { width: 20px; text-align: center; flex: none; }
 .palette-label { flex: 1; }
 .palette-empty { padding: 18px; color: var(--text-dim); text-align: center; }
+
+/* B5-M3 公开作品「撤回」按钮：琥珀色，区别于删除的危险红 */
+.btn-warning { background: #b45309; color: #fff; border: 1px solid #92400e; }
+.btn-warning:hover { background: #92400e; }

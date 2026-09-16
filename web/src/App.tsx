@@ -229,7 +229,7 @@ function PublicApp({ parts, query }: { parts: string[]; query: URLSearchParams }
   const section = parts[0] ?? 'explore';
   let content: React.ReactNode;
   if (section === 'watch' && parts[1]) {
-    content = <Watch id={parts[1]} />;
+    content = <Watch publicId={parts[1]} />;
   } else {
     content = <Explore />;
   }

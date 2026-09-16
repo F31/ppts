@@ -15,8 +15,11 @@ import (
 	"github.com/F31/ppts/internal/tenant"
 )
 
-// registerPublicRoutes 挂载公开区 HTTP 端点（V1.6 C-1）。
-//   - 匿名只读：GET /public/works（列表）、GET /public/works/{id}（详情，附封面签名 URL）
+// registerPublicRoutes 挂载公开区 HTTP 端点（V1.6 C-1，B5-M3 增强）。
+//   - 匿名只读：
+//     GET /public/works           已批准作品列表（跨租户聚合）
+//     GET /showcase/{publicId}    单条已批准作品详情（附封面签名 URL），public_id 不可反推
+//     GET /showcase/{publicId}/manifest  匿名可播放讲解清单
 //   - 受保护读（auth 中间件）：
 //     GET  /public/works/mine     我的发布（含未批准，限本人）
 //     GET  /public/works/queue    待审核队列（管理员）
@@ -25,13 +28,16 @@ import (
 //     POST /public/featured       管理员发布官方精选（approved）
 //     PUT  /public/works/{id}/review  管理员审核
 //     DELETE /public/works/{id}   管理员删除
+//     POST /public/works/{publicId}/recall  owner/admin 撤回（置 withdrawn，立即失效）
 //
-// 与 SPA catch-all（GET /{path...}）共存：精确 /public/works* 路由优先于通配。
+// 与 SPA catch-all（GET /{path...}）共存：精确 /public/works* 与 /showcase* 路由优先于通配。
 //
 // 注意：/public/works/mine 与 /public/works/queue 必须注册，否则会被
-// GET /public/works/{id} 捕获（id 取到 "mine"/"queue" 字面量）而进入 uuid 查询报 500，
+// GET /public/works/{id}（review/delete 的 {id} 通配）捕获而进入 uuid 查询报 500，
 // 前端"我的发布/审核队列"就会退化为静默空态（A26 假列表）。
 // Go 1.22 ServeMux 按具体度择优（字面量 > 通配），故这里与之并列注册即可稳定生效。
+// 匿名详情从原 GET /public/works/{id}（内部主键，可反推）迁移到 GET /showcase/{publicId}
+// （public_id，不可反推，B5-M3 A29）。
 func registerPublicRoutes(mux *http.ServeMux, store public.Store, objects objectstore.ObjectStore, members membership.Reader, jobs JobStore, auth func(http.Handler) http.Handler) {
 	mux.HandleFunc("GET /public/works", func(w http.ResponseWriter, r *http.Request) {
 		publicListWorks(w, r, store)
@@ -42,12 +48,16 @@ func registerPublicRoutes(mux *http.ServeMux, store public.Store, objects object
 	mux.Handle("GET /public/works/queue", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicReviewQueue(w, r, store, members)
 	})))
-	mux.HandleFunc("GET /public/works/{id}", func(w http.ResponseWriter, r *http.Request) {
+	// 匿名只读：按不可反推的 public_id 暴露，杜绝用内部主键枚举/反推（A29）。
+	mux.HandleFunc("GET /showcase/{publicId}", func(w http.ResponseWriter, r *http.Request) {
 		publicGetWork(w, r, store, objects)
 	})
-	mux.HandleFunc("GET /public/works/{id}/manifest", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /showcase/{publicId}/manifest", func(w http.ResponseWriter, r *http.Request) {
 		publicGetManifest(w, r, store, jobs, objects)
 	})
+	mux.Handle("POST /public/works/{publicId}/recall", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		publicRecall(w, r, store, members)
+	})))
 	mux.Handle("POST /public/works", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicPublish(w, r, store)
 	})))
@@ -84,8 +94,8 @@ type publicWorkResponse struct {
 }
 
 func publicGetWork(w http.ResponseWriter, r *http.Request, store public.Store, objects objectstore.ObjectStore) {
-	id := r.PathValue("id")
-	pub, err := store.GetApproved(r.Context(), id)
+	publicID := r.PathValue("publicId")
+	pub, err := store.GetApprovedByPublicID(r.Context(), publicID)
 	if errors.Is(err, public.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -133,8 +143,8 @@ type publicManifest struct {
 // 仅放行 approved 作品；复用既有 timeline 打包与签名逻辑，音频/字幕/页面 PNG 均签发短期匿名可读 URL。
 // 作品若无成功配音任务（narration 未就绪），返回 404，前端优雅降级为「暂未生成语音讲解」。
 func publicGetManifest(w http.ResponseWriter, r *http.Request, store public.Store, jobs JobStore, objects objectstore.ObjectStore) {
-	id := r.PathValue("id")
-	pub, err := store.GetApproved(r.Context(), id)
+	publicID := r.PathValue("publicId")
+	pub, err := store.GetApprovedByPublicID(r.Context(), publicID)
 	if errors.Is(err, public.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
@@ -335,7 +345,26 @@ func publicDelete(w http.ResponseWriter, r *http.Request, store public.Store, me
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// requireAdmin 校验当前身份在租户内达到 admin 角色；members 为 nil 时放行（开发/私有化）。
+// publicRecall 由 owner/admin 撤回已发布作品：置 withdrawn 状态，匿名只读策略（status='approved'）立即拒绝。
+// 复用 requireAdmin——其 roleRank 比较实际放行 admin 及其以上的 owner（B5-M3，C-8 要求 owner/admin 可撤回）。
+func publicRecall(w http.ResponseWriter, r *http.Request, store public.Store, members membership.Reader) {
+	principal, ok := requireAdmin(r.Context(), members, w)
+	if !ok {
+		return
+	}
+	publicID := r.PathValue("publicId")
+	pub, err := store.Recall(r.Context(), principal.TenantID, publicID, principal.UserID)
+	if errors.Is(err, public.ErrNotFound) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, pub)
+}
+
 func requireAdmin(ctx context.Context, members membership.Reader, w http.ResponseWriter) (Principal, bool) {
 	principal, ok := PrincipalFromContext(ctx)
 	if !ok {

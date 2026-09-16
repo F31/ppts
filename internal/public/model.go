@@ -4,7 +4,7 @@
 //   - KindFeatured：官方精选，由管理员发布即 approved（直接公开展示）；
 //   - KindUser：用户作品，由用户发布为 pending，经管理员审核 approve 后公开。
 //
-// 只读接口（ListApproved/GetApproved）设计为匿名调用：调用方不经过 tenant.Run，
+// 只读接口（ListApproved/GetApprovedByPublicID）设计为匿名调用：调用方不经过 tenant.Run，
 // 直接走 pgxpool 查询，由 RLS 的 publications_public_read 策略仅放行 status='approved'。
 // 写接口均在租户 RLS 上下文（tenant.Run）内执行，行租户须匹配调用方租户。
 package public
@@ -37,10 +37,11 @@ func (k Kind) Valid() bool {
 type Status string
 
 const (
-	StatusDraft    Status = "draft"
-	StatusPending  Status = "pending"  // 用户已发布，待审核
-	StatusApproved Status = "approved" // 已公开
-	StatusRejected Status = "rejected" // 审核驳回
+	StatusDraft     Status = "draft"
+	StatusPending   Status = "pending"   // 用户已发布，待审核
+	StatusApproved  Status = "approved"  // 已公开
+	StatusRejected  Status = "rejected"  // 审核驳回
+	StatusWithdrawn Status = "withdrawn" // 已撤回（立即失效，匿名不可读，B5-M3）
 )
 
 // Publication 是公开作品领域实体（对应 publications 表）。
@@ -59,6 +60,8 @@ type Publication struct {
 	ReviewedAt     time.Time `json:"reviewed_at,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	PublicID       string    `json:"public_id"`
+	WithdrawnAt    time.Time `json:"withdrawn_at,omitempty"`
 }
 
 // NewPublication 新建公开作品的输入。
@@ -82,13 +85,14 @@ type Store interface {
 	Feature(ctx context.Context, tenantID string, in NewPublication) (*Publication, error)
 	// ListApproved 匿名列出已批准作品；kind 为空表示两类合并。
 	ListApproved(ctx context.Context, kind Kind, cursor string, pageSize int) ([]*Publication, string, error)
-	// GetApproved 匿名获取单条已批准作品。
-	GetApproved(ctx context.Context, id string) (*Publication, error)
+	// GetApprovedByPublicID 匿名获取单条已批准作品（按不可反推的 public_id）。B5-M3。
+	GetApprovedByPublicID(ctx context.Context, publicID string) (*Publication, error)
 	// ListByProject 列出某租户某项目下的全部发布（含未批准），供"我的发布"页使用。
 	ListByProject(ctx context.Context, tenantID, projectID string) ([]*Publication, error)
 	// Review 由管理员审核：approve=true 置 approved，否则置 rejected。
 	Review(ctx context.Context, tenantID, id string, approve bool, reviewer string) (*Publication, error)
-	// Delete 由管理员删除公开作品。
+	// Recall 由 owner/admin 撤回已发布作品：置 withdrawn 立即失效（含匿名读）。B5-M3。
+	Recall(ctx context.Context, tenantID, publicID, by string) (*Publication, error)
 	// ListMine 列出某租户某用户的全部发布（含未批准），供"我的发布"页使用。
 	ListMine(ctx context.Context, tenantID, createdBy string, status Status) ([]*Publication, error)
 	// ListPending 列出某租户待审核的发布，供审核队列使用。

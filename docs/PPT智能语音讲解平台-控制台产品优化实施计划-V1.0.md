@@ -634,7 +634,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 |---|---|---|
 | B5-M1 命令面板（Cmd/Ctrl+K） | 纯前端：AppShell 全局 Cmd/Ctrl+K 监听 + 顶栏 ⌘K 按钮；`CommandPalette` 复用 `useDialogA11y`（Esc/焦点陷阱/焦点返回），命令由 `primaryNav`/`settingsMenus` 按角色过滤（导航+设置子页）+「新建讲解」/「公开区」操作；方向键选择、回车执行、输入过滤；i18n 中英、样式入 styles.css | 【已实施】 |
 | B5-M2 全局成品库 | 后端 `GET /artifacts`（`artifact.Store.ListAll` 跨项目 JOIN projects 取项目名，`tenant.Run` 多租户；`requireRole(RoleOwner)` 门控，高于单项目 `artifact.list` 的 editor）+ 前端 `/library` 页（`library.view`=ROLE_OWNER 能力；侧栏入口带 `need` 过滤保持菜单与后端一致；按格式/项目/时间筛选、下载、跳转项目成品页）；i18n 中英 + 样式入 styles.css。原生 HTTP 端点，不改 proto | 【已实施】 |
-| B5-M3 公开发布与撤回（A29） | 迁移加 `publications.public_id`(32B 随机 base62 不可反推) + `status` 加 `withdrawn`/`withdrawn_at`；匿名读从内部 `id` 切到 `/showcase/:publicId`；新增 `POST /public/works/:publicId/recall`（owner/admin 置 withdrawn 立即拒读）；删除级联失效（artifact 删→publication 连带 withdrawn）；验收 A29。**门控**：能力不完整则入口整体不上线（C-8） | 待实施 |
+| B5-M3 公开发布与撤回（A29） | 迁移 `0028` 加 `publications.public_id`(32 字符 base62 不可反推，由 `genPublicID`/`ppts_gen_public_id` 生成) + `status` 加 `withdrawn`/`withdrawn_at`；匿名读从内部 `id` 切到 `GET /showcase/{publicId}`（含 `/manifest`），后端 `GetApprovedByPublicID`；新增 `POST /public/works/{publicId}/recall`（复用 `requireAdmin`→owner/admin 置 withdrawn，RLS `status='approved'` 立即拒匿名读）；删除级联失效（删除即行消失，匿名 URL 失效）；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免。验收 A29 达成。**门控**：能力齐备已上线（C-8） | 【已实施】 |
 
 **验证回路**：`contrast.mjs` 0 失败 → `tsc -b` → `vite build`；后端 `go build ./...` + `go vet ./internal/...` + `go test ./internal/...`；每里程碑一 commit 一 push；匿名发布/撤回须独立最小字段集 + 越权测试（R-15/R-2）。
 
@@ -675,7 +675,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 | C-5 | 生成口径 | **【已定 + 已实施】强制阻止未确认稿正式生成（A09）**：`draftSegments>0` 时前端禁用正式生成按钮并提示，生成请求传 `lockConfirmedOnly=true`；后端 `CreateGeneration` 的 `RequireConfirmed` 校验未确认稿即返回 `FailedPrecondition` | 已落地，不再待定 |
 | C-6 | 切租户 | **【已定：不做】**本轮明确不做切租户；**2026-09-16 按文件核实**：后端 `TenantService` 无租户列表 RPC、前端无切租户入口，不存在假能力/死入口，无需隐藏动作 | 无需新增接口；本项关闭 |
 | C-7 | 个人设置 | **【已定】明确不做并移除入口**：遵守 §1.2 第 3 条；若设置菜单已有个人设置入口则隐藏，本轮不实现个人设置页（留作后续 B4） | B4 ④ 顺延；当前不暴露虚假能力 |
-| C-8 | 公开作品发布 | **【已定 + 已立项 2026-09-16】**归入 B5 可选增强，范围裁定为 3 块（命令面板+全局成品库+公开发布 A29），邮箱注册延后；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免；发布能力不完整则入口整体不上线（B5 门控） | B5-M3 实施中；A29 随 B5-M3 验收 |
+| C-8 | 公开作品发布 | **【已定 + 已立项 2026-09-16】**归入 B5 可选增强，范围裁定为 3 块（命令面板+全局成品库+公开发布 A29），邮箱注册延后；CDN 清理按 B5-C2 状态机即时失效+TTL 豁免；发布能力不完整则入口整体不上线（B5 门控） | B5-M3 已实施，A29 已验收 |
 
 ---
 

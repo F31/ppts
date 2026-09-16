@@ -914,11 +914,12 @@ export async function deleteDictionary(identity: ClientIdentity, id: string): Pr
 // 匿名只读接口（list/get）无需身份；写接口（发布/精选/审核/删除）带身份头。
 
 export type PublicationKind = 'featured' | 'user';
-export type PublicationStatus = 'draft' | 'pending' | 'approved' | 'rejected';
+export type PublicationStatus = 'draft' | 'pending' | 'approved' | 'rejected' | 'withdrawn';
 
 // PublicWork 字段名与后端 JSON（snake_case）一致，避免额外映射层。
 export type PublicWork = {
   id: string;
+  public_id?: string;
   tenant_id: string;
   project_id: string;
   kind: PublicationKind;
@@ -954,14 +955,15 @@ export async function listPublicWorks(params: { kind?: PublicationKind; cursor?:
   return publicGet<PublicWorkPage>(`/public/works${q ? `?${q}` : ''}`);
 }
 
-export async function getPublicWork(id: string): Promise<PublicWork> {
-  return publicGet<PublicWork>(`/public/works/${encodeURIComponent(id)}`);
+// getShowcaseWork 拉取已批准公开作品详情（B5-M3：按不可反推的 public_id 匿名访问 /showcase/{publicId}）。
+export async function getShowcaseWork(publicId: string): Promise<PublicWork> {
+  return publicGet<PublicWork>(`/showcase/${encodeURIComponent(publicId)}`);
 }
 
-// getPublicManifest 拉取已批准公开作品的匿名可播放讲解清单（B3 音频播放接入）。
+// getShowcaseManifest 拉取已批准公开作品的匿名可播放讲解清单（B3 音频播放接入）。
 // 与控制台 getPlaybackManifest 同构，但走原生 HTTP 匿名端点、无需鉴权；narration 未就绪时返回 404。
-export async function getPublicManifest(id: string): Promise<PlaybackManifest> {
-  return publicGet<PlaybackManifest>(`/public/works/${encodeURIComponent(id)}/manifest`);
+export async function getShowcaseManifest(publicId: string): Promise<PlaybackManifest> {
+  return publicGet<PlaybackManifest>(`/showcase/${encodeURIComponent(publicId)}/manifest`);
 }
 
 export async function publishWork(
@@ -1017,6 +1019,11 @@ export async function reviewWork(identity: ClientIdentity, id: string, approve: 
 
 export async function deleteWork(identity: ClientIdentity, id: string): Promise<void> {
   await authedJSON<Record<string, never>>(identity, 'DELETE', `/public/works/${encodeURIComponent(id)}`);
+}
+
+// recallWork 由 owner/admin 撤回已发布作品（置 withdrawn 立即失效，B5-M3）。
+export async function recallWork(identity: ClientIdentity, publicId: string): Promise<PublicWork> {
+  return authedJSON<PublicWork>(identity, 'POST', `/public/works/${encodeURIComponent(publicId)}/recall`);
 }
 
 // 受保护只读：我的发布（按创建者）/ 审核队列（admin，pending）。

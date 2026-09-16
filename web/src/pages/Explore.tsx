@@ -73,7 +73,7 @@ export function Explore() {
       ) : (
         <div className="work-grid">
           {works.map((w) => (
-            <Link key={w.id} to={`/watch/${w.id}`} className="work-card">
+            <Link key={w.public_id ?? w.id} to={`/watch/${w.public_id ?? w.id}`} className="work-card">
               {w.cover_url ? (
                 <img className="work-cover" src={w.cover_url} alt={w.title} loading="lazy" />
               ) : (
