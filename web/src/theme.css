@@ -245,3 +245,73 @@ html[data-theme="light"] .home-artifact-format { background: rgba(3, 105, 161, .
 html[data-theme="light"] .home-artifact-size,
 html[data-theme="light"] .home-artifact-row small { color: #64748b; }
 html[data-theme="light"] .warn-note { color: #92400e; }
+
+/* ============================================================
+   设计令牌：浅色重定义（V-M1 视觉基线专项）
+   与 styles.css :root 同名，浅色下覆盖。
+   ============================================================ */
+html[data-theme="light"] {
+  /* V-M1 设计令牌（浅色） */
+  --accent: #67e8f9;
+  --accent-border: rgba(79,70,229,.4);
+  --accent-info: #0891b2;
+  --accent-soft: rgba(79, 70, 229, .1);
+  --accent-tint: rgba(103, 232, 249, .1);
+  --accent-tint-border: rgba(103, 232, 249, .7);
+  --bg-backdrop: rgba(15,23,42,.4);
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+  --bg-input-2: #f5f7fb;
+  --bg-inset: rgba(15,23,42,.03);
+  --bg-item: rgba(15,23,42,.03);
+  --bg-row: #ffffff;
+  --bg-shell: #eef1f6;
+  --bg-sunken: rgba(15,23,42,.03);
+  --bg-surface: #ffffff;
+  --bg-surface-2: #f5f7fb;
+  --bg-topbar: rgba(255,255,255,.9);
+  --bg-user-trigger: rgba(255,255,255,.8);
+  --border: rgba(15,23,42,.1);
+  --border-2: rgba(15,23,42,.12);
+  --border-strong: rgba(15,23,42,.16);
+  --border-subtle: rgba(15,23,42,.08);
+  --danger: #b91c1c;
+  --danger-bg-soft: rgba(239,68,68,.07);
+  --danger-border: rgba(185,28,28,.26);
+  --danger-mid: rgba(220,38,38,.12);
+  --danger-vivid: #dc2626;
+  --grad-body: radial-gradient(circle at 10% 0%, #dbe4f5 0, transparent 32rem), #eef1f6;
+  --grad-brand: radial-gradient(circle at 20% 10%, #dbe4f5 0, transparent 34rem), linear-gradient(160deg, #f3f5fb, #e7ecf5);
+  --grad-modal: linear-gradient(160deg, #ffffff, #f5f7fb);
+  --grad-nav-selected: linear-gradient(135deg, rgba(79, 70, 229, .16), rgba(13, 148, 136, .1));
+  --grad-rail-selected: linear-gradient(135deg, rgba(79, 70, 229, .16), rgba(13, 148, 136, .1));
+  --grad-sidebar: linear-gradient(180deg, #ffffff, #f3f5fa);
+  --info-border: rgba(8,145,178,.3);
+  --info-soft: rgba(8,145,178,.08);
+  --link: #4f46e5;
+  --link-info: #075985;
+  --link-info-bg: rgba(3, 105, 161, .12);
+  --loadfailure-bg: rgba(15,23,42,.05);
+  --loadfailure-bg-hover: rgba(15,23,42,.1);
+  --loadfailure-border: rgba(15,23,42,.18);
+  --neutral-bg: rgba(100,116,139,.1);
+  --ok: #15803d;
+  --ok-bg: rgba(34,197,94,.12);
+  --ok-bg-soft: rgba(34,197,94,.08);
+  --ok-border: rgba(21,128,61,.28);
+  --overlay-btn: rgba(15,23,42,.06);
+  --overlay-hover: rgba(15,23,42,.05);
+  --overlay-hover-2: rgba(15,23,42,.1);
+  --shadow-modal: 0 24px 60px rgba(15,23,42,.25);
+  --shadow-panel: 0 22px 60px rgba(15,23,42,.1);
+  --text-body: #334155;
+  --text-dim: #94a3b8;
+  --text-faint: #64748b;
+  --text-faintest: #94a3b8;
+  --text-muted: #64748b;
+  --text-strong: #0f172a;
+  --warn: #b45309;
+  --warn-bg-soft: rgba(251,191,36,.1);
+  --warn-border: rgba(180,83,9,.28);
+  --warn-quiet: #b45309;
+}
