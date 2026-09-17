@@ -204,17 +204,22 @@ func (r *SofficeRenderer) Render(ctx context.Context, src io.ReaderAt, size int6
 		return nil, err
 	}
 
+	pageFiles, err := rasterizedPageFiles(prefix, pageCount)
+	if err != nil {
+		return nil, err
+	}
+
 	pages := make([]PageImage, 0, pageCount)
-	for i := 1; i <= pageCount; i++ {
-		png, err := os.ReadFile(fmt.Sprintf("%s-%d.png", prefix, i))
+	for i, file := range pageFiles {
+		png, err := os.ReadFile(file)
 		if err != nil {
-			return nil, fmt.Errorf("render: read page %d: %w", i, err)
+			return nil, fmt.Errorf("render: read page %d: %w", i+1, err)
 		}
 		w, h, err := pngSize(png)
 		if err != nil {
 			return nil, err
 		}
-		pages = append(pages, PageImage{Index: i - 1, Width: w, Height: h, PNG: png})
+		pages = append(pages, PageImage{Index: i, Width: w, Height: h, PNG: png})
 	}
 
 	return &RenderResult{
@@ -227,6 +232,23 @@ func (r *SofficeRenderer) Render(ctx context.Context, src io.ReaderAt, size int6
 			PageCount:   pageCount,
 		},
 	}, nil
+}
+
+// rasterizedPageFiles 返回 pdftoppm 实际产出的页图路径，按页码顺序。
+//
+// 页码宽度取决于文档总页数（14 页 → page-01.png…page-14.png，2 页 → page-1.png…page-2.png），
+// 所以不能按固定的 "%s-%d.png" 拼路径 —— 那会让 10 页及以上的文档一个页图都读不到。
+// 同一次运行的宽度一致，filepath.Glob 的词法序即页序；数量不符时报错而不是漏页。
+func rasterizedPageFiles(prefix string, pageCount int) ([]string, error) {
+	files, err := filepath.Glob(prefix + "-*.png")
+	if err != nil {
+		return nil, fmt.Errorf("render: list rasterized pages: %w", err)
+	}
+	if len(files) != pageCount {
+		return nil, fmt.Errorf("render: pdftoppm produced %d page images, pdfinfo reported %d pages",
+			len(files), pageCount)
+	}
+	return files, nil
 }
 
 // convertToPDF 运行 `soffice --headless --convert-to pdf --outdir <dir> <input>`。

@@ -143,3 +143,89 @@ func assertFrameColorAt(t *testing.T, encoder *MP4Encoder, video string, positio
 		t.Fatalf("frame at %dus is not blue: r=%d b=%d", positionUS, r, b)
 	}
 }
+
+// countInkPixels 统计画面下半部分「非背景（纯黑）」像素数。libass 默认把字幕渲染在底部居中，
+// 用它判断字幕是否真被合成进画面，而不是只断言 ffmpeg 没报错。
+func countInkPixels(t *testing.T, path string) int {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	ink := 0
+	for y := b.Min.Y + b.Dy()/2; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, _ := img.At(x, y).RGBA()
+			// 阈值 90/255：H.264 有损压缩会在纯黑背景上留下少量噪声，需与真实字形区分。
+			if int(r>>8)+int(g>>8)+int(bl>>8) > 90 {
+				ink++
+			}
+		}
+	}
+	return ink
+}
+
+// TestMP4EncodeBurnsChineseSubtitles 覆盖真实烧录链路：把中文字幕压进画面（BurnSubtitles=true）。
+// 本机缺 ffmpeg 或缺 libass 时跳过（与同文件其它用例一致）。
+//
+// 断言的是「字幕确实被合成进画面」—— 同一时刻的帧，烧录版底部墨迹像素必须显著多于未烧录基线。
+// 字形本身是否渲染正确（缺字体时 libass 会退回默认字体或豆腐块）无法由像素数判定，需人工看帧。
+func TestMP4EncodeBurnsChineseSubtitles(t *testing.T) {
+	e, err := NewMP4Encoder()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+	ctx := context.Background()
+	ok, err := e.SupportsSubtitles(ctx)
+	if err != nil {
+		t.Fatalf("SupportsSubtitles: %v", err)
+	}
+	if !ok {
+		t.Skip("ffmpeg lacks the subtitles filter (libass)")
+	}
+
+	srt := []byte("1\n00:00:00,000 --> 00:00:02,000\n中文烧录：字幕应正确显示\n\n" +
+		"2\n00:00:02,000 --> 00:00:04,000\n第二句中文，用于确认时序\n\n")
+	page := solidPNG(640, 360, color.RGBA{A: 255})
+	work := t.TempDir()
+	plain := filepath.Join(work, "plain.mp4")
+	burned := filepath.Join(work, "burned.mp4")
+
+	opts := MP4EncodeOptions{OutPath: plain, FPS: 10, Width: 640, Height: 360, PagePNGs: [][]byte{page}, Totals: 4}
+	if _, err := e.Encode(ctx, opts); err != nil {
+		t.Fatalf("Encode(plain): %v", err)
+	}
+	opts.OutPath = burned
+	opts.BurnSubtitles = true
+	opts.SubtitleSRT = srt
+	opts.SubtitleFontName = "WenQuanYi Zen Hei"
+	res, err := e.Encode(ctx, opts)
+	if err != nil {
+		t.Fatalf("Encode(burned): %v", err)
+	}
+	if res.VideoCodec != "h264" || res.AudioCodec != "aac" {
+		t.Fatalf("burned codecs: video=%s audio=%s", res.VideoCodec, res.AudioCodec)
+	}
+
+	plainFrame := filepath.Join(work, "plain.png")
+	burnedFrame := filepath.Join(work, "burned.png")
+	if err := extractFrame(ctx, e.ffmpeg, plain, "1.0", plainFrame); err != nil {
+		t.Fatalf("extractFrame(plain): %v", err)
+	}
+	if err := extractFrame(ctx, e.ffmpeg, burned, "1.0", burnedFrame); err != nil {
+		t.Fatalf("extractFrame(burned): %v", err)
+	}
+	plainInk, burnedInk := countInkPixels(t, plainFrame), countInkPixels(t, burnedFrame)
+	if burnedInk < 200 {
+		t.Fatalf("burned frame has %d ink pixels: subtitles were not composited", burnedInk)
+	}
+	if burnedInk <= plainInk+100 {
+		t.Fatalf("burned ink %d not clearly above baseline %d: subtitles may not have rendered", burnedInk, plainInk)
+	}
+}
