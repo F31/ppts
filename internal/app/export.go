@@ -39,12 +39,21 @@ type ExportHandler struct {
 	}
 	objects objectstore.ObjectStore
 	encoder *media.MP4Encoder
+	// subtitleFontName 字幕烧录锁定的字体族名；空 = 由系统默认字体决定（见 media.subtitleStage）。
+	subtitleFontName string
 }
 
 func NewExportHandler(artifacts artifact.Store, steps interface {
 	MarkStep(context.Context, pipeline.JobStep) error
 }, objects objectstore.ObjectStore, encoder *media.MP4Encoder) *ExportHandler {
 	return &ExportHandler{artifacts: artifacts, steps: steps, objects: objects, encoder: encoder}
+}
+
+// WithSubtitleFont 设定字幕烧录锁定的字体族名（默认空 = 系统默认）。
+// 用于与部署镜像安装的字体保持一致，保证中文渲染在各环境一致可复现（V1_6 §338）。
+func (h *ExportHandler) WithSubtitleFont(name string) *ExportHandler {
+	h.subtitleFontName = name
+	return h
 }
 
 func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
@@ -262,6 +271,7 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
 		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioWAV: audio,
 		BurnSubtitles: snapshot.BurnSubtitles, SubtitleSRT: subtitleSRT,
+		SubtitleFontName: h.subtitleFontName,
 	}); err != nil {
 		if errors.Is(err, media.ErrSubtitlesUnavailable) {
 			// A26：能力缺失必须明确说明原因，而不是静默产出一段没有字幕的视频。

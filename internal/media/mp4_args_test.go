@@ -172,6 +172,41 @@ func TestCompileEncodeArgsBurnsSubtitlesOntoConcatOutput(t *testing.T) {
 	}
 }
 
+func TestCompileEncodeArgsLocksSubtitleFont(t *testing.T) {
+	args, _, err := compileEncodeArgs(MP4EncodeOptions{
+		OutPath: "/out/v.mp4", FPS: 1, Width: 320, Height: 180,
+		PagePNGs: [][]byte{{1}}, BurnSubtitles: true, SubtitleSRT: []byte("1\n"),
+		SubtitleFontName: "WenQuanYi Zen Hei",
+	}, inputsFor(1, false))
+	if err != nil {
+		t.Fatalf("compileEncodeArgs: %v", err)
+	}
+	vf, _ := argsValue(args, "-vf")
+	want := ",subtitles=filename=" + subtitleFileName + ":force_style='FontName=WenQuanYi Zen Hei'"
+	if !strings.HasSuffix(vf, want) {
+		t.Fatalf("vf must lock the subtitle font: %q (want suffix %q)", vf, want)
+	}
+	if strings.Contains(vf, "/work") {
+		t.Fatalf("subtitle path must be a relative basename, got %q", vf)
+	}
+}
+
+func TestCompileEncodeArgsLocksSubtitleFontOnConcat(t *testing.T) {
+	args, _, err := compileEncodeArgs(MP4EncodeOptions{
+		OutPath: "/out/v.mp4", FPS: 20, Width: 320, Height: 180,
+		PagePNGs: [][]byte{{1}, {2}}, PageDurationsMS: []int64{700, 300},
+		BurnSubtitles: true, SubtitleSRT: []byte("1\n"), SubtitleFontName: "WenQuanYi Zen Hei",
+	}, inputsFor(2, true))
+	if err != nil {
+		t.Fatalf("compileEncodeArgs: %v", err)
+	}
+	fc, _ := argsValue(args, "-filter_complex")
+	want := "[vbase]subtitles=filename=" + subtitleFileName + ":force_style='FontName=WenQuanYi Zen Hei'[vout]"
+	if !strings.Contains(fc, want) {
+		t.Fatalf("concat output must lock the subtitle font: %q (want contains %q)", fc, want)
+	}
+}
+
 func TestCompileEncodeArgsUsesLavfiSilenceWhenNoAudio(t *testing.T) {
 	in := inputsFor(1, false)
 	in.AudioFile = ""

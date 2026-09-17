@@ -133,7 +133,8 @@ func run() error {
 	if err != nil {
 		logger.Info("mp4 encoder unavailable", "error", err)
 	}
-	exportHandler := app.NewExportHandler(artifact.NewPGStore(pool), jobs, objects, mp4Encoder)
+	exportHandler := app.NewExportHandler(artifact.NewPGStore(pool), jobs, objects, mp4Encoder).
+		WithSubtitleFont(subtitleFontName())
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
 		// 异步任务 span link：把 API 侧创建的 span 以 link 关联到 worker 执行 span（G3-8）。
 		_, span := observability.Tracer("ppts.worker").Start(ctx, "job."+string(job.Kind),
@@ -279,6 +280,15 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// subtitleFontName 返回字幕烧录锁定的字体族名；未设置时默认与 Dockerfile.worker 安装的
+// fonts-wqy-zenhei 对齐，保证中文渲染在各部署环境一致可复现（V1_6 §338）。
+func subtitleFontName() string {
+	if v := os.Getenv("PPTS_SUBTITLE_FONT_NAME"); v != "" {
+		return v
+	}
+	return "WenQuanYi Zen Hei"
 }
 
 // envInt 读取整数环境变量，非法或缺失时返回默认值。

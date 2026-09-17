@@ -1,7 +1,27 @@
 FROM debian:bookworm-slim
+
+# 瘦身方案（与完整 apt 方案相比，镜像增量从 ~300–600MB 降到 ~100MB）：
+#   - 静态 ffmpeg（johnvansickle release，自带 libass/libx264/libx265 等，~80MB，无 apt 依赖膨胀）；
+#   - 轻量中文字体 WenQuanYi Zen Hei（fonts-wqy-zenhei，~10MB），替代 fonts-noto-cjk（~200MB）。
+# 静态 ffmpeg 必须带 libass，否则 subtitles 滤镜不可用、字幕烧录会明确失败（见 media.ErrSubtitlesUnavailable）。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
+# 下载并落盘静态 ffmpeg/ffprobe（release 为 johnvansickle 稳定滚动版，含 --enable-libass）。
+RUN set -eux; \
+    curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ffmpeg.tar.xz; \
+    tar -xf /tmp/ffmpeg.tar.xz -C /tmp; \
+    cp /tmp/ffmpeg-release-amd64-static/ffmpeg /usr/local/bin/ffmpeg; \
+    cp /tmp/ffmpeg-release-amd64-static/ffprobe /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-release-amd64-static; \
+    ffmpeg -hide_banner -version | head -n 1; \
+    ffprobe -hide_banner -version | head -n 1
+
 COPY ppts-worker.bin /ppts-worker
 ENV PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
+    PPTS_SUBTITLE_FONT_NAME=WenQuanYi Zen Hei \
     TZ=Asia/Shanghai
 EXPOSE 0
 ENTRYPOINT ["/ppts-worker"]

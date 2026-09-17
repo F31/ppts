@@ -41,6 +41,10 @@ type MP4EncodeOptions struct {
 	BurnSubtitles bool
 	// SubtitleSRT 为 UTF-8 编码的 SRT 内容；BurnSubtitles 为 true 时必填（缺失即报错，不静默降级）。
 	SubtitleSRT []byte
+	// SubtitleFontName 为烧录时锁定的字体族名（fontconfig family），经 subtitles 滤镜的
+	// force_style=FontName=... 注入；非空时绕过 fontconfig 默认选择，保证中文渲染在各环境一致
+	// （设计方案 V1_6 §338「字幕烧录字体锁定」）。空 = 不指定，由 ffmpeg/libass 走系统默认字体。
+	SubtitleFontName string
 }
 
 // MP4EncodeResult 是编码后的 ffprobe 验证结果。
@@ -203,8 +207,8 @@ func compileEncodeArgs(opts MP4EncodeOptions, in encodeInputs) ([]string, float6
 	)
 	subtitle := ""
 	if opts.BurnSubtitles {
-		// 相对 basename（cwd = in.WorkDir），规避 filtergraph 路径转义。
-		subtitle = "subtitles=filename=" + subtitleFileName
+		// 相对 basename（cwd = in.WorkDir），规避 filtergraph 路径转义；字体名锁定见 subtitleStage。
+		subtitle = subtitleStage(opts.SubtitleFontName)
 	}
 	if variablePageTiming {
 		var filter strings.Builder
@@ -325,6 +329,18 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 
 func millisecondsDecimal(milliseconds int64) string {
 	return fmt.Sprintf("%d.%03d", milliseconds/1000, milliseconds%1000)
+}
+
+// subtitleStage 构造字幕烧录滤镜段。fontName 非空时追加 force_style=FontName=... 锁定字体，
+// 避免依赖 fontconfig 默认选择导致中文渲染结果在各部署环境不一致（V1_6 §338）。
+// 字幕以固定 basename 相对引用（见 subtitleFileName），规避 filtergraph 路径转义。
+func subtitleStage(fontName string) string {
+	s := "subtitles=filename=" + subtitleFileName
+	if fontName == "" {
+		return s
+	}
+	// force_style 值内含空格（如 "WenQuanYi Zen Hei"），用单引号包裹以规避 filtergraph 的逗号/空格分隔歧义。
+	return s + ":force_style='FontName=" + fontName + "'"
 }
 
 // verify 用 ffprobe 校验封装格式与流，并抽帧验证画面非空。
