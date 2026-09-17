@@ -1,27 +1,61 @@
-FROM debian:bookworm-slim
+# ppts worker 镜像：解析（PPTX→PNG）+ 配音 + 导出（MP4，含中文字幕烧录）。
+#
+# 运行时外部依赖，逐一对应代码里的 exec.LookPath/exec.Command 调用点：
+#   ffmpeg / ffprobe     internal/media/mp4.go          画面合成、ffprobe 校验；烧录还需 subtitles 滤镜（libass）
+#   soffice              internal/integrations/render/render.go   PPTX → PDF
+#   pdftoppm / pdfinfo   同上                            PDF → 逐页 PNG
+#   中文字体             fonts-wqy-zenhei                字幕 force_style=FontName 锁定 + PPTX 渲染中文回退
+#
+# 体积取舍（本机实测 deb 包磁盘占用）：
+#   Debian 的 ffmpeg 包会连带 libllvm15/libflite1/mesa 等约 459MB；
+#   johnvansickle 静态构建只需 153MB（ffmpeg 77MB + ffprobe 76MB，自带 libass/fontconfig/freetype）。
+#   LibreOffice 取 -nogui 变体（约 252MB），比 GUI 版少拉一整套 X11。
+#
+# 构建：docker compose build worker
+# 注意：若宿主机 ~/.docker/config.json 配了仅本机可达的代理，构建容器内会连不上；
+#       docker-compose.yml 已把代理 build-arg 显式置空，需要真代理时改回即可。
 
-# 瘦身方案（与完整 apt 方案相比，镜像增量从 ~300–600MB 降到 ~100MB）：
-#   - 静态 ffmpeg（johnvansickle release，自带 libass/libx264/libx265 等，~80MB，无 apt 依赖膨胀）；
-#   - 轻量中文字体 WenQuanYi Zen Hei（fonts-wqy-zenhei，~10MB），替代 fonts-noto-cjk（~200MB）。
-# 静态 ffmpeg 必须带 libass，否则 subtitles 滤镜不可用、字幕烧录会明确失败（见 media.ErrSubtitlesUnavailable）。
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl xz-utils fonts-wqy-zenhei \
-    && rm -rf /var/lib/apt/lists/*
+FROM golang:1.25-bookworm AS builder
 
-# 下载并落盘静态 ffmpeg/ffprobe（release 为 johnvansickle 稳定滚动版，含 --enable-libass）。
+# GOWORK=off：镜像内不存在 ../go-pptx 工作区，必须按 go.mod 锁定的模块版本解析依赖。
+# 不要设 GOPRIVATE=github.com/F31 —— 那会绕过 GOPROXY 直连 GitHub，受限网络下必然失败。
+ARG GOPROXY=https://goproxy.cn,direct
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN GOWORK=off GOPROXY=$GOPROXY go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOWORK=off GOPROXY=$GOPROXY \
+    go build -trimpath -ldflags="-s -w" -o /out/ppts-worker ./cmd/worker
+
+FROM debian:bookworm-slim AS runtime
+
+# 静态 ffmpeg 必须带 libass，否则 subtitles 滤镜缺失、字幕烧录会明确失败
+# （media.ErrSubtitlesUnavailable，见 internal/media/mp4.go）。
+ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+# apt 源默认走官方；本机可达性差时由 docker-compose.yml 传 APT_MIRROR=mirrors.aliyun.com。
+ARG APT_MIRROR=deb.debian.org
+
 RUN set -eux; \
-    curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz" -o /tmp/ffmpeg.tar.xz; \
-    tar -xf /tmp/ffmpeg.tar.xz -C /tmp; \
-    cp /tmp/ffmpeg-release-amd64-static/ffmpeg /usr/local/bin/ffmpeg; \
-    cp /tmp/ffmpeg-release-amd64-static/ffprobe /usr/local/bin/ffprobe; \
-    rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-release-amd64-static; \
-    ffmpeg -hide_banner -version | head -n 1; \
-    ffprobe -hide_banner -version | head -n 1
+    sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates tzdata poppler-utils fonts-wqy-zenhei libreoffice-impress-nogui \
+        curl xz-utils; \
+    curl -fsSL "$FFMPEG_URL" -o /tmp/ffmpeg.tar.xz; \
+    tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; \
+    install -m 0755 /tmp/ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg; \
+    install -m 0755 /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe; \
+    rm -rf /tmp/ffmpeg.tar.xz /tmp/ffmpeg-*-static; \
+    ffmpeg -hide_banner -filters | awk '{print $2}' | grep -qx subtitles; \
+    ffprobe -hide_banner -version >/dev/null; \
+    apt-get purge -y --auto-remove curl xz-utils; \
+    rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/lib/libreoffice/share/gallery \
+        /usr/lib/libreoffice/share/template /usr/lib/libreoffice/CREDITS.fodt
 
-COPY ppts-worker.bin /ppts-worker
+COPY --from=builder /out/ppts-worker /usr/local/bin/ppts-worker
+
 ENV PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
-    PPTS_SUBTITLE_FONT_NAME=WenQuanYi Zen Hei \
+    PPTS_SUBTITLE_FONT_NAME="WenQuanYi Zen Hei" \
     TZ=Asia/Shanghai
-EXPOSE 0
-ENTRYPOINT ["/ppts-worker"]
+ENTRYPOINT ["/usr/local/bin/ppts-worker"]

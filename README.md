@@ -40,6 +40,41 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 cd web && npm ci && npm run build
 ```
 
+## 容器构建与部署
+
+```bash
+docker compose build        # 构建 ppts-api / ppts-worker 镜像
+docker compose up -d        # 启动（api 监听 :80，含 /healthz 健康检查）
+```
+
+- `Dockerfile.api`：多阶段构建，Debian slim 运行时仅含 CA 证书/时区数据/curl；Go 单进程同时服务 API 与前端静态资源（`PPTS_WEB_ROOT=/app/web-dist`，SPA history 兜底 + `/assets/` immutable 缓存头），无需 nginx。
+- `Dockerfile.worker`：Debian slim 运行时含 poppler-utils、`fonts-wqy-zenhei`（中文字幕烧录字体）、`libreoffice-impress-nogui`（页面渲染）与静态 ffmpeg/ffprobe（johnvansickle 构建，带 libass 字幕滤镜）；按最小依赖裁剪后镜像约 820MB，api 镜像约 168MB。
+- 前端产物需先 `cd web && npm ci && npm run build` 生成 `web/dist`，api 镜像构建时随上下文打包。
+
+## 二进制发行（单机部署）
+
+```bash
+scripts/package.sh [版本号]   # 缺省取 git describe；产出 dist/ppts-<版本>-linux-amd64.tar.gz
+```
+
+发行包含 `ppts-api`/`ppts-worker`（CGO_ENABLED=0 纯静态，版本号经 ldflags 注入）、静态 ffmpeg/ffprobe、
+`install.sh`、systemd unit 与配置模板。前端产物（`web/dist`）与 SQL 迁移均内嵌进二进制：
+
+- api 在 `PPTS_WEB_ROOT` 未设置时直接服务内嵌前端（`web/embed.go`，SPA 兜底与外部目录同一套语义）；
+- `ppts-api migrate` 幂等应用内嵌迁移（`internal/migrate`），需 superuser DSN（`PPTS_MIGRATE_DATABASE_URL`，
+  回退 `PPTS_DATABASE_URL`）；`ppts-api version` / `ppts-worker version` 打印版本。
+
+目标机安装（Debian/Ubuntu 为主，RHEL 系 best-effort）：
+
+```bash
+tar xzf ppts-<版本>-linux-amd64.tar.gz && cd ppts-<版本>-linux-amd64
+sudo ./install.sh     # 装系统依赖 → 建 ppts 账号 → 生成 /etc/ppts/config.env → 建库迁移 → systemd 启动
+```
+
+`install.sh` 幂等可重复执行，不覆盖既有配置；`SKIP_DEPS=1` 跳过依赖安装、`SKIP_START=1` 只装不启。
+布局：`/opt/ppts/bin`、`/etc/ppts/config.env`、`/var/lib/ppts`（本地对象存储与 LibreOffice profile）。
+注意：随包 ffmpeg 静态构建含 GPL 组件（x264/libass），商业分发需确认许可证合规。
+
 当前 Connect API 已提供 Project/Script/Narration/Playback/Export/Upload 主链路：
 - `ProjectService`：`Create/Get/List/Archive/GetSlides`；
 - `UploadService`：`CreateUpload/CompleteUpload/AbortUpload`（授权直传：分配受限对象键与预签名写链接，完成时校验大小/哈希/租户所有权后才创建源版本并入队解析任务）；

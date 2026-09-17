@@ -6,6 +6,15 @@ bin/
 go.work
 go.work.sum
 
+# 发布产物与打包缓存
+build/
+/ppts-api
+/ppts-worker.bin
+
+# 外部工具状态目录
+.workbuddy/
+.tokenize_bak/
+
 # 运行时数据
 /tmp/
 /data/
@@ -14,6 +23,9 @@ go.work.sum
 # 前端
 node_modules/
 dist/
+!web/dist/
+web/dist/*
+!web/dist/.gitkeep
 *.tsbuildinfo
 *.local
 

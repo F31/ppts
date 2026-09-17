@@ -1,0 +1,20 @@
+[Unit]
+Description=PPTS API server
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ppts
+Group=ppts
+EnvironmentFile=/etc/ppts/config.env
+ExecStart=/opt/ppts/bin/ppts-api
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ppts
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

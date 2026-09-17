@@ -1,12 +1,42 @@
+# ppts api 镜像：单个 Go 进程同时提供 REST/Connect RPC 与前端静态资源。
+#
+# PPTS_WEB_ROOT 指向前端构建产物后，internal/api 会挂上 "/" 的 SPA 兜底
+# （internal/api/server.go spaFallbackHandler），因此不再需要 nginx：
+#   - 少一层反代，省掉 nginx 及其运行期依赖；
+#   - 顺带消除旧拓扑的隐患：nginx 默认 client_max_body_size=1m，大于 1MB 的 PPTX 上传会被 413 拒绝。
+# 静态资源缓存语义由 spaFallbackHandler 接替：/assets/ 下的内容哈希文件返回 immutable。
+#
+# 构建：docker compose build api
+
+FROM golang:1.25-bookworm AS builder
+
+# GOWORK=off：镜像内不存在 ../go-pptx 工作区，必须按 go.mod 锁定的模块版本解析依赖。
+# 不要设 GOPRIVATE=github.com/F31 —— 那会绕过 GOPROXY 直连 GitHub，受限网络下必然失败。
+ARG GOPROXY=https://goproxy.cn,direct
+WORKDIR /build
+COPY go.mod go.sum ./
+RUN GOWORK=off GOPROXY=$GOPROXY go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOWORK=off GOPROXY=$GOPROXY \
+    go build -trimpath -ldflags="-s -w" -o /out/ppts-api ./cmd/api
+
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends nginx curl ca-certificates && rm -rf /var/lib/apt/lists/* \
-    && rm -f /etc/nginx/sites-enabled/default
-COPY ppts-api /usr/local/bin/ppts-api
-COPY web/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
-ENV PPTS_WEB_ROOT=/usr/share/nginx/html \
+
+# curl 仅用于 compose 的 healthcheck。
+# apt 源默认走官方；本机可达性差时由 docker-compose.yml 传 APT_MIRROR=mirrors.aliyun.com。
+ARG APT_MIRROR=deb.debian.org
+RUN set -eux; \
+    sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates tzdata curl; \
+    rm -rf /var/lib/apt/lists/* /usr/share/doc
+
+COPY --from=builder /out/ppts-api /usr/local/bin/ppts-api
+COPY web/dist /app/web-dist
+
+ENV PPTS_WEB_ROOT=/app/web-dist \
     PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
     TZ=Asia/Shanghai
-ENTRYPOINT ["sh", "-c", "ppts-api & nginx -g 'daemon off;'"]
+EXPOSE 80
+ENTRYPOINT ["/usr/local/bin/ppts-api"]

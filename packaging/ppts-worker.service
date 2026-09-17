@@ -1,0 +1,24 @@
+[Unit]
+Description=PPTS worker (parse / script / narration / export jobs)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ppts
+Group=ppts
+EnvironmentFile=/etc/ppts/config.env
+# ffmpeg/ffprobe 随包安装在 /opt/ppts/bin；LibreOffice 与 poppler 来自系统包
+Environment=PATH=/opt/ppts/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# LibreOffice headless 需要可写的 profile 目录（ppts 用户无家目录）
+Environment=HOME=/var/lib/ppts
+ExecStart=/opt/ppts/bin/ppts-worker
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/ppts
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

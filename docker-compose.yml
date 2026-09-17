@@ -1,14 +1,36 @@
+# 单机开发/自建部署编排。
+#
+# 构建注意：宿主机 ~/.docker/config.json 若配了仅本机可达的代理，docker CLI 会把它作为
+# build-arg 注入构建容器，而该地址在构建容器内不可达 → apt / go mod 全部失败。
+# 故两个 build 均显式把代理置空；构建确实需要代理时，在这里填成真实可达的地址。
+#
+# 构建注意 2：本机 buildx 当前指向 docker-container 驱动的 ppts-builder，它看不到 daemon 已缓存的
+# 基础镜像，会去 registry 拉元数据（本机到 Docker Hub 的连接不稳定 → 超时）。用 daemon 内置
+# builder 即可复用本地镜像：BUILDX_BUILDER=default docker compose build
+
 services:
   api:
     image: ppts-api:latest
     container_name: ppts-api
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        http_proxy: ""
+        https_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        # 官方 deb.debian.org 在本机容器内极慢/易挂，改用国内镜像。
+        APT_MIRROR: "mirrors.aliyun.com"
     restart: unless-stopped
     network_mode: host
     environment:
       PPTS_DATABASE_URL: "postgres://ppts_app:ppts_dev_pw@localhost:5433/ppts_dev?sslmode=disable"
       PPTS_TEST_DATABASE: "postgres://ppts_app:ppts_dev_pw@localhost:5433/ppts_test?sslmode=disable"
       PPTS_AUTH_DEV_HEADERS: "true"
-      PPTS_HTTP_ADDR: ":8080"
+      # 单进程同时提供 API 与前端静态资源（PPTS_WEB_ROOT 见 Dockerfile.api），占原先 nginx 的入口端口。
+      PPTS_HTTP_ADDR: ":80"
+      PPTS_WEB_ROOT: "/app/web-dist"
       PPTS_OBJECT_BACKEND: "local"
       PPTS_OBJECT_ROOT: "/data/objects"
       PPTS_OBJECT_SECRET: "${PPTS_OBJECT_SECRET}"
@@ -16,7 +38,7 @@ services:
     volumes:
       - ppts-objects:/data/objects
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:80/"]
+      test: ["CMD", "curl", "-sf", "http://localhost:80/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -25,6 +47,15 @@ services:
   worker:
     image: ppts-worker:latest
     container_name: ppts-worker
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+      args:
+        http_proxy: ""
+        https_proxy: ""
+        HTTP_PROXY: ""
+        HTTPS_PROXY: ""
+        APT_MIRROR: "mirrors.aliyun.com"
     restart: unless-stopped
     network_mode: host
     environment:

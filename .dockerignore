@@ -6,6 +6,11 @@ web/node_modules
 *.log
 .tmp
 workbuddy
+.workbuddy
+.tokenize_bak
 .commitmsg_*
 .commitmsg_m4.txt
 docs/*.pptx
+# 历史遗留的预编译产物：镜像是从源码多阶段构建，不再需要它们进上下文。
+ppts-api
+ppts-worker.bin
