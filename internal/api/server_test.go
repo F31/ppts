@@ -7,10 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"connectrpc.com/connect"
@@ -1976,5 +1980,132 @@ func TestUploadRejectsHashMismatchAndAbort(t *testing.T) {
 	}))
 	if connect.CodeOf(err) != connect.CodeFailedPrecondition {
 		t.Fatalf("complete aborted code = %v, err=%v", connect.CodeOf(err), err)
+	}
+}
+
+// TestSPAFallbackServesWebRoot 覆盖单二进制部署下前端静态资源的托管语义：
+// 客户端路由回退 index.html、哈希资源强缓存、缺失资源 404 而非误回退。
+func TestSPAFallbackServesWebRoot(t *testing.T) {
+	webRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("<html>app</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(webRoot, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webRoot, "assets", "app-abc123.js"), []byte("console.log(1)"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	handler := spaFallbackHandler(os.DirFS(webRoot))
+
+	cases := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantBody   string
+		wantCache  string
+	}{
+		{"客户端路由回退 index.html", http.MethodGet, "/projects/abc/timeline", http.StatusOK, "<html>app</html>", ""},
+		{"哈希资源命中并强缓存", http.MethodGet, "/assets/app-abc123.js", http.StatusOK, "console.log(1)", "public, max-age=31536000, immutable"},
+		{"缺失的静态资源 404 而不回退", http.MethodGet, "/assets/missing.js", http.StatusNotFound, "", ""},
+		{"系统前缀不参与回退", http.MethodGet, "/healthz", http.StatusNotFound, "", ""},
+		{"HEAD 与 GET 同权（同 nginx 拓扑）", http.MethodHead, "/assets/app-abc123.js", http.StatusOK, "", "public, max-age=31536000, immutable"},
+		{"HEAD 客户端路由同样回退", http.MethodHead, "/projects/abc/timeline", http.StatusOK, "", ""},
+		{"非 GET/HEAD 一律不服务", http.MethodPost, "/assets/app-abc123.js", http.StatusNotFound, "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler(rec, httptest.NewRequest(tc.method, tc.path, nil))
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if tc.wantBody != "" && !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Fatalf("body = %q, want contains %q", rec.Body.String(), tc.wantBody)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != tc.wantCache {
+				t.Fatalf("Cache-Control = %q, want %q", got, tc.wantCache)
+			}
+		})
+	}
+}
+
+// TestSPAFallbackServesEmbeddedFS 覆盖内嵌前端产物（单二进制分发）的托管语义：
+// WebFS 与 WebRoot 走同一 handler，且 NewHandler 优先使用 WebRoot、空时退回 WebFS。
+func TestSPAFallbackServesEmbeddedFS(t *testing.T) {
+	dist := fstest.MapFS{
+		"index.html":          {Data: []byte("<html>embedded</html>")},
+		"assets/app-def456.js": {Data: []byte("console.log(2)")},
+	}
+	handler := spaFallbackHandler(dist)
+
+	rec := httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/console/settings", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<html>embedded</html>") {
+		t.Fatalf("spa route status = %d body = %q", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	handler(rec, httptest.NewRequest(http.MethodGet, "/assets/app-def456.js", nil))
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") == "" {
+		t.Fatalf("asset status = %d cache = %q", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+
+	// NewHandler 在 WebRoot 为空时挂载 WebFS。
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
+		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{WebFS: dist}))
+	t.Cleanup(server.Close)
+	resp, err := http.Get(server.URL + "/console/settings")
+	if err != nil {
+		t.Fatalf("spa route: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<html>embedded</html>") {
+		t.Fatalf("spa route status = %d body = %q", resp.StatusCode, body)
+	}
+}
+
+// TestHandlerMountsSPAFallbackWithoutShadowingAPI 断言 WebRoot 接线不会遮蔽已注册路由。
+func TestHandlerMountsSPAFallbackWithoutShadowingAPI(t *testing.T) {
+	webRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("<html>app</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
+		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{WebRoot: webRoot}))
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + "/healthz")
+	if err != nil {
+		t.Fatalf("healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d", resp.StatusCode)
+	}
+
+	spaResp, err := http.Get(server.URL + "/projects/some-id/timeline")
+	if err != nil {
+		t.Fatalf("spa route: %v", err)
+	}
+	defer spaResp.Body.Close()
+	body, _ := io.ReadAll(spaResp.Body)
+	if spaResp.StatusCode != http.StatusOK || !strings.Contains(string(body), "<html>app</html>") {
+		t.Fatalf("spa route status = %d body = %q", spaResp.StatusCode, body)
+	}
+
+	// 未配置 WebRoot 时保持旧行为：无 SPA 兜底，客户端路由 404。
+	plain := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
+		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	t.Cleanup(plain.Close)
+	plainResp, err := http.Get(plain.URL + "/projects/some-id/timeline")
+	if err != nil {
+		t.Fatalf("plain spa route: %v", err)
+	}
+	defer plainResp.Body.Close()
+	if plainResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("plain spa route status = %d, want 404", plainResp.StatusCode)
 	}
 }

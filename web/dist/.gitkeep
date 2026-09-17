@@ -1,0 +1,1 @@
+占位文件：web/dist 为 vite 构建输出目录（gitignore），保留本文件使 `go:embed all:dist` 在未构建前端时也能编译。

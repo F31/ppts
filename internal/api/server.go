@@ -3,9 +3,10 @@ package api
 import (
 	"context"
 	"expvar"
+	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -56,8 +57,14 @@ type Options struct {
 	Pronunciation pronunciation.Store
 	Gateway       gateway.StoreResolver
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
-	JWTSecret    string
+	JWTSecret      string
 	PasswordPepper string
+	// WebRoot 指向前端构建产物目录（vite build 输出）。非空时由 Go 直接托管静态资源与
+	// SPA history 兜底 —— 单二进制部署无需 nginx。
+	WebRoot string
+	// WebFS 是内嵌的前端构建产物（go:embed，见 web 包），WebRoot 为空时作为兜底；
+	// 两者皆空 = 维持旧行为，由外部反代托管前端。
+	WebFS fs.FS
 }
 
 // NewHandler builds the HTTP surface. Health checks intentionally bypass auth;
@@ -139,19 +146,29 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			objHandler.serve(objectstore.OpDelete, w, r)
 		})
 	}
-	// 可选 SPA 兜底：由外部反代（nginx/Caddy）或前端 dev server 处理，
-	// 单二进制部署时可通过 nginx location / { try_files $uri $uri /index.html; } 实现。
+	// SPA 兜底：WebRoot 或内嵌 WebFS 非空时由 Go 直接托管前端构建产物（单二进制部署，替代 nginx）。
+	// "/" 是最宽泛的模式：Go 1.22+ ServeMux 让更具体的已注册路由优先，故不会遮蔽任何 API。
+	switch {
+	case opt.WebRoot != "":
+		mux.Handle("/", spaFallbackHandler(os.DirFS(opt.WebRoot)))
+	case opt.WebFS != nil:
+		mux.Handle("/", spaFallbackHandler(opt.WebFS))
+	}
 	return mux
 }
 
-// spaFallbackHandler 在 PPTS_WEB_ROOT 指向前端构建目录时，为 SPA 提供 history 路由兜底：
-// 真实静态资源（带扩展名）命中则返回、未命中 404；其余 GET 请求返回 index.html 交由客户端路由接管。
+// hashedAssetPrefix 是 vite 构建输出的哈希资源目录：文件名内嵌内容哈希，可长期强缓存。
+const hashedAssetPrefix = "/assets/"
+
+// spaFallbackHandler 为 SPA 提供 history 路由兜底：
+// 真实静态资源（带扩展名）命中则返回、未命中 404；其余 GET/HEAD 请求返回 index.html 交由客户端路由接管。
 // 系统/API/对象存储前缀一律放行 404，避免与已注册路由冲突。
-func spaFallbackHandler(webRoot string) http.HandlerFunc {
-	fileServer := http.FileServer(http.Dir(webRoot))
-	indexHTML := filepath.Join(webRoot, "index.html")
+// HEAD 与 GET 同权（原 nginx 拓扑支持 HEAD，CDN/代理常用它探测静态资源）。
+// fsys 可以是 os.DirFS(webRoot)（外部目录）或内嵌 embed.FS（单二进制分发）。
+func spaFallbackHandler(fsys fs.FS) http.HandlerFunc {
+	fileServer := http.FileServer(http.FS(fsys))
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			http.NotFound(w, r)
 			return
 		}
@@ -160,9 +177,15 @@ func spaFallbackHandler(webRoot string) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		if ext := filepath.Ext(p); ext != "" {
-			f := filepath.Join(webRoot, filepath.Clean(p))
-			if fi, err := os.Stat(f); err == nil && !fi.IsDir() {
+		if ext := path.Ext(p); ext != "" {
+			// fs.ValidPath 要求无前导斜杠的相对路径。
+			name := path.Join(strings.TrimPrefix(p, "/"))
+			if fi, err := fs.Stat(fsys, name); err == nil && !fi.IsDir() {
+				// 接替 nginx 原先的 expires 1y / immutable：只对 /assets/ 下的内容哈希文件生效，
+				// 避免像旧 nginx 规则那样把 favicon.svg 这类非哈希资源也缓存一年。
+				if strings.HasPrefix(p, hashedAssetPrefix) {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				fileServer.ServeHTTP(w, r)
 				return
 			}
@@ -170,6 +193,6 @@ func spaFallbackHandler(webRoot string) http.HandlerFunc {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeFile(w, r, indexHTML)
+		http.ServeFileFS(w, r, fsys, "index.html")
 	}
 }
