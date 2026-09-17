@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -19,7 +18,6 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
 	"github.com/F31/ppts/internal/membership"
-	"github.com/F31/ppts/internal/migrate"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
@@ -29,55 +27,12 @@ import (
 	"github.com/F31/ppts/internal/tenant"
 	"github.com/F31/ppts/internal/upload"
 	"github.com/F31/ppts/internal/usage"
-	"github.com/F31/ppts/migrations"
 	"github.com/F31/ppts/web"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// version 由发布构建经 -ldflags "-X main.version=..." 注入；源码构建为 dev。
-var version = "dev"
-
-func main() {
-	log.SetFlags(0)
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "migrate":
-			if err := runMigrate(); err != nil {
-				log.Fatal(err)
-			}
-			return
-		case "version":
-			fmt.Printf("ppts-api %s\n", version)
-			return
-		}
-	}
-	if err := run(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-// runMigrate 应用全部内嵌 SQL 迁移（幂等）。迁移含建角色/扩展，需要 superuser 连接：
-// 优先取 PPTS_MIGRATE_DATABASE_URL，回退 PPTS_DATABASE_URL。
-func runMigrate() error {
-	dsn := os.Getenv("PPTS_MIGRATE_DATABASE_URL")
-	if dsn == "" {
-		dsn = os.Getenv("PPTS_DATABASE_URL")
-	}
-	if dsn == "" {
-		return errors.New("PPTS_MIGRATE_DATABASE_URL or PPTS_DATABASE_URL is required")
-	}
-	applied, err := migrate.Apply(context.Background(), dsn, migrations.FS)
-	if err != nil {
-		return err
-	}
-	for _, name := range applied {
-		log.Printf("migrate: applied %s", name)
-	}
-	log.Printf("migrate: ok, %d applied, schema up to date", len(applied))
-	return nil
-}
-
-func run() error {
+// runServer 启动 API + 前端控制台（原 cmd/api 的 run）。
+func runServer() error {
 	dsn := os.Getenv("PPTS_DATABASE_URL")
 	if dsn == "" {
 		return errors.New("PPTS_DATABASE_URL is required")
@@ -143,7 +98,7 @@ func run() error {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("api %s listening on %s", version, addr)
+		log.Printf("ppts server %s listening on %s", version, addr)
 		errCh <- server.ListenAndServe()
 	}()
 

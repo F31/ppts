@@ -34,11 +34,10 @@ else
   log "SKIP_WEB=1，沿用既有 web/dist"
 fi
 
-# ---------- 2. Go 二进制（纯静态，内嵌前端与迁移） ----------
+# ---------- 2. Go 二进制（纯静态，单入口子命令，内嵌前端与迁移） ----------
 LDFLAGS="-s -w -X main.version=${VERSION}"
-log "构建 ppts-api / ppts-worker（version=$VERSION）…"
-CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/bin/ppts-api" ./cmd/api
-CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/bin/ppts-worker" ./cmd/worker
+log "构建 ppts（version=$VERSION）…"
+CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags "$LDFLAGS" -o "$STAGE/bin/ppts" ./cmd/ppts
 
 # ---------- 3. 静态 ffmpeg（带 libass，字幕烧录必需） ----------
 mkdir -p build

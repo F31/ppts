@@ -8,8 +8,7 @@ go.work.sum
 
 # 发布产物与打包缓存
 build/
-/ppts-api
-/ppts-worker.bin
+/ppts
 
 # 外部工具状态目录
 .workbuddy/

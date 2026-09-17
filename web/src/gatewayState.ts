@@ -5,7 +5,7 @@
 //   因此「检测通过 / 当前不可用」只能来自**本次会话内**的 `POST /api/model-gateways/{name}/test` 结果，
 //   刷新页面即回到「未检测」。未检测 ≠ 不可用，UI 必须显式标注。
 // - worker 侧真实 TTS 供应商由环境变量 `PPTS_TTS_PROVIDER`（fake | siliconflow）决定
-//   （cmd/worker/main.go:56、:351），**不经任何 HTTP/RPC 端点暴露**。控制台无法直接得知，
+//   （cmd/ppts/worker.go），**不经任何 HTTP/RPC 端点暴露**。控制台无法直接得知，
 //   故不渲染 `fake` 这类内部枚举（见 docs/PPT讲解平台-控制台UI设计评审.md:53、:57），
 //   只用可验证的等价信号：「本租户是否接入了可用（启用 + 有密钥）的网关」。
 import type { GatewayTestResult, ModelGateway } from './api';

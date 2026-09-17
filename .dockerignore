@@ -11,6 +11,7 @@ workbuddy
 .commitmsg_*
 .commitmsg_m4.txt
 docs/*.pptx
-# 历史遗留的预编译产物：镜像是从源码多阶段构建，不再需要它们进上下文。
-ppts-api
-ppts-worker.bin
+# 发布产物与打包缓存：镜像是从源码多阶段构建，不需要它们进上下文。
+build/
+dist/
+ppts

@@ -25,7 +25,7 @@ COPY go.mod go.sum ./
 RUN GOWORK=off GOPROXY=$GOPROXY go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOWORK=off GOPROXY=$GOPROXY \
-    go build -trimpath -ldflags="-s -w" -o /out/ppts-worker ./cmd/worker
+    go build -trimpath -ldflags="-s -w" -o /out/ppts ./cmd/ppts
 
 FROM debian:bookworm-slim AS runtime
 
@@ -52,10 +52,11 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/lib/libreoffice/share/gallery \
         /usr/lib/libreoffice/share/template /usr/lib/libreoffice/CREDITS.fodt
 
-COPY --from=builder /out/ppts-worker /usr/local/bin/ppts-worker
+COPY --from=builder /out/ppts /usr/local/bin/ppts
 
 ENV PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
     PPTS_SUBTITLE_FONT_NAME="WenQuanYi Zen Hei" \
     TZ=Asia/Shanghai
-ENTRYPOINT ["/usr/local/bin/ppts-worker"]
+ENTRYPOINT ["/usr/local/bin/ppts"]
+CMD ["worker"]

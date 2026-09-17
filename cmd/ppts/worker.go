@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -37,21 +36,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// version 由发布构建经 -ldflags "-X main.version=..." 注入；源码构建为 dev。
-var version = "dev"
-
-func main() {
-	log.SetFlags(0)
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("ppts-worker %s\n", version)
-		return
-	}
-	if err := run(); err != nil {
-		log.Fatal(err)
-	}
-}
-
-func run() error {
+// runWorker 启动任务执行器（原 cmd/worker 的 run）。
+func runWorker() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	// 后台循环组件接受 *log.Logger，用 slog 后端适配器统一为结构化输出。
 	stdLogger := slog.NewLogLogger(logger.Handler(), slog.LevelInfo)

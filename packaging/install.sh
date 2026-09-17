@@ -5,7 +5,7 @@
 # 幂等：可重复执行；已存在的配置/账号/数据库不会被覆盖。
 #
 # 布局：
-#   /opt/ppts/bin/          ppts-api ppts-worker ffmpeg ffprobe
+#   /opt/ppts/bin/          ppts（server/worker/migrate 子命令）+ ffmpeg ffprobe
 #   /etc/ppts/config.env    两个服务共用的环境配置（systemd EnvironmentFile）
 #   /var/lib/ppts/          本地对象存储 + LibreOffice profile
 #   systemd: ppts-api.service ppts-worker.service
@@ -28,7 +28,7 @@ log() { printf '[install] %s\n' "$*"; }
 die() { printf '[install] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || die "请以 root 运行（sudo ./install.sh）"
-[[ -x "$SRC_DIR/bin/ppts-api" && -x "$SRC_DIR/bin/ppts-worker" ]] || die "未找到 bin/ppts-api 与 bin/ppts-worker，请在解压后的发行目录内运行"
+[[ -x "$SRC_DIR/bin/ppts" ]] || die "未找到 bin/ppts，请在解压后的发行目录内运行"
 
 # ---------- 1. 系统依赖 ----------
 # LibreOffice（页面渲染）、poppler（PDF→PNG）、中文字体（字幕烧录）、PostgreSQL。
@@ -64,7 +64,7 @@ install -d -m 0755 "$PREFIX/bin"
 install -d -m 0750 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR" "$DATA_DIR/objects"
 
 # ---------- 3. 安装二进制 ----------
-install -m 0755 "$SRC_DIR/bin/ppts-api" "$SRC_DIR/bin/ppts-worker" "$PREFIX/bin/"
+install -m 0755 "$SRC_DIR/bin/ppts" "$PREFIX/bin/"
 # ffmpeg/ffprobe 为随包附带的静态构建（带 libass 字幕滤镜）
 install -m 0755 "$SRC_DIR/bin/ffmpeg" "$SRC_DIR/bin/ffprobe" "$PREFIX/bin/"
 log "二进制安装到 $PREFIX/bin"
@@ -101,7 +101,7 @@ fi
 
 # 迁移（含建角色 ppts_app/ppts_migrator 与 pgcrypto 扩展）需要 superuser，走本地 socket peer 认证。
 sudo -u postgres env PPTS_MIGRATE_DATABASE_URL="postgres:///$DB_NAME?host=/var/run/postgresql" \
-  "$PREFIX/bin/ppts-api" migrate
+  "$PREFIX/bin/ppts" migrate
 # 统一运行账号口令（角色可能由迁移创建，也可能由旧配置保留）
 pg_exec "ALTER ROLE $DB_USER LOGIN PASSWORD '$DB_PW';"
 log "数据库迁移完成，运行账号 $DB_USER 口令已同步"

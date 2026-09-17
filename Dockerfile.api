@@ -18,7 +18,7 @@ COPY go.mod go.sum ./
 RUN GOWORK=off GOPROXY=$GOPROXY go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOWORK=off GOPROXY=$GOPROXY \
-    go build -trimpath -ldflags="-s -w" -o /out/ppts-api ./cmd/api
+    go build -trimpath -ldflags="-s -w" -o /out/ppts ./cmd/ppts
 
 FROM debian:bookworm-slim
 
@@ -31,7 +31,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates tzdata curl; \
     rm -rf /var/lib/apt/lists/* /usr/share/doc
 
-COPY --from=builder /out/ppts-api /usr/local/bin/ppts-api
+COPY --from=builder /out/ppts /usr/local/bin/ppts
 COPY web/dist /app/web-dist
 
 ENV PPTS_WEB_ROOT=/app/web-dist \
@@ -39,4 +39,5 @@ ENV PPTS_WEB_ROOT=/app/web-dist \
     PPTS_OBJECT_ROOT=/data/objects \
     TZ=Asia/Shanghai
 EXPOSE 80
-ENTRYPOINT ["/usr/local/bin/ppts-api"]
+ENTRYPOINT ["/usr/local/bin/ppts"]
+CMD ["server"]

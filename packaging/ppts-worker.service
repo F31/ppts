@@ -12,7 +12,7 @@ EnvironmentFile=/etc/ppts/config.env
 Environment=PATH=/opt/ppts/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # LibreOffice headless 需要可写的 profile 目录（ppts 用户无家目录）
 Environment=HOME=/var/lib/ppts
-ExecStart=/opt/ppts/bin/ppts-worker
+ExecStart=/opt/ppts/bin/ppts worker
 Restart=always
 RestartSec=3
 NoNewPrivileges=true

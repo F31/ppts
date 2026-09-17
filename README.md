@@ -10,8 +10,7 @@
 ## 目录结构
 
 ```text
-cmd/api           云端 API 入口
-cmd/worker        任务 worker（租约执行与步骤恢复）
+cmd/ppts          单一入口：server（API+前端）/ worker / migrate / version 子命令
 cmd/local-engine  桌面 Go sidecar（G4）
 internal/project  源文件版本/页面/元素/导入报告 + go-pptx 读适配器
 internal/narration 讲稿/分段/来源锚点/术语/审核
@@ -57,12 +56,14 @@ docker compose up -d        # 启动（api 监听 :80，含 /healthz 健康检�
 scripts/package.sh [版本号]   # 缺省取 git describe；产出 dist/ppts-<版本>-linux-amd64.tar.gz
 ```
 
-发行包含 `ppts-api`/`ppts-worker`（CGO_ENABLED=0 纯静态，版本号经 ldflags 注入）、静态 ffmpeg/ffprobe、
-`install.sh`、systemd unit 与配置模板。前端产物（`web/dist`）与 SQL 迁移均内嵌进二进制：
+发行包含单一入口 `ppts`（CGO_ENABLED=0 纯静态，版本号经 ldflags 注入，子命令见下）、静态
+ffmpeg/ffprobe、`install.sh`、systemd unit 与配置模板。前端产物（`web/dist`）与 SQL 迁移均内嵌进二进制：
 
-- api 在 `PPTS_WEB_ROOT` 未设置时直接服务内嵌前端（`web/embed.go`，SPA 兜底与外部目录同一套语义）；
-- `ppts-api migrate` 幂等应用内嵌迁移（`internal/migrate`），需 superuser DSN（`PPTS_MIGRATE_DATABASE_URL`，
-  回退 `PPTS_DATABASE_URL`）；`ppts-api version` / `ppts-worker version` 打印版本。
+- `ppts server`：API + 前端控制台（`PPTS_WEB_ROOT` 未设置时服务内嵌前端，`web/embed.go`，
+  SPA 兜底与外部目录同一套语义）；
+- `ppts worker`：任务执行器（解析/讲稿/配音/导出）；
+- `ppts migrate`：幂等应用内嵌迁移（`internal/migrate`），需 superuser DSN（`PPTS_MIGRATE_DATABASE_URL`，
+  回退 `PPTS_DATABASE_URL`）；`ppts version` 打印版本。
 
 目标机安装（Debian/Ubuntu 为主，RHEL 系 best-effort）：
 
@@ -111,13 +112,13 @@ Web OIDC PKCE 登录使用 Vite 环境变量：`VITE_OIDC_AUTHORIZATION_ENDPOINT
 PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
 PPTS_OBJECT_ROOT='./var/ppts-objects' \
 PPTS_OBJECT_SECRET='dev-download-secret' \
-GOWORK=off go run ./cmd/api
+GOWORK=off go run ./cmd/ppts server
 
 PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
 PPTS_TENANT_ID='00000000-0000-0000-0000-000000000000' \
 PPTS_OBJECT_ROOT='./var/ppts-objects' \
 PPTS_TTS_PROVIDER='fake' \
-GOWORK=off go run ./cmd/worker
+GOWORK=off go run ./cmd/ppts worker
 ```
 
 `fake` TTS 只生成开发测试用静音 WAV，不构成正式供应商验收。
