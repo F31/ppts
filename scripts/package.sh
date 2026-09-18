@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # 构建单机二进制发行包：dist/ppts-<version>-linux-amd64.tar.gz（+ .sha256）
 #
+# 正式发布流程：
+#   git tag v2.0.1            # 语义化版本 tag（打在已提交的 HEAD 上）
+#   scripts/package.sh        # 产出 ppts-2.0.1-linux-amd64.tar.gz
+# 未打 tag 时版本号退化为提交哈希（如 ppts-775563a-linux-amd64.tar.gz），仅用于测试包。
+#
 # 用法：
 #   scripts/package.sh [version]      # version 缺省取 git describe，再缺省 dev
 # 开关：
@@ -18,6 +23,8 @@ VERSION="${1:-${VERSION:-}}"
 if [[ -z "$VERSION" ]]; then
   VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
 fi
+# 规范化为纯语义化版本：v2.0.1 → 2.0.1；tag 后的额外提交 v2.0.1-3-gabc1234 → 2.0.1-3-gabc1234
+VERSION="${VERSION#v}"
 PKG="ppts-${VERSION}-linux-amd64"
 STAGE="dist/$PKG"
 FFMPEG_URL="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
@@ -28,8 +35,9 @@ log() { printf '[package] %s\n' "$*"; }
 if [[ "${SKIP_WEB:-0}" != "1" || ! -f web/dist/index.html ]]; then
   log "构建前端 web/dist …"
   (cd web && npm ci && npm run build)
-  # vite build 会清空 dist（含占位文件）；补回 .gitkeep 保证 go:embed 始终可编译
-  touch web/dist/.gitkeep
+  # vite build 会清空 dist（含占位文件）；恢复 .gitkeep 保证 go:embed 始终可编译
+  # 注意要写回原内容而不是 touch 空文件，否则工作区变 dirty 污染版本号
+  git checkout -- web/dist/.gitkeep 2>/dev/null || touch web/dist/.gitkeep
 else
   log "SKIP_WEB=1，沿用既有 web/dist"
 fi
@@ -64,7 +72,7 @@ install -m 0755 packaging/install.sh "$STAGE/install.sh"
 install -m 0644 packaging/config.env.example "$STAGE/config.env.example"
 mkdir -p "$STAGE/systemd" "$STAGE/migrations"
 install -m 0644 packaging/ppts-api.service packaging/ppts-worker.service "$STAGE/systemd/"
-# 迁移已内嵌进二进制（ppts-api migrate）；随包附 SQL 仅供 DBA 审阅/手工排查
+# 迁移已内嵌进二进制（ppts migrate）；随包附 SQL 仅供 DBA 审阅/手工排查
 cp migrations/*.sql "$STAGE/migrations/"
 
 # ---------- 5. 归档与校验 ----------

@@ -2,10 +2,9 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
-  define: {
-    // 允许容器化部署下仍使用开发身份登录（无需 OIDC）
-    'import.meta.env.VITE_ALLOW_DEV_IDENTITY': JSON.stringify('true'),
-  },
+  // 注意：不要在这里 define VITE_ALLOW_DEV_IDENTITY —— 发行版登录页不允许出现开发身份入口。
+  // 开发态（vite dev）由 auth.ts 的 import.meta.env.DEV 自动放行；确有联调需要时用
+  // `VITE_ALLOW_DEV_IDENTITY=true npm run build` 显式构建。
   plugins: [react()],
   server: {
     port: 5173,
