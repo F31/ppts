@@ -6,8 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/F31/go-pptx"
-	"github.com/F31/go-pptx/ir"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 )
 
 // DocumentReader 读适配器端口（V4.0 §5.1）。页序、正文、备注、表格、图片与特性清单。
@@ -33,7 +32,7 @@ type Limits struct {
 	MaxBytes int64
 }
 
-// GoPPTXReader 以 go-pptx v1.0.0 实现 DocumentReader。
+// GoPPTXReader 以 go-pptx v2.0.0 实现 DocumentReader。
 type GoPPTXReader struct {
 	limits  Limits
 	parser  string
@@ -45,7 +44,7 @@ func NewGoPPTXReader(limits Limits) *GoPPTXReader {
 	if limits.MaxPages == 0 && limits.MaxBytes == 0 {
 		limits = DefaultLimits
 	}
-	return &GoPPTXReader{limits: limits, parser: "go-pptx", version: "v1.0.0"}
+	return &GoPPTXReader{limits: limits, parser: "go-pptx", version: "v2.0.0"}
 }
 
 // Inspect 打开 OOXML 包并提取领域视图。
@@ -70,11 +69,10 @@ func (g *GoPPTXReader) Inspect(ctx context.Context, r io.ReaderAt, size int64) (
 }
 
 func (g *GoPPTXReader) extract(p *pptx.Presentation) (*Document, error) {
-	irdoc, err := ir.FromPresentation(p, ir.Options{
-		IncludeNotes:      true,
-		IncludeTimingNode: true,
-		IncludeTimingIR:   false,
-	})
+	// go-pptx v2 起 ir 子包转为内部实现（门面收敛），这里直接用公共对象模型
+	// （Presentation → Slide → Shape）投影领域视图，字段语义对齐 v1 ir：
+	// 页序遍历、SpeakerNotesText、HasTiming、PartName，组合形状子项平铺到页级。
+	slides, err := p.Slides()
 	if err != nil {
 		return nil, mapOpenError(err)
 	}
@@ -82,21 +80,35 @@ func (g *GoPPTXReader) extract(p *pptx.Presentation) (*Document, error) {
 		SchemaVersion: SchemaVersion,
 		ParserName:    g.parser,
 		ParserVersion: g.version,
-		Pages:         make([]*Page, 0, len(irdoc.Pages)),
+		Pages:         make([]*Page, 0, len(slides)),
 		Features:      &Features{},
 	}
-	for i := range irdoc.Pages {
-		src := &irdoc.Pages[i]
+	for i, s := range slides {
 		pg := &Page{
-			Index:     src.Index,
-			SlideID:   slideIDString(src.SlideID),
-			Part:      src.Part,
-			Name:      src.Name,
-			NotesText: src.NotesText,
-			HasTiming: src.HasTiming,
+			Index:     i,
+			SlideID:   slideIDString(s.ID()),
+			Part:      s.PartName(),
+			Name:      s.Name(),
+			HasTiming: s.HasTiming(),
 		}
-		for _, sh := range src.Shapes {
-			pg.Shapes = append(pg.Shapes, mapShape(&sh))
+		if notes, err := s.SpeakerNotesText(); err == nil {
+			pg.NotesText = notes
+		}
+		shapes, err := s.Shapes()
+		if err != nil {
+			doc.Diagnostics = append(doc.Diagnostics, "IR_SHAPES_READ: "+err.Error())
+		}
+		for _, sh := range shapes {
+			// 组合（GroupShape）：子形状平铺到页级，组本身不入列（v1 ir 语义）。
+			if gs, ok := sh.(*pptx.GroupShape); ok && gs != nil {
+				if children, err := gs.Children(); err == nil {
+					for _, c := range children {
+						pg.Shapes = append(pg.Shapes, mapShape(c))
+					}
+					continue
+				}
+			}
+			pg.Shapes = append(pg.Shapes, mapShape(sh))
 		}
 		pg.FeatureFlags = collectPageFeatures(pg)
 		doc.Pages = append(doc.Pages, pg)
@@ -109,37 +121,111 @@ func (g *GoPPTXReader) extract(p *pptx.Presentation) (*Document, error) {
 		}
 	}
 	doc.Features = aggregateFeatures(doc.Pages, doc.Features)
-	for _, d := range irdoc.Diagnostics {
-		doc.Diagnostics = append(doc.Diagnostics, d.Code+": "+d.Message)
-	}
 	return doc, nil
 }
 
-// mapShape 把 ir.Shape 映射为领域 Shape。
-func mapShape(s *ir.Shape) *Shape {
+// mapShape 把 v2 公共对象模型的形状句柄投影为领域 Shape（等价 v1 ir 的
+// shapeSummary+projectShape：文本框/自选图形取段落文本，表格取行列与单元格
+// 文本，图表取类型与标题/分类摘要，图片等仅元信息）。
+func mapShape(sh pptx.Shape) *Shape {
+	kind := sh.Kind().String()
 	out := &Shape{
-		ID:        shapeIDString(s.ID),
-		Name:      s.Name,
-		Kind:      s.Kind,
-		Opaque:    isOpaqueKind(s.Kind),
-		NodePath:  s.NodePath,
-		AltText:   s.AltText,
-		Text:      s.Text,
-		ChartType: s.ChartType,
-		TableRows: s.TableRows,
-		TableCols: s.TableCols,
+		ID:       shapeIDString(sh.ID()),
+		Name:     sh.Name(),
+		Kind:     kind,
+		Opaque:   isOpaqueKind(kind),
+		NodePath: sh.NodePath(),
+		AltText:  sh.AltText(),
 	}
-	if s.Bounds != nil {
-		out.Bounds = &Box{X: s.Bounds.X, Y: s.Bounds.Y, Width: s.Bounds.Width, Height: s.Bounds.Height}
+	if b, err := sh.Bounds(); err == nil {
+		out.Bounds = &Box{X: int64(b.X), Y: int64(b.Y), Width: int64(b.W), Height: int64(b.H)}
 	}
-	for i := range s.Children {
-		out.Children = append(out.Children, mapShape(&s.Children[i]))
+	switch s := sh.(type) {
+	case *pptx.TableShape:
+		rows, _ := s.RowCount()
+		cols, _ := s.ColumnCount()
+		out.TableRows = rows
+		out.TableCols = cols
+		out.Text = tableText(s, rows, cols)
+	case *pptx.ChartShape:
+		if data, err := s.Data(); err == nil {
+			out.ChartType = data.Type.String()
+			var sb strings.Builder
+			if data.Title != "" {
+				sb.WriteString(data.Title)
+				sb.WriteString(": ")
+			}
+			for i, c := range data.Categories {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(c)
+			}
+			out.Text = sb.String()
+		}
+	case *pptx.AutoShape:
+		out.Text = shapeText(s)
 	}
 	return out
 }
 
+// shapeText 提取文本框/自选图形正文（段落以 '\n' 连接）；无正文返回空串。
+func shapeText(s *pptx.AutoShape) string {
+	tf, err := s.TextFrame()
+	if err != nil {
+		return ""
+	}
+	return textFrameText(tf)
+}
+
+// textFrameText 拼接 TextFrame 全部段落文本（'\n' 分隔）。
+func textFrameText(tf *pptx.TextFrame) string {
+	paragraphs, err := tf.Paragraphs()
+	if err != nil {
+		return ""
+	}
+	var sb strings.Builder
+	for i, par := range paragraphs {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		if txt, err := par.Text(); err == nil {
+			sb.WriteString(txt)
+		}
+	}
+	return sb.String()
+}
+
+// tableText 把表格内容序列化为多行 tab 分隔串。
+func tableText(ts *pptx.TableShape, rows, cols int) string {
+	if rows <= 0 || cols <= 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for r := 0; r < rows; r++ {
+		if r > 0 {
+			sb.WriteByte('\n')
+		}
+		for c := 0; c < cols; c++ {
+			cell, err := ts.Cell(r, c)
+			if err != nil {
+				continue
+			}
+			if c > 0 {
+				sb.WriteByte('\t')
+			}
+			if tf, err := cell.TextFrame(); err == nil {
+				sb.WriteString(strings.TrimRight(textFrameText(tf), "\n"))
+			}
+		}
+	}
+	return sb.String()
+}
+
+// isOpaqueKind 判定未知/未解析形状。go-pptx ShapeKind 字符串为短名
+// （"opaque"/"picture"/…），未知枚举值形如 "ShapeKind(n)"。
 func isOpaqueKind(kind string) bool {
-	return strings.HasPrefix(strings.ToLower(kind), "shapeopaque") || kind == "ShapeUnknown" || kind == ""
+	return kind == "opaque" || kind == "" || strings.HasPrefix(kind, "ShapeKind(")
 }
 
 // collectPageFeatures 汇总单页特性提示。
@@ -150,15 +236,15 @@ func collectPageFeatures(pg *Page) []string {
 			flags = append(flags, "opaque_shape:"+sh.Name)
 		}
 		switch strings.ToLower(sh.Kind) {
-		case "shapepicture":
+		case "picture":
 			flags = append(flags, "picture")
-		case "shapeaudio":
+		case "audio":
 			flags = append(flags, "audio")
-		case "shapevideo":
+		case "video":
 			flags = append(flags, "video")
-		case "shapechart":
+		case "chart":
 			flags = append(flags, "chart")
-		case "shapetable":
+		case "table":
 			flags = append(flags, "table")
 		}
 	}
@@ -172,15 +258,15 @@ func aggregateFeatures(pages []*Page, f *Features) *Features {
 	for _, pg := range pages {
 		for _, sh := range pg.Shapes {
 			switch strings.ToLower(sh.Kind) {
-			case "shapepicture":
+			case "picture":
 				f.Pictures++
-			case "shapeaudio":
+			case "audio":
 				f.AudioClips++
-			case "shapevideo":
+			case "video":
 				f.VideoClips++
-			case "shapechart":
+			case "chart":
 				f.ChartShapes++
-			case "shapetable":
+			case "table":
 				f.TableShapes++
 			}
 			if sh.Opaque {

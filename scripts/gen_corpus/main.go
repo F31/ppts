@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/F31/go-pptx"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 )
 
 var outDir = "testdata/corpus/generated"

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/F31/go-pptx"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 )
 
 // minimalPDFPages 生成含 xref 的 n 页最小 PDF（每页 200x200pt 蓝色方块），

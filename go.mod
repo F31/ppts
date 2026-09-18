@@ -4,7 +4,6 @@ go 1.25.0
 
 require (
 	connectrpc.com/connect v1.21.0
-	github.com/F31/go-pptx v1.0.1
 	github.com/coreos/go-oidc/v3 v3.15.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
@@ -18,6 +17,7 @@ require (
 )
 
 require (
+	github.com/F31/go-pptx/v2 v2.0.0
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect

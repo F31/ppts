@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"github.com/F31/go-pptx"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"

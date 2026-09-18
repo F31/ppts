@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/F31/go-pptx"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 )
 
 // buildTestDeck 用 go-pptx 生成一个最小可读样本：两页文本 + 备注，写回内存。
@@ -54,7 +54,7 @@ func TestGoPPTXReaderInspect(t *testing.T) {
 	if doc.SchemaVersion != SchemaVersion {
 		t.Fatalf("SchemaVersion: got %q", doc.SchemaVersion)
 	}
-	if doc.ParserName != "go-pptx" || doc.ParserVersion != "v1.0.0" {
+	if doc.ParserName != "go-pptx" || doc.ParserVersion != "v2.0.0" {
 		t.Fatalf("parser info: %s %s", doc.ParserName, doc.ParserVersion)
 	}
 	if len(doc.Pages) != 1 {

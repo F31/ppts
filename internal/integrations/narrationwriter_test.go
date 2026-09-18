@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/F31/go-pptx"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 
 	"github.com/F31/ppts/internal/project"
 )

@@ -54,3 +54,12 @@ $$;
 
 REVOKE ALL ON FUNCTION auth_lookup_credential(text) FROM public;
 GRANT EXECUTE ON FUNCTION auth_lookup_credential(text) TO ppts_app;
+
+-- 测试库的 PG 集成测试需要清表重放；生产运行账号不授予 TRUNCATE。
+DO $$
+BEGIN
+    IF current_database() = 'ppts_test' THEN
+        GRANT TRUNCATE ON users TO ppts_app;
+        GRANT TRUNCATE ON credentials TO ppts_app;
+    END IF;
+END $$;

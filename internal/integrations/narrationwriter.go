@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/F31/go-pptx"
+	pptx "github.com/F31/go-pptx/v2/pptx"
 )
 
 // NarrationWriter 写适配器端口（V4.0 §5.1 NarrationWriter.Apply）。
@@ -62,7 +62,7 @@ func NewGoPPTXNarrationWriter() *GoPPTXNarrationWriter {
 // Apply 打开源副本（OpenReader 只读打开，写走 Write 新字节流，源文件字节不变），
 // 按计划嵌入音轨并设置自动切页，输出到内存。
 func (w *GoPPTXNarrationWriter) Apply(ctx context.Context, src io.ReaderAt, size int64, plan NarrationPlan) (*ApplyReport, error) {
-	rep := &ApplyReport{Writer: "go-pptx", Version: "v1.0.1", OutputMIME: "application/vnd.openxmlformats-officedocument.presentationml.presentation"}
+	rep := &ApplyReport{Writer: "go-pptx", Version: "v2.0.0", OutputMIME: "application/vnd.openxmlformats-officedocument.presentationml.presentation"}
 
 	p, err := pptx.OpenReader(src, size)
 	if err != nil {

@@ -14,3 +14,13 @@ CREATE INDEX IF NOT EXISTS idx_pronunciation_dictionaries_tenant
 -- narration_segments 可选词典覆盖：若为 NULL 则使用租户默认词典。
 ALTER TABLE narration_segments
   ADD COLUMN IF NOT EXISTS dictionary_id uuid;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON pronunciation_dictionaries TO ppts_app;
+
+-- 测试库的 PG 集成测试需要清表重放；生产运行账号不授予 TRUNCATE。
+DO $$
+BEGIN
+    IF current_database() = 'ppts_test' THEN
+        GRANT TRUNCATE ON pronunciation_dictionaries TO ppts_app;
+    END IF;
+END $$;

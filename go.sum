@@ -1,7 +1,7 @@
 connectrpc.com/connect v1.21.0 h1:LhqSJt7jHf5NJBo9Jq/t/9FjcYAideif0mg+qe2jCUs=
 connectrpc.com/connect v1.21.0/go.mod h1:A2ygJrukXwWy32vkCAAHNVguZrqZ+jeZ9rGRnGR4dN4=
-github.com/F31/go-pptx v1.0.1 h1:YPzs5UqS6ZZ4uEhW9rOGGJslNjDCdDaE6+KaYBPoKNk=
-github.com/F31/go-pptx v1.0.1/go.mod h1:5SR/JF6/trz0FGv2E9CWu44Bb2kU2jNePoI+FZleqy0=
+github.com/F31/go-pptx/v2 v2.0.0 h1:Dlz2fMummsjohfgEmofuTNK0DyLIxp8mb8HT9uBlpB8=
+github.com/F31/go-pptx/v2 v2.0.0/go.mod h1:aNl/m5DcwqjCYgn32r5j2j16GUqB2d3hzZEVs+FrISM=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=

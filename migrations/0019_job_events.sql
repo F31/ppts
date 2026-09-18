@@ -36,6 +36,7 @@ DO $$
 BEGIN
     IF current_database() = 'ppts_test' THEN
         GRANT TRUNCATE ON job_events TO ppts_app;
-        ALTER SEQUENCE IF EXISTS job_events_seq_seq OWNER TO ppts_app;
+        -- 注意：seq 是 IDENTITY 列，其序列所有权跟随表（内部依赖），
+        -- ALTER SEQUENCE ... OWNER 会被 PG 拒绝（SQLSTATE 0A000），故不设。
     END IF;
 END $$;

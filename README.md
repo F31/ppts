@@ -4,7 +4,7 @@
 
 - 技术基线：《PPT自动讲解工具-技术方案-V4.0.md》（`docs/`）
 - 开发计划：`docs/PPT自动讲解工具-开发计划-V1.0.md`
-- 组件依赖：go-pptx v1.0.x（`github.com/F31/go-pptx`；开发期经 `go.work` 指向本地产库）
+- 组件依赖：go-pptx v2.0.0（`github.com/F31/go-pptx/v2`，公共面为 `pptx` 子包；开发期经 `go.work` 指向本地产库）
 - go-pptx 增强/缺陷走统一跟踪计划：`docs/go-pptx特性与bug跟踪计划.md`
 
 ## 目录结构
@@ -29,7 +29,7 @@ docs/             技术方案/开发计划/ADR/跟踪计划
 ## 开发命令
 
 ```bash
-GOWORK=off go build ./...        # BUG-001 修复前使用发布版 go-pptx v1.0.1
+GOWORK=off go build ./...        # 使用发布版 go-pptx v2.0.0
 GOWORK=off go vet ./...
 GOWORK=off go test ./...
 

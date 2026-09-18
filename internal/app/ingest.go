@@ -17,7 +17,7 @@ import (
 )
 
 // ParserVersion 记录解析器版本，供 source revision 与缓存键追踪。
-const ParserVersion = "go-pptx-v1.0.1"
+const ParserVersion = "go-pptx-v2.0.0"
 
 // ParseSnapshot 是 parse 任务的输入快照（与任务强绑定，V4.0 §7.1 Job.input_snapshot）。
 type ParseSnapshot struct {
