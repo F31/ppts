@@ -16,6 +16,11 @@ import (
 const artifactColumns = `id, tenant_id, project_id, snapshot_hash, format, object_key,
 	content_hash, size_bytes, duration_ms, created_at`
 
+// artifactColumnsA 是 ListAll 专用的 a 表限定版列清单：该查询 JOIN projects（同有 id/tenant_id/
+// created_at 列），未限定列名会触发 SQLSTATE 42702 ambiguous。与 artifactColumns 保持同序。
+const artifactColumnsA = `a.id, a.tenant_id, a.project_id, a.snapshot_hash, a.format, a.object_key,
+	a.content_hash, a.size_bytes, a.duration_ms, a.created_at`
+
 type PGStore struct {
 	pool *pgxpool.Pool
 }
@@ -83,7 +88,7 @@ func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID string)
 func (s *PGStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact, error) {
 	items := []*Artifact{}
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, qErr := tx.Query(ctx, `SELECT `+artifactColumns+`,
+		rows, qErr := tx.Query(ctx, `SELECT `+artifactColumnsA+`,
 			COALESCE(p.title, '') AS project_title
 			FROM artifacts a
 			LEFT JOIN projects p ON p.id = a.project_id AND p.tenant_id = a.tenant_id

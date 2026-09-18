@@ -34,6 +34,8 @@ services:
       PPTS_OBJECT_BACKEND: "local"
       PPTS_OBJECT_ROOT: "/data/objects"
       PPTS_OBJECT_SECRET: "${PPTS_OBJECT_SECRET}"
+      PPTS_JWT_SECRET: "ppts-dev-jwt-secret-change-in-production-32bytes!"
+      PPTS_PASSWORD_PEPPER: "ppts-dev-pepper-16bytes"
       TZ: "Asia/Shanghai"
     volumes:
       - ppts-objects:/data/objects

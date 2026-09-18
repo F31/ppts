@@ -87,11 +87,13 @@ if [[ ! -f "$CONFIG_DIR/config.env" ]]; then
   OBJ_SECRET="$(openssl rand -base64 32)"
   JWT_SECRET="$(openssl rand -base64 32)"
   PEPPER="$(openssl rand -base64 32)"
+  GW_KEY="$(openssl rand -base64 32)"
   sed -e "s|PPTS_DATABASE_URL=.*|PPTS_DATABASE_URL=postgres://$DB_USER:$DB_PW@127.0.0.1:$PG_PORT/$DB_NAME?sslmode=disable|" \
       -e "s|PPTS_SCHEDULER_DATABASE_URL=.*|PPTS_SCHEDULER_DATABASE_URL=postgres://ppts_scheduler:$SCHED_PW@127.0.0.1:$PG_PORT/$DB_NAME?sslmode=disable|" \
       -e "s|PPTS_OBJECT_SECRET=.*|PPTS_OBJECT_SECRET=$OBJ_SECRET|" \
       -e "s|PPTS_JWT_SECRET=.*|PPTS_JWT_SECRET=$JWT_SECRET|" \
       -e "s|PPTS_PASSWORD_PEPPER=.*|PPTS_PASSWORD_PEPPER=$PEPPER|" \
+      -e "s|PPTS_GATEWAY_AES_KEY_BASE64=.*|PPTS_GATEWAY_AES_KEY_BASE64=$GW_KEY|" \
       "$SRC_DIR/config.env.example" > "$CONFIG_DIR/config.env"
   chmod 0640 "$CONFIG_DIR/config.env"
   chown root:"$APP_USER" "$CONFIG_DIR/config.env"
@@ -105,6 +107,16 @@ else
     printf 'PPTS_SCHEDULER_DATABASE_URL=postgres://ppts_scheduler:%s@127.0.0.1:%s/%s?sslmode=disable\n' \
       "$SCHED_PW" "$PG_PORT" "$DB_NAME" >> "$CONFIG_DIR/config.env"
     log "既存配置缺少 PPTS_SCHEDULER_DATABASE_URL，已补生成"
+  fi
+  # 老配置缺网关 AES 密钥：补生成（缺密钥时 /api/model-gateways 全部 503，首页模型卡片报错）
+  if ! grep -q '^PPTS_GATEWAY_AES_KEY_BASE64=.\+' "$CONFIG_DIR/config.env"; then
+    GW_KEY="$(openssl rand -base64 32)"
+    if grep -q '^PPTS_GATEWAY_AES_KEY_BASE64=' "$CONFIG_DIR/config.env"; then
+      sed -i "s|^PPTS_GATEWAY_AES_KEY_BASE64=.*|PPTS_GATEWAY_AES_KEY_BASE64=$GW_KEY|" "$CONFIG_DIR/config.env"
+    else
+      printf 'PPTS_GATEWAY_AES_KEY_BASE64=%s\n' "$GW_KEY" >> "$CONFIG_DIR/config.env"
+    fi
+    log "既存配置缺少 PPTS_GATEWAY_AES_KEY_BASE64，已补生成"
   fi
   log "保留既有配置 $CONFIG_DIR/config.env"
 fi
