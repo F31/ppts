@@ -1549,6 +1549,60 @@ func TestCreateDownloadSignsArtifactObject(t *testing.T) {
 	}
 }
 
+// TestGlobalArtifactsRouteMounted 守护 B5-M2 跨项目成品库路由（GET /artifacts）确实被挂载。
+// 回归背景：globalArtifacts handler 写完但漏挂路由，请求落到 SPA 兜底返回 index.html，
+// 前端 JSON 解析报 `Unexpected token '<', "<!doctype"`（见项目风险 R-10）。
+// 本用例特意挂上 SPA 兜底（WebRoot + index.html）复现单二进制部署形态：
+// 路由未挂载时响应体必为 HTML；挂载正确则为 JSON。
+func TestGlobalArtifactsRouteMounted(t *testing.T) {
+	members := &fakeRoleReader{role: membership.RoleOwner}
+	artifacts := &fakeArtifactStore{artifact: &artifact.Artifact{
+		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1", ProjectName: "Demo",
+		Format: artifact.FormatSRT, SizeBytes: 3, CreatedAt: time.Unix(1, 0),
+	}}
+	webRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webRoot, "index.html"), []byte("<!doctype html><html>app</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewHandler(
+		&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
+		artifacts, testObjects(t), nil, Options{Members: members, WebRoot: webRoot},
+	))
+	t.Cleanup(server.Close)
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/artifacts", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(tenantHeader, "tenant-1")
+	req.Header.Set(userHeader, "user-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /artifacts: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, body)
+	}
+	if strings.Contains(strings.ToLower(string(body)), "<!doctype") {
+		t.Fatalf("GET /artifacts 命中 SPA 兜底返回了 HTML（路由未挂载）: %s", body)
+	}
+	var payload struct {
+		Artifacts []struct {
+			ID          string `json:"id"`
+			ProjectName string `json:"projectName"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("响应不是 JSON: %v body = %s", err, body)
+	}
+	if len(payload.Artifacts) != 1 || payload.Artifacts[0].ProjectName != "Demo" {
+		t.Fatalf("artifacts = %+v", payload.Artifacts)
+	}
+}
+
 func TestPlaybackManifestSignsAllRequiredResources(t *testing.T) {
 	objects := testObjects(t)
 	timeline, err := media.BuildTimeline([]media.SlideInput{{

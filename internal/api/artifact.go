@@ -11,10 +11,18 @@ import (
 )
 
 // registerArtifactRoutes 挂载成品列表原生 HTTP 端点（buf/protoc 不可用，不新增 Connect RPC）：
-// 按项目列出全部产物（前端再按 snapshotHash 分组），供成品与版本页展示与下载（B3-M1）。
+//   - GET /projects/{pid}/artifacts：按项目列出全部产物（前端再按 snapshotHash 分组），供成品与版本页展示与下载（B3-M1）；
+//   - GET /artifacts：跨项目成品库（owner 级），供 B5-M2 成品库页展示。
+//
+// 注意：/artifacts 此前 handler（globalArtifacts）已写但漏挂路由，请求落到 SPA 兜底（server.go 的 "/"）
+// 拿到 index.html，前端 JSON 解析报 `Unexpected token '<', "<!doctype"`。新增任何 REST handler
+// 必须同步在注册表挂载（见项目风险 R-10）。
 func registerArtifactRoutes(mux *http.ServeMux, artifacts artifact.Store, members membership.Store, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/artifacts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicProjectArtifacts(w, r, artifacts, members)
+	})))
+	mux.Handle("GET /artifacts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		globalArtifacts(w, r, artifacts, members)
 	})))
 }
 
