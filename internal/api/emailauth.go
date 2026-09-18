@@ -17,7 +17,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// B5-M4 邮箱自助注册（决策 ①A/②A/③A）：
+// B5-M4 账号自助注册（邮箱或手机号，决策 ①A/②A/③A）：
 //   - ①A 自注册创建个人租户，首个用户为 owner，无邀请流程；
 //   - ②A 注册即信任，不做邮件验证（当前无邮件能力）；
 //   - ③A HS256 自签名 JWT（环境变量 PPTS_JWT_SECRET），与 OIDC 并存。
@@ -222,8 +222,8 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 		return
 	}
 	email := strings.TrimSpace(strings.ToLower(body.Email))
-	if !validEmail(email) {
-		http.Error(w, "invalid email", http.StatusBadRequest)
+	if !validAccount(email) {
+		http.Error(w, "invalid account", http.StatusBadRequest)
 		return
 	}
 	if len(body.Password) < minPassword {
@@ -236,14 +236,14 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 	}
 	ctx := r.Context()
 
-	// 重复邮箱检查（users 无 RLS，可直接查）。
+	// 重复账号检查（users 无 RLS，可直接查）。
 	var exists bool
 	if err := pool.QueryRow(ctx, `SELECT true FROM users WHERE email=$1`, email).Scan(&exists); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if exists {
-		// 统一响应，不泄露邮箱是否已注册（R-16）。
+		// 统一响应，不泄露账号是否已注册（R-16）。
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "registration_failed", "message": "registration failed"})
 		return
 	}
@@ -304,7 +304,7 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 	})
 }
 
-// authEmailLogin 邮箱登录：auth_lookup_credential 跨租户定位凭证（SECURITY DEFINER 绕过 RLS）。
+// authEmailLogin 账号登录（邮箱或手机号）：auth_lookup_credential 跨租户定位凭证（SECURITY DEFINER 绕过 RLS）。
 // 未命中也做一次 bcrypt 比对以恒定耗时；所有失败统一 401 文案，不区分用户是否存在（R-16）。
 func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jwtSecret, pepper, dummyHash string) {
 	if r.Method != http.MethodPost {
@@ -320,8 +320,8 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 		return
 	}
 	email := strings.TrimSpace(strings.ToLower(body.Email))
-	if !validEmail(email) {
-		http.Error(w, "invalid email", http.StatusBadRequest)
+	if !validAccount(email) {
+		http.Error(w, "invalid account", http.StatusBadRequest)
 		return
 	}
 	if jwtSecret == "" {
@@ -333,7 +333,7 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 	err := pool.QueryRow(ctx, `SELECT tenant_id, user_id, password_hash FROM auth_lookup_credential($1)`, email).
 		Scan(&tenantID, &userID, &hash)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// 未命中：仍做一次 bcrypt 比对以恒定耗时，防止通过响应时间/状态枚举邮箱（R-16）。
+		// 未命中：仍做一次 bcrypt 比对以恒定耗时，防止通过响应时间/状态枚举账号（R-16）。
 		_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(body.Password+pepper))
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid email or password"})
 		return
@@ -358,9 +358,23 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 	})
 }
 
-func validEmail(email string) bool {
-	return len(email) > 3 && len(email) <= 254 &&
-		strings.Contains(email, "@") &&
-		!strings.Contains(email, " ") &&
-		!strings.Contains(email, "..")
+// validAccount 校验登录账号：邮箱（含 @）或手机号（可选 + 前缀，5-15 位数字）。
+// 存储上复用 users.email / credentials.email 列作为账号列，两种形态同列共存。
+func validAccount(account string) bool {
+	if len(account) > 254 || strings.Contains(account, " ") {
+		return false
+	}
+	if strings.Contains(account, "@") {
+		return len(account) > 3 && !strings.Contains(account, "..")
+	}
+	digits := strings.TrimPrefix(account, "+")
+	if len(digits) < 5 || len(digits) > 15 {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }

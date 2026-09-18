@@ -11,7 +11,7 @@ type EmailMode = 'signin' | 'register';
 
 export function Login() {
   const { loginDev, loginOIDC, loginEmail: loginEmailSession } = useSession();
-  const { t } = useI18n();
+  const { t, lang, toggle } = useI18n();
   const [tenantId, setTenantId] = useState(defaultTenantId);
   const [userId, setUserId] = useState('dev-user');
   const [submitting, setSubmitting] = useState(false);
@@ -98,6 +98,9 @@ export function Login() {
 
   return (
     <main className="login-page">
+      <button type="button" className="lang-toggle login-lang" onClick={toggle} title={t('shell.languageToggle')}>
+        {lang === 'zh' ? t('lang.en') : t('lang.zh')}
+      </button>
       <aside className="login-brand">
         <span className="brand-mark">{t('shell.brand')}</span>
         <h1>{t('login.tagline')}</h1>
@@ -105,7 +108,6 @@ export function Login() {
       </aside>
       <section className="login-card">
         <span className="eyebrow">{t('login.eyebrow')}</span>
-        <h2>{t('login.title')}</h2>
         {showOIDC && (
           <>
             <button type="button" className="primary-login" disabled={submitting} onClick={() => void onOIDC()}>
@@ -118,35 +120,13 @@ export function Login() {
         )}
         {emailEnabled === true && (
           <div className="email-auth">
-            <div className="email-tabs" role="tablist">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={emailMode === 'signin'}
-                className={emailMode === 'signin' ? 'tab active' : 'tab'}
-                disabled={submitting}
-                onClick={() => setEmailMode('signin')}
-              >
-                {t('login.signInTab')}
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={emailMode === 'register'}
-                className={emailMode === 'register' ? 'tab active' : 'tab'}
-                disabled={submitting}
-                onClick={() => setEmailMode('register')}
-              >
-                {t('login.registerTab')}
-              </button>
-            </div>
             <label>
               {t('login.email')}
               <input
-                type="email"
+                type="text"
                 value={email}
-                autoComplete="email"
-                placeholder="you@example.com"
+                autoComplete="username"
+                placeholder={t('login.accountPlaceholder')}
                 onChange={(e) => setEmail(e.currentTarget.value)}
               />
             </label>

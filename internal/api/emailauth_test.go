@@ -91,20 +91,26 @@ func TestHashPasswordVerify(t *testing.T) {
 	}
 }
 
-func TestValidEmail(t *testing.T) {
+func TestValidAccount(t *testing.T) {
 	cases := map[string]bool{
 		"a@example.com":  true,
 		"x@y.io":         true,
+		"UPPER@X.COM":    true,
+		"13800138000":    true,
+		"+8613800138000": true,
+		"+14155552671":   true,
 		"":               false,
 		"no-at":          false,
 		"a@b":            false,
 		"a b@x.com":      false,
 		"a..b@x.com":     false,
-		"UPPER@X.COM":    true,
+		"1234":           false, // 少于 5 位
+		"1380013800a":    false, // 含字母
+		"+":              false,
 	}
-	for email, want := range cases {
-		if got := validEmail(email); got != want {
-			t.Errorf("validEmail(%q)=%v want %v", email, got, want)
+	for account, want := range cases {
+		if got := validAccount(account); got != want {
+			t.Errorf("validAccount(%q)=%v want %v", account, got, want)
 		}
 	}
 }

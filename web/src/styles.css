@@ -396,11 +396,16 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .state-tag.empty { color: #9fb1cf; background: rgba(159,177,207,.1); }
 
 /* ============ 登录页 ============ */
-.login-page { min-height: 100vh; display: grid; grid-template-columns: 1.1fr 1fr; }
+.login-page { min-height: 100vh; display: grid; grid-template-columns: 1.1fr 1fr; position: relative; }
+/* 右上角语言切换：复用控制台 lang-toggle 结构，配色改为随主题（原样式为深色顶栏专用） */
+.login-lang { position: absolute; top: 20px; right: 24px; z-index: 2; color: var(--text-strong); border-color: var(--border); background: transparent; }
+.login-lang:hover { background: var(--overlay-btn); }
 .login-brand { display: flex; flex-direction: column; justify-content: center; gap: 14px; padding: 48px clamp(32px, 6vw, 88px); background: var(--grad-brand); }
 .login-brand h1 { font-size: clamp(26px, 3.4vw, 42px); line-height: 1.25; margin: 8px 0; }
 .login-brand p { color: var(--text-muted); line-height: 1.7; }
 .login-card { display: flex; flex-direction: column; justify-content: center; gap: 12px; max-width: 400px; width: 100%; margin: 0 auto; padding: 32px 24px; }
+/* 登录页品牌名（平台全称）替代原 h2 标题：放大加粗 */
+.login-card .eyebrow { color: var(--text-strong); font-size: 22px; font-weight: 800; letter-spacing: .02em; text-transform: none; }
 .login-card h2 { font-size: 22px; margin: 4px 0 8px; }
 .login-card label { display: grid; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .login-card input { padding: 11px 12px; }
