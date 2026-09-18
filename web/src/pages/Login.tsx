@@ -80,7 +80,7 @@ export function Login() {
         emailMode === 'register'
           ? await registerEmail({ email: trimmedEmail, password })
           : await loginEmail({ email: trimmedEmail, password });
-      loginEmailSession({ tenantId: res.tenant_id, userId: res.user_id, accessToken: res.access_token });
+      loginEmailSession({ tenantId: res.tenant_id, userId: res.user_id, accessToken: res.access_token, account: res.account, tenantName: res.tenant_name });
     } catch (err) {
       setError(
         describeApiError(

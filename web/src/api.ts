@@ -24,6 +24,12 @@ export type ClientIdentity = {
   tenantId: string;
   userId: string;
   accessToken?: string;
+  // account 为登录账号（邮箱或手机号），仅邮箱注册/登录路径写入，用于界面展示；
+  // 旧会话（localStorage 无此字段）回退显示 userId。
+  account?: string;
+  // tenantName 为租户显示名，仅邮箱注册/登录路径从后端 tenants.name 带回；
+  // 旧会话或开发/OIDC 登录无此字段时，界面回退显示 tenantId。
+  tenantName?: string;
 };
 
 export class ConnectError extends Error {
@@ -50,7 +56,9 @@ function identityHeaders(identity: ClientIdentity): Record<string, string> {
 export type EmailAuthResult = {
   access_token: string;
   tenant_id: string;
+  tenant_name: string;
   user_id: string;
+  account: string;
 };
 
 // getAuthConfig 探测后端认证能力（无认证端点）；登录页据此显隐邮箱入口，满足 B5 门控。

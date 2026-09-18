@@ -95,6 +95,7 @@
   "user.title": "Profile",
   "user.userId": "User ID",
   "user.tenantId": "Tenant ID",
+  "user.tenant": "Tenant",
   "user.role": "Role",
   "user.roleFallback": "(decided by server)",
   "user.loginMethod": "Sign-in method",

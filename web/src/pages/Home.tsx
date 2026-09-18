@@ -332,7 +332,7 @@ export function Home({ identity, role, roleReady }: { identity: ClientIdentity; 
       <section className="home-hero">
         <div>
           <span className="eyebrow">{t('home.eyebrow')}</span>
-          <h1>{t('home.welcome', { name: (identity.userId ?? t('home.user')).slice(0, 24) })}</h1>
+          <h1>{t('home.welcome', { name: identity.account ?? identity.userId ?? t('home.user') })}</h1>
           <p>{t('home.subtitle')}</p>
         </div>
         {/* 服务端 ProjectService.Create 要求 editor（project.go:35），无权限时不渲染假入口（A22）。 */}

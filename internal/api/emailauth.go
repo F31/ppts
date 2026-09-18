@@ -300,7 +300,9 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"access_token": token,
 		"tenant_id":    tenantID,
+		"tenant_name":  email,
 		"user_id":      userID,
+		"account":      email,
 	})
 }
 
@@ -329,9 +331,11 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 		return
 	}
 	ctx := r.Context()
-	var tenantID, userID, hash string
-	err := pool.QueryRow(ctx, `SELECT tenant_id, user_id, password_hash FROM auth_lookup_credential($1)`, email).
-		Scan(&tenantID, &userID, &hash)
+	var tenantID, userID, hash, tenantName string
+	err := pool.QueryRow(ctx,
+		`SELECT tenant_id, user_id, password_hash, (SELECT name FROM tenants WHERE id = tenant_id) FROM auth_lookup_credential($1)`,
+		email).
+		Scan(&tenantID, &userID, &hash, &tenantName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// 未命中：仍做一次 bcrypt 比对以恒定耗时，防止通过响应时间/状态枚举账号（R-16）。
 		_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(body.Password+pepper))
@@ -354,7 +358,9 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": token,
 		"tenant_id":    tenantID,
+		"tenant_name":  tenantName,
 		"user_id":      userID,
+		"account":      email,
 	})
 }
 

@@ -129,9 +129,9 @@ export function AppShell({ children, role, roleReady = true }: { children: React
             </button>
             <div className="user-area">
               <button type="button" className="user-trigger" aria-haspopup="menu" aria-expanded={userMenuOpen} onClick={() => setUserMenuOpen((v) => !v)}>
-                <span className="user-avatar">{identity?.userId.slice(0, 1).toUpperCase() ?? '?'}</span>
+                <span className="user-avatar">{(identity?.account ?? identity?.userId ?? '?').slice(0, 1).toUpperCase()}</span>
                 <span className="user-meta">
-                  <strong>{identity?.userId ?? '-'}</strong>
+                  <strong>{identity?.account ?? identity?.userId ?? '-'}</strong>
                   <small>{role ? t(roleKey[role]) : identity?.tenantId ?? ''}</small>
                 </span>
               </button>
@@ -154,37 +154,47 @@ export function AppShell({ children, role, roleReady = true }: { children: React
         </header>
         <main className="console-content">{children}</main>
       </div>
-      {profileOpen && identity && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('user.title')} ref={profileDialogRef}>
-          <section className="modal-card profile-modal">
-            <header>
-              <div>
-                <span className="eyebrow">{t('user.title')}</span>
-                <h2>{identity.userId}</h2>
-              </div>
-              <button type="button" onClick={() => setProfileOpen(false)}>{t('common.close')}</button>
-            </header>
-            <dl className="profile-dl">
-              <div>
-                <dt>{t('user.userId')}</dt>
-                <dd>{identity.userId}</dd>
-              </div>
-              <div>
-                <dt>{t('user.tenantId')}</dt>
-                <dd>{identity.tenantId}</dd>
-              </div>
-              <div>
-                <dt>{t('user.role')}</dt>
-                <dd>{role ? t(roleKey[role]) : t('user.roleFallback')}</dd>
-              </div>
-              <div>
-                <dt>{t('user.loginMethod')}</dt>
-                <dd>{identity.accessToken ? t('user.oidc') : t('user.dev')}</dd>
-              </div>
-            </dl>
-          </section>
-        </div>
-      )}
+      {profileOpen && identity && (() => {
+        const displayName = identity.account ?? identity.userId;
+        const showUserSubId = !!identity.account && identity.account !== identity.userId;
+        const tenantName = identity.tenantName;
+        const showTenantSubId = !!tenantName && tenantName !== identity.tenantId;
+        return (
+          <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('user.title')} ref={profileDialogRef}>
+            <section className="modal-card profile-modal">
+              <header>
+                <div>
+                  <span className="eyebrow">{t('user.title')}</span>
+                  <h2 className="profile-name">{displayName}</h2>
+                  {showUserSubId && (
+                    <small className="profile-subid">{t('user.userId')}: {identity.userId}</small>
+                  )}
+                </div>
+                <button type="button" onClick={() => setProfileOpen(false)}>{t('common.close')}</button>
+              </header>
+              <dl className="profile-dl">
+                <div>
+                  <dt>{t('user.tenant')}</dt>
+                  <dd>
+                    <strong className="profile-name">{tenantName ?? identity.tenantId}</strong>
+                    {showTenantSubId && (
+                      <small className="profile-subid">{identity.tenantId}</small>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t('user.role')}</dt>
+                  <dd>{role ? t(roleKey[role]) : t('user.roleFallback')}</dd>
+                </div>
+                <div>
+                  <dt>{t('user.loginMethod')}</dt>
+                  <dd>{identity.accessToken ? t('user.oidc') : t('user.dev')}</dd>
+                </div>
+              </dl>
+            </section>
+          </div>
+        );
+      })()}
       {paletteOpen && (
         <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} role={role} roleReady={roleReady} />
       )}

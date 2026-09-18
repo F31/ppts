@@ -95,6 +95,7 @@
   "user.title": "个人信息",
   "user.userId": "用户 ID",
   "user.tenantId": "租户 ID",
+  "user.tenant": "租户",
   "user.role": "角色",
   "user.roleFallback": "（由服务端授权决定）",
   "user.loginMethod": "登录方式",

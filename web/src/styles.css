@@ -553,6 +553,11 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .profile-dl > div { display: grid; grid-template-columns: 120px 1fr; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.07); }
 .profile-dl dt { color: var(--text-faint); }
 .profile-dl dd { margin: 0; color: #e6eefc; overflow-wrap: anywhere; }
+/* B5-M5：个人信息——用户名/租户名突出展示，原始 user/tenant id 降为灰色小字。 */
+.profile-name { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+.profile-modal header h2.profile-name { margin: 2px 0 0; font-size: 22px; line-height: 1.25; }
+.profile-modal header .profile-subid { margin-top: 4px; }
+.profile-subid { display: block; font-size: 12px; font-weight: 400; color: var(--text-faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
 .job-detail { margin-bottom: 0; }
 /* B4-M6a：任务详情——执行步骤区、步骤状态徽标与原始快照折叠块。 */
 .steps-section { margin-top: 18px; }
