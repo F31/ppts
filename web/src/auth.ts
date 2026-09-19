@@ -26,6 +26,27 @@ export function saveDevIdentity(identity: DevIdentity) {
   localStorage.setItem(devIdentityKey, JSON.stringify(identity));
 }
 
+const localIdentityKey = 'pptsLocalIdentity';
+
+// 单租户本地模式身份（SQLite profile）：后端无登录，前端以固定本地身份自动进入。
+// 与"开发身份"不同——这是后端经 /auth/config 明确告知的正式运行模式（local=true），
+// 因此不受 VITE_ALLOW_DEV_IDENTITY 门控，刷新后直接恢复。
+export function storedLocalIdentity(): DevIdentity | null {
+  const raw = localStorage.getItem(localIdentityKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as DevIdentity;
+    if (parsed.tenantId && parsed.userId) return parsed;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLocalIdentity(identity: DevIdentity) {
+  localStorage.setItem(localIdentityKey, JSON.stringify(identity));
+}
+
 // 开发身份（无 token 的 X-PPTS-Tenant-ID / X-PPTS-User-ID）是**显式门控**能力（A01/A02）。
 // 生产构建默认关闭：登录页不渲染开发身份表单，已存的 dev identity 也不被采纳，
 // 未配置 OIDC 时只提示「登录服务尚未配置」，不回退。
@@ -59,6 +80,7 @@ export function clearAllIdentity() {
   localStorage.removeItem(tokenKey);
   localStorage.removeItem(devIdentityKey);
   localStorage.removeItem(identityKey);
+  localStorage.removeItem(localIdentityKey);
 }
 
 function base64URL(bytes: ArrayBuffer | Uint8Array) {

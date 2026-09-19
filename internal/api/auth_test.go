@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -106,5 +108,48 @@ func TestAuthMiddlewareLocalPrincipalRespectsTenantStatus(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d want 403", rec.Code)
+	}
+}
+
+// 单租户本地模式端到端：/auth/config 返回 local=true，且受保护路由无凭证可访问。
+func TestLocalModeAuthConfigAndAccess(t *testing.T) {
+	local := Principal{TenantID: "00000000-0000-0000-0000-000000000001", UserID: "local-user"}
+	h := NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
+		&fakeArtifactStore{}, testObjects(t), nil,
+		Options{LocalPrincipal: &local})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/auth/config")
+	if err != nil {
+		t.Fatalf("auth config: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("auth config status = %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var cfg map[string]any
+	if err := json.Unmarshal(body, &cfg); err != nil {
+		t.Fatalf("auth config json: %v body=%s", err, body)
+	}
+	if cfg["local"] != true {
+		t.Fatalf("expected local=true, got %v", cfg)
+	}
+	if cfg["tenant_id"] != "00000000-0000-0000-0000-000000000001" || cfg["user_id"] != "local-user" {
+		t.Fatalf("unexpected identity in config: %v", cfg)
+	}
+	if cfg["email_password"] != false {
+		t.Fatalf("local mode should have email_password=false, got %v", cfg["email_password"])
+	}
+
+	// 受保护路由无凭证访问（本地模式注入固定 Principal）。
+	orgResp, err := http.Get(srv.URL + "/projects/organization")
+	if err != nil {
+		t.Fatalf("organization: %v", err)
+	}
+	defer orgResp.Body.Close()
+	if orgResp.StatusCode != http.StatusOK {
+		t.Fatalf("organization should be 200 in local mode, got %d", orgResp.StatusCode)
 	}
 }

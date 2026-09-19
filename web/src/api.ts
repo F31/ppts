@@ -97,13 +97,24 @@ export type EmailAuthResult = {
   account: string;
 };
 
-// getAuthConfig 探测后端认证能力（无认证端点）；登录页据此显隐邮箱入口，满足 B5 门控。
-export async function getAuthConfig(): Promise<{ email_password: boolean }> {
+// AuthConfig 是后端认证能力探测结果。
+// local=true 表示单租户本地模式（SQLite profile）：无需登录，前端以 tenant_id/user_id
+// 固定身份自动进入。email_password 控制邮箱登录入口显隐。
+export type AuthConfig = {
+  email_password: boolean;
+  local?: boolean;
+  tenant_id?: string;
+  user_id?: string;
+};
+
+// getAuthConfig 探测后端认证能力（无认证端点）；登录页据此显隐邮箱入口，
+// App 启动时据此判断是否本地模式自动进入。
+export async function getAuthConfig(): Promise<AuthConfig> {
   const response = await fetch('/auth/config');
   if (!response.ok) {
     throw new ConnectError(`http_${response.status}`, `auth config failed: HTTP ${response.status}`);
   }
-  return (await response.json()) as { email_password: boolean };
+  return (await response.json()) as AuthConfig;
 }
 
 // registerEmail 自助注册：后端创建个人租户并签发 JWT，无需邮件验证（决策 ②A）。

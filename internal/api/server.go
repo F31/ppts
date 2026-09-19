@@ -126,6 +126,19 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	if pool != nil {
 		registerAuthRoutes(mux, pool, opt.JWTSecret, opt.PasswordPepper)
 	}
+	// 单租户本地模式（SQLite profile）：暴露 /auth/config 告知前端"无需登录"，
+	// 前端据此以固定本地身份自动进入，跳过登录页。local=true 时 email_password 恒 false。
+	if opt.LocalPrincipal != nil {
+		local := *opt.LocalPrincipal
+		mux.HandleFunc("GET /auth/config", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"email_password": false,
+				"local":          true,
+				"tenant_id":      local.TenantID,
+				"user_id":        local.UserID,
+			})
+		})
+	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
 	registerNarrationRoutes(mux, scripts, opt.Members, projects, opt.Audit, auth)
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。

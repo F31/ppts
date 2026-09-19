@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { listMembers, type ClientIdentity } from './api';
+import { getAuthConfig, listMembers, type ClientIdentity } from './api';
 import { AppShell } from './AppShell';
-import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, saveDevIdentity, storedIdentity, saveIdentity } from './auth';
+import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, storedLocalIdentity, saveLocalIdentity, saveDevIdentity, storedIdentity, saveIdentity } from './auth';
 import { navigate, useRoute } from './router';
 import { Home } from './pages/Home';
 import { Jobs } from './pages/Jobs';
@@ -35,6 +35,9 @@ function AppContent() {
     // 邮箱登录身份优先：含真实 tenantId/userId，刷新后直接恢复。
     const email = storedIdentity();
     if (email) return email;
+    // 单租户本地模式（SQLite）：后端无登录，刷新后直接以固定本地身份进入。
+    const local = storedLocalIdentity();
+    if (local) return { tenantId: local.tenantId, userId: local.userId };
     const dev = storedDevIdentity();
     const token = storedAccessToken();
     if (dev) {
@@ -46,6 +49,35 @@ function AppContent() {
     return null;
   });
   const [oidcDone, setOidcDone] = useState(false);
+  // localAuthDone：本地模式探测是否完成（避免探测期间闪现登录页）。
+  const [localAuthDone, setLocalAuthDone] = useState(false);
+
+  // 单租户本地模式自动进入：探测 /auth/config，local=true 时以固定本地身份进入，无需登录。
+  // PostgreSQL 多租户模式返回 email_password（无 local 字段），不触发自动进入。
+  useEffect(() => {
+    if (identity) {
+      setLocalAuthDone(true);
+      return;
+    }
+    let cancelled = false;
+    getAuthConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        if (cfg.local && cfg.tenant_id && cfg.user_id) {
+          saveLocalIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id });
+          setIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id });
+        }
+      })
+      .catch(() => {
+        // 探测失败（后端不可达/非本地模式）：退回登录页逻辑。
+      })
+      .finally(() => {
+        if (!cancelled) setLocalAuthDone(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity]);
 
   // OIDC 回调：登录成功后优先按 OIDC 身份进入。
   useEffect(() => {
@@ -96,8 +128,8 @@ function AppContent() {
     [identity, loginDev, loginOIDC, loginEmail, logout]
   );
 
-  // 未完成 OIDC 回调判定前不闪登录页（深链接登录 A05）。
-  if (!oidcDone) {
+  // 未完成 OIDC 回调 / 本地模式探测判定前不闪登录页（深链接登录 A05）。
+  if (!oidcDone || !localAuthDone) {
     return <div className="splash-screen">{t('app.restoring')}</div>;
   }
   // 公开区（作品广场 / 广场作品播放 / 私密分享播放）无需登录：必须在身份判定之前返回，
