@@ -869,7 +869,6 @@
   "projects.batchClear": "Clear selection",
   "projects.select": "Select {title}",
   "projects.share": "Share",
-
   "share.title": "Private sharing",
   "share.privateBadge": "Private sharing",
   "share.privateNote": "This is private sharing — it never appears in the public showcase. Only people with the link can access it, and you can revoke it at any time.",
@@ -910,7 +909,6 @@
   "share.revoke": "Revoke now",
   "share.linkRevoked": "Revoked",
   "share.noLinks": "No share links yet",
-
   "shared.privateBadge": "Private sharing",
   "shared.invalidLink": "Link is invalid or has been revoked",
   "shared.invalidHint": "The link may have been revoked by its owner, or it may have expired. Ask the sender for a new link.",
@@ -920,5 +918,12 @@
   "shared.audioNotReadyWithPassword": "Wrong password, or narration is not ready yet. Please try again.",
   "shared.passwordPrompt": "This link is password protected — enter the access password",
   "shared.unlock": "Unlock",
-  "shared.untitled": "Untitled share"
+  "shared.untitled": "Untitled share",
+  "versions.diffSummary": "Compare with another version",
+  "versions.diffSelectLabel": "Select comparison version",
+  "versions.diffSelectPlaceholder": "— select —",
+  "versions.diffAdded": "Added {n} page(s)",
+  "versions.diffRemoved": "Removed {n} page(s)",
+  "versions.diffChanged": "Changed {n} page(s)",
+  "versions.diffNone": "No differences between versions"
 }

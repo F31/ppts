@@ -58,6 +58,36 @@ function identityHeaders(identity: ClientIdentity): Record<string, string> {
   };
 }
 
+// RevisionDiff 是两次源版本之间的页级差异。
+export type RevisionDiff = {
+  added: Array<{ slideId: string; name: string; pageCount: number }>;
+  removed: Array<{ slideId: string; name: string; pageCount: number }>;
+  changed: Array<{
+    slideId: string;
+    oldName: string;
+    newName: string;
+    oldNotes: string;
+    newNotes: string;
+    pageCount: number;
+  }>;
+};
+
+// getRevisionDiff 比较两个源版本的幻灯片差异。
+export async function getRevisionDiff(
+  identity: ClientIdentity,
+  projectId: string,
+  revA: number,
+  revB: number
+): Promise<RevisionDiff> {
+  const r = await getJSON<{
+    added: RevisionDiff['added'];
+    removed: RevisionDiff['removed'];
+    changed: RevisionDiff['changed'];
+  }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions/${revA}/diff/${revB}`);
+  return r as RevisionDiff;
+}
+
+
 // ---- 邮箱自助注册（B5-M4）----
 export type EmailAuthResult = {
   access_token: string;

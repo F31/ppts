@@ -869,7 +869,6 @@
   "projects.batchClear": "取消选择",
   "projects.select": "选择 {title}",
   "projects.share": "分享",
-
   "share.title": "私密分享",
   "share.privateBadge": "私密分享",
   "share.privateNote": "这是私密分享，不会出现在公开作品广场；只有拿到链接的人可以访问，可随时撤回。",
@@ -910,7 +909,6 @@
   "share.revoke": "立即失效",
   "share.linkRevoked": "已失效",
   "share.noLinks": "还没有分享链接",
-
   "shared.privateBadge": "私密分享",
   "shared.invalidLink": "链接无效或已失效",
   "shared.invalidHint": "链接可能已被创建者撤回，或已超过有效期。请联系分享者获取新链接。",
@@ -920,5 +918,12 @@
   "shared.audioNotReadyWithPassword": "口令不正确，或该项目尚未生成语音讲解。请重新输入口令。",
   "shared.passwordPrompt": "此链接受口令保护，请输入访问口令",
   "shared.unlock": "解锁",
-  "shared.untitled": "未命名分享"
+  "shared.untitled": "未命名分享",
+  "versions.diffSummary": "比较此版与另一版差异",
+  "versions.diffSelectLabel": "选择对比版本",
+  "versions.diffSelectPlaceholder": "— 选择 —",
+  "versions.diffAdded": "新增 {n} 页",
+  "versions.diffRemoved": "删除 {n} 页",
+  "versions.diffChanged": "变更 {n} 页",
+  "versions.diffNone": "两版内容一致，无差异"
 }

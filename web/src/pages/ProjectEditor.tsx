@@ -12,7 +12,9 @@ import {
   getPlaybackManifest,
   getProjectSlides,
   getSourceRevisions,
+  getRevisionDiff,
   type SourceRevisionSummary,
+  type RevisionDiff,
   getScript,
   getSlideRenderURLs,
   getSlideScriptSources,
@@ -102,6 +104,9 @@ export function ProjectEditor({
   const [previewRev, setPreviewRev] = useState<number | null>(null);
   const [previewSlides, setPreviewSlides] = useState<SlideSummary[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [diffRevB, setDiffRevB] = useState<number | null>(null);
+  const [diffResult, setDiffResult] = useState<RevisionDiff | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +121,23 @@ export function ProjectEditor({
       cancelled = true;
     };
   }, [identity, projectId]);
+
+  const computeDiff = useCallback(
+    async (revB: number) => {
+      if (previewRev == null) return;
+      setDiffRevB(revB);
+      setDiffLoading(true);
+      try {
+        const d = await getRevisionDiff(identity, projectId, previewRev, revB);
+        setDiffResult(d);
+      } catch {
+        setDiffResult(null);
+      } finally {
+        setDiffLoading(false);
+      }
+    },
+    [identity, projectId, previewRev],
+  );
 
   const openVersionPreview = useCallback(
     async (revNo: number) => {
@@ -766,6 +788,67 @@ export function ProjectEditor({
                     {previewRev !== currentRevision && (
                       <p className="form-hint">{t('versions.switchNote')}</p>
                     )}
+                    {/* 版本 diff：选择另一个版本对比 */}
+                    <details className="version-diff-section">
+                      <summary className="version-diff-summary">{t('versions.diffSummary')}</summary>
+                      <div className="version-diff-body">
+                        <select
+                          className="diff-select"
+                          value={diffRevB ?? ''}
+                          onChange={(e) => {
+                            const v = Number(e.currentTarget.value);
+                            if (v && v !== previewRev) computeDiff(v);
+                          }}
+                          aria-label={t('versions.diffSelectLabel')}
+                        >
+                          <option value="">{t('versions.diffSelectPlaceholder')}</option>
+                          {revisions
+                            .filter((rv) => rv.revisionNo !== previewRev)
+                            .map((rv) => (
+                              <option key={rv.revisionNo} value={rv.revisionNo}>
+                                v{rv.revisionNo} · {t('versions.pages', { count: rv.pageCount })}
+                              </option>
+                            ))}
+                        </select>
+                        {diffLoading && <p className="form-hint">{t('editor.loading')}</p>}
+                        {diffResult != null && diffRevB != null && (
+                          <div className="version-diff-result">
+                            {diffResult.added.length > 0 && (
+                              <div className="diff-section diff-added">
+                                <strong>{t('versions.diffAdded', { n: diffResult.added.length })}</strong>
+                                <ul>{diffResult.added.map((p: {slideId: string; name: string; pageCount: number}) => <li key={p.slideId}>{p.name || p.slideId}</li>)}</ul>
+                              </div>
+                            )}
+                            {diffResult.removed.length > 0 && (
+                              <div className="diff-section diff-removed">
+                                <strong>{t('versions.diffRemoved', { n: diffResult.removed.length })}</strong>
+                                <ul>{diffResult.removed.map((p: {slideId: string; name: string; pageCount: number}) => <li key={p.slideId}>{p.name || p.slideId}</li>)}</ul>
+                              </div>
+                            )}
+                            {diffResult.changed.length > 0 && (
+                              <div className="diff-section diff-changed">
+                                <strong>{t('versions.diffChanged', { n: diffResult.changed.length })}</strong>
+                                <ul>
+                                  {diffResult.changed.map((c: { slideId: string; oldName: string; newName: string; oldNotes: string; newNotes: string; pageCount: number }) => (
+                                    <li key={c.slideId}>
+                                      <span className="diff-slide-id">{c.slideId.replace('slide-', '')}</span>
+                                      {c.oldName !== c.newName && (
+                                        <span className="diff-name">
+                                          <del>{c.oldName}</del> → <ins>{c.newName}</ins>
+                                        </span>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                            {diffResult.added.length === 0 && diffResult.removed.length === 0 && diffResult.changed.length === 0 && (
+                              <p className="form-hint">{t('versions.diffNone')}</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </details>
                   </>
                 )}
               </div>

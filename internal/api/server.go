@@ -138,6 +138,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerMemberRoutes(mux, opt.Members, auth)
 	// 源版本历史只读端点（原生 HTTP，绕过 proto）：GET /projects/{pid}/revisions，供版本抽屉查看历史版本。
 	registerRevisionRoutes(mux, projects, auth)
+	// 源版本 diff 端点（V4.0 §7.1 增强）：GET /projects/{pid}/revisions/{revA}/diff/{revB}
+	registerDiffRevisionRoutes(mux, projects, objects, auth)
 	// 标签 + 分组体系（#94，原生 HTTP 绕过 proto）：tags/folders/project_tags 的增删改查与项目归属。
 	registerTagFolderRoutes(mux, projects, opt.Members, auth)
 	// 私密分享与协作者（#95，原生 HTTP 绕过 proto）：协作者 CRUD + 分享链接 + 匿名最小字段播放链路。
