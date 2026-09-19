@@ -87,6 +87,19 @@ Web 真实链路：登录（正式 OIDC，未配置时开发身份入口）→ �
 
 ## 本地服务
 
+数据库支持两种模式（同一二进制，经 `PPTS_DB_DRIVER` 切换）：
+
+- **SQLite（默认，单租户轻量）**：无需外部数据库，数据落 `~/.ppts/ppts.db`，无登录（固定本地
+  租户/用户），开箱即用。能力边界与配置见 [`docs/SQLite单租户部署.md`](docs/SQLite单租户部署.md)。
+- **PostgreSQL（多租户全功能）**：RLS + 成员/角色 + 协作 + 调度双连接 + 邮箱/OIDC 登录（下节）。
+
+```bash
+# SQLite 轻量模式（默认）
+PPTS_OBJECT_BACKEND=local PPTS_OBJECT_ROOT=./var/ppts-objects \
+PPTS_OBJECT_SECRET="$(head -c32 /dev/urandom | base64)" \
+GOWORK=off go run ./cmd/ppts server
+```
+
 API 依赖已应用迁移的 PostgreSQL。生产身份可配置 OIDC bearer token 校验：设置
 `PPTS_OIDC_ISSUER`、`PPTS_OIDC_CLIENT_ID` 后，API 通过 issuer discovery/JWKS 验签，默认从
 `tenant_id` 与 `sub` claims 推导租户和用户；可用 `PPTS_OIDC_TENANT_CLAIM`、`PPTS_OIDC_USER_CLAIM`
