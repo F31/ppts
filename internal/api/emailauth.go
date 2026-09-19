@@ -7,9 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -33,11 +36,59 @@ const (
 	dummyPassword = "dummy-password-for-timing-only"
 )
 
+// 账号类型：注册时一次性选定，之后不变（不做个人→组织升级）。
+//   - personal：个人账号 = 只有一个成员的租户，前端隐藏成员管理/邀请协作者入口；
+//   - organization：组织账号，可邀请成员并分配角色。
+//
+// 后端权限模型不按类型分叉（隔离统一按 tenant_id），类型仅驱动前端入口显隐。
+const (
+	accountTypePersonal     = "personal"
+	accountTypeOrganization = "organization"
+
+	// 组织名称长度按字符（非字节）计；规则与前端 web/src/pages/Login.tsx 的 orgNameError 一致。
+	minOrgName = 2
+	maxOrgName = 40
+
+	// 个人租户默认显示名后缀："{账号@前} 的空间"。
+	personalTenantSuffix = " 的空间"
+)
+
+// validateOrgName 校验组织名称：长度 2~40 个字符，允许中英文/数字/空格/-_&.。
+func validateOrgName(name string) error {
+	if n := utf8.RuneCountInString(name); n < minOrgName || n > maxOrgName {
+		return fmt.Errorf("org name must be %d-%d characters", minOrgName, maxOrgName)
+	}
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case ' ', '-', '_', '&', '.':
+			continue
+		}
+		return errors.New("org name contains invalid characters")
+	}
+	return nil
+}
+
+// defaultPersonalTenantName 由登录账号生成个人租户默认显示名："{@前部分} 的空间"。
+// 账号为手机号（无 @）时取整个账号。
+func defaultPersonalTenantName(account string) string {
+	local := account
+	if at := strings.IndexByte(account, '@'); at >= 0 {
+		local = account[:at]
+	}
+	if local == "" {
+		local = account
+	}
+	return local + personalTenantSuffix
+}
+
 // ---------------------------------------------------------------------------
 // HS256 JWT（手动实现，避免引入新依赖；仅支持 HS256，显式拒绝其他 alg）
 // ---------------------------------------------------------------------------
 
-func b64urlEncode(b []byte) string  { return base64.RawURLEncoding.EncodeToString(b) }
+func b64urlEncode(b []byte) string          { return base64.RawURLEncoding.EncodeToString(b) }
 func b64urlDecode(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
 
 type jwtClaims struct {
@@ -214,13 +265,15 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 		return
 	}
 	var body struct {
-		Email     string `json:"email"`
-		Password  string `json:"password"`
-		Username  string `json:"username"`
-		FullName  string `json:"full_name"`
-		Gender    string `json:"gender"`
-		BirthDate string `json:"birth_date"`
-		Phone     string `json:"phone"`
+		Email       string `json:"email"`
+		Password    string `json:"password"`
+		AccountType string `json:"account_type"`
+		OrgName     string `json:"org_name"`
+		Username    string `json:"username"`
+		FullName    string `json:"full_name"`
+		Gender      string `json:"gender"`
+		BirthDate   string `json:"birth_date"`
+		Phone       string `json:"phone"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -234,6 +287,20 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 	if len(body.Password) < minPassword {
 		http.Error(w, "password too short", http.StatusBadRequest)
 		return
+	}
+	// 账号类型必须显式声明（不做"猜测式兜底"）；组织账号需合规的组织名称。
+	accountType := strings.TrimSpace(body.AccountType)
+	if accountType != accountTypePersonal && accountType != accountTypeOrganization {
+		http.Error(w, "account_type must be personal or organization", http.StatusBadRequest)
+		return
+	}
+	tenantName := defaultPersonalTenantName(email)
+	if accountType == accountTypeOrganization {
+		if err := validateOrgName(strings.TrimSpace(body.OrgName)); err != nil {
+			http.Error(w, "invalid org_name: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		tenantName = strings.TrimSpace(body.OrgName)
 	}
 	if jwtSecret == "" {
 		http.Error(w, "email registration is not enabled", http.StatusServiceUnavailable)
@@ -259,7 +326,7 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 		return
 	}
 
-	// 事务：创建个人租户 + owner 成员 + 用户 + 凭证。
+	// 事务：创建租户（个人/组织）+ owner 成员 + 用户 + 凭证。
 	tenantID := uuid.New().String()
 	userID := uuid.New().String()
 	tx, err := pool.Begin(ctx)
@@ -269,7 +336,7 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 
-	if _, err := tx.Exec(ctx, `INSERT INTO tenants(id, name, status) VALUES($1,$2,'active')`, tenantID, email); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO tenants(id, name, status, type) VALUES($1,$2,'active',$3)`, tenantID, tenantName, accountType); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -314,7 +381,8 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"access_token": token,
 		"tenant_id":    tenantID,
-		"tenant_name":  email,
+		"tenant_name":  tenantName,
+		"tenant_type":  accountType,
 		"user_id":      userID,
 		"account":      email,
 	})
@@ -350,11 +418,13 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 		return
 	}
 	ctx := r.Context()
-	var tenantID, userID, hash, tenantName string
+	var tenantID, userID, hash, tenantName, tenantType string
 	err := pool.QueryRow(ctx,
-		`SELECT tenant_id, user_id, password_hash, (SELECT name FROM tenants WHERE id = tenant_id) FROM auth_lookup_credential($1)`,
+		`SELECT c.tenant_id, c.user_id, c.password_hash, t.name, t.type
+		 FROM auth_lookup_credential($1) c
+		 JOIN tenants t ON t.id = c.tenant_id`,
 		email).
-		Scan(&tenantID, &userID, &hash, &tenantName)
+		Scan(&tenantID, &userID, &hash, &tenantName, &tenantType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// 未命中：仍做一次 bcrypt 比对以恒定耗时，防止通过响应时间/状态枚举账号（R-16）。
 		_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(body.Password+pepper))
@@ -378,6 +448,7 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 		"access_token": token,
 		"tenant_id":    tenantID,
 		"tenant_name":  tenantName,
+		"tenant_type":  tenantType,
 		"user_id":      userID,
 		"account":      email,
 	})

@@ -8,6 +8,22 @@ import { describeApiError } from '../apiError';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
 type EmailMode = 'signin' | 'register';
+type AccountType = 'personal' | 'organization';
+
+// 组织名称校验规则（与后端 internal/api/emailauth.go 的 validateOrgName 一致）：
+// 长度 2~40 个字符，允许中英文/数字/空格/-_&.。返回 i18n 键，合法返回 null。
+const ORG_NAME_MIN = 2;
+const ORG_NAME_MAX = 40;
+
+function orgNameError(name: string): string | null {
+  const chars = Array.from(name); // 按码点计数，对齐 Go 的 utf8.RuneCountInString
+  if (chars.length < ORG_NAME_MIN || chars.length > ORG_NAME_MAX) return 'login.orgNameLength';
+  for (const ch of chars) {
+    if (/[\p{L}\p{N}]/u.test(ch) || ' -_&.'.includes(ch)) continue;
+    return 'login.orgNameInvalid';
+  }
+  return null;
+}
 
 export function Login() {
   const { loginDev, loginOIDC, loginEmail: loginEmailSession } = useSession();
@@ -22,6 +38,9 @@ export function Login() {
   const [emailMode, setEmailMode] = useState<EmailMode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // 注册的账号类型：个人（默认，单成员租户）或组织（需填组织名称）。
+  const [accountType, setAccountType] = useState<AccountType>('personal');
+  const [orgName, setOrgName] = useState('');
   // 注册时采集的可选档案字段（成员列表富字段展示）。
   const [regUsername, setRegUsername] = useState('');
   const [regFullName, setRegFullName] = useState('');
@@ -81,12 +100,23 @@ export function Login() {
       setSubmitting(false);
       return;
     }
+    const trimmedOrg = orgName.trim();
+    if (emailMode === 'register' && accountType === 'organization') {
+      const orgErr = orgNameError(trimmedOrg);
+      if (orgErr) {
+        setError(t(orgErr));
+        setSubmitting(false);
+        return;
+      }
+    }
     try {
       const res =
         emailMode === 'register'
           ? await registerEmail({
               email: trimmedEmail,
               password,
+              accountType,
+              orgName: accountType === 'organization' ? trimmedOrg : undefined,
               username: regUsername,
               fullName: regFullName,
               gender: regGender,
@@ -94,7 +124,14 @@ export function Login() {
               phone: regPhone,
             })
           : await loginEmail({ email: trimmedEmail, password });
-      loginEmailSession({ tenantId: res.tenant_id, userId: res.user_id, accessToken: res.access_token, account: res.account, tenantName: res.tenant_name });
+      loginEmailSession({
+        tenantId: res.tenant_id,
+        userId: res.user_id,
+        accessToken: res.access_token,
+        account: res.account,
+        tenantName: res.tenant_name,
+        tenantType: res.tenant_type,
+      });
     } catch (err) {
       setError(
         describeApiError(
@@ -109,6 +146,10 @@ export function Login() {
 
   const showOIDC = oidcConfigured();
   const showDev = isDevIdentityEnabled();
+  // 组织名称的行内提示与提交门禁：仅在"组织"模式下校验。
+  const registerOrg = emailMode === 'register' && accountType === 'organization';
+  const orgErr = registerOrg && orgName.trim() !== '' ? orgNameError(orgName.trim()) : null;
+  const registerBlocked = registerOrg && orgNameError(orgName.trim()) !== null;
 
   return (
     <main className="login-page">
@@ -154,6 +195,46 @@ export function Login() {
               />
             </label>
             {emailMode === 'register' && (
+              <fieldset className="account-type">
+                <legend>{t('login.accountType')}</legend>
+                <label className={`account-type-option ${accountType === 'personal' ? 'selected' : ''}`}>
+                  <input
+                    type="radio"
+                    name="accountType"
+                    checked={accountType === 'personal'}
+                    onChange={() => setAccountType('personal')}
+                  />
+                  <span>
+                    <strong>{t('login.accountPersonal')}</strong>
+                    <small>{t('login.accountPersonalHint')}</small>
+                  </span>
+                </label>
+                <label className={`account-type-option ${accountType === 'organization' ? 'selected' : ''}`}>
+                  <input
+                    type="radio"
+                    name="accountType"
+                    checked={accountType === 'organization'}
+                    onChange={() => setAccountType('organization')}
+                  />
+                  <span>
+                    <strong>{t('login.accountOrganization')}</strong>
+                    <small>{t('login.accountOrganizationHint')}</small>
+                  </span>
+                </label>
+                {accountType === 'organization' && (
+                  <label className="org-name">
+                    {t('login.orgName')}
+                    <input
+                      value={orgName}
+                      placeholder={t('login.orgNamePlaceholder')}
+                      onChange={(e) => setOrgName(e.currentTarget.value)}
+                    />
+                    {orgErr && <small className="field-error" role="alert">{t(orgErr)}</small>}
+                  </label>
+                )}
+              </fieldset>
+            )}
+            {emailMode === 'register' && (
               <div className="register-profile">
                 <label>
                   {t('login.username')}
@@ -183,7 +264,7 @@ export function Login() {
                 </label>
               </div>
             )}
-            <button type="button" className="primary-login" disabled={submitting} onClick={() => void submitEmail()}>
+            <button type="button" className="primary-login" disabled={submitting || registerBlocked} onClick={() => void submitEmail()}>
               {submitting ? t('login.submitting') : emailMode === 'register' ? t('login.register') : t('login.signIn')}
             </button>
             <p className="email-switch">

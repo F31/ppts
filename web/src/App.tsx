@@ -37,7 +37,7 @@ function AppContent() {
     if (email) return email;
     // 单租户本地模式（SQLite）：后端无登录，刷新后直接以固定本地身份进入。
     const local = storedLocalIdentity();
-    if (local) return { tenantId: local.tenantId, userId: local.userId };
+    if (local) return { tenantId: local.tenantId, userId: local.userId, tenantType: local.tenantType };
     const dev = storedDevIdentity();
     const token = storedAccessToken();
     if (dev) {
@@ -64,8 +64,8 @@ function AppContent() {
       .then((cfg) => {
         if (cancelled) return;
         if (cfg.local && cfg.tenant_id && cfg.user_id) {
-          saveLocalIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id });
-          setIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id });
+          saveLocalIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type });
+          setIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type });
         }
       })
       .catch(() => {

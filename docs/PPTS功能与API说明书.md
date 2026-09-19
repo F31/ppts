@@ -224,11 +224,12 @@ GET /healthz                          → "ok"（纯文本）
 ### 5.2 邮箱认证（匿名）
 
 ```
-GET  /auth/config                     → {email_password: bool}（探测邮箱注册能力）
-POST /auth/register                   → Body: {email, password}（≥8 位）
-                                      → {access_token, account, tenant_id, tenant_name, user_id}
+GET  /auth/config                     → {email_password: bool, local?: bool, tenant_type?}
+                                      （探测邮箱注册能力；local=true 为 SQLite 单租户本地模式）
+POST /auth/register                   → Body: {email, password(≥8位), account_type: personal|organization, org_name?(组织必填)}
+                                      → {access_token, account, tenant_id, tenant_name, tenant_type, user_id}
 POST /auth/email-login                → Body: {email, password}
-                                      → {access_token, account, tenant_id, tenant_name, user_id}
+                                      → {access_token, account, tenant_id, tenant_name, tenant_type, user_id}
 ```
 
 **JWT 说明：** HS256 签名，payload 含 `sub(user_id), tti(tenant_id), iss, aud, exp, iat`。  

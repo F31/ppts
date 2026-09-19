@@ -125,6 +125,16 @@ func (s *TenantService) SetMemberRole(ctx context.Context, req *connect.Request[
 	if err := s.requireOwnerForOwnerChange(ctx, p.TenantID, role); err != nil {
 		return nil, err
 	}
+	// 降级（非 owner）需守卫"最后一个 owner"：新成员（ErrNotFound）无此风险。
+	if role != membership.RoleOwner {
+		current, err := s.members.GetRole(ctx, p.TenantID, userID)
+		if err != nil && !errors.Is(err, membership.ErrNotFound) {
+			return nil, tenantError(err)
+		}
+		if err := s.ensureLastOwner(ctx, p.TenantID, current); err != nil {
+			return nil, err
+		}
+	}
 	if err := s.members.SetRole(ctx, p.TenantID, userID, role); err != nil {
 		return nil, tenantError(err)
 	}
@@ -153,10 +163,39 @@ func (s *TenantService) RemoveMember(ctx context.Context, req *connect.Request[p
 	if err := s.requireOwnerForOwnerChange(ctx, p.TenantID, role); err != nil {
 		return nil, err
 	}
+	if err := s.ensureLastOwner(ctx, p.TenantID, role); err != nil {
+		return nil, err
+	}
 	if err := s.members.Remove(ctx, p.TenantID, userID); err != nil {
 		return nil, tenantError(err)
 	}
 	return connect.NewResponse(&pptsv1.RemoveMemberResponse{}), nil
+}
+
+// ensureLastOwner 禁止移除或降级租户当前唯一的 owner——否则租户将无主
+// （无成员可再管理成员/导出/擦除）。current 为目标的当前角色，调用方已读取时直接传入，
+// 空值表示目标不是成员（新成员无此风险）。
+//
+// 说明：读取与写入非同一事务，极端并发下两个 owner 同时降级仍可能都通过；
+// 成员管理是低频控制面操作，此处以简单性优先，不做行级锁。
+func (s *TenantService) ensureLastOwner(ctx context.Context, tenantID string, current membership.Role) error {
+	if current != membership.RoleOwner {
+		return nil
+	}
+	members, err := s.members.List(ctx, tenantID)
+	if err != nil {
+		return tenantError(err)
+	}
+	owners := 0
+	for _, m := range members {
+		if m.Role == membership.RoleOwner {
+			owners++
+		}
+	}
+	if owners <= 1 {
+		return connect.NewError(connect.CodeFailedPrecondition, errors.New("cannot remove or demote the last owner"))
+	}
+	return nil
 }
 
 func (s *TenantService) requireOwnerForOwnerChange(ctx context.Context, tenantID string, targetRole membership.Role) error {

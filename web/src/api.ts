@@ -36,6 +36,10 @@ export type ClientIdentity = {
   // tenantName 为租户显示名，仅邮箱注册/登录路径从后端 tenants.name 带回；
   // 旧会话或开发/OIDC 登录无此字段时，界面回退显示 tenantId。
   tenantName?: string;
+  // tenantType 为租户类型（personal/organization），由邮箱注册/登录与本地模式带回。
+  // 个人账号（单成员）隐藏"成员管理/邀请协作者"入口；旧会话/开发/OIDC 无此字段时
+  // 按组织处理（不隐藏），与后端不按类型分叉的宽松语义一致。
+  tenantType?: string;
 };
 
 export class ConnectError extends Error {
@@ -93,6 +97,7 @@ export type EmailAuthResult = {
   access_token: string;
   tenant_id: string;
   tenant_name: string;
+  tenant_type: string;
   user_id: string;
   account: string;
 };
@@ -105,6 +110,7 @@ export type AuthConfig = {
   local?: boolean;
   tenant_id?: string;
   user_id?: string;
+  tenant_type?: string;
 };
 
 // getAuthConfig 探测后端认证能力（无认证端点）；登录页据此显隐邮箱入口，
@@ -117,17 +123,30 @@ export async function getAuthConfig(): Promise<AuthConfig> {
   return (await response.json()) as AuthConfig;
 }
 
-// registerEmail 自助注册：后端创建个人租户并签发 JWT，无需邮件验证（决策 ②A）。
+// registerEmail 自助注册：后端按 accountType 创建个人/组织租户并签发 JWT，无需邮件验证（决策 ②A）。
+// 请求体字段名与后端 internal/api/emailauth.go 的 json tag 一一对应（显式映射，避免驼峰字段被静默丢弃）。
 export async function registerEmail(params: {
   email: string;
   password: string;
+  accountType: 'personal' | 'organization';
+  orgName?: string;
   username?: string;
   fullName?: string;
   gender?: string;
   birthDate?: string;
   phone?: string;
 }): Promise<EmailAuthResult> {
-  return postAuth('/auth/register', params);
+  return postAuth('/auth/register', {
+    email: params.email,
+    password: params.password,
+    account_type: params.accountType,
+    org_name: params.orgName ?? '',
+    username: params.username ?? '',
+    full_name: params.fullName ?? '',
+    gender: params.gender ?? '',
+    birth_date: params.birthDate ?? '',
+    phone: params.phone ?? ''
+  });
 }
 
 // loginEmail 邮箱登录：后端校验凭证并签发 JWT。

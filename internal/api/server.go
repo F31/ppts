@@ -43,21 +43,21 @@ func tracingInterceptor() connect.UnaryInterceptorFunc {
 // Options 是可选横切依赖（G3-2 配额预占、G3-9 租户用量/策略）。
 // tenant_id 始终由服务端从可信身份推导，客户端传入值不作授权依据。
 type Options struct {
-	Quota         QuotaManager
-	Usage         TenantUsageReader
-	Policy        TenantPolicyReader
-	Audit         audit.Store
-	Members       membership.Store
-	Lifecycle     TenantLifecycle
-	Storage       TenantStorageReader
-	Archive       TenantArchiveReader
-	TenantStatus  TenantStatusChecker
-	Auth          Authenticator
-	DevHeaders    bool
+	Quota        QuotaManager
+	Usage        TenantUsageReader
+	Policy       TenantPolicyReader
+	Audit        audit.Store
+	Members      membership.Store
+	Lifecycle    TenantLifecycle
+	Storage      TenantStorageReader
+	Archive      TenantArchiveReader
+	TenantStatus TenantStatusChecker
+	Auth         Authenticator
+	DevHeaders   bool
 	// LocalPrincipal 非空时启用单租户本地模式（SQLite profile）：所有请求以此固定身份运行，无登录。
 	LocalPrincipal *Principal
-	Pronunciation pronunciation.Store
-	Gateway       gateway.StoreResolver
+	Pronunciation  pronunciation.Store
+	Gateway        gateway.StoreResolver
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
@@ -136,6 +136,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 				"local":          true,
 				"tenant_id":      local.TenantID,
 				"user_id":        local.UserID,
+				// 单租户本地模式即个人账号（1 个成员）→ 前端隐藏成员管理入口。
+				"tenant_type": accountTypePersonal,
 			})
 		})
 	}

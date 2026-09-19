@@ -165,9 +165,11 @@ if [[ "${SKIP_START:-0}" != "1" && ! -f "$ADMIN_CREDS" ]]; then
     curl -sf -o /dev/null "http://127.0.0.1:${PORT:-8080}/healthz" && break
     sleep 1
   done
+  # 自托管默认管理员属组织账号（可邀请成员）：必须显式声明 account_type，
+  # 且组织账号需合规的 org_name（后端不做缺失兜底）。
   if curl -sf -X POST "http://127.0.0.1:${PORT:-8080}/auth/register" \
       -H 'Content-Type: application/json' \
-      -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\"}" -o /dev/null; then
+      -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PW\",\"account_type\":\"organization\",\"org_name\":\"PPTS\"}" -o /dev/null; then
     install -m 0600 /dev/null "$ADMIN_CREDS"
     printf 'email=%s\npassword=%s\n' "$ADMIN_EMAIL" "$ADMIN_PW" > "$ADMIN_CREDS"
     log "默认管理员已创建：$ADMIN_EMAIL（口令见 $ADMIN_CREDS，首次登录后请尽快修改）"

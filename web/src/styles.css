@@ -565,6 +565,19 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .register-profile { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 4px 0 2px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-inset); }
 .register-profile label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-soft); }
 .register-profile input, .register-profile select { width: 100%; }
+/* 注册"使用方式"单选卡片（个人/组织）：选组织时展开组织名称输入。 */
+.account-type { display: grid; gap: 8px; margin: 4px 0 2px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-inset); }
+.account-type legend { padding: 0 6px; font-size: 12px; color: var(--text-muted); }
+/* 提高一级特异性，压过 .login-card label 的 grid 布局。 */
+.login-card .account-type-option { display: flex; align-items: flex-start; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; cursor: pointer; }
+.login-card .account-type-option.selected { border-color: var(--accent-border); background: var(--accent-soft); }
+.account-type-option input { margin-top: 2px; }
+.account-type-option span { display: flex; flex-direction: column; gap: 2px; }
+.account-type-option strong { font-size: 13px; color: var(--text-strong); }
+.account-type-option small { font-size: 12px; color: var(--text-muted); }
+.login-card .org-name { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-soft); }
+.org-name input { width: 100%; }
+.field-error { font-size: 12px; color: #fca5a5; }
 .job-detail { margin-bottom: 0; }
 /* B4-M6a：任务详情——执行步骤区、步骤状态徽标与原始快照折叠块。 */
 .steps-section { margin-top: 18px; }

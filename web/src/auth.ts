@@ -5,7 +5,8 @@ const verifierKey = 'pptsPKCEVerifier';
 const stateKey = 'pptsOIDCState';
 const devIdentityKey = 'pptsDevIdentity';
 
-export type DevIdentity = { tenantId: string; userId: string };
+// tenantType 仅本地模式（SQLite）写入：该模式恒为个人账号，用于隐藏成员管理入口。
+export type DevIdentity = { tenantId: string; userId: string; tenantType?: string };
 
 export function storedDevIdentity(): DevIdentity | null {
   // A02：开发身份不得混入生产。未开放该能力的构建里，即使浏览器残留 pptsDevIdentity

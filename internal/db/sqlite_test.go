@@ -56,6 +56,15 @@ func TestSQLiteMigrateAndLocalIdentity(t *testing.T) {
 		t.Fatalf("local identity not seeded: tenants=%d users=%d members=%d", tenants, users, members)
 	}
 
+	// tenants.type（0002）：本地单租户即个人账号。
+	var tenantType string
+	if err := sqldb.QueryRowContext(ctx, `SELECT type FROM tenants WHERE id = ?`, LocalTenantID).Scan(&tenantType); err != nil {
+		t.Fatalf("select tenant type: %v", err)
+	}
+	if tenantType != "personal" {
+		t.Fatalf("local tenant type = %q want personal", tenantType)
+	}
+
 	// 插入一个项目验证外键与时间默认值。
 	if _, err := sqldb.ExecContext(ctx,
 		`INSERT INTO projects (id, tenant_id, owner_user, title) VALUES (?, ?, ?, ?)`,

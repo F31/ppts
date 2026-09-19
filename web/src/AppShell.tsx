@@ -19,11 +19,21 @@ export const primaryNav: NavItem[] = [
   { key: 'settings', to: '/settings/models', labelKey: 'nav.settings', icon: '🔧' }
 ];
 
+// SettingsNavItem 扩展 NavItem：hideForPersonal 标记"个人账号（单成员租户）不渲染"的入口。
+export type SettingsNavItem = {
+  key: string;
+  to: string;
+  labelKey: string;
+  need: Capability;
+  hideForPersonal?: boolean;
+};
+
 // 设置子菜单（作用域分组：个人不占本轮——C-7 已定不做并移除入口；租户项按方案 §12）。
 // B4-M1：每项声明所需能力，菜单按角色过滤，做到「菜单与后端一致」（A22）。
-export const settingsMenus: Array<{ key: string; to: string; labelKey: string; need: Capability }> = [
+// 个人账号（tenantType=personal）另按 hideForPersonal 过滤：成员管理对其无意义（恒 1 个成员）。
+export const settingsMenus: SettingsNavItem[] = [
   { key: 'models', to: '/settings/models', labelKey: 'nav.settingsModels', need: 'gateway.manage' },
-  { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers', need: 'member.manage' },
+  { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers', need: 'member.manage', hideForPersonal: true },
   { key: 'dictionary', to: '/settings/dictionary', labelKey: 'nav.settingsDictionary', need: 'project.read' },
   { key: 'usage', to: '/settings/usage', labelKey: 'nav.settingsUsage', need: 'project.read' },
   { key: 'tags', to: '/settings/tags', labelKey: 'nav.settingsTags', need: 'project.organize' },
@@ -65,9 +75,13 @@ export function AppShell({ children, role, roleReady = true }: { children: React
   const active = activeKey(route.parts);
   const tenantShort = identity ? identity.tenantId.split('-').pop() ?? identity.tenantId : '-';
 
+  // 个人账号（单成员租户）隐藏成员管理入口（hideForPersonal）。
+  const personalTenant = identity?.tenantType === 'personal';
   // B4-M1：只渲染当前角色确实可用的设置项（菜单与后端一致，A22）。
   // 角色解析中先按"零权限"处理，避免向 Viewer 闪现管理菜单。
-  const visibleSettings = settingsMenus.filter((item) => roleReady && can(role, item.need));
+  const visibleSettings = settingsMenus.filter(
+    (item) => roleReady && can(role, item.need) && !(item.hideForPersonal && personalTenant)
+  );
   // B5-M2：侧栏主导航同样按 need 过滤（library 仅 owner 可见），保持「菜单与后端一致」（A22）。
   const visiblePrimary = primaryNav.filter((item) => !item.need || (roleReady && can(role, item.need)));
   // 「设置」入口落到第一个可见子页；解析中先落用量页（仅需已认证，对任何角色都安全）。

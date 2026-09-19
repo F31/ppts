@@ -1164,6 +1164,40 @@ func TestTenantServiceMemberManagementEnforcesRoles(t *testing.T) {
 	}
 }
 
+func TestTenantServiceProtectsLastOwner(t *testing.T) {
+	members := &fakeRoleReader{
+		roles: map[string]membership.Role{"user-1": membership.RoleOwner},
+		list:  []membership.Member{{UserID: "user-1", Role: membership.RoleOwner}},
+	}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
+		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+
+	// 唯一 owner 自我降级被拒。
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-1", Role: pptsv1.Role_ROLE_VIEWER})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("demote last owner code = %v want FailedPrecondition", connect.CodeOf(err))
+	}
+	// 唯一 owner 被移除被拒。
+	if _, err := client.RemoveMember(context.Background(), authRequest(&pptsv1.RemoveMemberRequest{UserId: "user-1"})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("remove last owner code = %v want FailedPrecondition", connect.CodeOf(err))
+	}
+	// 新成员（无当前角色）不受守卫影响，可正常授予角色。
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-2", Role: pptsv1.Role_ROLE_EDITOR})); err != nil {
+		t.Fatalf("grant role to new member: %v", err)
+	}
+
+	// 存在第二个 owner 时，可降级其一。
+	members.roles["user-3"] = membership.RoleOwner
+	members.list = []membership.Member{
+		{UserID: "user-1", Role: membership.RoleOwner},
+		{UserID: "user-3", Role: membership.RoleOwner},
+	}
+	if _, err := client.SetMemberRole(context.Background(), authRequest(&pptsv1.SetMemberRoleRequest{UserId: "user-3", Role: pptsv1.Role_ROLE_ADMIN})); err != nil {
+		t.Fatalf("demote second owner: %v", err)
+	}
+}
+
 func TestTenantServiceProjectUsage(t *testing.T) {
 	u := &fakeTenantUsage{seconds: 120}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
@@ -1272,6 +1306,7 @@ func TestTenantServiceListAuditEventsRequiresAdmin(t *testing.T) {
 type fakeRoleReader struct {
 	role  membership.Role
 	roles map[string]membership.Role
+	list  []membership.Member
 	err   error
 }
 
@@ -1287,7 +1322,7 @@ func (f *fakeRoleReader) GetRole(_ context.Context, _, userID string) (membershi
 }
 
 func (f *fakeRoleReader) List(context.Context, string) ([]membership.Member, error) {
-	return nil, nil
+	return f.list, f.err
 }
 
 func (f *fakeRoleReader) SetRole(_ context.Context, _, userID string, role membership.Role) error {
@@ -2171,7 +2206,7 @@ func TestSPAFallbackServesWebRoot(t *testing.T) {
 // WebFS 与 WebRoot 走同一 handler，且 NewHandler 优先使用 WebRoot、空时退回 WebFS。
 func TestSPAFallbackServesEmbeddedFS(t *testing.T) {
 	dist := fstest.MapFS{
-		"index.html":          {Data: []byte("<html>embedded</html>")},
+		"index.html":           {Data: []byte("<html>embedded</html>")},
 		"assets/app-def456.js": {Data: []byte("console.log(2)")},
 	}
 	handler := spaFallbackHandler(dist)

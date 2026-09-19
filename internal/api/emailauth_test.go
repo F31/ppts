@@ -91,6 +91,39 @@ func TestHashPasswordVerify(t *testing.T) {
 	}
 }
 
+func TestValidateOrgName(t *testing.T) {
+	cases := map[string]bool{
+		"北京分公司":                 true,
+		"Acme Inc.":             true,
+		"R&D_Team-1":            true,
+		"ab":                    true,
+		"a":                     false, // 少于 2 个字符
+		"":                      false,
+		" ":                     false, // 纯空格
+		strings.Repeat("x", 40): true,
+		strings.Repeat("x", 41): false, // 超过 40 个字符
+		"bad😀":                  false, // emoji 不允许
+		"a<b":                   false, // 尖括号不允许
+		"公司/部门":                 false, // 斜杠不允许
+	}
+	for name, want := range cases {
+		err := validateOrgName(strings.TrimSpace(name))
+		if (err == nil) != want {
+			t.Errorf("validateOrgName(%q) err=%v want ok=%v", name, err, want)
+		}
+	}
+}
+
+func TestDefaultPersonalTenantName(t *testing.T) {
+	if got, want := defaultPersonalTenantName("zhangsan@xx.com"), "zhangsan"+personalTenantSuffix; got != want {
+		t.Errorf("email account => %q want %q", got, want)
+	}
+	// 手机号（无 @）：取整个账号。
+	if got, want := defaultPersonalTenantName("13800138000"), "13800138000"+personalTenantSuffix; got != want {
+		t.Errorf("phone account => %q want %q", got, want)
+	}
+}
+
 func TestValidAccount(t *testing.T) {
 	cases := map[string]bool{
 		"a@example.com":  true,

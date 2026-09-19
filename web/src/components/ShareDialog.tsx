@@ -33,7 +33,9 @@ export function ShareDialog({
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const [tab, setTab] = useState<'collaborators' | 'links'>('collaborators');
+  // 个人账号（单成员租户）无其他成员可邀请 → 隐藏"邀请协作者"Tab，仅保留链接分享。
+  const personalTenant = identity.tenantType === 'personal';
+  const [tab, setTab] = useState<'collaborators' | 'links'>(personalTenant ? 'links' : 'collaborators');
   const canManage = can(role, 'project.share');
 
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
@@ -112,9 +114,11 @@ export function ShareDialog({
         <p className="share-private-note">{t('share.privateNote')}</p>
 
         <div className="share-tabs">
-          <button type="button" className={tab === 'collaborators' ? 'active' : ''} onClick={() => setTab('collaborators')}>
-            {t('share.tabCollaborators')}
-          </button>
+          {!personalTenant && (
+            <button type="button" className={tab === 'collaborators' ? 'active' : ''} onClick={() => setTab('collaborators')}>
+              {t('share.tabCollaborators')}
+            </button>
+          )}
           <button type="button" className={tab === 'links' ? 'active' : ''} onClick={() => setTab('links')}>
             {t('share.tabLinks')}
           </button>
