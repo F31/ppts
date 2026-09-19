@@ -367,9 +367,6 @@ export function Home({ identity, role, roleReady }: { identity: ClientIdentity; 
         ) : projects.length === 0 ? (
           <div className="empty-state first-run">
             <p>{t('home.noProjects')}</p>
-            {canCreateProject && (
-              <Link to="/projects" className="button-primary">{t('home.importFirst')}</Link>
-            )}
           </div>
         ) : (
           <div className="recent-projects">
