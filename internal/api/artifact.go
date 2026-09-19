@@ -36,6 +36,9 @@ func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts ar
 		writeConnectError(w, err)
 		return
 	}
+	if _, ok := requireProjectAccess(w, r, nil); !ok {
+		return
+	}
 	pid := r.PathValue("pid")
 	list, err := artifacts.ListByProject(r.Context(), principal.TenantID, pid)
 	if err != nil {

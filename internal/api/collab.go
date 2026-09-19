@@ -377,7 +377,7 @@ func sharedMeta(w http.ResponseWriter, r *http.Request, projects project.Project
 		return
 	}
 	title := ""
-	if p, perr := projects.GetProject(r.Context(), link.TenantID, link.ProjectID); perr == nil {
+	if p, perr := projects.GetProject(r.Context(), link.TenantID, "", link.ProjectID); perr == nil {
 		title = p.Title
 	}
 	var expires int64

@@ -162,9 +162,9 @@ var ErrInvalidCollaboratorRole = errors.New("project: invalid collaborator role"
 // ProjectStore 项目与源版本存储端口。
 type ProjectStore interface {
 	CreateProject(ctx context.Context, tenantID, owner, title string) (*Project, error)
-	GetProject(ctx context.Context, tenantID, id string) (*Project, error)
-	ListProjects(ctx context.Context, tenantID, cursor string, pageSize int) ([]*Project, string, error)
-	ArchiveProject(ctx context.Context, tenantID, id string) (*Project, error)
+	GetProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
+	ListProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error)
+	ArchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
 	// CreateSourceRevision 原子递增 current_revision 并写入不可变源版本。
 	CreateSourceRevision(ctx context.Context, tenantID string, in NewSourceRevision) (*SourceRevision, error)
 	// GetSourceRevision 按项目与 revision 号查询。
@@ -239,14 +239,18 @@ func (s *PGProjectStore) CreateProject(ctx context.Context, tenantID, owner, tit
 	return p, err
 }
 
-func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, id string) (*Project, error) {
+func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
 	var p *Project
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		p, e = scanProject(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
 			   delete_source_after, created_at, updated_at
-			 FROM projects WHERE id=$1 AND tenant_id=$2`, id, tenantID))
+			 FROM projects WHERE id=$3 AND tenant_id=$2
+			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
+			    SELECT 1 FROM project_collaborators pc
+			     WHERE pc.project_id = projects.id AND pc.user_id = $1))`,
+			userID, tenantID, id))
 		return e
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -255,7 +259,7 @@ func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, id string) (*
 	return p, err
 }
 
-func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, cursor string, pageSize int) ([]*Project, string, error) {
+func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 50
 	}
@@ -264,12 +268,16 @@ func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, cursor stri
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var rows pgx.Rows
 		var err error
+		baseWhere := `tenant_id=$1 AND archived=false` +
+			` AND ($2 = '' OR owner_user = $2 OR EXISTS (` +
+			`  SELECT 1 FROM project_collaborators pc` +
+			`   WHERE pc.project_id = projects.id AND pc.user_id = $2))`
 		if cursor == "" {
 			rows, err = tx.Query(ctx,
 				`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
 				   delete_source_after, created_at, updated_at
-				 FROM projects WHERE tenant_id=$1 AND archived=false
-				 ORDER BY created_at DESC LIMIT $2`, tenantID, pageSize+1)
+				 FROM projects WHERE `+baseWhere+`
+				 ORDER BY created_at DESC LIMIT $3`, tenantID, userID, pageSize+1)
 		} else {
 			createdBefore, parseErr := time.Parse(time.RFC3339Nano, cursor)
 			if parseErr != nil {
@@ -278,8 +286,8 @@ func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, cursor stri
 			rows, err = tx.Query(ctx,
 				`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
 				   delete_source_after, created_at, updated_at
-				 FROM projects WHERE tenant_id=$1 AND archived=false AND created_at < $2
-				 ORDER BY created_at DESC LIMIT $3`, tenantID, createdBefore, pageSize+1)
+				 FROM projects WHERE `+baseWhere+` AND created_at < $4
+				 ORDER BY created_at DESC LIMIT $5`, tenantID, userID, createdBefore, pageSize+1)
 		}
 		if err != nil {
 			return err
@@ -308,15 +316,19 @@ func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, cursor stri
 	return projects, next, nil
 }
 
-func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, id string) (*Project, error) {
+func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
 	var p *Project
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		p, e = scanProject(tx.QueryRow(ctx,
 			`UPDATE projects SET archived=true, updated_at=now()
-			 WHERE id=$1 AND tenant_id=$2
+			 WHERE id=$3 AND tenant_id=$2
+			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
+			    SELECT 1 FROM project_collaborators pc
+			     WHERE pc.project_id = projects.id AND pc.user_id = $1))
 			 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
-			   delete_source_after, created_at, updated_at`, id, tenantID))
+			   delete_source_after, created_at, updated_at`,
+			userID, tenantID, id))
 		return e
 	})
 	if errors.Is(err, pgx.ErrNoRows) {

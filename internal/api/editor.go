@@ -187,7 +187,7 @@ func editorListRevisions(w http.ResponseWriter, r *http.Request, projects projec
 		return
 	}
 	projectID := r.PathValue("pid")
-	proj, err := projects.GetProject(r.Context(), principal.TenantID, projectID)
+	proj, err := projects.GetProject(r.Context(), principal.TenantID, principal.UserID, projectID)
 	if err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
 		return

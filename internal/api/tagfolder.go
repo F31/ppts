@@ -270,6 +270,9 @@ func attachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectS
 		writeConnectError(w, err)
 		return
 	}
+	if _, ok := requireProjectAccess(w, r, projects); !ok {
+		return
+	}
 	if err := projects.AttachTag(r.Context(), principal.TenantID, projectID, tagID); err != nil {
 		writeConnectError(w, orgError(err))
 		return
@@ -287,6 +290,9 @@ func detachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectS
 		writeConnectError(w, err)
 		return
 	}
+	if _, ok := requireProjectAccess(w, r, projects); !ok {
+		return
+	}
 	if err := projects.DetachTag(r.Context(), principal.TenantID, projectID, tagID); err != nil {
 		writeConnectError(w, orgError(err))
 		return
@@ -302,6 +308,9 @@ func moveProject(w http.ResponseWriter, r *http.Request, projects project.Projec
 	}
 	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects); !ok {
 		return
 	}
 	var body struct {

@@ -18,9 +18,9 @@
 CREATE TABLE IF NOT EXISTS project_collaborators (
     tenant_id        uuid NOT NULL,
     project_id       uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    user_id          uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id          text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role             text NOT NULL CHECK (role IN ('viewer', 'reviewer', 'editor', 'admin')),
-    invited_by       uuid,
+    invited_by       text,
     created_at       timestamptz NOT NULL DEFAULT now(),
     last_accessed_at timestamptz,
     PRIMARY KEY (project_id, user_id)
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS project_share_links (
     password_protected boolean NOT NULL DEFAULT false,
     expires_at         timestamptz,
     revoked            boolean NOT NULL DEFAULT false,
-    created_by         uuid,
+    created_by         text,
     created_at         timestamptz NOT NULL DEFAULT now(),
     last_accessed_at   timestamptz
 );

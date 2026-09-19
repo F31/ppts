@@ -51,7 +51,7 @@ func (s *ProjectService) Get(ctx context.Context, req *connect.Request[pptsv1.Ge
 	if err != nil {
 		return nil, err
 	}
-	got, err := s.store.GetProject(ctx, p.TenantID, req.Msg.GetId())
+	got, err := s.store.GetProject(ctx, p.TenantID, p.UserID, req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
 	}
@@ -63,7 +63,7 @@ func (s *ProjectService) List(ctx context.Context, req *connect.Request[pptsv1.L
 	if err != nil {
 		return nil, err
 	}
-	projects, next, err := s.store.ListProjects(ctx, p.TenantID, req.Msg.GetCursor().GetValue(), int(req.Msg.GetPageSize()))
+	projects, next, err := s.store.ListProjects(ctx, p.TenantID, p.UserID, req.Msg.GetCursor().GetValue(), int(req.Msg.GetPageSize()))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -82,7 +82,7 @@ func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv
 	if err := requireRole(ctx, s.members, membership.RoleAdmin); err != nil {
 		return nil, err
 	}
-	archived, err := s.store.ArchiveProject(ctx, p.TenantID, req.Msg.GetId())
+	archived, err := s.store.ArchiveProject(ctx, p.TenantID, p.UserID, req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
 	}
@@ -103,7 +103,7 @@ func (s *ProjectService) GetSlides(ctx context.Context, req *connect.Request[ppt
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
 	}
 	revisionNo := int(req.Msg.GetRevisionNo())
-	projectRow, err := s.store.GetProject(ctx, p.TenantID, projectID)
+	projectRow, err := s.store.GetProject(ctx, p.TenantID, p.UserID, projectID)
 	if err != nil {
 		return nil, projectError(err)
 	}

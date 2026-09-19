@@ -84,7 +84,7 @@ func (s *UploadService) CreateUpload(ctx context.Context, tenantID string, in Up
 	if in.SizeBytes > MaxUploadBytes {
 		return nil, ErrUploadTooLarge
 	}
-	if _, err := s.projects.GetProject(ctx, tenantID, in.ProjectID); err != nil {
+	if _, err := s.projects.GetProject(ctx, tenantID, "", in.ProjectID); err != nil {
 		return nil, fmt.Errorf("upload: project: %w", err)
 	}
 

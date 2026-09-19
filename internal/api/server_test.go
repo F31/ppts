@@ -55,7 +55,7 @@ func (s *fakeProjectStore) CreateProject(_ context.Context, tenantID, owner, tit
 	return p, nil
 }
 
-func (s *fakeProjectStore) GetProject(_ context.Context, tenantID, id string) (*project.Project, error) {
+func (s *fakeProjectStore) GetProject(_ context.Context, tenantID, userID, id string) (*project.Project, error) {
 	for _, p := range s.projects {
 		if p.TenantID == tenantID && p.ID == id {
 			return p, nil
@@ -64,12 +64,12 @@ func (s *fakeProjectStore) GetProject(_ context.Context, tenantID, id string) (*
 	return nil, project.ErrProjectNotFound
 }
 
-func (s *fakeProjectStore) ListProjects(context.Context, string, string, int) ([]*project.Project, string, error) {
+func (s *fakeProjectStore) ListProjects(context.Context, string, string, string, int) ([]*project.Project, string, error) {
 	return s.projects, "", nil
 }
 
-func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, id string) (*project.Project, error) {
-	p, err := s.GetProject(context.Background(), tenantID, id)
+func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, userID, id string) (*project.Project, error) {
+	p, err := s.GetProject(context.Background(), tenantID, "", id)
 	if err != nil {
 		return nil, err
 	}
@@ -78,7 +78,7 @@ func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, id string
 }
 
 func (s *fakeProjectStore) CreateSourceRevision(ctx context.Context, tenantID string, in project.NewSourceRevision) (*project.SourceRevision, error) {
-	if _, err := s.GetProject(ctx, tenantID, in.ProjectID); err != nil {
+	if _, err := s.GetProject(ctx, tenantID, "", in.ProjectID); err != nil {
 		return nil, err
 	}
 	s.nextRev++

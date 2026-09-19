@@ -340,6 +340,9 @@ func publicNarrationDraftCount(w http.ResponseWriter, r *http.Request, scripts n
 		writeConnectError(w, err)
 		return
 	}
+	if _, ok := requireProjectAccess(w, r, nil); !ok {
+		return
+	}
 	pid := r.PathValue("pid")
 	n, err := scripts.CountDraftSegments(r.Context(), principal.TenantID, pid)
 	if err != nil {
@@ -357,6 +360,9 @@ func publicNarrationStale(w http.ResponseWriter, r *http.Request, scripts narrat
 	}
 	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, nil); !ok {
 		return
 	}
 	pid := r.PathValue("pid")
