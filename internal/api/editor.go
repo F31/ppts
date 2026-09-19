@@ -13,7 +13,9 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
@@ -23,16 +25,16 @@ import (
 // GET /projects/{pid}/slides/render 返回每页渲染 PNG 的短期签名可读 URL，按 slideId 对齐，供编辑器缩略图与 PPT 预览。
 // PUT /projects/{pid}/slides/{sid}/source + GET /projects/{pid}/slides/sources 管理"无备注页讲稿来源"选择。
 // 均受 auth 中间件保护（仅项目所属租户成员可访问）。
-func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, srcStore app.ScriptSourceStore, auth func(http.Handler) http.Handler) {
+func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, srcStore app.ScriptSourceStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/slides/render", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		editorSlideRender(w, r, jobs, objects)
+		editorSlideRender(w, r, jobs, objects, projects, members, recorder)
 	})))
 	// M3 ⑥：无备注页讲稿来源选择。
 	mux.Handle("PUT /projects/{pid}/slides/{sid}/source", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		editorSetSlideSource(w, r, srcStore)
+		editorSetSlideSource(w, r, srcStore, projects, members, recorder)
 	})))
 	mux.Handle("GET /projects/{pid}/slides/sources", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		editorListSlideSources(w, r, srcStore)
+		editorListSlideSources(w, r, srcStore, projects, members, recorder)
 	})))
 }
 
@@ -43,13 +45,16 @@ type editorSlideRenderItem struct {
 
 // editorSlideRender 读取最近一次成功解析任务的页面清单（PageManifest），为每页渲染 PNG 签发短期匿名可读 URL。
 // 解析未完成、页面清单缺失或某页渲染图不存在时，对应项跳过；整体缺失时返回空列表，前端优雅降级为序号/标题缩略图。
-func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore) {
+func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
 	ctx := r.Context()
 	job, err := jobs.LatestSucceededJob(ctx, principal.TenantID, projectID, string(pipeline.KindParse))
 	if errors.Is(err, pipeline.ErrNoSucceededJob) {
@@ -105,7 +110,7 @@ type editorSlideSourceItem struct {
 
 // editorSetSlideSource 持久化单页讲稿来源选择（M3 ⑥）。body: {source, customText?}。
 // source ∈ layout/title/body/notes/custom；custom 时 customText 必填且非空。
-func editorSetSlideSource(w http.ResponseWriter, r *http.Request, srcStore app.ScriptSourceStore) {
+func editorSetSlideSource(w http.ResponseWriter, r *http.Request, srcStore app.ScriptSourceStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	if srcStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_disabled", "message": "slide script source store not configured"})
 		return
@@ -116,6 +121,9 @@ func editorSetSlideSource(w http.ResponseWriter, r *http.Request, srcStore app.S
 		return
 	}
 	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
 	slideID := r.PathValue("sid")
 	if projectID == "" || slideID == "" {
 		http.Error(w, "project_id and slide_id are required", http.StatusBadRequest)
@@ -146,7 +154,7 @@ func editorSetSlideSource(w http.ResponseWriter, r *http.Request, srcStore app.S
 }
 
 // editorListSlideSources 返回项目内所有页的讲稿来源选择（M3 ⑥）。
-func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app.ScriptSourceStore) {
+func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app.ScriptSourceStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	if srcStore == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_disabled", "message": "slide script source store not configured"})
 		return
@@ -157,6 +165,9 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 		return
 	}
 	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
 	if projectID == "" {
 		http.Error(w, "project_id is required", http.StatusBadRequest)
 		return
@@ -175,22 +186,26 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 
 // registerRevisionRoutes 挂载源版本历史只读端点（buf/protoc 不可用，不新增 Connect RPC）：
 //   - GET /projects/{pid}/revisions：返回 current_revision 与未软删版本列表（倒序），供版本抽屉展示。
-func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, auth func(http.Handler) http.Handler) {
+func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		editorListRevisions(w, r, projects)
+		editorListRevisions(w, r, projects, members, recorder)
 	})))
 }
 
 // editorListRevisions 返回项目源版本历史。current_revision 来自 projects 行（即"当前生效版本"）；
 // 版本列表排除 source_deleted_at 非空的软删版本（保留不可变版本行用于追溯，但不可预览）。
-func editorListRevisions(w http.ResponseWriter, r *http.Request, projects project.ProjectStore) {
+func editorListRevisions(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	projectID := r.PathValue("pid")
-	proj, err := projects.GetProject(r.Context(), principal.TenantID, principal.UserID, projectID)
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	userID, _ := projectAccessUser(r.Context(), members)
+	proj, err := projects.GetProject(r.Context(), principal.TenantID, userID, projectID)
 	if err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
 		return
@@ -217,13 +232,16 @@ func editorListRevisions(w http.ResponseWriter, r *http.Request, projects projec
 // editorDiffRevisions 比较两个源版本的幻灯片差异（V4.0 §7.1 版本管理增强）。
 // GET /projects/{pid}/revisions/{revA}/diff/{revB}
 // 返回 {added: [{slideId,name}], removed: [...], changed: [{slideId,oldName,newName,oldNotes,newNotes}]}
-func editorDiffRevisions(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, objects objectstore.ObjectStore) {
+func editorDiffRevisions(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
 	revAStr := r.PathValue("revA")
 	revBStr := r.PathValue("revB")
 	if projectID == "" || revAStr == "" || revBStr == "" {
@@ -344,8 +362,8 @@ func diffDocuments(oldDoc, newDoc *project.Document) map[string]any {
 
 
 // registerDiffRevisionRoutes 挂载源版本 diff 端点。
-func registerDiffRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, objects objectstore.ObjectStore, auth func(http.Handler) http.Handler) {
-	mux.HandleFunc("GET /projects/{pid}/revisions/{revA}/diff/{revB}", func(w http.ResponseWriter, r *http.Request) {
-		editorDiffRevisions(w, r, projects, objects)
-	})
+func registerDiffRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
+	mux.Handle("GET /projects/{pid}/revisions/{revA}/diff/{revB}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorDiffRevisions(w, r, projects, objects, members, recorder)
+	})))
 }

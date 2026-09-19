@@ -185,8 +185,8 @@ type ProjectStore interface {
 	RenameFolder(ctx context.Context, tenantID, folderID, name string) (*Folder, error)
 	DeleteFolder(ctx context.Context, tenantID, folderID string) error
 	MoveProject(ctx context.Context, tenantID, projectID, folderID string) error
-	// ListProjectOrganization 返回租户内每个项目的 folder_id 与 tag_id 列表（#94，供前端合并列表）。
-	ListProjectOrganization(ctx context.Context, tenantID string) ([]*ProjectOrg, error)
+	// ListProjectOrganization 返回当前用户可见项目的 folder_id 与 tag_id 列表（#94，供前端合并列表）。
+	ListProjectOrganization(ctx context.Context, tenantID, userID string) ([]*ProjectOrg, error)
 	// ---- 私密分享与协作者（#95） ----
 	ListCollaborators(ctx context.Context, tenantID, projectID string) ([]*Collaborator, error)
 	InviteCollaborator(ctx context.Context, tenantID, projectID, userID, role, invitedBy string) (*Collaborator, error)
@@ -664,9 +664,10 @@ func (s *PGProjectStore) getProjectRow(ctx context.Context, tx pgx.Tx, tenantID,
 	return p, e
 }
 
-// ListProjectOrganization 一次性返回租户内所有项目的 folder_id 与 tag_id 列表（#94）。
+// ListProjectOrganization 一次性返回租户内**当前用户可见**项目的 folder_id 与 tag_id 列表（#94）。
+// userID 为空串表示管理旁路（admin/owner，返回全部项目，方案 A）；否则仅返回 owner/协作者项目。
 // 用 string_agg 聚合 tag id 为逗号串，避免 pgx 扫描 uuid 数组的兼容性差异；空聚合返回空串（无标签）。
-func (s *PGProjectStore) ListProjectOrganization(ctx context.Context, tenantID string) ([]*ProjectOrg, error) {
+func (s *PGProjectStore) ListProjectOrganization(ctx context.Context, tenantID, userID string) ([]*ProjectOrg, error) {
 	var orgs []*ProjectOrg
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
@@ -676,8 +677,11 @@ func (s *PGProjectStore) ListProjectOrganization(ctx context.Context, tenantID s
 			 LEFT JOIN project_tags pt ON pt.project_id = p.id
 			 LEFT JOIN tags t ON t.id = pt.tag_id AND t.tenant_id = $1
 			 WHERE p.tenant_id = $1
+			   AND ($2 = '' OR p.owner_user = $2 OR EXISTS (
+			     SELECT 1 FROM project_collaborators pc
+			      WHERE pc.project_id = p.id AND pc.user_id = $2))
 			 GROUP BY p.id, p.folder_id`,
-			tenantID)
+			tenantID, userID)
 		if e != nil {
 			return e
 		}

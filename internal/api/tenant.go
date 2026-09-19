@@ -251,6 +251,10 @@ func (s *TenantService) ProjectUsage(ctx context.Context, req *connect.Request[p
 	if err != nil {
 		return nil, err
 	}
+	// 方案 A：单项目用量属管理态（可见全租户任意项目用量），限 admin/owner 并记审计。
+	if err := requireRole(ctx, s.members, membership.RoleAdmin); err != nil {
+		return nil, err
+	}
 	projectID := strings.TrimSpace(req.Msg.GetProjectId())
 	if projectID == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
@@ -258,6 +262,12 @@ func (s *TenantService) ProjectUsage(ctx context.Context, req *connect.Request[p
 	usage, err := s.usage.ProjectUsage(ctx, p.TenantID, projectID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{
+			TenantID: p.TenantID, ActorUser: p.UserID, Action: "project.admin_override_usage",
+			ResourceType: "project", ResourceID: projectID, Metadata: map[string]any{"surface": "rpc.ProjectUsage"},
+		})
 	}
 	return connect.NewResponse(&pptsv1.GetProjectUsageResponse{
 		ProjectId:    usage.ProjectID,

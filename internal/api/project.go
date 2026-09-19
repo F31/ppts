@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/project"
@@ -21,10 +22,11 @@ type ProjectService struct {
 	store   project.ProjectStore
 	objects objectstore.ObjectStore
 	members membership.Reader
+	audit   audit.Recorder
 }
 
-func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader) *ProjectService {
-	return &ProjectService{store: store, objects: objects, members: members}
+func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder) *ProjectService {
+	return &ProjectService{store: store, objects: objects, members: members, audit: recorder}
 }
 
 func (s *ProjectService) Create(ctx context.Context, req *connect.Request[pptsv1.CreateProjectRequest]) (*connect.Response[pptsv1.CreateProjectResponse], error) {
@@ -51,9 +53,13 @@ func (s *ProjectService) Get(ctx context.Context, req *connect.Request[pptsv1.Ge
 	if err != nil {
 		return nil, err
 	}
-	got, err := s.store.GetProject(ctx, p.TenantID, p.UserID, req.Msg.GetId())
+	userID, override := projectAccessUser(ctx, s.members)
+	got, err := s.store.GetProject(ctx, p.TenantID, userID, req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
+	}
+	if override {
+		recordAdminOverride(ctx, s.audit, "project.admin_override_access", got.ID, map[string]any{"surface": "rpc.Get"})
 	}
 	return connect.NewResponse(toProtoProject(got)), nil
 }
@@ -63,7 +69,8 @@ func (s *ProjectService) List(ctx context.Context, req *connect.Request[pptsv1.L
 	if err != nil {
 		return nil, err
 	}
-	projects, next, err := s.store.ListProjects(ctx, p.TenantID, p.UserID, req.Msg.GetCursor().GetValue(), int(req.Msg.GetPageSize()))
+	userID, _ := projectAccessUser(ctx, s.members)
+	projects, next, err := s.store.ListProjects(ctx, p.TenantID, userID, req.Msg.GetCursor().GetValue(), int(req.Msg.GetPageSize()))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
@@ -82,9 +89,13 @@ func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv
 	if err := requireRole(ctx, s.members, membership.RoleAdmin); err != nil {
 		return nil, err
 	}
-	archived, err := s.store.ArchiveProject(ctx, p.TenantID, p.UserID, req.Msg.GetId())
+	userID, override := projectAccessUser(ctx, s.members)
+	archived, err := s.store.ArchiveProject(ctx, p.TenantID, userID, req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
+	}
+	if override {
+		recordAdminOverride(ctx, s.audit, "project.admin_override_archive", archived.ID, map[string]any{"surface": "rpc.Archive"})
 	}
 	return connect.NewResponse(toProtoProject(archived)), nil
 }
@@ -103,7 +114,8 @@ func (s *ProjectService) GetSlides(ctx context.Context, req *connect.Request[ppt
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
 	}
 	revisionNo := int(req.Msg.GetRevisionNo())
-	projectRow, err := s.store.GetProject(ctx, p.TenantID, p.UserID, projectID)
+	userID, _ := projectAccessUser(ctx, s.members)
+	projectRow, err := s.store.GetProject(ctx, p.TenantID, userID, projectID)
 	if err != nil {
 		return nil, projectError(err)
 	}

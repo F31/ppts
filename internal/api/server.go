@@ -86,7 +86,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	auth := func(handler http.Handler) http.Handler {
 		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders})
 	}
-	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members), handlerOpts...)
+	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -125,11 +125,11 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		registerAuthRoutes(mux, pool, opt.JWTSecret, opt.PasswordPepper)
 	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
-	registerNarrationRoutes(mux, scripts, opt.Members, auth)
+	registerNarrationRoutes(mux, scripts, opt.Members, projects, opt.Audit, auth)
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
-	registerArtifactRoutes(mux, artifacts, opt.Members, auth)
+	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
-	registerEditorRoutes(mux, jobs, objects, scriptSources, auth)
+	registerEditorRoutes(mux, jobs, objects, scriptSources, projects, opt.Members, opt.Audit, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。
 	registerJobDetailRoutes(mux, jobs, auth)
 	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。
@@ -137,13 +137,13 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 成员档案富字段列表/编辑（原生 HTTP，绕过 proto，成员页展示 用户名/姓名/性别/出生年月/邮箱/电话/创建时间）。
 	registerMemberRoutes(mux, opt.Members, auth)
 	// 源版本历史只读端点（原生 HTTP，绕过 proto）：GET /projects/{pid}/revisions，供版本抽屉查看历史版本。
-	registerRevisionRoutes(mux, projects, auth)
+	registerRevisionRoutes(mux, projects, opt.Members, opt.Audit, auth)
 	// 源版本 diff 端点（V4.0 §7.1 增强）：GET /projects/{pid}/revisions/{revA}/diff/{revB}
-	registerDiffRevisionRoutes(mux, projects, objects, auth)
+	registerDiffRevisionRoutes(mux, projects, objects, opt.Members, opt.Audit, auth)
 	// 标签 + 分组体系（#94，原生 HTTP 绕过 proto）：tags/folders/project_tags 的增删改查与项目归属。
-	registerTagFolderRoutes(mux, projects, opt.Members, auth)
+	registerTagFolderRoutes(mux, projects, opt.Members, opt.Audit, auth)
 	// 私密分享与协作者（#95，原生 HTTP 绕过 proto）：协作者 CRUD + 分享链接 + 匿名最小字段播放链路。
-	registerCollabRoutes(mux, projects, opt.Members, jobs, objects, opt.PasswordPepper, auth)
+	registerCollabRoutes(mux, projects, opt.Members, jobs, objects, opt.PasswordPepper, opt.Audit, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

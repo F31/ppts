@@ -14,10 +14,12 @@ import (
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/usage"
 )
 
@@ -321,16 +323,16 @@ func (s *NarrationGenerationService) Estimate(ctx context.Context, req *connect.
 
 // registerNarrationRoutes 挂载核心创作辅助的原生 HTTP 端点（buf/protoc 不可用，不新增 Connect RPC）：
 // 待确认稿计数与 stale 信号，供生成面板前置检查（C-5 强制阻止 + 过期提示）。
-func registerNarrationRoutes(mux *http.ServeMux, scripts narration.Store, members membership.Reader, auth func(http.Handler) http.Handler) {
+func registerNarrationRoutes(mux *http.ServeMux, scripts narration.Store, members membership.Reader, projects project.ProjectStore, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/narration/draft-count", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		publicNarrationDraftCount(w, r, scripts, members)
+		publicNarrationDraftCount(w, r, scripts, members, projects, recorder)
 	})))
 	mux.Handle("GET /projects/{pid}/narration/stale", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		publicNarrationStale(w, r, scripts, members)
+		publicNarrationStale(w, r, scripts, members, projects, recorder)
 	})))
 }
 
-func publicNarrationDraftCount(w http.ResponseWriter, r *http.Request, scripts narration.Store, members membership.Reader) {
+func publicNarrationDraftCount(w http.ResponseWriter, r *http.Request, scripts narration.Store, members membership.Reader, projects project.ProjectStore, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -340,7 +342,7 @@ func publicNarrationDraftCount(w http.ResponseWriter, r *http.Request, scripts n
 		writeConnectError(w, err)
 		return
 	}
-	if _, ok := requireProjectAccess(w, r, nil); !ok {
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	pid := r.PathValue("pid")
@@ -352,7 +354,7 @@ func publicNarrationDraftCount(w http.ResponseWriter, r *http.Request, scripts n
 	writeJSON(w, http.StatusOK, map[string]any{"draftSegments": n})
 }
 
-func publicNarrationStale(w http.ResponseWriter, r *http.Request, scripts narration.Store, members membership.Reader) {
+func publicNarrationStale(w http.ResponseWriter, r *http.Request, scripts narration.Store, members membership.Reader, projects project.ProjectStore, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -362,7 +364,7 @@ func publicNarrationStale(w http.ResponseWriter, r *http.Request, scripts narrat
 		writeConnectError(w, err)
 		return
 	}
-	if _, ok := requireProjectAccess(w, r, nil); !ok {
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	pid := r.PathValue("pid")

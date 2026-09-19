@@ -130,7 +130,7 @@ func (*fakeProjectStore) DeleteFolder(context.Context, string, string) error {
 func (*fakeProjectStore) MoveProject(context.Context, string, string, string) error {
 	return errors.New("not used")
 }
-func (*fakeProjectStore) ListProjectOrganization(context.Context, string) ([]*project.ProjectOrg, error) {
+func (*fakeProjectStore) ListProjectOrganization(context.Context, string, string) ([]*project.ProjectOrg, error) {
 	return nil, nil
 }
 

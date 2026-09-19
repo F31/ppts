@@ -13,6 +13,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
 )
@@ -46,29 +47,30 @@ func registerCollabRoutes(
 	jobs JobStore,
 	objects objectstore.ObjectStore,
 	pepper string,
+	recorder audit.Recorder,
 	auth func(http.Handler) http.Handler,
 ) {
 	mux.Handle("GET /projects/{pid}/collaborators", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		listCollaborators(w, r, projects)
+		listCollaborators(w, r, projects, members, recorder)
 	})))
 	mux.Handle("POST /projects/{pid}/collaborators", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		inviteCollaborator(w, r, projects, members)
+		inviteCollaborator(w, r, projects, members, recorder)
 	})))
 	mux.Handle("PUT /projects/{pid}/collaborators/{userId}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		updateCollaborator(w, r, projects, members, r.PathValue("userId"))
+		updateCollaborator(w, r, projects, members, recorder, r.PathValue("userId"))
 	})))
 	mux.Handle("DELETE /projects/{pid}/collaborators/{userId}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		removeCollaborator(w, r, projects, members, r.PathValue("userId"))
+		removeCollaborator(w, r, projects, members, recorder, r.PathValue("userId"))
 	})))
 
 	mux.Handle("GET /projects/{pid}/shares", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		listShareLinks(w, r, projects)
+		listShareLinks(w, r, projects, members, recorder)
 	})))
 	mux.Handle("POST /projects/{pid}/shares", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		createShareLink(w, r, projects, members, pepper)
+		createShareLink(w, r, projects, members, pepper, recorder)
 	})))
 	mux.Handle("POST /projects/{pid}/shares/{linkId}/revoke", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		revokeShareLink(w, r, projects, members, r.PathValue("linkId"))
+		revokeShareLink(w, r, projects, members, recorder, r.PathValue("linkId"))
 	})))
 
 	mux.HandleFunc("GET /shared/{token}", func(w http.ResponseWriter, r *http.Request) {
@@ -128,10 +130,13 @@ func optionalTime(t *time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
-func listCollaborators(w http.ResponseWriter, r *http.Request, projects project.ProjectStore) {
+func listCollaborators(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	items, err := projects.ListCollaborators(r.Context(), principal.TenantID, r.PathValue("pid"))
@@ -148,7 +153,7 @@ func listCollaborators(w http.ResponseWriter, r *http.Request, projects project.
 
 // inviteCollaborator 按邮箱邀请**本租户成员**为项目协作者。
 // 租户外邮箱暂不支持（无邮件邀约链路），返回明确 404 原因而非静默失败（A26）。
-func inviteCollaborator(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader) {
+func inviteCollaborator(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -156,6 +161,9 @@ func inviteCollaborator(w http.ResponseWriter, r *http.Request, projects project
 	}
 	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	var body struct {
@@ -208,7 +216,7 @@ func resolveTenantUser(ctx context.Context, members membership.Reader, tenantID,
 		errors.New("该邮箱/用户名不是本租户成员；当前仅支持邀请租户内成员，暂不支持向租户外发送邀约"))
 }
 
-func updateCollaborator(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, userID string) {
+func updateCollaborator(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, userID string) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -216,6 +224,9 @@ func updateCollaborator(w http.ResponseWriter, r *http.Request, projects project
 	}
 	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	var body struct {
@@ -233,7 +244,7 @@ func updateCollaborator(w http.ResponseWriter, r *http.Request, projects project
 	writeJSON(w, http.StatusOK, map[string]any{"collaborator": collaboratorJSON(c)})
 }
 
-func removeCollaborator(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, userID string) {
+func removeCollaborator(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, userID string) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -243,6 +254,9 @@ func removeCollaborator(w http.ResponseWriter, r *http.Request, projects project
 		writeConnectError(w, err)
 		return
 	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
 	if err := projects.RemoveCollaborator(r.Context(), principal.TenantID, r.PathValue("pid"), userID); err != nil {
 		writeConnectError(w, collabError(err))
 		return
@@ -250,10 +264,13 @@ func removeCollaborator(w http.ResponseWriter, r *http.Request, projects project
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func listShareLinks(w http.ResponseWriter, r *http.Request, projects project.ProjectStore) {
+func listShareLinks(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	items, err := projects.ListShareLinks(r.Context(), principal.TenantID, r.PathValue("pid"))
@@ -268,7 +285,7 @@ func listShareLinks(w http.ResponseWriter, r *http.Request, projects project.Pro
 	writeJSON(w, http.StatusOK, map[string]any{"shareLinks": out})
 }
 
-func createShareLink(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, pepper string) {
+func createShareLink(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, pepper string, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -276,6 +293,9 @@ func createShareLink(w http.ResponseWriter, r *http.Request, projects project.Pr
 	}
 	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	var body struct {
@@ -316,7 +336,7 @@ func createShareLink(w http.ResponseWriter, r *http.Request, projects project.Pr
 	writeJSON(w, http.StatusCreated, map[string]any{"shareLink": shareLinkJSON(l)})
 }
 
-func revokeShareLink(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, linkID string) {
+func revokeShareLink(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, linkID string) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -324,6 +344,9 @@ func revokeShareLink(w http.ResponseWriter, r *http.Request, projects project.Pr
 	}
 	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
 		writeConnectError(w, err)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	if err := projects.RevokeShareLink(r.Context(), principal.TenantID, linkID); err != nil {

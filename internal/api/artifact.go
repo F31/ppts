@@ -7,7 +7,9 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/membership"
+	"github.com/F31/ppts/internal/project"
 )
 
 // registerArtifactRoutes 挂载成品列表原生 HTTP 端点（buf/protoc 不可用，不新增 Connect RPC）：
@@ -17,16 +19,16 @@ import (
 // 注意：/artifacts 此前 handler（globalArtifacts）已写但漏挂路由，请求落到 SPA 兜底（server.go 的 "/"）
 // 拿到 index.html，前端 JSON 解析报 `Unexpected token '<', "<!doctype"`。新增任何 REST handler
 // 必须同步在注册表挂载（见项目风险 R-10）。
-func registerArtifactRoutes(mux *http.ServeMux, artifacts artifact.Store, members membership.Store, auth func(http.Handler) http.Handler) {
+func registerArtifactRoutes(mux *http.ServeMux, artifacts artifact.Store, members membership.Store, projects project.ProjectStore, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/artifacts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		publicProjectArtifacts(w, r, artifacts, members)
+		publicProjectArtifacts(w, r, artifacts, members, projects, recorder)
 	})))
 	mux.Handle("GET /artifacts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		globalArtifacts(w, r, artifacts, members)
 	})))
 }
 
-func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, members membership.Store) {
+func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, members membership.Store, projects project.ProjectStore, recorder audit.Recorder) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -36,7 +38,7 @@ func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts ar
 		writeConnectError(w, err)
 		return
 	}
-	if _, ok := requireProjectAccess(w, r, nil); !ok {
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	pid := r.PathValue("pid")

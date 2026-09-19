@@ -8,6 +8,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/F31/ppts/internal/membership"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/project"
 )
 
@@ -25,7 +26,7 @@ import (
 //   - PUT    /projects/{pid}/tags/{tagId}     给项目打标签
 //   - DELETE /projects/{pid}/tags/{tagId}     移除项目标签
 //   - PUT    /projects/{pid}/folder           移动项目到分组 {folderId?}（空=未分类）
-func registerTagFolderRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, auth func(http.Handler) http.Handler) {
+func registerTagFolderRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /tags", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		listTags(w, r, projects)
 	})))
@@ -53,17 +54,17 @@ func registerTagFolderRoutes(mux *http.ServeMux, projects project.ProjectStore, 
 	})))
 
 	mux.Handle("GET /projects/organization", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		listProjectOrganization(w, r, projects)
+		listProjectOrganization(w, r, projects, members)
 	})))
 
 	mux.Handle("PUT /projects/{pid}/tags/{tagId}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attachTag(w, r, projects, members, r.PathValue("pid"), r.PathValue("tagId"))
+		attachTag(w, r, projects, members, recorder, r.PathValue("pid"), r.PathValue("tagId"))
 	})))
 	mux.Handle("DELETE /projects/{pid}/tags/{tagId}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		detachTag(w, r, projects, members, r.PathValue("pid"), r.PathValue("tagId"))
+		detachTag(w, r, projects, members, recorder, r.PathValue("pid"), r.PathValue("tagId"))
 	})))
 	mux.Handle("PUT /projects/{pid}/folder", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		moveProject(w, r, projects, members, r.PathValue("pid"))
+		moveProject(w, r, projects, members, recorder, r.PathValue("pid"))
 	})))
 }
 
@@ -234,13 +235,14 @@ func deleteFolder(w http.ResponseWriter, r *http.Request, projects project.Proje
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func listProjectOrganization(w http.ResponseWriter, r *http.Request, projects project.ProjectStore) {
+func listProjectOrganization(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
 		return
 	}
-	rows, err := projects.ListProjectOrganization(r.Context(), principal.TenantID)
+	userID, _ := projectAccessUser(r.Context(), members)
+	rows, err := projects.ListProjectOrganization(r.Context(), principal.TenantID, userID)
 	if err != nil {
 		writeConnectError(w, orgError(err))
 		return
@@ -260,7 +262,7 @@ func listProjectOrganization(w http.ResponseWriter, r *http.Request, projects pr
 	writeJSON(w, http.StatusOK, map[string]any{"organization": out})
 }
 
-func attachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, projectID, tagID string) {
+func attachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, projectID, tagID string) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -270,7 +272,7 @@ func attachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectS
 		writeConnectError(w, err)
 		return
 	}
-	if _, ok := requireProjectAccess(w, r, projects); !ok {
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	if err := projects.AttachTag(r.Context(), principal.TenantID, projectID, tagID); err != nil {
@@ -280,7 +282,7 @@ func attachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectS
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func detachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, projectID, tagID string) {
+func detachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, projectID, tagID string) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -290,7 +292,7 @@ func detachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectS
 		writeConnectError(w, err)
 		return
 	}
-	if _, ok := requireProjectAccess(w, r, projects); !ok {
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	if err := projects.DetachTag(r.Context(), principal.TenantID, projectID, tagID); err != nil {
@@ -300,7 +302,7 @@ func detachTag(w http.ResponseWriter, r *http.Request, projects project.ProjectS
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func moveProject(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, projectID string) {
+func moveProject(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, projectID string) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -310,7 +312,7 @@ func moveProject(w http.ResponseWriter, r *http.Request, projects project.Projec
 		writeConnectError(w, err)
 		return
 	}
-	if _, ok := requireProjectAccess(w, r, projects); !ok {
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 		return
 	}
 	var body struct {
