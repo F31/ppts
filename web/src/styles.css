@@ -856,6 +856,22 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .tag-chip.toggle { cursor: pointer; border: 1px solid var(--border); color: var(--text-body); background: var(--bg-elevated); }
 .tag-chip.toggle.on { color: #fff; border-color: transparent; }
 .tag-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; }
+/* 内联组织：左栏「新建」按钮 + 内联表单 + 行内控件 */
+.org-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.org-head h3 { margin: 0; }
+.link-btn { background: none; border: none; padding: 0; color: var(--accent-text); cursor: pointer; font-size: 12px; }
+.link-btn:hover { text-decoration: underline; }
+.org-composer { display: flex; gap: 6px; margin-bottom: 8px; }
+.org-composer input[type="text"], .org-composer input:not([type]) { flex: 1 1 auto; min-width: 0; }
+.org-composer input[type="color"] { width: 30px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: none; cursor: pointer; }
+.org-composer button { flex: 0 0 auto; }
+.org-manage { display: block; text-align: center; font-size: 13px; }
+.inline-select { max-width: 140px; font-size: 12px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-body); }
+.tag-cell { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.tag-cell .tag-add { max-width: 48px; }
+.tag-chip .chip-x { border: none; background: none; color: inherit; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 0 0 2px; opacity: 0.8; }
+.tag-chip .chip-x:hover { opacity: 1; }
+.pc-org { display: inline-flex; align-items: center; gap: 6px; }
 .batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px; font-size: 13px; }
 .col-check, .card-check { width: 28px; text-align: center; }
 .card-check { position: absolute; top: 10px; right: 10px; }

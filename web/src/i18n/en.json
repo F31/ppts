@@ -925,5 +925,13 @@
   "versions.diffAdded": "Added {n} page(s)",
   "versions.diffRemoved": "Removed {n} page(s)",
   "versions.diffChanged": "Changed {n} page(s)",
-  "versions.diffNone": "No differences between versions"
+  "versions.diffNone": "No differences between versions",
+  "common.saveFailed": "Save failed",
+  "projects.addTag": "Add tag",
+  "projects.removeTag": "Remove tag",
+  "projects.moveFolder": "Move to folder",
+  "projects.manageOrg": "Manage tags & folders",
+  "projects.folderMoved": "Moved to folder",
+  "projects.tagAdded": "Tag added",
+  "projects.tagRemoved": "Tag removed"
 }

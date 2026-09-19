@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   archiveProject,
   attachTag,
+  createFolder,
   createProject,
+  createTag,
   detachTag,
   getNarration,
   getProjectSlides,
@@ -94,6 +96,13 @@ export function Projects({
 
   // 批量选择（打标签 / 移动分组）。
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // 内联创建（分组 / 标签）：在项目页左栏直接创建，无需跳转设置页。
+  const [showFolderComposer, setShowFolderComposer] = useState(false);
+  const [folderDraft, setFolderDraft] = useState('');
+  const [showTagComposer, setShowTagComposer] = useState(false);
+  const [tagDraft, setTagDraft] = useState('');
+  const [tagColorDraft, setTagColorDraft] = useState('#2563eb');
 
   const canOrganize = roleReady && can(role, 'project.organize' as Capability);
 
@@ -323,6 +332,84 @@ export function Projects({
     }
   };
 
+  // 内联创建分组。
+  const submitFolder = async () => {
+    const name = folderDraft.trim();
+    if (!name) return;
+    try {
+      const folder = await createFolder(identity, name);
+      setFolders((cur) => [...cur, folder]);
+      setFolderDraft('');
+      setShowFolderComposer(false);
+      pushNotice(t('folders.created', { name: folder.name }));
+    } catch (err) {
+      setOrgError(err instanceof Error ? err.message : t('common.saveFailed'));
+    }
+  };
+
+  // 内联创建标签。
+  const submitTag = async () => {
+    const name = tagDraft.trim();
+    if (!name) return;
+    try {
+      const tag = await createTag(identity, name, tagColorDraft);
+      setTags((cur) => [...cur, tag]);
+      setTagDraft('');
+      setShowTagComposer(false);
+      pushNotice(t('tags.created', { name: tag.name }));
+    } catch (err) {
+      setOrgError(err instanceof Error ? err.message : t('common.saveFailed'));
+    }
+  };
+
+  // 行内移动分组（单项目）。
+  const moveToFolder = async (projectId: string, folderId: string) => {
+    try {
+      await moveProject(identity, projectId, folderId);
+      setOrg((cur) => {
+        const rest = cur.filter((o) => o.projectId !== projectId);
+        const prev = cur.find((o) => o.projectId === projectId);
+        return [...rest, { projectId, folderId, tagIds: prev?.tagIds ?? [] }];
+      });
+      pushNotice(t('projects.folderMoved'));
+    } catch (err) {
+      setOrgError(err instanceof Error ? err.message : t('projects.batchMoveFailed'));
+    }
+  };
+
+  // 行内打标签（单项目，追加）。
+  const addTagToProject = async (projectId: string, tagId: string) => {
+    if (!tagId) return;
+    try {
+      await attachTag(identity, projectId, tagId);
+      setOrg((cur) => {
+        const prev = cur.find((o) => o.projectId === projectId);
+        const rest = cur.filter((o) => o.projectId !== projectId);
+        const tagIds = prev?.tagIds ?? [];
+        return [...rest, { projectId, folderId: prev?.folderId ?? '', tagIds: tagIds.includes(tagId) ? tagIds : [...tagIds, tagId] }];
+      });
+      pushNotice(t('projects.tagAdded'));
+    } catch (err) {
+      setOrgError(err instanceof Error ? err.message : t('projects.batchTagFailed'));
+    }
+  };
+
+  // 行内移除标签（单项目）。
+  const removeTagFromProject = async (projectId: string, tagId: string) => {
+    try {
+      await detachTag(identity, projectId, tagId);
+      setOrg((cur) => {
+        const prev = cur.find((o) => o.projectId === projectId);
+        if (!prev) return cur;
+        const rest = cur.filter((o) => o.projectId !== projectId);
+        return [...rest, { ...prev, tagIds: prev.tagIds.filter((x) => x !== tagId) }];
+      });
+      pushNotice(t('projects.tagRemoved'));
+    } catch (err) {
+      setOrgError(err instanceof Error ? err.message : t('projects.batchTagFailed'));
+    }
+  };
+
   const renderActions = (project: Project) => (
     <div className="row-actions">
       <Link to={`/projects/${project.id}/editor`} className="button-ghost">
@@ -348,7 +435,7 @@ export function Projects({
     </div>
   );
 
-  const TagChips = ({ projectId }: { projectId: string }) => {
+  const TagChips = ({ projectId, onRemove }: { projectId: string; onRemove?: (tagId: string) => void }) => {
     const o = orgByProject[projectId];
     if (!o || o.tagIds.length === 0) return null;
     return (
@@ -357,10 +444,72 @@ export function Projects({
           tagById[tid] ? (
             <span key={tid} className="tag-chip" style={{ background: tagById[tid].color || '#4b5563' }}>
               {tagById[tid].name}
+              {onRemove && (
+                <button
+                  type="button"
+                  className="chip-x"
+                  onClick={() => onRemove(tid)}
+                  title={t('projects.removeTag')}
+                  aria-label={t('projects.removeTag')}
+                >
+                  ×
+                </button>
+              )}
             </span>
           ) : null
         )}
       </span>
+    );
+  };
+
+  // 行内标签控件：已挂标签（可移除）+ 「＋」下拉追加。
+  const TagControl = ({ projectId }: { projectId: string }) => {
+    const attached = new Set(orgByProject[projectId]?.tagIds ?? []);
+    const options = tags.filter((tg) => !attached.has(tg.id));
+    return (
+      <div className="tag-cell">
+        <TagChips projectId={projectId} onRemove={(tid) => void removeTagFromProject(projectId, tid)} />
+        {canOrganize && (
+          <select
+            className="inline-select tag-add"
+            value=""
+            onChange={(e) => {
+              void addTagToProject(projectId, e.currentTarget.value);
+              e.currentTarget.value = '';
+            }}
+            title={t('projects.addTag')}
+            aria-label={t('projects.addTag')}
+          >
+            <option value="">＋</option>
+            {options.map((tg) => (
+              <option key={tg.id} value={tg.id}>
+                {tg.name}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+    );
+  };
+
+  // 行内分组控件：下拉直接移动（未分类 + 各分组）。
+  const FolderControl = ({ projectId }: { projectId: string }) => {
+    if (!canOrganize) return <>{folderNameOf(projectId)}</>;
+    return (
+      <select
+        className="inline-select"
+        value={orgByProject[projectId]?.folderId ?? ''}
+        onChange={(e) => void moveToFolder(projectId, e.currentTarget.value)}
+        title={t('projects.moveFolder')}
+        aria-label={t('projects.moveFolder')}
+      >
+        <option value="">{t('folders.uncategorized')}</option>
+        {folders.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+          </option>
+        ))}
+      </select>
     );
   };
 
@@ -410,7 +559,38 @@ export function Projects({
       <div className="projects-layout">
         <aside className="org-side" aria-label={t('projects.orgLabel')}>
           <div className="org-section">
-            <h3>{t('folders.title')}</h3>
+            <div className="org-head">
+              <h3>{t('folders.title')}</h3>
+              {canOrganize && (
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => setShowFolderComposer((v) => !v)}
+                  title={t('folders.create')}
+                >
+                  ＋ {t('folders.create')}
+                </button>
+              )}
+            </div>
+            {canOrganize && showFolderComposer && (
+              <form
+                className="org-composer"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void submitFolder();
+                }}
+              >
+                <input
+                  value={folderDraft}
+                  onChange={(e) => setFolderDraft(e.currentTarget.value)}
+                  placeholder={t('folders.newName')}
+                  autoFocus
+                />
+                <button type="submit" disabled={!folderDraft.trim()}>
+                  ✓
+                </button>
+              </form>
+            )}
             <ul className="folder-tree">
               <li>
                 <button
@@ -447,7 +627,45 @@ export function Projects({
             </ul>
           </div>
           <div className="org-section">
-            <h3>{t('tags.title')}</h3>
+            <div className="org-head">
+              <h3>{t('tags.title')}</h3>
+              {canOrganize && (
+                <button
+                  type="button"
+                  className="link-btn"
+                  onClick={() => setShowTagComposer((v) => !v)}
+                  title={t('tags.create')}
+                >
+                  ＋ {t('tags.create')}
+                </button>
+              )}
+            </div>
+            {canOrganize && showTagComposer && (
+              <form
+                className="org-composer"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void submitTag();
+                }}
+              >
+                <input
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.currentTarget.value)}
+                  placeholder={t('tags.newName')}
+                  autoFocus
+                />
+                <input
+                  type="color"
+                  value={tagColorDraft}
+                  onChange={(e) => setTagColorDraft(e.currentTarget.value)}
+                  title={t('tags.color')}
+                  aria-label={t('tags.color')}
+                />
+                <button type="submit" disabled={!tagDraft.trim()}>
+                  ✓
+                </button>
+              </form>
+            )}
             {tags.length === 0 ? (
               <p className="hint-note">{t('tags.emptyHint')}</p>
             ) : (
@@ -466,6 +684,13 @@ export function Projects({
               </div>
             )}
           </div>
+          {canOrganize && (
+            <div className="org-section">
+              <Link to="/settings/tags" className="button-ghost org-manage">
+                {t('projects.manageOrg')}
+              </Link>
+            </div>
+          )}
         </aside>
 
         <section className="panel">
@@ -621,9 +846,11 @@ export function Projects({
                               {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
                             </span>
                           </td>
-                          <td>{folderNameOf(project.id)}</td>
                           <td>
-                            <TagChips projectId={project.id} />
+                            <FolderControl projectId={project.id} />
+                          </td>
+                          <td>
+                            <TagControl projectId={project.id} />
                           </td>
                           <td className="col-actions">{renderActions(project)}</td>
                         </tr>
@@ -673,11 +900,11 @@ export function Projects({
                               {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
                             </span>
                           </span>
-                          <span>
-                            {t('folders.title')}: {folderNameOf(project.id)}
+                          <span className="pc-org">
+                            {t('folders.title')}: <FolderControl projectId={project.id} />
                           </span>
                         </div>
-                        <TagChips projectId={project.id} />
+                        <TagControl projectId={project.id} />
                         {renderActions(project)}
                       </div>
                     );

@@ -925,5 +925,13 @@
   "versions.diffAdded": "新增 {n} 页",
   "versions.diffRemoved": "删除 {n} 页",
   "versions.diffChanged": "变更 {n} 页",
-  "versions.diffNone": "两版内容一致，无差异"
+  "versions.diffNone": "两版内容一致，无差异",
+  "common.saveFailed": "保存失败",
+  "projects.addTag": "打标签",
+  "projects.removeTag": "移除标签",
+  "projects.moveFolder": "移动分组",
+  "projects.manageOrg": "管理标签与分组",
+  "projects.folderMoved": "已移动分组",
+  "projects.tagAdded": "已添加标签",
+  "projects.tagRemoved": "已移除标签"
 }
