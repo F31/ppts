@@ -24,6 +24,7 @@ import type { Capability } from './permissions';
 import { PublicShell } from './PublicShell';
 import { Explore } from './pages/Explore';
 import { Watch } from './pages/Watch';
+import { SharedWatch } from './pages/SharedWatch';
 import { PublicAdmin } from './pages/PublicAdmin';
 import { describeApiError } from './apiError';
 
@@ -99,6 +100,17 @@ function AppContent() {
   if (!oidcDone) {
     return <div className="splash-screen">{t('app.restoring')}</div>;
   }
+  // 公开区（作品广场 / 广场作品播放 / 私密分享播放）无需登录：必须在身份判定之前返回，
+  // 否则匿名访客会被强制跳登录页。此前 isPublicRoute/PublicApp 从未被调用，导致
+  // /explore 与 /watch/{id} 实际不可达（死代码），本轮随 #95 一并接回。
+  if (isPublicRoute(route.parts)) {
+    return (
+      <SessionContext.Provider value={session}>
+        <PublicApp parts={route.parts} query={route.query} />
+      </SessionContext.Provider>
+    );
+  }
+
   if (!identity) {
     return (
       <SessionContext.Provider value={session}>
@@ -233,8 +245,16 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
   );
 }
 
+// isPublicRoute 判定无需登录即可访问的公开区路径：
+//   - /explore                 公开作品广场
+//   - /watch/{publicId}        广场作品匿名播放（B5-M3 改用不可反推的 public_id）
+//   - /shared/{token}          私密分享匿名播放（#95），与广场互不干扰
 function isPublicRoute(parts: string[]): boolean {
-  return parts[0] === 'explore' || (parts[0] === 'watch' && parts.length >= 2);
+  return (
+    parts[0] === 'explore' ||
+    (parts[0] === 'watch' && parts.length >= 2) ||
+    (parts[0] === 'shared' && parts.length >= 2)
+  );
 }
 
 function PublicApp({ parts, query }: { parts: string[]; query: URLSearchParams }) {
@@ -242,6 +262,8 @@ function PublicApp({ parts, query }: { parts: string[]; query: URLSearchParams }
   let content: React.ReactNode;
   if (section === 'watch' && parts[1]) {
     content = <Watch publicId={parts[1]} />;
+  } else if (section === 'shared' && parts[1]) {
+    content = <SharedWatch token={parts[1]} />;
   } else {
     content = <Explore />;
   }

@@ -325,3 +325,44 @@ export type PronunciationDictionary = {
   rules: PronunciationRule[];
   updatedAtUnix?: number;
 };
+
+// ---- 私密分享与协作者（#95） ----
+
+// 项目级协作者角色：复用租户角色名，不含 owner（owner 属租户级）。
+export type CollaboratorRole = 'viewer' | 'reviewer' | 'editor' | 'admin';
+
+export type Collaborator = {
+  userId: string;
+  role: CollaboratorRole | string;
+  email: string;
+  username: string;
+  fullName: string;
+  invitedBy: string;
+  createdAt: string;
+  lastAccessedAt: string;
+};
+
+export type ShareAccessMode = 'view_only' | 'view_and_comment';
+
+export type ShareLink = {
+  id: string;
+  projectId: string;
+  token: string;
+  // 后端拼好的站内相对路径，前端只需拼接 origin 即可得到可分享 URL。
+  url: string;
+  accessMode: ShareAccessMode | string;
+  passwordProtected: boolean;
+  expiresAt: string;
+  revoked: boolean;
+  createdBy: string;
+  createdAt: string;
+  lastAccessedAt: string;
+};
+
+// 匿名分享页拿到的元信息：刻意不含 project_id / tenant_id 等内部标识。
+export type SharedMeta = {
+  title: string;
+  accessMode: string;
+  passwordProtected: boolean;
+  expiresAtUnix: number;
+};

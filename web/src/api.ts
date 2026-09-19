@@ -2,6 +2,7 @@ import type {
   ArtifactFormat,
   AuditArchiveFile,
   AuditEvent,
+  Collaborator,
   Folder,
   Job,
   Member,
@@ -15,6 +16,8 @@ import type {
   ScriptMode,
   ScriptRevision,
   ScriptSegment,
+  SharedMeta,
+  ShareLink,
   SlideSummary,
   StorageUsage,
   Tag,
@@ -1259,6 +1262,86 @@ export async function listReviewQueue(identity: ClientIdentity, params: { kind?:
   if (params.kind) qs.set('kind', params.kind);
   const q = qs.toString();
   return (await authedJSON<PublicWorkPage>(identity, 'GET', `/public/works/queue${q ? `?${q}` : ''}`)) as PublicWorkPage;
+}
+
+// ---- 私密分享与协作者（#95） ----
+// 与"发布到公开作品广场"是两种不同能力：私密分享不出现在广场，只面向持有链接的人。
+// 管理端走原生 HTTP 受保护端点；匿名端走 /shared/{token} 最小字段端点。
+
+export async function listCollaborators(identity: ClientIdentity, projectId: string): Promise<Collaborator[]> {
+  const data = await getJSON<{ collaborators?: Collaborator[] }>(identity, `/projects/${encodeURIComponent(projectId)}/collaborators`);
+  return data.collaborators ?? [];
+}
+
+export async function inviteCollaborator(
+  identity: ClientIdentity,
+  projectId: string,
+  params: { email: string; role: string }
+): Promise<Collaborator> {
+  const data = await postJSON<{ collaborator?: Collaborator }>(identity, `/projects/${encodeURIComponent(projectId)}/collaborators`, params);
+  return data.collaborator!;
+}
+
+export async function updateCollaboratorRole(
+  identity: ClientIdentity,
+  projectId: string,
+  userId: string,
+  role: string
+): Promise<Collaborator> {
+  const data = await putJSON<{ collaborator?: Collaborator }>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/collaborators/${encodeURIComponent(userId)}`,
+    { role }
+  );
+  return data.collaborator!;
+}
+
+export async function removeCollaborator(identity: ClientIdentity, projectId: string, userId: string): Promise<void> {
+  await deleteJSON<{ ok?: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/collaborators/${encodeURIComponent(userId)}`);
+}
+
+export async function listShareLinks(identity: ClientIdentity, projectId: string): Promise<ShareLink[]> {
+  const data = await getJSON<{ shareLinks?: ShareLink[] }>(identity, `/projects/${encodeURIComponent(projectId)}/shares`);
+  return data.shareLinks ?? [];
+}
+
+export async function createShareLink(
+  identity: ClientIdentity,
+  projectId: string,
+  params: { accessMode: string; password?: string; expiresInDays?: number }
+): Promise<ShareLink> {
+  const data = await postJSON<{ shareLink?: ShareLink }>(identity, `/projects/${encodeURIComponent(projectId)}/shares`, params);
+  return data.shareLink!;
+}
+
+export async function revokeShareLink(identity: ClientIdentity, projectId: string, linkId: string): Promise<void> {
+  await postJSON<{ ok?: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(linkId)}/revoke`, {});
+}
+
+// 匿名端：口令只经请求头传递（不进 URL / 访问日志）。
+async function sharedGet<T>(path: string, password?: string): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (password) headers['X-Share-Password'] = password;
+  const response = await fetch(path, { headers });
+  if (!response.ok) {
+    throw new Error(`GET ${path} failed: HTTP ${response.status}`);
+  }
+  return (await response.json()) as T;
+}
+
+export function getSharedMeta(token: string): Promise<SharedMeta> {
+  return sharedGet<SharedMeta>(`/shared/${encodeURIComponent(token)}`);
+}
+
+export function getSharedManifest(token: string, password?: string): Promise<PlaybackManifest> {
+  return sharedGet<PlaybackManifest>(`/shared/${encodeURIComponent(token)}/manifest`, password);
+}
+
+// shareUrl 把后端给的相对路径拼成绝对地址，供"复制链接"使用。
+export function shareUrl(url: string): string {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${window.location.origin}${url.startsWith('/') ? url : `/${url}`}`;
 }
 
 

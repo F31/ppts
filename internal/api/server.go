@@ -140,6 +140,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerRevisionRoutes(mux, projects, auth)
 	// 标签 + 分组体系（#94，原生 HTTP 绕过 proto）：tags/folders/project_tags 的增删改查与项目归属。
 	registerTagFolderRoutes(mux, projects, opt.Members, auth)
+	// 私密分享与协作者（#95，原生 HTTP 绕过 proto）：协作者 CRUD + 分享链接 + 匿名最小字段播放链路。
+	registerCollabRoutes(mux, projects, opt.Members, jobs, objects, opt.PasswordPepper, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

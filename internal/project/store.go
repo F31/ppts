@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"time"
@@ -65,6 +66,69 @@ type ProjectOrg struct {
 	TagIDs    []string
 }
 
+// Collaborator 是项目协作者（#95 私密分享/协作者）。
+// Role 复用 membership 角色字符串（viewer/reviewer/editor/admin），不新增角色概念。
+type Collaborator struct {
+	ProjectID string
+	UserID    string
+	Role      string
+	InvitedBy string
+	CreatedAt time.Time
+	// LastAccessedAt 为 nil 表示尚未访问过。
+	LastAccessedAt *time.Time
+	// 展示用字段由 List 经 users / user_profiles 联表填充，可空。
+	Email    string
+	Username string
+	FullName string
+}
+
+// 项目级协作者角色：复用 membership 角色名，限制在 viewer..admin（不含 owner，owner 属租户级）。
+const (
+	CollabRoleViewer   = "viewer"
+	CollabRoleReviewer = "reviewer"
+	CollabRoleEditor   = "editor"
+	CollabRoleAdmin    = "admin"
+)
+
+// ValidCollaboratorRole 判断项目级角色取值是否合法。
+func ValidCollaboratorRole(role string) bool {
+	switch role {
+	case CollabRoleViewer, CollabRoleReviewer, CollabRoleEditor, CollabRoleAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+// ShareLink 是项目私密分享链接（#95）。
+// Token 为不可反推的随机串；PasswordHash 由租户上下文读取，永不出现在匿名响应里。
+type ShareLink struct {
+	ID                string
+	TenantID          string
+	ProjectID         string
+	Token             string
+	AccessMode        string
+	PasswordProtected bool
+	PasswordHash      string
+	ExpiresAt         *time.Time
+	Revoked           bool
+	CreatedBy         string
+	CreatedAt         time.Time
+	// LastAccessedAt 为 nil 表示尚未被匿名访问过。
+	LastAccessedAt *time.Time
+}
+
+// 分享链接访问模式（与 project_share_links.access_mode 的 CHECK 约束一致）。
+const (
+	ShareAccessViewOnly       = "view_only"
+	ShareAccessViewAndComment = "view_and_comment"
+)
+
+// ValidShareAccessMode 判断访问模式取值是否合法。
+func ValidShareAccessMode(mode string) bool {
+	return mode == ShareAccessViewOnly || mode == ShareAccessViewAndComment
+}
+
 // ErrTagNotFound 表示标签不存在或越权。
 var ErrTagNotFound = errors.New("project: tag not found")
 
@@ -82,6 +146,18 @@ var ErrProjectNotFound = errors.New("project: project not found")
 
 // ErrSourceRevisionNotFound 表示源版本不存在。
 var ErrSourceRevisionNotFound = errors.New("project: source revision not found")
+
+// ErrCollaboratorNotFound 表示协作者不存在或越权。
+var ErrCollaboratorNotFound = errors.New("project: collaborator not found")
+
+// ErrShareLinkNotFound 表示分享链接不存在、已撤回或越权。
+var ErrShareLinkNotFound = errors.New("project: share link not found")
+
+// ErrShareLinkExpired 表示分享链接已过有效期。
+var ErrShareLinkExpired = errors.New("project: share link expired")
+
+// ErrInvalidCollaboratorRole 表示项目级角色取值不在 viewer/reviewer/editor/admin 内。
+var ErrInvalidCollaboratorRole = errors.New("project: invalid collaborator role")
 
 // ProjectStore 项目与源版本存储端口。
 type ProjectStore interface {
@@ -111,6 +187,22 @@ type ProjectStore interface {
 	MoveProject(ctx context.Context, tenantID, projectID, folderID string) error
 	// ListProjectOrganization 返回租户内每个项目的 folder_id 与 tag_id 列表（#94，供前端合并列表）。
 	ListProjectOrganization(ctx context.Context, tenantID string) ([]*ProjectOrg, error)
+	// ---- 私密分享与协作者（#95） ----
+	ListCollaborators(ctx context.Context, tenantID, projectID string) ([]*Collaborator, error)
+	InviteCollaborator(ctx context.Context, tenantID, projectID, userID, role, invitedBy string) (*Collaborator, error)
+	UpdateCollaboratorRole(ctx context.Context, tenantID, projectID, userID, role string) (*Collaborator, error)
+	RemoveCollaborator(ctx context.Context, tenantID, projectID, userID string) error
+	// CreateShareLink 生成私密分享链接；passwordHash 为空表示不设口令。
+	CreateShareLink(ctx context.Context, tenantID, projectID, accessMode, passwordHash, createdBy string, expiresAt *time.Time) (*ShareLink, error)
+	ListShareLinks(ctx context.Context, tenantID, projectID string) ([]*ShareLink, error)
+	RevokeShareLink(ctx context.Context, tenantID, linkID string) error
+	// GetShareLinkByToken 匿名按 token 取链接（不经 tenant.Run，由 anon_read 策略放行）。
+	// 命中即代表"未撤回且未过期"；口令是否正确由上层比对。
+	GetShareLinkByToken(ctx context.Context, token string) (*ShareLink, error)
+	// ShareLinkPasswordHash 在租户上下文内取口令散列，供匿名链路做 bcrypt 比对。
+	ShareLinkPasswordHash(ctx context.Context, tenantID, linkID string) (string, error)
+	// TouchShareLinkAccess 更新最后访问时间（匿名命中成功后调用）。
+	TouchShareLinkAccess(ctx context.Context, tenantID, linkID string) error
 }
 
 // NewSourceRevision 新建源版本的输入。
@@ -622,4 +714,238 @@ func scanSourceRevision(row pgx.Row) (*SourceRevision, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// ---- 私密分享与协作者（#95） ----
+//
+// 两张表均 FORCE RLS：协作者纯租户隔离；分享链接另有 anon_read 策略放行"未撤回且未过期"的行，
+// 供匿名链路按不可反推的 token 命中（与 publications_public_read 同范式）。
+// 口令散列（password_hash）只在租户上下文内读取，绝不经匿名路径返回。
+
+// collaboratorSelect 联表带出展示用档案字段；COALESCE 保证空档案不产生 NULL 扫描错误。
+const collaboratorSelect = `SELECT c.project_id, c.user_id, c.role, c.invited_by, c.created_at, c.last_accessed_at,
+       COALESCE(u.email, ''), COALESCE(up.username, ''), COALESCE(up.full_name, '')
+  FROM project_collaborators c
+  LEFT JOIN users u ON u.id = c.user_id
+  LEFT JOIN user_profiles up ON up.user_id = c.user_id`
+
+// shareLinkColumns 不含 password_hash：匿名响应与列表响应都不得携带口令散列。
+const shareLinkColumns = `id, tenant_id, project_id, token, access_mode, password_protected,
+       expires_at, revoked, created_by, created_at, last_accessed_at`
+
+const shareLinkSelect = `SELECT ` + shareLinkColumns + ` FROM project_share_links`
+
+func scanCollaborator(row pgx.Row) (*Collaborator, error) {
+	var c Collaborator
+	var invitedBy sql.NullString
+	var last *time.Time
+	err := row.Scan(&c.ProjectID, &c.UserID, &c.Role, &invitedBy, &c.CreatedAt, &last,
+		&c.Email, &c.Username, &c.FullName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrCollaboratorNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.InvitedBy = invitedBy.String
+	c.LastAccessedAt = last
+	return &c, nil
+}
+
+func scanShareLink(row pgx.Row) (*ShareLink, error) {
+	var l ShareLink
+	var expires, last *time.Time
+	var createdBy sql.NullString
+	err := row.Scan(&l.ID, &l.TenantID, &l.ProjectID, &l.Token, &l.AccessMode, &l.PasswordProtected,
+		&expires, &l.Revoked, &createdBy, &l.CreatedAt, &last)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrShareLinkNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	l.ExpiresAt = expires
+	l.CreatedBy = createdBy.String
+	l.LastAccessedAt = last
+	return &l, nil
+}
+
+func (s *PGProjectStore) ListCollaborators(ctx context.Context, tenantID, projectID string) ([]*Collaborator, error) {
+	var items []*Collaborator
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx, collaboratorSelect+` WHERE c.project_id=$1 AND c.tenant_id=$2 ORDER BY c.created_at`,
+			projectID, tenantID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			c, e := scanCollaborator(rows)
+			if e != nil {
+				return e
+			}
+			items = append(items, c)
+		}
+		return rows.Err()
+	})
+	return items, err
+}
+
+func (s *PGProjectStore) InviteCollaborator(ctx context.Context, tenantID, projectID, userID, role, invitedBy string) (*Collaborator, error) {
+	if !ValidCollaboratorRole(role) {
+		return nil, ErrInvalidCollaboratorRole
+	}
+	var c *Collaborator
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if _, e := s.getProjectRow(ctx, tx, tenantID, projectID); e != nil {
+			return e
+		}
+		_, e := tx.Exec(ctx,
+			`INSERT INTO project_collaborators (tenant_id, project_id, user_id, role, invited_by)
+			 VALUES ($1,$2,$3,$4,$5)
+			 ON CONFLICT (project_id, user_id) DO UPDATE SET role=EXCLUDED.role`,
+			tenantID, projectID, userID, role, nullIfEmpty(invitedBy))
+		if e != nil {
+			return e
+		}
+		var e2 error
+		c, e2 = scanCollaborator(tx.QueryRow(ctx,
+			collaboratorSelect+` WHERE c.project_id=$1 AND c.tenant_id=$2 AND c.user_id=$3`,
+			projectID, tenantID, userID))
+		return e2
+	})
+	return c, err
+}
+
+func (s *PGProjectStore) UpdateCollaboratorRole(ctx context.Context, tenantID, projectID, userID, role string) (*Collaborator, error) {
+	if !ValidCollaboratorRole(role) {
+		return nil, ErrInvalidCollaboratorRole
+	}
+	var c *Collaborator
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		tag, e := tx.Exec(ctx,
+			`UPDATE project_collaborators SET role=$4
+			  WHERE tenant_id=$1 AND project_id=$2 AND user_id=$3`,
+			tenantID, projectID, userID, role)
+		if e != nil {
+			return e
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrCollaboratorNotFound
+		}
+		var e2 error
+		c, e2 = scanCollaborator(tx.QueryRow(ctx,
+			collaboratorSelect+` WHERE c.project_id=$1 AND c.tenant_id=$2 AND c.user_id=$3`,
+			projectID, tenantID, userID))
+		return e2
+	})
+	return c, err
+}
+
+func (s *PGProjectStore) RemoveCollaborator(ctx context.Context, tenantID, projectID, userID string) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		tag, e := tx.Exec(ctx,
+			`DELETE FROM project_collaborators WHERE tenant_id=$1 AND project_id=$2 AND user_id=$3`,
+			tenantID, projectID, userID)
+		if e != nil {
+			return e
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrCollaboratorNotFound
+		}
+		return nil
+	})
+}
+
+func (s *PGProjectStore) CreateShareLink(ctx context.Context, tenantID, projectID, accessMode, passwordHash, createdBy string, expiresAt *time.Time) (*ShareLink, error) {
+	if !ValidShareAccessMode(accessMode) {
+		return nil, errors.New("project: invalid share access mode")
+	}
+	var l *ShareLink
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if _, e := s.getProjectRow(ctx, tx, tenantID, projectID); e != nil {
+			return e
+		}
+		var e error
+		l, e = scanShareLink(tx.QueryRow(ctx,
+			`INSERT INTO project_share_links
+			   (tenant_id, project_id, access_mode, password_hash, password_protected, expires_at, created_by)
+			 VALUES ($1,$2,$3,$4,$5,$6,$7)
+			 RETURNING `+shareLinkColumns,
+			tenantID, projectID, accessMode, nullIfEmpty(passwordHash), passwordHash != "", expiresAt,
+			nullIfEmpty(createdBy)))
+		return e
+	})
+	return l, err
+}
+
+func (s *PGProjectStore) ListShareLinks(ctx context.Context, tenantID, projectID string) ([]*ShareLink, error) {
+	var items []*ShareLink
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx,
+			shareLinkSelect+` WHERE project_id=$1 AND tenant_id=$2 ORDER BY created_at DESC`,
+			projectID, tenantID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			l, e := scanShareLink(rows)
+			if e != nil {
+				return e
+			}
+			items = append(items, l)
+		}
+		return rows.Err()
+	})
+	return items, err
+}
+
+func (s *PGProjectStore) RevokeShareLink(ctx context.Context, tenantID, linkID string) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		tag, e := tx.Exec(ctx,
+			`UPDATE project_share_links SET revoked=true WHERE id=$1 AND tenant_id=$2`,
+			linkID, tenantID)
+		if e != nil {
+			return e
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrShareLinkNotFound
+		}
+		return nil
+	})
+}
+
+// GetShareLinkByToken 匿名按 token 取链接：不经 tenant.Run，靠 anon_read 策略只放行
+// "未撤回且未过期"的行；查不到即视为无效链接（与已撤回/已过期同文案，防枚举）。
+func (s *PGProjectStore) GetShareLinkByToken(ctx context.Context, token string) (*ShareLink, error) {
+	l, err := scanShareLink(s.pool.QueryRow(ctx,
+		shareLinkSelect+` WHERE token=$1 AND revoked=false AND (expires_at IS NULL OR expires_at > now())`,
+		token))
+	if err != nil {
+		return nil, err
+	}
+	return l, nil
+}
+
+func (s *PGProjectStore) ShareLinkPasswordHash(ctx context.Context, tenantID, linkID string) (string, error) {
+	var hash string
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx,
+			`SELECT COALESCE(password_hash,'') FROM project_share_links WHERE id=$1 AND tenant_id=$2`,
+			linkID, tenantID).Scan(&hash)
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrShareLinkNotFound
+	}
+	return hash, err
+}
+
+func (s *PGProjectStore) TouchShareLinkAccess(ctx context.Context, tenantID, linkID string) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, e := tx.Exec(ctx,
+			`UPDATE project_share_links SET last_accessed_at=now() WHERE id=$1 AND tenant_id=$2`,
+			linkID, tenantID)
+		return e
+	})
 }

@@ -14,6 +14,7 @@ import {
   type ClientIdentity
 } from '../api';
 import { ImportDialog } from '../components/ImportDialog';
+import { ShareDialog } from '../components/ShareDialog';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
 import { can, type Capability } from '../permissions';
@@ -73,6 +74,7 @@ export function Projects({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [importTarget, setImportTarget] = useState<Project | null>(null);
+  const [shareTarget, setShareTarget] = useState<Project | null>(null);
   const [creating, setCreating] = useState(false);
   const [notices, setNotices] = useState<Array<{ id: string; text: string }>>([]);
 
@@ -331,6 +333,9 @@ export function Projects({
       </Link>
       <button type="button" onClick={() => setImportTarget(project)} title={t('projects.import')}>
         {t('projects.import')}
+      </button>
+      <button type="button" onClick={() => setShareTarget(project)} title={t('projects.share')}>
+        {t('projects.share')}
       </button>
       <button
         type="button"
@@ -693,6 +698,16 @@ export function Projects({
             pushNotice(t('projects.queued'));
             void load(true);
           }}
+        />
+      )}
+
+      {shareTarget && (
+        <ShareDialog
+          identity={identity}
+          projectId={shareTarget.id}
+          projectTitle={shareTarget.title}
+          role={role}
+          onClose={() => setShareTarget(null)}
         />
       )}
     </div>

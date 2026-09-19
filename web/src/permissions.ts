@@ -33,7 +33,8 @@ export type Capability =
   | 'public.recall'
   | 'tenant.danger'
   | 'library.view'
-  | 'project.organize';
+  | 'project.organize'
+  | 'project.share';
 
 // minRole：每项能力的最低角色，逐条对齐服务端校验点。
 // | capability          | 最低角色 | 服务端依据                                                        |
@@ -77,7 +78,10 @@ export const minRole: Record<Capability, Role> = {
   'public.recall': 'ROLE_ADMIN',
   'tenant.danger': 'ROLE_OWNER',
   'library.view': 'ROLE_OWNER',
-  'project.organize': 'ROLE_EDITOR'
+  'project.organize': 'ROLE_EDITOR',
+  // 私密分享写入（邀请协作者 / 生成链接 / 撤回）由 collab.go 的 requireRole RoleEditor 守护；
+  // 读取（看协作者列表、看链接列表）只要求已认证，与后端一致。
+  'project.share': 'ROLE_EDITOR'
 };
 
 export function roleRank(role: Role | undefined): number {

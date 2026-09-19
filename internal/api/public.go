@@ -12,7 +12,6 @@ import (
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/public"
-	"github.com/F31/ppts/internal/tenant"
 )
 
 // registerPublicRoutes 挂载公开区 HTTP 端点（V1.6 C-1，B5-M3 增强）。
@@ -153,60 +152,19 @@ func publicGetManifest(w http.ResponseWriter, r *http.Request, store public.Stor
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	ctx := r.Context()
-	job, err := jobs.LatestSucceededJob(ctx, pub.TenantID, pub.ProjectID, string(pipeline.KindNarration))
-	if errors.Is(err, pipeline.ErrNoSucceededJob) {
-		http.Error(w, "narration not ready", http.StatusNotFound)
-		return
-	}
+	// 与私密分享（#95）共用同一条时间轴打包链路，避免两处逻辑漂移。
+	manifest, err := buildPlaybackManifest(r.Context(), pub.TenantID, pub.ProjectID, jobs, objects)
 	if err != nil {
+		if errors.Is(err, pipeline.ErrNoSucceededJob) {
+			http.Error(w, "narration not ready", http.StatusNotFound)
+			return
+		}
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	timelineKey, err := jobs.StepResultRef(tenant.WithContext(ctx, pub.TenantID), job.ID, "timeline")
-	if err != nil || timelineKey == "" {
-		http.Error(w, "narration not ready", http.StatusNotFound)
-		return
-	}
-	// 页面 PNG 为可选项：获取失败则优雅降级为音频+字幕。
-	pagePngKeys, _ := resolvePagePngKeys(ctx, jobs, objects, pub.TenantID, pub.ProjectID, timelineKey)
-	bundle, _, err := loadBundle(ctx, objects, pub.TenantID, timelineKey)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	parser, _ := objects.(signedURLParser)
-	ttl := time.Hour
-	resources, err := signManifestResources(ctx, objects, parser, pub.TenantID, timelineKey, bundle, pagePngKeys, ttl)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	out := make([]publicManifestResource, 0, len(resources))
-	for _, res := range resources {
-		out = append(out, publicManifestResource{
-			Type:        res.Type.String(),
-			Key:         res.Key,
-			SignedUrl:   res.SignedUrl,
-			ContentType: res.ContentType,
-			SizeBytes:   res.SizeBytes,
-			ContentHash: res.ContentHash,
-			SlideId:     res.SlideId,
-			SegmentId:   res.SegmentId,
-		})
-	}
-	timelineJSON, err := json.Marshal(bundle.Timeline)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, publicManifest{
-		ProjectId:     pub.ProjectID,
-		TimelineKey:   timelineKey,
-		TimelineJson:  string(timelineJSON),
-		Resources:     out,
-		ExpiresAtUnix: time.Now().Add(ttl).Unix(),
-	})
+	// 公开作品沿用既有行为：清单携带 project_id 供播放器溯源；私密分享侧刻意留空。
+	manifest.ProjectId = pub.ProjectID
+	writeJSON(w, http.StatusOK, manifest)
 }
 
 func publicPublish(w http.ResponseWriter, r *http.Request, store public.Store) {

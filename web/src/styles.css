@@ -877,3 +877,50 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
   .org-side { position: static; }
   .tags-admin { grid-template-columns: 1fr; }
 }
+
+/* ---- #95 私密分享与协作者 ---- */
+.share-dialog { width: min(680px, 100%); }
+.share-private-note {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  border-radius: 8px;
+  background: var(--accent-soft, rgba(96, 165, 250, 0.12));
+  font-size: 12px;
+  line-height: 1.6;
+}
+.share-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.12)); }
+.share-tabs button {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  padding: 8px 14px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.share-tabs button.active {
+  border-color: var(--border, rgba(255, 255, 255, 0.14));
+  background: var(--bg-elevated, rgba(255, 255, 255, 0.06));
+  font-weight: 600;
+}
+.share-section { display: grid; gap: 12px; }
+.share-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.share-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+}
+.share-who { display: grid; gap: 2px; min-width: 0; }
+.share-who strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.share-form { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.share-form input { flex: 1 1 180px; }
+.shared-password { display: grid; gap: 10px; justify-items: start; margin-top: 12px; }
+.shared-password label { display: grid; gap: 6px; font-size: 13px; }
+.shared-password input { min-width: 220px; }

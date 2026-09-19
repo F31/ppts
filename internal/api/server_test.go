@@ -134,6 +134,38 @@ func (*fakeProjectStore) ListProjectOrganization(context.Context, string) ([]*pr
 	return nil, nil
 }
 
+// ---- #95 私密分享与协作者：测试桩未覆盖这些端点，统一返回"未使用" ----
+func (*fakeProjectStore) ListCollaborators(context.Context, string, string) ([]*project.Collaborator, error) {
+	return nil, nil
+}
+func (*fakeProjectStore) InviteCollaborator(context.Context, string, string, string, string, string) (*project.Collaborator, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) UpdateCollaboratorRole(context.Context, string, string, string, string) (*project.Collaborator, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) RemoveCollaborator(context.Context, string, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) CreateShareLink(context.Context, string, string, string, string, string, *time.Time) (*project.ShareLink, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) ListShareLinks(context.Context, string, string) ([]*project.ShareLink, error) {
+	return nil, nil
+}
+func (*fakeProjectStore) RevokeShareLink(context.Context, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) GetShareLinkByToken(context.Context, string) (*project.ShareLink, error) {
+	return nil, project.ErrShareLinkNotFound
+}
+func (*fakeProjectStore) ShareLinkPasswordHash(context.Context, string, string) (string, error) {
+	return "", project.ErrShareLinkNotFound
+}
+func (*fakeProjectStore) TouchShareLinkAccess(context.Context, string, string) error {
+	return nil
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
