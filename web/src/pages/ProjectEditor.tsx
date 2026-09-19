@@ -819,7 +819,7 @@ export function ProjectEditor({
         </div>
       )}
 
-      <div className={`editor-layout editor-layout-3col${scriptOpen ? '' : ' script-collapsed'}`}>
+      <div className="editor-layout">
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
             {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
@@ -890,22 +890,13 @@ export function ProjectEditor({
             </section>
           )}
         </section>
+      </div>
 
-        <section className={`script-column${scriptOpen ? '' : ' collapsed'}`}>
-          <div className="script-column-head">
-            <button
-              type="button"
-              className="script-toggle"
-              onClick={() => setScriptOpen((v) => !v)}
-              title={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
-              aria-label={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
-              aria-expanded={scriptOpen}
-            >
-              {scriptOpen ? '›' : '‹'}
-            </button>
-            <span className="eyebrow script-column-title">{t('editor.scriptEyebrow')}</span>
+      {scriptOpen && (
+        <section className="script-panel">
+          <div className="script-panel-head">
+            <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
           </div>
-          {scriptOpen && (
           <div className="script-column-body">
             {activeRealScript ? (
             <ScriptEditor
@@ -1004,9 +995,19 @@ export function ProjectEditor({
             </section>
           )}
           </div>
-          )}
         </section>
-      </div>
+      )}
+
+      <button
+        type="button"
+        className="script-handle"
+        onClick={() => setScriptOpen((v) => !v)}
+        title={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
+        aria-label={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
+        aria-expanded={scriptOpen}
+      >
+        {scriptOpen ? '›' : '‹'}
+      </button>
 
       {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
       {propsOpen && (
