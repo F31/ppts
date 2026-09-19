@@ -715,27 +715,29 @@ export function ProjectEditor({
           <Link to="/projects" className="back-link" title={t('editor.backToProjectsTitle')}>
             {t('editor.backToProjects')}
           </Link>
-          <div className="editor-title-block">
-            <span className="eyebrow">{t('editor.project')}</span>
-            <h1 title={projectTitle || projectId}>{projectTitle || projectId}</h1>
+          <div className="editor-title-row">
+            <span className="editor-title" title={projectTitle || projectId}>{projectTitle || projectId}</span>
             {revisions.length > 0 && (
-              <select
-                className="version-select"
-                value={initRevisionNo ?? currentRevision}
-                onChange={(e) => {
-                  const v = Number(e.currentTarget.value);
-                  if (v === currentRevision) return;
-                  navigate(`/projects/${projectId}/editor${v === currentRevision ? '' : `?rev=${v}`}`);
-                }}
-                title={t('versions.openTitle')}
-              >
-                {revisions.map((rv) => (
-                  <option key={rv.revisionNo} value={rv.revisionNo} disabled={rv.isCurrent}>
-                    v{rv.revisionNo} · {rv.displayName}
-                    {rv.isCurrent ? ` (${t('versions.current')})` : ''}
-                  </option>
-                ))}
-              </select>
+              <>
+                <span className="editor-title-sep">·</span>
+                <select
+                  className="version-select"
+                  value={initRevisionNo ?? currentRevision}
+                  onChange={(e) => {
+                    const v = Number(e.currentTarget.value);
+                    if (v === currentRevision) return;
+                    navigate(`/projects/${projectId}/editor${v === currentRevision ? '' : `?rev=${v}`}`);
+                  }}
+                  title={t('versions.openTitle')}
+                >
+                  {revisions.map((rv) => (
+                    <option key={rv.revisionNo} value={rv.revisionNo} disabled={rv.isCurrent}>
+                      v{rv.revisionNo} · {rv.displayName}
+                      {rv.isCurrent ? ` (${t('versions.current')})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </>
             )}
           </div>
         </div>
