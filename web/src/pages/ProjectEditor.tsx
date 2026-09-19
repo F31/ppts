@@ -891,20 +891,22 @@ export function ProjectEditor({
           )}
         </section>
 
-        {scriptOpen && (
-          <section className="script-column">
-            <div className="script-column-head">
-              <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => setScriptOpen(false)}
-                title={t('editor.scriptCollapse')}
-                aria-label={t('editor.scriptCollapse')}
-              >
-                ›
-              </button>
-            </div>
+        <section className={`script-column${scriptOpen ? '' : ' collapsed'}`}>
+          <div className="script-column-head">
+            <button
+              type="button"
+              className="script-toggle"
+              onClick={() => setScriptOpen((v) => !v)}
+              title={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
+              aria-label={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
+              aria-expanded={scriptOpen}
+            >
+              {scriptOpen ? '›' : '‹'}
+            </button>
+            <span className="eyebrow script-column-title">{t('editor.scriptEyebrow')}</span>
+          </div>
+          {scriptOpen && (
+          <div className="script-column-body">
             {activeRealScript ? (
             <ScriptEditor
               ref={scriptEditorRef}
@@ -1001,19 +1003,10 @@ export function ProjectEditor({
               )}
             </section>
           )}
-          </section>
-        )}
+          </div>
+          )}
+        </section>
       </div>
-      {!scriptOpen && (
-        <button
-          type="button"
-          className="script-open-fab"
-          onClick={() => setScriptOpen(true)}
-          title={t('editor.scriptExpand')}
-        >
-          ‹ {t('editor.scriptEyebrow')}
-        </button>
-      )}
 
       {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
       {propsOpen && (
