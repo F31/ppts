@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
@@ -189,10 +190,11 @@ func previewText(notes string, shapes []shapeText) string {
 }
 
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
-	return s[:n] + "…"
+	runes := []rune(s)
+	return string(runes[:n]) + "…"
 }
 
 func srcRevString(n int) string {

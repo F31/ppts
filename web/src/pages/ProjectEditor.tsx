@@ -255,6 +255,13 @@ export function ProjectEditor({
     };
   }, [identity, projectId, initRevisionNo]);
 
+  // 当前页备注：幻灯片或修订号变化时自动加载（含首次进入）。
+  useEffect(() => {
+    if (slidesState.mode !== 'real' || !activeSlideID) return;
+    const revNo = slidesState.revisionNo || initRevisionNo || currentRevision;
+    void loadSlideNotes(activeSlideID, revNo);
+  }, [activeSlideID, slidesState, initRevisionNo, currentRevision, loadSlideNotes]);
+
   // 真实渲染缩略图 / 预览图：读取每页渲染 PNG 的短期签名 URL（按 slideId 对齐）；失败则降级为序号/标题缩略图。
   useEffect(() => {
     if (slidesState.mode !== 'real') {
@@ -453,7 +460,6 @@ export function ProjectEditor({
     if (slideId === activeSlideID) return;
     scriptEditorRef.current?.flush();
     setActiveSlideID(slideId);
-    void loadSlideNotes(slideId, initRevisionNo ?? currentRevision);
   };
 
   // M3 ③：确认当前页讲稿（REVIEWER 及以上）。
@@ -855,6 +861,30 @@ export function ProjectEditor({
             </span>
             <strong className="nowrap-ellipsis">{activeSlide?.title}</strong>
           </div>
+          {/* 幻灯片备注编辑器：位于 PPT 显示区下方（播放器预览上方） */}
+          {slidesState.mode === 'real' && activeSlideID && (
+            <section className="notes-editor" aria-label={t('editor.notesAria')}>
+              <header>
+                <span className="eyebrow">{t('editor.notesEyebrow')}</span>
+                {notesSaving && <span className="notes-saving">{t('common.saving')}</span>}
+              </header>
+              <textarea
+                className="notes-textarea"
+                value={slideNotesText}
+                onChange={(e) => setSlideNotesText(e.currentTarget.value)}
+                onBlur={() => scheduleSaveNotes(slideNotesText, activeSlideID, initRevisionNo ?? currentRevision)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    scheduleSaveNotes(slideNotesText, activeSlideID, initRevisionNo ?? currentRevision);
+                  }
+                }}
+                placeholder={t('editor.notesPlaceholder')}
+                rows={3}
+              />
+              {notesError && <p className="form-error">{notesError}</p>}
+            </section>
+          )}
         </section>
 
         <section className="script-column">
@@ -1139,30 +1169,6 @@ export function ProjectEditor({
           <section className="player-card">
             <span className="eyebrow">{t('editor.playerPreview')}</span>
             <p className="empty-state">{narrationStatus.message || t('editor.playerHint')}</p>
-          </section>
-        )}
-        {/* 幻灯片备注编辑器 */}
-        {slidesState.mode === 'real' && activeSlideID && (
-          <section className="notes-editor" aria-label={t('editor.notesAria')}>
-            <header>
-              <span className="eyebrow">{t('editor.notesEyebrow')}</span>
-              {notesSaving && <span className="notes-saving">{t('common.saving')}</span>}
-            </header>
-            <textarea
-              className="notes-textarea"
-              value={slideNotesText}
-              onChange={(e) => setSlideNotesText(e.currentTarget.value)}
-              onBlur={() => scheduleSaveNotes(slideNotesText, activeSlideID, initRevisionNo ?? currentRevision)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                  e.preventDefault();
-                  scheduleSaveNotes(slideNotesText, activeSlideID, initRevisionNo ?? currentRevision);
-                }
-              }}
-              placeholder={t('editor.notesPlaceholder')}
-              rows={3}
-            />
-            {notesError && <p className="form-error">{notesError}</p>}
           </section>
         )}
       </section>

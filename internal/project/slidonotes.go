@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/F31/ppts/internal/integrations/objectstore"
 )
@@ -21,11 +20,11 @@ type SlideNotesStore interface {
 	Set(ctx context.Context, tenantID, projectID string, revisionNo int, slideID, notes string) error
 }
 
-// slideNotesObjectKey 构造备注侧载文件路径。
+// slideNotesObjectKey 构造备注侧载文件路径：{tenant}/{project}/{revision}/{notes}/{slides}.json。
 func slideNotesObjectKey(tenantID, projectID string, revisionNo int) objectstore.ObjectKey {
 	return objectstore.ObjectKey{
 		TenantID: tenantID, ProjectID: projectID,
-		Revision: fmt.Sprintf("%d", revisionNo), AssetType: "notes", AssetID: "", Ext: "json",
+		Revision: fmt.Sprintf("%d", revisionNo), AssetType: "notes", AssetID: "slides", Ext: "json",
 	}
 }
 
@@ -63,11 +62,8 @@ func (s *PgSlideNotesStore) Set(ctx context.Context, tenantID, projectID string,
 	if m == nil {
 		m = make(map[string]string)
 	}
-	if strings.TrimSpace(notes) == "" {
-		delete(m, slideID)
-	} else {
-		m[slideID] = notes
-	}
+	// 始终写入条目（含空串）：空串表示用户显式清空，覆盖解析所得原备注。
+	m[slideID] = notes
 	data, err := json.Marshal(m)
 	if err != nil {
 		return fmt.Errorf("marshal notes: %w", err)

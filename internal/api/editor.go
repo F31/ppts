@@ -190,7 +190,7 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 //   - DELETE /projects/{pid}/revisions/{revisionNo}    软删指定版本（禁止删除当前生效版本）。
 //   - GET    /projects/{pid}/slides/{sid}/notes        读取单页备注。
 //   - PATCH  /projects/{pid}/slides/{sid}/notes        保存单页备注。
-func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, notesStore project.SlideNotesStore, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
+func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, notesStore project.SlideNotesStore, objects objectstore.ObjectStore, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListRevisions(w, r, projects, members, recorder)
 	})))
@@ -202,7 +202,7 @@ func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, m
 	})))
 	if notesStore != nil {
 		mux.Handle("GET /projects/{pid}/slides/{sid}/notes", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			editorGetSlideNotes(w, r, notesStore)
+			editorGetSlideNotes(w, r, notesStore, objects)
 		})))
 		mux.Handle("PATCH /projects/{pid}/slides/{sid}/notes", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			editorSetSlideNotes(w, r, notesStore, projects, members, recorder)
@@ -474,7 +474,8 @@ func registerDiffRevisionRoutes(mux *http.ServeMux, projects project.ProjectStor
 }
 
 // editorGetSlideNotes 读取单页演讲者备注（任意已认证成员可见）。
-func editorGetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore project.SlideNotesStore) {
+// 用户手写备注优先；缺失时回退解析文档中的原始备注，保证 PPT 自带备注可见。
+func editorGetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore project.SlideNotesStore, objects objectstore.ObjectStore) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -502,10 +503,49 @@ func editorGetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore proj
 		return
 	}
 	notes := ""
+	stored, hasStored := "", false
 	if m != nil {
-		notes = m[slideID]
+		stored, hasStored = m[slideID]
+	}
+	switch {
+	case hasStored:
+		notes = stored // 用户显式覆盖（可能为空串 = 已清空）
+	case objects != nil:
+		notes = docSlideNotes(r.Context(), objects, principal.TenantID, projectID, revNo, slideID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"slide_id": slideID, "notes": notes})
+}
+
+// docSlideNotes 从解析产物中读取指定页的原始备注；读取失败或无该页时返回空串。
+func docSlideNotes(ctx context.Context, objects objectstore.ObjectStore, tenantID, projectID string, revisionNo int, slideID string) string {
+	docKey := objectstore.ObjectKey{
+		TenantID: tenantID, ProjectID: projectID,
+		Revision: srcRevString(revisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
+	}
+	rc, _, err := objects.Get(ctx, docKey)
+	if err != nil {
+		return ""
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return ""
+	}
+	var doc struct {
+		Pages []struct {
+			SlideID   string `json:"slideId"`
+			NotesText string `json:"notesText"`
+		} `json:"pages"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return ""
+	}
+	for _, pg := range doc.Pages {
+		if pg.SlideID == slideID {
+			return strings.TrimSpace(pg.NotesText)
+		}
+	}
+	return ""
 }
 
 // editorSetSlideNotes 保存单页演讲者备注（EDITOR+）。
