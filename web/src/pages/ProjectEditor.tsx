@@ -819,7 +819,7 @@ export function ProjectEditor({
         </div>
       )}
 
-      <div className="editor-layout">
+      <div className={`editor-layout${scriptOpen ? '' : ' script-collapsed'}`}>
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
             {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
@@ -890,11 +890,20 @@ export function ProjectEditor({
             </section>
           )}
         </section>
-      </div>
 
-      {scriptOpen && (
+        {scriptOpen && (
         <section className="script-panel">
           <div className="script-panel-head">
+            <button
+              type="button"
+              className="script-toggle"
+              onClick={() => setScriptOpen(false)}
+              title={t('editor.scriptCollapse')}
+              aria-label={t('editor.scriptCollapse')}
+              aria-expanded={scriptOpen}
+            >
+              ›
+            </button>
             <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
           </div>
           <div className="script-column-body">
@@ -996,18 +1005,21 @@ export function ProjectEditor({
           )}
           </div>
         </section>
-      )}
+        )}
+      </div>
 
-      <button
-        type="button"
-        className="script-handle"
-        onClick={() => setScriptOpen((v) => !v)}
-        title={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
-        aria-label={scriptOpen ? t('editor.scriptCollapse') : t('editor.scriptExpand')}
-        aria-expanded={scriptOpen}
-      >
-        {scriptOpen ? '›' : '‹'}
-      </button>
+      {!scriptOpen && (
+        <button
+          type="button"
+          className="script-reopen"
+          onClick={() => setScriptOpen(true)}
+          title={t('editor.scriptExpand')}
+          aria-label={t('editor.scriptExpand')}
+        >
+          <span className="script-reopen-glyph">‹</span>
+          <span className="script-reopen-label">{t('editor.scriptEyebrow')}</span>
+        </button>
+      )}
 
       {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
       {propsOpen && (
