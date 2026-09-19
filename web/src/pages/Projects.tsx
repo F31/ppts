@@ -558,16 +558,14 @@ export function Projects({
                   >
                     {t('projects.view')}
                   </button>
-                  {!revision.isCurrent && (
-                    <button
-                      type="button"
-                      className="button-ghost"
-                      onClick={() => navigate(`/projects/${project.id}/editor?export&rev=${revision.revisionNo}`)}
-                      title={t('projects.export')}
-                    >
-                      {t('projects.export')}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    onClick={() => navigate(`/projects/${project.id}/editor?export&rev=${revision.revisionNo}`)}
+                    title={t('projects.export')}
+                  >
+                    {t('projects.export')}
+                  </button>
                   {!revision.isCurrent && (
                     <button
                       type="button"

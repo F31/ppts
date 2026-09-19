@@ -188,7 +188,9 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 //   - GET    /projects/{pid}/revisions                 返回 current_revision 与未软删版本列表（倒序）。
 //   - PATCH  /projects/{pid}/revisions/{revisionNo}    更新 PPT 显示名。
 //   - DELETE /projects/{pid}/revisions/{revisionNo}    软删指定版本（禁止删除当前生效版本）。
-func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
+//   - GET    /projects/{pid}/slides/{sid}/notes        读取单页备注。
+//   - PATCH  /projects/{pid}/slides/{sid}/notes        保存单页备注。
+func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, notesStore project.SlideNotesStore, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListRevisions(w, r, projects, members, recorder)
 	})))
@@ -198,6 +200,14 @@ func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, m
 	mux.Handle("DELETE /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorDeleteRevision(w, r, projects, members, recorder)
 	})))
+	if notesStore != nil {
+		mux.Handle("GET /projects/{pid}/slides/{sid}/notes", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			editorGetSlideNotes(w, r, notesStore)
+		})))
+		mux.Handle("PATCH /projects/{pid}/slides/{sid}/notes", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			editorSetSlideNotes(w, r, notesStore, projects, members, recorder)
+		})))
+	}
 }
 
 // editorListRevisions 返回项目源版本历史。current_revision 来自 projects 行（即"当前生效版本"）；
@@ -461,4 +471,83 @@ func registerDiffRevisionRoutes(mux *http.ServeMux, projects project.ProjectStor
 	mux.Handle("GET /projects/{pid}/revisions/{revA}/diff/{revB}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorDiffRevisions(w, r, projects, objects, members, recorder)
 	})))
+}
+
+// editorGetSlideNotes 读取单页演讲者备注（任意已认证成员可见）。
+func editorGetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore project.SlideNotesStore) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	projectID := r.PathValue("pid")
+	slideID := r.PathValue("sid")
+	if projectID == "" || slideID == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("pid and sid required")))
+		return
+	}
+	revStr := r.URL.Query().Get("revision_no")
+	if revStr == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("revision_no required")))
+		return
+	}
+	revNo, err := strconv.Atoi(revStr)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revision_no")))
+		return
+	}
+	m, err := notesStore.Get(r.Context(), principal.TenantID, projectID, revNo)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	notes := ""
+	if m != nil {
+		notes = m[slideID]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slide_id": slideID, "notes": notes})
+}
+
+// editorSetSlideNotes 保存单页演讲者备注（EDITOR+）。
+func editorSetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore project.SlideNotesStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	projectID := r.PathValue("pid")
+	slideID := r.PathValue("sid")
+	if projectID == "" || slideID == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("pid and sid required")))
+		return
+	}
+	revStr := r.URL.Query().Get("revision_no")
+	if revStr == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("revision_no required")))
+		return
+	}
+	revNo, err := strconv.Atoi(revStr)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revision_no")))
+		return
+	}
+	var body struct {
+		Notes string `json:"notes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
+		return
+	}
+	if err := notesStore.Set(r.Context(), principal.TenantID, projectID, revNo, slideID, body.Notes); err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

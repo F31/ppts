@@ -88,7 +88,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	auth := func(handler http.Handler) http.Handler {
 		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal})
 	}
-	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members, opt.Audit), handlerOpts...)
+	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members, opt.Audit, project.NewPgSlideNotesStore(objects)), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -160,7 +160,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 成员档案富字段列表/编辑（原生 HTTP，绕过 proto，成员页展示 用户名/姓名/性别/出生年月/邮箱/电话/创建时间）。
 	registerMemberRoutes(mux, opt.Members, auth)
 	// 源版本历史只读端点（原生 HTTP，绕过 proto）：GET /projects/{pid}/revisions，供版本抽屉查看历史版本。
-	registerRevisionRoutes(mux, projects, opt.Members, opt.Audit, auth)
+	registerRevisionRoutes(mux, projects, opt.Members, project.NewPgSlideNotesStore(objects), opt.Audit, auth)
 	// 源版本 diff 端点（V4.0 §7.1 增强）：GET /projects/{pid}/revisions/{revA}/diff/{revB}
 	registerDiffRevisionRoutes(mux, projects, objects, opt.Members, opt.Audit, auth)
 	// 标签 + 分组体系（#94，原生 HTTP 绕过 proto）：tags/folders/project_tags 的增删改查与项目归属。

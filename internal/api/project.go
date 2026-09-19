@@ -19,14 +19,15 @@ import (
 
 type ProjectService struct {
 	pptsv1connect.UnimplementedProjectServiceHandler
-	store   project.ProjectStore
-	objects objectstore.ObjectStore
-	members membership.Reader
-	audit   audit.Recorder
+	store      project.ProjectStore
+	objects    objectstore.ObjectStore
+	members    membership.Reader
+	audit      audit.Recorder
+	slideNotes project.SlideNotesStore
 }
 
-func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder) *ProjectService {
-	return &ProjectService{store: store, objects: objects, members: members, audit: recorder}
+func NewProjectService(store project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder, slideNotes project.SlideNotesStore) *ProjectService {
+	return &ProjectService{store: store, objects: objects, members: members, audit: recorder, slideNotes: slideNotes}
 }
 
 func (s *ProjectService) Create(ctx context.Context, req *connect.Request[pptsv1.CreateProjectRequest]) (*connect.Response[pptsv1.CreateProjectResponse], error) {
@@ -149,6 +150,18 @@ func (s *ProjectService) GetSlides(ctx context.Context, req *connect.Request[ppt
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("invalid parsed document: %w", err))
+	}
+	// 合并用户编辑过的备注（优先级高于解析所得备注）。
+	if s.slideNotes != nil {
+		if storedNotes, err := s.slideNotes.Get(ctx, p.TenantID, projectID, revisionNo); err == nil && storedNotes != nil {
+			stored := storedNotes
+			for i := range doc.Pages {
+				if n, ok := stored[doc.Pages[i].SlideID]; ok {
+					doc.Pages[i].NotesText = n
+					doc.Pages[i].FeatureFlags = append(doc.Pages[i].FeatureFlags, "userNotes")
+				}
+			}
+		}
 	}
 	out := make([]*pptsv1.SlideSummary, 0, len(doc.Pages))
 	for _, pg := range doc.Pages {

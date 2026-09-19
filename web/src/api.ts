@@ -433,6 +433,29 @@ export async function updatePptDisplayName(identity: ClientIdentity, projectId: 
   }
 }
 
+// getSlideNotes 读取单页备注（空字符串 = 无备注）。
+export async function getSlideNotes(identity: ClientIdentity, projectId: string, slideId: string, revisionNo: number): Promise<string> {
+  const r = await getJSON<{ notes: string }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/notes?revision_no=${revisionNo}`);
+  return r.notes ?? '';
+}
+
+// setSlideNotes 保存单页备注。
+export async function setSlideNotes(identity: ClientIdentity, projectId: string, slideId: string, revisionNo: number, notes: string): Promise<void> {
+  const response = await fetch(`/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/notes?revision_no=${revisionNo}`, {
+    method: 'PATCH',
+    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notes })
+  });
+  if (!response.ok) {
+    let message = `setSlideNotes failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) message = `${envelope.code}: ${envelope.message ?? ''}`;
+    } catch { /* ignore */ }
+    throw new ConnectError('http_' + response.status, message);
+  }
+}
+
 export type SlideRenderURL = { slideId: string; url: string };
 
 // getSlideRenderURLs 返回每页渲染 PNG 的短期签名可读 URL（按 slideId 对齐），供编辑器缩略图与 PPT 预览使用。

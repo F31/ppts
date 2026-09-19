@@ -14,6 +14,8 @@ import {
   getProjectSlides,
   getSourceRevisions,
   getRevisionDiff,
+  getSlideNotes,
+  setSlideNotes,
   type SourceRevisionSummary,
   type RevisionDiff,
   getScript,
@@ -112,6 +114,11 @@ export function ProjectEditor({
   // 项目标题与当前 PPT 展示名（用于回退链接）
   const [projectTitle, setProjectTitle] = useState('');
   const [pptDisplayName, setPptDisplayName] = useState('');
+  // 当前幻灯片备注编辑
+  const [slideNotesText, setSlideNotesText] = useState('');
+  const [notesSaving, setNotesSaving] = useState(false);
+  const [notesError, setNotesError] = useState('');
+  const notesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -133,6 +140,32 @@ export function ProjectEditor({
       cancelled = true;
     };
   }, [identity, projectId]);
+
+  // 加载/保存当前幻灯片备注（切换幻灯片或修订号时自动加载，失焦时延迟保存）。
+  const loadSlideNotes = useCallback(async (sid: string, revNo: number) => {
+    setNotesError('');
+    try {
+      const notes = await getSlideNotes(identity, projectId, sid, revNo);
+      setSlideNotesText(notes ?? '');
+    } catch (err) {
+      setNotesError(err instanceof Error ? err.message : '');
+    }
+  }, [identity, projectId]);
+
+  const scheduleSaveNotes = useCallback((text: string, sid: string, revNo: number) => {
+    if (notesSaveTimer.current) clearTimeout(notesSaveTimer.current);
+    setNotesSaving(true);
+    notesSaveTimer.current = setTimeout(async () => {
+      try {
+        await setSlideNotes(identity, projectId, sid, revNo, text);
+        setNotesError('');
+      } catch (err) {
+        setNotesError(err instanceof Error ? err.message : t('editor.notesSaveFailed'));
+      } finally {
+        setNotesSaving(false);
+      }
+    }, 600);
+  }, [identity, projectId, t]);
 
   const computeDiff = useCallback(
     async (revB: number) => {
@@ -420,6 +453,7 @@ export function ProjectEditor({
     if (slideId === activeSlideID) return;
     scriptEditorRef.current?.flush();
     setActiveSlideID(slideId);
+    void loadSlideNotes(slideId, initRevisionNo ?? currentRevision);
   };
 
   // M3 ③：确认当前页讲稿（REVIEWER 及以上）。
@@ -1105,6 +1139,30 @@ export function ProjectEditor({
           <section className="player-card">
             <span className="eyebrow">{t('editor.playerPreview')}</span>
             <p className="empty-state">{narrationStatus.message || t('editor.playerHint')}</p>
+          </section>
+        )}
+        {/* 幻灯片备注编辑器 */}
+        {slidesState.mode === 'real' && activeSlideID && (
+          <section className="notes-editor" aria-label={t('editor.notesAria')}>
+            <header>
+              <span className="eyebrow">{t('editor.notesEyebrow')}</span>
+              {notesSaving && <span className="notes-saving">{t('common.saving')}</span>}
+            </header>
+            <textarea
+              className="notes-textarea"
+              value={slideNotesText}
+              onChange={(e) => setSlideNotesText(e.currentTarget.value)}
+              onBlur={() => scheduleSaveNotes(slideNotesText, activeSlideID, initRevisionNo ?? currentRevision)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  scheduleSaveNotes(slideNotesText, activeSlideID, initRevisionNo ?? currentRevision);
+                }
+              }}
+              placeholder={t('editor.notesPlaceholder')}
+              rows={3}
+            />
+            {notesError && <p className="form-error">{notesError}</p>}
           </section>
         )}
       </section>
