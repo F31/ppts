@@ -1224,7 +1224,18 @@ export type PublicWorkPage = { items: PublicWork[]; next_cursor: string };
 async function publicGet<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) {
-    throw new Error(`GET ${path} failed: HTTP ${response.status}`);
+    // 解析后端 {code,message} 错误体（如公开区在单租户部署返回 feature_disabled/503），
+    // 使 describeApiError 能映射为可读文案；无 JSON 体时回退 HTTP 码。
+    let code = `http_${response.status}`;
+    let message = `GET ${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      // 非 JSON 错误体，保留默认 message。
+    }
+    throw new ConnectError(code, message);
   }
   return (await response.json()) as T;
 }

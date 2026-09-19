@@ -121,6 +121,12 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
 	if pool != nil {
 		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth)
+	} else {
+		// SQLite 单租户 profile 不提供公开区（无发布/审核/多租户）。显式返回 JSON 503，
+		// 否则 GET /public|/showcase 会落到 SPA 兜底返回 HTML，前端 JSON 解析报
+		// "Unexpected token '<'"（公开区加载失败）。
+		mux.HandleFunc("/public/", featureDisabledHandler("public area"))
+		mux.HandleFunc("/showcase/", featureDisabledHandler("public area"))
 	}
 	// 邮箱自助注册（B5-M4）：注册/登录/能力探测端点。pool 为 nil 时不挂载（测试桩）。
 	if pool != nil {
@@ -182,6 +188,18 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		mux.Handle("/", spaFallbackHandler(opt.WebFS))
 	}
 	return mux
+}
+
+// featureDisabledHandler 为当前部署未挂载的功能路径返回明确的 JSON 503（code=feature_disabled），
+// 取代 SPA 兜底返回 HTML —— 后者会让前端把 "<!doctype html>" 当 JSON 解析并报
+// "Unexpected token '<'"，掩盖"该功能在本部署不可用"的真实原因。
+func featureDisabledHandler(feature string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"code":    "feature_disabled",
+			"message": feature + " is not available in this deployment",
+		})
+	}
 }
 
 // hashedAssetPrefix 是 vite 构建输出的哈希资源目录：文件名内嵌内容哈希，可长期强缓存。

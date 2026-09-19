@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -151,5 +152,39 @@ func TestLocalModeAuthConfigAndAccess(t *testing.T) {
 	defer orgResp.Body.Close()
 	if orgResp.StatusCode != http.StatusOK {
 		t.Fatalf("organization should be 200 in local mode, got %d", orgResp.StatusCode)
+	}
+}
+
+// TestLocalModePublicAreaDisabled 回归：SQLite 单租户模式未挂载公开区路由时，
+// GET /public|/showcase 必须返回 JSON 503，而不是 SPA 兜底的 HTML
+// （否则前端 JSON.parse 报 "Unexpected token '<'"，公开区显示"加载失败"）。
+func TestLocalModePublicAreaDisabled(t *testing.T) {
+	local := Principal{TenantID: "00000000-0000-0000-0000-000000000001", UserID: "local-user"}
+	h := NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
+		&fakeArtifactStore{}, testObjects(t), nil,
+		Options{LocalPrincipal: &local})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	for _, path := range []string{"/public/works", "/showcase/abc", "/showcase/abc/manifest"} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("GET %s status = %d want 503 (body=%s)", path, resp.StatusCode, body)
+		}
+		if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+			t.Fatalf("GET %s content-type = %q want application/json", path, ct)
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			t.Fatalf("GET %s body not JSON: %v (%s)", path, err, body)
+		}
+		if envelope["code"] != "feature_disabled" {
+			t.Fatalf("GET %s code = %v want feature_disabled", path, envelope["code"])
+		}
 	}
 }
