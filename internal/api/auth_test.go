@@ -72,3 +72,39 @@ func TestAuthMiddlewareAllowsExplicitDevHeaderFallback(t *testing.T) {
 		t.Fatalf("status = %d", rec.Code)
 	}
 }
+
+// 单租户本地模式：不解析任何凭证，直接注入固定身份，且忽略 dev 头与 Authenticator。
+func TestAuthMiddlewareLocalPrincipal(t *testing.T) {
+	want := Principal{TenantID: "00000000-0000-0000-0000-000000000001", UserID: "local-user"}
+	h := AuthMiddlewareWithOptions(principalHandler(t, want), AuthOptions{
+		LocalPrincipal: &want,
+		// 即便配置了 Authenticator，本地模式也不应调用它（用会失败的桩验证）。
+		Authenticator: fakeAuthenticator{ok: false},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/ppts.v1.ProjectService/List", nil)
+	// 携带冲突的 dev 头，应被忽略。
+	req.Header.Set(tenantHeader, "someone-else")
+	req.Header.Set(userHeader, "someone-else")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// 本地模式下租户被暂停应返回 403（保留生命周期检查）。
+type fakeStatus struct{ active bool }
+
+func (f fakeStatus) TenantActive(context.Context, string) (bool, error) { return f.active, nil }
+
+func TestAuthMiddlewareLocalPrincipalRespectsTenantStatus(t *testing.T) {
+	local := Principal{TenantID: "t", UserID: "u"}
+	h := AuthMiddlewareWithOptions(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("handler should not run when tenant suspended")
+	}), AuthOptions{LocalPrincipal: &local, TenantStatus: fakeStatus{active: false}})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d want 403", rec.Code)
+	}
+}

@@ -35,6 +35,9 @@ type AuthOptions struct {
 	TenantStatus    TenantStatusChecker
 	Authenticator   Authenticator
 	AllowDevHeaders bool
+	// LocalPrincipal 非空时启用**单租户本地模式**（SQLite profile）：所有请求以该固定身份运行，
+	// 不做登录（无 OIDC/JWT/邮箱，也不读 dev 头）。仅应在 PPTS_DB_DRIVER=sqlite 时设置。
+	LocalPrincipal *Principal
 }
 
 // PrincipalFromContext returns the authenticated tenant and user.
@@ -45,16 +48,24 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 
 // AuthMiddlewareWithOptions authenticates OIDC bearer tokens when configured and
 // only falls back to development headers when explicitly allowed.
+//
+// LocalPrincipal 优先：单租户本地模式下不解析任何凭证，直接注入固定身份。
 func AuthMiddlewareWithOptions(next http.Handler, opts AuthOptions) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		principal, ok, err := authenticateRequest(r, opts)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
-			return
-		}
-		if !ok {
-			http.Error(w, "missing authenticated tenant or user", http.StatusUnauthorized)
-			return
+		var principal Principal
+		if opts.LocalPrincipal != nil {
+			principal = *opts.LocalPrincipal
+		} else {
+			p, ok, err := authenticateRequest(r, opts)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnauthorized)
+				return
+			}
+			if !ok {
+				http.Error(w, "missing authenticated tenant or user", http.StatusUnauthorized)
+				return
+			}
+			principal = p
 		}
 		if opts.TenantStatus != nil {
 			active, err := opts.TenantStatus.TenantActive(r.Context(), principal.TenantID)

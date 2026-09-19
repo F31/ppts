@@ -54,6 +54,8 @@ type Options struct {
 	TenantStatus  TenantStatusChecker
 	Auth          Authenticator
 	DevHeaders    bool
+	// LocalPrincipal 非空时启用单租户本地模式（SQLite profile）：所有请求以此固定身份运行，无登录。
+	LocalPrincipal *Principal
 	Pronunciation pronunciation.Store
 	Gateway       gateway.StoreResolver
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
@@ -84,7 +86,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	mux.Handle("GET /debug/vars", expvar.Handler())
 	allowDevHeaders := opt.Auth == nil || opt.DevHeaders
 	auth := func(handler http.Handler) http.Handler {
-		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders})
+		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal})
 	}
 	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))
