@@ -4,10 +4,13 @@ import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import type { StorageUsage, TenantPolicy, TenantQuota, TenantUsage } from '../types';
 
+// 后端走 Protobuf-JSON：int64 字段编码为字符串，且零值字段会被省略（undefined）。
+// 这里统一按数字解析，缺失/非法值按 0 处理，避免 undefined.toFixed 抛错导致整页白屏。
 function fmtBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
+  const b = Number(bytes) || 0;
+  if (b <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
+  let value = b;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
     value /= 1024;
@@ -17,7 +20,8 @@ function fmtBytes(bytes: number): string {
 }
 
 function fmtMinutes(seconds: number): string {
-  return seconds <= 0 ? '0' : `${Math.round((seconds / 60) * 10) / 10}`;
+  const s = Number(seconds) || 0;
+  return s <= 0 ? '0' : `${Math.round((s / 60) * 10) / 10}`;
 }
 
 export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
@@ -98,13 +102,13 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
           label={t('usage.ratio')}
           value={quota && quota.monthlySeconds > 0 ? `${Math.round((Math.min(usage?.secondsUsed ?? 0, quota.monthlySeconds) / quota.monthlySeconds) * 100)}%` : '—'}
         />
-        <Stat label={t('usage.maxConcurrent')} value={quota ? String(quota.maxConcurrentJobs) : '—'} />
+        <Stat label={t('usage.maxConcurrent')} value={quota ? String(quota.maxConcurrentJobs ?? 0) : '—'} />
       </section>
 
       <section className="stat-grid" aria-label={t('usage.supplierCost')}>
         <Stat label={t('usage.userAmount')} value={usage ? `${usage.currency} ${usage.userAmount ?? 0}` : '—'} note={t('usage.byPricing')} />
         <Stat label={t('usage.supplierCost')} value={usage ? `${usage.currency} ${usage.supplierCost ?? 0}` : '—'} note={t('usage.splitBilling')} />
-        <Stat label={t('usage.costUnits')} value={usage ? String(usage.costUnits) : '—'} note={t('usage.monthlyUnits')} />
+        <Stat label={t('usage.costUnits')} value={usage ? String(usage.costUnits ?? 0) : '—'} note={t('usage.monthlyUnits')} />
       </section>
 
       <section className="panel">
@@ -133,7 +137,7 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
               <Row label={t('usage.catOther')} objects={storage.otherObjects} bytes={storage.otherBytes} />
               <tr className="row-total">
                 <td>{t('usage.total')}</td>
-                <td>{storage.sourceObjects + storage.artifactObjects + storage.otherObjects}</td>
+                <td>{(Number(storage.sourceObjects) || 0) + (Number(storage.artifactObjects) || 0) + (Number(storage.otherObjects) || 0)}</td>
                 <td>{fmtBytes(storage.totalBytes)}</td>
               </tr>
             </tbody>
@@ -203,7 +207,7 @@ function Row({ label, objects, bytes }: { label: string; objects: number; bytes:
   return (
     <tr>
       <td>{label}</td>
-      <td>{objects}</td>
+      <td>{Number(objects) || 0}</td>
       <td>{fmtBytes(bytes)}</td>
     </tr>
   );

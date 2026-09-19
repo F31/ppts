@@ -71,9 +71,11 @@ type Stats = {
 };
 
 function fmtBytes(bytes: number): string {
-  if (bytes <= 0) return '0 B';
+  // 后端 Protobuf-JSON：int64 为字符串、零值字段省略（undefined）。统一按数字解析，避免 undefined.toFixed 抛错白屏。
+  const b = Number(bytes) || 0;
+  if (b <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  let value = bytes;
+  let value = b;
   let unit = 0;
   while (value >= 1024 && unit < units.length - 1) {
     value /= 1024;

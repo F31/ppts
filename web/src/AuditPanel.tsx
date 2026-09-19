@@ -22,9 +22,10 @@ function formatTime(unix: number, locale: string) {
 }
 
 function formatSize(bytes: number) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
+  const b = Number(bytes) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KiB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MiB`;
 }
 
 export function AuditPanel({ identity }: Props) {
