@@ -138,6 +138,9 @@ func EnsureLocalIdentity(ctx context.Context, sqldb *sql.DB) error {
 // TimeFormat 是 SQLite 时间列的存储格式（RFC3339 毫秒 UTC，可被 time.RFC3339Nano 解析）。
 const TimeFormat = "2006-01-02T15:04:05.000Z"
 
+// Now 返回当前时间的 SQLite 存储字符串（UTC）。
+func Now() string { return FormatTime(time.Now()) }
+
 // FormatTime 将 time.Time 转为 SQLite 存储字符串（UTC）。
 func FormatTime(t time.Time) string { return t.UTC().Format(TimeFormat) }
 

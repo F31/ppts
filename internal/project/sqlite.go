@@ -26,7 +26,7 @@ type SQLiteStore struct {
 // NewSQLiteStore 创建 SQLite 项目存储。
 func NewSQLiteStore(sqldb *sql.DB) *SQLiteStore { return &SQLiteStore{db: sqldb} }
 
-func sqNow() string { return db.FormatTime(time.Now()) }
+func sqNow() string { return db.Now() }
 
 // ─── 扫描辅助 ────────────────────────────────────────────────────────────────
 
