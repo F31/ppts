@@ -7,9 +7,12 @@ import (
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
+
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
 )
 
@@ -165,4 +168,45 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 		items = append(items, editorSlideSourceItem{SlideID: choice.SlideID, Source: string(choice.Kind), CustomText: choice.CustomText})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sources": items})
+}
+
+// registerRevisionRoutes 挂载源版本历史只读端点（buf/protoc 不可用，不新增 Connect RPC）：
+//   - GET /projects/{pid}/revisions：返回 current_revision 与未软删版本列表（倒序），供版本抽屉展示。
+func registerRevisionRoutes(mux *http.ServeMux, projects project.Store, auth func(http.Handler) http.Handler) {
+	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorListRevisions(w, r, projects)
+	})))
+}
+
+// editorListRevisions 返回项目源版本历史。current_revision 来自 projects 行（即"当前生效版本"）；
+// 版本列表排除 source_deleted_at 非空的软删版本（保留不可变版本行用于追溯，但不可预览）。
+func editorListRevisions(w http.ResponseWriter, r *http.Request, projects project.Store) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	projectID := r.PathValue("pid")
+	proj, err := projects.GetProject(r.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
+		return
+	}
+	revs, err := projects.ListSourceRevisions(r.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	out := make([]map[string]any, 0, len(revs))
+	for _, rv := range revs {
+		out = append(out, map[string]any{
+			"revision_no":    rv.RevisionNo,
+			"created_at":     rv.CreatedAt.Format(time.RFC3339),
+			"page_count":     rv.PageCount,
+			"parser_version": rv.ParserVersion,
+			"object_key":     rv.ObjectKey,
+			"is_current":     rv.RevisionNo == proj.CurrentRevision,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"current_revision": proj.CurrentRevision, "revisions": out})
 }

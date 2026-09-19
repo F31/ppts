@@ -55,6 +55,8 @@ type ProjectStore interface {
 	CreateSourceRevision(ctx context.Context, tenantID string, in NewSourceRevision) (*SourceRevision, error)
 	// GetSourceRevision 按项目与 revision 号查询。
 	GetSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) (*SourceRevision, error)
+	// ListSourceRevisions 列出项目全部未软删的源版本（倒序），供前端版本历史查看。
+	ListSourceRevisions(ctx context.Context, tenantID, projectID string) ([]*SourceRevision, error)
 }
 
 // NewSourceRevision 新建源版本的输入。
@@ -240,6 +242,31 @@ func (s *PGProjectStore) GetSourceRevision(ctx context.Context, tenantID, projec
 		return e
 	})
 	return r, err
+}
+
+func (s *PGProjectStore) ListSourceRevisions(ctx context.Context, tenantID, projectID string) ([]*SourceRevision, error) {
+	var revs []*SourceRevision
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, e := tx.Query(ctx,
+			`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at
+			 FROM source_revisions WHERE project_id=$1 AND tenant_id=$2 AND source_deleted_at IS NULL
+			 ORDER BY revision_no DESC`,
+			projectID, tenantID)
+		if e != nil {
+			return e
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var r SourceRevision
+			if e := rows.Scan(&r.ID, &r.ProjectID, &r.TenantID, &r.RevisionNo, &r.SourceHash,
+				&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &r.CreatedAt); e != nil {
+				return e
+			}
+			revs = append(revs, &r)
+		}
+		return rows.Err()
+	})
+	return revs, err
 }
 
 func scanProject(row pgx.Row) (*Project, error) {

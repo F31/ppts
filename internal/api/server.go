@@ -134,6 +134,10 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerJobDetailRoutes(mux, jobs, auth)
 	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。
 	registerJobListRoutes(mux, jobs, auth)
+	// 成员档案富字段列表/编辑（原生 HTTP，绕过 proto，成员页展示 用户名/姓名/性别/出生年月/邮箱/电话/创建时间）。
+	registerMemberRoutes(mux, opt.Members, auth)
+	// 源版本历史只读端点（原生 HTTP，绕过 proto）：GET /projects/{pid}/revisions，供版本抽屉查看历史版本。
+	registerRevisionRoutes(mux, projects, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

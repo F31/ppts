@@ -11,6 +11,8 @@ import {
   getNarrationDraftCount,
   getPlaybackManifest,
   getProjectSlides,
+  getSourceRevisions,
+  type SourceRevisionSummary,
   getScript,
   getSlideRenderURLs,
   getSlideScriptSources,
@@ -93,6 +95,43 @@ export function ProjectEditor({
   // A26/A23：true 表示当前音色是后端兜底的开发音色（本租户无可用 TTS 网关），需显式标注。
   const [voiceSimulated, setVoiceSimulated] = useState(false);
   const [ratePercent, setRatePercent] = useState(100);
+  // 版本历史（P0 多版本查看）：列历史版本 + 抽屉预览，只读，不切换生效版本。
+  const [revisions, setRevisions] = useState<SourceRevisionSummary[]>([]);
+  const [currentRevision, setCurrentRevision] = useState(0);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [previewRev, setPreviewRev] = useState<number | null>(null);
+  const [previewSlides, setPreviewSlides] = useState<SlideSummary[] | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSourceRevisions(identity, projectId)
+      .then((r) => {
+        if (cancelled) return;
+        setRevisions(r.revisions);
+        setCurrentRevision(r.currentRevision);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, projectId]);
+
+  const openVersionPreview = useCallback(
+    async (revNo: number) => {
+      setPreviewRev(revNo);
+      setPreviewLoading(true);
+      try {
+        const res = await getProjectSlides(identity, projectId, revNo);
+        setPreviewSlides(res.slides);
+      } catch {
+        setPreviewSlides([]);
+      } finally {
+        setPreviewLoading(false);
+      }
+    },
+    [identity, projectId]
+  );
   // M4 ⑦：生成范围 + 待确认稿数（C-5 前置检查）。
   const [genScope, setGenScope] = useState<'all' | 'pending' | 'current'>('all');
   const [draftSegments, setDraftSegments] = useState(0);
@@ -645,6 +684,16 @@ export function ProjectEditor({
           <div>
             <span className="eyebrow">{t('editor.project')}</span>
             <h1 title={projectId}>{projectId.slice(0, 12)}</h1>
+            {revisions.length > 0 && (
+              <button
+                type="button"
+                className="version-pill"
+                onClick={() => setVersionsOpen(true)}
+                title={t('versions.openTitle')}
+              >
+                v{currentRevision} · {t('versions.count', { count: revisions.length })}
+              </button>
+            )}
           </div>
         </div>
         <div className="editor-header-right">
@@ -665,6 +714,65 @@ export function ProjectEditor({
           </button>
         </div>
       </header>
+
+      {versionsOpen && (
+        <div
+          className="version-drawer-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('versions.title')}
+          onClick={() => setVersionsOpen(false)}
+        >
+          <div className="version-drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="version-drawer-head">
+              <h2>{t('versions.title')}</h2>
+              <button type="button" className="button-ghost" onClick={() => setVersionsOpen(false)}>
+                {t('common.close')}
+              </button>
+            </div>
+            <div className="version-drawer-body">
+              <ul className="version-list">
+                {revisions.map((rv) => (
+                  <li key={rv.revisionNo} className={rv.isCurrent ? 'is-current' : ''}>
+                    <button
+                      type="button"
+                      className="version-row"
+                      onClick={() => openVersionPreview(rv.revisionNo)}
+                    >
+                      <span className="version-no">v{rv.revisionNo}</span>
+                      <span className="version-meta">
+                        <span>{new Date(rv.createdAt).toLocaleString()}</span>
+                        <span>{t('versions.pages', { count: rv.pageCount })}</span>
+                        {rv.isCurrent && <span className="badge-current">{t('versions.current')}</span>}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <div className="version-preview">
+                {previewRev == null && <p className="empty-state">{t('versions.selectHint')}</p>}
+                {previewLoading && <p className="empty-state">{t('editor.loading')}</p>}
+                {previewRev != null && !previewLoading && (
+                  <>
+                    <p className="version-preview-head">{t('versions.previewOf', { no: previewRev })}</p>
+                    <ol className="version-preview-list">
+                      {(previewSlides ?? []).map((s, i) => (
+                        <li key={s.slideId}>
+                          <span className="idx">{i + 1}</span>
+                          {s.title || s.slideId}
+                        </li>
+                      ))}
+                    </ol>
+                    {previewRev !== currentRevision && (
+                      <p className="form-hint">{t('versions.switchNote')}</p>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {activeGenJobs.length > 0 && (
         <div className="snapshot-banner" role="status" aria-live="polite">
