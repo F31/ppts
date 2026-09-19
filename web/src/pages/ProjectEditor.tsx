@@ -110,6 +110,9 @@ export function ProjectEditor({
   const [diffRevB, setDiffRevB] = useState<number | null>(null);
   const [diffResult, setDiffResult] = useState<RevisionDiff | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
+  // 项目标题与当前 PPT 展示名（用于回退链接）
+  const [projectTitle, setProjectTitle] = useState('');
+  const [pptDisplayName, setPptDisplayName] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -118,6 +121,13 @@ export function ProjectEditor({
         if (cancelled) return;
         setRevisions(r.revisions);
         setCurrentRevision(r.currentRevision);
+        const cur = r.revisions.find((rv) => rv.isCurrent);
+        setPptDisplayName(cur?.displayName ?? '');
+      })
+      .catch(() => {});
+    getProject(identity, projectId)
+      .then((p) => {
+        if (!cancelled) setProjectTitle(p.title);
       })
       .catch(() => {});
     return () => {

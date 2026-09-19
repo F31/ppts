@@ -17,6 +17,7 @@ import {
   listTags,
   moveProject,
   renameFolder,
+  updatePptDisplayName,
   type ClientIdentity,
   type SourceRevisionSummary
 } from '../api';
@@ -486,6 +487,10 @@ export function Projects({
         return { ...cur, [project.id]: { ...projMap, [revNo]: newName } };
       });
       setEditingCell(null);
+      // 持久化到后端（异步，不阻塞 UI）
+      void updatePptDisplayName(identity, project.id, revNo, newName).catch(() => {
+        // 静默失败：刷新后会从服务器重新加载正确值
+      });
     };
     const getDisplayName = (rev: SourceRevisionSummary) =>
       (editableNames[project.id]?.[rev.revisionNo] ?? rev.displayName) || rev.displayName;

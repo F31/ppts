@@ -186,10 +186,14 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 
 // registerRevisionRoutes 挂载源版本历史只读端点（buf/protoc 不可用，不新增 Connect RPC）：
 //   - GET    /projects/{pid}/revisions                 返回 current_revision 与未软删版本列表（倒序）。
+//   - PATCH  /projects/{pid}/revisions/{revisionNo}    更新 PPT 显示名。
 //   - DELETE /projects/{pid}/revisions/{revisionNo}    软删指定版本（禁止删除当前生效版本）。
 func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListRevisions(w, r, projects, members, recorder)
+	})))
+	mux.Handle("PATCH /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorUpdateRevisionDisplayName(w, r, projects, members, recorder)
 	})))
 	mux.Handle("DELETE /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorDeleteRevision(w, r, projects, members, recorder)
@@ -227,10 +231,50 @@ func editorListRevisions(w http.ResponseWriter, r *http.Request, projects projec
 			"page_count":     rv.PageCount,
 			"parser_version": rv.ParserVersion,
 			"object_key":     rv.ObjectKey,
+			"display_name":   rv.DisplayName,
 			"is_current":     rv.RevisionNo == proj.CurrentRevision,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"current_revision": proj.CurrentRevision, "revisions": out})
+}
+
+// editorUpdateRevisionDisplayName 更新 PPT 展示名（EDITOR+）。
+func editorUpdateRevisionDisplayName(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	projectID := r.PathValue("pid")
+	revStr := r.PathValue("revisionNo")
+	if projectID == "" || revStr == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("pid and revisionNo required")))
+		return
+	}
+	revNo, err := strconv.Atoi(revStr)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revisionNo")))
+		return
+	}
+	var body struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
+		return
+	}
+	if err := projects.UpdateSourceRevisionDisplayName(r.Context(), principal.TenantID, projectID, revNo, body.DisplayName); err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // editorDeleteRevision 软删指定源版本（禁止删除当前生效版本）。

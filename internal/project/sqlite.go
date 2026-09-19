@@ -57,7 +57,7 @@ func sqScanSourceRevision(row rowScanner) (*SourceRevision, error) {
 	var createdAt string
 	var sourceDeletedAt sql.NullString
 	if err := row.Scan(&r.ID, &r.ProjectID, &r.TenantID, &r.RevisionNo, &r.SourceHash,
-		&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &sourceDeletedAt, &createdAt); err != nil {
+		&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &sourceDeletedAt, &createdAt, &r.DisplayName); err != nil {
 		return nil, err
 	}
 	r.CreatedAt = db.ParseTime(createdAt)
@@ -65,7 +65,7 @@ func sqScanSourceRevision(row rowScanner) (*SourceRevision, error) {
 }
 
 const sqSourceRevisionColumns = `id, project_id, tenant_id, revision_no, source_hash, object_key,
-	parser_version, page_count, upload_id, source_deleted_at, created_at`
+	parser_version, page_count, upload_id, source_deleted_at, created_at, COALESCE(display_name, '')`
 
 func sqNormalizeErr(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
@@ -214,16 +214,16 @@ func (s *SQLiteStore) CreateSourceRevision(ctx context.Context, tenantID string,
 	sr := &SourceRevision{
 		ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: current + 1,
 		SourceHash: in.SourceHash, ObjectKey: in.ObjectKey, ParserVersion: in.ParserVersion,
-		UploadID: in.UploadID,
+		UploadID: in.UploadID, DisplayName: in.Filename,
 	}
 	sr.ID = uuid.New().String()
 	now := sqNow()
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO source_revisions (id, project_id, tenant_id, revision_no, source_hash,
-		   object_key, parser_version, upload_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   object_key, parser_version, upload_id, display_name, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sr.ID, sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey,
-		sr.ParserVersion, sr.UploadID, now); err != nil {
+		sr.ParserVersion, sr.UploadID, sr.DisplayName, now); err != nil {
 		return nil, err
 	}
 	sr.CreatedAt = db.ParseTime(now)
@@ -273,6 +273,13 @@ func (s *SQLiteStore) UpdateSourceRevisionPageCount(ctx context.Context, tenantI
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE source_revisions SET page_count = ? WHERE tenant_id = ? AND project_id = ? AND revision_no = ?`,
 		pageCount, tenantID, projectID, revisionNo)
+	return err
+}
+
+func (s *SQLiteStore) UpdateSourceRevisionDisplayName(ctx context.Context, tenantID, projectID string, revisionNo int, displayName string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE source_revisions SET display_name = ? WHERE tenant_id = ? AND project_id = ? AND revision_no = ?`,
+		displayName, tenantID, projectID, revisionNo)
 	return err
 }
 

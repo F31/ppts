@@ -39,6 +39,7 @@ type SourceRevision struct {
 	PageCount     int
 	UploadID      string // 上传会话幂等键；非上传路径为空
 	Filename      string // 原始上传文件名；用于前端展示 PPT 名称
+	DisplayName   string // 用户自定义显示名；为空时回退到 Filename
 	CreatedAt     time.Time
 }
 
@@ -178,6 +179,8 @@ type ProjectStore interface {
 	ListSourceRevisions(ctx context.Context, tenantID, projectID string) ([]*SourceRevision, error)
 	// UpdateSourceRevisionPageCount 在解析完成后写回页数（幂等，可重复调用）。
 	UpdateSourceRevisionPageCount(ctx context.Context, tenantID, projectID string, revisionNo int, pageCount int) error
+	// UpdateSourceRevisionDisplayName 保存用户自定义显示名（可为空，清空时回退到默认文件名）。
+	UpdateSourceRevisionDisplayName(ctx context.Context, tenantID, projectID string, revisionNo int, displayName string) error
 	// DeleteSourceRevision 软删指定版本（设 source_deleted_at），禁止删除当前生效版本。
 	DeleteSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) error
 	// ---- 标签与分组（#94 标签+分组体系） ----
@@ -373,7 +376,7 @@ func (s *PGProjectStore) CreateSourceRevision(ctx context.Context, tenantID stri
 		// 上传链路幂等：同一 upload_id 已建源版本时返回既有版本，不重复递增。
 		if in.UploadID != "" {
 			existing, err := scanSourceRevision(tx.QueryRow(ctx,
-				`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at
+				`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at, COALESCE(display_name, '')
 				 FROM source_revisions WHERE tenant_id=$1 AND upload_id=$2`,
 				tenantID, in.UploadID))
 			switch {
@@ -388,13 +391,13 @@ func (s *PGProjectStore) CreateSourceRevision(ctx context.Context, tenantID stri
 		sr = &SourceRevision{
 			ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: current + 1,
 			SourceHash: in.SourceHash, ObjectKey: in.ObjectKey, ParserVersion: in.ParserVersion,
-			UploadID: in.UploadID,
+			UploadID: in.UploadID, DisplayName: in.Filename,
 		}
 		if err := tx.QueryRow(ctx,
-			`INSERT INTO source_revisions (id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, upload_id)
-			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7)
+			`INSERT INTO source_revisions (id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, upload_id, display_name)
+			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,$8)
 			 RETURNING id, created_at`,
-			sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey, sr.ParserVersion, sr.UploadID,
+			sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey, sr.ParserVersion, sr.UploadID, nullIfEmpty(sr.DisplayName),
 		).Scan(&sr.ID, &sr.CreatedAt); err != nil {
 			return err
 		}
@@ -416,7 +419,7 @@ func (s *PGProjectStore) GetSourceRevision(ctx context.Context, tenantID, projec
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		r, e = scanSourceRevision(tx.QueryRow(ctx,
-			`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at
+			`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at, COALESCE(display_name, '')
 			 FROM source_revisions WHERE project_id=$1 AND tenant_id=$2 AND revision_no=$3`,
 			projectID, tenantID, revisionNo))
 		return e
@@ -428,7 +431,7 @@ func (s *PGProjectStore) ListSourceRevisions(ctx context.Context, tenantID, proj
 	var revs []*SourceRevision
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
-			`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at
+			`SELECT id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, page_count, upload_id, created_at, COALESCE(display_name, '')
 			 FROM source_revisions WHERE project_id=$1 AND tenant_id=$2 AND source_deleted_at IS NULL
 			 ORDER BY revision_no DESC`,
 			projectID, tenantID)
@@ -454,6 +457,15 @@ func (s *PGProjectStore) UpdateSourceRevisionPageCount(ctx context.Context, tena
 		_, err := tx.Exec(ctx,
 			`UPDATE source_revisions SET page_count = $4 WHERE tenant_id = $1 AND project_id = $2 AND revision_no = $3`,
 			tenantID, projectID, revisionNo, pageCount)
+		return err
+	})
+}
+
+func (s *PGProjectStore) UpdateSourceRevisionDisplayName(ctx context.Context, tenantID, projectID string, revisionNo int, displayName string) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE source_revisions SET display_name = $4 WHERE tenant_id = $1 AND project_id = $2 AND revision_no = $3`,
+			tenantID, projectID, revisionNo, displayName)
 		return err
 	})
 }
@@ -791,7 +803,7 @@ func scanProject(row pgx.Row) (*Project, error) {
 func scanSourceRevision(row pgx.Row) (*SourceRevision, error) {
 	var r SourceRevision
 	err := row.Scan(&r.ID, &r.ProjectID, &r.TenantID, &r.RevisionNo, &r.SourceHash,
-		&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &r.CreatedAt)
+		&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &r.CreatedAt, &r.DisplayName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSourceRevisionNotFound
 	}

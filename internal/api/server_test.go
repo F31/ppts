@@ -97,6 +97,7 @@ func (*fakeProjectStore) ListSourceRevisions(context.Context, string, string) ([
 }
 func (*fakeProjectStore) UpdateSourceRevisionPageCount(context.Context, string, string, int, int) error { return nil }
 func (*fakeProjectStore) DeleteSourceRevision(context.Context, string, string, int) error              { return nil }
+func (*fakeProjectStore) UpdateSourceRevisionDisplayName(context.Context, string, string, int, string) error { return nil }
 
 // ---- #94 标签+分组体系：测试桩（未使用，返回零值以满足 project.Store 接口） ----
 func (*fakeProjectStore) ListTags(context.Context, string) ([]*project.Tag, error) {

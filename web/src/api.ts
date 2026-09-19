@@ -395,6 +395,7 @@ export async function getSourceRevisions(
       page_count: number;
       parser_version: string;
       object_key: string;
+      display_name?: string;
       is_current: boolean;
     }>;
   }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions`);
@@ -406,7 +407,7 @@ export async function getSourceRevisions(
       pageCount: x.page_count,
       parserVersion: x.parser_version,
       objectKey: x.object_key,
-      displayName: parseObjectKeyDisplayName(x.object_key),
+      displayName: x.display_name || parseObjectKeyDisplayName(x.object_key),
       isCurrent: x.is_current,
     })),
   };
@@ -414,6 +415,22 @@ export async function getSourceRevisions(
 
 export async function deleteSourceRevision(identity: ClientIdentity, projectId: string, revisionNo: number): Promise<void> {
   await deleteJSON<{ ok: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}`);
+}
+
+export async function updatePptDisplayName(identity: ClientIdentity, projectId: string, revisionNo: number, displayName: string): Promise<void> {
+  const response = await fetch(`/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}`, {
+    method: 'PATCH',
+    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName })
+  });
+  if (!response.ok) {
+    let message = `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) message = `${envelope.code}: ${envelope.message ?? ''}`;
+    } catch { /* ignore */ }
+    throw new ConnectError('http_' + response.status, message);
+  }
 }
 
 export type SlideRenderURL = { slideId: string; url: string };

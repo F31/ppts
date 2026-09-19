@@ -92,6 +92,7 @@ func (s *fakeACLProjectStore) ListSourceRevisions(_ context.Context, _, _ string
 }
 func (s *fakeACLProjectStore) UpdateSourceRevisionPageCount(_ context.Context, _ string, _ string, _ int, _ int) error { return nil }
 func (s *fakeACLProjectStore) DeleteSourceRevision(_ context.Context, _ string, _ string, _ int) error                  { return nil }
+func (s *fakeACLProjectStore) UpdateSourceRevisionDisplayName(_ context.Context, _ string, _ string, _ int, _ string) error { return nil }
 func (s *fakeACLProjectStore) ListTags(_ context.Context, _ string) ([]*project.Tag, error) {
 	return nil, nil
 }
