@@ -56,6 +56,7 @@ type Folder struct {
 	TenantID  string
 	Name      string
 	CreatedBy string
+	SortOrder int
 	CreatedAt time.Time
 }
 
@@ -184,7 +185,7 @@ type ProjectStore interface {
 	DetachTag(ctx context.Context, tenantID, projectID, tagID string) error
 	// 分组（单归属，删分组时项目回落未分类）。
 	ListFolders(ctx context.Context, tenantID string) ([]*Folder, error)
-	CreateFolder(ctx context.Context, tenantID, name, createdBy string) (*Folder, error)
+	CreateFolder(ctx context.Context, tenantID, name, createdBy, afterFolderID string) (*Folder, error)
 	RenameFolder(ctx context.Context, tenantID, folderID, name string) (*Folder, error)
 	DeleteFolder(ctx context.Context, tenantID, folderID string) error
 	MoveProject(ctx context.Context, tenantID, projectID, folderID string) error
@@ -564,7 +565,7 @@ func (s *PGProjectStore) ListFolders(ctx context.Context, tenantID string) ([]*F
 	var folders []*Folder
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
-			`SELECT id, tenant_id, name, created_by, created_at FROM folders WHERE tenant_id=$1 ORDER BY name`,
+			`SELECT id, tenant_id, name, created_by, sort_order, created_at FROM folders WHERE tenant_id=$1 ORDER BY sort_order, name`,
 			tenantID)
 		if e != nil {
 			return e
@@ -572,7 +573,7 @@ func (s *PGProjectStore) ListFolders(ctx context.Context, tenantID string) ([]*F
 		defer rows.Close()
 		for rows.Next() {
 			var f Folder
-			if e := rows.Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.CreatedAt); e != nil {
+			if e := rows.Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &f.CreatedAt); e != nil {
 				return e
 			}
 			folders = append(folders, &f)
@@ -582,7 +583,7 @@ func (s *PGProjectStore) ListFolders(ctx context.Context, tenantID string) ([]*F
 	return folders, err
 }
 
-func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, createdBy string) (*Folder, error) {
+func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, createdBy, afterFolderID string) (*Folder, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, errors.New("project: folder name required")
@@ -595,10 +596,25 @@ func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, creat
 		} else if !errors.Is(e, pgx.ErrNoRows) {
 			return e
 		}
+		sortOrder := 0
+		if strings.TrimSpace(afterFolderID) == "" {
+			if e := tx.QueryRow(ctx, `SELECT COALESCE(MAX(sort_order) + 1, 0) FROM folders WHERE tenant_id=$1`, tenantID).Scan(&sortOrder); e != nil {
+				return e
+			}
+		} else {
+			if e := tx.QueryRow(ctx, `SELECT sort_order + 1 FROM folders WHERE tenant_id=$1 AND id=$2`, tenantID, afterFolderID).Scan(&sortOrder); errors.Is(e, pgx.ErrNoRows) {
+				return ErrFolderNotFound
+			} else if e != nil {
+				return e
+			}
+			if _, e := tx.Exec(ctx, `UPDATE folders SET sort_order=sort_order+1 WHERE tenant_id=$1 AND sort_order >= $2`, tenantID, sortOrder); e != nil {
+				return e
+			}
+		}
 		f = &Folder{}
 		return tx.QueryRow(ctx,
-			`INSERT INTO folders (tenant_id, name, created_by) VALUES ($1,$2,$3) RETURNING id, tenant_id, name, created_by, created_at`,
-			tenantID, name, nullIfEmpty(createdBy)).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.CreatedAt)
+			`INSERT INTO folders (tenant_id, name, created_by, sort_order) VALUES ($1,$2,$3,$4) RETURNING id, tenant_id, name, created_by, sort_order, created_at`,
+			tenantID, name, nullIfEmpty(createdBy), sortOrder).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &f.CreatedAt)
 	})
 	return f, err
 }
@@ -618,8 +634,8 @@ func (s *PGProjectStore) RenameFolder(ctx context.Context, tenantID, folderID, n
 		}
 		f = &Folder{}
 		e := tx.QueryRow(ctx,
-			`UPDATE folders SET name=$3 WHERE id=$2 AND tenant_id=$1 RETURNING id, tenant_id, name, created_by, created_at`,
-			tenantID, folderID, name).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.CreatedAt)
+			`UPDATE folders SET name=$3 WHERE id=$2 AND tenant_id=$1 RETURNING id, tenant_id, name, created_by, sort_order, created_at`,
+			tenantID, folderID, name).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &f.CreatedAt)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return ErrFolderNotFound
 		}

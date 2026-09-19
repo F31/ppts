@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   archiveProject,
   attachTag,
@@ -9,18 +9,19 @@ import {
   detachTag,
   getNarration,
   getProjectSlides,
+  getSourceRevisions,
   listFolders,
   listProjectOrganization,
   listProjects,
   listTags,
   moveProject,
   renameFolder,
-  type ClientIdentity
+  type ClientIdentity,
+  type SourceRevisionSummary
 } from '../api';
 import { ImportDialog } from '../components/ImportDialog';
-import { ShareDialog } from '../components/ShareDialog';
 import { useI18n } from '../i18n';
-import { Link } from '../router';
+import { Link, navigate } from '../router';
 import { can, type Capability } from '../permissions';
 import { type Folder, type Project, type ProjectOrg, type Role, type Tag } from '../types';
 
@@ -28,6 +29,12 @@ type RowMeta = {
   slideCount: number;
   voiced: boolean;
   lastError?: string;
+};
+
+type ProjectVersionsState = {
+  loading: boolean;
+  error: string;
+  revisions: SourceRevisionSummary[];
 };
 
 type SortKey = 'created_desc' | 'created_asc' | 'name_asc' | 'name_desc';
@@ -78,7 +85,12 @@ export function Projects({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [importTarget, setImportTarget] = useState<Project | null>(null);
-  const [shareTarget, setShareTarget] = useState<Project | null>(null);
+  const [expandedProjectId, setExpandedProjectId] = useState('');
+  const [versionsByProject, setVersionsByProject] = useState<Record<string, ProjectVersionsState>>({});
+  // 每个 project+revision 的 PPT 展示名（本地暂存，刷新重置）。
+  const [editableNames, setEditableNames] = useState<Record<string, Record<number, string>>>({});
+  // 正在编辑的 PPT 名：key = `${projectId}:${revisionNo}`。
+  const [editingCell, setEditingCell] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [notices, setNotices] = useState<Array<{ id: string; text: string }>>([]);
 
@@ -102,6 +114,7 @@ export function Projects({
   // 内联创建（分组 / 标签）：在项目页左栏直接创建，无需跳转设置页。
   const [showFolderComposer, setShowFolderComposer] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
+  const [folderAfterId, setFolderAfterId] = useState('');
   // 内联重命名：哪个分组正在编辑名称（空 = 无）。
   const [editingFolderId, setEditingFolderId] = useState('');
   const [editFolderDraft, setEditFolderDraft] = useState('');
@@ -227,6 +240,35 @@ export function Projects({
     }
   };
 
+  const toggleVersions = async (project: Project) => {
+    if (expandedProjectId === project.id) {
+      setExpandedProjectId('');
+      return;
+    }
+    setExpandedProjectId(project.id);
+    if (versionsByProject[project.id]) return;
+    setVersionsByProject((current) => ({
+      ...current,
+      [project.id]: { loading: true, error: '', revisions: [] }
+    }));
+    try {
+      const result = await getSourceRevisions(identity, project.id);
+      setVersionsByProject((current) => ({
+        ...current,
+        [project.id]: { loading: false, error: '', revisions: result.revisions }
+      }));
+    } catch (err) {
+      setVersionsByProject((current) => ({
+        ...current,
+        [project.id]: {
+          loading: false,
+          error: err instanceof Error ? err.message : t('projects.versionsFailed'),
+          revisions: []
+        }
+      }));
+    }
+  };
+
   const clearFilters = () => {
     setQ('');
     setSort('created_desc');
@@ -342,9 +384,10 @@ export function Projects({
     const name = folderDraft.trim();
     if (!name) return;
     try {
-      const folder = await createFolder(identity, name);
-      setFolders((cur) => [...cur, folder]);
+      const folder = await createFolder(identity, name, folderAfterId);
+      setFolders((cur) => [...cur, folder].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)));
       setFolderDraft('');
+      setFolderAfterId('');
       setShowFolderComposer(false);
       pushNotice(t('folders.created', { name: folder.name }));
     } catch (err) {
@@ -415,19 +458,121 @@ export function Projects({
     }
   };
 
+  const renderProjectName = (project: Project) => (
+    <button
+      type="button"
+      className="project-name-button"
+      onClick={() => void toggleVersions(project)}
+      aria-expanded={expandedProjectId === project.id}
+      title={t('projects.showPpts')}
+    >
+      <span className="project-name">{project.title}</span>
+      <small className="cell-sub">{project.id}</small>
+    </button>
+  );
+
+  const renderVersionList = (project: Project) => {
+    const state = versionsByProject[project.id];
+    const row = meta[project.id];
+    if (!state || state.loading) return <p className="cell-sub">{t('common.loading')}</p>;
+    if (state.error) return <p className="api-status error">{state.error}</p>;
+    if (state.revisions.length === 0) return <p className="cell-sub">{t('projects.noPpts')}</p>;
+    const editKey = (revNo: number) => `${project.id}:${revNo}`;
+    const startEdit = (revNo: number) => setEditingCell(editKey(revNo));
+    const commitEdit = (revNo: number, newName: string) => {
+      setEditableNames((cur) => {
+        const projMap = cur[project.id] ?? {};
+        return { ...cur, [project.id]: { ...projMap, [revNo]: newName } };
+      });
+      setEditingCell(null);
+    };
+    const getDisplayName = (rev: SourceRevisionSummary) =>
+      (editableNames[project.id]?.[rev.revisionNo] ?? rev.displayName) || rev.displayName;
+    return (
+      <table className="data-table nested-table">
+        <thead>
+          <tr>
+            <th className="col-ppt-name">{t('projects.colPptName')}</th>
+            <th>{t('projects.colSlides')}</th>
+            <th>{t('projects.colRevision')}</th>
+            <th>{t('projects.colCreated')}</th>
+            <th>{t('projects.colVoice')}</th>
+            <th>{t('tags.title')}</th>
+            <th className="col-actions">{t('projects.colActions')}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {state.revisions.map((revision) => {
+            const isEditing = editingCell === editKey(revision.revisionNo);
+            return (
+            <tr key={revision.revisionNo}>
+              <td className="col-ppt-name">
+                {isEditing ? (
+                    <input
+                      className="ppt-name-input"
+                      defaultValue={getDisplayName(revision)}
+                      autoFocus
+                      onBlur={(e) => commitEdit(revision.revisionNo, e.currentTarget.value.trim())}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur();
+                        if (e.key === 'Escape') setEditingCell(null);
+                      }}
+                    />
+                  ) : (
+                    <span
+                      className="ppt-name"
+                      title={t('projects.editPptName')}
+                      onDoubleClick={() => startEdit(revision.revisionNo)}
+                    >
+                      {getDisplayName(revision)}
+                    </span>
+                  )}
+                </td>
+                <td>{revision.pageCount}</td>
+                <td>v{revision.revisionNo}</td>
+                <td>{new Date(revision.createdAt).toLocaleString()}</td>
+                <td>
+                  {revision.isCurrent ? (
+                    <span className={`state-tag ${row?.voiced ? 'succeeded' : 'empty'}`}>
+                      {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
+                    </span>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+                <td>
+                  <TagChips projectId={project.id} />
+                </td>
+                <td className="col-actions">
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    onClick={() => navigate(`/projects/${project.id}/editor${revision.isCurrent ? '' : `?rev=${revision.revisionNo}`}`)}
+                    title={t('projects.view')}
+                  >
+                    {t('projects.view')}
+                  </button>
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    onClick={() => navigate(`/projects/${project.id}/editor?export&rev=${revision.revisionNo}`)}
+                    title={t('projects.export')}
+                  >
+                    {t('projects.export')}
+                  </button>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  };
+
   const renderActions = (project: Project) => (
     <div className="row-actions">
-      <Link to={`/projects/${project.id}/editor`} className="button-ghost">
-        {t('projects.view')}
-      </Link>
-      <Link to={`/projects/${project.id}/editor?draft=1`} className="button-ghost">
-        {t('projects.dub')}
-      </Link>
       <button type="button" onClick={() => setImportTarget(project)} title={t('projects.import')}>
         {t('projects.import')}
-      </button>
-      <button type="button" onClick={() => setShareTarget(project)} title={t('projects.share')}>
-        {t('projects.share')}
       </button>
       <button
         type="button"
@@ -683,6 +828,17 @@ export function Projects({
                   placeholder={t('folders.newName')}
                   autoFocus
                 />
+                <label className="sr-only" htmlFor="folder-after">
+                  {t('folders.position')}
+                </label>
+                <select id="folder-after" value={folderAfterId} onChange={(e) => setFolderAfterId(e.currentTarget.value)}>
+                  <option value="">{t('folders.positionEnd')}</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {t('folders.positionAfter', { name: folder.name })}
+                    </option>
+                  ))}
+                </select>
                 <button type="submit" disabled={!folderDraft.trim()}>
                   ✓
                 </button>
@@ -893,10 +1049,7 @@ export function Projects({
                   <thead>
                     <tr>
                       {canOrganize && <th className="col-check"></th>}
-                      <th>{t('projects.colName')}</th>
-                      <th>{t('projects.colSlides')}</th>
-                      <th>{t('projects.colRevision')}</th>
-                      <th>{t('projects.colVoice')}</th>
+                      <th>{t('projects.colProjectName')}</th>
                       <th>{t('folders.title')}</th>
                       <th>{t('tags.title')}</th>
                       <th className="col-actions">{t('projects.colActions')}</th>
@@ -904,44 +1057,34 @@ export function Projects({
                   </thead>
                   <tbody>
                     {visible.map((project) => {
-                      const row = meta[project.id];
                       return (
-                        <tr key={project.id} className={project.archived ? 'row-muted' : ''}>
-                          {canOrganize && (
-                            <td className="col-check">
-                              <input
-                                type="checkbox"
-                                checked={selected.has(project.id)}
-                                onChange={() => toggleSelect(project.id)}
-                                aria-label={t('projects.select', { title: project.title })}
-                              />
+                        <Fragment key={project.id}>
+                          <tr className={project.archived ? 'row-muted' : ''}>
+                            {canOrganize && (
+                              <td className="col-check">
+                                <input
+                                  type="checkbox"
+                                  checked={selected.has(project.id)}
+                                  onChange={() => toggleSelect(project.id)}
+                                  aria-label={t('projects.select', { title: project.title })}
+                                />
+                              </td>
+                            )}
+                            <td>{renderProjectName(project)}</td>
+                            <td>
+                              <FolderControl projectId={project.id} />
                             </td>
+                            <td>
+                              <TagControl projectId={project.id} />
+                            </td>
+                            <td className="col-actions">{renderActions(project)}</td>
+                          </tr>
+                          {expandedProjectId === project.id && (
+                            <tr className="project-detail-row">
+                              <td colSpan={canOrganize ? 5 : 4}>{renderVersionList(project)}</td>
+                            </tr>
                           )}
-                          <td>
-                            <Link
-                              to={`/projects/${project.id}/editor`}
-                              className="project-name"
-                              title={t('projects.enter')}
-                            >
-                              {project.title}
-                            </Link>
-                            <small className="cell-sub">{project.id}</small>
-                          </td>
-                          <td>{row ? String(row.slideCount) : '—'}</td>
-                          <td>{project.currentRevision}</td>
-                          <td>
-                            <span className={`state-tag ${row?.voiced ? 'succeeded' : 'empty'}`}>
-                              {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
-                            </span>
-                          </td>
-                          <td>
-                            <FolderControl projectId={project.id} />
-                          </td>
-                          <td>
-                            <TagControl projectId={project.id} />
-                          </td>
-                          <td className="col-actions">{renderActions(project)}</td>
-                        </tr>
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -949,7 +1092,6 @@ export function Projects({
               ) : (
                 <div className="project-cards">
                   {visible.map((project) => {
-                    const row = meta[project.id];
                     return (
                       <div key={project.id} className={`project-card ${project.archived ? 'row-muted' : ''}`}>
                         {canOrganize && (
@@ -963,36 +1105,18 @@ export function Projects({
                           </label>
                         )}
                         <div className="pc-head">
-                          <Link
-                            to={`/projects/${project.id}/editor`}
-                            className="project-name"
-                            title={t('projects.enter')}
-                          >
-                            {project.title}
-                          </Link>
+                          {renderProjectName(project)}
                           {project.archived && (
                             <span className="state-tag empty">{t('projects.archivedBadge')}</span>
                           )}
                         </div>
-                        <small className="cell-sub">{project.id}</small>
                         <div className="pc-meta">
-                          <span>
-                            {t('projects.colSlides')}: {row ? String(row.slideCount) : '—'}
-                          </span>
-                          <span>
-                            {t('projects.colRevision')}: {project.currentRevision}
-                          </span>
-                          <span>
-                            {t('projects.colVoice')}:{' '}
-                            <span className={`state-tag ${row?.voiced ? 'succeeded' : 'empty'}`}>
-                              {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
-                            </span>
-                          </span>
                           <span className="pc-org">
                             {t('folders.title')}: <FolderControl projectId={project.id} />
                           </span>
                         </div>
                         <TagControl projectId={project.id} />
+                        {expandedProjectId === project.id && <div className="project-card-detail">{renderVersionList(project)}</div>}
                         {renderActions(project)}
                       </div>
                     );
@@ -1013,16 +1137,6 @@ export function Projects({
             pushNotice(t('projects.queued'));
             void load(true);
           }}
-        />
-      )}
-
-      {shareTarget && (
-        <ShareDialog
-          identity={identity}
-          projectId={shareTarget.id}
-          projectTitle={shareTarget.title}
-          role={role}
-          onClose={() => setShareTarget(null)}
         />
       )}
     </div>

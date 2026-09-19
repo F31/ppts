@@ -148,9 +148,24 @@ func TestSQLiteTagsFolders(t *testing.T) {
 		t.Fatalf("detach: %v", err)
 	}
 
-	folder, err := s.CreateFolder(ctx, testTenant, "客户A", testOwner)
+	folder, err := s.CreateFolder(ctx, testTenant, "客户A", testOwner, "")
 	if err != nil {
 		t.Fatalf("create folder: %v", err)
+	}
+	folderB, err := s.CreateFolder(ctx, testTenant, "客户B", testOwner, "")
+	if err != nil {
+		t.Fatalf("create folder B: %v", err)
+	}
+	folderC, err := s.CreateFolder(ctx, testTenant, "客户C", testOwner, folder.ID)
+	if err != nil {
+		t.Fatalf("create folder C: %v", err)
+	}
+	folders, err := s.ListFolders(ctx, testTenant)
+	if err != nil {
+		t.Fatalf("list folders: %v", err)
+	}
+	if len(folders) < 3 || folders[0].ID != folder.ID || folders[1].ID != folderC.ID || folders[2].ID != folderB.ID {
+		t.Fatalf("unexpected folder order: %+v", folders)
 	}
 	if err := s.MoveProject(ctx, testTenant, p.ID, folder.ID); err != nil {
 		t.Fatalf("move: %v", err)

@@ -118,7 +118,7 @@ func (*fakeProjectStore) DetachTag(context.Context, string, string, string) erro
 func (*fakeProjectStore) ListFolders(context.Context, string) ([]*project.Folder, error) {
 	return nil, nil
 }
-func (*fakeProjectStore) CreateFolder(context.Context, string, string, string) (*project.Folder, error) {
+func (*fakeProjectStore) CreateFolder(context.Context, string, string, string, string) (*project.Folder, error) {
 	return nil, errors.New("not used")
 }
 func (*fakeProjectStore) RenameFolder(context.Context, string, string, string) (*project.Folder, error) {

@@ -108,6 +108,7 @@ export type Folder = {
   id: string;
   name: string;
   createdBy?: string;
+  sortOrder?: number;
   createdAt?: string;
 };
 

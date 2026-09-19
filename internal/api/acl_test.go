@@ -78,32 +78,68 @@ func (s *fakeACLProjectStore) ArchiveProject(_ context.Context, tenantID, userID
 	return p, nil
 }
 
-func (s *fakeACLProjectStore) CreateProject(_ context.Context, _, _, _ string) (*project.Project, error)                  { return nil, nil }
-func (s *fakeACLProjectStore) CreateSourceRevision(_ context.Context, _ string, _ project.NewSourceRevision) (*project.SourceRevision, error) { return nil, nil }
-func (s *fakeACLProjectStore) GetSourceRevision(_ context.Context, _, _ string, _ int) (*project.SourceRevision, error)       { return nil, nil }
-func (s *fakeACLProjectStore) ListSourceRevisions(_ context.Context, _, _ string) ([]*project.SourceRevision, error)          { return nil, nil }
-func (s *fakeACLProjectStore) ListTags(_ context.Context, _ string) ([]*project.Tag, error)                                 { return nil, nil }
-func (s *fakeACLProjectStore) CreateTag(_ context.Context, _, _, _ string) (*project.Tag, error)                            { return nil, nil }
-func (s *fakeACLProjectStore) RenameTag(_ context.Context, _, _, _, _ string) (*project.Tag, error)                         { return nil, nil }
-func (s *fakeACLProjectStore) DeleteTag(_ context.Context, _, _ string) error                                               { return nil }
-func (s *fakeACLProjectStore) AttachTag(_ context.Context, _, _, _ string) error                                            { return nil }
-func (s *fakeACLProjectStore) DetachTag(_ context.Context, _, _, _ string) error                                            { return nil }
-func (s *fakeACLProjectStore) ListFolders(_ context.Context, _ string) ([]*project.Folder, error)                           { return nil, nil }
-func (s *fakeACLProjectStore) CreateFolder(_ context.Context, _, _, _ string) (*project.Folder, error)                      { return nil, nil }
-func (s *fakeACLProjectStore) RenameFolder(_ context.Context, _, _, _ string) (*project.Folder, error)                      { return nil, nil }
-func (s *fakeACLProjectStore) DeleteFolder(_ context.Context, _, _ string) error                                            { return nil }
-func (s *fakeACLProjectStore) MoveProject(_ context.Context, _, _, _ string) error                                          { return nil }
-func (s *fakeACLProjectStore) ListProjectOrganization(_ context.Context, _, _ string) ([]*project.ProjectOrg, error)           { return nil, nil }
-func (s *fakeACLProjectStore) ListCollaborators(_ context.Context, _, _ string) ([]*project.Collaborator, error)            { return nil, nil }
-func (s *fakeACLProjectStore) InviteCollaborator(_ context.Context, _, _, _, _, _ string) (*project.Collaborator, error)    { return nil, nil }
-func (s *fakeACLProjectStore) UpdateCollaboratorRole(_ context.Context, _, _, _, _ string) (*project.Collaborator, error)    { return nil, nil }
-func (s *fakeACLProjectStore) RemoveCollaborator(_ context.Context, _, _, _ string) error                                   { return nil }
-func (s *fakeACLProjectStore) CreateShareLink(_ context.Context, _, _, _, _, _ string, _ *time.Time) (*project.ShareLink, error) { return nil, nil }
-func (s *fakeACLProjectStore) ListShareLinks(_ context.Context, _, _ string) ([]*project.ShareLink, error)                  { return nil, nil }
-func (s *fakeACLProjectStore) RevokeShareLink(_ context.Context, _, _ string) error                                         { return nil }
-func (s *fakeACLProjectStore) GetShareLinkByToken(_ context.Context, _ string) (*project.ShareLink, error)                 { return nil, nil }
-func (s *fakeACLProjectStore) ShareLinkPasswordHash(_ context.Context, _, _ string) (string, error)                         { return "", nil }
-func (s *fakeACLProjectStore) TouchShareLinkAccess(_ context.Context, _, _ string) error                                    { return nil }
+func (s *fakeACLProjectStore) CreateProject(_ context.Context, _, _, _ string) (*project.Project, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) CreateSourceRevision(_ context.Context, _ string, _ project.NewSourceRevision) (*project.SourceRevision, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) GetSourceRevision(_ context.Context, _, _ string, _ int) (*project.SourceRevision, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) ListSourceRevisions(_ context.Context, _, _ string) ([]*project.SourceRevision, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) ListTags(_ context.Context, _ string) ([]*project.Tag, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) CreateTag(_ context.Context, _, _, _ string) (*project.Tag, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) RenameTag(_ context.Context, _, _, _, _ string) (*project.Tag, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) DeleteTag(_ context.Context, _, _ string) error    { return nil }
+func (s *fakeACLProjectStore) AttachTag(_ context.Context, _, _, _ string) error { return nil }
+func (s *fakeACLProjectStore) DetachTag(_ context.Context, _, _, _ string) error { return nil }
+func (s *fakeACLProjectStore) ListFolders(_ context.Context, _ string) ([]*project.Folder, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) CreateFolder(_ context.Context, _, _, _, _ string) (*project.Folder, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) RenameFolder(_ context.Context, _, _, _ string) (*project.Folder, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) DeleteFolder(_ context.Context, _, _ string) error   { return nil }
+func (s *fakeACLProjectStore) MoveProject(_ context.Context, _, _, _ string) error { return nil }
+func (s *fakeACLProjectStore) ListProjectOrganization(_ context.Context, _, _ string) ([]*project.ProjectOrg, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) ListCollaborators(_ context.Context, _, _ string) ([]*project.Collaborator, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) InviteCollaborator(_ context.Context, _, _, _, _, _ string) (*project.Collaborator, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) UpdateCollaboratorRole(_ context.Context, _, _, _, _ string) (*project.Collaborator, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) RemoveCollaborator(_ context.Context, _, _, _ string) error { return nil }
+func (s *fakeACLProjectStore) CreateShareLink(_ context.Context, _, _, _, _, _ string, _ *time.Time) (*project.ShareLink, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) ListShareLinks(_ context.Context, _, _ string) ([]*project.ShareLink, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) RevokeShareLink(_ context.Context, _, _ string) error { return nil }
+func (s *fakeACLProjectStore) GetShareLinkByToken(_ context.Context, _ string) (*project.ShareLink, error) {
+	return nil, nil
+}
+func (s *fakeACLProjectStore) ShareLinkPasswordHash(_ context.Context, _, _ string) (string, error) {
+	return "", nil
+}
+func (s *fakeACLProjectStore) TouchShareLinkAccess(_ context.Context, _, _ string) error { return nil }
 
 func TestRequireProjectAccess_OwnerCanAccess(t *testing.T) {
 	store := newFakeACLProjectStore()

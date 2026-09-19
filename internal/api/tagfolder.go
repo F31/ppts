@@ -7,8 +7,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/project"
 )
 
@@ -19,7 +19,7 @@ import (
 //   - PUT    /tags/{tagId}                    重命名/改色 {name,color?}
 //   - DELETE /tags/{tagId}                    删除标签（级联清 project_tags）
 //   - GET    /folders                         列出租户分组
-//   - POST   /folders                         新建分组 {name}
+//   - POST   /folders                         新建分组 {name,after_folder_id?}
 //   - PUT    /folders/{folderId}              重命名 {name}
 //   - DELETE /folders/{folderId}              删除分组（项目回落未分类）
 //   - GET    /projects/organization           返回 [{projectId,folderId,tagIds}] 供前端合并列表
@@ -178,6 +178,7 @@ func listFolders(w http.ResponseWriter, r *http.Request, projects project.Projec
 			"id":         f.ID,
 			"name":       f.Name,
 			"created_by": f.CreatedBy,
+			"sort_order": f.SortOrder,
 			"created_at": f.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		})
 	}
@@ -195,7 +196,8 @@ func mutateFolder(w http.ResponseWriter, r *http.Request, projects project.Proje
 		return
 	}
 	var body struct {
-		Name string `json:"name"`
+		Name          string `json:"name"`
+		AfterFolderID string `json:"after_folder_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
@@ -204,7 +206,7 @@ func mutateFolder(w http.ResponseWriter, r *http.Request, projects project.Proje
 	var f *project.Folder
 	switch op {
 	case "create":
-		f, err = projects.CreateFolder(r.Context(), principal.TenantID, body.Name, principal.UserID)
+		f, err = projects.CreateFolder(r.Context(), principal.TenantID, body.Name, principal.UserID, body.AfterFolderID)
 	case "rename":
 		f, err = projects.RenameFolder(r.Context(), principal.TenantID, folderID, body.Name)
 	}
@@ -216,6 +218,7 @@ func mutateFolder(w http.ResponseWriter, r *http.Request, projects project.Proje
 		"id":         f.ID,
 		"name":       f.Name,
 		"created_by": f.CreatedBy,
+		"sort_order": f.SortOrder,
 		"created_at": f.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 	})
 }

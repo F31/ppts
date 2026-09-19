@@ -363,8 +363,8 @@ func (s *SQLiteStore) DetachTag(ctx context.Context, tenantID, projectID, tagID 
 
 func (s *SQLiteStore) ListFolders(ctx context.Context, tenantID string) ([]*Folder, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, tenant_id, name, COALESCE(created_by, ''), created_at FROM folders
-		 WHERE tenant_id = ? ORDER BY name`, tenantID)
+		`SELECT id, tenant_id, name, COALESCE(created_by, ''), sort_order, created_at FROM folders
+		 WHERE tenant_id = ? ORDER BY sort_order, name`, tenantID)
 	if err != nil {
 		return nil, err
 	}
@@ -373,7 +373,7 @@ func (s *SQLiteStore) ListFolders(ctx context.Context, tenantID string) ([]*Fold
 	for rows.Next() {
 		var f Folder
 		var created string
-		if err := rows.Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &created); err != nil {
+		if err := rows.Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &created); err != nil {
 			return nil, err
 		}
 		f.CreatedAt = db.ParseTime(created)
@@ -382,19 +382,43 @@ func (s *SQLiteStore) ListFolders(ctx context.Context, tenantID string) ([]*Fold
 	return out, rows.Err()
 }
 
-func (s *SQLiteStore) CreateFolder(ctx context.Context, tenantID, name, createdBy string) (*Folder, error) {
+func (s *SQLiteStore) CreateFolder(ctx context.Context, tenantID, name, createdBy, afterFolderID string) (*Folder, error) {
 	name = strings.TrimSpace(name)
 	id := uuid.New().String()
 	now := sqNow()
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO folders (id, tenant_id, name, created_by, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, tenantID, name, sqNullIfEmpty(createdBy), now); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	sortOrder := 0
+	if strings.TrimSpace(afterFolderID) == "" {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort_order) + 1, 0) FROM folders WHERE tenant_id = ?`, tenantID).Scan(&sortOrder); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := tx.QueryRowContext(ctx, `SELECT sort_order + 1 FROM folders WHERE tenant_id = ? AND id = ?`, tenantID, afterFolderID).Scan(&sortOrder); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrFolderNotFound
+			}
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE folders SET sort_order = sort_order + 1 WHERE tenant_id = ? AND sort_order >= ?`, tenantID, sortOrder); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO folders (id, tenant_id, name, created_by, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, tenantID, name, sqNullIfEmpty(createdBy), sortOrder, now); err != nil {
 		if isUniqueViolation(err) {
 			return nil, ErrFolderNameExists
 		}
 		return nil, err
 	}
-	return &Folder{ID: id, TenantID: tenantID, Name: name, CreatedBy: createdBy, CreatedAt: db.ParseTime(now)}, nil
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &Folder{ID: id, TenantID: tenantID, Name: name, CreatedBy: createdBy, SortOrder: sortOrder, CreatedAt: db.ParseTime(now)}, nil
 }
 
 func (s *SQLiteStore) RenameFolder(ctx context.Context, tenantID, folderID, name string) (*Folder, error) {
@@ -410,8 +434,8 @@ func (s *SQLiteStore) RenameFolder(ctx context.Context, tenantID, folderID, name
 	var f Folder
 	var created string
 	if err := s.db.QueryRowContext(ctx,
-		`SELECT id, tenant_id, name, COALESCE(created_by, ''), created_at FROM folders WHERE id = ?`,
-		folderID).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &created); err != nil {
+		`SELECT id, tenant_id, name, COALESCE(created_by, ''), sort_order, created_at FROM folders WHERE id = ?`,
+		folderID).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &created); err != nil {
 		return nil, err
 	}
 	f.CreatedAt = db.ParseTime(created)

@@ -371,8 +371,15 @@ export type SourceRevisionSummary = {
   pageCount: number;
   parserVersion: string;
   objectKey: string;
+  displayName: string; // 默认取 objectKey 的文件名，可被前端覆盖
   isCurrent: boolean;
 };
+
+// parseObjectKeyDisplayName 从对象存储 key 提取文件名作为默认展示名。
+function parseObjectKeyDisplayName(objectKey: string): string {
+  const lastSlash = objectKey.lastIndexOf('/');
+  return lastSlash >= 0 ? objectKey.slice(lastSlash + 1) : objectKey;
+}
 
 // getSourceRevisions 返回项目源版本历史（倒序）与当前生效版本号。
 // 用于编辑器版本抽屉查看历史版本；切换"设为当前"不在此接口范围（后端暂无写接口）。
@@ -399,6 +406,7 @@ export async function getSourceRevisions(
       pageCount: x.page_count,
       parserVersion: x.parser_version,
       objectKey: x.object_key,
+      displayName: parseObjectKeyDisplayName(x.object_key),
       isCurrent: x.is_current,
     })),
   };
@@ -1039,8 +1047,28 @@ export function watchJobEvents(
 // ---- 租户（TenantService） ----
 
 export async function listMembers(identity: ClientIdentity): Promise<Member[]> {
-  const data = await getJSON<{ members?: Member[] }>(identity, '/members');
-  return data.members ?? [];
+  const data = await getJSON<{ members?: {
+    user_id: string;
+    role: Role;
+    created_at?: string;
+    email?: string;
+    username?: string;
+    full_name?: string;
+    gender?: string;
+    birth_date?: string;
+    phone?: string;
+  }[] }>(identity, '/members');
+  return (data.members ?? []).map((member) => ({
+    userId: member.user_id,
+    role: member.role,
+    createdAt: member.created_at,
+    email: member.email,
+    username: member.username,
+    fullName: member.full_name,
+    gender: member.gender,
+    birthDate: member.birth_date,
+    phone: member.phone
+  }));
 }
 
 // updateMemberProfile 写入成员档案（admin 级），供成员列表富字段展示。
@@ -1072,12 +1100,34 @@ export async function deleteTag(identity: ClientIdentity, tagId: string): Promis
 }
 
 export async function listFolders(identity: ClientIdentity): Promise<Folder[]> {
-  const data = await getJSON<{ folders?: Folder[] }>(identity, '/folders');
-  return data.folders ?? [];
+  const data = await getJSON<{ folders?: {
+    id: string;
+    name: string;
+    created_by?: string;
+    sort_order?: number;
+    created_at?: string;
+  }[] }>(identity, '/folders');
+  return (data.folders ?? []).map((folder) => ({
+    id: folder.id,
+    name: folder.name,
+    createdBy: folder.created_by,
+    sortOrder: folder.sort_order,
+    createdAt: folder.created_at
+  }));
 }
 
-export async function createFolder(identity: ClientIdentity, name: string): Promise<Folder> {
-  return postJSON<Folder>(identity, '/folders', { name });
+export async function createFolder(identity: ClientIdentity, name: string, afterFolderId = ''): Promise<Folder> {
+  const folder = await postJSON<{ id: string; name: string; created_by?: string; sort_order?: number; created_at?: string }>(identity, '/folders', {
+    name,
+    after_folder_id: afterFolderId
+  });
+  return {
+    id: folder.id,
+    name: folder.name,
+    createdBy: folder.created_by,
+    sortOrder: folder.sort_order,
+    createdAt: folder.created_at
+  };
 }
 
 export async function renameFolder(identity: ClientIdentity, folderId: string, name: string): Promise<Folder> {
@@ -1419,5 +1469,3 @@ export function shareUrl(url: string): string {
   if (/^https?:\/\//i.test(url)) return url;
   return `${window.location.origin}${url.startsWith('/') ? url : `/${url}`}`;
 }
-
-
