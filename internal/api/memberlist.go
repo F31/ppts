@@ -42,7 +42,7 @@ func listEnrichedMembers(w http.ResponseWriter, r *http.Request, members members
 	for _, m := range list {
 		out = append(out, map[string]any{
 			"user_id":    m.UserID,
-			"role":       string(roleProto(m.Role)),
+			"role":       roleProto(m.Role).String(),
 			"created_at": m.CreatedAt.Format(time.RFC3339),
 			"email":      m.Email,
 			"username":   m.Username,
