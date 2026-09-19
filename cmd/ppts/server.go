@@ -12,31 +12,15 @@ import (
 	"time"
 
 	"github.com/F31/ppts/internal/api"
-	"github.com/F31/ppts/internal/artifact"
-	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
-	"github.com/F31/ppts/internal/integrations/objectstore"
-	"github.com/F31/ppts/internal/integrations/objectstore/storefactory"
-	"github.com/F31/ppts/internal/membership"
-	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/observability"
-	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/pricing"
-	"github.com/F31/ppts/internal/project"
-	"github.com/F31/ppts/internal/pronunciation"
-	"github.com/F31/ppts/internal/tenant"
-	"github.com/F31/ppts/internal/upload"
-	"github.com/F31/ppts/internal/usage"
 	"github.com/F31/ppts/web"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // runServer 启动 API + 前端控制台（原 cmd/api 的 run）。
+// 数据库由 PPTS_DB_DRIVER 选择：sqlite（默认，单租户本地模式，无登录）或 postgres（多租户全功能）。
 func runServer() error {
-	dsn := os.Getenv("PPTS_DATABASE_URL")
-	if dsn == "" {
-		return errors.New("PPTS_DATABASE_URL is required")
-	}
 	addr := os.Getenv("PPTS_HTTP_ADDR")
 	if addr == "" {
 		addr = ":8080"
@@ -49,56 +33,53 @@ func runServer() error {
 		return err
 	}
 	defer func() { _ = traceShutdown(ctx) }()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer pool.Close()
-	if err := pool.Ping(ctx); err != nil {
-		return err
-	}
-	authenticator, err := authFromEnv(ctx)
-	if err != nil {
-		return err
-	}
-	jobs, err := pipeline.NewPGStore(ctx, dsn)
-	if err != nil {
-		return err
-	}
-	defer jobs.Close()
 
-	policyStore := tenant.NewPGStore(pool)
-	registry, err := storefactory.FromEnv(policyStore)
+	stores, err := openStores(ctx)
 	if err != nil {
 		return err
 	}
-	objects := objectstore.WithInventory(registry, policyStore)
-	objects, err = storefactory.WithEnvelopeEncryptionFromEnv(objects, policyStore)
-	if err != nil {
-		return err
-	}
+	defer stores.close()
+
 	priceBook, err := pricing.FromEnv()
 	if err != nil {
 		return err
 	}
-	usageStore := usage.NewPGStore(pool).WithPriceBook(priceBook)
-	auditStore := audit.NewPGStore(pool)
-	membersStore := membership.NewPGStore(pool)
+	stores.applyPriceBook(priceBook)
+
+	authenticator, err := authFromEnv(ctx)
+	if err != nil {
+		return err
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	gatewayStore := gatewayStoreFromEnv(ctx, logger, pool)
+	gatewayStore := gatewayStoreFromEnv(ctx, logger, stores)
+
+	// SQLite 单租户模式：本地固定身份、无登录；不挂载 auth/public 路由（pool 传 nil）。
+	localPrincipal := stores.localPrincipalFor()
+	handlerPool := stores.pg // sqlite 下为 nil → api 跳过 auth/public 路由
+
 	server := &http.Server{
 		Addr: addr,
 		Handler: observability.RequestLogger(
-			api.NewHandler(project.NewPGProjectStore(pool), upload.NewPGUploadStore(pool),
-				narration.NewPGStore(pool), jobs, artifact.NewPGStore(pool),
-				objects, pool,
-				api.Options{Quota: usageStore, Usage: usageStore, Policy: policyStore, Audit: auditStore, Members: membersStore, Lifecycle: policyStore, Storage: policyStore, Archive: policyStore, TenantStatus: policyStore, Auth: authenticator, DevHeaders: os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true", Pronunciation: pronunciation.NewPGStore(pool), Gateway: gatewayStore, JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"), WebRoot: os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS()}),
+			api.NewHandler(stores.projects, stores.uploads, stores.scripts, stores.jobs,
+				stores.artifacts, stores.objects, handlerPool,
+				api.Options{
+					Quota: stores.usage, Usage: stores.usage, Policy: stores.tenant,
+					Audit: stores.audit, Members: stores.members,
+					Lifecycle: stores.tenant, Storage: stores.tenant,
+					Archive: stores.tenant, TenantStatus: stores.tenant,
+					Auth: authenticator,
+					DevHeaders:    os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
+					LocalPrincipal: localPrincipal,
+					Pronunciation: stores.pronunciation, Gateway: gatewayStore,
+					JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
+					WebRoot: os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
+				}),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("ppts server %s listening on %s", version, addr)
+		log.Printf("ppts server %s listening on %s (driver=%s)", version, addr, stores.cfg.Driver)
 		errCh <- server.ListenAndServe()
 	}()
 
@@ -115,13 +96,14 @@ func runServer() error {
 	}
 }
 
-func gatewayStoreFromEnv(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool) gateway.StoreResolver {
+// gatewayStoreFromEnv 按驱动构建模型网关存储；AES 密钥未配置时返回 nil（回退 env 供应商）。
+func gatewayStoreFromEnv(ctx context.Context, logger *slog.Logger, stores *storeSet) gateway.StoreResolver {
 	cipher, err := gateway.CipherFromEnv()
 	if err != nil {
-		logger.Info("model gateway disabled (no AES key)")
+		logger.Info("model gateway disabled (no AES key); using env providers")
 		return nil
 	}
-	store := gateway.NewPGStore(pool, cipher)
+	store := stores.gatewayStore(cipher)
 	if err := gateway.SeedFromEnv(ctx, store, gateway.EnvFromEnv()); err != nil {
 		logger.Warn("gateway seed from env failed", "error", err)
 	}
