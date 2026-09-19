@@ -263,6 +263,9 @@ CREATE TABLE IF NOT EXISTS usage_ledger (
     quantity             REAL NOT NULL DEFAULT 0,
     unit                 TEXT NOT NULL DEFAULT '',
     price_version        TEXT NOT NULL DEFAULT '',
+    user_amount          REAL NOT NULL DEFAULT 0,
+    supplier_cost        REAL NOT NULL DEFAULT 0,
+    currency             TEXT NOT NULL DEFAULT '',
     created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     UNIQUE (tenant_id, logical_operation_id, usage_kind)
 );
