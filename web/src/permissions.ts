@@ -32,7 +32,8 @@ export type Capability =
   | 'public.manage'
   | 'public.recall'
   | 'tenant.danger'
-  | 'library.view';
+  | 'library.view'
+  | 'project.organize';
 
 // minRole：每项能力的最低角色，逐条对齐服务端校验点。
 // | capability          | 最低角色 | 服务端依据                                                        |
@@ -75,7 +76,8 @@ export const minRole: Record<Capability, Role> = {
   'public.manage': 'ROLE_ADMIN',
   'public.recall': 'ROLE_ADMIN',
   'tenant.danger': 'ROLE_OWNER',
-  'library.view': 'ROLE_OWNER'
+  'library.view': 'ROLE_OWNER',
+  'project.organize': 'ROLE_EDITOR'
 };
 
 export function roleRank(role: Role | undefined): number {

@@ -92,6 +92,47 @@ func (s *fakeProjectStore) CreateSourceRevision(ctx context.Context, tenantID st
 func (*fakeProjectStore) GetSourceRevision(context.Context, string, string, int) (*project.SourceRevision, error) {
 	return nil, errors.New("not used")
 }
+func (*fakeProjectStore) ListSourceRevisions(context.Context, string, string) ([]*project.SourceRevision, error) {
+	return nil, nil
+}
+
+// ---- #94 标签+分组体系：测试桩（未使用，返回零值以满足 project.Store 接口） ----
+func (*fakeProjectStore) ListTags(context.Context, string) ([]*project.Tag, error) {
+	return nil, nil
+}
+func (*fakeProjectStore) CreateTag(context.Context, string, string, string) (*project.Tag, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) RenameTag(context.Context, string, string, string, string) (*project.Tag, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) DeleteTag(context.Context, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) AttachTag(context.Context, string, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) DetachTag(context.Context, string, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) ListFolders(context.Context, string) ([]*project.Folder, error) {
+	return nil, nil
+}
+func (*fakeProjectStore) CreateFolder(context.Context, string, string, string) (*project.Folder, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) RenameFolder(context.Context, string, string, string) (*project.Folder, error) {
+	return nil, errors.New("not used")
+}
+func (*fakeProjectStore) DeleteFolder(context.Context, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) MoveProject(context.Context, string, string, string) error {
+	return errors.New("not used")
+}
+func (*fakeProjectStore) ListProjectOrganization(context.Context, string) ([]*project.ProjectOrg, error) {
+	return nil, nil
+}
 
 func itoa(n int) string {
 	if n == 0 {
@@ -1236,6 +1277,11 @@ func (f *fakeRoleReader) Remove(_ context.Context, _, userID string) error {
 		delete(f.roles, userID)
 	}
 	return nil
+}
+
+// SaveProfile 是 membership.Store 的必需方法（#94 前已加入）；fakeRoleReader 不依赖档案，返回 nil。
+func (f *fakeRoleReader) SaveProfile(_ context.Context, _ string, _ membership.Profile) error {
+	return f.err
 }
 
 type fakeTenantLifecycle struct {

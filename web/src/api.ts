@@ -2,10 +2,12 @@ import type {
   ArtifactFormat,
   AuditArchiveFile,
   AuditEvent,
+  Folder,
   Job,
   Member,
   PlaybackManifest,
   Project,
+  ProjectOrg,
   PronunciationDictionary,
   PronunciationRule,
   ProjectUsage,
@@ -15,6 +17,7 @@ import type {
   ScriptSegment,
   SlideSummary,
   StorageUsage,
+  Tag,
   TenantPolicy,
   TenantQuota,
   TenantUsage
@@ -71,7 +74,15 @@ export async function getAuthConfig(): Promise<{ email_password: boolean }> {
 }
 
 // registerEmail 自助注册：后端创建个人租户并签发 JWT，无需邮件验证（决策 ②A）。
-export async function registerEmail(params: { email: string; password: string }): Promise<EmailAuthResult> {
+export async function registerEmail(params: {
+  email: string;
+  password: string;
+  username?: string;
+  fullName?: string;
+  gender?: string;
+  birthDate?: string;
+  phone?: string;
+}): Promise<EmailAuthResult> {
   return postAuth('/auth/register', params);
 }
 
@@ -190,6 +201,49 @@ async function putJSON<T>(identity: ClientIdentity, path: string, body: Record<s
       if (envelope.message) message = envelope.message;
     } catch {
       // 非 Connect 错误体，保留默认 message。
+    }
+    throw new ConnectError(code, message);
+  }
+  return (await response.json()) as T;
+}
+
+// postJSON 调用后端原生 HTTP POST 端点（标签/分组创建等）。
+async function postJSON<T>(identity: ClientIdentity, path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    let code = `http_${response.status}`;
+    let message = `${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      /* 非 Connect 错误体，保留默认 message */
+    }
+    throw new ConnectError(code, message);
+  }
+  return (await response.json()) as T;
+}
+
+// deleteJSON 调用后端原生 HTTP DELETE 端点（标签/分组删除等）。
+async function deleteJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
+  const response = await fetch(path, {
+    method: 'DELETE',
+    headers: { ...identityHeaders(identity) }
+  });
+  if (!response.ok) {
+    let code = `http_${response.status}`;
+    let message = `${path} failed: HTTP ${response.status}`;
+    try {
+      const envelope = (await response.json()) as { code?: string; message?: string };
+      if (envelope.code) code = envelope.code;
+      if (envelope.message) message = envelope.message;
+    } catch {
+      /* 非 Connect 错误体，保留默认 message */
     }
     throw new ConnectError(code, message);
   }
@@ -928,6 +982,66 @@ export async function updateMemberProfile(
   profile: Partial<Pick<Member, 'username' | 'fullName' | 'gender' | 'birthDate' | 'phone'>>
 ): Promise<void> {
   await putJSON(identity, `/members/${encodeURIComponent(userId)}`, profile as Record<string, unknown>);
+}
+
+// ---- #94 标签 + 分组体系（原生 HTTP 端点） ----
+
+export async function listTags(identity: ClientIdentity): Promise<Tag[]> {
+  const data = await getJSON<{ tags?: Tag[] }>(identity, '/tags');
+  return data.tags ?? [];
+}
+
+export async function createTag(identity: ClientIdentity, name: string, color?: string): Promise<Tag> {
+  return postJSON<Tag>(identity, '/tags', { name, color: color ?? '' });
+}
+
+export async function renameTag(identity: ClientIdentity, tagId: string, name: string, color?: string): Promise<Tag> {
+  return putJSON<Tag>(identity, `/tags/${encodeURIComponent(tagId)}`, { name, color: color ?? '' });
+}
+
+export async function deleteTag(identity: ClientIdentity, tagId: string): Promise<void> {
+  await deleteJSON<{ ok: boolean }>(identity, `/tags/${encodeURIComponent(tagId)}`);
+}
+
+export async function listFolders(identity: ClientIdentity): Promise<Folder[]> {
+  const data = await getJSON<{ folders?: Folder[] }>(identity, '/folders');
+  return data.folders ?? [];
+}
+
+export async function createFolder(identity: ClientIdentity, name: string): Promise<Folder> {
+  return postJSON<Folder>(identity, '/folders', { name });
+}
+
+export async function renameFolder(identity: ClientIdentity, folderId: string, name: string): Promise<Folder> {
+  return putJSON<Folder>(identity, `/folders/${encodeURIComponent(folderId)}`, { name });
+}
+
+export async function deleteFolder(identity: ClientIdentity, folderId: string): Promise<void> {
+  await deleteJSON<{ ok: boolean }>(identity, `/folders/${encodeURIComponent(folderId)}`);
+}
+
+export async function listProjectOrganization(identity: ClientIdentity): Promise<ProjectOrg[]> {
+  const data = await getJSON<{ organization?: ProjectOrg[] }>(identity, '/projects/organization');
+  return data.organization ?? [];
+}
+
+export async function attachTag(identity: ClientIdentity, projectId: string, tagId: string): Promise<void> {
+  await putJSON<{ ok: boolean }>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/tags/${encodeURIComponent(tagId)}`,
+    {}
+  );
+}
+
+export async function detachTag(identity: ClientIdentity, projectId: string, tagId: string): Promise<void> {
+  await deleteJSON<{ ok: boolean }>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/tags/${encodeURIComponent(tagId)}`
+  );
+}
+
+export async function moveProject(identity: ClientIdentity, projectId: string, folderId: string): Promise<void> {
+  await putJSON<{ ok: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/folder`, { folderId });
 }
 
 export async function setMemberRole(identity: ClientIdentity, userId: string, role: Role): Promise<Member> {

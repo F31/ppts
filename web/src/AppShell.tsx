@@ -26,6 +26,7 @@ export const settingsMenus: Array<{ key: string; to: string; labelKey: string; n
   { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers', need: 'member.manage' },
   { key: 'dictionary', to: '/settings/dictionary', labelKey: 'nav.settingsDictionary', need: 'project.read' },
   { key: 'usage', to: '/settings/usage', labelKey: 'nav.settingsUsage', need: 'project.read' },
+  { key: 'tags', to: '/settings/tags', labelKey: 'nav.settingsTags', need: 'project.organize' },
   { key: 'audit', to: '/settings/audit', labelKey: 'nav.settingsAudit', need: 'audit.read' },
   { key: 'public', to: '/settings/public', labelKey: 'nav.settingsPublic', need: 'public.publish' }
 ];

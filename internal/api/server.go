@@ -138,6 +138,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerMemberRoutes(mux, opt.Members, auth)
 	// 源版本历史只读端点（原生 HTTP，绕过 proto）：GET /projects/{pid}/revisions，供版本抽屉查看历史版本。
 	registerRevisionRoutes(mux, projects, auth)
+	// 标签 + 分组体系（#94，原生 HTTP 绕过 proto）：tags/folders/project_tags 的增删改查与项目归属。
+	registerTagFolderRoutes(mux, projects, opt.Members, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {

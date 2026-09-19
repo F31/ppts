@@ -172,7 +172,7 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 
 // registerRevisionRoutes 挂载源版本历史只读端点（buf/protoc 不可用，不新增 Connect RPC）：
 //   - GET /projects/{pid}/revisions：返回 current_revision 与未软删版本列表（倒序），供版本抽屉展示。
-func registerRevisionRoutes(mux *http.ServeMux, projects project.Store, auth func(http.Handler) http.Handler) {
+func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListRevisions(w, r, projects)
 	})))
@@ -180,7 +180,7 @@ func registerRevisionRoutes(mux *http.ServeMux, projects project.Store, auth fun
 
 // editorListRevisions 返回项目源版本历史。current_revision 来自 projects 行（即"当前生效版本"）；
 // 版本列表排除 source_deleted_at 非空的软删版本（保留不可变版本行用于追溯，但不可预览）。
-func editorListRevisions(w http.ResponseWriter, r *http.Request, projects project.Store) {
+func editorListRevisions(w http.ResponseWriter, r *http.Request, projects project.ProjectStore) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

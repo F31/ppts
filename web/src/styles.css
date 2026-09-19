@@ -840,3 +840,40 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .pc-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
 .pc-meta .state-tag { font-size: 11px; padding: 2px 8px; }
 .project-card .row-actions { margin-top: 4px; flex-wrap: wrap; }
+
+/* ---- #94 标签 + 分组体系 ---- */
+.projects-layout { display: grid; grid-template-columns: 240px 1fr; gap: 16px; align-items: start; }
+.org-side { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 16px; }
+.org-section { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.org-section h3 { margin: 0 0 8px; font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.folder-tree { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.folder-node { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-body); cursor: pointer; font-size: 14px; text-align: left; }
+.folder-node:hover { background: var(--bg-backdrop); }
+.folder-node.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+.folder-node .count { font-size: 12px; color: var(--text-dim); background: var(--bg-backdrop); border-radius: 999px; padding: 1px 8px; min-width: 22px; text-align: center; }
+.tag-filter { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; font-size: 12px; color: #fff; background: #4b5563; white-space: nowrap; }
+.tag-chip.toggle { cursor: pointer; border: 1px solid var(--border); color: var(--text-body); background: var(--bg-elevated); }
+.tag-chip.toggle.on { color: #fff; border-color: transparent; }
+.tag-chips { display: inline-flex; flex-wrap: wrap; gap: 4px; vertical-align: middle; }
+.batch-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 10px; font-size: 13px; }
+.col-check, .card-check { width: 28px; text-align: center; }
+.card-check { position: absolute; top: 10px; right: 10px; }
+.project-card { position: relative; }
+.hint-note { font-size: 12px; color: var(--text-dim); margin: 6px 0 0; line-height: 1.5; }
+
+/* 标签/分组管理页 */
+.tags-admin { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.tag-admin-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.tag-admin-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; }
+.tag-admin-item .tag-chip { flex: 0 0 auto; }
+.tag-admin-item .folder-name { flex: 1 1 auto; font-size: 14px; }
+.color-palette { display: inline-flex; gap: 4px; }
+.swatch { width: 20px; height: 20px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.swatch.active { border-color: var(--text-body); }
+
+@media (max-width: 860px) {
+  .projects-layout { grid-template-columns: 1fr; }
+  .org-side { position: static; }
+  .tags-admin { grid-template-columns: 1fr; }
+}

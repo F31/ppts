@@ -57,8 +57,7 @@ func listEnrichedMembers(w http.ResponseWriter, r *http.Request, members members
 
 // updateMemberProfile 写入成员档案（admin 级）。
 func updateMemberProfile(w http.ResponseWriter, r *http.Request, members membership.Store) {
-	principal, err := requirePrincipal(r.Context())
-	if err != nil {
+	if _, err := requirePrincipal(r.Context()); err != nil {
 		writeConnectError(w, err)
 		return
 	}

@@ -96,6 +96,28 @@ export type Project = {
   createdAtUnix: number;
 };
 
+// ---- 标签 + 分组（#94） ----
+export type Tag = {
+  id: string;
+  name: string;
+  color?: string;
+  createdAt?: string;
+};
+
+export type Folder = {
+  id: string;
+  name: string;
+  createdBy?: string;
+  createdAt?: string;
+};
+
+// 项目与标签/分组的关联视图（#94，GET /projects/organization 返回）。
+export type ProjectOrg = {
+  projectId: string;
+  folderId: string; // 空 = 未分类
+  tagIds: string[];
+};
+
 export type SlideSummary = {
   slideId: string;
   index: number;

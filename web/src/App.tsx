@@ -13,6 +13,7 @@ import { Projects } from './pages/Projects';
 import { SettingsAudit } from './pages/SettingsAudit';
 import { SettingsDictionary } from './pages/SettingsDictionary';
 import { SettingsMembers } from './pages/SettingsMembers';
+import { SettingsTags } from './pages/SettingsTags';
 import { SettingsModels } from './pages/SettingsModels';
 import { SettingsUsage } from './pages/SettingsUsage';
 import { SessionContext, type Session } from './session';
@@ -175,7 +176,7 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
         if (projectId && parts[2] === 'editor' || (projectId && !parts[2])) {
           return <ProjectEditor identity={identity} projectId={projectId} draftRequested={query.get('draft') === '1'} role={role} roleReady={roleReady} />;
         }
-        return <Projects identity={identity} />;
+        return <Projects identity={identity} role={role} roleReady={roleReady} />;
       }
       case 'library':
         // B5-M2 跨项目成品库：owner 级（与后端 GET /artifacts requireRole RoleOwner 一致）。
@@ -199,6 +200,9 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
           // 公开区：含"我的发布"（成员均可用）与"审核队列"（ADMIN，组件内再门控）。
           case 'public':
             return <PublicAdmin identity={identity} role={role} />;
+          // 标签与分组：editor 及以上（project.organize，对应后端 requireRole RoleEditor）。
+          case 'tags':
+            return guard('project.organize', <SettingsTags identity={identity} />);
           // 模型服务：读写与测试均要求 ADMIN（gateway.go:85）。
           default:
             return guard('gateway.manage', <SettingsModels identity={identity} />);
