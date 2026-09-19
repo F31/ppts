@@ -338,6 +338,11 @@ export async function listProjectsPage(
   return { projects: data.projects ?? [], nextCursor: data.nextCursor?.value ?? '' };
 }
 
+// getProject 按 id 获取单个项目（含 title、currentRevision 等），供详情页展示。
+export async function getProject(identity: ClientIdentity, id: string): Promise<Project> {
+  return connectJSON<Project>(identity, '/ppts.v1.ProjectService/Get', { id });
+}
+
 export async function createProject(identity: ClientIdentity, title: string): Promise<Project> {
   const data = await connectJSON<{ project: Project }>(identity, '/ppts.v1.ProjectService/Create', { title });
   return data.project;

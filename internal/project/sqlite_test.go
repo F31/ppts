@@ -159,9 +159,16 @@ func TestSQLiteTagsFolders(t *testing.T) {
 	if len(orgs) != 1 || orgs[0].FolderID != folder.ID {
 		t.Fatalf("folder not set: %+v", orgs)
 	}
-	// 删分组 → 项目回落未分类
+	// 删分组：有项目时禁止删除。
+	if err := s.DeleteFolder(ctx, testTenant, folder.ID); !errors.Is(err, ErrFolderNotEmpty) {
+		t.Fatalf("delete folder with projects: got %v want ErrFolderNotEmpty", err)
+	}
+	// 移走项目后再删 → 成功。
+	if err := s.MoveProject(ctx, testTenant, p.ID, ""); err != nil {
+		t.Fatalf("move to uncat: %v", err)
+	}
 	if err := s.DeleteFolder(ctx, testTenant, folder.ID); err != nil {
-		t.Fatalf("delete folder: %v", err)
+		t.Fatalf("delete empty folder: %v", err)
 	}
 	orgs, _ = s.ListProjectOrganization(ctx, testTenant, testOwner)
 	if len(orgs) != 1 || orgs[0].FolderID != "" {

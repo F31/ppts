@@ -861,12 +861,13 @@
   "folders.empty": "No folders yet",
   "folders.renamePrompt": "Rename folder",
   "folders.renameFailed": "Rename failed",
-  "folders.deleteConfirm": "Delete folder \"{name}\"? Its projects fall back to Uncategorized.",
+  "folders.deleteConfirm": "Delete folder \"{name}\"?",
   "folders.deleteFailed": "Delete failed",
   "folders.deleted": "Deleted folder \"{name}\"",
+  "folders.deleteBlocked": "Folder has projects under it and cannot be deleted (please move projects away first)",
   "folders.uncategorized": "Uncategorized",
   "folders.all": "All projects",
-  "folders.deleteHint": "Deleting a folder does not delete projects; they fall back to Uncategorized.",
+  "folders.deleteHint": "Cannot delete a folder that still has projects — move them away first.",
   "projects.orgLabel": "Tags & Folders",
   "projects.selected": "{n} projects selected",
   "projects.batchTag": "Tag",
@@ -942,5 +943,6 @@
   "projects.manageOrg": "Manage tags & folders",
   "projects.folderMoved": "Moved to folder",
   "projects.tagAdded": "Tag added",
-  "projects.tagRemoved": "Tag removed"
+  "projects.tagRemoved": "Tag removed",
+  "folders.renamed": "Renamed folder to \"{name}\""
 }

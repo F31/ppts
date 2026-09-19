@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
+  ConnectError,
   createFolder,
   createTag,
   deleteFolder,
@@ -119,7 +120,12 @@ export function SettingsTags({ identity }: { identity: ClientIdentity }) {
       setNotice(t('folders.deleted', { name: folder.name }));
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('folders.deleteFailed'));
+      // 后端在分组下还有项目时返回 412 FailedPrecondition（err.folderNotEmpty）。
+      if (err instanceof ConnectError && err.code === 'http_412') {
+        setError(t('folders.deleteBlocked'));
+      } else {
+        setError(err instanceof Error ? err.message : t('folders.deleteFailed'));
+      }
     }
   };
 

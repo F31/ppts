@@ -861,12 +861,12 @@
   "folders.empty": "暂无分组",
   "folders.renamePrompt": "重命名分组",
   "folders.renameFailed": "重命名失败",
-  "folders.deleteConfirm": "确定删除分组“{name}”？其下项目将回落“未分类”。",
+  "folders.deleteConfirm": "确定删除分组\"{name}\"？",
   "folders.deleteFailed": "删除失败",
   "folders.deleted": "已删除分组“{name}”",
   "folders.uncategorized": "未分类",
   "folders.all": "全部项目",
-  "folders.deleteHint": "删除分组不会删除项目，仅将其回落“未分类”。",
+  "folders.deleteHint": "分组下有项目时禁止删除，请先将项目移走后重试。",
   "projects.orgLabel": "标签与分组",
   "projects.selected": "已选 {n} 个项目",
   "projects.batchTag": "打标签",
@@ -942,5 +942,7 @@
   "projects.manageOrg": "管理标签与分组",
   "projects.folderMoved": "已移动分组",
   "projects.tagAdded": "已添加标签",
-  "projects.tagRemoved": "已移除标签"
+  "projects.tagRemoved": "已移除标签",
+  "folders.deleteBlocked": "该分组下还有项目，不能删除（请先将项目移走）",
+  "folders.renamed": "已重命名分组为 \"{name}\""
 }

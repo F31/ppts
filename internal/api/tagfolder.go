@@ -78,6 +78,8 @@ func orgError(err error) error {
 	case errors.Is(err, project.ErrTagNameExists),
 		errors.Is(err, project.ErrFolderNameExists):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	case errors.Is(err, project.ErrFolderNotEmpty):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)
 }

@@ -419,7 +419,14 @@ func (s *SQLiteStore) RenameFolder(ctx context.Context, tenantID, folderID, name
 }
 
 func (s *SQLiteStore) DeleteFolder(ctx context.Context, tenantID, folderID string) error {
-	// 项目回落未分类：外键 ON DELETE SET NULL 已处理（projects.folder_id）。
+	// 分组下有项目时禁止删除。
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE tenant_id = ? AND folder_id = ?`, tenantID, folderID).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrFolderNotEmpty
+	}
 	res, err := s.db.ExecContext(ctx, `DELETE FROM folders WHERE id = ? AND tenant_id = ?`, folderID, tenantID)
 	if err != nil {
 		return err

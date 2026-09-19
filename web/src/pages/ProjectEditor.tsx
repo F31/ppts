@@ -10,6 +10,7 @@ import {
   getNarration,
   getNarrationDraftCount,
   getPlaybackManifest,
+  getProject,
   getProjectSlides,
   getSourceRevisions,
   getRevisionDiff,

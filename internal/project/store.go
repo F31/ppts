@@ -141,6 +141,9 @@ var ErrFolderNotFound = errors.New("project: folder not found")
 // ErrFolderNameExists 表示租户内分组名已存在（唯一约束冲突）。
 var ErrFolderNameExists = errors.New("project: folder name already exists")
 
+// ErrFolderNotEmpty 表示分组下还有项目，不允许删除。
+var ErrFolderNotEmpty = errors.New("project: folder is not empty")
+
 // ErrProjectNotFound 表示项目不存在或越权。
 var ErrProjectNotFound = errors.New("project: project not found")
 
@@ -627,18 +630,16 @@ func (s *PGProjectStore) RenameFolder(ctx context.Context, tenantID, folderID, n
 
 func (s *PGProjectStore) DeleteFolder(ctx context.Context, tenantID, folderID string) error {
 	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		// 删除分组前先把项目回落未分类（folder_id SET NULL）。
-		if _, e := tx.Exec(ctx,
-			`UPDATE projects SET folder_id=NULL, updated_at=now() WHERE tenant_id=$1 AND folder_id=$2`,
-			tenantID, folderID); e != nil {
+		// 分组下有项目时禁止删除，避免项目意外落入未分类。
+		var count int
+		if e := tx.QueryRow(ctx, `SELECT COUNT(*) FROM projects WHERE tenant_id=$1 AND folder_id=$2`, tenantID, folderID).Scan(&count); e != nil {
 			return e
 		}
-		tag, e := tx.Exec(ctx, `DELETE FROM folders WHERE id=$1 AND tenant_id=$2`, folderID, tenantID)
-		if e != nil {
-			return e
+		if count > 0 {
+			return ErrFolderNotEmpty
 		}
-		if tag.RowsAffected() == 0 {
-			return ErrFolderNotFound
+		if _, e := tx.Exec(ctx, `DELETE FROM folders WHERE id=$1 AND tenant_id=$2`, folderID, tenantID); e != nil {
+			return e
 		}
 		return nil
 	})

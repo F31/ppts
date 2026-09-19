@@ -5,6 +5,7 @@ import {
   createFolder,
   createProject,
   createTag,
+  deleteFolder,
   detachTag,
   getNarration,
   getProjectSlides,
@@ -13,6 +14,7 @@ import {
   listProjects,
   listTags,
   moveProject,
+  renameFolder,
   type ClientIdentity
 } from '../api';
 import { ImportDialog } from '../components/ImportDialog';
@@ -100,6 +102,9 @@ export function Projects({
   // 内联创建（分组 / 标签）：在项目页左栏直接创建，无需跳转设置页。
   const [showFolderComposer, setShowFolderComposer] = useState(false);
   const [folderDraft, setFolderDraft] = useState('');
+  // 内联重命名：哪个分组正在编辑名称（空 = 无）。
+  const [editingFolderId, setEditingFolderId] = useState('');
+  const [editFolderDraft, setEditFolderDraft] = useState('');
   const [showTagComposer, setShowTagComposer] = useState(false);
   const [tagDraft, setTagDraft] = useState('');
   const [tagColorDraft, setTagColorDraft] = useState('#2563eb');
@@ -519,6 +524,98 @@ export function Projects({
     return folderById[o.folderId]?.name ?? t('folders.uncategorized');
   };
 
+  // 左栏分组节点：点击切换筛选；hover 时显示重命名/删除按钮（仅 editor+）。
+  const FolderNode = ({ folder }: { folder: Folder }) => {
+    const isActive = folderSel === folder.id;
+    const count = folderCounts[folder.id] ?? 0;
+    const isEditing = editingFolderId === folder.id;
+    const startEdit = () => {
+      setEditingFolderId(folder.id);
+      setEditFolderDraft(folder.name);
+    };
+    const cancelEdit = () => {
+      setEditingFolderId('');
+      setEditFolderDraft('');
+    };
+    const submitRename = async () => {
+      const name = editFolderDraft.trim();
+      if (!name || name === folder.name) { cancelEdit(); return; }
+      try {
+        await renameFolder(identity, folder.id, name);
+        pushNotice(t('folders.renamed', { name }));
+        await refreshOrg();
+        cancelEdit();
+      } catch {
+        pushNotice(t('folders.renameFailed'));
+        cancelEdit();
+      }
+    };
+    const handleDelete = async () => {
+      if (count > 0) {
+        pushNotice(t('folders.deleteBlocked'));
+        return;
+      }
+      if (!window.confirm(t('folders.deleteConfirm', { name: folder.name }))) return;
+      try {
+        await deleteFolder(identity, folder.id);
+        pushNotice(t('folders.deleted', { name: folder.name }));
+        await refreshOrg();
+        if (folderSel === folder.id) setFolderSel('all');
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : t('folders.deleteFailed');
+        pushNotice(msg);
+      }
+    };
+    return (
+      <li>
+        <button
+          type="button"
+          className={`folder-node ${isActive ? 'active' : ''}`}
+          onClick={() => setFolderSel(folder.id)}
+          aria-label={`${t('folders.title')}：${folder.name}，${count} 个项目`}
+        >
+          <span className="folder-icon">📁</span>
+          {isEditing ? (
+            <input
+              className="folder-rename-input"
+              value={editFolderDraft}
+              onChange={(e) => setEditFolderDraft(e.currentTarget.value)}
+              onBlur={submitRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void submitRename();
+                if (e.key === 'Escape') cancelEdit();
+              }}
+              autoFocus
+              maxLength={40}
+            />
+          ) : (
+            <span className="folder-label">{folder.name}</span>
+          )}
+          <span className="count">{count}</span>
+          {canOrganize && (
+            <span className="folder-actions" title={t('common.actions')}>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={(e) => { e.stopPropagation(); startEdit(); }}
+                aria-label={t('common.rename')}
+                title={t('common.rename')}
+              >✏️</button>
+              <button
+                type="button"
+                className={`icon-btn ${count > 0 ? 'disabled' : ''}`}
+                onClick={(e) => { e.stopPropagation(); void handleDelete(); }}
+                aria-label={t('common.delete')}
+                title={count > 0 ? t('folders.deleteBlocked') : t('common.delete')}
+                disabled={count > 0}
+              >🗑️</button>
+            </span>
+          )}
+        </button>
+      </li>
+    );
+  };
+
   return (
     <div className="page-stack">
       <section className="page-header-row">
@@ -613,16 +710,7 @@ export function Projects({
                 </button>
               </li>
               {folders.map((f) => (
-                <li key={f.id}>
-                  <button
-                    type="button"
-                    className={`folder-node ${folderSel === f.id ? 'active' : ''}`}
-                    onClick={() => setFolderSel(f.id)}
-                  >
-                    📁 {f.name}
-                    <span className="count">{folderCounts[f.id] ?? 0}</span>
-                  </button>
-                </li>
+                <FolderNode key={f.id} folder={f} />
               ))}
             </ul>
           </div>

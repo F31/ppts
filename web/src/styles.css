@@ -864,6 +864,14 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .folder-node:hover { background: var(--bg-backdrop); }
 .folder-node.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
 .folder-node .count { font-size: 12px; color: var(--text-dim); background: var(--bg-backdrop); border-radius: 999px; padding: 1px 8px; min-width: 22px; text-align: center; }
+.folder-node .folder-icon { flex-shrink: 0; }
+.folder-node .folder-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-node .folder-rename-input { flex: 1; min-width: 0; font-size: 13px; padding: 2px 6px; border: 1px solid var(--accent-border); border-radius: 4px; background: var(--bg-input); color: var(--text-strong); outline: none; }
+.folder-node .folder-actions { display: flex; gap: 2px; opacity: 0; transition: opacity .15s; flex-shrink: 0; }
+.folder-node:hover .folder-actions { opacity: 1; }
+.icon-btn { background: none; border: none; padding: 2px 4px; cursor: pointer; font-size: 13px; line-height: 1; color: var(--text-muted); border-radius: 4px; }
+.icon-btn:hover { background: var(--bg-elevated); color: var(--text-strong); }
+.icon-btn.disabled { opacity: .35; cursor: not-allowed; pointer-events: none; }
 .tag-filter { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 10px; border-radius: 999px; font-size: 12px; color: #fff; background: #4b5563; white-space: nowrap; }
 .tag-chip.toggle { cursor: pointer; border: 1px solid var(--border); color: var(--text-body); background: var(--bg-elevated); }
