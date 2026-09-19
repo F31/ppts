@@ -35,7 +35,7 @@ import { can } from '../permissions';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
-import { Link } from '../router';
+import { Link, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { useDialogA11y } from '../a11y';
 
@@ -74,12 +74,14 @@ export function ProjectEditor({
   identity,
   projectId,
   draftRequested,
+  revisionNo: initRevisionNo,
   role,
   roleReady = true
 }: {
   identity: ClientIdentity;
   projectId: string;
   draftRequested?: boolean;
+  revisionNo?: number;
   role?: Role;
   roleReady?: boolean;
 }) {
@@ -197,7 +199,7 @@ export function ProjectEditor({
     setDraftStatus({ phase: 'idle', message: '' });
     setNarrationStatus({ phase: 'idle', message: '' });
     setRealManifest(null);
-    getProjectSlides(identity, projectId)
+    getProjectSlides(identity, projectId, initRevisionNo)
       .then((res) => {
         if (cancelled) return;
         setSlidesState(res.slides.length === 0 ? { mode: 'empty' } : { mode: 'real', slides: res.slides, revisionNo: res.revisionNo });
@@ -209,7 +211,7 @@ export function ProjectEditor({
     return () => {
       cancelled = true;
     };
-  }, [identity, projectId]);
+  }, [identity, projectId, initRevisionNo]);
 
   // 真实渲染缩略图 / 预览图：读取每页渲染 PNG 的短期签名 URL（按 slideId 对齐）；失败则降级为序号/标题缩略图。
   useEffect(() => {

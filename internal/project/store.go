@@ -38,6 +38,7 @@ type SourceRevision struct {
 	ParserVersion string
 	PageCount     int
 	UploadID      string // 上传会话幂等键；非上传路径为空
+	Filename      string // 原始上传文件名；用于前端展示 PPT 名称
 	CreatedAt     time.Time
 }
 
@@ -175,6 +176,10 @@ type ProjectStore interface {
 	GetSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) (*SourceRevision, error)
 	// ListSourceRevisions 列出项目全部未软删的源版本（倒序），供前端版本历史查看。
 	ListSourceRevisions(ctx context.Context, tenantID, projectID string) ([]*SourceRevision, error)
+	// UpdateSourceRevisionPageCount 在解析完成后写回页数（幂等，可重复调用）。
+	UpdateSourceRevisionPageCount(ctx context.Context, tenantID, projectID string, revisionNo int, pageCount int) error
+	// DeleteSourceRevision 软删指定版本（设 source_deleted_at），禁止删除当前生效版本。
+	DeleteSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) error
 	// ---- 标签与分组（#94 标签+分组体系） ----
 	// 标签（多对多，租户内 name 唯一）。
 	ListTags(ctx context.Context, tenantID string) ([]*Tag, error)
@@ -216,6 +221,7 @@ type NewSourceRevision struct {
 	ObjectKey     string
 	ParserVersion string
 	UploadID      string // 上传链路幂等键；为空时不启用按会话去重
+	Filename      string // 原始上传文件名
 }
 
 // PGProjectStore 以 PostgreSQL 实现 ProjectStore。revision 递增与版本行写入同事务，
@@ -441,6 +447,40 @@ func (s *PGProjectStore) ListSourceRevisions(ctx context.Context, tenantID, proj
 		return rows.Err()
 	})
 	return revs, err
+}
+
+func (s *PGProjectStore) UpdateSourceRevisionPageCount(ctx context.Context, tenantID, projectID string, revisionNo int, pageCount int) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx,
+			`UPDATE source_revisions SET page_count = $4 WHERE tenant_id = $1 AND project_id = $2 AND revision_no = $3`,
+			tenantID, projectID, revisionNo, pageCount)
+		return err
+	})
+}
+
+var ErrDeleteCurrentRevision = errors.New("project: cannot delete current revision")
+
+func (s *PGProjectStore) DeleteSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) error {
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var current int
+		if err := tx.QueryRow(ctx,
+			`SELECT current_revision FROM projects WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+			projectID, tenantID).Scan(&current); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrProjectNotFound
+			}
+			return err
+		}
+		if revisionNo == current {
+			return ErrDeleteCurrentRevision
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE source_revisions SET source_deleted_at = now() WHERE tenant_id = $1 AND project_id = $2 AND revision_no = $3`,
+			tenantID, projectID, revisionNo); err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 func nullIfEmpty(s string) interface{} {

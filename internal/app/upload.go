@@ -170,7 +170,7 @@ func (s *UploadService) CompleteUpload(ctx context.Context, tenantID, uploadID, 
 		return "", "", fmt.Errorf("upload: create source revision: %w", err)
 	}
 	snap := ParseSnapshot{
-		SourceRevisionID: rev.ID, ProjectID: ses.ProjectID, ObjectKey: srcKey.String(),
+		SourceRevisionID: rev.ID, TenantID: tenantID, ProjectID: ses.ProjectID, ObjectKey: srcKey.String(),
 		RevisionNo: rev.RevisionNo, ParserVersion: ParserVersion,
 	}
 	snapBytes, _ := marshalSnapshot(snap)

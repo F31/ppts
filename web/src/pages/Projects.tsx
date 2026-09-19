@@ -6,6 +6,7 @@ import {
   createProject,
   createTag,
   deleteFolder,
+  deleteSourceRevision,
   detachTag,
   getNarration,
   getProjectSlides,
@@ -552,14 +553,44 @@ export function Projects({
                   >
                     {t('projects.view')}
                   </button>
-                  <button
-                    type="button"
-                    className="button-ghost"
-                    onClick={() => navigate(`/projects/${project.id}/editor?export&rev=${revision.revisionNo}`)}
-                    title={t('projects.export')}
-                  >
-                    {t('projects.export')}
-                  </button>
+                  {!revision.isCurrent && (
+                    <button
+                      type="button"
+                      className="button-ghost"
+                      onClick={() => navigate(`/projects/${project.id}/editor?export&rev=${revision.revisionNo}`)}
+                      title={t('projects.export')}
+                    >
+                      {t('projects.export')}
+                    </button>
+                  )}
+                  {!revision.isCurrent && (
+                    <button
+                      type="button"
+                      className="button-ghost danger"
+                      onClick={async () => {
+                        if (!window.confirm(t('projects.deletePptConfirm', { name: getDisplayName(revision), no: revision.revisionNo }))) return;
+                        try {
+                          await deleteSourceRevision(identity, project.id, revision.revisionNo);
+                          setVersionsByProject((cur) => {
+                            const s = cur[project.id];
+                            if (!s) return cur;
+                            return {
+                              ...cur,
+                              [project.id]: { ...s, revisions: s.revisions.filter((r) => r.revisionNo !== revision.revisionNo) }
+                            };
+                          });
+                          pushNotice(t('projects.pptDeleted', { name: getDisplayName(revision) }));
+                        } catch (err) {
+                          const msg = err instanceof Error ? err.message : t('projects.deletePptFailed');
+                          if (msg.includes('当前生效版本')) setError(t('projects.deleteCurrentBlocked'));
+                          else setError(msg);
+                        }
+                      }}
+                      title={t('projects.deletePpt')}
+                    >
+                      {t('projects.deletePpt')}
+                    </button>
+                  )}
                 </td>
               </tr>
             );

@@ -185,10 +185,14 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 }
 
 // registerRevisionRoutes 挂载源版本历史只读端点（buf/protoc 不可用，不新增 Connect RPC）：
-//   - GET /projects/{pid}/revisions：返回 current_revision 与未软删版本列表（倒序），供版本抽屉展示。
+//   - GET    /projects/{pid}/revisions                 返回 current_revision 与未软删版本列表（倒序）。
+//   - DELETE /projects/{pid}/revisions/{revisionNo}    软删指定版本（禁止删除当前生效版本）。
 func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/revisions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListRevisions(w, r, projects, members, recorder)
+	})))
+	mux.Handle("DELETE /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorDeleteRevision(w, r, projects, members, recorder)
 	})))
 }
 
@@ -227,6 +231,53 @@ func editorListRevisions(w http.ResponseWriter, r *http.Request, projects projec
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"current_revision": proj.CurrentRevision, "revisions": out})
+}
+
+// editorDeleteRevision 软删指定源版本（禁止删除当前生效版本）。
+func editorDeleteRevision(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	projectID := r.PathValue("pid")
+	revStr := r.PathValue("revisionNo")
+	if projectID == "" || revStr == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("pid and revisionNo required")))
+		return
+	}
+	revNo, err := strconv.Atoi(revStr)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revisionNo")))
+		return
+	}
+	if err := projects.DeleteSourceRevision(r.Context(), principal.TenantID, projectID, revNo); err != nil {
+		switch {
+		case errors.Is(err, project.ErrProjectNotFound):
+			writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
+		case errors.Is(err, project.ErrDeleteCurrentRevision):
+			writeConnectError(w, connect.NewError(connect.CodeFailedPrecondition, err))
+		default:
+			writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		}
+		return
+	}
+	recorder.Record(r.Context(), audit.Event{
+		TenantID:     principal.TenantID,
+		ActorUser:    principal.UserID,
+		Action:       "project.source_revision.delete",
+		ResourceType: "project",
+		ResourceID:   projectID,
+		Metadata:     map[string]any{"revision_no": revNo},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // editorDiffRevisions 比较两个源版本的幻灯片差异（V4.0 §7.1 版本管理增强）。

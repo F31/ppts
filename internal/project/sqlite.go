@@ -269,6 +269,39 @@ func (s *SQLiteStore) ListSourceRevisions(ctx context.Context, tenantID, project
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) UpdateSourceRevisionPageCount(ctx context.Context, tenantID, projectID string, revisionNo int, pageCount int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE source_revisions SET page_count = ? WHERE tenant_id = ? AND project_id = ? AND revision_no = ?`,
+		pageCount, tenantID, projectID, revisionNo)
+	return err
+}
+
+func (s *SQLiteStore) DeleteSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var current int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT current_revision FROM projects WHERE id = ? AND tenant_id = ?`,
+		projectID, tenantID).Scan(&current); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrProjectNotFound
+		}
+		return err
+	}
+	if revisionNo == current {
+		return ErrDeleteCurrentRevision
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE source_revisions SET source_deleted_at = ? WHERE tenant_id = ? AND project_id = ? AND revision_no = ?`,
+		sqNow(), tenantID, projectID, revisionNo); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ─── 标签 ────────────────────────────────────────────────────────────────────
 
 func (s *SQLiteStore) ListTags(ctx context.Context, tenantID string) ([]*Tag, error) {

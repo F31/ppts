@@ -385,6 +385,7 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .ppt-name:hover { color: #7dd3fc; }
 .ppt-name-input { width: 240px; max-width: 100%; font-size: 13px; padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg-input); color: var(--text-strong); }
 .col-ppt-name { min-width: 200px; max-width: 300px; }
+.col-actions .button-ghost.danger:hover { color: #f87171; }
 .cell-sub { color: var(--text-dim); font-size: 11px; }
 .project-detail-row td { background: var(--bg-elevated); padding: 12px; }
 .nested-table { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; width: 100%; max-width: 960px; }

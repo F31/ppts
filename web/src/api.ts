@@ -412,6 +412,10 @@ export async function getSourceRevisions(
   };
 }
 
+export async function deleteSourceRevision(identity: ClientIdentity, projectId: string, revisionNo: number): Promise<void> {
+  await deleteJSON<{ ok: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}`);
+}
+
 export type SlideRenderURL = { slideId: string; url: string };
 
 // getSlideRenderURLs 返回每页渲染 PNG 的短期签名可读 URL（按 slideId 对齐），供编辑器缩略图与 PPT 预览使用。

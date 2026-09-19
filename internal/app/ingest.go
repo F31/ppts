@@ -22,6 +22,7 @@ const ParserVersion = "go-pptx-v2.0.0"
 // ParseSnapshot 是 parse 任务的输入快照（与任务强绑定，V4.0 §7.1 Job.input_snapshot）。
 type ParseSnapshot struct {
 	SourceRevisionID string `json:"sourceRevisionId"`
+	TenantID         string `json:"tenantId"`
 	ProjectID        string `json:"projectId"`
 	ObjectKey        string `json:"objectKey"`
 	RevisionNo       int    `json:"revisionNo"`
@@ -51,6 +52,17 @@ type ParseHandler struct {
 	steps    interface {
 		MarkStep(context.Context, pipeline.JobStep) error
 	}
+	projects interface {
+		UpdateSourceRevisionPageCount(ctx context.Context, tenantID, projectID string, revisionNo int, pageCount int) error
+	}
+}
+
+// WithProjects 注入项目 store，用于在解析完成后写回 page_count。
+func (h *ParseHandler) WithProjects(p interface {
+	UpdateSourceRevisionPageCount(ctx context.Context, tenantID, projectID string, revisionNo int, pageCount int) error
+}) *ParseHandler {
+	h.projects = p
+	return h
 }
 
 // NewParseHandler 创建 handler。
@@ -110,6 +122,12 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		return fmt.Errorf("parse: write extracted document: %w", err)
 	}
 	h.renderPages(ctx, job, key, data, doc, snap)
+	if h.projects != nil && doc.Features != nil && doc.Features.PageCount > 0 {
+		if err := h.projects.UpdateSourceRevisionPageCount(ctx, snap.TenantID, snap.ProjectID, snap.RevisionNo, doc.Features.PageCount); err != nil {
+			// 写回失败不阻塞解析任务；后续重新解析或手动触发会补写。
+			return fmt.Errorf("parse: update page count: %w", err)
+		}
+	}
 	return nil
 }
 
