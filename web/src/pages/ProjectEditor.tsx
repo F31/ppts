@@ -90,6 +90,8 @@ export function ProjectEditor({
   const { t } = useI18n();
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   const [activeSlideID, setActiveSlideID] = useState('');
+  // 右侧讲稿栏：可折叠为抽屉（默认展开）。
+  const [scriptOpen, setScriptOpen] = useState(true);
   const [realScripts, setRealScripts] = useState<Record<string, ScriptRevision>>({});
   const [draftStatus, setDraftStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
   const [draftMode, setDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
@@ -434,6 +436,9 @@ export function ProjectEditor({
   const activeRenderURL = activeSlide ? renderUrls[activeSlide.slideId] : undefined;
   const activeRealScript = isReady ? realScripts[activeSlideID] : undefined;
   const activeIndex = isReady ? slidesState.slides.findIndex((slide) => slide.slideId === activeSlideID) : -1;
+  // 当前页的讲稿来源选择（无备注页）。
+  const activeSource = activeSlide ? slideSources[activeSlide.slideId]?.source ?? 'layout' : 'layout';
+  const activeCustom = activeSlide ? slideSources[activeSlide.slideId]?.customText ?? '' : '';
 
   // 提交通道：**按传入的 slideId** 提交（不再闭包 activeSlideID）——
   // 提交在途时用户可能已切页，原页在途期间的编辑仍须能落库（R-13，见 ScriptEditor 草案表）。
@@ -715,7 +720,6 @@ export function ProjectEditor({
   };
 
   const pageCount = isReady ? slidesState.slides.length : 0;
-  const noNotesSlides = isReady ? slidesState.slides.filter((slide) => !slide.hasNotes) : [];
   const scriptReadyCount = isReady ? Object.keys(realScripts).length : 0;
   const statusMarker = useMemo(() => {
     if (!isReady) return t('editor.status.waitingParse');
@@ -815,7 +819,7 @@ export function ProjectEditor({
         </div>
       )}
 
-      <div className="editor-layout editor-layout-3col">
+      <div className={`editor-layout editor-layout-3col${scriptOpen ? '' : ' script-collapsed'}`}>
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
             {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
@@ -887,8 +891,21 @@ export function ProjectEditor({
           )}
         </section>
 
-        <section className="script-column">
-          {activeRealScript ? (
+        {scriptOpen && (
+          <section className="script-column">
+            <div className="script-column-head">
+              <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setScriptOpen(false)}
+                title={t('editor.scriptCollapse')}
+                aria-label={t('editor.scriptCollapse')}
+              >
+                ›
+              </button>
+            </div>
+            {activeRealScript ? (
             <ScriptEditor
               ref={scriptEditorRef}
               script={activeRealScript}
@@ -924,55 +941,49 @@ export function ProjectEditor({
                       </label>
                     ))}
                   </div>
-                  {/* M3 ⑥：无备注页显式选择讲稿来源（生成草稿前设置，持久化后由 Worker 尊重）。 */}
-                  {noNotesSlides.length > 0 && (
+                  {/* M3 ⑥：无备注页显式选择讲稿来源（仅当前页，随左侧页面切换；持久化后由 Worker 尊重）。 */}
+                  {activeSlide && !activeSlide.hasNotes && (
                     <div className="source-selector" aria-label={t('editor.noNotesSource')}>
-                      <span className="eyebrow">{t('editor.chooseSource')}</span>
-                      {noNotesSlides.map((slide) => {
-                        const src = slideSources[slide.slideId]?.source ?? 'layout';
-                        const custom = slideSources[slide.slideId]?.customText ?? '';
-                        return (
-                          <div key={slide.slideId} className="source-row">
-                            <strong className="nowrap-ellipsis" title={slide.slideId}>
-                              {slide.title || slide.slideId}
-                            </strong>
-                            <select
-                              value={src}
-                              onChange={(e) => {
-                                const value = e.currentTarget.value;
-                                if (value === 'custom') {
-                                  // 自定义来源需先有文本再持久化（后端校验 customText 非空）；
-                                  // 此处仅本地切换为 custom 以展示输入框，输入后由下方 onChange 持久化。
-                                  setSlideSources((current) => ({
-                                    ...current,
-                                    [slide.slideId]: { slideId: slide.slideId, source: 'custom', customText: custom }
-                                  }));
-                                } else {
-                                  saveSlideSource(slide.slideId, value);
-                                }
-                              }}
-                            >
-                              <option value="layout">{t('editor.sourceLayout')}</option>
-                              <option value="title">{t('editor.sourceTitle')}</option>
-                              <option value="body">{t('editor.sourceBody')}</option>
-                              <option value="notes">{t('editor.sourceNotes')}</option>
-                              <option value="custom">{t('editor.sourceCustom')}</option>
-                            </select>
-                            {src === 'custom' && (
-                              <input
-                                className="source-custom"
-                                placeholder={t('editor.customSourcePlaceholder')}
-                                value={custom}
-                                onChange={(e) => {
-                                  const text = e.currentTarget.value;
-                                  if (text.trim() !== '') saveSlideSource(slide.slideId, 'custom', text);
-                                  else setSlideSources((current) => ({ ...current, [slide.slideId]: { slideId: slide.slideId, source: 'custom', customText: '' } }));
-                                }}
-                              />
-                            )}
-                          </div>
-                        );
-                      })}
+                      <span className="eyebrow">{t('editor.chooseSourceForPage')}</span>
+                      <div className="source-row">
+                        <strong className="nowrap-ellipsis" title={activeSlide.slideId}>
+                          {activeSlide.title || activeSlide.slideId}
+                        </strong>
+                        <select
+                          value={activeSource}
+                          onChange={(e) => {
+                            const value = e.currentTarget.value;
+                            if (value === 'custom') {
+                              // 自定义来源需先有文本再持久化（后端校验 customText 非空）；
+                              // 此处仅本地切换为 custom 以展示输入框，输入后由下方 onChange 持久化。
+                              setSlideSources((current) => ({
+                                ...current,
+                                [activeSlide.slideId]: { slideId: activeSlide.slideId, source: 'custom', customText: activeCustom }
+                              }));
+                            } else {
+                              saveSlideSource(activeSlide.slideId, value);
+                            }
+                          }}
+                        >
+                          <option value="layout">{t('editor.sourceLayout')}</option>
+                          <option value="title">{t('editor.sourceTitle')}</option>
+                          <option value="body">{t('editor.sourceBody')}</option>
+                          <option value="notes">{t('editor.sourceNotes')}</option>
+                          <option value="custom">{t('editor.sourceCustom')}</option>
+                        </select>
+                        {activeSource === 'custom' && (
+                          <input
+                            className="source-custom"
+                            placeholder={t('editor.customSourcePlaceholder')}
+                            value={activeCustom}
+                            onChange={(e) => {
+                              const text = e.currentTarget.value;
+                              if (text.trim() !== '') saveSlideSource(activeSlide.slideId, 'custom', text);
+                              else setSlideSources((current) => ({ ...current, [activeSlide.slideId]: { slideId: activeSlide.slideId, source: 'custom', customText: '' } }));
+                            }}
+                          />
+                        )}
+                      </div>
                     </div>
                   )}
                   <div className="draft-actions">
@@ -990,8 +1001,19 @@ export function ProjectEditor({
               )}
             </section>
           )}
-        </section>
+          </section>
+        )}
       </div>
+      {!scriptOpen && (
+        <button
+          type="button"
+          className="script-open-fab"
+          onClick={() => setScriptOpen(true)}
+          title={t('editor.scriptExpand')}
+        >
+          ‹ {t('editor.scriptEyebrow')}
+        </button>
+      )}
 
       {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
       {propsOpen && (
