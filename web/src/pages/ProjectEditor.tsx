@@ -35,7 +35,7 @@ import { can } from '../permissions';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
-import { Link, useRoute } from '../router';
+import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { useDialogA11y } from '../a11y';
 
@@ -103,7 +103,6 @@ export function ProjectEditor({
   // 版本历史（P0 多版本查看）：列历史版本 + 抽屉预览，只读，不切换生效版本。
   const [revisions, setRevisions] = useState<SourceRevisionSummary[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
-  const [versionsOpen, setVersionsOpen] = useState(false);
   const [previewRev, setPreviewRev] = useState<number | null>(null);
   const [previewSlides, setPreviewSlides] = useState<SlideSummary[] | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -716,18 +715,27 @@ export function ProjectEditor({
           <Link to="/projects" className="back-link" title={t('editor.backToProjectsTitle')}>
             {t('editor.backToProjects')}
           </Link>
-          <div>
+          <div className="editor-title-block">
             <span className="eyebrow">{t('editor.project')}</span>
-            <h1 title={projectId}>{projectId.slice(0, 12)}</h1>
+            <h1 title={projectTitle || projectId}>{projectTitle || projectId}</h1>
             {revisions.length > 0 && (
-              <button
-                type="button"
-                className="version-pill"
-                onClick={() => setVersionsOpen(true)}
+              <select
+                className="version-select"
+                value={initRevisionNo ?? currentRevision}
+                onChange={(e) => {
+                  const v = Number(e.currentTarget.value);
+                  if (v === currentRevision) return;
+                  navigate(`/projects/${projectId}/editor${v === currentRevision ? '' : `?rev=${v}`}`);
+                }}
                 title={t('versions.openTitle')}
               >
-                v{currentRevision} · {t('versions.count', { count: revisions.length })}
-              </button>
+                {revisions.map((rv) => (
+                  <option key={rv.revisionNo} value={rv.revisionNo} disabled={rv.isCurrent}>
+                    v{rv.revisionNo} · {rv.displayName}
+                    {rv.isCurrent ? ` (${t('versions.current')})` : ''}
+                  </option>
+                ))}
+              </select>
             )}
           </div>
         </div>
@@ -750,125 +758,7 @@ export function ProjectEditor({
         </div>
       </header>
 
-      {versionsOpen && (
-        <div
-          className="version-drawer-overlay"
-          role="dialog"
-          aria-modal="true"
-          aria-label={t('versions.title')}
-          onClick={() => setVersionsOpen(false)}
-        >
-          <div className="version-drawer" onClick={(e) => e.stopPropagation()}>
-            <div className="version-drawer-head">
-              <h2>{t('versions.title')}</h2>
-              <button type="button" className="button-ghost" onClick={() => setVersionsOpen(false)}>
-                {t('common.close')}
-              </button>
-            </div>
-            <div className="version-drawer-body">
-              <ul className="version-list">
-                {revisions.map((rv) => (
-                  <li key={rv.revisionNo} className={rv.isCurrent ? 'is-current' : ''}>
-                    <button
-                      type="button"
-                      className="version-row"
-                      onClick={() => openVersionPreview(rv.revisionNo)}
-                    >
-                      <span className="version-no">v{rv.revisionNo}</span>
-                      <span className="version-meta">
-                        <span>{new Date(rv.createdAt).toLocaleString()}</span>
-                        <span>{t('versions.pages', { count: rv.pageCount })}</span>
-                        {rv.isCurrent && <span className="badge-current">{t('versions.current')}</span>}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <div className="version-preview">
-                {previewRev == null && <p className="empty-state">{t('versions.selectHint')}</p>}
-                {previewLoading && <p className="empty-state">{t('editor.loading')}</p>}
-                {previewRev != null && !previewLoading && (
-                  <>
-                    <p className="version-preview-head">{t('versions.previewOf', { no: previewRev })}</p>
-                    <ol className="version-preview-list">
-                      {(previewSlides ?? []).map((s, i) => (
-                        <li key={s.slideId}>
-                          <span className="idx">{i + 1}</span>
-                          {s.title || s.slideId}
-                        </li>
-                      ))}
-                    </ol>
-                    {previewRev !== currentRevision && (
-                      <p className="form-hint">{t('versions.switchNote')}</p>
-                    )}
-                    {/* 版本 diff：选择另一个版本对比 */}
-                    <details className="version-diff-section">
-                      <summary className="version-diff-summary">{t('versions.diffSummary')}</summary>
-                      <div className="version-diff-body">
-                        <select
-                          className="diff-select"
-                          value={diffRevB ?? ''}
-                          onChange={(e) => {
-                            const v = Number(e.currentTarget.value);
-                            if (v && v !== previewRev) computeDiff(v);
-                          }}
-                          aria-label={t('versions.diffSelectLabel')}
-                        >
-                          <option value="">{t('versions.diffSelectPlaceholder')}</option>
-                          {revisions
-                            .filter((rv) => rv.revisionNo !== previewRev)
-                            .map((rv) => (
-                              <option key={rv.revisionNo} value={rv.revisionNo}>
-                                v{rv.revisionNo} · {t('versions.pages', { count: rv.pageCount })}
-                              </option>
-                            ))}
-                        </select>
-                        {diffLoading && <p className="form-hint">{t('editor.loading')}</p>}
-                        {diffResult != null && diffRevB != null && (
-                          <div className="version-diff-result">
-                            {diffResult.added.length > 0 && (
-                              <div className="diff-section diff-added">
-                                <strong>{t('versions.diffAdded', { n: diffResult.added.length })}</strong>
-                                <ul>{diffResult.added.map((p: {slideId: string; name: string; pageCount: number}) => <li key={p.slideId}>{p.name || p.slideId}</li>)}</ul>
-                              </div>
-                            )}
-                            {diffResult.removed.length > 0 && (
-                              <div className="diff-section diff-removed">
-                                <strong>{t('versions.diffRemoved', { n: diffResult.removed.length })}</strong>
-                                <ul>{diffResult.removed.map((p: {slideId: string; name: string; pageCount: number}) => <li key={p.slideId}>{p.name || p.slideId}</li>)}</ul>
-                              </div>
-                            )}
-                            {diffResult.changed.length > 0 && (
-                              <div className="diff-section diff-changed">
-                                <strong>{t('versions.diffChanged', { n: diffResult.changed.length })}</strong>
-                                <ul>
-                                  {diffResult.changed.map((c: { slideId: string; oldName: string; newName: string; oldNotes: string; newNotes: string; pageCount: number }) => (
-                                    <li key={c.slideId}>
-                                      <span className="diff-slide-id">{c.slideId.replace('slide-', '')}</span>
-                                      {c.oldName !== c.newName && (
-                                        <span className="diff-name">
-                                          <del>{c.oldName}</del> → <ins>{c.newName}</ins>
-                                        </span>
-                                      )}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-                            {diffResult.added.length === 0 && diffResult.removed.length === 0 && diffResult.changed.length === 0 && (
-                              <p className="form-hint">{t('versions.diffNone')}</p>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </details>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+
 
       {activeGenJobs.length > 0 && (
         <div className="snapshot-banner" role="status" aria-live="polite">
