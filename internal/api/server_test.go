@@ -1026,6 +1026,10 @@ func (f *fakeMembershipReader) Remove(_ context.Context, _, userID string) error
 	return membership.ErrNotFound
 }
 
+func (f *fakeMembershipReader) SaveProfile(_ context.Context, _ string, _ membership.Profile) error {
+	return nil
+}
+
 func TestTenantServiceMembersAndRoles(t *testing.T) {
 	m := &fakeMembershipReader{members: []membership.Member{
 		{UserID: "user-1", Role: membership.RoleOwner},

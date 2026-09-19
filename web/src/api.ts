@@ -81,7 +81,7 @@ export async function loginEmail(params: { email: string; password: string }): P
 }
 
 // postAuth 通用无认证 POST（注册/登录），解析后端 {code,message} 错误体。
-async function postAuth(path: string, body: { email: string; password: string }): Promise<EmailAuthResult> {
+async function postAuth(path: string, body: Record<string, unknown>): Promise<EmailAuthResult> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -232,13 +232,54 @@ export async function archiveProject(identity: ClientIdentity, id: string): Prom
 
 export async function getProjectSlides(
   identity: ClientIdentity,
-  projectId: string
+  projectId: string,
+  revisionNo?: number
 ): Promise<{ revisionNo: number; slides: SlideSummary[] }> {
   return connectJSON<{ revisionNo: number; slides: SlideSummary[] }>(
     identity,
     '/ppts.v1.ProjectService/GetSlides',
-    { projectId }
+    revisionNo && revisionNo > 0 ? { projectId, revisionNo } : { projectId }
   );
+}
+
+// SourceRevisionSummary 是版本历史列表项（原生 HTTP GET /projects/{pid}/revisions 返回）。
+export type SourceRevisionSummary = {
+  revisionNo: number;
+  createdAt: string; // RFC3339
+  pageCount: number;
+  parserVersion: string;
+  objectKey: string;
+  isCurrent: boolean;
+};
+
+// getSourceRevisions 返回项目源版本历史（倒序）与当前生效版本号。
+// 用于编辑器版本抽屉查看历史版本；切换"设为当前"不在此接口范围（后端暂无写接口）。
+export async function getSourceRevisions(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ currentRevision: number; revisions: SourceRevisionSummary[] }> {
+  const r = await getJSON<{
+    current_revision: number;
+    revisions: Array<{
+      revision_no: number;
+      created_at: string;
+      page_count: number;
+      parser_version: string;
+      object_key: string;
+      is_current: boolean;
+    }>;
+  }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions`);
+  return {
+    currentRevision: r.current_revision,
+    revisions: (r.revisions ?? []).map((x) => ({
+      revisionNo: x.revision_no,
+      createdAt: x.created_at,
+      pageCount: x.page_count,
+      parserVersion: x.parser_version,
+      objectKey: x.object_key,
+      isCurrent: x.is_current,
+    })),
+  };
 }
 
 export type SlideRenderURL = { slideId: string; url: string };
@@ -876,8 +917,17 @@ export function watchJobEvents(
 // ---- 租户（TenantService） ----
 
 export async function listMembers(identity: ClientIdentity): Promise<Member[]> {
-  const data = await connectJSON<{ members?: Member[] }>(identity, '/ppts.v1.TenantService/Members', {});
+  const data = await getJSON<{ members?: Member[] }>(identity, '/members');
   return data.members ?? [];
+}
+
+// updateMemberProfile 写入成员档案（admin 级），供成员列表富字段展示。
+export async function updateMemberProfile(
+  identity: ClientIdentity,
+  userId: string,
+  profile: Partial<Pick<Member, 'username' | 'fullName' | 'gender' | 'birthDate' | 'phone'>>
+): Promise<void> {
+  await putJSON(identity, `/members/${encodeURIComponent(userId)}`, profile as Record<string, unknown>);
 }
 
 export async function setMemberRole(identity: ClientIdentity, userId: string, role: Role): Promise<Member> {

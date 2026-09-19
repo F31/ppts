@@ -205,7 +205,17 @@ export const roleKey: Record<Role, string> = {
   ROLE_VIEWER: 'enum.role.viewer'
 };
 
-export type Member = { userId: string; role: Role };
+export type Member = {
+  userId: string;
+  role: Role;
+  createdAt?: string; // 加入租户时间（RFC3339）
+  email?: string; // 登录账号
+  username?: string; // 展示用用户名（可空）
+  fullName?: string; // 姓名
+  gender?: string; // 性别 male/female/other/unknown
+  birthDate?: string; // 出生年月 YYYY-MM-DD
+  phone?: string; // 电话
+};
 
 export type TenantQuota = {
   monthlySeconds: number;

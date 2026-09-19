@@ -558,6 +558,13 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .profile-modal header h2.profile-name { margin: 2px 0 0; font-size: 22px; line-height: 1.25; }
 .profile-modal header .profile-subid { margin-top: 4px; }
 .profile-subid { display: block; font-size: 12px; font-weight: 400; color: var(--text-faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+/* 成员与权限列表：用户名列「用户名（文字下方显示 id）」 */
+.member-name { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
+.member-subid { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--text-faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+/* 注册页可选档案采集区 */
+.register-profile { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 4px 0 2px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-inset); }
+.register-profile label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-soft); }
+.register-profile input, .register-profile select { width: 100%; }
 .job-detail { margin-bottom: 0; }
 /* B4-M6a：任务详情——执行步骤区、步骤状态徽标与原始快照折叠块。 */
 .steps-section { margin-top: 18px; }

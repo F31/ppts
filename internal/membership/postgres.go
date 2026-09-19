@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -36,21 +37,32 @@ func (s *PGStore) GetRole(ctx context.Context, tenantID, userID string) (Role, e
 	return Role(role), nil
 }
 
-// List 返回租户全部成员。
+// List 返回租户全部成员（含联表填充的档案字段）。
 func (s *PGStore) List(ctx context.Context, tenantID string) ([]Member, error) {
 	var out []Member
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, err := tx.Query(ctx,
-			"SELECT user_id, role FROM tenant_members WHERE tenant_id=$1 ORDER BY created_at", tenantID)
+			`SELECT tm.user_id, tm.role, tm.created_at,
+			        COALESCE(u.email, ''),
+			        COALESCE(p.username, ''), COALESCE(p.full_name, ''),
+			        COALESCE(p.gender, ''), COALESCE(p.birth_date::text, ''), COALESCE(p.phone, '')
+			 FROM tenant_members tm
+			 LEFT JOIN users u ON u.id = tm.user_id
+			 LEFT JOIN user_profiles p ON p.user_id = tm.user_id
+			 WHERE tm.tenant_id=$1
+			 ORDER BY tm.created_at`, tenantID)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var m Member
-			if err := rows.Scan(&m.UserID, (*string)(&m.Role)); err != nil {
+			var createdAt time.Time
+			if err := rows.Scan(&m.UserID, (*string)(&m.Role), &createdAt,
+				&m.Email, &m.Username, &m.FullName, &m.Gender, &m.BirthDate, &m.Phone); err != nil {
 				return err
 			}
+			m.CreatedAt = createdAt
 			out = append(out, m)
 		}
 		return rows.Err()
@@ -95,4 +107,21 @@ func (s *PGStore) Remove(ctx context.Context, tenantID, userID string) error {
 		}
 		return nil
 	})
+}
+
+// SaveProfile 写入成员档案；user_profiles 无 RLS（无租户列），直接以 user_id 定位。
+func (s *PGStore) SaveProfile(ctx context.Context, userID string, p Profile) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return errors.New("membership: user_id is required")
+	}
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO user_profiles (user_id, username, full_name, gender, birth_date, phone, updated_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::date, NULLIF($6, ''), now())
+		 ON CONFLICT (user_id) DO UPDATE
+		   SET username=EXCLUDED.username, full_name=EXCLUDED.full_name,
+		       gender=EXCLUDED.gender, birth_date=EXCLUDED.birth_date,
+		       phone=EXCLUDED.phone, updated_at=now()`,
+		userID, p.Username, p.FullName, p.Gender, p.BirthDate, p.Phone)
+	return err
 }

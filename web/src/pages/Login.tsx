@@ -22,6 +22,12 @@ export function Login() {
   const [emailMode, setEmailMode] = useState<EmailMode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // 注册时采集的可选档案字段（成员列表富字段展示）。
+  const [regUsername, setRegUsername] = useState('');
+  const [regFullName, setRegFullName] = useState('');
+  const [regGender, setRegGender] = useState('');
+  const [regBirthDate, setRegBirthDate] = useState('');
+  const [regPhone, setRegPhone] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -78,7 +84,15 @@ export function Login() {
     try {
       const res =
         emailMode === 'register'
-          ? await registerEmail({ email: trimmedEmail, password })
+          ? await registerEmail({
+              email: trimmedEmail,
+              password,
+              username: regUsername,
+              fullName: regFullName,
+              gender: regGender,
+              birthDate: regBirthDate,
+              phone: regPhone,
+            })
           : await loginEmail({ email: trimmedEmail, password });
       loginEmailSession({ tenantId: res.tenant_id, userId: res.user_id, accessToken: res.access_token, account: res.account, tenantName: res.tenant_name });
     } catch (err) {
@@ -139,6 +153,36 @@ export function Login() {
                 onChange={(e) => setPassword(e.currentTarget.value)}
               />
             </label>
+            {emailMode === 'register' && (
+              <div className="register-profile">
+                <label>
+                  {t('login.username')}
+                  <input value={regUsername} onChange={(e) => setRegUsername(e.currentTarget.value)} placeholder={t('login.usernamePlaceholder')} />
+                </label>
+                <label>
+                  {t('login.fullName')}
+                  <input value={regFullName} onChange={(e) => setRegFullName(e.currentTarget.value)} placeholder={t('login.fullNamePlaceholder')} />
+                </label>
+                <label>
+                  {t('login.gender')}
+                  <select value={regGender} onChange={(e) => setRegGender(e.currentTarget.value)}>
+                    <option value="">—</option>
+                    <option value="male">{t('members.gender.male')}</option>
+                    <option value="female">{t('members.gender.female')}</option>
+                    <option value="other">{t('members.gender.other')}</option>
+                    <option value="unknown">{t('members.gender.unknown')}</option>
+                  </select>
+                </label>
+                <label>
+                  {t('login.birthDate')}
+                  <input type="month" value={regBirthDate} onChange={(e) => setRegBirthDate(e.currentTarget.value)} />
+                </label>
+                <label>
+                  {t('login.phone')}
+                  <input value={regPhone} onChange={(e) => setRegPhone(e.currentTarget.value)} placeholder={t('login.phonePlaceholder')} />
+                </label>
+              </div>
+            )}
             <button type="button" className="primary-login" disabled={submitting} onClick={() => void submitEmail()}>
               {submitting ? t('login.submitting') : emailMode === 'register' ? t('login.register') : t('login.signIn')}
             </button>

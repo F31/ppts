@@ -214,8 +214,13 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 		return
 	}
 	var body struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email     string `json:"email"`
+		Password  string `json:"password"`
+		Username  string `json:"username"`
+		FullName  string `json:"full_name"`
+		Gender    string `json:"gender"`
+		BirthDate string `json:"birth_date"`
+		Phone     string `json:"phone"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -277,6 +282,15 @@ func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jw
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// 成员档案（0030）：注册时一并采集可选档案字段；空值以 NULL 存入。
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_profiles (user_id, username, full_name, gender, birth_date, phone)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::date, NULLIF($6, ''))
+		 ON CONFLICT (user_id) DO NOTHING`,
+		userID, body.Username, body.FullName, body.Gender, body.BirthDate, body.Phone); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO tenant_members(tenant_id, user_id, role) VALUES($1,$2,'owner')`, tenantID, userID); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -314,8 +328,13 @@ func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, 
 		return
 	}
 	var body struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email     string `json:"email"`
+		Password  string `json:"password"`
+		Username  string `json:"username"`
+		FullName  string `json:"full_name"`
+		Gender    string `json:"gender"`
+		BirthDate string `json:"birth_date"`
+		Phone     string `json:"phone"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
