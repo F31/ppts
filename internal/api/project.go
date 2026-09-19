@@ -53,8 +53,7 @@ func (s *ProjectService) Get(ctx context.Context, req *connect.Request[pptsv1.Ge
 	if err != nil {
 		return nil, err
 	}
-	userID, override := projectAccessUser(ctx, s.members)
-	got, err := s.store.GetProject(ctx, p.TenantID, userID, req.Msg.GetId())
+	got, override, err := resolveProject(ctx, s.store, s.members, p.TenantID, p.UserID, req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
 	}
@@ -89,13 +88,14 @@ func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv
 	if err := requireRole(ctx, s.members, membership.RoleAdmin); err != nil {
 		return nil, err
 	}
-	userID, override := projectAccessUser(ctx, s.members)
-	archived, err := s.store.ArchiveProject(ctx, p.TenantID, userID, req.Msg.GetId())
+	if _, override, err := resolveProject(ctx, s.store, s.members, p.TenantID, p.UserID, req.Msg.GetId()); err != nil {
+		return nil, projectError(err)
+	} else if override {
+		recordAdminOverride(ctx, s.audit, "project.admin_override_archive", req.Msg.GetId(), map[string]any{"surface": "rpc.Archive"})
+	}
+	archived, err := s.store.ArchiveProject(ctx, p.TenantID, "", req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
-	}
-	if override {
-		recordAdminOverride(ctx, s.audit, "project.admin_override_archive", archived.ID, map[string]any{"surface": "rpc.Archive"})
 	}
 	return connect.NewResponse(toProtoProject(archived)), nil
 }
@@ -114,8 +114,7 @@ func (s *ProjectService) GetSlides(ctx context.Context, req *connect.Request[ppt
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id is required"))
 	}
 	revisionNo := int(req.Msg.GetRevisionNo())
-	userID, _ := projectAccessUser(ctx, s.members)
-	projectRow, err := s.store.GetProject(ctx, p.TenantID, userID, projectID)
+	projectRow, _, err := resolveProject(ctx, s.store, s.members, p.TenantID, p.UserID, projectID)
 	if err != nil {
 		return nil, projectError(err)
 	}

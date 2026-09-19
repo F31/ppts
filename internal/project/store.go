@@ -234,7 +234,19 @@ func (s *PGProjectStore) CreateProject(ctx context.Context, tenantID, owner, tit
 			 VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id, tenant_id, owner_user, title,
 			   current_revision, policy, archived, delete_source_after, created_at, updated_at`,
 			tenantID, owner, title))
-		return e
+		if e != nil {
+			return e
+		}
+		// owner 同时登记为项目 admin 协作者（与迁移 0033 同语义），保证 #96 ACL 模型统一：
+		// 项目可见性 = owner_user 或 project_collaborators，不再依赖"新项目无协作者行"的隐式回退。
+		if _, e := tx.Exec(ctx,
+			`INSERT INTO project_collaborators (tenant_id, project_id, user_id, role, invited_by)
+			 VALUES ($1, $2, $3, 'admin', $3)
+			 ON CONFLICT (project_id, user_id) DO NOTHING`,
+			tenantID, p.ID, owner); e != nil {
+			return e
+		}
+		return nil
 	})
 	return p, err
 }
@@ -671,7 +683,7 @@ func (s *PGProjectStore) ListProjectOrganization(ctx context.Context, tenantID, 
 	var orgs []*ProjectOrg
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
-			`SELECT p.id::text, p.folder_id::text,
+			`SELECT p.id::text, COALESCE(p.folder_id::text, ''),
 			        COALESCE(string_agg(t.id::text, ',' ORDER BY t.name), '')
 			 FROM projects p
 			 LEFT JOIN project_tags pt ON pt.project_id = p.id

@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -280,5 +281,50 @@ func TestRequireProjectAccess_CollaboratorNoOverrideAudit(t *testing.T) {
 	}
 	if len(rec.events) != 0 {
 		t.Fatalf("collaborator access must not be audited as override, got %d", len(rec.events))
+	}
+}
+
+// 精度：owner 访问自己的项目不应记为管理越权（避免审计噪声）。
+func TestRequireProjectAccess_OwnerSelfNoOverrideAudit(t *testing.T) {
+	store := newFakeACLProjectStore()
+	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
+	rec := &recordingAudit{}
+
+	req := httptest.NewRequest("GET", "/projects/proj-1/artifacts", nil)
+	req.SetPathValue("pid", "proj-1")
+	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{
+		TenantID: "tenant-1", UserID: "user-owner",
+	}))
+	w := httptest.NewRecorder()
+	// 即使 tenant role 是 owner（≥admin），访问自己的项目也走严格路径，不记越权审计。
+	if _, ok := requireProjectAccess(w, req, store, &aclRoleReader{role: membership.RoleOwner}, rec); !ok {
+		t.Fatalf("owner should access, got %d", w.Code)
+	}
+	if len(rec.events) != 0 {
+		t.Fatalf("owner accessing own project must not be audited as override, got %d", len(rec.events))
+	}
+}
+
+// resolveProject：admin 非成员 → override=true；普通成员非协作者 → NotFound。
+func TestResolveProject(t *testing.T) {
+	store := newFakeACLProjectStore()
+	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
+
+	base := context.WithValue(context.Background(), principalKey{}, Principal{TenantID: "tenant-1", UserID: "user-x"})
+
+	// admin 非成员 → 旁路
+	_, override, err := resolveProject(base, store, &aclRoleReader{role: membership.RoleAdmin}, "tenant-1", "user-x", "proj-1")
+	if err != nil || !override {
+		t.Fatalf("admin should override: err=%v override=%v", err, override)
+	}
+	// editor 非成员 → NotFound
+	_, _, err = resolveProject(base, store, &aclRoleReader{role: membership.RoleEditor}, "tenant-1", "user-x", "proj-1")
+	if !errors.Is(err, project.ErrProjectNotFound) {
+		t.Fatalf("editor non-member should get NotFound, got %v", err)
+	}
+	// owner 本人 → 严格命中，无 override
+	_, override, err = resolveProject(base, store, &aclRoleReader{role: membership.RoleEditor}, "tenant-1", "user-owner", "proj-1")
+	if err != nil || override {
+		t.Fatalf("owner should have direct access without override: err=%v override=%v", err, override)
 	}
 }
