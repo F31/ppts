@@ -801,3 +801,42 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 /* B5-M3 公开作品「撤回」按钮：琥珀色，区别于删除的危险红 */
 .btn-warning { background: #b45309; color: #fff; border: 1px solid #92400e; }
 .btn-warning:hover { background: #92400e; }
+
+/* #93 项目列表：筛选/搜索/排序工具条 + 表格/卡片视图切换 + 结果计数 */
+.projects-toolbar { flex-wrap: wrap; }
+.projects-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.projects-search {
+  padding: 8px 10px; min-width: 220px;
+  background: var(--bg-input); color: var(--text-body);
+  border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+}
+.projects-search:focus { outline: none; border-color: var(--accent-border); }
+.control-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; }
+.control-inline select {
+  padding: 7px 8px; background: var(--bg-input); color: var(--text-body);
+  border: 1px solid var(--border); border-radius: 8px; font-size: 13px;
+}
+.control-inline select:focus { outline: none; border-color: var(--accent-border); }
+.view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.view-toggle button {
+  padding: 7px 12px; background: var(--bg-input); color: var(--text-dim);
+  border: none; cursor: pointer; font-size: 13px;
+}
+.view-toggle button + button { border-left: 1px solid var(--border); }
+.view-toggle button.active { background: var(--accent-soft); color: var(--accent); }
+.results-count { margin: 10px 0 0; color: var(--text-dim); font-size: 12px; }
+
+/* 卡片视图 */
+.project-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; padding-top: 12px; }
+.project-card {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 14px; background: var(--bg-item); border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+}
+.project-card:hover { border-color: var(--border-2); }
+.project-card.row-muted { opacity: .62; }
+.pc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.pc-head .project-name { font-size: 15px; font-weight: 700; color: var(--text-body); }
+.pc-meta { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.pc-meta .state-tag { font-size: 11px; padding: 2px 8px; }
+.project-card .row-actions { margin-top: 4px; flex-wrap: wrap; }
