@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useI18n } from './i18n';
-import type { ScriptRevision, ScriptSegment } from './types';
+import type { ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import { useDialogA11y } from './a11y';
 
 export type ScriptEditorStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
@@ -30,13 +30,27 @@ type Props = {
   commit?: (slideId: string, segments: ScriptSegment[], expectedRevision: number) => Promise<ScriptRevision>;
   onCommitError?: (message: string) => void;
   onStatusChange?: (status: ScriptEditorStatus) => void;
-  // canReview：当前用户具 REVIEWER 及以上角色时显示确认/锁定按钮。
-  canReview?: boolean;
   // canEdit：当前用户具 EDITOR 及以上角色（服务端 ScriptService.Update 的最低要求，script.go:55）。
   // 为 false 时段落只读、工具栏禁用，避免 Viewer/Reviewer 看到可写却必然 403 的假能力（A22）。
   canEdit?: boolean;
-  onApprove?: () => void;
-  onLock?: () => void;
+  // onEdited：用户实际改动讲稿时触发（用于标记"语音待更新"）。
+  onEdited?: () => void;
+  // onRegenerateScript：按所选模式重新生成本页讲稿（原文朗读/润色讲解/AI 生成讲解）。
+  onRegenerateScript?: (mode: ScriptMode) => void;
+  // scriptBusy：讲稿正在后台重新生成。
+  scriptBusy?: boolean;
+  // scriptStatusText：讲稿生成中的状态短文案。
+  scriptStatusText?: string;
+  // onRegenerateVoice：按当前讲稿重新生成语音（TTS）。
+  onRegenerateVoice?: () => void;
+  // voiceBusy：语音正在生成中（禁用按钮并显示进行中文案）。
+  voiceBusy?: boolean;
+  // voiceProgress：生成进度百分比；<0 表示未知（排队中）。
+  voiceProgress?: number;
+  // voiceStatusText：生成中的状态短文案（排队中/生成中）。
+  voiceStatusText?: string;
+  // voiceNeedsUpdate：讲稿在最近一次配音后又被编辑过。
+  voiceNeedsUpdate?: boolean;
   // regeneratingIds：后端正在局部重生成的段落（显示占位、禁用编辑）。
   regeneratingIds?: string[];
   // onRegenerate：段落工具栏"缩短/润色/衔接"触发（M1 RegenerateSegments）。
@@ -48,12 +62,19 @@ type Props = {
 // 停顿标记：插入到 spokenText 的朗读提示；发音由 M4 ⑤ 读音 popover 经 〔读：x〕 标记处理。
 const PAUSE_MARKER = '‖';
 
+// 重新生成讲稿的三种模式（与生成面板保持一致）。
+const SCRIPT_REGEN_MODES: Array<{ value: ScriptMode; labelKey: string; descKey: string }> = [
+  { value: 'SCRIPT_MODE_ORIGINAL', labelKey: 'editor.modes.original', descKey: 'editor.modes.originalDesc' },
+  { value: 'SCRIPT_MODE_POLISH', labelKey: 'editor.modes.polish', descKey: 'editor.modes.polishDesc' },
+  { value: 'SCRIPT_MODE_AI_GENERATED', labelKey: 'editor.modes.ai', descKey: 'editor.modes.aiDesc' }
+];
+
 // A10 自动保存时序：停止输入 SAVE_DEBOUNCE_MS 后落库；若上次提交仍在途，退避 SAVE_RETRY_MS 后重排。
 const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, onChange, commit, onCommitError, onStatusChange, canReview, canEdit = true, onApprove, onLock, regeneratingIds, onRegenerate, onAddToDictionary },
+  { script, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, regeneratingIds, onRegenerate, onAddToDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -65,6 +86,24 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useDialogA11y<HTMLDivElement>(() => setPopoverOpen(false));
+  // 重新生成讲稿：模式下拉菜单。
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const modeMenuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!modeMenuOpen) return;
+    const onDocDown = (event: MouseEvent) => {
+      if (modeMenuRef.current && !modeMenuRef.current.contains(event.target as Node)) setModeMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setModeMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [modeMenuOpen]);
   const [popoverWord, setPopoverWord] = useState('');
   const [popoverReading, setPopoverReading] = useState('');
   const [affectedCount, setAffectedCount] = useState(0);
@@ -260,6 +299,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       return next;
     });
     setSaveState('dirty');
+    onEdited?.();
     // A10：中文输入法组合期间（拼音串/候选未确认）不调度保存，待 onCompositionEnd 再落库。
     if (composingRef.current) return;
     scheduleSaveRef.current(slideId);
@@ -322,6 +362,36 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const regenSet = new Set(regeneratingIds ?? []);
   const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
   const visualCount = anchors.filter((anchor) => anchor.kind.startsWith('visual_')).length;
+  // 来源锚点只展示类型（备注/标题/内容/表格…），不展示具体内容。
+  const anchorTypeLabel = (kind: string): string => {
+    if (kind.startsWith('visual_')) return t('script.anchorType.image');
+    const bare = kind.replace(/^shape_/, '').toLowerCase();
+    switch (bare) {
+      case 'notes':
+        return t('script.anchorType.notes');
+      case 'title':
+        return t('script.anchorType.title');
+      case 'body':
+      case 'text':
+      case 'textbox':
+      case 'placeholder':
+        return t('script.anchorType.body');
+      case 'table':
+        return t('script.anchorType.table');
+      case 'chart':
+        return t('script.anchorType.chart');
+      case 'picture':
+      case 'image':
+        return t('script.anchorType.image');
+      case 'autoshape':
+      case 'shape':
+      case 'freeform':
+        return t('script.anchorType.shape');
+      default:
+        return t('script.anchorType.other');
+    }
+  };
+  const anchorTypes = [...new Set(anchors.map((anchor) => anchorTypeLabel(anchor.kind)))];
 
   return (
     <section className="editor-card script-editor" aria-label={t('script.aria')}>
@@ -364,10 +434,10 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           {t('editor.transition')}
         </button>
         <span className="toolbar-sep" />
-        <button type="button" disabled={!canEdit || targetIds().length === 0 || locked} onClick={openPronounce} title={t('editor.pronounceHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={openPronounce} title={t('editor.pronounceHint')}>
           {t('editor.pronounce')}
         </button>
-        <button type="button" disabled={!canEdit || targetIds().length === 0 || locked} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
+        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
           {t('editor.pause')}
         </button>
         {selected.size > 0 && (
@@ -432,7 +502,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   textareaRefs.current[segment.segmentId] = el;
                 }}
                 value={texts[segment.segmentId] ?? ''}
-                readOnly={!canEdit || locked || segRegen}
+                readOnly={!canEdit || segRegen}
                 onFocus={() => setFocusedId(segment.segmentId)}
                 onClick={(e) => {
                   setFocusedId(segment.segmentId);
@@ -459,31 +529,73 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         })}
       </div>
 
-      {/* ③ 确认 / 锁定（需 REVIEWER）。已锁定后编辑只读、锁定按钮禁用。 */}
-      {canReview && (
-        <footer className="review-actions">
+      {/* 讲稿随时可编辑、自动保存。
+          操作顺序：先「重新生成讲稿」（选模式），改动后再出现「重新生成语音」。 */}
+      <footer className="review-actions">
+        <div className="script-regen" ref={modeMenuRef}>
           <button
             type="button"
             className="button-ghost"
-            disabled={locked || script.status === 'approved'}
-            onClick={() => onApprove?.()}
+            disabled={!canEdit || scriptBusy || !onRegenerateScript}
+            onClick={() => setModeMenuOpen((value) => !value)}
+            aria-haspopup="menu"
+            aria-expanded={modeMenuOpen}
           >
-            {t('editor.approve')}
+            {scriptBusy ? t('editor.scriptRegenerating') : t('editor.regenerateScript')}
+            <span aria-hidden="true"> ▾</span>
           </button>
-          <button type="button" className="button-ghost" disabled={locked} onClick={() => onLock?.()} title={locked ? t('editor.lockedHint') : ''}>
-            {t('editor.lock')}
+          {modeMenuOpen && (
+            <div className="script-mode-menu" role="menu">
+              {SCRIPT_REGEN_MODES.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setModeMenuOpen(false);
+                    onRegenerateScript?.(option.value);
+                  }}
+                >
+                  <strong>{t(option.labelKey)}</strong>
+                  <small>{t(option.descKey)}</small>
+                </button>
+              ))}
+            </div>
+          )}
+          {scriptBusy && <span className="script-regen-status">{scriptStatusText ?? t('editor.scriptRegenerating')}</span>}
+        </div>
+
+        {(voiceNeedsUpdate || voiceBusy) && (
+          <button
+            type="button"
+            className="button-primary"
+            disabled={!canEdit || voiceBusy || !onRegenerateVoice}
+            onClick={() => onRegenerateVoice?.()}
+          >
+            {voiceBusy ? t('editor.voiceGenerating') : t('editor.regenerateVoice')}
           </button>
-        </footer>
-      )}
+        )}
+        {voiceBusy ? (
+          <div className="voice-progress" role="status" aria-live="polite">
+            <span className="voice-progress-track">
+              <span className="voice-progress-fill" style={{ width: `${voiceProgress >= 0 ? Math.min(100, Math.max(0, voiceProgress)) : 0}%` }} />
+            </span>
+            <span className="voice-progress-text">
+              {voiceStatusText ?? t('editor.voiceProgressRunning')}
+              {voiceProgress >= 0 ? ` ${Math.round(voiceProgress)}%` : '…'}
+            </span>
+          </div>
+        ) : (
+          voiceNeedsUpdate && !voiceBusy && <span className="warn-note">{t('editor.voiceNeedsUpdate')}</span>
+        )}
+      </footer>
 
       {anchors.length > 0 && (
         <div className="anchor-strip" aria-label={t('script.currentSlide')}>
           <strong>{t('script.anchors', { count: anchors.length })}</strong>
           <span>{visualCount > 0 ? t('script.visualAnchors', { count: visualCount }) : t('script.structuralAnchors')}</span>
-          {anchors.slice(0, 3).map((anchor, index) => (
-            <em key={`${anchor.slideId}-${anchor.shapeId}-${index}`}>
-              {anchor.kind.startsWith('visual_') ? t('script.visual') : t('script.structural')} {Math.round(anchor.confidence * 100)}% · {anchor.raw}
-            </em>
+          {anchorTypes.map((label) => (
+            <em key={label}>{label}</em>
           ))}
         </div>
       )}

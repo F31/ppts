@@ -31,6 +31,8 @@ type ScriptDraftSnapshot struct {
 	Sources map[string]string `json:"sources,omitempty"`
 	// CustomSources 携带 kind=custom 时的自定义文本（slideID → 文本）。
 	CustomSources map[string]string `json:"customSources,omitempty"`
+	// Overwrite 为 true 时覆盖已有讲稿（用户显式"重新生成讲稿"）；false 时保持幂等（已有分段不覆盖）。
+	Overwrite bool `json:"overwrite,omitempty"`
 }
 
 // ScriptDraftHandler 是 script_draft 任务的 worker handler：
@@ -145,7 +147,7 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 		}
 		source := snap.Sources[pg.SlideID]
 		custom := snap.CustomSources[pg.SlideID]
-		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom); err != nil {
+		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap.Overwrite); err != nil {
 			if retry := pipeline.AsRetry(err); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
 				return retry.Err
 			}
@@ -198,14 +200,14 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 
 // ensureDraft 为单个页面生成草稿。已存在讲稿（含占位或用户已编辑）则跳过，不覆盖。
 // source/custom 为该页显式选择的讲稿来源（无备注页）；为空时回退默认行为。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string) error {
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, overwrite bool) error {
 	slideID := pg.SlideID
 	if slideID == "" {
 		return nil
 	}
 	rev, err := h.scripts.Get(ctx, tenantID, projectID, slideID, language)
-	if err == nil && len(rev.Segments) > 0 {
-		return nil // 已存在实际分段，不覆盖用户稿。
+	if err == nil && len(rev.Segments) > 0 && !overwrite {
+		return nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
 	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
 		return err
 	} else if err != nil {

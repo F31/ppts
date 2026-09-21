@@ -1,15 +1,15 @@
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ConnectError,
-  approveScript,
   createDictionary,
   createExport,
   createGeneration,
   estimateNarration,
   generateDraft,
   getNarration,
-  getNarrationDraftCount,
   getPlaybackManifest,
+  getVoiceSettings,
   getProject,
   getProjectSlides,
   getSourceRevisions,
@@ -21,16 +21,19 @@ import {
   getScript,
   getSlideRenderURLs,
   getSlideScriptSources,
-  listGateways,
   listJobsPage,
-  lockScript,
+  listVoiceModels,
   publishWork,
+  regenerateScriptDraft,
   regenerateSegments,
+  saveVoiceSettings,
   setSlideScriptSource,
   updateScript as updateScriptApi,
   type ClientIdentity,
   type NarrationEstimate,
-  type SlideScriptSource
+  type ProjectVoiceSettings,
+  type SlideScriptSource,
+  type VoiceModel
 } from '../api';
 import { Player } from '../Player';
 import { can } from '../permissions';
@@ -99,11 +102,16 @@ export function ProjectEditor({
   const [realManifest, setRealManifest] = useState<PlaybackManifest | null>(null);
   const [conflict, setConflict] = useState<ConflictState>(null);
   const [narrationEstimate, setNarrationEstimate] = useState<NarrationEstimate | null>(null);
-  const [voiceOptions, setVoiceOptions] = useState<string[]>([]);
   const [voiceId, setVoiceId] = useState('');
-  // A26/A23：true 表示当前音色是后端兜底的开发音色（本租户无可用 TTS 网关），需显式标注。
-  const [voiceSimulated, setVoiceSimulated] = useState(false);
   const [ratePercent, setRatePercent] = useState(100);
+  // 语音属性弹窗：可选模型（TTS 网关）与当前模型名，以及编辑中的草稿值。
+  const [voiceModels, setVoiceModels] = useState<VoiceModel[]>([]);
+  const [voiceModelName, setVoiceModelName] = useState('');
+  const [voiceDraftModel, setVoiceDraftModel] = useState('');
+  const [voiceDraftVoice, setVoiceDraftVoice] = useState('');
+  const [voiceDraftRate, setVoiceDraftRate] = useState(100);
+  const [voiceSaving, setVoiceSaving] = useState(false);
+  const [voiceSaveError, setVoiceSaveError] = useState('');
   // 版本历史（P0 多版本查看）：列历史版本 + 抽屉预览，只读，不切换生效版本。
   const [revisions, setRevisions] = useState<SourceRevisionSummary[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
@@ -202,8 +210,8 @@ export function ProjectEditor({
     [identity, projectId]
   );
   // M4 ⑦：生成范围 + 待确认稿数（C-5 前置检查）。
-  const [genScope, setGenScope] = useState<'all' | 'pending' | 'current'>('all');
-  const [draftSegments, setDraftSegments] = useState(0);
+  // 讲稿改动后是否待重新生成语音（用于讲稿栏提示）。
+  const [voiceDirty, setVoiceDirty] = useState(false);
   // B3-M5：本项目活跃的生成任务（配音/讲稿），驱动顶部"生成中继续编辑"快照提示。
   // 修正：c5a723e 引入 refreshActiveGenJobs 时漏声明该 state 与 NarrationEstimate 类型导入，
   // 会导致 `npm run build`（tsc）失败，此处补齐。
@@ -221,14 +229,15 @@ export function ProjectEditor({
   const [propsOpen, setPropsOpen] = useState(false);
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [unsaved, setUnsaved] = useState(false);
+  // 编辑区网格容器 + 讲稿栏宽度拖拽（CSS 变量 --script-panel-width，仅当前会话生效）。
+  const editorLayoutRef = useRef<HTMLDivElement>(null);
+  const [scriptResizing, setScriptResizing] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
   // B4-M1 权限边界（A22）：能力判定统一走 permissions.can，逐条镜像服务端 requireRole。
   // 角色未解析完成时不渲染需要权限的按钮（避免闪现假能力）。
-  const canReview = roleReady && can(role, 'script.review'); // 确认/锁定：REVIEWER+（script.go:81,99）
   const canEditScript = roleReady && can(role, 'script.edit'); // 讲稿编辑：EDITOR+（script.go:55,120）
   const canGenerate = roleReady && can(role, 'narration.generate'); // 配音生成：EDITOR+（narration.go:65,167）
   const canExport = roleReady && can(role, 'export.create'); // 导出：EDITOR+（export.go:39）
-  const canListArtifacts = roleReady && can(role, 'artifact.list'); // 成品列表：EDITOR+（artifact.go:27）
   // M3 ②：正在局部重生成的段落（按当前页 segmentId）。
   const [regeneratingIds, setRegeneratingIds] = useState<string[]>([]);
   // M3 ⑥：无备注页讲稿来源选择（持久化）。
@@ -256,6 +265,39 @@ export function ProjectEditor({
       cancelled = true;
     };
   }, [identity, projectId, initRevisionNo]);
+
+  // 打开编辑页时加载已有配音：narration 就绪则构建播放清单，供中间预览区播放器直接播放。
+  useEffect(() => {
+    if (slidesState.mode !== 'real') {
+      setRealManifest(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const status = await getNarration(identity, projectId);
+        if (cancelled || !status.ready || !status.timelineKey) return;
+        const manifest = await getPlaybackManifest({
+          identity,
+          projectId,
+          timelineKey: status.timelineKey,
+          pagePngKeys: status.pagePngKeys ?? [],
+          ttlSeconds: 900
+        });
+        if (cancelled) return;
+        setRealManifest(manifest);
+        setNarrationStatus({
+          phase: 'ready',
+          message: (status.pagePngKeys?.length ?? 0) > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
+        });
+      } catch {
+        // 尚未生成配音或端点未就绪：保持空态，不阻塞讲稿编辑。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [slidesState, identity, projectId, t]);
 
   // 当前页备注：幻灯片或修订号变化时自动加载（含首次进入）。
   useEffect(() => {
@@ -308,25 +350,6 @@ export function ProjectEditor({
     };
   }, [slidesState, identity, projectId]);
 
-  // M4 ⑦：拉取待确认稿数（draft 状态分段总数），供生成面板 C-5 前置检查。
-  useEffect(() => {
-    if (slidesState.mode !== 'real') {
-      setDraftSegments(0);
-      return;
-    }
-    let cancelled = false;
-    getNarrationDraftCount(identity, projectId)
-      .then((res) => {
-        if (!cancelled) setDraftSegments(res.draftSegments);
-      })
-      .catch(() => {
-        // 端点未就绪，保持 0（不阻止生成）。
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [slidesState, identity, projectId]);
-
   // B3-M5：感知本项目活跃的生成任务（配音/讲稿），驱动"生成中继续编辑"顶部快照提示。
   // 生成任务以创建时已确认的讲稿快照为输入（C-5：lockConfirmedOnly），故生成期间仍可继续编辑，
   // 新改动需下一次生成才生效。此处用 5s 轮询（与任务中心断线回退频率一致），避免在编辑器内持有长连接。
@@ -370,41 +393,39 @@ export function ProjectEditor({
     };
   }, [slidesState, identity, projectId]);
 
-  // 音色列表：从 TTS 模型网关读取 voice（多个值逗号分隔），兜底开发音色。
+  // 语音属性：加载项目已保存的（模型/音色/语速）+ 可选模型与音色（来自 TTS 网关配置）。
+  // 音色优先取接口返回；接口不可用或未配置音色时，退到开发音色并显式标注为"模拟音色"。
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const list: string[] = [];
+      let models: VoiceModel[] = [];
       try {
-        const gateways = await listGateways(identity, 'tts');
-        for (const gateway of gateways) {
-          if (!gateway.enabled || !gateway.voice) continue;
-          for (const voice of gateway.voice.split(',')) {
-            const trimmed = voice.trim();
-            if (trimmed && !list.includes(trimmed)) list.push(trimmed);
-          }
-        }
+        models = await listVoiceModels(identity, projectId);
       } catch {
-        // 非 admin 无法读取网关配置，使用开发兜底。
+        // 网关未启用/无权限：保持空列表，使用开发兜底。
+      }
+      let saved: ProjectVoiceSettings | null = null;
+      try {
+        saved = await getVoiceSettings(identity, projectId);
+      } catch {
+        // 端点不可用：使用缺省。
       }
       if (cancelled) return;
-      if (list.length > 0) {
-        setVoiceOptions(list);
-        setVoiceSimulated(false);
-        setVoiceId((current) => current || list[0]);
-      } else {
-        // A26/A23：本租户没有「启用 + 配置了 voice」的 TTS 网关时，后端仍要求 voice_id 非空
-        // （narration.go:70），只能退到开发音色。此处必须显式标注为"模拟音色"，
-        // 不能把内部枚举 fake-voice-1 当作正常音色渲染——否则用户会误以为产出的是正式产物。
-        setVoiceOptions([devNarrationVoiceID]);
-        setVoiceSimulated(true);
-        setVoiceId(devNarrationVoiceID);
-      }
+      setVoiceModels(models);
+
+      const savedModel = saved?.model && models.some((m) => m.name === saved?.model) ? saved.model : '';
+      const chosen = models.find((m) => m.name === savedModel) ?? models.find((m) => m.isDefault) ?? models[0];
+      setVoiceModelName(chosen?.name ?? '');
+
+      const available = chosen?.voices ?? [];
+      const chosenVoice = saved?.voice && available.includes(saved.voice) ? saved.voice : available[0];
+      setVoiceId(chosenVoice || saved?.voice || devNarrationVoiceID);
+      setRatePercent(saved?.ratePercent && saved.ratePercent > 0 ? saved.ratePercent : 100);
     })();
     return () => {
       cancelled = true;
     };
-  }, [identity]);
+  }, [identity, projectId]);
 
   // B2 M2 ⑧：Ctrl/Cmd+S 立即保存当前页草稿（阻止浏览器保存网页）。
   useEffect(() => {
@@ -440,6 +461,16 @@ export function ProjectEditor({
   const activeSource = activeSlide ? slideSources[activeSlide.slideId]?.source ?? 'layout' : 'layout';
   const activeCustom = activeSlide ? slideSources[activeSlide.slideId]?.customText ?? '' : '';
 
+  // 语音生成进度：来自对活跃任务的 5s 轮询，用于讲稿栏按钮后的进度/状态指示。
+  const activeNarrationJob = activeGenJobs.find((job) => job.kind === 'narration');
+  const voiceBusy = narrationStatus.phase === 'generating' || Boolean(activeNarrationJob);
+  const voiceProgress = activeNarrationJob ? activeNarrationJob.progressPercent : -1;
+  const voiceStatusText =
+    activeNarrationJob &&
+    (activeNarrationJob.state === 'JOB_STATE_QUEUED' || activeNarrationJob.state === 'JOB_STATE_RETRY_WAIT')
+      ? t('editor.voiceProgressQueued')
+      : t('editor.voiceProgressRunning');
+
   // 提交通道：**按传入的 slideId** 提交（不再闭包 activeSlideID）——
   // 提交在途时用户可能已切页，原页在途期间的编辑仍须能落库（R-13，见 ScriptEditor 草案表）。
   const commitRealScript = useCallback(
@@ -466,28 +497,6 @@ export function ProjectEditor({
     scriptEditorRef.current?.flush();
     setActiveSlideID(slideId);
   };
-
-  // M3 ③：确认当前页讲稿（REVIEWER 及以上）。
-  const approveActive = useCallback(async () => {
-    if (!isReady || !activeRealScript) return;
-    try {
-      const rev = await approveScript(identity, projectId, activeSlideID);
-      setRealScripts((current) => ({ ...current, [activeSlideID]: rev }));
-    } catch (error) {
-      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.approveFailed') });
-    }
-  }, [identity, projectId, activeSlideID, isReady, activeRealScript, t]);
-
-  // M3 ③：锁定当前页讲稿（后端不支持解锁）。
-  const lockActive = useCallback(async () => {
-    if (!isReady || !activeRealScript) return;
-    try {
-      const rev = await lockScript(identity, projectId, activeSlideID);
-      setRealScripts((current) => ({ ...current, [activeSlideID]: rev }));
-    } catch (error) {
-      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.lockFailed') });
-    }
-  }, [identity, projectId, activeSlideID, isReady, activeRealScript, t]);
 
   // M3 ②：局部重生成选中分段（RegenerateSegments）。轮询讲稿直到 revision 变化或超时后刷新。
   const regenerateActive = useCallback(
@@ -554,6 +563,47 @@ export function ProjectEditor({
     setUnsaved(status !== 'saved');
   }, []);
 
+  // 讲稿被改动：标记"语音待更新"，供讲稿栏提示。
+  const handleScriptEdited = useCallback(() => setVoiceDirty(true), []);
+
+  // 语音属性弹窗：可用音色（来自所选模型的网关配置）。
+  const voicesForModel = (name: string): string[] => voiceModels.find((m) => m.name === name)?.voices ?? [];
+
+  const openVoiceDialog = () => {
+    setVoiceSaveError('');
+    setVoiceDraftModel(voiceModelName);
+    setVoiceDraftVoice(voiceId);
+    setVoiceDraftRate(ratePercent);
+    setPropsOpen(true);
+  };
+
+  const selectVoiceModel = (name: string) => {
+    setVoiceDraftModel(name);
+    const voices = voicesForModel(name);
+    setVoiceDraftVoice(voices[0] ?? '');
+  };
+
+  // 保存语音属性到数据库，并同步生成时使用的模型/音色/语速。
+  const saveVoiceDialog = async () => {
+    setVoiceSaving(true);
+    setVoiceSaveError('');
+    try {
+      const saved = await saveVoiceSettings(identity, projectId, {
+        model: voiceDraftModel,
+        voice: voiceDraftVoice,
+        ratePercent: voiceDraftRate
+      });
+      setVoiceModelName(saved.model);
+      setRatePercent(saved.ratePercent || 100);
+      if (saved.voice) setVoiceId(saved.voice);
+      setPropsOpen(false);
+    } catch (error) {
+      setVoiceSaveError(error instanceof Error ? error.message : t('editor.voiceSaveFailed'));
+    } finally {
+      setVoiceSaving(false);
+    }
+  };
+
   const acceptLatest = () => {
     if (!conflict) return;
     setRealScripts((current) => ({ ...current, [conflict.latest.slideId]: conflict.latest }));
@@ -584,32 +634,73 @@ export function ProjectEditor({
     setDraftStatus({ phase: 'error', message });
   };
 
-  const generateAll = async () => {
+  // 拖拽预览区与讲稿栏之间的竖条，实时改写 --script-panel-width。
+  const startScriptResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    const layout = editorLayoutRef.current;
+    if (!layout) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const pointerId = event.pointerId;
+    handle.setPointerCapture?.(pointerId);
+    setScriptResizing(true);
+    const rect = layout.getBoundingClientRect();
+    const onMove = (moveEvent: PointerEvent) => {
+      // 上限 = 容器宽 - 左栏 200 - 预览最小 300 - 三处间距 30，保证预览区不被压塌。
+      const max = Math.max(280, rect.width - 530);
+      const width = Math.min(Math.max(rect.right - moveEvent.clientX, 280), max);
+      layout.style.setProperty('--script-panel-width', `${Math.round(width)}px`);
+    };
+    const onEnd = () => {
+      setScriptResizing(false);
+      handle.releasePointerCapture?.(pointerId);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onEnd);
+      window.removeEventListener('pointercancel', onEnd);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onEnd);
+    window.addEventListener('pointercancel', onEnd);
+  };
+
+  // 生成/重新生成讲稿：按模式对指定页生成，轮询直到 revision 变化（避免读到旧稿）。
+  const generateScript = async (mode: ScriptMode, slideIds: string[], overwrite = false) => {
     if (!isReady || draftStatus.phase === 'generating') return;
-    setDraftStatus({ phase: 'generating', message: t('editor.generateQueued', { mode: modeLabel(draftMode, t) }) });
+    if (slideIds.length === 0) {
+      setDraftStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
+      return;
+    }
+    // 记录基线 revision：只有拿到不同的 revision 才认为新稿已落库。
+    const baseline: Record<string, number> = {};
+    for (const id of slideIds) baseline[id] = Number(realScripts[id]?.revision ?? -1);
+
+    setDraftStatus({ phase: 'generating', message: t('editor.generateQueued', { mode: modeLabel(mode, t) }) });
     try {
-      await generateDraft(identity, projectId, [activeSlideID], draftMode);
-      const deadline = Date.now() + 120_000;
+      // 显式"重新生成讲稿"走 overwrite 端点（覆盖已有分段）；首次生成沿用幂等生成。
+      if (overwrite) await regenerateScriptDraft(identity, projectId, slideIds, mode);
+      else await generateDraft(identity, projectId, slideIds, mode);
+      const targets = slidesState.mode === 'real' ? slidesState.slides.filter((slide) => slideIds.includes(slide.slideId)) : [];
       const found: Record<string, ScriptRevision> = {};
+      const deadline = Date.now() + 120_000;
       while (Date.now() < deadline) {
-        const missing = slidesState.slides.filter((slide) => !found[slide.slideId]);
-        if (missing.length === 0) break;
-        for (const slide of missing) {
+        for (const slide of targets) {
+          if (found[slide.slideId]) continue;
           try {
             const rev = await getScript(identity, projectId, slide.slideId);
-            found[slide.slideId] = rev;
+            if (Number(rev.revision) !== baseline[slide.slideId]) found[slide.slideId] = rev;
           } catch {
-            // 尚未生成，继续等待。
+            // 尚未生成完成，继续等待。
           }
         }
-        setRealScripts({ ...found });
-        if (slidesState.slides.every((slide) => found[slide.slideId])) break;
+        if (Object.keys(found).length > 0) setRealScripts((current) => ({ ...current, ...found }));
+        if (targets.every((slide) => found[slide.slideId])) break;
         await sleep(1500);
       }
-      const ready = slidesState.slides.every((slide) => found[slide.slideId]);
+      const ready = targets.length > 0 && targets.every((slide) => found[slide.slideId]);
+      // 讲稿内容已变，语音需要重新生成。
+      setVoiceDirty(true);
       setDraftStatus(
         ready
-          ? { phase: 'ready', message: t('editor.generateDone', { count: slidesState.slides.length }) }
+          ? { phase: 'ready', message: t('editor.generateDone', { count: targets.length }) }
           : { phase: 'error', message: t('editor.generateBackground') }
       );
     } catch (error) {
@@ -617,22 +708,34 @@ export function ProjectEditor({
     }
   };
 
-  // M4 ⑦：按范围计算参与配音的页（仅已有讲稿的页）。
-  const scopeSlideIds = (): string[] => {
-    if (genScope === 'current') return activeRealScript ? [activeSlideID] : [];
-    // 闭包内 TS 不会沿用 isReady 的别名收窄，需就地判别可辨识联合。
-    if (slidesState.mode !== 'real') return [];
-    return slidesState.slides.filter((slide) => realScripts[slide.slideId]).map((slide) => slide.slideId);
+  // 生成面板（语音抽屉）沿用所选模式，针对当前页。
+  const generateAll = () => void generateScript(draftMode, [activeSlideID]);
+
+  // 讲稿栏「重新生成讲稿」：先落库本页未保存编辑，再按所选模式重新生成当前页。
+  const regenerateScriptActive = async (mode: ScriptMode) => {
+    if (!activeSlideID) return;
+    scriptEditorRef.current?.flush();
+    const waitDeadline = Date.now() + 5000;
+    while (scriptEditorRef.current?.isDirty() && Date.now() < waitDeadline) {
+      await sleep(200);
+    }
+    await generateScript(mode, [activeSlideID], true);
   };
 
-  const generateNarration = async () => {
+  // 全部已有讲稿的页（配音时间轴须完整覆盖，否则未提交的页会从播放器消失）。
+  const allScriptSlideIds = (): string[] => {
+    // 闭包内 TS 不会沿用 isReady 的别名收窄，需就地判别可辨识联合。
+    if (slidesState.mode !== 'real') return activeRealScript ? [activeSlideID] : [];
+    const ids = slidesState.slides.filter((slide) => realScripts[slide.slideId]).map((slide) => slide.slideId);
+    if (ids.length === 0 && activeRealScript) return [activeSlideID];
+    return ids;
+  };
+
+  // 核心配音流程：创建生成任务 → 轮询 narration → 构建播放清单。
+  // 讲稿随时可编辑、自动保存，不再要求"确认/锁定"（lockConfirmedOnly=false，后端 narration.go:92/110
+  // 仅在 RequireConfirmed 时才校验状态）。
+  const generateNarrationFor = async (slideIds: string[]) => {
     if (!isReady || narrationStatus.phase === 'generating') return;
-    // C-5 强制：存在未确认（draft）讲稿时阻止正式生成（后端亦校验 RequireConfirmed）。
-    if (draftSegments > 0) {
-      setNarrationStatus({ phase: 'error', message: t('editor.blockedByDraft', { count: draftSegments }) });
-      return;
-    }
-    const slideIds = scopeSlideIds();
     if (slideIds.length === 0) {
       setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
       return;
@@ -653,7 +756,7 @@ export function ProjectEditor({
       const idempotencyKey = `narration-${projectId}-${Date.now()}`;
       await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey, {
         ratePercent,
-        lockConfirmedOnly: true
+        lockConfirmedOnly: false
       });
       // B3-M5：生成任务已创建，立即刷新活跃任务，让顶部快照提示尽快出现。
       void refreshActiveGenJobs();
@@ -676,6 +779,7 @@ export function ProjectEditor({
         ttlSeconds: 900
       });
       setRealManifest(manifest);
+      setVoiceDirty(false);
       setNarrationStatus({
         phase: 'ready',
         message: status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
@@ -690,6 +794,19 @@ export function ProjectEditor({
       }
       setNarrationStatus({ phase: 'error', message });
     }
+  };
+
+  // 讲稿栏「重新生成语音」：先落库本页未保存编辑，再生成。
+  // 后端每次都会重建整条时间轴，故提交"全部已有讲稿的页"以保留其他页；未改动的段落按内容哈希
+  // 命中缓存，几乎不增加 TTS 成本。当前页的改动会被重新合成。
+  const regenerateVoiceActive = async () => {
+    if (!activeRealScript) return;
+    scriptEditorRef.current?.flush();
+    const deadline = Date.now() + 5000;
+    while (scriptEditorRef.current?.isDirty() && Date.now() < deadline) {
+      await sleep(200);
+    }
+    await generateNarrationFor(allScriptSlideIds());
   };
 
   const runExport = async (format: ArtifactFormat, options: ExportOptions) => {
@@ -789,17 +906,25 @@ export function ProjectEditor({
           <span className={`status-marker ${unsaved ? 'unsaved' : ''} ${isReady ? '' : 'muted'}`}>
             {unsaved ? t('editor.unsaved') : statusMarker}
           </span>
-          <button type="button" className="button-ghost" onClick={() => setPropsOpen(true)} title={t('editor.propertiesTitle')}>
+          <button type="button" className="button-ghost" onClick={openVoiceDialog} title={t('editor.propertiesTitle')}>
             {t('editor.properties')}
           </button>
-          {/* B4-M1：成品列表端点要求 EDITOR，非编辑角色不渲染该入口（A22）。 */}
-          {canListArtifacts && (
-            <Link to={`/projects/${projectId}/artifacts`} className="button-ghost" title={t('editor.artifactsTitle')}>
-              {t('editor.artifacts')}
-            </Link>
+          {/* B4-M1：导出要求 EDITOR（export.go:39）；无配音快照时无处可导，不渲染。 */}
+          {canExport && realManifest && (
+            <button
+              type="button"
+              className="button-ghost"
+              disabled={exporting}
+              onClick={() => {
+                setExportError('');
+                setExportOpen(true);
+              }}
+            >
+              {t('editor.export')}
+            </button>
           )}
           <button type="button" className="button-ghost" onClick={() => setPubOpen(true)}>
-            {t('public.publish')}
+            {t('editor.publish')}
           </button>
         </div>
       </header>
@@ -819,7 +944,7 @@ export function ProjectEditor({
         </div>
       )}
 
-      <div className={`editor-layout${scriptOpen ? '' : ' script-collapsed'}`}>
+      <div className={`editor-layout${scriptOpen ? '' : ' script-collapsed'}${scriptResizing ? ' script-resizing' : ''}`} ref={editorLayoutRef}>
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
             {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
@@ -854,7 +979,16 @@ export function ProjectEditor({
         </aside>
 
         <section className="slide-preview" aria-label={t('editor.slidePreview')}>
-          {activeRenderURL ? (
+          {realManifest ? (
+            <Player
+              manifest={realManifest}
+              activeSlideId={activeSlideID || undefined}
+              activeImageUrl={activeRenderURL}
+              activeImageLabel={activeSlide?.title}
+              embedded
+              onSlideChange={handleSlideSelect}
+            />
+          ) : activeRenderURL ? (
             <img className="slide-preview-img" src={activeRenderURL} alt={activeSlide?.title ?? activeSlideID} />
           ) : (
             <div className="slide-preview-empty">{t('editor.renderPending')}</div>
@@ -892,6 +1026,16 @@ export function ProjectEditor({
         </section>
 
         {scriptOpen && (
+          <button
+            type="button"
+            className="script-resize-handle"
+            onPointerDown={startScriptResize}
+            title={t('editor.scriptResize')}
+            aria-label={t('editor.scriptResize')}
+          />
+        )}
+
+        {scriptOpen && (
         <section className="script-panel">
           <div className="script-panel-head">
             <button
@@ -915,10 +1059,16 @@ export function ProjectEditor({
               commit={commitRealScript}
               onCommitError={commitError}
               onStatusChange={handleScriptStatus}
-              canReview={canReview}
               canEdit={canEditScript}
-              onApprove={approveActive}
-              onLock={lockActive}
+              onEdited={handleScriptEdited}
+              onRegenerateScript={canEditScript ? regenerateScriptActive : undefined}
+              scriptBusy={draftStatus.phase === 'generating'}
+              scriptStatusText={draftStatus.message}
+              onRegenerateVoice={canGenerate ? regenerateVoiceActive : undefined}
+              voiceBusy={voiceBusy}
+              voiceProgress={voiceProgress}
+              voiceStatusText={voiceStatusText}
+              voiceNeedsUpdate={voiceDirty}
               regeneratingIds={regeneratingIds}
               onRegenerate={regenerateActive}
               onAddToDictionary={addToDictionary}
@@ -1022,39 +1172,55 @@ export function ProjectEditor({
         </button>
       )}
 
-      {/* 属性面板：右上角按钮唤出的抽屉（B2 M2 ① 属性改页签/抽屉） */}
+      {/* 语音属性抽屉：仅语音模型 / 音色 / 语速 + 保存。保存后持久化到数据库。 */}
       {propsOpen && (
         <div className="drawer-backdrop" onClick={() => setPropsOpen(false)}>
           <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()} ref={propsDialogRef}>
             <header>
               <span className="eyebrow">{t('editor.properties')}</span>
-              <button type="button" onClick={() => setPropsOpen(false)}>
+              <button type="button" onClick={() => setPropsOpen(false)} aria-label={t('common.close')}>
                 {t('common.close')}
               </button>
             </header>
             <section className="panel nested">
-              <span className="eyebrow">{t('editor.narrationProps')}</span>
-
-              {/* M4 ④ 音色选择器（降级：后端无 voice catalog，无样例/语言/风格元数据；试听按钮禁用并提示）。 */}
-              <div className="voice-selector" aria-label={t('editor.voiceSelector')}>
-                <span className="field-label">{t('editor.voice')}</span>
-                <div className="voice-cards">
-                  {voiceOptions.map((voice) => (
-                    <div key={voice} className={`voice-card ${voice === voiceId ? 'selected' : ''}`}>
-                      <button type="button" className="voice-name" onClick={() => setVoiceId(voice)} title={voice}>
-                        {voice}
-                      </button>
-                      <button type="button" className="voice-try" disabled title={t('editor.sampleUnavailable')}>
-                        {t('editor.trySample')}
-                      </button>
-                    </div>
+              <label className="field-label">
+                {t('editor.voiceModel')}
+                <select
+                  value={voiceDraftModel}
+                  onChange={(e) => selectVoiceModel(e.currentTarget.value)}
+                  disabled={voiceModels.length === 0}
+                >
+                  {voiceModels.length === 0 && <option value="">{t('editor.voiceModelEmpty')}</option>}
+                  {voiceModels.map((model) => (
+                    <option key={model.name} value={model.name}>
+                      {model.model || model.name}
+                      {model.isDefault ? ` · ${t('editor.voiceModelDefault')}` : ''}
+                    </option>
                   ))}
-                </div>
-              </div>
+                </select>
+              </label>
 
               <label className="field-label">
-                {t('editor.rate', { percent: ratePercent })}
-                <select value={ratePercent} onChange={(e) => setRatePercent(Number(e.currentTarget.value))}>
+                {t('editor.voice')}
+                <select
+                  value={voiceDraftVoice}
+                  onChange={(e) => setVoiceDraftVoice(e.currentTarget.value)}
+                  disabled={voicesForModel(voiceDraftModel).length === 0}
+                >
+                  {(voicesForModel(voiceDraftModel).length > 0
+                    ? voicesForModel(voiceDraftModel)
+                    : [voiceDraftVoice || devNarrationVoiceID]
+                  ).map((voice) => (
+                    <option key={voice} value={voice}>
+                      {voice}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field-label">
+                {t('editor.rate', { percent: voiceDraftRate })}
+                <select value={voiceDraftRate} onChange={(e) => setVoiceDraftRate(Number(e.currentTarget.value))}>
                   {[75, 90, 100, 110, 125, 150].map((rate) => (
                     <option key={rate} value={rate}>
                       {rate === 100 ? t('editor.rateStandard') : `${rate}%`}
@@ -1063,80 +1229,20 @@ export function ProjectEditor({
                 </select>
               </label>
 
-              {/* M4 ⑦ 生成面板：范围 / 待确认稿数 / 需新生成 / 用量 / C-5 阻止。 */}
-              <div className="gen-panel" aria-label={t('editor.generatePanel')}>
-                <span className="field-label">{t('editor.genScope')}</span>
-                <div className="scope-options">
-                  {(['all', 'current'] as const).map((scope) => (
-                    <label key={scope} className={genScope === scope ? 'selected' : ''}>
-                      <input type="radio" name="gen-scope" value={scope} checked={genScope === scope} onChange={() => setGenScope(scope)} />
-                      <span>{t(`editor.scope.${scope}`)}</span>
-                    </label>
-                  ))}
-                </div>
+              {voiceModels.length === 0 && <p className="narration-note">{t('editor.voiceModelEmpty')}</p>}
+              {voiceModels.length > 0 && <p className="narration-note">{t('editor.voiceModelNote')}</p>}
+              {voiceSaveError && <p className="form-error">{voiceSaveError}</p>}
 
-                <dl className="gen-stats">
-                  <div>
-                    <dt>{t('editor.draftCount')}</dt>
-                    <dd className={draftSegments > 0 ? 'warn' : ''}>{draftSegments}</dd>
-                  </div>
-                  <div>
-                    <dt>{t('editor.pendingCount')}</dt>
-                    <dd>{Math.max(0, pageCount - scriptReadyCount)}</dd>
-                  </div>
-                  <div>
-                    <dt>{t('editor.needGenerate')}</dt>
-                    <dd>{Math.max(0, pageCount - scriptReadyCount)}</dd>
-                  </div>
-                </dl>
-
-                {narrationEstimate != null && (
-                  <p className="narration-note">
-                    {t('editor.estimatedDuration', { minutes: Math.round(narrationEstimate.estimatedSeconds / 60) })}
-                    {' · '}
-                    {t('editor.costRange', { min: narrationEstimate.costMin, max: narrationEstimate.costMax })}
-                  </p>
-                )}
-
-                {draftSegments > 0 && (
-                  <p className="form-error gen-blocked">{t('editor.blockedByDraftHint', { count: draftSegments })}</p>
-                )}
-
-                {dictNotice && (
-                  <p className="narration-note dict-notice" role="status">{dictNotice}</p>
-                )}
-
-                <div className="draft-actions">
-                  <button
-                    type="button"
-                    className="primary"
-                    disabled={!isReady || !canGenerate || narrationStatus.phase === 'generating' || draftSegments > 0}
-                    onClick={() => void generateNarration()}
-                  >
-                    {narrationStatus.phase === 'generating' ? t('editor.narrationGeneratingBtn') : realManifest ? t('editor.regenerateNarration') : t('editor.generateNarration')}
-                  </button>
-                </div>
-                {/* B4-M1：无生成权限（EDITOR 以下）时给出准确说明，而不是可点却 403 的假按钮（A22/A26）。 */}
-                {!canGenerate && <p className="perm-hint">{t('perm.needEditorGenerate')}</p>}
+              <div className="draft-actions">
+                <button type="button" className="primary" disabled={voiceSaving || !canEditScript} onClick={() => void saveVoiceDialog()}>
+                  {voiceSaving ? t('editor.saving') : t('common.save')}
+                </button>
+                <button type="button" className="button-ghost" onClick={() => setPropsOpen(false)}>
+                  {t('common.cancel')}
+                </button>
               </div>
-
-              {narrationStatus.message && (
-                <p className={`narration-note ${narrationStatus.phase === 'error' ? 'error' : ''}`}>{narrationStatus.message}</p>
-              )}
+              {!canEditScript && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
             </section>
-
-            {isReady && (
-              <section className="panel nested">
-                <span className="eyebrow">{t('editor.pagePreview')}</span>
-                {activeRealScript ? (
-                  <p className="page-preview-text">{activeRealScript.segments.map((segment) => segment.displayText).join('\n\n')}</p>
-                ) : (
-                  <p className="page-preview-text muted">
-                    {(slidesState.mode === 'real' && slidesState.slides.find((slide) => slide.slideId === activeSlideID)?.preview) ?? t('editor.previewPending')}
-                  </p>
-                )}
-              </section>
-            )}
           </aside>
         </div>
       )}
@@ -1166,38 +1272,6 @@ export function ProjectEditor({
                 {t('editor.acceptServer')}
               </button>
             </div>
-          </section>
-        )}
-        {realManifest ? (
-          <>
-            <Player manifest={realManifest} onSlideChange={handleSlideSelect} />
-            <div className="export-row">
-              {/* B4-M1：导出要求 EDITOR（export.go:39）；无权限时不渲染可点击入口。 */}
-              {canExport && (
-                <button
-                  type="button"
-                  className="button-primary"
-                  disabled={exporting}
-                  onClick={() => {
-                    setExportError('');
-                    setExportOpen(true);
-                  }}
-                >
-                  {t('editor.export')}
-                </button>
-              )}
-              {canListArtifacts && (
-                <Link to={`/projects/${projectId}/artifacts`} className="button-ghost">
-                  {t('editor.viewArtifacts')}
-                </Link>
-              )}
-              {!canExport && !canListArtifacts && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
-            </div>
-          </>
-        ) : (
-          <section className="player-card">
-            <span className="eyebrow">{t('editor.playerPreview')}</span>
-            <p className="empty-state">{narrationStatus.message || t('editor.playerHint')}</p>
           </section>
         )}
       </section>

@@ -205,6 +205,16 @@ func (s *storeSet) scriptSourceStore() app.ScriptSourceStore {
 	return nil
 }
 
+func (s *storeSet) voiceSettingsStore() app.VoiceSettingsStore {
+	if s.pg != nil {
+		return app.NewVoiceSettingsStore(s.pg)
+	}
+	if s.sqldb != nil {
+		return app.NewSQLiteVoiceSettingsStore(s.sqldb)
+	}
+	return nil
+}
+
 // defaultWorkerTenant 返回 worker 的租户上下文：SQLite 单租户下为本地租户；
 // PostgreSQL 下沿用 PPTS_TENANT_ID（空=跨租户模式）。
 func (s *storeSet) defaultWorkerTenant(envTenant string) string {

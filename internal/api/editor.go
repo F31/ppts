@@ -14,8 +14,10 @@ import (
 
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
+	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
@@ -25,7 +27,7 @@ import (
 // GET /projects/{pid}/slides/render 返回每页渲染 PNG 的短期签名可读 URL，按 slideId 对齐，供编辑器缩略图与 PPT 预览。
 // PUT /projects/{pid}/slides/{sid}/source + GET /projects/{pid}/slides/sources 管理"无备注页讲稿来源"选择。
 // 均受 auth 中间件保护（仅项目所属租户成员可访问）。
-func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, srcStore app.ScriptSourceStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
+func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, srcStore app.ScriptSourceStore, voiceStore app.VoiceSettingsStore, gatewayStore gateway.StoreResolver, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/slides/render", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorSlideRender(w, r, jobs, objects, projects, members, recorder)
 	})))
@@ -36,6 +38,224 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/slides/sources", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListSlideSources(w, r, srcStore, projects, members, recorder)
 	})))
+	// 重新生成讲稿（用户显式覆盖已有讲稿）：原生 HTTP，避免改 proto。
+	mux.Handle("POST /projects/{pid}/script-draft", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorRegenerateScriptDraft(w, r, jobs, srcStore, projects, members, recorder)
+	})))
+	// 语音属性：项目级语音模型 / 音色 / 语速的读写。
+	mux.Handle("GET /projects/{pid}/voice-settings", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorGetVoiceSettings(w, r, voiceStore, projects, members, recorder)
+	})))
+	mux.Handle("PUT /projects/{pid}/voice-settings", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorSaveVoiceSettings(w, r, voiceStore, projects, members, recorder)
+	})))
+	// 可选语音模型（按 TTS 网关配置）+ 每个模型配置的音色。
+	mux.Handle("GET /projects/{pid}/voice-models", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorVoiceModels(w, r, gatewayStore, projects, members, recorder)
+	})))
+}
+
+type projectVoiceSettingsPayload struct {
+	Model       string `json:"model"`
+	Voice       string `json:"voice"`
+	RatePercent int    `json:"ratePercent"`
+}
+
+// editorGetVoiceSettings 读取项目语音属性；未保存过时返回缺省（rate=100）。
+func editorGetVoiceSettings(w http.ResponseWriter, r *http.Request, voiceStore app.VoiceSettingsStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	if voiceStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_disabled", "message": "voice settings store not configured"})
+		return
+	}
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	projectID, ok := requireProjectAccess(w, r, projects, members, recorder)
+	if !ok {
+		return
+	}
+	settings, err := voiceStore.Get(r.Context(), principal.TenantID, projectID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectVoiceSettingsPayload{Model: settings.Model, Voice: settings.Voice, RatePercent: settings.RatePercent})
+}
+
+// editorSaveVoiceSettings 保存项目语音属性（语音模型 / 音色 / 语速）。
+func editorSaveVoiceSettings(w http.ResponseWriter, r *http.Request, voiceStore app.VoiceSettingsStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	if voiceStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_disabled", "message": "voice settings store not configured"})
+		return
+	}
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": "permission_denied", "message": "requires editor role"})
+		return
+	}
+	projectID, ok := requireProjectAccess(w, r, projects, members, recorder)
+	if !ok {
+		return
+	}
+	var body projectVoiceSettingsPayload
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_argument", "message": "invalid JSON body"})
+		return
+	}
+	settings := app.VoiceSettings{
+		Model: strings.TrimSpace(body.Model), Voice: strings.TrimSpace(body.Voice), RatePercent: body.RatePercent,
+	}
+	if settings.RatePercent == 0 {
+		settings.RatePercent = 100
+	}
+	if settings.RatePercent < 50 || settings.RatePercent > 200 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_argument", "message": "rate_percent must be between 50 and 200"})
+		return
+	}
+	if err := voiceStore.Save(r.Context(), principal.TenantID, projectID, settings); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, projectVoiceSettingsPayload{Model: settings.Model, Voice: settings.Voice, RatePercent: settings.RatePercent})
+}
+
+type voiceModelItem struct {
+	Name      string   `json:"name"`
+	Model     string   `json:"model"`
+	Voices    []string `json:"voices"`
+	IsDefault bool     `json:"isDefault"`
+}
+
+// editorVoiceModels 列出本租户已启用的 TTS 网关（语音模型）及其配置的音色。
+// 音色来自网关配置的 voice 字段（多个逗号分隔）；无可用网关时返回空列表，前端据此降级。
+func editorVoiceModels(w http.ResponseWriter, r *http.Request, gatewayStore gateway.StoreResolver, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	if gatewayStore == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_disabled", "message": "model gateway disabled"})
+		return
+	}
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	gws, err := gatewayStore.List(r.Context(), principal.TenantID, gateway.KindTTS)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	items := make([]voiceModelItem, 0, len(gws))
+	for _, gw := range gws {
+		if gw == nil || !gw.Enabled {
+			continue
+		}
+		voices := make([]string, 0, 4)
+		seen := map[string]struct{}{}
+		for _, raw := range strings.Split(gw.Voice, ",") {
+			v := strings.TrimSpace(raw)
+			if v == "" {
+				continue
+			}
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+			voices = append(voices, v)
+		}
+		items = append(items, voiceModelItem{Name: gw.Name, Model: gw.Model, Voices: voices, IsDefault: gw.IsDefault})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"models": items})
+}
+
+// editorRegenerateScriptDraft 以 overwrite=true 入队 script_draft 任务：覆盖已有讲稿。
+// body: {slideIds: string[], mode: "SCRIPT_MODE_ORIGINAL|SCRIPT_MODE_POLISH|SCRIPT_MODE_AI_GENERATED"}。
+func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs JobStore, srcStore app.ScriptSourceStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleEditor); err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": "permission_denied", "message": "requires editor role"})
+		return
+	}
+	projectID, ok := requireProjectAccess(w, r, projects, members, recorder)
+	if !ok {
+		return
+	}
+	var body struct {
+		SlideIDs []string `json:"slideIds"`
+		Mode     string   `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_argument", "message": "invalid JSON body"})
+		return
+	}
+	mode := scriptModeFromString(body.Mode)
+	snap := app.ScriptDraftSnapshot{
+		ProjectID: projectID, Language: requestLanguage(r.Header), Mode: string(mode), Overwrite: true,
+	}
+	if srcStore != nil {
+		if choices, lerr := srcStore.List(r.Context(), principal.TenantID, projectID); lerr == nil && len(choices) > 0 {
+			sources := make(map[string]string, len(choices))
+			customs := make(map[string]string, len(choices))
+			for slideID, choice := range choices {
+				sources[slideID] = string(choice.Kind)
+				if choice.Kind == app.ScriptSourceCustom {
+					customs[slideID] = choice.CustomText
+				}
+			}
+			snap.Sources = sources
+			snap.CustomSources = customs
+		}
+	}
+	seen := make(map[string]struct{}, len(body.SlideIDs))
+	for _, raw := range body.SlideIDs {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		snap.SlideIDs = append(snap.SlideIDs, id)
+	}
+	snapBytes, err := json.Marshal(snap)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		idem = "regen-script:" + projectID + ":" + string(mode) + ":" + strings.Join(snap.SlideIDs, ",") + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	job, err := jobs.Create(r.Context(), principal.TenantID, projectID, string(pipeline.KindScriptDraft), idem, string(snapBytes), time.Time{})
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobId": job.ID})
+}
+
+// scriptModeFromString 兼容 proto 枚举名与领域字符串（original/polish/ai_generated）。
+func scriptModeFromString(raw string) narration.ScriptMode {
+	switch strings.TrimSpace(raw) {
+	case "SCRIPT_MODE_POLISH", string(narration.ModePolish):
+		return narration.ModePolish
+	case "SCRIPT_MODE_AI_GENERATED", string(narration.ModeAIGenerated):
+		return narration.ModeAIGenerated
+	default:
+		return narration.ModeOriginal
+	}
 }
 
 type editorSlideRenderItem struct {

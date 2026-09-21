@@ -598,6 +598,20 @@ export async function generateDraft(
   );
 }
 
+// regenerateScriptDraft 重新生成讲稿（覆盖已有讲稿）。原生 HTTP 端点，后端以 overwrite=true 入队，
+// 与 GenerateDraft 的"已有分段不覆盖"语义区分开。
+export async function regenerateScriptDraft(
+  identity: ClientIdentity,
+  projectId: string,
+  slideIds: string[],
+  mode: ScriptMode
+): Promise<{ jobId: string }> {
+  return postJSON<{ jobId: string }>(identity, `/projects/${encodeURIComponent(projectId)}/script-draft`, {
+    slideIds,
+    mode
+  });
+}
+
 export async function createGeneration(
   identity: ClientIdentity,
   projectId: string,
@@ -898,6 +912,43 @@ export async function setDefaultGateway(identity: ClientIdentity, name: string, 
 
 export async function testGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<GatewayTestResult> {
   return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}`)) as GatewayTestResult;
+}
+
+// ---- 项目语音属性（语音模型 / 音色 / 语速）----
+
+export type ProjectVoiceSettings = {
+  model: string;
+  voice: string;
+  ratePercent: number;
+};
+
+export type VoiceModel = {
+  name: string;
+  model: string;
+  voices: string[];
+  isDefault: boolean;
+};
+
+export async function getVoiceSettings(identity: ClientIdentity, projectId: string): Promise<ProjectVoiceSettings> {
+  return getJSON<ProjectVoiceSettings>(identity, `/projects/${encodeURIComponent(projectId)}/voice-settings`);
+}
+
+export async function saveVoiceSettings(
+  identity: ClientIdentity,
+  projectId: string,
+  settings: ProjectVoiceSettings
+): Promise<ProjectVoiceSettings> {
+  return putJSON<ProjectVoiceSettings>(identity, `/projects/${encodeURIComponent(projectId)}/voice-settings`, {
+    model: settings.model,
+    voice: settings.voice,
+    ratePercent: settings.ratePercent
+  });
+}
+
+// listVoiceModels 返回本租户已启用的 TTS 模型及其配置的音色；无可用模型时返回空数组。
+export async function listVoiceModels(identity: ClientIdentity, projectId: string): Promise<VoiceModel[]> {
+  const data = await getJSON<{ models?: VoiceModel[] }>(identity, `/projects/${encodeURIComponent(projectId)}/voice-models`);
+  return data.models ?? [];
 }
 
 // ---- 任务（JobService） ----

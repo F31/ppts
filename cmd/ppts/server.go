@@ -57,6 +57,7 @@ func runServer() error {
 	localPrincipal := stores.localPrincipalFor()
 	handlerPool := stores.pg // sqlite 下为 nil → api 跳过 auth/public 路由
 	scriptSources := stores.scriptSourceStore()
+	voiceSettings := stores.voiceSettingsStore()
 
 	server := &http.Server{
 		Addr: addr,
@@ -71,7 +72,7 @@ func runServer() error {
 					Auth:           authenticator,
 					DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
 					LocalPrincipal: localPrincipal,
-					Pronunciation:  stores.pronunciation, Gateway: gatewayStore, ScriptSources: scriptSources,
+					Pronunciation:  stores.pronunciation, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
 					JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
 					WebRoot: os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
 				}),

@@ -59,6 +59,7 @@ type Options struct {
 	Pronunciation  pronunciation.Store
 	Gateway        gateway.StoreResolver
 	ScriptSources  app.ScriptSourceStore
+	VoiceSettings  app.VoiceSettingsStore
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
@@ -155,7 +156,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
 	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
-	registerEditorRoutes(mux, jobs, objects, scriptSources, projects, opt.Members, opt.Audit, auth)
+	registerEditorRoutes(mux, jobs, objects, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。
 	registerJobDetailRoutes(mux, jobs, auth)
 	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。
