@@ -120,3 +120,34 @@ func TestSiliconFlowLLMLiveSmoke(t *testing.T) {
 	}
 	t.Logf("model=%s prompt=%d completion=%d text=%s", got.Model, got.PromptTokens, got.CompletionTokens, got.Text)
 }
+
+// TestRewriteReasoningContentFallback：reasoning 模型（如 agnes-2.0-flash）将文本放在 reasoning_content 而非 content。
+func TestRewriteReasoningContentFallback(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{
+			"id":      "test-id",
+			"model":   "agnes-2.0-flash",
+			"choices": []map[string]any{{"message": map[string]any{"role": "assistant", "content": "", "reasoning_content": "这是一段测试讲解文本"}}},
+			"usage":   map[string]int{"prompt_tokens": 10, "completion_tokens": 5},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	p, err := NewSiliconFlowProvider(SiliconFlowConfig{
+		BaseURL: server.URL, APIKey: "sk-test", Model: "agnes-2.0-flash",
+	})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+	result, err := p.Rewrite(context.Background(), RewriteRequest{
+		SourceText: "英伟达GPU显卡技术解析", Mode: "polish", Language: "zh-CN",
+	})
+	if err != nil {
+		t.Fatalf("Rewrite: %v", err)
+	}
+	if !strings.Contains(result.Text, "测试讲解文本") {
+		t.Fatalf("expected reasoning_content fallback, got text=%q", result.Text)
+	}
+}

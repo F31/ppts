@@ -18,6 +18,9 @@ import (
 // ErrNotFound 表示该租户（含平台回退）没有可用的网关配置。
 var ErrNotFound = errors.New("gateway: not found")
 
+// ErrExists 表示目标 (name, kind) 已存在同名的另一类网关，无法迁移类型。
+var ErrExists = errors.New("gateway: already exists")
+
 // Kind 区分网关用途。
 type Kind string
 
@@ -71,6 +74,9 @@ type Store interface {
 	Create(ctx context.Context, gw *Gateway, apiKey string) error
 	// Update 更新网关；apiKey 为空时保留原 key。
 	Update(ctx context.Context, gw *Gateway, apiKey string) error
+	// ChangeKind 把网关从 oldKind 迁移到 gw.Kind（主键含 kind，需重建行并重加密凭据）；
+	// apiKey 为空时复用旧 key。目标 (name, gw.Kind) 已存在时返回 ErrExists。
+	ChangeKind(ctx context.Context, gw *Gateway, oldKind Kind, apiKey string) error
 	Delete(ctx context.Context, tenantID, name string, kind Kind) error
 	SetDefault(ctx context.Context, tenantID, name string, kind Kind) error
 }

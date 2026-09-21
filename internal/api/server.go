@@ -58,6 +58,7 @@ type Options struct {
 	LocalPrincipal *Principal
 	Pronunciation  pronunciation.Store
 	Gateway        gateway.StoreResolver
+	ScriptSources  app.ScriptSourceStore
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
@@ -93,8 +94,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	// M3 ⑥：无备注页讲稿来源存储（pool 可用时启用；nil 时端点返回 feature_disabled）。
-	var scriptSources app.ScriptSourceStore
-	if pool != nil {
+	scriptSources := opt.ScriptSources
+	if scriptSources == nil && pool != nil {
 		scriptSources = app.NewScriptSourceStore(pool)
 	}
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members, scriptSources), handlerOpts...)
@@ -149,6 +150,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	// 核心创作辅助路由（待确认稿计数 + stale 信号），供生成面板前置检查（C-5）。
 	registerNarrationRoutes(mux, scripts, opt.Members, projects, opt.Audit, auth)
+	// 项目级讲稿列表：避免编辑器逐页探测不存在的讲稿导致大量 404。
+	registerScriptRoutes(mux, scripts, opt.Members, projects, opt.Audit, opt.Gateway, auth)
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
 	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。

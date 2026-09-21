@@ -588,7 +588,7 @@ export function ProjectEditor({
     if (!isReady || draftStatus.phase === 'generating') return;
     setDraftStatus({ phase: 'generating', message: t('editor.generateQueued', { mode: modeLabel(draftMode, t) }) });
     try {
-      await generateDraft(identity, projectId, slidesState.slides.map((slide) => slide.slideId), draftMode);
+      await generateDraft(identity, projectId, [activeSlideID], draftMode);
       const deadline = Date.now() + 120_000;
       const found: Record<string, ScriptRevision> = {};
       while (Date.now() < deadline) {
@@ -943,6 +943,7 @@ export function ProjectEditor({
                       </label>
                     ))}
                   </div>
+
                   {/* M3 ⑥：无备注页显式选择讲稿来源（仅当前页，随左侧页面切换；持久化后由 Worker 尊重）。 */}
                   {activeSlide && !activeSlide.hasNotes && (
                     <div className="source-selector" aria-label={t('editor.noNotesSource')}>
@@ -1085,7 +1086,7 @@ export function ProjectEditor({
                   </div>
                   <div>
                     <dt>{t('editor.needGenerate')}</dt>
-                    <dd>{genScope === 'current' ? (activeRealScript ? 0 : 1) : Math.max(0, pageCount - scriptReadyCount)}</dd>
+                    <dd>{Math.max(0, pageCount - scriptReadyCount)}</dd>
                   </div>
                 </dl>
 

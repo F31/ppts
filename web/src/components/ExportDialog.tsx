@@ -39,7 +39,7 @@ export function ExportDialog({
   const { t } = useI18n();
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
   const [format, setFormat] = useState<ArtifactFormat>('ARTIFACT_FORMAT_WEB_PROJECT');
-  const [burnSubtitles, setBurnSubtitles] = useState(false);
+  const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeNotes, setIncludeNotes] = useState(true);
 
   const pagePngCount = manifest.resources.filter((r) => r.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG').length;

@@ -130,6 +130,9 @@ func (p *SiliconFlowProvider) Rewrite(ctx context.Context, req RewriteRequest) (
 		return RewriteResult{}, errors.New("llm: empty choices")
 	}
 	text := strings.TrimSpace(contentString(out.Choices[0].Message.Content))
+	if text == "" && out.Choices[0].Message.ReasoningContent != "" {
+		text = strings.TrimSpace(out.Choices[0].Message.ReasoningContent)
+	}
 	if text == "" {
 		return RewriteResult{}, errors.New("llm: empty content")
 	}
@@ -193,6 +196,12 @@ func (p *SiliconFlowProvider) ExtractVisual(ctx context.Context, req VisualExtra
 	if err != nil {
 		return nil, err
 	}
+	if len(anchors) == 0 && out.Choices[0].Message.ReasoningContent != "" {
+		anchors, err = parseVisualAnchors(out.Choices[0].Message.ReasoningContent)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return anchors, nil
 }
 
@@ -204,8 +213,9 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content any    `json:"content"`
+	Role             string `json:"role"`
+	Content          any    `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 type chatContentPart struct {

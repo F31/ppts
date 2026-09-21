@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { listMembers, removeMember, setMemberRole, updateMemberProfile, type ClientIdentity } from '../api';
 import { useI18n } from '../i18n';
+import { useConfirmDialog } from '../components/ConfirmDialog';
 import { roleKey, type Member, type Role } from '../types';
 
 const roles: Role[] = ['ROLE_OWNER', 'ROLE_ADMIN', 'ROLE_EDITOR', 'ROLE_REVIEWER', 'ROLE_VIEWER'];
@@ -30,6 +31,8 @@ function displayName(m: Member): string {
 
 export function SettingsMembers({ identity }: { identity: ClientIdentity }) {
   const { t } = useI18n();
+  const confirmDialog = useConfirmDialog();
+  const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -100,7 +103,8 @@ export function SettingsMembers({ identity }: { identity: ClientIdentity }) {
   };
 
   const onRemove = async (userId: string) => {
-    if (!window.confirm(t('members.removeConfirm', { user: userId }))) return;
+    const ok = await confirmAsk({ kind: 'confirm', titleKey: 'members.removeTitle', messageKey: 'members.removeConfirm', messageValues: { user: userId }, confirmKey: 'common.delete', danger: true });
+    if (!ok) return;
     setError('');
     setNotice('');
     try {
@@ -286,6 +290,7 @@ export function SettingsMembers({ identity }: { identity: ClientIdentity }) {
           </table>
         )}
       </section>
+      {confirmDialogEl}
     </div>
   );
 }

@@ -12,6 +12,7 @@ import {
   type ClientIdentity
 } from '../api';
 import { useI18n } from '../i18n';
+import { useConfirmDialog } from '../components/ConfirmDialog';
 import type { Folder, Tag } from '../types';
 
 // 标签色板（前端建议色；后端仅存字符串，空 = 默认灰）。
@@ -19,6 +20,8 @@ const PALETTE = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#7c3aed', '#0891b2
 
 export function SettingsTags({ identity }: { identity: ClientIdentity }) {
   const { t } = useI18n();
+  const confirmDialog = useConfirmDialog();
+  const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [tags, setTags] = useState<Tag[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,7 +64,7 @@ export function SettingsTags({ identity }: { identity: ClientIdentity }) {
   };
 
   const renameTagNow = async (tag: Tag) => {
-    const name = window.prompt(t('tags.renamePrompt'), tag.name);
+    const name = await confirmAsk({ kind: 'prompt', titleKey: 'tags.renameTitle', initial: tag.name, confirmKey: 'common.save' });
     if (name === null) return;
     const trimmed = name.trim();
     if (!trimmed || trimmed === tag.name) return;
@@ -74,7 +77,8 @@ export function SettingsTags({ identity }: { identity: ClientIdentity }) {
   };
 
   const deleteTagNow = async (tag: Tag) => {
-    if (!window.confirm(t('tags.deleteConfirm', { name: tag.name }))) return;
+    const ok = await confirmAsk({ kind: 'confirm', titleKey: 'tags.deleteTitle', messageKey: 'tags.deleteConfirm', messageValues: { name: tag.name }, confirmKey: 'common.delete', danger: true });
+    if (!ok) return;
     try {
       await deleteTag(identity, tag.id);
       setNotice(t('tags.deleted', { name: tag.name }));
@@ -101,7 +105,7 @@ export function SettingsTags({ identity }: { identity: ClientIdentity }) {
   };
 
   const renameFolderNow = async (folder: Folder) => {
-    const name = window.prompt(t('folders.renamePrompt'), folder.name);
+    const name = await confirmAsk({ kind: 'prompt', titleKey: 'folders.renameTitle', initial: folder.name, confirmKey: 'common.save' });
     if (name === null) return;
     const trimmed = name.trim();
     if (!trimmed || trimmed === folder.name) return;
@@ -114,7 +118,8 @@ export function SettingsTags({ identity }: { identity: ClientIdentity }) {
   };
 
   const deleteFolderNow = async (folder: Folder) => {
-    if (!window.confirm(t('folders.deleteConfirm', { name: folder.name }))) return;
+    const ok = await confirmAsk({ kind: 'confirm', titleKey: 'folders.deleteTitle', messageKey: 'folders.deleteConfirm', messageValues: { name: folder.name }, confirmKey: 'common.delete', danger: true });
+    if (!ok) return;
     try {
       await deleteFolder(identity, folder.id);
       setNotice(t('folders.deleted', { name: folder.name }));
@@ -229,6 +234,7 @@ export function SettingsTags({ identity }: { identity: ClientIdentity }) {
           </section>
         </div>
       )}
+      {confirmDialogEl}
     </div>
   );
 }

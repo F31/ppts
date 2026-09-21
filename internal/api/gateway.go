@@ -52,18 +52,21 @@ func (h *GatewayHandler) Register(mux *http.ServeMux, auth func(http.Handler) ht
 }
 
 type gatewayRequest struct {
-	Kind        string `json:"kind"`
-	Name        string `json:"name"`
-	Provider    string `json:"provider"`
-	BaseURL     string `json:"baseUrl"`
-	APIKey      string `json:"apiKey"`
-	Model       string `json:"model"`
-	VisionModel string `json:"visionModel"`
-	Voice       string `json:"voice"`
-	SampleRate  int    `json:"sampleRate"`
-	IsDefault   *bool  `json:"isDefault,omitempty"`
-	Enabled     *bool  `json:"enabled,omitempty"`
-	Version     int    `json:"version"`
+	Kind string `json:"kind"`
+	// OriginalKind 仅在编辑时切换类型（tts<->llm）时携带，标识迁移前的类型；
+	// 为空表示不切换类型（向后兼容）。
+	OriginalKind string `json:"originalKind"`
+	Name         string `json:"name"`
+	Provider     string `json:"provider"`
+	BaseURL      string `json:"baseUrl"`
+	APIKey       string `json:"apiKey"`
+	Model        string `json:"model"`
+	VisionModel  string `json:"visionModel"`
+	Voice        string `json:"voice"`
+	SampleRate   int    `json:"sampleRate"`
+	IsDefault    *bool  `json:"isDefault,omitempty"`
+	Enabled      *bool  `json:"enabled,omitempty"`
+	Version      int    `json:"version"`
 }
 
 func (h *GatewayHandler) requireAdmin(w http.ResponseWriter, r *http.Request) (Principal, bool) {
@@ -170,8 +173,17 @@ func (h *GatewayHandler) update(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"code":"invalid","message":"`+err.Error()+`"}`, http.StatusBadRequest)
 		return
 	}
+	// oldKind 默认与 kind 一致；仅当显式携带 originalKind 时才发生类型迁移（tts<->llm）。
+	oldKind := kind
+	if strings.TrimSpace(req.OriginalKind) != "" {
+		oldKind, err = parseKind(req.OriginalKind)
+		if err != nil {
+			http.Error(w, `{"code":"invalid","message":"`+err.Error()+`"}`, http.StatusBadRequest)
+			return
+		}
+	}
 	// 以当前值合并请求字段：未提供的字段保持不变。
-	cur, err := h.store.Get(r.Context(), p.TenantID, name, kind)
+	cur, err := h.store.Get(r.Context(), p.TenantID, name, oldKind)
 	if err != nil {
 		if errors.Is(err, gateway.ErrNotFound) {
 			http.Error(w, `{"code":"not_found","message":"gateway not found"}`, http.StatusNotFound)
@@ -181,7 +193,7 @@ func (h *GatewayHandler) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	gw := &gateway.Gateway{
-		TenantID: cur.TenantID, Name: cur.Name, Kind: cur.Kind,
+		TenantID: cur.TenantID, Name: cur.Name, Kind: kind,
 		Provider:    valueOr(req.Provider, cur.Provider),
 		BaseURL:     valueOr(req.BaseURL, cur.BaseURL),
 		Model:       valueOr(req.Model, cur.Model),
@@ -199,9 +211,19 @@ func (h *GatewayHandler) update(w http.ResponseWriter, r *http.Request) {
 	if req.Enabled != nil {
 		gw.Enabled = *req.Enabled
 	}
-	if err := h.store.Update(r.Context(), gw, req.APIKey); err != nil {
-		if errors.Is(err, gateway.ErrNotFound) {
+	var saveErr error
+	if oldKind != kind {
+		saveErr = h.store.ChangeKind(r.Context(), gw, oldKind, req.APIKey)
+	} else {
+		saveErr = h.store.Update(r.Context(), gw, req.APIKey)
+	}
+	if saveErr != nil {
+		if errors.Is(saveErr, gateway.ErrNotFound) {
 			http.Error(w, `{"code":"not_found","message":"gateway not found"}`, http.StatusNotFound)
+			return
+		}
+		if errors.Is(saveErr, gateway.ErrExists) {
+			http.Error(w, `{"code":"exists","message":"a gateway with this name already exists for the target type"}`, http.StatusConflict)
 			return
 		}
 		http.Error(w, `{"code":"internal","message":"failed to update gateway"}`, http.StatusInternalServerError)

@@ -11,6 +11,7 @@ import {
   type ModelGateway
 } from './api';
 import { useDialogA11y } from './a11y';
+import { useConfirmDialog } from './components/ConfirmDialog';
 import { gatewayHealth, gatewayKey, healthKeySuffix, serviceKeySuffix, serviceState } from './gatewayState';
 import { useI18n } from './i18n';
 
@@ -55,9 +56,11 @@ export function GatewaySettings({
   const [gateways, setGateways] = useState<ModelGateway[]>([]);
   const [loading, setLoading] = useState(true);
   const dialogRef = useDialogA11y<HTMLDivElement>(() => onClose?.());
+  const confirmDialog = useConfirmDialog();
+  const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [error, setError] = useState('');
   const [form, setForm] = useState<FormState | null>(null);
-  const [editing, setEditing] = useState<{ name: string; version: number } | null>(null);
+  const [editing, setEditing] = useState<{ kind: 'tts' | 'llm'; name: string; version: number } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, GatewayTestResult>>({});
 
@@ -90,6 +93,7 @@ export function GatewaySettings({
       if (editing) {
         await updateGateway(identity, editing.name, {
           kind: form.kind,
+          originalKind: editing.kind,
           version: editing.version,
           provider: form.provider || undefined,
           baseUrl: form.baseUrl,
@@ -122,7 +126,7 @@ export function GatewaySettings({
   };
 
   const startEdit = (gw: ModelGateway) => {
-    setEditing({ name: gw.name, version: gw.version });
+    setEditing({ kind: gw.kind, name: gw.name, version: gw.version });
     setForm({
       kind: gw.kind,
       name: gw.name,
@@ -153,7 +157,8 @@ export function GatewaySettings({
   };
 
   const remove = async (gw: ModelGateway) => {
-    if (!window.confirm(t('gateway.deleteConfirm', { name: gw.name, kind: gw.kind }))) return;
+    const ok = await confirmAsk({ kind: 'confirm', titleKey: 'gateway.deleteTitle', messageKey: 'gateway.deleteConfirm', messageValues: { name: gw.name, kind: gw.kind }, confirmKey: 'common.delete', danger: true });
+    if (!ok) return;
     try {
       await deleteGateway(identity, gw.name, gw.kind);
       await load();
@@ -165,6 +170,129 @@ export function GatewaySettings({
 
   // 语音合成服务的总体可用性（A23）：未配置 / 当前不可用 / 未检测 / 可用。
   const ttsState = serviceState(gateways, 'tts', testResult);
+
+  // 编辑/新增表单。编辑时内联渲染在被编辑的那一项原位（见下方 list），新增时渲染在列表下方。
+  const renderForm = () => {
+    if (!form) return null;
+    return (
+      <form
+        className="gateway-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <div className="form-row">
+          <label>
+            {t('gateway.typeLabel')}
+            <select
+              value={form.kind}
+              onChange={(e) => {
+                const kind = e.target.value as 'tts' | 'llm';
+                setForm((f) => f && {
+                  ...f,
+                  kind,
+                  model: kind === 'tts' ? 'FunAudioLLM/CosyVoice2-0.5B' : 'Qwen/Qwen2.5-7B-Instruct'
+                });
+              }}
+            >
+              <option value="tts">{t('gateway.kindTtsFull')}</option>
+              <option value="llm">{t('gateway.kindLlmFull')}</option>
+            </select>
+          </label>
+          <label>
+            {t('gateway.nameLabel')}
+            <input
+              value={form.name}
+              placeholder={t('gateway.namePlaceholder')}
+              disabled={!!editing}
+              title={editing ? t('gateway.immutableWhenEditing') : ''}
+              onChange={(e) => setForm((f) => f && { ...f, name: e.target.value })}
+              required
+            />
+          </label>
+        </div>
+        <div className="form-row">
+          <label>
+            {t('gateway.providerLabel')}
+            <input
+              value={form.provider}
+              placeholder={defaultProvider}
+              onChange={(e) => setForm((f) => f && { ...f, provider: e.target.value })}
+            />
+          </label>
+          <label>
+            {t('gateway.baseUrlLabel')}
+            <input
+              value={form.baseUrl}
+              placeholder="https://api.siliconflow.cn"
+              onChange={(e) => setForm((f) => f && { ...f, baseUrl: e.target.value })}
+              required
+            />
+          </label>
+        </div>
+        <div className="form-row">
+          <label>
+            {t('gateway.apiKeyLabel')}
+            <input
+              type="password"
+              value={form.apiKey}
+              placeholder="sk-…"
+              onChange={(e) => setForm((f) => f && { ...f, apiKey: e.target.value })}
+            />
+          </label>
+          <label>
+            {t('gateway.modelLabel')}
+            <input
+              value={form.model}
+              onChange={(e) => setForm((f) => f && { ...f, model: e.target.value })}
+              required
+            />
+          </label>
+        </div>
+        <div className="form-row">
+          {form.kind === 'llm' ? (
+            <label>
+              {t('gateway.visionLabel')}
+              <input
+                value={form.visionModel}
+                onChange={(e) => setForm((f) => f && { ...f, visionModel: e.target.value })}
+              />
+            </label>
+          ) : (
+            <label>
+              {t('gateway.voiceLabel')}
+              <input
+                value={form.voice}
+                placeholder={t('gateway.voicePlaceholder')}
+                onChange={(e) => setForm((f) => f && { ...f, voice: e.target.value })}
+              />
+            </label>
+          )}
+        </div>
+        <label className="checkbox-row">
+          <input
+            type="checkbox"
+            checked={form.isDefault}
+            onChange={(e) => setForm((f) => f && { ...f, isDefault: e.target.checked })}
+          />
+          {t('gateway.setAsDefault')}
+        </label>
+        <div className="draft-actions">
+          <button type="submit">{editing ? t('gateway.saveEdit') : t('gateway.save')}</button>
+          <button
+            type="button"
+            onClick={() => {
+              setForm(null);
+              setEditing(null);
+            }}
+          >
+            {t('common.cancel')}
+          </button>
+        </div>
+      </form>
+    );
+  };
 
   const content = (
     <>
@@ -195,8 +323,13 @@ export function GatewaySettings({
               const key = gatewayKey(gw);
               const result = testResult[key];
               const health = gatewayHealth(gw, result);
+              const isEditingThis = !!editing && editing.kind === gw.kind && editing.name === gw.name;
               return (
                 <li key={key} className="gateway-item">
+                  {isEditingThis ? (
+                    renderForm()
+                  ) : (
+                    <>
                   <div className="gateway-head">
                     <strong>{gw.name}</strong>
                     <span className={`kind-tag ${gw.kind}`}>{gw.kind === 'tts' ? t('gateway.kindTts') : t('gateway.kindLlm')}</span>
@@ -249,12 +382,14 @@ export function GatewaySettings({
                   {!result && gw.enabled && gw.hasKey && (
                     <p className="test-hint">{t('gateway.untestedNote')}</p>
                   )}
+                    </>
+                  )}
                 </li>
               );
             })}
           </ul>
         )}
-        {form === null ? (
+        {form === null && (
           <div className="draft-actions">
             <button
               type="button"
@@ -266,134 +401,23 @@ export function GatewaySettings({
               {t('gateway.new')}
             </button>
           </div>
-        ) : (
-          <form
-            className="gateway-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void submit();
-            }}
-          >
-            <div className="form-row">
-              <label>
-                {t('gateway.typeLabel')}
-                <select
-                  value={form.kind}
-                  disabled={!!editing}
-                  onChange={(e) => {
-                    const kind = e.target.value as 'tts' | 'llm';
-                    setForm((f) => f && {
-                      ...f,
-                      kind,
-                      model: kind === 'tts' ? 'FunAudioLLM/CosyVoice2-0.5B' : 'Qwen/Qwen2.5-7B-Instruct'
-                    });
-                  }}
-                >
-                  <option value="tts">{t('gateway.kindTtsFull')}</option>
-                  <option value="llm">{t('gateway.kindLlmFull')}</option>
-                </select>
-              </label>
-              <label>
-                {t('gateway.nameLabel')}
-                <input
-                  value={form.name}
-                  placeholder={t('gateway.namePlaceholder')}
-                  disabled={!!editing}
-                  title={editing ? t('gateway.immutableWhenEditing') : ''}
-                  onChange={(e) => setForm((f) => f && { ...f, name: e.target.value })}
-                  required
-                />
-              </label>
-            </div>
-            <div className="form-row">
-              <label>
-                {t('gateway.providerLabel')}
-                <input
-                  value={form.provider}
-                  placeholder={defaultProvider}
-                  onChange={(e) => setForm((f) => f && { ...f, provider: e.target.value })}
-                />
-              </label>
-              <label>
-                {t('gateway.baseUrlLabel')}
-                <input
-                  value={form.baseUrl}
-                  placeholder="https://api.siliconflow.cn"
-                  onChange={(e) => setForm((f) => f && { ...f, baseUrl: e.target.value })}
-                  required
-                />
-              </label>
-            </div>
-            <div className="form-row">
-              <label>
-                {t('gateway.apiKeyLabel')}
-                <input
-                  type="password"
-                  value={form.apiKey}
-                  placeholder="sk-…"
-                  onChange={(e) => setForm((f) => f && { ...f, apiKey: e.target.value })}
-                />
-              </label>
-              <label>
-                {t('gateway.modelLabel')}
-                <input
-                  value={form.model}
-                  onChange={(e) => setForm((f) => f && { ...f, model: e.target.value })}
-                  required
-                />
-              </label>
-            </div>
-            <div className="form-row">
-              {form.kind === 'llm' ? (
-                <label>
-                  {t('gateway.visionLabel')}
-                  <input
-                    value={form.visionModel}
-                    onChange={(e) => setForm((f) => f && { ...f, visionModel: e.target.value })}
-                  />
-                </label>
-              ) : (
-                <label>
-                  {t('gateway.voiceLabel')}
-                  <input
-                    value={form.voice}
-                    placeholder={t('gateway.voicePlaceholder')}
-                    onChange={(e) => setForm((f) => f && { ...f, voice: e.target.value })}
-                  />
-                </label>
-              )}
-            </div>
-            <label className="checkbox-row">
-              <input
-                type="checkbox"
-                checked={form.isDefault}
-                onChange={(e) => setForm((f) => f && { ...f, isDefault: e.target.checked })}
-              />
-              {t('gateway.setAsDefault')}
-            </label>
-            <div className="draft-actions">
-              <button type="submit">{editing ? t('gateway.saveEdit') : t('gateway.save')}</button>
-              <button
-                type="button"
-                onClick={() => {
-                  setForm(null);
-                  setEditing(null);
-                }}
-              >
-                {t('common.cancel')}
-              </button>
-            </div>
-          </form>
         )}
+        {form !== null && !editing && renderForm()}
     </>
   );
 
   if (inline) {
-    return <section className="panel gateway-panel">{content}</section>;
+    return (
+      <>
+        <section className="panel gateway-panel">{content}</section>
+        {confirmDialogEl}
+      </>
+    );
   }
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('gateway.eyebrow')} ref={dialogRef}>
       <section className="modal-card gateway-panel">{content}</section>
+      {confirmDialogEl}
     </div>
   );
 }

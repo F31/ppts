@@ -1,10 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from './i18n';
 import type { PlaybackManifest, PlaybackResource, Timeline } from './types';
-import { progress, slideAt, subtitleAt, usecToClock } from './playerClock';
+import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } from './playerClock';
 
 type PlayerProps = {
   manifest: PlaybackManifest;
+  activeSlideId?: string;
+  activeSlideIndex?: number;
+  activeImageUrl?: string;
+  activeImageLabel?: string;
+  embedded?: boolean;
+  pauseSignal?: number;
   onSlideChange?: (slideId: string) => void;
 };
 
@@ -14,9 +20,14 @@ const SEEK_STEP_US = 5_000_000;
 
 type AudioSegment = { startUs: number; endUs: number; url: string };
 
-export function Player({ manifest, onSlideChange }: PlayerProps) {
+export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeImageUrl, activeImageLabel, embedded = false, pauseSignal = 0, onSlideChange }: PlayerProps) {
   const { t } = useI18n();
   const timeline = useMemo(() => JSON.parse(manifest.timelineJson) as Timeline, [manifest.timelineJson]);
+  const requestedTimelineSlide = useMemo(() => {
+    if (!activeSlideId) return undefined;
+    return timeline.slides.find((slide) => slide.slideId === activeSlideId) ?? (activeSlideIndex >= 0 ? timeline.slides[activeSlideIndex] : undefined);
+  }, [timeline.slides, activeSlideId, activeSlideIndex]);
+  const initialPositionUs = requestedTimelineSlide?.startUs ?? 0;
 
   // 将 manifest 中的 AUDIO 资源与 timeline 段按 (slideId#segmentId) / audioKey 关联，按时间排序。
   const audioSegments = useMemo<AudioSegment[]>(() => {
@@ -41,34 +52,79 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
   const hasAudio = audioSegments.length > 0;
 
   const [playing, setPlaying] = useState(false);
-  const [positionUs, setPositionUs] = useState(0);
+  const [positionUs, setPositionUs] = useState(initialPositionUs);
   const [speed, setSpeed] = useState(1);
   const [buffering, setBuffering] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const currentIndexRef = useRef(-1);
   const seekingRef = useRef(false);
+  const hideControlsTimerRef = useRef<number | null>(null);
 
   const activeSlide = slideAt(timeline, positionUs);
   const activeSubtitle = subtitleAt(timeline, positionUs);
   const pageResource = manifest.resources.find(
     (r: PlaybackResource) => r.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG' && r.slideId === activeSlide.slideId
   );
+  const showingExternalSlide = Boolean(activeSlideId && !requestedTimelineSlide && activeImageUrl);
+  const displayImageUrl = showingExternalSlide ? activeImageUrl : pageResource?.signedUrl;
+  const displayImageAlt = showingExternalSlide ? (activeImageLabel ?? activeSlideId) : activeSlide.slideId;
+  const selectedSlideHasAudio = !activeSlideId || Boolean(requestedTimelineSlide);
+  const displaySubtitle = showingExternalSlide ? null : activeSubtitle;
+
+  // B4-M6 字幕：只显示当前朗读的那一行（按 \n 切行、随朗读位置轮换），已朗读字符用高亮色。
+  const spokenSubtitle = (() => {
+    if (!displaySubtitle) return null;
+    const at = spokenCharAt(displaySubtitle, positionUs);
+    const lines = splitLines(displaySubtitle);
+    const found = lines.findIndex((line) => at >= line.start && at < line.end);
+    const lineIdx = found >= 0 ? found : at >= displaySubtitle.text.length ? lines.length - 1 : 0;
+    const line = lines[lineIdx];
+    const spokenInLine = Math.max(0, Math.min(at, line.end) - line.start);
+    const before = displaySubtitle.text.slice(line.start, line.start + spokenInLine);
+    const after = displaySubtitle.text.slice(line.start + spokenInLine, line.end);
+    return { before, after };
+  })();
+
+  // 仅在播放进度跨越到不同幻灯片时才通知父组件切页。
+  // 不能把 onSlideChange 放进依赖并在每次渲染触发：父组件传入的回调每次渲染都是新引用，
+  // 会把手动点缩略图切到的页立刻被覆盖回播放器当前页（有配音的项目才挂载播放器，故会有项目差异）。
+  const onSlideChangeRef = useRef(onSlideChange);
+  onSlideChangeRef.current = onSlideChange;
+  useEffect(() => {
+    onSlideChangeRef.current?.(activeSlide.slideId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSlide.slideId]);
+
+  useLayoutEffect(() => {
+    if (!activeSlideId) return;
+    if (!requestedTimelineSlide) {
+      setPlaying(false);
+      currentIndexRef.current = -1;
+      return;
+    }
+    if (requestedTimelineSlide.slideId === activeSlide.slideId) return;
+    if (hasAudio) seekingRef.current = true;
+    currentIndexRef.current = -1;
+    setPositionUs(requestedTimelineSlide.startUs);
+  }, [activeSlideId, activeSlide.slideId, requestedTimelineSlide, hasAudio]);
 
   useEffect(() => {
-    onSlideChange?.(activeSlide.slideId);
-  }, [activeSlide.slideId, onSlideChange]);
+    if (pauseSignal > 0) setPlaying(false);
+  }, [pauseSignal]);
 
   // 切换 manifest（新快照）时复位播放状态，避免串音。
   useEffect(() => {
     setPlaying(false);
-    setPositionUs(0);
+    setPositionUs(timeline.slides.find((slide) => slide.slideId === activeSlideId)?.startUs ?? 0);
     setBuffering(false);
     currentIndexRef.current = -1;
     seekingRef.current = false;
-  }, [manifest.timelineKey]);
+  }, [manifest.timelineKey, timeline.slides]);
 
   // 段定位：返回最后一个 startUs <= positionUs 的段索引
   const indexForPosition = (posUs: number): number => {
@@ -187,12 +243,37 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
 
   // 全屏状态同步
   useEffect(() => {
-    const onFsChange = () => setFullscreen(Boolean(document.fullscreenElement));
+    const onFsChange = () => {
+      const active = document.fullscreenElement === cardRef.current;
+      setFullscreen(active);
+      setControlsVisible(true);
+    };
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
+  const showFullscreenControls = () => {
+    if (!fullscreen) return;
+    if (hideControlsTimerRef.current !== null) window.clearTimeout(hideControlsTimerRef.current);
+    setControlsVisible(true);
+    hideControlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 2200);
+  };
+
+  useEffect(() => {
+    if (hideControlsTimerRef.current !== null) window.clearTimeout(hideControlsTimerRef.current);
+    if (!fullscreen) {
+      setControlsVisible(true);
+      return;
+    }
+    setControlsVisible(true);
+    hideControlsTimerRef.current = window.setTimeout(() => setControlsVisible(false), 2200);
+    return () => {
+      if (hideControlsTimerRef.current !== null) window.clearTimeout(hideControlsTimerRef.current);
+    };
+  }, [fullscreen]);
+
   const seek = (value: number) => {
+    if (!selectedSlideHasAudio) return;
     const target = Math.round(timeline.durationUs * value);
     if (hasAudio) seekingRef.current = true;
     setPositionUs(target);
@@ -205,7 +286,9 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
     if (document.fullscreenElement) {
       void document.exitFullscreen().catch(() => {});
     } else {
-      void el.requestFullscreen?.().catch(() => {});
+      void el.requestFullscreen?.().then(() => {
+        (document.activeElement as HTMLElement | null)?.blur?.();
+      }).catch(() => {});
     }
   };
 
@@ -228,7 +311,7 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
       case ' ':
       case 'Spacebar':
         event.preventDefault();
-        setPlaying((value) => !value);
+        if (selectedSlideHasAudio) setPlaying((value) => !value);
         return;
       case 'ArrowLeft':
       case 'ArrowRight': {
@@ -260,30 +343,43 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
 
   return (
     <section
-      className={`player-card${fullscreen ? ' is-fullscreen' : ''}`}
+      className={`player-card${embedded ? ' embedded-player' : ''}${fullscreen ? ' is-fullscreen' : ''}${fullscreen && controlsVisible ? ' controls-visible' : ''}`}
       aria-label={t('player.aria')}
       ref={cardRef}
+      onMouseMove={showFullscreenControls}
+      onPointerMove={showFullscreenControls}
     >
       <audio ref={audioRef} key={manifest.timelineKey} preload="auto" />
       <div className="viewport">
-        {pageResource?.signedUrl ? (
-          <img src={pageResource.signedUrl} alt={activeSlide.slideId} />
+        {displayImageUrl ? (
+          <img src={displayImageUrl} alt={displayImageAlt} />
         ) : (
           <div className="slide-fallback">
             <span>{activeSlide.slideId}</span>
-            <strong>{activeSubtitle?.text ?? t('player.waitingSubtitle')}</strong>
+            <strong>{displaySubtitle?.text ?? t('player.waitingSubtitle')}</strong>
           </div>
         )}
-        <div className="subtitle-strip">{activeSubtitle?.text ?? ' '}</div>
+        {subtitlesEnabled && (
+          <div className="subtitle-strip">
+            {spokenSubtitle ? (
+              <span className="subtitle-line">
+                {spokenSubtitle.before && <span className="subtitle-spoken">{spokenSubtitle.before}</span>}
+                <span>{spokenSubtitle.after}</span>
+              </span>
+            ) : (
+              ' '
+            )}
+          </div>
+        )}
         {buffering && <div className="player-buffering">{t('player.buffering')}</div>}
       </div>
       {/* B4-M4（A25）：控制条 + 进度条收进 .player-dock，移动端吸附到视口底部（<768px）。 */}
-      <div className="player-dock" aria-label={t('player.dock')}>
+      <div className="player-dock" aria-label={t('player.dock')} onFocus={showFullscreenControls} onMouseEnter={showFullscreenControls}>
         <div className="player-controls">
-          <button type="button" onClick={() => setPlaying((value) => !value)}>
+          <button type="button" disabled={!selectedSlideHasAudio} onClick={() => setPlaying((value) => !value)}>
             {playing ? t('player.pause') : t('player.play')}
           </button>
-          <button type="button" onClick={() => seek(0)}>
+          <button type="button" disabled={!selectedSlideHasAudio} onClick={() => seek(0)}>
             {t('player.restart')}
           </button>
           <span>
@@ -307,6 +403,15 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
           <button type="button" className="player-fullscreen" onClick={toggleFullscreen}>
             {fullscreen ? t('player.exitFullscreen') : t('player.fullscreen')}
           </button>
+          <button
+            type="button"
+            className="player-cc"
+            aria-pressed={subtitlesEnabled}
+            title={subtitlesEnabled ? t('player.subtitlesOff') : t('player.subtitlesOn')}
+            onClick={() => setSubtitlesEnabled((value) => !value)}
+          >
+            CC
+          </button>
         </div>
         <input
           className="timeline-range"
@@ -316,23 +421,26 @@ export function Player({ manifest, onSlideChange }: PlayerProps) {
           value={Math.round(progress(positionUs, timeline.durationUs) * 1000)}
           onChange={(event) => seek(Number(event.currentTarget.value) / 1000)}
           aria-label={t('player.progress')}
+          disabled={!selectedSlideHasAudio}
         />
       </div>
-      <div className="slide-map">
-        {timeline.slides.map((slide) => (
-          <button
-            key={slide.slideId}
-            type="button"
-            className={slide.slideId === activeSlide.slideId ? 'active' : ''}
-            style={{ width: `${Math.max(8, progress(slide.endUs - slide.startUs, timeline.durationUs) * 100)}%` }}
-            onClick={() => seek(progress(slide.startUs, timeline.durationUs))}
-          >
-            {slide.slideId.replace('slide-', '')}
-          </button>
-        ))}
-      </div>
-      <p className="player-shortcuts">{t('player.shortcutsHint')}</p>
-      {!hasAudio && <p className="player-note">{t('player.noAudio')}</p>}
+      {!embedded && (
+        <div className="slide-map">
+          {timeline.slides.map((slide) => (
+            <button
+              key={slide.slideId}
+              type="button"
+              className={slide.slideId === activeSlide.slideId ? 'active' : ''}
+              style={{ width: `${Math.max(8, progress(slide.endUs - slide.startUs, timeline.durationUs) * 100)}%` }}
+              onClick={() => seek(progress(slide.startUs, timeline.durationUs))}
+            >
+              {slide.slideId.replace('slide-', '')}
+            </button>
+          ))}
+        </div>
+      )}
+      {!embedded && <p className="player-shortcuts">{t('player.shortcutsHint')}</p>}
+      {(!hasAudio || !selectedSlideHasAudio) && <p className="player-note">{t('player.noAudio')}</p>}
     </section>
   );
 }

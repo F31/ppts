@@ -69,7 +69,6 @@ func sqScanRow(row rowScanner) (rawRow, error) {
 	return r, err
 }
 
-
 // sqToGateway 把 rawRow 转为 Gateway（与 PGStore.toGateway 同逻辑，驱动无关）。
 func sqToGateway(r rawRow, apiKey string) *Gateway {
 	return &Gateway{
@@ -207,6 +206,81 @@ func (s *SQLiteStore) Update(ctx context.Context, gw *Gateway, apiKey string) er
 		return fmt.Errorf("gateway update: %w", err)
 	}
 	gw.Version = version
+	s.Invalidate(gw.TenantID, gw.Kind)
+	return nil
+}
+
+// ChangeKind 把网关从 oldKind 迁移到 gw.Kind。主键含 kind，因此需在事务内插入新行、
+// 删除旧行；apiKey 为空时用旧 kind 的 AAD 解密后按新 kind 重新加密。
+func (s *SQLiteStore) ChangeKind(ctx context.Context, gw *Gateway, oldKind Kind, apiKey string) error {
+	if oldKind == gw.Kind {
+		return s.Update(ctx, gw, apiKey)
+	}
+	var oldEnc []byte
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT encrypted_creds FROM model_gateways WHERE tenant_id = ? AND name = ? AND kind = ?`,
+		gw.TenantID, gw.Name, string(oldKind)).Scan(&oldEnc); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	if apiKey == "" {
+		plain, err := decodeCreds(s.cipher, gw.TenantID, gw.Name, string(oldKind), oldEnc)
+		if err != nil {
+			return err
+		}
+		apiKey = plain
+	}
+	enc, err := encodeCreds(s.cipher, gw.TenantID, gw.Name, string(gw.Kind), apiKey)
+	if err != nil {
+		return err
+	}
+	version := gw.Version + 1
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var exists int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM model_gateways WHERE tenant_id = ? AND name = ? AND kind = ?`,
+		gw.TenantID, gw.Name, string(gw.Kind)).Scan(&exists); err == nil {
+		return ErrExists
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	if gw.IsDefault {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE model_gateways SET is_default = 0 WHERE tenant_id = ? AND kind = ?`,
+			gw.TenantID, string(gw.Kind)); err != nil {
+			return fmt.Errorf("gateway change kind: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO model_gateways
+			(tenant_id, name, kind, provider, base_url, encrypted_creds, model, vision_model, voice,
+			 sample_rate, is_default, enabled, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		gw.TenantID, gw.Name, string(gw.Kind), gw.Provider, gw.BaseURL, enc,
+		gw.Model, gw.VisionModel, gw.Voice, gw.SampleRate, b2i(gw.IsDefault), b2i(gw.Enabled),
+		dbNow(), dbNow()); err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM model_gateways WHERE tenant_id = ? AND name = ? AND kind = ?`,
+		gw.TenantID, gw.Name, string(oldKind))
+	if err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	gw.Version = version
+	s.Invalidate(gw.TenantID, oldKind)
 	s.Invalidate(gw.TenantID, gw.Kind)
 	return nil
 }

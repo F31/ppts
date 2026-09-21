@@ -110,7 +110,7 @@ func TestNarrationUpdateAndConflict(t *testing.T) {
 	}
 }
 
-func TestNarrationLockPreventsEdit(t *testing.T) {
+func TestNarrationLockedScriptDirectEdit(t *testing.T) {
 	s := nrStore(t)
 	ctx := context.Background()
 	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, nrSlide, lang, ModeOriginal); err != nil {
@@ -131,14 +131,23 @@ func TestNarrationLockPreventsEdit(t *testing.T) {
 	if locked.Status != StatusLocked {
 		t.Fatalf("locked status: %+v", locked)
 	}
-	// 锁定后编辑被拒。
-	if _, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 2,
-		segs(seg("seg-1", "hack"))); !errors.Is(err, ErrLocked) {
-		t.Fatalf("update locked: got %v, want ErrLocked", err)
+	// Revision protection remains in force for legacy locked scripts.
+	_, err = s.Update(ctx, nrTenant, nrProject, nrSlide, lang, locked.Revision-1, segs(seg("seg-1", "stale")))
+	var conflict *ErrConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("stale update: got %v, want ErrConflict", err)
 	}
-	// 状态机不允许从 locked 回退。
-	if _, err := s.SetStatus(ctx, nrTenant, nrProject, nrSlide, lang, StatusApproved); err == nil {
-		t.Fatalf("downgrade from locked should fail")
+	edited, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, locked.Revision, segs(seg("seg-1", "new draft")))
+	if err != nil || edited.Status != StatusDraft || edited.Revision != locked.Revision+1 {
+		t.Fatalf("direct edit: %+v, %v", edited, err)
+	}
+	// 锁定后可回到 approved，供用户重新编辑并重新生成语音。
+	unlocked, err := s.SetStatus(ctx, nrTenant, nrProject, nrSlide, lang, StatusApproved)
+	if err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	if unlocked.Status != StatusApproved {
+		t.Fatalf("unlocked status: %+v", unlocked)
 	}
 }
 

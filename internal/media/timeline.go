@@ -65,6 +65,16 @@ type SubtitleCue struct {
 	StartUS   int64  `json:"startUs"`
 	EndUS     int64  `json:"endUs"`
 	Text      string `json:"text"`
+	// Chars 是可选字符级时间戳（相对全局时钟），供播放器按朗读位置逐行轮换 + 高亮。
+	// SRT/VTT 渲染只消费 Text，忽略此字段以保持导出格式稳定。
+	Chars []CharCue `json:"chars,omitempty"`
+}
+
+// CharCue 定位单个字符（或词）在全局时钟上的朗读区间。
+type CharCue struct {
+	StartUS int64  `json:"startUs"`
+	EndUS   int64  `json:"endUs"`
+	Char    string `json:"char"`
 }
 
 // BuildTimeline applies D_page = lead_in + sum(audio + gap) + tail_hold.
@@ -143,9 +153,24 @@ func BuildTimeline(slides []SlideInput, timing Timing) (*Timeline, error) {
 				}
 			}
 			slide.Segments = append(slide.Segments, segment)
+			var chars []CharCue
+			if inputSegment.Alignment != nil && len(inputSegment.Alignment.Tokens) > 0 {
+				chars = make([]CharCue, 0, len(inputSegment.Alignment.Tokens))
+				for _, token := range inputSegment.Alignment.Tokens {
+					tokenStart, err := addUS(cursor, token.StartUS)
+					if err != nil {
+						return nil, err
+					}
+					tokenEnd, err := addUS(cursor, token.EndUS)
+					if err != nil {
+						return nil, err
+					}
+					chars = append(chars, CharCue{StartUS: tokenStart, EndUS: tokenEnd, Char: token.Char})
+				}
+			}
 			timeline.Subtitles = append(timeline.Subtitles, SubtitleCue{
 				SlideID: inputSlide.SlideID, SegmentID: inputSegment.SegmentID,
-				StartUS: cueStart, EndUS: cueEnd, Text: inputSegment.DisplayText,
+				StartUS: cueStart, EndUS: cueEnd, Text: inputSegment.DisplayText, Chars: chars,
 			})
 			cursor, err = addUS(segmentEnd, gapUS)
 			if err != nil {

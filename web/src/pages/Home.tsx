@@ -14,7 +14,7 @@ import {
   type ClientIdentity,
   type ProjectArtifact
 } from '../api';
-import { describeApiError, settle, type Translator } from '../apiError';
+import { describeApiError, isUnimplemented, settle, type Translator } from '../apiError';
 import { useI18n } from '../i18n';
 import { can } from '../permissions';
 import { Link } from '../router';
@@ -231,8 +231,13 @@ export function Home({ identity, role, roleReady }: { identity: ClientIdentity; 
       //（internal/public/store.go:150,171），因此 items.length 即精确条数。
       if (canQueue) {
         const res = await settle(() => listReviewQueue(identity, {}));
-        if (res.error) failures.push(res.error);
-        else setQueueCount((res.data?.items ?? []).length);
+        // 公开区可能未在当前部署提供（SQLite 单租户 profile → 503 feature_disabled）：
+        // 此时没有审核队列，属于"无此能力"而非故障，隐藏该待办而不报错（A26）。
+        if (res.error) {
+          if (!isUnimplemented(res.error)) failures.push(res.error);
+        } else {
+          setQueueCount((res.data?.items ?? []).length);
+        }
       } else {
         setQueueCount(null);
       }

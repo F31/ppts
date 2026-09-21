@@ -500,6 +500,13 @@ export async function getScript(
   return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Get', { projectId, slideId });
 }
 
+export async function listProjectScripts(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ scripts: ScriptRevision[] }> {
+  return getJSON<{ scripts: ScriptRevision[] }>(identity, `/projects/${encodeURIComponent(projectId)}/scripts`);
+}
+
 export type UpdateScriptResult = {
   revision: ScriptRevision;
   conflict: boolean;
@@ -526,9 +533,14 @@ export async function approveScript(identity: ClientIdentity, projectId: string,
   return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Approve', { projectId, slideId });
 }
 
-// lockScript 将单页讲稿锁定（需 REVIEWER 角色；后端不支持解锁）。后端 ScriptService.Lock。
+// lockScript 将单页讲稿锁定（需 REVIEWER 角色）。后端 ScriptService.Lock。
 export async function lockScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
   return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Lock', { projectId, slideId, lock: true });
+}
+
+// unlockScript 将锁定讲稿退回已确认状态，便于重新编辑后再生成语音。
+export async function unlockScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
+  return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Lock', { projectId, slideId, lock: false });
 }
 
 // regenerateSegments 局部重生成选中分段（M2 M1 落地的 RegenerateSegments RPC）。
@@ -540,11 +552,26 @@ export async function regenerateSegments(
   segmentIds: string[],
   voiceId?: string
 ): Promise<{ jobId: string }> {
+  const idempotencyKey = `regen-${projectId}-${slideId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return connectJSON<{ jobId: string }>(identity, '/ppts.v1.NarrationService/RegenerateSegments', {
     projectId,
     slideId,
     segmentIds,
     voiceId: voiceId ?? ''
+  }, { 'Idempotency-Key': idempotencyKey });
+}
+
+export async function rewriteScriptText(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string,
+  text: string,
+  action: 'shorten' | 'polish' | 'transition' | 'ai_generated'
+): Promise<{ text: string }> {
+  return postJSON<{ text: string }>(identity, `/projects/${encodeURIComponent(projectId)}/scripts/rewrite`, {
+    slideId,
+    text,
+    action
   });
 }
 
@@ -555,6 +582,7 @@ export async function generateDraft(
   mode: ScriptMode = 'SCRIPT_MODE_ORIGINAL',
   options: { audience?: string; style?: string; totalSeconds?: number } = {}
 ): Promise<{ jobId: string; fullySupported: boolean }> {
+  const idempotencyKey = `draft-${projectId}-${mode}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return connectJSON<{ jobId: string; fullySupported: boolean }>(
     identity,
     '/ppts.v1.ScriptService/GenerateDraft',
@@ -565,7 +593,8 @@ export async function generateDraft(
       audience: options.audience,
       style: options.style,
       duration: options.totalSeconds ? { totalSeconds: options.totalSeconds } : undefined
-    }
+    },
+    { 'Idempotency-Key': idempotencyKey }
   );
 }
 
@@ -853,7 +882,7 @@ export async function createGateway(
 export async function updateGateway(
   identity: ClientIdentity,
   name: string,
-  input: { kind: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean }
+  input: { kind: 'tts' | 'llm'; originalKind?: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean }
 ): Promise<ModelGateway> {
   const data = (await gatewayPath(identity, 'PUT', `/api/model-gateways/${encodeURIComponent(name)}`, input)) as { gateway?: ModelGateway };
   return data.gateway!;

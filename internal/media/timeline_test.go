@@ -43,6 +43,11 @@ func TestBuildTimelineUsesAlignmentAndPreservesSlideOrder(t *testing.T) {
 	}
 	if got := timeline.Subtitles[0]; got.StartUS != 300_000 || got.EndUS != 900_000 {
 		t.Fatalf("aligned subtitle = %+v", got)
+	} else if len(got.Chars) != 2 || got.Chars[0].Char != "A" || got.Chars[0].StartUS != 300_000 || got.Chars[1].EndUS != 900_000 {
+		t.Fatalf("subtitle chars = %+v", got.Chars)
+	}
+	if timeline.Subtitles[1].Chars != nil {
+		t.Fatalf("segment without alignment must not emit chars")
 	}
 	if got := timeline.Subtitles[1]; got.StartUS != 1_300_000 || got.EndUS != 1_800_000 {
 		t.Fatalf("fallback subtitle = %+v", got)

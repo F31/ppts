@@ -22,6 +22,7 @@ import {
   type SourceRevisionSummary
 } from '../api';
 import { ImportDialog } from '../components/ImportDialog';
+import { useConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
 import { can, type Capability } from '../permissions';
@@ -81,6 +82,8 @@ export function Projects({
   roleReady?: boolean;
 }) {
   const { t } = useI18n();
+  const confirmDialog = useConfirmDialog();
+  const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [projects, setProjects] = useState<Project[]>([]);
   const [meta, setMeta] = useState<Record<string, RowMeta>>({});
   const [title, setTitle] = useState('');
@@ -232,7 +235,8 @@ export function Projects({
   };
 
   const archive = async (project: Project) => {
-    if (!window.confirm(t('projects.archiveConfirm', { title: project.title }))) return;
+    const ok = await confirmAsk({ kind: 'confirm', titleKey: 'projects.archiveTitle', messageKey: 'projects.archiveConfirm', messageValues: { title: project.title }, confirmKey: 'projects.archive', danger: true });
+    if (!ok) return;
     try {
       await archiveProject(identity, project.id);
       setProjects((current) => current.filter((item) => item.id !== project.id));
@@ -525,12 +529,27 @@ export function Projects({
                       }}
                     />
                   ) : (
-                    <span
-                      className="ppt-name"
-                      title={t('projects.editPptName')}
-                      onDoubleClick={() => startEdit(revision.revisionNo)}
-                    >
-                      {getDisplayName(revision)}
+                    <span className="ppt-name-wrap">
+                      <button
+                        type="button"
+                        className="ppt-name"
+                        title={t('projects.viewPpt')}
+                        onClick={() => navigate(`/projects/${project.id}/editor${revision.isCurrent ? '' : `?rev=${revision.revisionNo}`}`)}
+                      >
+                        {getDisplayName(revision)}
+                      </button>
+                      <button
+                        type="button"
+                        className="ppt-name-edit"
+                        title={t('projects.editPptName')}
+                        aria-label={t('projects.editPptName')}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEdit(revision.revisionNo);
+                        }}
+                      >
+                        ✎
+                      </button>
                     </span>
                   )}
                 </td>
@@ -571,7 +590,8 @@ export function Projects({
                       type="button"
                       className="button-ghost danger"
                       onClick={async () => {
-                        if (!window.confirm(t('projects.deletePptConfirm', { name: getDisplayName(revision), no: revision.revisionNo }))) return;
+                        const ok = await confirmAsk({ kind: 'confirm', titleKey: 'projects.deletePptTitle', messageKey: 'projects.deletePptConfirm', messageValues: { name: getDisplayName(revision), no: revision.revisionNo }, confirmKey: 'common.delete', danger: true });
+                        if (!ok) return;
                         try {
                           await deleteSourceRevision(identity, project.id, revision.revisionNo);
                           setVersionsByProject((cur) => {
@@ -734,7 +754,8 @@ export function Projects({
         pushNotice(t('folders.deleteBlocked'));
         return;
       }
-      if (!window.confirm(t('folders.deleteConfirm', { name: folder.name }))) return;
+      const ok = await confirmAsk({ kind: 'confirm', titleKey: 'folders.deleteTitle', messageKey: 'folders.deleteConfirm', messageValues: { name: folder.name }, confirmKey: 'common.delete', danger: true });
+      if (!ok) return;
       try {
         await deleteFolder(identity, folder.id);
         pushNotice(t('folders.deleted', { name: folder.name }));
@@ -1173,6 +1194,7 @@ export function Projects({
           }}
         />
       )}
+      {confirmDialogEl}
     </div>
   );
 }

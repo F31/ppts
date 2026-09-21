@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/api"
+	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/db"
@@ -192,6 +193,16 @@ func (s *storeSet) localPrincipalFor() *api.Principal {
 		return nil
 	}
 	return &api.Principal{TenantID: db.LocalTenantID, UserID: db.LocalUserID}
+}
+
+func (s *storeSet) scriptSourceStore() app.ScriptSourceStore {
+	if s.pg != nil {
+		return app.NewScriptSourceStore(s.pg)
+	}
+	if s.sqldb != nil {
+		return app.NewSQLiteScriptSourceStore(s.sqldb)
+	}
+	return nil
 }
 
 // defaultWorkerTenant 返回 worker 的租户上下文：SQLite 单租户下为本地租户；

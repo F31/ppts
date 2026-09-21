@@ -93,9 +93,7 @@ func (s *PGStore) Update(ctx context.Context, tenantID, projectID, slideID, lang
 		if err != nil {
 			return err
 		}
-		if status == StatusLocked {
-			return ErrLocked
-		}
+		// Editing a legacy locked script creates a new draft under the same revision check.
 		if revision != expected {
 			return &ErrConflict{Latest: loadRevisionTx(ctx, tx, scriptID)}
 		}
@@ -160,10 +158,13 @@ func (s *PGStore) SetStatus(ctx context.Context, tenantID, projectID, slideID, l
 	}
 	var rev *Revision
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		if newStatus == StatusApproved {
+			allowFrom = StatusLocked
+		}
 		tag, err := tx.Exec(ctx,
 			`UPDATE narration_scripts SET status=$5, updated_at=now()
-			 WHERE tenant_id=$1 AND project_id=$2 AND slide_id=$3 AND language=$4 AND status=$6`,
-			tenantID, projectID, slideID, language, string(newStatus), allowFrom)
+			 WHERE tenant_id=$1 AND project_id=$2 AND slide_id=$3 AND language=$4 AND status IN ($6, $7)`,
+			tenantID, projectID, slideID, language, string(newStatus), allowFrom, StatusDraft)
 		if err != nil {
 			return err
 		}
@@ -176,7 +177,7 @@ func (s *PGStore) SetStatus(ctx context.Context, tenantID, projectID, slideID, l
 			if gerr != nil {
 				return gerr
 			}
-			if cur.Status == StatusLocked {
+			if cur.Status == StatusLocked && newStatus != StatusApproved {
 				return ErrLocked
 			}
 			return errors.New("narration: status transition not allowed from " + string(cur.Status))
@@ -242,6 +243,11 @@ func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID, langua
 				&r.Mode, &r.Status, &r.Revision, &r.AudioRevision, &r.UpdatedAt); serr != nil {
 				return serr
 			}
+			segs, serr := loadSegmentsTx(ctx, tx, r.ID)
+			if serr != nil {
+				return serr
+			}
+			r.Segments = segs
 			revs = append(revs, &r)
 		}
 		return rows.Err()

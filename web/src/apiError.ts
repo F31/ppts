@@ -11,12 +11,22 @@ export type Translator = (key: string) => string;
 //
 // 约定：任何"可能失败且结果会渲染成空态"的请求，都必须走这里把原因显式带到界面上；
 // 调用方负责同时提供重试入口（修复入口）。
+// isUnimplemented 判定"当前部署未提供该能力"（后端 503 feature_disabled / 501 unimplemented）。
+// 用于可选项探测：能力确实不存在时，调用方应隐藏入口，而不是把部署差异渲染成故障
+// （A26「无接口功能：隐藏或明确不可用」——此处选"隐藏"）。
+export function isUnimplemented(error: unknown): boolean {
+  return (
+    error instanceof ConnectError &&
+    (error.code === 'feature_disabled' || error.code === 'unimplemented' || error.code === 'http_501')
+  );
+}
+
 export function describeApiError(error: unknown, fallback: string, t?: Translator): string {
   if (error instanceof ConnectError) {
     // ConnectError 的 code 对原生 HTTP 端点是 `http_<status>`，对 Connect RPC 是标准码。
     if (t) {
       // feature_disabled：后端明确声明"该功能在本部署未提供"（如 SQLite 单租户 profile 无公开区）。
-      if (error.code === 'feature_disabled' || error.code === 'unimplemented' || error.code === 'http_501') {
+      if (isUnimplemented(error)) {
         return t('err.unimplemented');
       }
       if (error.code === 'http_404' || error.code === 'not_found') return t('err.notFound');

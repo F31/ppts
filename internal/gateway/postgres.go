@@ -231,6 +231,79 @@ func (s *PGStore) updateTx(ctx context.Context, gw *Gateway, enc []byte, version
 	return nil
 }
 
+// ChangeKind 把网关从 oldKind 迁移到 gw.Kind。主键含 kind，因此需在事务内插入新行、
+// 删除旧行；apiKey 为空时用旧 kind 的 AAD 解密后按新 kind 重新加密。
+func (s *PGStore) ChangeKind(ctx context.Context, gw *Gateway, oldKind Kind, apiKey string) error {
+	if oldKind == gw.Kind {
+		return s.Update(ctx, gw, apiKey)
+	}
+	var oldEnc []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT encrypted_creds FROM model_gateways WHERE tenant_id = $1 AND name = $2 AND kind = $3`,
+		gw.TenantID, gw.Name, string(oldKind)).Scan(&oldEnc); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	if apiKey == "" {
+		plain, err := decodeCreds(s.cipher, gw.TenantID, gw.Name, string(oldKind), oldEnc)
+		if err != nil {
+			return err
+		}
+		apiKey = plain
+	}
+	enc, err := encodeCreds(s.cipher, gw.TenantID, gw.Name, string(gw.Kind), apiKey)
+	if err != nil {
+		return err
+	}
+	version := gw.Version + 1
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var exists int
+	if err := tx.QueryRow(ctx,
+		`SELECT 1 FROM model_gateways WHERE tenant_id = $1 AND name = $2 AND kind = $3`,
+		gw.TenantID, gw.Name, string(gw.Kind)).Scan(&exists); err == nil {
+		return ErrExists
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	if gw.IsDefault {
+		if _, err := tx.Exec(ctx,
+			`UPDATE model_gateways SET is_default=false WHERE tenant_id=$1 AND kind=$2`,
+			gw.TenantID, string(gw.Kind)); err != nil {
+			return fmt.Errorf("gateway change kind: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO model_gateways
+			(tenant_id, name, kind, provider, base_url, encrypted_creds, model, vision_model, voice, sample_rate, is_default, enabled)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		gw.TenantID, gw.Name, string(gw.Kind), gw.Provider, gw.BaseURL, enc,
+		gw.Model, gw.VisionModel, gw.Voice, gw.SampleRate, gw.IsDefault, gw.Enabled); err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM model_gateways WHERE tenant_id=$1 AND name=$2 AND kind=$3`,
+		gw.TenantID, gw.Name, string(oldKind))
+	if err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("gateway change kind: %w", err)
+	}
+	gw.Version = version
+	s.Invalidate(gw.TenantID, oldKind)
+	s.Invalidate(gw.TenantID, gw.Kind)
+	return nil
+}
+
 func (s *PGStore) Delete(ctx context.Context, tenantID, name string, kind Kind) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM model_gateways WHERE tenant_id = $1 AND name = $2 AND kind = $3`,
 		tenantID, name, string(kind))

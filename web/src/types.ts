@@ -21,6 +21,13 @@ export type SubtitleCue = {
   startUs: number;
   endUs: number;
   text: string;
+  chars?: CharCue[];
+};
+
+export type CharCue = {
+  startUs: number;
+  endUs: number;
+  char: string;
 };
 
 export type Timeline = {

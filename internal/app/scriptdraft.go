@@ -46,6 +46,8 @@ type ScriptDraftHandler struct {
 	visionFor   func(ctx context.Context, tenantID string) (llm.VisionExtractor, error)
 }
 
+const maxScriptDraftRetryAttempts = 3
+
 // LLMTokenAccountant 是 script_draft 任务预占/结算 LLM token 额度所需的窄能力（G2-5）。
 type LLMTokenAccountant interface {
 	Reserve(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind, units float64) (*usage.Reservation, error)
@@ -144,6 +146,9 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 		source := snap.Sources[pg.SlideID]
 		custom := snap.CustomSources[pg.SlideID]
 		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom); err != nil {
+			if retry := pipeline.AsRetry(err); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
+				return retry.Err
+			}
 			return err
 		}
 	}
@@ -198,10 +203,13 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if slideID == "" {
 		return nil
 	}
-	if _, err := h.scripts.Get(ctx, tenantID, projectID, slideID, language); err == nil {
-		return nil // 已存在，不覆盖（含占位）。
-	} else if !errors.Is(err, narration.ErrNotFound) {
+	rev, err := h.scripts.Get(ctx, tenantID, projectID, slideID, language)
+	if err == nil && len(rev.Segments) > 0 {
+		return nil // 已存在实际分段，不覆盖用户稿。
+	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
 		return err
+	} else if err != nil {
+		rev = nil
 	}
 
 	text := pgText(pg, source, custom)
@@ -222,9 +230,11 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if err != nil {
 		return err
 	}
-	rev, err := h.scripts.EnsureExists(ctx, tenantID, projectID, slideID, language, mode)
-	if err != nil {
-		return fmt.Errorf("script_draft: ensure script: %w", err)
+	if rev == nil {
+		rev, err = h.scripts.EnsureExists(ctx, tenantID, projectID, slideID, language, mode)
+		if err != nil {
+			return fmt.Errorf("script_draft: ensure script: %w", err)
+		}
 	}
 	segment := &narration.Segment{
 		SegmentID:     fmt.Sprintf("seg-%02d", pg.Index+1),
@@ -375,6 +385,11 @@ func classifyLLMError(err error) error {
 	var retryable *llm.RetryableError
 	if !errors.As(err, &retryable) {
 		return err
+	}
+	// 429 速率限制（含免费用户配额耗尽）不可重试：重试只会继续 429，浪费 worker 资源。
+	var httpErr interface{ HTTPStatus() int }
+	if errors.As(retryable.Err, &httpErr) && httpErr.HTTPStatus() == 429 {
+		return retryable.Err // 不包装为 RetryError，pipeline 视为非可重试
 	}
 	retry := &pipeline.RetryError{Err: err}
 	if retryable.RetryAfter > 0 {

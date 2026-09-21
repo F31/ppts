@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -49,9 +50,18 @@ type scriptSourcePGStore struct {
 	pool *pgxpool.Pool
 }
 
+type scriptSourceSQLiteStore struct {
+	db *sql.DB
+}
+
 // NewScriptSourceStore 创建基于 pgxpool 的来源存储。
 func NewScriptSourceStore(pool *pgxpool.Pool) ScriptSourceStore {
 	return &scriptSourcePGStore{pool: pool}
+}
+
+// NewSQLiteScriptSourceStore 创建 SQLite 单租户部署使用的来源存储。
+func NewSQLiteScriptSourceStore(db *sql.DB) ScriptSourceStore {
+	return &scriptSourceSQLiteStore{db: db}
 }
 
 func (s *scriptSourcePGStore) Set(ctx context.Context, tenantID, projectID, slideID string, kind ScriptSourceKind, customText string) error {
@@ -77,6 +87,46 @@ func (s *scriptSourcePGStore) List(ctx context.Context, tenantID, projectID stri
 	rows, err := s.pool.Query(ctx, `
 		SELECT slide_id, source, custom_text FROM slide_script_sources
 		WHERE tenant_id = $1 AND project_id = $2
+	`, tenantID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ScriptSourceChoice{}
+	for rows.Next() {
+		var slideID, source, custom string
+		if err := rows.Scan(&slideID, &source, &custom); err != nil {
+			return nil, err
+		}
+		out[slideID] = ScriptSourceChoice{SlideID: slideID, Kind: ScriptSourceKind(source), CustomText: custom}
+	}
+	return out, rows.Err()
+}
+
+func (s *scriptSourceSQLiteStore) Set(ctx context.Context, tenantID, projectID, slideID string, kind ScriptSourceKind, customText string) error {
+	if tenantID == "" || projectID == "" || slideID == "" {
+		return errors.New("script_source: tenant/project/slide id required")
+	}
+	if !ValidScriptSourceKinds[kind] {
+		return errors.New("script_source: invalid kind")
+	}
+	if kind != ScriptSourceCustom {
+		customText = ""
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO slide_script_sources (tenant_id, project_id, slide_id, source, custom_text, updated_at)
+		VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		ON CONFLICT (tenant_id, project_id, slide_id)
+		DO UPDATE SET source = excluded.source, custom_text = excluded.custom_text,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+	`, tenantID, projectID, slideID, string(kind), customText)
+	return err
+}
+
+func (s *scriptSourceSQLiteStore) List(ctx context.Context, tenantID, projectID string) (map[string]ScriptSourceChoice, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT slide_id, source, custom_text FROM slide_script_sources
+		WHERE tenant_id = ? AND project_id = ?
 	`, tenantID, projectID)
 	if err != nil {
 		return nil, err

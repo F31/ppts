@@ -155,9 +155,8 @@ func (s *SQLiteStore) Update(ctx context.Context, tenantID, projectID, slideID, 
 	if err != nil {
 		return nil, err
 	}
-	if status == StatusLocked {
-		return nil, ErrLocked
-	}
+	// Editing creates a new draft, including for legacy locked scripts.
+	// Keep the revision check atomic so concurrent edits cannot overwrite content.
 	if revision != expected {
 		latest, lerr := s.sqRevisionTx(ctx, tx, scriptID)
 		if lerr != nil {
@@ -232,10 +231,13 @@ func (s *SQLiteStore) SetStatus(ctx context.Context, tenantID, projectID, slideI
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	if newStatus == StatusApproved {
+		allowFrom = StatusLocked
+	}
 	res, err := tx.ExecContext(ctx,
 		`UPDATE narration_scripts SET status = ?, updated_at = ?
-		 WHERE tenant_id = ? AND project_id = ? AND slide_id = ? AND language = ? AND status = ?`,
-		string(newStatus), db.Now(), tenantID, projectID, slideID, language, string(allowFrom))
+		 WHERE tenant_id = ? AND project_id = ? AND slide_id = ? AND language = ? AND status IN (?, ?)`,
+		string(newStatus), db.Now(), tenantID, projectID, slideID, language, string(allowFrom), string(StatusDraft))
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +246,7 @@ func (s *SQLiteStore) SetStatus(ctx context.Context, tenantID, projectID, slideI
 		if gerr != nil {
 			return nil, gerr
 		}
-		if cur.Status == StatusLocked {
+		if cur.Status == StatusLocked && newStatus != StatusApproved {
 			return nil, ErrLocked
 		}
 		return nil, errors.New("narration: status transition not allowed from " + string(cur.Status))
@@ -294,6 +296,9 @@ func (s *SQLiteStore) ListByProject(ctx context.Context, tenantID, projectID, la
 	for rows.Next() {
 		r, err := sqScanScript(rows)
 		if err != nil {
+			return nil, err
+		}
+		if _, err := s.sqWithSegments(ctx, s.db, r); err != nil {
 			return nil, err
 		}
 		revs = append(revs, r)

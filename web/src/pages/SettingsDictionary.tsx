@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createDictionary, deleteDictionary, listDictionaries, updateDictionary, type ClientIdentity } from '../api';
 import { useI18n } from '../i18n';
+import { useConfirmDialog } from '../components/ConfirmDialog';
 import type { PronunciationDictionary, PronunciationRule } from '../types';
 
 type EditorState = {
@@ -13,6 +14,8 @@ const emptyRule: PronunciationRule = { pattern: '', replacement: '', enabled: tr
 
 export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
   const { t } = useI18n();
+  const confirmDialog = useConfirmDialog();
+  const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [dictionaries, setDictionaries] = useState<PronunciationDictionary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -70,7 +73,8 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
   };
 
   const onDelete = async (dict: PronunciationDictionary) => {
-    if (!window.confirm(t('dict.deleteConfirm', { name: dict.name }))) return;
+    const ok = await confirmAsk({ kind: 'confirm', titleKey: 'dict.deleteTitle', messageKey: 'dict.deleteConfirm', messageValues: { name: dict.name }, confirmKey: 'common.delete', danger: true });
+    if (!ok) return;
     setError('');
     try {
       await deleteDictionary(identity, dict.id);
@@ -198,6 +202,7 @@ export function SettingsDictionary({ identity }: { identity: ClientIdentity }) {
           </table>
         )}
       </section>
+      {confirmDialogEl}
     </div>
   );
 }

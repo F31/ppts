@@ -95,9 +95,13 @@ func (*fakeProjectStore) GetSourceRevision(context.Context, string, string, int)
 func (*fakeProjectStore) ListSourceRevisions(context.Context, string, string) ([]*project.SourceRevision, error) {
 	return nil, nil
 }
-func (*fakeProjectStore) UpdateSourceRevisionPageCount(context.Context, string, string, int, int) error { return nil }
-func (*fakeProjectStore) DeleteSourceRevision(context.Context, string, string, int) error              { return nil }
-func (*fakeProjectStore) UpdateSourceRevisionDisplayName(context.Context, string, string, int, string) error { return nil }
+func (*fakeProjectStore) UpdateSourceRevisionPageCount(context.Context, string, string, int, int) error {
+	return nil
+}
+func (*fakeProjectStore) DeleteSourceRevision(context.Context, string, string, int) error { return nil }
+func (*fakeProjectStore) UpdateSourceRevisionDisplayName(context.Context, string, string, int, string) error {
+	return nil
+}
 
 // ---- #94 标签+分组体系：测试桩（未使用，返回零值以满足 project.Store 接口） ----
 func (*fakeProjectStore) ListTags(context.Context, string) ([]*project.Tag, error) {
@@ -434,7 +438,7 @@ func (s *fakeScriptStore) SetStatus(_ context.Context, tenantID, _, _, language 
 	if s.revision == nil {
 		return nil, narration.ErrNotFound
 	}
-	if s.revision.Status == narration.StatusLocked {
+	if s.revision.Status == narration.StatusLocked && status != narration.StatusApproved {
 		return nil, narration.ErrLocked
 	}
 	s.revision.Status = status
@@ -601,7 +605,7 @@ func TestScriptUpdateReturnsLatestOnConflict(t *testing.T) {
 	}
 }
 
-func TestScriptValidationAndIrreversibleLock(t *testing.T) {
+func TestScriptValidationAndUnlock(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
 	t.Cleanup(server.Close)
@@ -615,11 +619,15 @@ func TestScriptValidationAndIrreversibleLock(t *testing.T) {
 		t.Fatalf("duplicate segment code = %v, err=%v", connect.CodeOf(err), err)
 	}
 
-	_, err = client.Lock(context.Background(), authRequest(&pptsv1.LockScriptRequest{
+	store.revision.Status = narration.StatusLocked
+	resp, err := client.Lock(context.Background(), authRequest(&pptsv1.LockScriptRequest{
 		ProjectId: "project-1", SlideId: "slide-1", Lock: false,
 	}))
-	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("unlock code = %v, err=%v", connect.CodeOf(err), err)
+	if err != nil {
+		t.Fatalf("unlock: %v", err)
+	}
+	if resp.Msg.GetStatus() != "approved" {
+		t.Fatalf("unlock status = %q", resp.Msg.GetStatus())
 	}
 }
 

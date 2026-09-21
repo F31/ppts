@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -62,6 +63,23 @@ func (f *fakeGatewayStore) Update(_ context.Context, g *gateway.Gateway, _ strin
 	}
 	g.Version++
 	f.rows[key] = g
+	return nil
+}
+
+func (f *fakeGatewayStore) ChangeKind(_ context.Context, g *gateway.Gateway, oldKind gateway.Kind, _ string) error {
+	oldKey := gwKey(g.TenantID, g.Name, string(oldKind))
+	if _, ok := f.rows[oldKey]; !ok {
+		return gateway.ErrNotFound
+	}
+	newKey := gwKey(g.TenantID, g.Name, string(g.Kind))
+	if oldKey != newKey {
+		if _, ok := f.rows[newKey]; ok {
+			return gateway.ErrExists
+		}
+	}
+	g.Version++
+	delete(f.rows, oldKey)
+	f.rows[newKey] = g
 	return nil
 }
 
@@ -202,5 +220,37 @@ func TestGatewayUpdateMerges(t *testing.T) {
 	updated, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "q", gateway.KindLLM)
 	if updated.Model != "m2" || updated.BaseURL != "https://a" {
 		t.Fatalf("merge = %+v", updated)
+	}
+}
+
+func TestGatewayUpdateSwitchesKind(t *testing.T) {
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"tts","name":"svc","baseUrl":"https://a","apiKey":"k","model":"m","voice":"v1"}`)
+	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "svc", gateway.KindTTS)
+
+	rec := gwDo(t, h, "PUT", "/api/model-gateways/svc", `{"kind":"llm","originalKind":"tts","version":`+strconv.Itoa(g.Version)+`,"model":"m2","visionModel":"v2"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("switch kind code = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "svc", gateway.KindTTS); !errors.Is(err, gateway.ErrNotFound) {
+		t.Fatalf("old kind row should be gone, err=%v", err)
+	}
+	llm, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "svc", gateway.KindLLM)
+	if err != nil || llm.Model != "m2" {
+		t.Fatalf("llm after switch = %+v err=%v", llm, err)
+	}
+}
+
+func TestGatewayUpdateSwitchKindConflict(t *testing.T) {
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"tts","name":"dup","baseUrl":"https://a","apiKey":"k","model":"m"}`)
+	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"llm","name":"dup","baseUrl":"https://b","apiKey":"k","model":"m"}`)
+	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "dup", gateway.KindTTS)
+
+	rec := gwDo(t, h, "PUT", "/api/model-gateways/dup", `{"kind":"llm","originalKind":"tts","version":`+strconv.Itoa(g.Version)+`,"model":"m2"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("conflict code = %d want 409 body=%s", rec.Code, rec.Body.String())
 	}
 }

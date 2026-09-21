@@ -85,9 +85,16 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 	if _, err := s.SetStatus(ctx, tenant, project, slide, lang, StatusLocked); err != nil {
 		t.Fatalf("lock: %v", err)
 	}
-	// 锁定后不可更新
-	if _, err := s.Update(ctx, tenant, project, slide, lang, 1, segs); !errors.Is(err, ErrLocked) {
-		t.Fatalf("locked update should be ErrLocked, got %v", err)
+	// Legacy locks do not require a separate unlock before editing.
+	if _, err := s.Update(ctx, tenant, project, slide, lang, 0, segs); err == nil {
+		t.Fatal("locked script must still reject a stale revision")
+	}
+	edited, err := s.Update(ctx, tenant, project, slide, lang, 1, segs)
+	if err != nil || edited.Status != StatusDraft || edited.Revision != 2 {
+		t.Fatalf("direct edit of locked script: %+v, %v", edited, err)
+	}
+	if unlocked, err := s.SetStatus(ctx, tenant, project, slide, lang, StatusApproved); err != nil || unlocked.Status != StatusApproved {
+		t.Fatalf("unlock = %+v, %v", unlocked, err)
 	}
 
 	// CountDraftSegments（已锁定稿分段状态仍为 draft：整页替换时写入 draft）
@@ -101,7 +108,10 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 		t.Fatalf("mark audio: %v", err)
 	}
 	list, err := s.ListByProject(ctx, tenant, project, lang)
-	if err != nil || len(list) != 1 || list[0].AudioRevision != 1 {
+	if err != nil || len(list) != 1 || list[0].AudioRevision != 1 || len(list[0].Segments) != 1 {
 		t.Fatalf("list by project: err=%v list=%+v", err, list)
+	}
+	if list[0].AudioRevision >= list[0].Revision {
+		t.Fatal("editing must leave the previous audio marked stale")
 	}
 }

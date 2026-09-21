@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"time"
 
@@ -11,9 +12,13 @@ import (
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/gateway"
+	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/project"
 )
 
 const defaultLanguage = "zh-CN"
@@ -30,6 +35,105 @@ type ScriptService struct {
 // NewScriptService creates a ScriptService. srcStore 承载"无备注页讲稿来源"选择（M3 ⑥），可为 nil（不注入来源）。
 func NewScriptService(store narration.Store, jobs JobCreator, members membership.Reader, srcStore app.ScriptSourceStore) *ScriptService {
 	return &ScriptService{store: store, jobs: jobs, members: members, srcStore: srcStore}
+}
+
+// registerScriptRoutes 提供不经 proto 的项目级讲稿列表。编辑器进入页面时只需要“已有讲稿”，
+// 若逐页调用 ScriptService.Get，未生成页会产生大量 404。列表接口直接返回已存在 revisions。
+func registerScriptRoutes(mux *http.ServeMux, scripts narration.Store, members membership.Reader, projects project.ProjectStore, recorder audit.Recorder, gateways gateway.StoreResolver, auth func(http.Handler) http.Handler) {
+	providers := gateway.NewProviderCache()
+	mux.Handle("GET /projects/{pid}/scripts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, err := requirePrincipal(r.Context())
+		if err != nil {
+			writeConnectError(w, err)
+			return
+		}
+		if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+			return
+		}
+		revs, err := scripts.ListByProject(r.Context(), principal.TenantID, r.PathValue("pid"), requestLanguage(r.Header))
+		if err != nil {
+			writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+			return
+		}
+		out := make([]map[string]any, 0, len(revs))
+		for _, rev := range revs {
+			out = append(out, scriptRevisionJSON(rev))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"scripts": out})
+	})))
+	mux.Handle("POST /projects/{pid}/scripts/rewrite", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		principal, err := requirePrincipal(r.Context())
+		if err != nil {
+			writeConnectError(w, err)
+			return
+		}
+		if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+			return
+		}
+		if gateways == nil {
+			writeConnectError(w, connect.NewError(connect.CodeFailedPrecondition, errors.New("LLM gateway is not configured")))
+			return
+		}
+		var body struct {
+			SlideID string `json:"slideId"`
+			Text    string `json:"text"`
+			Action  string `json:"action"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
+			return
+		}
+		body.Text = strings.TrimSpace(body.Text)
+		if body.Text == "" {
+			writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("text is required")))
+			return
+		}
+		instructions := rewriteInstructions(body.Action)
+		if instructions == "" {
+			writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("unsupported rewrite action")))
+			return
+		}
+		cfg, err := gateways.Resolve(r.Context(), principal.TenantID, gateway.KindLLM)
+		if err != nil {
+			writeConnectError(w, connect.NewError(connect.CodeFailedPrecondition, err))
+			return
+		}
+		provider, err := providers.LLM(cfg)
+		if err != nil {
+			writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		result, err := provider.Rewrite(ctx, llm.RewriteRequest{
+			LogicalOpID:  principal.TenantID + ":" + r.PathValue("pid") + ":" + body.SlideID + ":rewrite:" + body.Action,
+			Mode:         "polish",
+			Language:     requestLanguage(r.Header),
+			SourceText:   body.Text,
+			Instructions: instructions,
+		})
+		if err != nil {
+			writeConnectError(w, connect.NewError(connect.CodeUnavailable, err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(result.Text)})
+	})))
+}
+
+func rewriteInstructions(action string) string {
+	suffix := "必须逐字保留所有数字、单位、日期、型号、专有名词和事实，不新增原文没有的信息。只输出改写后的正文。"
+	switch action {
+	case "shorten":
+		return "请将原文压缩为更短、更适合口播的讲稿，保留关键结论和必要数据，减少重复解释。" + suffix
+	case "polish":
+		return "请润色原文，使其更自然、流畅、适合 PPT 演示口播。" + suffix
+	case "transition":
+		return "请为原文补充自然的前后衔接表达，使其更适合从上一页过渡到本页讲解。" + suffix
+	case "ai_generated":
+		return "基于原文生成一段更完整、自然、适合客户演示的讲解稿；可以补足衔接和解释，但不得引入原文没有支持的事实。" + suffix
+	default:
+		return ""
+	}
 }
 
 func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.GetScriptRequest]) (*connect.Response[pptsv1.ScriptRevision], error) {
@@ -102,10 +206,11 @@ func (s *ScriptService) Lock(ctx context.Context, req *connect.Request[pptsv1.Lo
 	if err := requireProjectSlide(req.Msg.GetProjectId(), req.Msg.GetSlideId()); err != nil {
 		return nil, err
 	}
+	status := narration.StatusLocked
 	if !req.Msg.GetLock() {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("locked scripts cannot be unlocked"))
+		status = narration.StatusApproved
 	}
-	rev, err := s.store.SetStatus(ctx, p.TenantID, req.Msg.GetProjectId(), req.Msg.GetSlideId(), requestLanguage(req.Header()), narration.StatusLocked)
+	rev, err := s.store.SetStatus(ctx, p.TenantID, req.Msg.GetProjectId(), req.Msg.GetSlideId(), requestLanguage(req.Header()), status)
 	if err != nil {
 		return nil, scriptError(err)
 	}
@@ -260,6 +365,37 @@ func toProtoRevision(rev *narration.Revision) *pptsv1.ScriptRevision {
 		Status:        string(rev.Status),
 		Segments:      segments,
 		UpdatedAtUnix: rev.UpdatedAt.Unix(),
+	}
+}
+
+func scriptRevisionJSON(rev *narration.Revision) map[string]any {
+	segments := make([]map[string]any, 0, len(rev.Segments))
+	for _, segment := range rev.Segments {
+		anchors := make([]map[string]any, 0, len(segment.SourceAnchors))
+		for _, anchor := range segment.SourceAnchors {
+			anchors = append(anchors, map[string]any{
+				"slideId": anchor.SlideID, "shapeId": anchor.ShapeID, "kind": anchor.Kind,
+				"raw": anchor.Raw, "confidence": anchor.Confidence,
+			})
+		}
+		segments = append(segments, map[string]any{
+			"segmentId":     segment.SegmentID,
+			"slideId":       rev.SlideID,
+			"displayText":   segment.DisplayText,
+			"spokenText":    segment.SpokenText,
+			"sourceRefs":    append([]string(nil), segment.SourceRefs...),
+			"sourceAnchors": anchors,
+			"status":        string(segment.Status),
+		})
+	}
+	return map[string]any{
+		"projectId": rev.ProjectID,
+		"slideId":   rev.SlideID,
+		"language":  rev.Language,
+		"mode":      toProtoMode(rev.Mode).String(),
+		"revision":  rev.Revision,
+		"status":    string(rev.Status),
+		"segments":  segments,
 	}
 }
 

@@ -81,7 +81,7 @@ type Store interface {
 	Get(ctx context.Context, tenantID, projectID, slideID, language string) (*Revision, error)
 	// Update 以 expected_revision 乐观并发更新内容；冲突返回 ErrConflict。
 	Update(ctx context.Context, tenantID, projectID, slideID, language string, expected int64, segments []*Segment) (*Revision, error)
-	// SetStatus 审批/锁定（仅 draft→approved→locked 单向；锁定后拒绝回退到 draft）。
+	// SetStatus 审批/锁定（draft→approved→locked；locked 可回到 approved 以重新编辑）。
 	SetStatus(ctx context.Context, tenantID, projectID, slideID, language string, newStatus ScriptStatus) (*Revision, error)
 	// EnsureExists 在编辑前创建草稿占位（幂等）。
 	EnsureExists(ctx context.Context, tenantID, projectID, slideID, language string, mode ScriptMode) (*Revision, error)
