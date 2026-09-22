@@ -656,12 +656,34 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 页面内容/页面级来源/自定义文本优先于沿用旧稿；指令用例用 `deny` 断言"给页面文字时指令里不得出现『当前讲稿』"）✅；
 `tsc -b` ✅ + `vite build` ✅（本次为纯后端改动，CSS 81.59 kB 未变）。
 
+**修复（M4，同日续作）：原生端点入参校验与语义收敛**
+
+- **问题**：`POST /projects/{pid}/script-draft` 此前对 `mode` / `sourceMode` / `slideIds` **一律不校验**，
+  无法识别的取值静默回退——`mode` 拼错会静默变成 `original`（**不调 LLM、直接拿备注原文当稿**，
+  而用户以为走了 AI 生成）；`sourceMode` 非法值静默走 `default` 分支（退回页面级「无备注页来源」，
+  "来源=页面内容"变成别的含义）；`slideIds` 为空会建出一个 **0 页任务**，最后照样报"成稿完成"。
+  静默回退让「用户选的」与「实际用的」不一致，且界面上看不出来。
+- **修复**：新增纯函数 `parseScriptDraftParams(body, headerLanguage)`（`internal/api/editor.go`）——
+  入参校验与归一化只此一处，**非法即 400 `invalid_argument`**：
+  `mode` 白名单（空 / `SCRIPT_MODE_UNSPECIFIED` → original，另接受 proto 名与领域名）、
+  `sourceMode` 白名单（`""` / `notes_first` / `notes_only` / `page_content`）、
+  `slideIds` 去空白去重后不得为空、`targetSeconds` 不得为负；`overwrite` 缺省 `true`。
+  请求体结构体提为具名类型 `scriptDraftBody`；`scriptModeFromString` 改为返回 `(mode, ok)`，不再吞掉非法值。
+- **语义收敛（写进端点注释，消除歧义）**：`sourceMode` 为空时**才**采用页面级 `Sources`；
+  显式给了 `sourceMode` 时页面级选择被它覆盖（既定语义，不是回退）；`overwrite=false` = 只填空白页。
+  错误信息经 `postJSON` 原样透传到前端，成稿面板会显示原因（不静默）。
+- **测试**：新增 `internal/api/editor_test.go` **5 例**（无 DB/网络/外部工具，任何机器可跑）——
+  proto 名与领域名双向接受、非法 `mode`/`sourceMode`/空 `slideIds`/负 `targetSeconds` 必须报错
+  （含守门人用例「未知 mode 不得静默降级为原文」）、`slideIds` 去重保序、语言回落与 `overwrite` 缺省、
+  白名单项数与 `app.pgInputForMode` 支持集合一致（防新增来源漏登记）。
+- **验证**：`gofmt` 清白；`go build ./...` + `go vet ./internal/api/...` + `go test ./internal/...` 全绿
+  （0 FAIL；16 项 SKIP 均环境依赖型，`internal/api` **0 SKIP**）；`tsc -b` ✅ + `vite build` ✅。
+
 **遗留（未在本次范围）**：
 - **降级落库不可见（M3 续作时发现，需 schema 变更）**：数字/单位/型号校验两次不过时 `draftText` 会 `return source` ——
   把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，而调用方只看到"成功"。`job_steps.state` 受
   `CHECK (state IN ('pending','success','skipped','failed'))` 约束、无 `degraded` 取值，界面无法区分"降级落库"与"正常生成"；
   修好需加状态取值（迁移）或给步骤加注记列。**M1 修复后该路径触发概率上升**（输入从稀疏备注变成数字密集的页面文字）。
-- 原生端点不校验 `sourceMode` 白名单，非法值静默走 `default` 分支（M4）。
 - `web/src/api.ts` 的 `generateDraft` 为死导出且未设 `RevisionNo/SourceMode`，会回退 revision 1（M6）。
 
 ### B5 可选增强（独立立项，2026-09-16 范围裁定）

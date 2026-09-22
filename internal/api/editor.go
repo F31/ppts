@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -275,8 +276,15 @@ func parseVoiceList(body []byte, model string) []string {
 	return out
 }
 
-// editorRegenerateScriptDraft 以 overwrite=true 入队 script_draft 任务：覆盖已有讲稿。
-// body: {slideIds: string[], mode: "SCRIPT_MODE_ORIGINAL|SCRIPT_MODE_POLISH|SCRIPT_MODE_AI_GENERATED"}。
+// editorRegenerateScriptDraft 入队 script_draft 任务（单页「重新生成讲稿」与「一键成稿」共用）。
+// body: {slideIds: string[], mode, language?, sourceMode?, audience?, style?, targetSeconds?, overwrite?}。
+//
+// 语义（M4 收敛，参数校验见 parseScriptDraftParams）：
+//   - overwrite 缺省 true；false = 只填空白页（已有讲稿的页会被跳过并计入 job_steps）。
+//   - sourceMode ∈ {"", notes_first, notes_only, page_content}；**空串时**才采用页面级
+//     「无备注页讲稿来源」选择（srcStore），显式给了 sourceMode 时页面级选择被覆盖。
+//   - mode 缺省 original；original 不调 LLM（直接取素材原文），其余才走模型。
+//   - 非法 mode / sourceMode / 空 slideIds / 负 targetSeconds 一律 400，不静默回退。
 func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs JobStore, srcStore app.ScriptSourceStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
@@ -291,33 +299,20 @@ func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs Jo
 	if !ok {
 		return
 	}
-	var body struct {
-		SlideIDs      []string `json:"slideIds"`
-		Mode          string   `json:"mode"`
-		Language      string   `json:"language"`
-		SourceMode    string   `json:"sourceMode"`
-		Audience      string   `json:"audience"`
-		Style         string   `json:"style"`
-		TargetSeconds int      `json:"targetSeconds"`
-		Overwrite     *bool    `json:"overwrite"`
-	}
+	var body scriptDraftBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_argument", "message": "invalid JSON body"})
 		return
 	}
-	mode := scriptModeFromString(body.Mode)
-	language := strings.TrimSpace(body.Language)
-	if language == "" {
-		language = requestLanguage(r.Header)
-	}
-	overwrite := true
-	if body.Overwrite != nil {
-		overwrite = *body.Overwrite
+	params, err := parseScriptDraftParams(body, requestLanguage(r.Header))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_argument", "message": err.Error()})
+		return
 	}
 	snap := app.ScriptDraftSnapshot{
-		ProjectID: projectID, Language: language, Mode: string(mode), SourceMode: strings.TrimSpace(body.SourceMode),
-		Audience: strings.TrimSpace(body.Audience), Style: strings.TrimSpace(body.Style), TargetSeconds: body.TargetSeconds,
-		Overwrite: overwrite,
+		ProjectID: projectID, Language: params.Language, Mode: string(params.Mode), SourceMode: params.SourceMode,
+		Audience: params.Audience, Style: params.Style, TargetSeconds: params.TargetSeconds,
+		Overwrite: params.Overwrite, SlideIDs: params.SlideIDs,
 	}
 	// 解析脚本必须基于项目当前版本：worker 在 RevisionNo=0 时会回退到首个版本，
 	// 而旧版本可能页数不足/没有备注，导致"有备注的页没有讲稿"。此处显式绑定当前版本。
@@ -340,6 +335,91 @@ func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs Jo
 			snap.CustomSources = customs
 		}
 	}
+	snapBytes, err := json.Marshal(snap)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if idem == "" {
+		idem = "regen-script:" + projectID + ":" + string(params.Mode) + ":" + strings.Join(snap.SlideIDs, ",") + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	job, err := jobs.Create(r.Context(), principal.TenantID, projectID, string(pipeline.KindScriptDraft), idem, string(snapBytes), time.Time{})
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"jobId": job.ID})
+}
+
+// scriptDraftBody 是 POST /projects/{pid}/script-draft 的请求体。
+type scriptDraftBody struct {
+	SlideIDs      []string `json:"slideIds"`
+	Mode          string   `json:"mode"`
+	Language      string   `json:"language"`
+	SourceMode    string   `json:"sourceMode"`
+	Audience      string   `json:"audience"`
+	Style         string   `json:"style"`
+	TargetSeconds int      `json:"targetSeconds"`
+	Overwrite     *bool    `json:"overwrite"`
+}
+
+// scriptDraftParams 是校验并归一化后的入参（不含需要查库的 ProjectID/RevisionNo/Sources）。
+type scriptDraftParams struct {
+	SlideIDs      []string
+	Mode          narration.ScriptMode
+	Language      string
+	SourceMode    string
+	Audience      string
+	Style         string
+	TargetSeconds int
+	Overwrite     bool
+}
+
+// scriptSourceModes 是批量成稿来源的白名单。
+// 空串 = 未指定：**只有此时页面级 Sources（"无备注页讲稿来源"）才会生效**；
+// 一旦显式给了批量来源，页面级选择就被它覆盖 —— 这是既定语义，不是回退。
+var scriptSourceModes = map[string]struct{}{
+	"":             {},
+	"notes_first":  {},
+	"notes_only":   {},
+	"page_content": {},
+}
+
+// parseScriptDraftParams 校验并归一化「重新生成讲稿」的入参；error 非 nil = 应答 400 invalid_argument。
+//
+// 这里刻意**拒绝**而不是静默回退，因为静默回退会让「用户选的」与「实际用的」不一致且界面上看不出来：
+//   - mode 无法识别时曾静默变成 original，即「不调 LLM、直接拿备注原文当稿」，而用户以为走了 AI 生成；
+//   - sourceMode 非法值曾静默走 default 分支（退回页面级 Sources），"来源=页面内容"变成别的含义；
+//   - slideIds 为空曾建出一个 0 页任务，最后照样报"成稿完成"。
+//
+// 纯函数（只依赖入参），因此任何机器上都能单测（见 editor_test.go）。
+func parseScriptDraftParams(body scriptDraftBody, headerLanguage string) (scriptDraftParams, error) {
+	out := scriptDraftParams{
+		Language:      strings.TrimSpace(body.Language),
+		SourceMode:    strings.TrimSpace(body.SourceMode),
+		Audience:      strings.TrimSpace(body.Audience),
+		Style:         strings.TrimSpace(body.Style),
+		TargetSeconds: body.TargetSeconds,
+		Overwrite:     true,
+	}
+	if out.Language == "" {
+		out.Language = strings.TrimSpace(headerLanguage)
+	}
+	if body.Overwrite != nil {
+		out.Overwrite = *body.Overwrite
+	}
+	mode, ok := scriptModeFromString(body.Mode)
+	if !ok {
+		return scriptDraftParams{}, fmt.Errorf("unknown mode %q", strings.TrimSpace(body.Mode))
+	}
+	out.Mode = mode
+	if _, ok := scriptSourceModes[out.SourceMode]; !ok {
+		return scriptDraftParams{}, fmt.Errorf("unknown sourceMode %q", out.SourceMode)
+	}
+	if out.TargetSeconds < 0 {
+		return scriptDraftParams{}, errors.New("targetSeconds must not be negative")
+	}
 	seen := make(map[string]struct{}, len(body.SlideIDs))
 	for _, raw := range body.SlideIDs {
 		id := strings.TrimSpace(raw)
@@ -350,34 +430,26 @@ func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs Jo
 			continue
 		}
 		seen[id] = struct{}{}
-		snap.SlideIDs = append(snap.SlideIDs, id)
+		out.SlideIDs = append(out.SlideIDs, id)
 	}
-	snapBytes, err := json.Marshal(snap)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	if len(out.SlideIDs) == 0 {
+		return scriptDraftParams{}, errors.New("slideIds must not be empty")
 	}
-	idem := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
-	if idem == "" {
-		idem = "regen-script:" + projectID + ":" + string(mode) + ":" + strings.Join(snap.SlideIDs, ",") + ":" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	}
-	job, err := jobs.Create(r.Context(), principal.TenantID, projectID, string(pipeline.KindScriptDraft), idem, string(snapBytes), time.Time{})
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"jobId": job.ID})
+	return out, nil
 }
 
 // scriptModeFromString 兼容 proto 枚举名与领域字符串（original/polish/ai_generated）。
-func scriptModeFromString(raw string) narration.ScriptMode {
+// 空串与 SCRIPT_MODE_UNSPECIFIED 都表示「未指定」，按 original 处理；其余无法识别的取值返回 ok=false。
+func scriptModeFromString(raw string) (narration.ScriptMode, bool) {
 	switch strings.TrimSpace(raw) {
+	case "", "SCRIPT_MODE_UNSPECIFIED", "SCRIPT_MODE_ORIGINAL", string(narration.ModeOriginal):
+		return narration.ModeOriginal, true
 	case "SCRIPT_MODE_POLISH", string(narration.ModePolish):
-		return narration.ModePolish
+		return narration.ModePolish, true
 	case "SCRIPT_MODE_AI_GENERATED", string(narration.ModeAIGenerated):
-		return narration.ModeAIGenerated
+		return narration.ModeAIGenerated, true
 	default:
-		return narration.ModeOriginal
+		return narration.ModeOriginal, false
 	}
 }
 
