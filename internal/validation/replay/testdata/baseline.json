@@ -1,6 +1,7 @@
 {
   "note": "逐条审阅后的判定基线；判定改变必须显式更新并说明原因",
   "verdicts": {
+    "auth-chinese-numeral-known-gap": "block",
     "auth-date-changed-day": "block",
     "auth-date-eq-spaced": "pass",
     "auth-fullwidth-eq": "pass",

@@ -178,5 +178,14 @@
     "tag": "measure",
     "provenance": "authored",
     "note": "目标省略量词：任一侧缺量词视为兼容（避免新增误杀）"
+  },
+  {
+    "id": "auth-chinese-numeral-known-gap",
+    "source": "共 3 个要点",
+    "target": "共三个要点。",
+    "want": "pass",
+    "tag": "chinese-numeral",
+    "provenance": "authored",
+    "note": "已知缺口（用户裁定暂不做）：中文数字未解析，故此处必然被判违规＝误杀。实现中文数字解析后本用例应翻为 pass 并更新基线——这条用例的意义就是把缺口挂在门禁上（改动会立刻显形），而不是只写在文档里。"
   }
 ]
