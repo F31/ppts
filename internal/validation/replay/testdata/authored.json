@@ -1,0 +1,146 @@
+[
+  {
+    "id": "auth-date-eq-spaced",
+    "source": "2026-09-13 正式发布",
+    "target": "2026 年 9 月 13 日正式发布。",
+    "want": "pass",
+    "tag": "date",
+    "provenance": "authored",
+    "note": "日期等价写法：短横线 ↔ 年月日（M11 的空白容差）"
+  },
+  {
+    "id": "auth-date-changed-day",
+    "source": "2026-09-13 正式发布",
+    "target": "2026 年 9 月 14 日正式发布。",
+    "want": "block",
+    "tag": "date",
+    "provenance": "authored",
+    "note": "日期被改：日 13 → 14，必须拦"
+  },
+  {
+    "id": "auth-unit-ms-zh",
+    "source": "端到端延迟 12ms",
+    "target": "端到端延迟 12 毫秒。",
+    "want": "pass",
+    "tag": "unit",
+    "provenance": "authored",
+    "note": "单位等价：ms ↔ 毫秒"
+  },
+  {
+    "id": "auth-unit-min-zh",
+    "source": "单页合成耗时 5 min",
+    "target": "单页合成耗时 5 分钟。",
+    "want": "pass",
+    "tag": "unit",
+    "provenance": "authored",
+    "note": "单位等价：min ↔ 分钟"
+  },
+  {
+    "id": "auth-unit-hz-zh",
+    "source": "刷新率 60hz",
+    "target": "刷新率 60 赫兹。",
+    "want": "pass",
+    "tag": "unit",
+    "provenance": "authored",
+    "note": "单位等价：hz ↔ 赫兹"
+  },
+  {
+    "id": "auth-unit-changed",
+    "source": "端到端延迟 12ms",
+    "target": "端到端延迟 12 秒。",
+    "want": "block",
+    "tag": "unit",
+    "provenance": "authored",
+    "note": "单位被换：ms → 秒（数量相同但量纲被改，必须拦）"
+  },
+  {
+    "id": "auth-thousands-eq",
+    "source": "预算 1,000 万元",
+    "target": "预算 1000 万元。",
+    "want": "pass",
+    "tag": "thousands",
+    "provenance": "authored",
+    "note": "千分位与不写千分位等价"
+  },
+  {
+    "id": "auth-fullwidth-eq",
+    "source": "单卡显存 ９６GB",
+    "target": "单卡显存 96GB。",
+    "want": "pass",
+    "tag": "fullwidth",
+    "provenance": "authored",
+    "note": "全角数字与半角等价"
+  },
+  {
+    "id": "auth-trailing-zero-eq",
+    "source": "接口版本 3.0",
+    "target": "接口版本 3。",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "authored",
+    "note": "小数尾随零可省（3.0 ↔ 3）"
+  },
+  {
+    "id": "auth-memory-changed",
+    "source": "单卡显存 96GB",
+    "target": "单卡显存 48GB。",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "authored",
+    "note": "数量被改：96GB → 48GB（M11 的关键守门用例）"
+  },
+  {
+    "id": "auth-memory-dropped",
+    "source": "单卡显存 96GB",
+    "target": "单卡显存容量很大。",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "authored",
+    "note": "数量被删：换成模糊表述（最典型的隐性失真）"
+  },
+  {
+    "id": "auth-model-kept",
+    "source": "H20 与 RTX6000D 对比",
+    "target": "本页对比了 H20 和 RTX6000D。",
+    "want": "pass",
+    "tag": "model",
+    "provenance": "authored",
+    "note": "型号如实保留（未被改写、未展开）"
+  },
+  {
+    "id": "auth-model-changed",
+    "source": "H20 与 RTX6000D 对比",
+    "target": "H20 与 A100 对比。",
+    "want": "block",
+    "tag": "model",
+    "provenance": "authored",
+    "note": "型号被换：RTX6000D → A100，必须拦"
+  },
+  {
+    "id": "auth-model-alias-eq",
+    "source": "k8s 集群规模",
+    "target": "Kubernetes 集群规模。",
+    "want": "pass",
+    "tag": "model",
+    "provenance": "authored",
+    "note": "已登记等价：k8s ↔ Kubernetes（唯一被证实的领域缩写对）"
+  },
+  {
+    "id": "auth-number-inserted-numbering",
+    "source": "这是本页的重点内容",
+    "target": "第 2 步，这是本页的重点内容。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "authored",
+    "note": "原文无数字时模型自行编号（用户裁定不豁免）"
+  },
+  {
+    "id": "auth-number-changed-count",
+    "source": "共 3 个页面需要重生成语音",
+    "target": "共 4 个页面需要重生成语音。",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "authored",
+    "note": "计数被改：3 → 4"
+  }
+]

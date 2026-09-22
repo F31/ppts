@@ -1,0 +1,542 @@
+[
+  {
+    "id": "gen-s100-p0-multiplier-fold",
+    "source": "single text page — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "single text page — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s100-p0-trailing-zero",
+    "source": "single text page — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "single text page — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s101-p0-multiplier-fold",
+    "source": "two pages with notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s101-p0-trailing-zero",
+    "source": "two pages with notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s102-p0-multiplier-fold",
+    "source": "three pages plain text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s102-p0-trailing-zero",
+    "source": "three pages plain text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s103-p0-multiplier-fold",
+    "source": "four pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s103-p0-trailing-zero",
+    "source": "four pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s104-p0-multiplier-fold",
+    "source": "five pages, no notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "five pages, no notes — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s104-p0-trailing-zero",
+    "source": "five pages, no notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "five pages, no notes — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s105-p0-multiplier-fold",
+    "source": "three pages with notes only second — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages with notes only second — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s105-p0-trailing-zero",
+    "source": "three pages with notes only second — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages with notes only second — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s106-p0-multiplier-fold",
+    "source": "eight pages marker text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "eight pages marker text — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s106-p0-trailing-zero",
+    "source": "eight pages marker text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "eight pages marker text — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s107-p0-multiplier-fold",
+    "source": "two pages english+chinese — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages english+chinese — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s107-p0-trailing-zero",
+    "source": "two pages english+chinese — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages english+chinese — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s108-p0-multiplier-fold",
+    "source": "ten pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "ten pages mixed notes — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s108-p0-trailing-zero",
+    "source": "ten pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "ten pages mixed notes — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s109-p0-multiplier-fold",
+    "source": "twelve pages tables entities — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "twelve pages tables entities — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s109-p0-trailing-zero",
+    "source": "twelve pages tables entities — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "twelve pages tables entities — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s110-p0-multiplier-fold",
+    "source": "fifteen pages notes entities — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "fifteen pages notes entities — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s110-p0-trailing-zero",
+    "source": "fifteen pages notes entities — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "fifteen pages notes entities — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "gen-s111-p0-multiplier-fold",
+    "source": "twenty pages long deck — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "twenty pages long deck — page 1：PCIe 5.0 16 / 64 GB",
+    "want": "pass",
+    "tag": "multiplier-fold",
+    "provenance": "generated",
+    "note": "等价改写：multiplier-fold"
+  },
+  {
+    "id": "gen-s111-p0-trailing-zero",
+    "source": "twenty pages long deck — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "twenty pages long deck — page 1：PCIe 5 x16 / 64 GB",
+    "want": "pass",
+    "tag": "trailing-zero",
+    "provenance": "generated",
+    "note": "等价改写：trailing-zero"
+  },
+  {
+    "id": "mut-s001-p0-number-changed",
+    "source": "Quarterly Report\nREPORT_BODY placeholder for ReplaceText gold action.\n季度汇总保持不变，用于确认未触碰段落。\nEmoji and symbols: GPU → HBM, 50% \u0026 100%.",
+    "target": "Quarterly Report\nREPORT_BODY placeholder for ReplaceText gold action.\n季度汇总保持不变，用于确认未触碰段落。\nEmoji and symbols: GPU → HBM, 57% \u0026 100%.",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s001-p0-number-dropped",
+    "source": "Quarterly Report\nREPORT_BODY placeholder for ReplaceText gold action.\n季度汇总保持不变，用于确认未触碰段落。\nEmoji and symbols: GPU → HBM, 50% \u0026 100%.",
+    "target": "Quarterly Report\nREPORT_BODY placeholder for ReplaceText gold action.\n季度汇总保持不变，用于确认未触碰段落。\nEmoji and symbols: GPU → HBM, 若干% \u0026 100%.",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s001-p0-number-inserted",
+    "source": "Quarterly Report\nREPORT_BODY placeholder for ReplaceText gold action.\n季度汇总保持不变，用于确认未触碰段落。\nEmoji and symbols: GPU → HBM, 50% \u0026 100%.",
+    "target": "Quarterly Report\nREPORT_BODY placeholder for ReplaceText gold action.\n季度汇总保持不变，用于确认未触碰段落。\nEmoji and symbols: GPU → HBM, 50% \u0026 100%.\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s002-p0-number-changed",
+    "source": "GPU Specification Matrix\n型号\t显存\t功耗\t备注\nH20\t96GB\t400W\t推理\nRTX6000D\t96GB\t300W\t工作站\n910B4\t64GB\t350W\t国产算力",
+    "target": "GPU Specification Matrix\n型号\t显存\t功耗\t备注\nH27\t96GB\t400W\t推理\nRTX6000D\t96GB\t300W\t工作站\n910B4\t64GB\t350W\t国产算力",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s002-p0-number-dropped",
+    "source": "GPU Specification Matrix\n型号\t显存\t功耗\t备注\nH20\t96GB\t400W\t推理\nRTX6000D\t96GB\t300W\t工作站\n910B4\t64GB\t350W\t国产算力",
+    "target": "GPU Specification Matrix\n型号\t显存\t功耗\t备注\nH若干\t96GB\t400W\t推理\nRTX6000D\t96GB\t300W\t工作站\n910B4\t64GB\t350W\t国产算力",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s002-p0-number-inserted",
+    "source": "GPU Specification Matrix\n型号\t显存\t功耗\t备注\nH20\t96GB\t400W\t推理\nRTX6000D\t96GB\t300W\t工作站\n910B4\t64GB\t350W\t国产算力",
+    "target": "GPU Specification Matrix\n型号\t显存\t功耗\t备注\nH20\t96GB\t400W\t推理\nRTX6000D\t96GB\t300W\t工作站\n910B4\t64GB\t350W\t国产算力\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s100-p0-number-changed",
+    "source": "single text page — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "single text page — page 8：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s100-p0-number-dropped",
+    "source": "single text page — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "single text page — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s100-p0-number-inserted",
+    "source": "single text page — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "single text page — page 1：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s101-p0-number-changed",
+    "source": "two pages with notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 8：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s101-p0-number-dropped",
+    "source": "two pages with notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s101-p0-number-inserted",
+    "source": "two pages with notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 1：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s101-p1-number-changed",
+    "source": "two pages with notes — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 9：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s101-p1-number-dropped",
+    "source": "two pages with notes — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s101-p1-number-inserted",
+    "source": "two pages with notes — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "two pages with notes — page 2：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s102-p0-number-changed",
+    "source": "three pages plain text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 8：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s102-p0-number-dropped",
+    "source": "three pages plain text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s102-p0-number-inserted",
+    "source": "three pages plain text — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 1：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s102-p1-number-changed",
+    "source": "three pages plain text — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 9：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s102-p1-number-dropped",
+    "source": "three pages plain text — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s102-p1-number-inserted",
+    "source": "three pages plain text — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 2：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s102-p2-number-changed",
+    "source": "three pages plain text — page 3：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 10：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s102-p2-number-dropped",
+    "source": "three pages plain text — page 3：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s102-p2-number-inserted",
+    "source": "three pages plain text — page 3：PCIe 5.0 x16 / 64 GB",
+    "target": "three pages plain text — page 3：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s103-p0-number-changed",
+    "source": "four pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 8：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s103-p0-number-dropped",
+    "source": "four pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s103-p0-number-inserted",
+    "source": "four pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 1：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s103-p1-number-changed",
+    "source": "four pages mixed notes — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 9：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s103-p1-number-dropped",
+    "source": "four pages mixed notes — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s103-p1-number-inserted",
+    "source": "four pages mixed notes — page 2：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 2：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s103-p2-number-changed",
+    "source": "four pages mixed notes — page 3：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 10：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s103-p2-number-dropped",
+    "source": "four pages mixed notes — page 3：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s103-p2-number-inserted",
+    "source": "four pages mixed notes — page 3：PCIe 5.0 x16 / 64 GB",
+    "target": "four pages mixed notes — page 3：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  },
+  {
+    "id": "mut-s104-p0-number-changed",
+    "source": "five pages, no notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "five pages, no notes — page 8：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-changed",
+    "provenance": "generated",
+    "note": "数字被改：真实数值换成源文不存在的值"
+  },
+  {
+    "id": "mut-s104-p0-number-dropped",
+    "source": "five pages, no notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "five pages, no notes — page 若干：PCIe 5.0 x16 / 64 GB",
+    "want": "block",
+    "tag": "number-dropped",
+    "provenance": "generated",
+    "note": "数字被删：换成模糊表述（源文没有的写法）"
+  },
+  {
+    "id": "mut-s104-p0-number-inserted",
+    "source": "five pages, no notes — page 1：PCIe 5.0 x16 / 64 GB",
+    "target": "five pages, no notes — page 1：PCIe 5.0 x16 / 64 GB\n本页共 37 个要点。",
+    "want": "block",
+    "tag": "number-inserted",
+    "provenance": "generated",
+    "note": "新增数字：原文没有的数字（含自行编号）"
+  }
+]

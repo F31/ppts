@@ -8,12 +8,20 @@
 //
 // 未配置 LLM 供应商时跳过（exit 0），供无密钥环境/CI 占位。
 // 报告写入 testdata/ai-eval/report.json。
+//
+// 加 -dump-pairs <path> 时，顺带把每页 (原文, 成稿) 写成校验回放语料（真实模型输出，
+// 不预设对错，作为"判定基线"）：
+//
+//	... go run ./scripts/ai_eval -dump-pairs internal/validation/replay/testdata/recorded.json
+//
+// 之后用 scripts/replay_eval 离线比对（不需要 LLM）。
 package main
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +32,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/validation"
+	"github.com/F31/ppts/internal/validation/replay"
 )
 
 const corpusDir = "testdata/corpus/generated"
@@ -53,6 +62,10 @@ type report struct {
 }
 
 func main() {
+	dumpPairs := flag.String("dump-pairs", "",
+		"把每页 (原文, 成稿) 写成校验回放语料（记录模型输出的判定基线，不预设对错）")
+	flag.Parse()
+
 	polisher, err := llm.FromEnv()
 	if err != nil {
 		fatal(err)
@@ -72,6 +85,9 @@ func main() {
 	reader := project.NewGoPPTXReader(project.Limits{})
 	rep := report{GeneratedAt: time.Now().UTC().Format(time.RFC3339)}
 	ctx := context.Background()
+	// rec 收集 (原文, 成稿) 对，供校验规则做**行为基线**回放（见 -dump-pairs）。
+	// 记的是真实模型输出的判定快照，不预设对错；对错判定由 replay 包的带 want 用例负责。
+	var rec []replay.Case
 
 	for _, deckPath := range decks {
 		deck := strings.TrimSuffix(filepath.Base(deckPath), ".pptx")
@@ -84,8 +100,18 @@ func main() {
 			if strings.TrimSpace(source) == "" {
 				continue
 			}
-			res := evalPage(ctx, polisher, deck, pg, source)
+			res, out := evalPage(ctx, polisher, deck, pg, source)
 			rep.Pages = append(rep.Pages, res)
+			if *dumpPairs != "" && res.Error == "" && strings.TrimSpace(out) != "" {
+				rec = append(rec, replay.Case{
+					ID:         fmt.Sprintf("rec-%s-p%d", deck, pg.Index),
+					Source:     source,
+					Target:     out,
+					Tag:        "recorded",
+					Provenance: replay.ProvenanceRecorded,
+					Note:       "真实模型输出（只比基线，不判对错）",
+				})
+			}
 			switch {
 			case res.Error != "":
 				rep.PagesErrored++
@@ -118,6 +144,13 @@ func main() {
 	fmt.Printf("pages=%d ok=%d failed=%d errored=%d passRate=%.2f p95=%.2fs\n",
 		rep.PagesEvaluated, rep.PagesOK, rep.PagesFailed, rep.PagesErrored, rep.PassRate, rep.P95Seconds)
 	fmt.Printf("report written to %s\n", out)
+	if *dumpPairs != "" {
+		if err := replay.WriteFile(*dumpPairs, rec); err != nil {
+			fatal(err)
+		}
+		fmt.Printf("recorded %d pairs -> %s\n", len(rec), *dumpPairs)
+		fmt.Println("下一步：review 后提交，并跑 `go run ./scripts/replay_eval -update-baseline` 锁定判定基线。")
+	}
 	// G2-6 门禁：关键数字全部忠于来源（任一页实体漂移即失败）。
 	if rep.PagesFailed > 0 || rep.PagesErrored > 0 {
 		os.Exit(1)
@@ -137,7 +170,8 @@ func inspect(ctx context.Context, reader *project.GoPPTXReader, path string) (*p
 	return reader.Inspect(ctx, f, st.Size())
 }
 
-func evalPage(ctx context.Context, polisher llm.TextRewriter, deck string, pg *project.Page, source string) pageResult {
+// evalPage 返回逐页结果与模型**原始输出**（后者供 -dump-pairs 录制回放语料）。
+func evalPage(ctx context.Context, polisher llm.TextRewriter, deck string, pg *project.Page, source string) (pageResult, string) {
 	res := pageResult{Deck: deck, Index: pg.Index, SlideID: pg.SlideID}
 	started := time.Now()
 	defer func() { res.DurationS = time.Since(started).Seconds() }()
@@ -163,13 +197,13 @@ func evalPage(ctx context.Context, polisher llm.TextRewriter, deck string, pg *p
 	}
 	if err != nil {
 		res.Error = err.Error()
-		return res
+		return res, ""
 	}
 	check := validation.CheckPreserved(source, result.Text)
 	res.OK = check.OK()
 	res.Missing = validation.FormatEntities(check.Missing)
 	res.Inserted = validation.FormatEntities(check.Inserted)
-	return res
+	return res, result.Text
 }
 
 // pageText 拼接页面正文；为空时回退备注（与 ScriptDraftHandler 同口径）。
