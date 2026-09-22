@@ -615,28 +615,10 @@ export async function rewriteScriptText(
   });
 }
 
-export async function generateDraft(
-  identity: ClientIdentity,
-  projectId: string,
-  slideIds: string[],
-  mode: ScriptMode = 'SCRIPT_MODE_ORIGINAL',
-  options: { audience?: string; style?: string; totalSeconds?: number; language?: string } = {}
-): Promise<{ jobId: string; fullySupported: boolean }> {
-  const idempotencyKey = `draft-${projectId}-${mode}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  return connectJSON<{ jobId: string; fullySupported: boolean }>(
-    identity,
-    '/ppts.v1.ScriptService/GenerateDraft',
-    {
-      projectId,
-      slideIds,
-      mode,
-      audience: options.audience,
-      style: options.style,
-      duration: options.totalSeconds ? { totalSeconds: options.totalSeconds } : undefined
-    },
-    { 'Idempotency-Key': idempotencyKey, ...(options.language ? { 'Accept-Language': options.language } : {}) }
-  );
-}
+// 说明（M6 清理）：此处原有 generateDraft（Connect ScriptService/GenerateDraft）已删除——
+// 全站无调用方，且它未传 RevisionNo/SourceMode，一旦被启用会让 worker 回退到首个版本
+// （旧版本可能页数不足/没有备注 → "有备注的页没有讲稿"）。重生成讲稿统一走
+// regenerateScriptDraft（原生端点，显式绑定当前版本并透传 sourceMode/overwrite）。
 
 // regenerateScriptDraft 重新生成讲稿。默认 overwrite=true；一键成稿可传 overwrite=false 只填充空白页。
 export async function regenerateScriptDraft(

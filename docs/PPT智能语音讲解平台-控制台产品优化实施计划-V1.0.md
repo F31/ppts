@@ -679,6 +679,37 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 - **验证**：`gofmt` 清白；`go build ./...` + `go vet ./internal/api/...` + `go test ./internal/...` 全绿
   （0 FAIL；16 项 SKIP 均环境依赖型，`internal/api` **0 SKIP**）；`tsc -b` ✅ + `vite build` ✅。
 
+**M6：死导出清理与「后端有、前端未接线」盘点（同日续作）**
+
+- **清理**：删除 `web/src/api.ts` 的 `generateDraft`（Connect `ScriptService/GenerateDraft`）——全站零调用方，
+  且未传 `RevisionNo`/`SourceMode`，一旦被启用会让 worker 回退到**首个版本**（旧版本可能页数不足/没有备注，
+  正是"有备注的页没有讲稿"的成因）。重生成讲稿统一走 `regenerateScriptDraft`（原生端点，显式绑定当前版本）。
+  删除处留了说明注释，避免下次被"顺手补回来"。
+- **盘点方法（可复用，三层缺一不可）**：① 后端 `mux.Handle` 注册表 vs 前端路径字面量做差集
+  （75 条路由 → 仅 `GET/PUT/DELETE /ppts/object/{key...}`、`/healthz`、`/debug/vars` 无前端字面引用，
+  均属正常：对象端点走服务端签发的 URL）；② Connect RPC 方法表 vs 前端 `/ppts.v1.X/Y` 字面量（31 个方法）；
+  ③ **导出符号 vs 导入方**——才是真正的死代码判据（RPC 字面量会出现在死导出**内部**，只做 ①② 会把死代码
+  误判成"已接线"，`GenerateDraft`/`ProjectUsage` 即如此）。
+- **未接线能力清单（保留不删**：删除等于抹掉后端能力的唯一客户端，把差距藏起来）：
+  | 后端能力 | 前端包装 | 现状 |
+  |---|---|---|
+  | `ScriptService/Approve`、`Lock`（lock/unlock） | `approveScript`/`lockScript`/`unlockScript` | **UI 无任何入口** |
+  | `POST /projects/{pid}/scripts/rewrite` | `rewriteScriptText` | 无入口（AI 改写/缩短/过渡） |
+  | `GET /projects/{pid}/scripts` | `listProjectScripts` | 无入口 |
+  | `POST /public/featured` | `featureWork` | 无入口（官方精选发布；`permissions.ts` 已登记 `public.manage`） |
+  | `TenantService/ProjectUsage` | `getProjectUsage` | 无入口（用量页只有租户级） |
+  | `ExportService/GetArtifact` | — | 后端方法无客户端（列表走原生 `/projects/{pid}/artifacts`） |
+- **重要发现（需产品决策）**：**「确认 / 锁定讲稿」在 UI 上完全没有入口**——
+  `editor.approve` / `editor.approveFailed` 两条文案零引用，`ScriptEditor.tsx` 只在状态徽标处**展示**
+  `draft/approved/locked`；`scriptState.ts` 甚至已算出 `confirmed`/`locked` 两态。而生成语音时前端传
+  `lockConfirmedOnly:false`，所以 C-5 的"未确认稿不得生成"门禁**实际从未生效**。
+  要么补 UI 入口（确认/锁定按钮，复用既有文案），要么明确该门禁已废弃（则 `editor.approve*` 文案与
+  `confirmed/locked` 状态应一并清理，避免"看得见的状态永远变不了"）。
+- **纯类型死导出（暂不动）**：`api.ts` 另有 11 个 type 仅模块内部使用（`AuthConfig`/`EmailAuthResult`/
+  `JobPage`/`JobStep`/`JobStepState`/`NarrationSlideStale`/`NarrationStatus`/`ProjectPage`/`PublicWorkPage`/
+  `SlideRenderURL`/`UpdateScriptResult`/`UploadSession`）——去掉 `export` 收益低、改动面大。
+- **验证**：`tsc -b` ✅ + `vite build` ✅；`grep -rn generateDraft web/src` 只剩说明注释。
+
 **遗留（未在本次范围）**：
 - **降级落库不可见（M3 续作时发现，需 schema 变更）**：数字/单位/型号校验两次不过时 `draftText` 会 `return source` ——
   把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，而调用方只看到"成功"。`job_steps.state` 受
