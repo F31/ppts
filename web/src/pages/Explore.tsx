@@ -15,6 +15,8 @@ export function Explore() {
   const [loading, setLoading] = useState(true);
   // A26：加载失败不能伪装成"暂无作品"，否则观众会以为广场是空的。
   const [error, setError] = useState('');
+  // 失败态必须带修复入口：重试计数变化即重跑本 effect（与 Home/Library 的 reloadKey 同款）。
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,7 +38,7 @@ export function Explore() {
     return () => {
       cancelled = true;
     };
-  }, [tab, t]);
+  }, [tab, t, reloadKey]);
 
   return (
     <div className="explore">
@@ -68,6 +70,15 @@ export function Explore() {
 
       {loading ? (
         <div className="explore-loading">{t('public.loading')}</div>
+      ) : error ? (
+        // A26：失败必须可见且带修复入口。此前 error 只被赋值、从未渲染，
+        // 广场 5xx 时观众看到的是「暂无作品」——与"广场确实是空的"完全同貌。
+        <div className="load-failure" role="alert">
+          <p className="form-error">{error}</p>
+          <button type="button" onClick={() => setReloadKey((key) => key + 1)}>
+            {t('common.retry')}
+          </button>
+        </div>
       ) : works.length === 0 ? (
         <div className="explore-empty">{t('public.empty')}</div>
       ) : (

@@ -31,15 +31,14 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
   const [storage, setStorage] = useState<StorageUsage | null>(null);
   const [policy, setPolicy] = useState<TenantPolicy | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  // A26：分区错误单独记录，失败时给出原因与重试，不再统一渲染成"暂不可用"。
+  // A26：分区错误单独记录（核心 / 存储 / 策略），失败时给出原因与重试，不再统一渲染成"暂不可用"。
+  // 核心区 = 配额 + 用量，是这一页唯一会被用户直接拿去质疑计费口径的数字，必须能解释。
   const [coreError, setCoreError] = useState('');
   const [storageError, setStorageError] = useState('');
   const [policyError, setPolicyError] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
-    setError('');
     setCoreError('');
     setStorageError('');
     setPolicyError('');
@@ -93,7 +92,14 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
         </div>
       </section>
 
-      {error && <p className="form-error">{error}</p>}
+      {/* A26：核心区失败必须给原因 + 重试。此前 coreError 只被赋值、从未渲染，
+          配额/用量拉不到时指标卡只剩一排「—」，用户只能理解为"平台没这个数"。 */}
+      {coreError && (
+        <div className="load-failure" role="alert">
+          <p className="form-error">{coreError}</p>
+          <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
+        </div>
+      )}
 
       <section className="stat-grid" aria-label={t('usage.title')}>
         <Stat label={t('usage.monthlyQuota')} value={quota ? t('usage.minutes', { n: fmtMinutes(quota.monthlySeconds) }) : '—'} />

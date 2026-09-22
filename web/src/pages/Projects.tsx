@@ -22,6 +22,7 @@ import {
   type RevisionVoiceStatus,
   type SourceRevisionSummary
 } from '../api';
+import { describeApiError } from '../apiError';
 import { ImportDialog } from '../components/ImportDialog';
 import { useConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
@@ -91,6 +92,9 @@ export function Projects({
   const [editableNames, setEditableNames] = useState<Record<string, Record<number, string>>>({});
   // 正在编辑的 PPT 名：key = `${projectId}:${revisionNo}`。
   const [editingCell, setEditingCell] = useState<string | null>(null);
+  // 重命名失败原因（含所属项目，直接渲染在版本列表内）。
+  // A26：重命名是乐观更新，失败必须回滚——否则界面留着新名字，用户以为已保存成功。
+  const [renameError, setRenameError] = useState<{ projectId: string; message: string } | null>(null);
   const [creating, setCreating] = useState(false);
   const [notices, setNotices] = useState<Array<{ id: string; text: string }>>([]);
 
@@ -451,6 +455,15 @@ export function Projects({
     </button>
   );
 
+  // 重命名失败的提示紧邻版本列表渲染：页面顶部的通用错误条在展开行之后往往已滚出视口。
+  // 表格视图与卡片视图都调用本函数，避免两处各写一遍 markup 而漂移。
+  const renderRenameError = (project: Project) =>
+    renameError?.projectId === project.id ? (
+      <div className="load-failure" role="alert">
+        <p className="form-error">{renameError.message}</p>
+      </div>
+    ) : null;
+
   const renderVersionList = (project: Project) => {
     const state = versionsByProject[project.id];
     if (!state || state.loading) return <p className="cell-sub">{t('common.loading')}</p>;
@@ -459,15 +472,27 @@ export function Projects({
     const editKey = (revNo: number) => `${project.id}:${revNo}`;
     const startEdit = (revNo: number) => setEditingCell(editKey(revNo));
     const commitEdit = (revNo: number, newName: string) => {
+      const previous = editableNames[project.id]?.[revNo];
       setEditableNames((cur) => {
         const projMap = cur[project.id] ?? {};
         return { ...cur, [project.id]: { ...projMap, [revNo]: newName } };
       });
       setEditingCell(null);
-      // 持久化到后端（异步，不阻塞 UI）
-      void updatePptDisplayName(identity, project.id, revNo, newName).catch(() => {
-        // 静默失败：刷新后会从服务器重新加载正确值
-      });
+      setRenameError(null);
+      // 持久化到后端（异步，不阻塞 UI）。失败必须回滚乐观更新，否则是"假成功"：
+      // 界面留着新名字，只有刷新才会悄悄退回旧值（A26 禁止的形态）。
+      void updatePptDisplayName(identity, project.id, revNo, newName)
+        .catch((err: unknown) => {
+          setEditableNames((cur) => {
+            const projMap = cur[project.id];
+            if (!projMap) return cur;
+            const next = { ...projMap };
+            if (previous === undefined) delete next[revNo];
+            else next[revNo] = previous;
+            return { ...cur, [project.id]: next };
+          });
+          setRenameError({ projectId: project.id, message: describeApiError(err, t('projects.renameFailed'), t) });
+        });
     };
     const getDisplayName = (rev: SourceRevisionSummary) =>
       (editableNames[project.id]?.[rev.revisionNo] ?? rev.displayName) || rev.displayName;
@@ -1154,7 +1179,7 @@ export function Projects({
                           </tr>
                           {expandedProjectId === project.id && (
                             <tr className="project-detail-row">
-                              <td colSpan={canOrganize ? 5 : 4}>{renderVersionList(project)}</td>
+                              <td colSpan={canOrganize ? 5 : 4}>{renderRenameError(project)}{renderVersionList(project)}</td>
                             </tr>
                           )}
                         </Fragment>
@@ -1189,7 +1214,7 @@ export function Projects({
                           </span>
                         </div>
                         <TagControl projectId={project.id} />
-                        {expandedProjectId === project.id && <div className="project-card-detail">{renderVersionList(project)}</div>}
+                        {expandedProjectId === project.id && <div className="project-card-detail">{renderRenameError(project)}{renderVersionList(project)}</div>}
                         {renderActions(project)}
                       </div>
                     );

@@ -50,7 +50,10 @@ import { useDialogA11y } from '../a11y';
 
 type SlidesState =
   | { mode: 'loading' }
+  // A26：empty 是"这个版本确实没有页面"，failed 是"页面列表没读到"。
+  // 两者外观必须可区分，否则后端/网络故障会被当成"PPT 是空的"，且不给重试入口。
   | { mode: 'empty' }
+  | { mode: 'failed'; message: string }
   | { mode: 'real'; slides: SlideSummary[]; revisionNo: number };
 
 type DraftStatus = { phase: 'idle' | 'generating' | 'ready' | 'error'; message: string };
@@ -108,6 +111,8 @@ export function ProjectEditor({
 }) {
   const { t } = useI18n();
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
+  // 页面列表加载失败后的重试计数（与 scriptsRefreshNonce 同款：变化即重跑加载 effect）。
+  const [slidesReloadKey, setSlidesReloadKey] = useState(0);
   const [activeSlideID, setActiveSlideID] = useState('');
   // 右侧讲稿栏：可折叠为抽屉（默认展开）。
   const [scriptOpen, setScriptOpen] = useState(true);
@@ -323,13 +328,13 @@ export function ProjectEditor({
         setSlidesState(res.slides.length === 0 ? { mode: 'empty' } : { mode: 'real', slides: res.slides, revisionNo: res.revisionNo });
         if (res.slides.length > 0) setActiveSlideID(res.slides[0].slideId);
       })
-      .catch(() => {
-        if (!cancelled) setSlidesState({ mode: 'empty' });
+      .catch((error: unknown) => {
+        if (!cancelled) setSlidesState({ mode: 'failed', message: describeApiError(error, t('editor.slidesLoadFailed'), t) });
       });
     return () => {
       cancelled = true;
     };
-  }, [identity, projectId, initRevisionNo]);
+  }, [identity, projectId, initRevisionNo, slidesReloadKey, t]);
 
   // 打开编辑页时加载已有配音：narration 就绪则构建播放清单，供中间预览区播放器直接播放。
   useEffect(() => {
@@ -1359,7 +1364,14 @@ export function ProjectEditor({
             {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
           </div>
           {!isReady ? (
-            <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : t('editor.noSlides')}</p>
+            slidesState.mode === 'failed' ? (
+              <div className="load-failure load-failure-stack" role="alert">
+                <p className="form-error">{slidesState.message}</p>
+                <button type="button" onClick={() => setSlidesReloadKey((key) => key + 1)}>{t('common.retry')}</button>
+              </div>
+            ) : (
+              <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : t('editor.noSlides')}</p>
+            )
           ) : (
             slidesState.slides.map((slide, index) => {
               const thumb = renderUrls[slide.slideId];
@@ -1399,6 +1411,9 @@ export function ProjectEditor({
             />
           ) : activeRenderURL ? (
             <img className="slide-preview-img" src={activeRenderURL} alt={activeSlide?.title ?? activeSlideID} />
+          ) : slidesState.mode === 'failed' ? (
+            // 页面列表没读到 ≠ 还在渲染：此处若沿用 renderPending，故障会被读成"再等等就好"。
+            <div className="slide-preview-empty">{slidesState.message}</div>
           ) : (
             <div className="slide-preview-empty">{t('editor.renderPending')}</div>
           )}
