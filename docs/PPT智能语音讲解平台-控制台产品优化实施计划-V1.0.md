@@ -739,6 +739,33 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   修好需加状态取值（迁移）或给步骤加注记列。**M1 修复后该路径触发概率上升**（输入从稀疏备注变成数字密集的页面文字）。
 - `web/src/api.ts` 的 `generateDraft` 为死导出且未设 `RevisionNo/SourceMode`，会回退 revision 1（M6）。
 
+### M8：讲稿「确认/锁定」残留清理（2026-09-22，非批次里程碑）【已实施】
+
+**背景（产品决定）**：讲稿改为「**按需编辑、不锁定**」（commit `40387c6` 的免确认编辑：自动保存 +
+改动后才出现「重新生成语音」），前端不再有确认/锁定入口。但 UI 与 i18n 仍留着该体系残骸，其中
+**状态徽标会渲染数据库里的历史状态**——主打胶片实测 34 条讲稿中存在 `approved` 1 条、`locked` 1 条
+（早期操作残留），界面会显示"已确认 / 已锁定"，与"不锁定"的决定矛盾。
+
+**改动**：
+- 删除 `web/src/api.ts` 的 `approveScript` / `lockScript` / `unlockScript`（外部引用 0）。后端
+  `ScriptService/Approve`、`ScriptService/Lock` 能力**保留**，原地留注释说明"前端按决定不再提供客户端封装"。
+- `web/src/ScriptEditor.tsx`：删除头部 `status-marker` 状态徽标与分段 `approved/locked` 徽标；
+  顺带删除**只定义、从未使用**的 `locked` 变量。保留自动保存提示 `save-state` 与 `seg-badge.regen`。
+- `web/src/styles.css`：摘除失效的 `.seg-badge.approved/.locked`、`.status-marker.approved/.locked/.draft`
+  （`status-marker` 基类仍被编辑器的未保存提示使用 → 只摘选择器、不整条删）；修正 `/* M3 ③ 确认/锁定 */` 注释。
+- i18n：中英同步删除 **17 条**零引用文案（`editor.approve` / `unapprove` / `lock` / `unlock` / `draft` /
+  `approved` / `locked` / `lockHint` / `unlockHint` / `lockedHint` / `lockedEditableHint` / `approveFailed` /
+  `lockFailed` / `unlockFailed` / `unlockAudioMismatchConfirm` / `unlockAudioMismatchTitle` / `draftCount`）；
+  `editor.draftHint` 仍在使用，保留。
+
+**验证**：`tsc -b` ✅ + `vite build` ✅（CSS 81.59 → **81.32 kB**）；i18n 键数中英一致（1099 / 1099）；
+`grep` 确认无残留引用。
+
+**坑（新增，重要）**：`web/src/styles.css` 在仓库中是**混合行尾**（CRLF 984 + LF 120）。用编辑类工具改它
+会把整个文件统一成 LF，`git diff` 于是显示 1900+ 行变更（实际只有 7 行）。**改这类文件后必须用
+`git diff --stat` 复核**；若行数异常，先用 `git diff --ignore-cr-at-eol --stat` 确认"行尾是唯一差异"，
+再**以 HEAD 版本为基础重放改动、保留原行尾**写回（`core.autocrlf=true` 环境下尤其容易踩）。
+
 ### B5 可选增强（独立立项，2026-09-16 范围裁定）
 
 **范围裁定（B5-C1）**：本轮原定做 **3 块**——命令面板、全局成品库、**用户作品公开发布与撤回（A29）**；**邮箱自助注册**原延后立项（自注册用户如何归属租户风险最高，C-8 原计划 4 块中的该块）。**现已单独立项 B5-M4 并实施**（决策 ①A 自注册创建个人租户/首个用户为 owner、②A 注册即信任不做邮件验证、③A HS256 自签名 JWT 与 OIDC 并存），详见下方里程碑表与 C-8。

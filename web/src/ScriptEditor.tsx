@@ -363,7 +363,6 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     });
   };
 
-  const locked = script.status === 'locked';
   const regenSet = new Set(regeneratingIds ?? []);
   const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
   const visualCount = anchors.filter((anchor) => anchor.kind.startsWith('visual_')).length;
@@ -416,9 +415,6 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   : saveState === 'conflict'
                     ? t('script.conflict')
                     : t('script.dirty')}
-          </span>
-          <span className={`status-marker ${script.status}`}>
-            {script.status === 'locked' ? t('editor.locked') : script.status === 'approved' ? t('editor.approved') : t('editor.draft')}
           </span>
         </div>
       </header>
@@ -498,8 +494,6 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   onChange={() => toggleSelect(segment.segmentId)}
                 />
                 <span className="segment-index">{index + 1}</span>
-                {segment.status === 'approved' && <span className="seg-badge approved">{t('editor.approved')}</span>}
-                {segment.status === 'locked' && <span className="seg-badge locked">{t('editor.locked')}</span>}
                 {segRegen && <span className="seg-badge regen">{t('editor.regenerating')}</span>}
               </label>
               <textarea

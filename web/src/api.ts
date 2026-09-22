@@ -568,20 +568,9 @@ export async function updateScript(
   });
 }
 
-// approveScript 将单页讲稿置为已确认（需 REVIEWER 角色）。后端 ScriptService.Approve。
-export async function approveScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
-  return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Approve', { projectId, slideId });
-}
-
-// lockScript 将单页讲稿锁定（需 REVIEWER 角色）。后端 ScriptService.Lock。
-export async function lockScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
-  return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Lock', { projectId, slideId, lock: true });
-}
-
-// unlockScript 将锁定讲稿退回已确认状态，便于重新编辑后再生成语音。
-export async function unlockScript(identity: ClientIdentity, projectId: string, slideId: string): Promise<ScriptRevision> {
-  return connectJSON<ScriptRevision>(identity, '/ppts.v1.ScriptService/Lock', { projectId, slideId, lock: false });
-}
+// 讲稿「确认 / 锁定」的客户端封装（approveScript / lockScript / unlockScript）已移除：
+// 产品决定改为「按需编辑、不锁定」（commit 40387c6 的免确认编辑），后端
+// ScriptService/Approve、ScriptService/Lock 能力保留，但前端不再有入口，故不留死导出。
 
 // regenerateSegments 局部重生成选中分段（M2 M1 落地的 RegenerateSegments RPC）。
 // 返回 jobId；生成完成后需重新拉取讲稿。后端 NarrationService.RegenerateSegments。

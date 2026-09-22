@@ -137,13 +137,11 @@ button, textarea, input { font: inherit; }
 .segment-head { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; }
 .segment-index { font-weight: 700; color: #9fb1cf; min-width: 20px; }
 .seg-badge { font-size: 11px; border-radius: 999px; padding: 3px 9px; border: 1px solid rgba(255, 255, 255, .14); }
-.seg-badge.approved { color: #9bf6c0; border-color: rgba(120, 246, 180, .5); }
-.seg-badge.locked { color: #ffd9a8; border-color: rgba(255, 184, 120, .5); }
 .seg-badge.regen { color: #a9e7ff; }
 .segment-card textarea { grid-column: 1 / -1; width: 100%; height: 100%; min-height: 160px; margin: 0; resize: none; border: 1px solid rgba(255, 255, 255, .12); border-radius: 8px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); line-height: 1.7; }
 .segment-card textarea:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .16); }
 
-/* M3 ③ 确认/锁定 */
+/* 讲稿栏底部操作区（重新生成讲稿 / 重新生成语音、配音进度） */
 .review-actions { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
 .voice-progress { display: flex; align-items: center; gap: 8px; min-width: 160px; flex: 1; }
 .voice-progress-track { flex: 1; height: 6px; min-width: 80px; border-radius: 999px; background: rgba(255,255,255,.12); overflow: hidden; }
@@ -162,9 +160,6 @@ button, textarea, input { font: inherit; }
 .script-mode-menu small { color: var(--text-faint); font-size: 11.5px; }
 .script-header-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .script-audio-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; padding: 12px 0; color: var(--text-body); }
-.status-marker.approved { color: #9bf6c0; border-color: rgba(120, 246, 180, .5); }
-.status-marker.locked { color: #ffd9a8; border-color: rgba(255, 184, 120, .5); }
-.status-marker.draft { opacity: .7; }
 
 /* M3 ⑥ 无备注页来源选择 */
 .source-selector { display: flex; flex-direction: column; gap: 8px; margin: 14px 0; }
