@@ -413,6 +413,28 @@ func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.Visio
 	return out
 }
 
+// guardInstructions 是第二轮（定点修补）的指令。
+//
+// 只列**具体违规项**，并要求最小改动：把违规清单精确摆到模型面前，比让它重新读一遍原文
+// 更可预期——后者每轮都在重新猜，命不命中靠运气。抽成纯函数是为了在没有 LLM 的机器上
+// 也能锁定「指令里必须出现哪些信息」。
+func guardInstructions(report validation.Report) string {
+	parts := []string{"以下是需要修正的文案，它违反了数字/单位/型号保持规则："}
+	if missing := validation.FormatEntities(report.Missing); len(missing) > 0 {
+		parts = append(parts, "遗漏了原素材中的 "+strings.Join(missing, "、")+"，必须补回；")
+	}
+	inserted := validation.FormatEntities(report.Inserted)
+	if len(inserted) > 0 {
+		parts = append(parts, "出现了原素材没有的 "+strings.Join(inserted, "、")+"，必须删除；")
+	}
+	if len(report.Missing) == 0 && len(report.Inserted) == 0 {
+		// 调用方只在 !OK() 时才会走到这里；留一个无死角的兜底，避免指令成为半句话。
+		parts = append(parts, "其中的数字、单位与型号与原素材不一致；")
+	}
+	parts = append(parts, "除这些实体外不要改动其它措辞与结构，只做最小必要修改。只输出修正后的正文。")
+	return strings.Join(parts, "")
+}
+
 // draftText 产出单页讲稿正文，返回 (displayText, spokenText, degraded, error)。
 //
 // degraded=true 表示数字/单位/型号校验两轮仍不过，已**保守回退为原始素材原文**（未经 AI 加工）：
@@ -447,15 +469,19 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 	if report.OK() {
 		return text, text, false, nil
 	}
-	// 一次定向修正；仍失败则回退原文（degraded=true），保证零未经批准数字变更。
+	// 第二轮是**定点修补**：把上一版文案本身当作待修的稿子，只列出违规项。
+	// 原先这里重发原文（SourceText: source），等于让模型从头再写一遍——第一版已经写好的
+	// 部分被丢弃，很可能换一种方式再错，两轮下来只剩下回退原文一条路。
 	guardOpID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode) + ":guard"
-	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, source); err != nil {
+	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, text); err != nil {
 		return "", "", false, err
 	}
 	fix, err := polisher.Rewrite(ctx, llm.RewriteRequest{
-		LogicalOpID: guardOpID,
-		Mode:        string(mode), Language: language, SourceText: source,
-		Instructions: "上一版文案违反数字/单位/型号保持规则。必须保留这些实体：" + strings.Join(validation.FormatEntities(report.Source), ", ") + "。不得新增其它数字。只输出修正后的正文。",
+		LogicalOpID:  guardOpID,
+		Mode:         string(mode),
+		Language:     language,
+		SourceText:   text, // ← 待修补的是**上一版产出**，不是原始素材
+		Instructions: guardInstructions(report),
 	})
 	if err == nil {
 		h.settleLLMTokens(ctx, tenantID, guardOpID, fix)
@@ -510,7 +536,15 @@ func draftInstructions(mode narration.ScriptMode, kind draftInputKind, snap Scri
 	if snap.TargetSeconds > 0 {
 		parts = append(parts, fmt.Sprintf("控制成适合约 %d 秒口播的长度。", snap.TargetSeconds))
 	}
-	suffix := strings.Join(parts, "") + "必须逐字保留所有数字、单位、日期、型号，不新增未经原文支持的数字。只输出正文。"
+	// 数字/单位/型号的约束**与校验器同源**：等价写法说明直接取自 validation 包，
+	// 避免出现「指令说可以这样写、校验器却拒绝」的假失败——模型照着指令写、仍被判违规，
+	// 用户只看到整页回退原文，却查不出是谁的问题（M1/M3 的教训：同一件事两处各写一份必然漂移）。
+	suffix := strings.Join(parts, "") +
+		"硬约束：① 原文中的数字、单位、日期、型号必须逐一保留，不得改写、替换或省略；" +
+		"② 原文没有出现的数字一律不得新增——不要自行编号或计数（例如不要写「第 1 步」「3 个要点」）；" +
+		"③ 型号与缩写保持原样，不要擅自改写、展开或省略。" +
+		validation.FormatEquivalenceHint() +
+		"只输出正文。"
 
 	// 输入是已有讲稿（未显式指定来源时的沿用/润色路径）。
 	if kind == inputExisting {

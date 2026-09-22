@@ -6,6 +6,7 @@ import (
 
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/validation"
 )
 
 // 本文件锁定两件事，都不依赖 PG/外部工具，任何机器可跑：
@@ -163,6 +164,50 @@ func TestDraftInstructionsDescribeActualInput(t *testing.T) {
 				t.Fatalf("instructions = %q，缺少收尾约束", got)
 			}
 		})
+	}
+}
+
+// TestDraftInstructionsCarryHardConstraints 守住 M10：任何来源、任何模式的指令都必须带上
+// 三条硬约束，且**等价写法说明取自校验器的同一张表**。
+//
+// 为什么必须断言「同源」而不是只断言"指令里有这句话"：如果提示词自己抄一份等价写法说明，
+// 两边迟早不一致——模型照着指令写、校验器却判违规，用户只看到整页回退原文，
+// 查不出是模型的问题还是提示词的问题（M1/M3 的教训）。
+func TestDraftInstructionsCarryHardConstraints(t *testing.T) {
+	hint := validation.FormatEquivalenceHint()
+	if strings.TrimSpace(hint) == "" {
+		t.Fatal("等价写法说明为空：断言会退化为恒真")
+	}
+	modes := []narration.ScriptMode{narration.ModePolish, narration.ModeAIGenerated}
+	kinds := []draftInputKind{inputPage, inputNotes, inputCustom, inputExisting}
+	for _, mode := range modes {
+		for _, kind := range kinds {
+			got := draftInstructions(mode, kind, ScriptDraftSnapshot{})
+			if !strings.Contains(got, hint) {
+				t.Errorf("mode=%s kind=%s：指令未带上校验器的等价写法说明%q", mode, kind, hint)
+			}
+			// 与校验器守门用例（序号不豁免）一一对应：原文没有的数字不得自行新增。
+			if !strings.Contains(got, "不得新增") {
+				t.Errorf("mode=%s kind=%s：指令未禁止新增原文没有的数字", mode, kind)
+			}
+			if !strings.Contains(got, "型号与缩写保持原样") {
+				t.Errorf("mode=%s kind=%s：指令未要求型号/缩写保持原样", mode, kind)
+			}
+			if !strings.Contains(got, "逐一保留") {
+				t.Errorf("mode=%s kind=%s：指令未要求逐字保留原文实体", mode, kind)
+			}
+		}
+	}
+}
+
+// TestDraftInstructionsKeepAudienceStyleLength 保证 M10 的改写没有丢掉既有的受众/风格/时长。
+func TestDraftInstructionsKeepAudienceStyleLength(t *testing.T) {
+	snap := ScriptDraftSnapshot{Audience: "技术决策者", Style: "简洁", TargetSeconds: 90}
+	got := draftInstructions(narration.ModePolish, inputPage, snap)
+	for _, want := range []string{"技术决策者", "简洁", "90 秒"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("指令丢失 %q：%q", want, got)
+		}
 	}
 }
 
