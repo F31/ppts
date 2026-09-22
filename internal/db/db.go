@@ -28,10 +28,10 @@ const (
 
 // 单租户 profile 的固定身份（SQLite 模式）。ID 形状与 PG 的 uuid/text 一致，便于将来迁移数据。
 const (
-	LocalTenantID    = "00000000-0000-0000-0000-000000000001"
-	LocalUserID      = "local-user"
-	LocalUserEmail   = "local@localhost"
-	LocalTenantName  = "Local"
+	LocalTenantID   = "00000000-0000-0000-0000-000000000001"
+	LocalUserID     = "local-user"
+	LocalUserEmail  = "local@localhost"
+	LocalTenantName = "Local"
 )
 
 // Config 是数据库连接配置。

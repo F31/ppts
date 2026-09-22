@@ -13,7 +13,7 @@ import (
 // projectAccessUser 返回用于**列表类**项目 ACL 过滤的用户 ID（#96 方案 A）。
 //
 // 分层语义：
-//   - 租户 admin/owner → 返回空串（store SQL 中 `$1 = ''` 表示不过滤），可列出租户内全部项目；
+//   - 租户 admin/owner → 返回空串（store SQL 中以空串入参表示不过滤），可列出租户内全部项目；
 //     列表属浏览性操作，不逐条审计。
 //   - 其余成员 → 返回真实 userID，store 层仅返回 owner_user 或协作者项目。
 //   - members 为 nil（测试桩/无成员服务）时不做旁路，退化为严格协作者模型。

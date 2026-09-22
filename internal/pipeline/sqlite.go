@@ -41,13 +41,13 @@ const sqJobColumns = `id, tenant_id, project_id, kind, state, input_snapshot,
 	run_at, progress, last_error, created_at, updated_at, traceparent`
 
 type sqJobBuf struct {
-	j            Job
-	createdAt    string
-	updatedAt    string
-	leaseOwner   sql.NullString
-	runAt        sql.NullString
-	leaseUntil   sql.NullString
-	lastErr      []byte
+	j          Job
+	createdAt  string
+	updatedAt  string
+	leaseOwner sql.NullString
+	runAt      sql.NullString
+	leaseUntil sql.NullString
+	lastErr    []byte
 }
 
 func (b *sqJobBuf) dest() []any {

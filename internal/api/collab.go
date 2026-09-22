@@ -10,10 +10,10 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
-	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/tenant"
 )

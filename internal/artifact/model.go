@@ -17,9 +17,9 @@ const (
 )
 
 type Artifact struct {
-	ID           string
-	TenantID     string
-	ProjectID    string
+	ID        string
+	TenantID  string
+	ProjectID string
 	// ProjectName 是跨项目成品库（GET /artifacts，B5-M2）所需的冗余展示字段：
 	// 由 ListAll 经 LEFT JOIN projects 填充；Get/ListByProject 不填充（空串）。
 	ProjectName  string

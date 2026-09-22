@@ -106,4 +106,5 @@ func (s *SQLiteStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact
 	}
 	return items, rows.Err()
 }
+
 var _ Store = (*SQLiteStore)(nil)
