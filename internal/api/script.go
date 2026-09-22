@@ -237,7 +237,7 @@ func (s *ScriptService) GenerateDraft(ctx context.Context, req *connect.Request[
 	snapshot := app.ScriptDraftSnapshot{
 		ProjectID: projectID, Language: requestLanguage(req.Header()), Mode: string(mode),
 	}
-	// M3 ⑥：注入已存的"无备注页讲稿来源"选择，使 worker 在 pgText/pgAnchors 中尊重用户显式来源。
+	// M3 ⑥：注入已存的"无备注页讲稿来源"选择，使 worker 在 pgInput/pgAnchors 中尊重用户显式来源。
 	if s.srcStore != nil {
 		if choices, lerr := s.srcStore.List(ctx, p.TenantID, projectID); lerr == nil && len(choices) > 0 {
 			sources := make(map[string]string, len(choices))

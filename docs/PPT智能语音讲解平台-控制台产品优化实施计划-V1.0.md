@@ -620,7 +620,7 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 
 **验证**：`gofmt` 清白；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（22 包全绿、**0 FAIL**）；`tsc -b` ✅ + `vite build` ✅（CSS 50.01 kB、`dist/favicon.svg` 就位）；迁移以 `sqlglot` Postgres 方言校验（0027 单语句 OK）。
 
-### 一键成稿来源优先级缺陷修复（2026-09-22，非批次里程碑）
+### 一键成稿：来源优先级缺陷修复 + 提示词按来源分流（2026-09-22，非批次里程碑）
 
 **缺陷（用户报告）**：一键成稿选「讲稿来源 = 页面内容」，产出并非页面内容的解析结果。
 
@@ -643,12 +643,26 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   `types.ts` 的 `jobStepTypeKey` + `Jobs.tsx` 的 `KNOWN_STEP_TYPES` + 中英文案。
 - **顺带修复（同一代码路径）**：成稿任务的轮询定时器此前**到达终态后仍不停**（每 2s 继续 `getJob` + 全量 `getScript`），改为终态即 `stopPolling()`——否则新增的逐页结果会被后续 tick 反复覆写，且停留越久请求越多。
 
-**验证**：`gofmt` 清白；`go build ./...` ✅、`go vet ./internal/...` ✅、`go test ./internal/...` ✅（0 FAIL；16 项 SKIP 全为环境依赖型，`internal/api` **0 SKIP**）；
-新增**无 DB** 单测 `internal/app/scriptdraft_input_test.go`（12 例，前 3 例即本缺陷守门人：页面内容/页面级来源/自定义文本优先于沿用旧稿）✅；
-`tsc -b` ✅ + `vite build` ✅（CSS 81.59 kB 未变，本次未加样式）。
+**修复（M3）：指令必须与输入来源一致**
+- **缺陷**：`draftInstructions` 恒以「把当前讲稿润色为…」/「基于当前讲稿生成…」开头，而 M1 修好之后输入常常是**页面文字/备注**
+  （版面要点片段，不是成稿）。等于要求模型"改写一份已有成稿"，实际喂进去的是碎片要点 —— 产出会偏离素材（体现为自言自语式的行文或漏要点）。
+- **做法**：`selectDraftInput` 改为返回 `draftInput{Kind, Text}`，**文本与来源种类由同一处产出**：新增 `inputPage/inputNotes/inputCustom/inputExisting`；
+  页面级取值抽成唯一实现 `pgInput`（原先 `pgText` 只算文本、`pgTextForMode` 另判来源，已合并删除）；`draftInstructions(mode, kind, snap)` 据 kind 分流——
+  原始素材走"把其中的要点整理成口播稿"/"据此撰写"，只有 `inputExisting` 才走"润色当前讲稿"/"基于当前讲稿生成"。数字/单位/型号保持约束任何来源都带上。
+- **为什么不做成两个函数各判一次**：两份来源判断迟早不一致 —— 本缺陷本身就是"算在一处、判定写在另一处"的漂移产物。
 
-**遗留（未在本次范围）**：`draftInstructions` 仍恒为「把当前讲稿润色…」，不随来源变化（M3）；原生端点不校验 `sourceMode` 白名单（M4）；
-`web/src/api.ts` 的 `generateDraft` 为死导出且未设 `RevisionNo/SourceMode`（M6）。
+**验证**：`gofmt` 清白；`go build ./...` ✅、`go vet ./internal/...` ✅、`go test ./internal/...` ✅（0 FAIL；16 项 SKIP 全为环境依赖型，`internal/api` **0 SKIP**）；
+新增**无 DB** 单测 `internal/app/scriptdraft_input_test.go` 共 **20 例**（12 例来源优先级 + 8 例指令一致性；前 3 例即本缺陷守门人：
+页面内容/页面级来源/自定义文本优先于沿用旧稿；指令用例用 `deny` 断言"给页面文字时指令里不得出现『当前讲稿』"）✅；
+`tsc -b` ✅ + `vite build` ✅（本次为纯后端改动，CSS 81.59 kB 未变）。
+
+**遗留（未在本次范围）**：
+- **降级落库不可见（M3 续作时发现，需 schema 变更）**：数字/单位/型号校验两次不过时 `draftText` 会 `return source` ——
+  把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，而调用方只看到"成功"。`job_steps.state` 受
+  `CHECK (state IN ('pending','success','skipped','failed'))` 约束、无 `degraded` 取值，界面无法区分"降级落库"与"正常生成"；
+  修好需加状态取值（迁移）或给步骤加注记列。**M1 修复后该路径触发概率上升**（输入从稀疏备注变成数字密集的页面文字）。
+- 原生端点不校验 `sourceMode` 白名单，非法值静默走 `default` 分支（M4）。
+- `web/src/api.ts` 的 `generateDraft` 为死导出且未设 `RevisionNo/SourceMode`，会回退 revision 1（M6）。
 
 ### B5 可选增强（独立立项，2026-09-16 范围裁定）
 

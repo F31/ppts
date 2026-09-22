@@ -32,7 +32,7 @@ type ScriptDraftSnapshot struct {
 	Style         string `json:"style,omitempty"`
 	TargetSeconds int    `json:"targetSeconds,omitempty"`
 	// Sources 是"无备注页"显式指定的讲稿来源（slideID → kind：layout/title/body/notes/custom）。
-	// 由 GenerateDraft handler 注入已存选择；script_draft worker 在 pgText/pgAnchors 中尊重。
+	// 由 GenerateDraft handler 注入已存选择；script_draft worker 在 pgInput/pgAnchors 中尊重。
 	Sources map[string]string `json:"sources,omitempty"`
 	// CustomSources 携带 kind=custom 时的自定义文本（slideID → 文本）。
 	CustomSources map[string]string `json:"customSources,omitempty"`
@@ -70,6 +70,28 @@ const (
 	// draftSkippedNoText 该页页面文字与备注均为空，没有可用的成稿素材。
 	draftSkippedNoText draftOutcome = "skipped_no_text"
 )
+
+// draftInputKind 是成稿输入文本的**实际来源**。由 selectDraftInput 单点决定，
+// 供 draftInstructions 生成与输入一致的指令（M3）。
+type draftInputKind string
+
+const (
+	// inputPage 输入来自 PPT 页面形状文字（layout/title/body，以及 page_content 来源）。
+	inputPage draftInputKind = "page"
+	// inputNotes 输入来自演讲者备注。
+	inputNotes draftInputKind = "notes"
+	// inputCustom 输入来自用户为该页填写的自定义文本。
+	inputCustom draftInputKind = "custom"
+	// inputExisting 输入来自该页已有讲稿（未显式指定来源且 overwrite 时沿用）。
+	inputExisting draftInputKind = "existing"
+)
+
+// draftInput 是单页成稿的输入：文本 + 它的实际来源。
+// 两者必须**同源产生**——否则会出现"按页面文字生成、却告诉模型这是在润色现有讲稿"。
+type draftInput struct {
+	Kind draftInputKind
+	Text string
+}
 
 // stepTypePage 是逐页成稿步骤的 step_type（与 ingest 的 "pages"、narration 的
 // "tts_segment" 同级；前端 enum.jobStepType.page 有对应文案）。
@@ -261,8 +283,10 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		rev = nil
 	}
 
-	text := selectDraftInput(pg, source, custom, snap.SourceMode, mode, snap.Overwrite, revisionText(rev))
-	if text == "" {
+	// in 同时给出文本与它的**实际来源**：提示词必须据此描述输入，
+	// 否则会告诉模型"把当前讲稿润色一遍"，而实际喂进去的是 PPT 页面文字。
+	in := selectDraftInput(pg, source, custom, snap.SourceMode, mode, snap.Overwrite, revisionText(rev))
+	if in.Text == "" {
 		return draftSkippedNoText, nil // 无正文/备注，不生成空讲稿。
 	}
 	var vision llm.VisionExtractor
@@ -275,7 +299,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if len(refs) == 0 {
 		refs = []string{slideID}
 	}
-	displayText, spokenText, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, text, snap)
+	displayText, spokenText, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, snap)
 	if err != nil {
 		return "", err
 	}
@@ -369,7 +393,8 @@ func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.Visio
 	return out
 }
 
-func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, source string, snap ScriptDraftSnapshot) (string, string, error) {
+func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, snap ScriptDraftSnapshot) (string, string, error) {
+	source := in.Text
 	if mode == narration.ModeOriginal {
 		return source, source, nil
 	}
@@ -386,7 +411,7 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		Mode:         string(mode),
 		Language:     language,
 		SourceText:   source,
-		Instructions: draftInstructions(mode, snap),
+		Instructions: draftInstructions(mode, in.Kind, snap),
 	})
 	if err != nil {
 		return "", "", classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
@@ -398,6 +423,9 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		return text, text, nil
 	}
 	// 一次定向修正；仍失败则回退原文，保证零未经批准数字变更。
+	// 注意（已知缺口）：此回退把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，
+	// 而调用方只看到"成功"——job_steps 的 state 受 CHECK 约束无 "degraded" 取值，
+	// 故当前无法在界面上把"降级落库"与"正常生成"区分开。修好需加状态或注记列（见计划文档遗留）。
 	guardOpID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode) + ":guard"
 	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, source); err != nil {
 		return "", "", err
@@ -443,7 +471,11 @@ func (h *ScriptDraftHandler) settleLLMTokens(ctx context.Context, tenantID, opID
 	}
 }
 
-func draftInstructions(mode narration.ScriptMode, snap ScriptDraftSnapshot) string {
+// draftInstructions 生成发给模型的指令。**指令必须描述真实的输入来源**：
+// 输入是页面文字/备注（版面要点片段）时，若仍说"把当前讲稿润色一遍"，模型会按
+// "改写一份已有成稿"去理解，而它实际拿到的是碎片要点 —— 产出会偏离素材。
+// 来源种类由 selectDraftInput 单点决定（本函数不重复做优先级判断）。
+func draftInstructions(mode narration.ScriptMode, kind draftInputKind, snap ScriptDraftSnapshot) string {
 	parts := []string{}
 	if strings.TrimSpace(snap.Audience) != "" {
 		parts = append(parts, "目标受众："+strings.TrimSpace(snap.Audience)+"。")
@@ -455,10 +487,27 @@ func draftInstructions(mode narration.ScriptMode, snap ScriptDraftSnapshot) stri
 		parts = append(parts, fmt.Sprintf("控制成适合约 %d 秒口播的长度。", snap.TargetSeconds))
 	}
 	suffix := strings.Join(parts, "") + "必须逐字保留所有数字、单位、日期、型号，不新增未经原文支持的数字。只输出正文。"
-	if mode == narration.ModeAIGenerated {
-		return "基于当前讲稿生成一段更完整、自然、适合客户演示的讲解稿；可以补足衔接和解释，但不得引入当前讲稿没有支持的事实。" + suffix
+
+	// 输入是已有讲稿（未显式指定来源时的沿用/润色路径）。
+	if kind == inputExisting {
+		if mode == narration.ModeAIGenerated {
+			return "基于当前讲稿生成一段更完整、自然、适合客户演示的讲解稿；可以补足衔接和解释，但不得引入当前讲稿没有支持的事实。" + suffix
+		}
+		return "把当前讲稿润色为更适合 PPT 演示讲解的自然口播稿；" + suffix
 	}
-	return "把当前讲稿润色为更适合 PPT 演示讲解的自然口播稿；" + suffix
+
+	// 输入是原始素材（页面文字 / 备注 / 自定义文本），不是成稿，必须说清是"整理要点"。
+	material := "以下是本页 PPT 的页面文字（版面上的要点片段，不是成稿句子）"
+	switch kind {
+	case inputNotes:
+		material = "以下是本页 PPT 的演讲者备注（讲稿要点，不是成稿句子）"
+	case inputCustom:
+		material = "以下是用户为本页提供的内容（讲稿要点，不是成稿句子）"
+	}
+	if mode == narration.ModeAIGenerated {
+		return material + "。请据此撰写一段完整、自然、适合客户演示的口播讲解稿：把要点组织成连贯的语句，可以补足衔接与必要解释，但不得引入这些内容没有支持的事实。" + suffix
+	}
+	return material + "。请把其中的要点整理成一段适合 PPT 演示讲解的自然口播稿：保持原意、要点齐全，不添加这些内容以外的信息。" + suffix
 }
 
 func revisionText(rev *narration.Revision) string {
@@ -551,17 +600,19 @@ func sourceRefsFromAnchors(slideID string, anchors []narration.SourceAnchor) []s
 	return refs
 }
 
-// pgText 拼接页面形状文本；为空时回退到备注。
-// source 指定时只取该来源对应文本；source=custom 时使用 custom 文本；source=notes 时仅用备注。
-func pgText(pg parsedPage, source, custom string) string {
+// pgInput 按页面级来源取文本，**并标出最终胜出的来源**。
+// source 指定时只取该来源对应文本；source=custom 用 custom 文本；source=notes 仅用备注。
+// 这是页面级取值的唯一实现——文本与来源种类必须由同一处产生，
+// 否则"返回的文本算在一处、来源判定写在另一处"会重新漂移。
+func pgInput(pg parsedPage, source, custom string) draftInput {
 	switch source {
 	case "notes":
-		return strings.TrimSpace(pg.NotesText)
+		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
 	case "custom":
 		if t := strings.TrimSpace(custom); t != "" {
-			return t
+			return draftInput{Kind: inputCustom, Text: t}
 		}
-		return strings.TrimSpace(pg.NotesText)
+		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
 	}
 	var parts []string
 	for _, sh := range pg.Shapes {
@@ -577,28 +628,32 @@ func pgText(pg parsedPage, source, custom string) string {
 	}
 	text := strings.TrimSpace(strings.Join(parts, "\n"))
 	if text == "" {
-		text = strings.TrimSpace(pg.NotesText)
+		// 形状文字为空 → 回退备注：来源种类也必须是备注，不能仍标成"页面文字"。
+		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
 	}
-	return text
+	return draftInput{Kind: inputPage, Text: text}
 }
 
-func pgTextForMode(pg parsedPage, source, custom, sourceMode string) string {
+// pgInputForMode 在页面级来源之上叠加批量来源（sourceMode，来自一键成稿）。
+func pgInputForMode(pg parsedPage, source, custom, sourceMode string) draftInput {
 	switch strings.TrimSpace(sourceMode) {
 	case "notes_first":
 		if notes := strings.TrimSpace(pg.NotesText); notes != "" {
-			return notes
+			return draftInput{Kind: inputNotes, Text: notes}
 		}
-		return pgText(pg, "layout", "")
+		return pgInput(pg, "layout", "")
 	case "notes_only":
-		return strings.TrimSpace(pg.NotesText)
+		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
 	case "page_content":
-		return pgText(pg, "layout", "")
+		return pgInput(pg, "layout", "")
 	default:
-		return pgText(pg, source, custom)
+		return pgInput(pg, source, custom)
 	}
 }
 
-// selectDraftInput 决定单页成稿的来源文本（空串 = 该页没有可用素材，应跳过）。
+// selectDraftInput 决定单页成稿的输入：**文本 + 它的实际来源**（Text 为空 = 该页没有可用素材，应跳过）。
+// 返回 Kind 而不是只返回文本，是为了让提示词能据此描述输入（见 draftInstructions）；
+// 若分成两个函数各判一次来源，两份判断迟早会不一致。
 //
 // **来源优先级是本函数的唯一职责**，也是曾经的缺陷所在：
 //
@@ -611,18 +666,18 @@ func pgTextForMode(pg parsedPage, source, custom, sourceMode string) string {
 // 缺陷史（2026-09-22）：原实现先按来源算好页面文字，再用 `overwrite && rev != nil` 无条件
 // 覆盖成旧讲稿。于是「一键成稿 · 来源=页面内容 · 覆盖全部」实际是把旧讲稿润色一遍，
 // 页面文字从未进入提示词；产出看起来"没按页面内容生成"。
-func selectDraftInput(pg parsedPage, source, custom, sourceMode string, mode narration.ScriptMode, overwrite bool, existing string) string {
+func selectDraftInput(pg parsedPage, source, custom, sourceMode string, mode narration.ScriptMode, overwrite bool, existing string) draftInput {
 	explicit := strings.TrimSpace(sourceMode) != "" || strings.TrimSpace(source) != ""
 	if !explicit {
 		if mode == narration.ModeOriginal {
-			return strings.TrimSpace(pg.NotesText)
+			return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
 		}
 		// 显式重新生成时，润色/AI 生成以用户当前讲稿为输入，而不是重新从 PPT 版面抽取。
 		if overwrite {
 			if current := strings.TrimSpace(existing); current != "" {
-				return current
+				return draftInput{Kind: inputExisting, Text: current}
 			}
 		}
 	}
-	return pgTextForMode(pg, source, custom, sourceMode)
+	return pgInputForMode(pg, source, custom, sourceMode)
 }
