@@ -133,6 +133,10 @@ const (
 	StepSuccess JobStepState = "success"
 	StepSkipped JobStepState = "skipped"
 	StepFailed  JobStepState = "failed"
+	// StepDegraded 步骤执行完了，但产出是**降级结果**而非预期产物：一键成稿时数字/单位/型号
+	// 校验两轮仍不过，保守回退为原始素材原文（未经 AI 加工）。它与 StepSuccess 必须分开——
+	// 否则界面会把"页面要点片段"当作"讲解稿已生成"报告（A26：不得假成功）。
+	StepDegraded JobStepState = "degraded"
 )
 
 // JobStep 是任务内的一个执行步骤（重试只重跑未确认完成的步骤，V4.0 §10.2）。

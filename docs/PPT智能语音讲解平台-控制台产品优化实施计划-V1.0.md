@@ -733,10 +733,8 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 - **验证**：`tsc -b` ✅ + `vite build` ✅（CSS 81.59 kB 未变；JS 442.38 → 442.84 kB）。
 
 **遗留（未在本次范围）**：
-- **降级落库不可见（M3 续作时发现，需 schema 变更）**：数字/单位/型号校验两次不过时 `draftText` 会 `return source` ——
-  把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，而调用方只看到"成功"。`job_steps.state` 受
-  `CHECK (state IN ('pending','success','skipped','failed'))` 约束、无 `degraded` 取值，界面无法区分"降级落库"与"正常生成"；
-  修好需加状态取值（迁移）或给步骤加注记列。**M1 修复后该路径触发概率上升**（输入从稀疏备注变成数字密集的页面文字）。
+- ~~**降级落库不可见**（M3 续作时发现，需 schema 变更）~~ → **已由 M9 解决**（见下节）：
+  `job_steps.state` 新增 `degraded`，界面明确显示"已保留页面原文、待人工确认"，不再把回退原文报告成"成稿完成"。
 - `web/src/api.ts` 的 `generateDraft` 为死导出且未设 `RevisionNo/SourceMode`，会回退 revision 1（M6）。
 
 ### M8：讲稿「确认/锁定」残留清理（2026-09-22，非批次里程碑）【已实施】
@@ -765,6 +763,46 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 会把整个文件统一成 LF，`git diff` 于是显示 1900+ 行变更（实际只有 7 行）。**改这类文件后必须用
 `git diff --stat` 复核**；若行数异常，先用 `git diff --ignore-cr-at-eol --stat` 确认"行尾是唯一差异"，
 再**以 HEAD 版本为基础重放改动、保留原行尾**写回（`core.autocrlf=true` 环境下尤其容易踩）。
+
+### M9：一键成稿「降级」可见（degraded 状态）（2026-09-22，非批次里程碑）【已实施】
+
+**问题（诚实性缺口）**：`draftText` 在数字/单位/型号校验两轮仍不过时 `return source, source, nil` ——
+把**原始素材**（来源=页面内容时即页面形状文字拼成的要点片段）直接当成稿落库，且 `err == nil`：
+任务步骤记 `success`、界面报「成稿完成：共 N 页」，与正常生成**完全无法区分**（违反 A26）。
+M1 修复后该路径触发概率上升（输入从稀疏备注变成数字密集的页面文字）。方案裁定：**a —— 新增状态取值**。
+
+**改动**：
+- **迁移（双套同步）**：`migrations/0039_job_steps_degraded.sql` + `migrations/sqlite/0007_job_steps_degraded.sql`
+  给 `job_steps.state` 的 CHECK 约束加入 `'degraded'`。
+  - PG：原约束是匿名 CHECK，故**按约束定义动态匹配**（查 `pg_constraint`）而非硬编码名字——若名字与预期不符，
+    `DROP CONSTRAINT IF EXISTS <猜的名>` 会静默跳过，随后 ADD 只是又加一个约束，旧约束仍拒绝 `degraded`
+    （迁移"成功"但写入失败）。且**先把约束名收集到数组再循环 DROP**：`FOR ... IN SELECT ... FROM pg_constraint`
+    是"边扫描系统表边改它"，循环体内执行 DDL 会让游标行为不可预测。
+  - SQLite：不支持改 CHECK → 按官方流程重建表（新建 / 复制 / 删除 / 改名 / 重建索引）。前置确认 `job_steps`
+    不被任何表、视图或触发器引用，故 `foreign_keys=ON` 下 DROP 旧表不会触发外键错误；`idx_steps_job`
+    随 DROP 一并消失、必须重建。
+- **后端**：`pipeline.StepDegraded`；`draftText` 返回值增加 `degraded`；`draftOutcome` 增加 `draftDegraded`；
+  新增纯函数 `pageStepState(outcome)` 专做映射（降级必须单列一类，不得归入 success），`markPageStep` 改用它。
+- **前端**：`types.ts` 的 `jobStepStateKey` 增加 `degraded`（任务详情的步骤标签自动支持该状态）；
+  一键成稿结果面板把「更新 / 跳过 / **保留原文**」三者分开显示，降级时追加警告行
+  「已保留页面原文——请手动改写后再生成语音」（复用既有 `.narration-note.warn`，未新增 CSS）。
+
+**验证**：
+- SQLite 迁移**实跑**（Python sqlite3，内存库）：模拟升级路径（先写数据 → 再应用 0007）→ 数据保留 2/2、
+  DDL 含 `degraded`、无残留临时表、`idx_steps_job` 已重建、`UNIQUE(job_id, step_key)` 仍在、`degraded` 可写、
+  非法值被拒、外键仍生效 —— **8 项全过**。
+- PG 迁移：`sqlglot` 解析 `ALTER TABLE` + 结构检查（括号 / `BEGIN`-`END` / `LOOP`-`END LOOP` 配对）
+  + **`pglast`（libpg_query，真实 PG 解析器）** 接受 `DO` 与 `ALTER TABLE` 语句。
+- 回归：`internal/app` 新增 `TestPageStepStateIncludesDegraded`（4 例 + 两条守门断言：降级不得映射为 success；
+  `StepDegraded` 字面量必须与迁移 CHECK 一致）✅；`go build` / `go vet` / `go test ./internal/...` 全绿
+  （0 FAIL；16 项 SKIP 与基线一致）；`tsc -b` ✅ + `vite build` ✅。
+
+**未做（有意）**：任务详情里 `degraded` 步骤标签暂无专属配色（未加 `.state-tag.step-degraded`），沿用默认样式；
+成稿面板已用既有 `.narration-note.warn` 给出警告色与完整说明，故本次不动 CSS
+（该文件为混合行尾，改它有整文件 diff 的风险）。
+
+**发现（既有问题，未在本次范围）**：`internal/pipeline/sqlite.go` 不符合 `gofmt`（`sqJobBuf` 字段对齐），
+但 `git diff` 显示该文件在本次**未被改动** → 属仓库既有格式问题，未混入本次提交。
 
 ### B5 可选增强（独立立项，2026-09-16 范围裁定）
 

@@ -278,9 +278,10 @@ export function ProjectEditor({
   const [oneDraftRunning, setOneDraftRunning] = useState(false);
   const [oneDraftProgress, setOneDraftProgress] = useState({ done: 0, total: 0, message: '' });
   const [oneDraftJobId, setOneDraftJobId] = useState('');
-  // 成稿逐页结果（来自任务步骤计数）。任务"成功"不等于"有页被更新"——
-  // 「仅补空」可能把每一页都跳过，必须把两个数字分开显示，否则用户会以为来源选择没生效。
-  const [oneDraftResult, setOneDraftResult] = useState<{ generated: number; skipped: number } | null>(null);
+  // 成稿逐页结果（来自任务步骤计数）。任务"成功"不等于"有页被更新"：
+  // 「仅补空」可能把每一页都跳过；数字/单位/型号校验两轮不过的页还会**降级保留原文**。
+  // 三者必须分开显示，否则用户会以为来源选择没生效，或把页面原文当成 AI 讲解稿。
+  const [oneDraftResult, setOneDraftResult] = useState<{ generated: number; skipped: number; degraded: number } | null>(null);
   const [oneDraftResultUnavailable, setOneDraftResultUnavailable] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
   // 编辑区网格容器 + 讲稿栏宽度拖拽（CSS 变量 --script-panel-width，仅当前会话生效）。
@@ -657,8 +658,9 @@ export function ProjectEditor({
           stopPolling();
           setOneDraftRunning(false);
           setOneDraftProgress({ done: total || 100, total: total || 100, message: t('editor.oneDraftProgressComplete', { total: total || 100 }) });
-          // 逐页结果：进度百分比只说明"跑完了"，跳过的页不会体现在百分比里。
-          // 步骤计数是后端逐页登记的结果（success=生成 / skipped=跳过），失败时明确标注不可用。
+          // 逐页结果：进度百分比只说明"跑完了"，跳过与降级的页都不会体现在百分比里。
+          // 步骤计数是后端逐页登记的结果（success=生成 / skipped=跳过 / degraded=保留原文），
+          // 取不到时明确标注不可用，不编数字。
           try {
             const detail = await getJobDetail(identity, oneDraftJobId);
             if (!cancelled) {
@@ -667,7 +669,11 @@ export function ProjectEditor({
                 setOneDraftResultUnavailable(true);
               } else {
                 const counts = detail.stepCounts ?? {};
-                setOneDraftResult({ generated: counts.success ?? 0, skipped: counts.skipped ?? 0 });
+                setOneDraftResult({
+                  generated: counts.success ?? 0,
+                  skipped: counts.skipped ?? 0,
+                  degraded: counts.degraded ?? 0
+                });
                 setOneDraftResultUnavailable(false);
               }
             }
@@ -1799,6 +1805,11 @@ export function ProjectEditor({
               {oneDraftResult && (
                 <p className="narration-note" role="status">
                   {t('editor.oneDraftResult', { generated: oneDraftResult.generated, skipped: oneDraftResult.skipped })}
+                </p>
+              )}
+              {oneDraftResult && oneDraftResult.degraded > 0 && (
+                <p className="narration-note warn" role="status">
+                  {t('editor.oneDraftDegraded', { degraded: oneDraftResult.degraded })}
                 </p>
               )}
               {!oneDraftResult && oneDraftResultUnavailable && (

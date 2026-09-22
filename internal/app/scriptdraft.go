@@ -69,6 +69,10 @@ const (
 	draftSkippedExisting draftOutcome = "skipped_existing"
 	// draftSkippedNoText 该页页面文字与备注均为空，没有可用的成稿素材。
 	draftSkippedNoText draftOutcome = "skipped_no_text"
+	// draftDegraded 该页写出了讲稿，但内容是**未经 AI 加工的原始素材**：数字/单位/型号校验
+	// 两轮仍不过，模型的两版产出都被判为不可信，遂保守回退为原文。必须与 draftGenerated
+	// 分开——否则界面会把"页面要点片段"报告成"成稿完成"（A26：不得假成功）。
+	draftDegraded draftOutcome = "degraded"
 )
 
 // draftInputKind 是成稿输入文本的**实际来源**。由 selectDraftInput 单点决定，
@@ -299,7 +303,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if len(refs) == 0 {
 		refs = []string{slideID}
 	}
-	displayText, spokenText, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, snap)
+	displayText, spokenText, degraded, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, snap)
 	if err != nil {
 		return "", err
 	}
@@ -320,6 +324,11 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if _, err := h.scripts.Update(ctx, tenantID, projectID, slideID, language, rev.Revision, []*narration.Segment{segment}); err != nil {
 		return "", fmt.Errorf("script_draft: write draft: %w", err)
 	}
+	if degraded {
+		// 稿子写进去了，但内容是未经加工的原始素材。返回 degraded 让调用方把它记为
+		// degraded 步骤、界面给出"待人工确认"，而不是"成稿完成"。
+		return draftDegraded, nil
+	}
 	return draftGenerated, nil
 }
 
@@ -327,14 +336,25 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 //
 // step_key 以 slideId 为幂等键：同一任务的同一页重复执行只留一条步骤（job_steps 有
 // UNIQUE(job_id, step_key)），重试不会把计数翻倍。
+// pageStepState 把单页处理结果映射为任务步骤状态。
+//
+// 降级必须单列一类：记为 success 会让界面把"原始素材当稿"误报为正常生成（A26）。
+func pageStepState(outcome draftOutcome) pipeline.JobStepState {
+	switch outcome {
+	case draftGenerated:
+		return pipeline.StepSuccess
+	case draftDegraded:
+		return pipeline.StepDegraded
+	default:
+		return pipeline.StepSkipped
+	}
+}
+
 func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome) {
 	if h.steps == nil || pg.SlideID == "" {
 		return
 	}
-	state := pipeline.StepSkipped
-	if outcome == draftGenerated {
-		state = pipeline.StepSuccess
-	}
+	state := pageStepState(outcome)
 	step := pipeline.JobStep{
 		JobID: job.ID, TenantID: job.TenantID,
 		StepType: stepTypePage,
@@ -393,18 +413,23 @@ func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.Visio
 	return out
 }
 
-func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, snap ScriptDraftSnapshot) (string, string, error) {
+// draftText 产出单页讲稿正文，返回 (displayText, spokenText, degraded, error)。
+//
+// degraded=true 表示数字/单位/型号校验两轮仍不过，已**保守回退为原始素材原文**（未经 AI 加工）：
+// 落库的是页面要点片段而非讲解稿。该标志必须向上传递——当作成功会让界面把要点片段报告成
+// "成稿完成"（A26：不得假成功）。
+func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, snap ScriptDraftSnapshot) (string, string, bool, error) {
 	source := in.Text
 	if mode == narration.ModeOriginal {
-		return source, source, nil
+		return source, source, false, nil
 	}
 	polisher, err := h.polisherForTenant(ctx, tenantID)
 	if err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	opID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode)
 	if err := h.reserveLLMTokens(ctx, tenantID, opID, source); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	result, err := polisher.Rewrite(ctx, llm.RewriteRequest{
 		LogicalOpID:  opID,
@@ -414,21 +439,18 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		Instructions: draftInstructions(mode, in.Kind, snap),
 	})
 	if err != nil {
-		return "", "", classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
+		return "", "", false, classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
 	}
 	h.settleLLMTokens(ctx, tenantID, opID, result)
 	text := strings.TrimSpace(result.Text)
 	report := validation.CheckPreserved(source, text)
 	if report.OK() {
-		return text, text, nil
+		return text, text, false, nil
 	}
-	// 一次定向修正；仍失败则回退原文，保证零未经批准数字变更。
-	// 注意（已知缺口）：此回退把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，
-	// 而调用方只看到"成功"——job_steps 的 state 受 CHECK 约束无 "degraded" 取值，
-	// 故当前无法在界面上把"降级落库"与"正常生成"区分开。修好需加状态或注记列（见计划文档遗留）。
+	// 一次定向修正；仍失败则回退原文（degraded=true），保证零未经批准数字变更。
 	guardOpID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode) + ":guard"
 	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, source); err != nil {
-		return "", "", err
+		return "", "", false, err
 	}
 	fix, err := polisher.Rewrite(ctx, llm.RewriteRequest{
 		LogicalOpID: guardOpID,
@@ -439,10 +461,12 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		h.settleLLMTokens(ctx, tenantID, guardOpID, fix)
 		fixed := strings.TrimSpace(fix.Text)
 		if validation.CheckPreserved(source, fixed).OK() {
-			return fixed, fixed, nil
+			return fixed, fixed, false, nil
 		}
 	}
-	return source, source, nil
+	// 两轮校验都不过：保守回退为原始素材原文，并以 degraded=true 告知调用方——落库的是
+	// 页面要点片段，界面必须显示"已保留原文、待人工确认"，不得报告成稿完成。
+	return source, source, true, nil
 }
 
 // reserveLLMTokens 预占 LLM token 额度（G2-5）；超出上限时任务失败。

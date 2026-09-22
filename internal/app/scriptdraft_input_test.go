@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/pipeline"
 )
 
 // 本文件锁定两件事，都不依赖 PG/外部工具，任何机器可跑：
@@ -162,5 +163,35 @@ func TestDraftInstructionsDescribeActualInput(t *testing.T) {
 				t.Fatalf("instructions = %q，缺少收尾约束", got)
 			}
 		})
+	}
+}
+
+// TestPageStepStateIncludesDegraded 守住"降级不得记为成功"（M9）：
+// 数字/单位/型号校验两轮不过时 draftText 会把**原始素材**当稿落库（draftDegraded）。
+// 若它被映射成 StepSuccess，界面就会把"页面要点片段"报告成"成稿完成"（A26：不得假成功）。
+func TestPageStepStateIncludesDegraded(t *testing.T) {
+	cases := []struct {
+		outcome draftOutcome
+		want    pipeline.JobStepState
+		why     string
+	}{
+		{draftGenerated, pipeline.StepSuccess, "正常生成"},
+		{draftDegraded, pipeline.StepDegraded, "回退原文必须单列 degraded"},
+		{draftSkippedExisting, pipeline.StepSkipped, "已有讲稿且未选覆盖"},
+		{draftSkippedNoText, pipeline.StepSkipped, "无可用素材"},
+	}
+	for _, tc := range cases {
+		got := pageStepState(tc.outcome)
+		if got != tc.want {
+			t.Errorf("pageStepState(%q) = %q, want %q（%s）", tc.outcome, got, tc.want, tc.why)
+		}
+	}
+	if got := pageStepState(draftDegraded); got == pipeline.StepSuccess {
+		t.Fatalf("draftDegraded 被映射为 %q：界面会把原始素材当成讲解稿报告", got)
+	}
+	// 步骤状态字面量必须与迁移的 CHECK 约束一致（PG 0039 / sqlite 0007），
+	// 否则 MarkStep 写库会直接被约束拒绝。
+	if string(pipeline.StepDegraded) != "degraded" {
+		t.Fatalf("StepDegraded = %q，但迁移的 CHECK 约束只允许 'degraded'", pipeline.StepDegraded)
 	}
 }

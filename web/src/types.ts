@@ -213,7 +213,11 @@ export const jobStepStateKey: Record<string, string> = {
   pending: 'enum.jobStepState.pending',
   success: 'enum.jobStepState.success',
   skipped: 'enum.jobStepState.skipped',
-  failed: 'enum.jobStepState.failed'
+  failed: 'enum.jobStepState.failed',
+  // degraded：步骤执行完了，但产出是降级结果（一键成稿时数字/单位/型号校验两轮不过，
+  // 保守保留页面原文）。必须与 success 分开显示，否则界面会把"页面要点片段"报告成
+  // "讲解稿已生成"（A26：不得假成功）。
+  degraded: 'enum.jobStepState.degraded'
 };
 
 export const jobScopeKindKey: Record<string, string> = {
