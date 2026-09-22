@@ -2331,3 +2331,22 @@ func TestHandlerMountsSPAFallbackWithoutShadowingAPI(t *testing.T) {
 		t.Fatalf("plain spa route status = %d, want 404", plainResp.StatusCode)
 	}
 }
+
+// TestRequestLanguagePrefersExplicitHeader 锁定显式语言头优先于 Accept-Language：
+// 编辑器用它保证"一键成稿生成的语言"与"面板展示的语言"一致。
+func TestRequestLanguagePrefersExplicitHeader(t *testing.T) {
+	cases := []struct {
+		name   string
+		header http.Header
+		want   string
+	}{
+		{"explicit wins", http.Header{"X-Ppts-Language": {"en-US"}, "Accept-Language": {"zh-CN,zh;q=0.9"}}, "en-US"},
+		{"falls back to accept-language", http.Header{"Accept-Language": {"en-US,en;q=0.9"}}, "en-US"},
+		{"default when absent", http.Header{}, defaultLanguage},
+	}
+	for _, tc := range cases {
+		if got := requestLanguage(tc.header); got != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}

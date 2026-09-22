@@ -594,6 +594,8 @@
   "editor.notesPlaceholder": "No notes — click to edit…",
   "editor.notesSaveFailed": "Failed to save notes",
   "editor.scriptEyebrow": "Script",
+  "editor.scriptLanguage": "Script language",
+  "editor.scriptLanguageTitle": "Switch script language (one-click draft and voiceover use it)",
   "editor.draftHint": "Parsing complete. Pick a script mode to generate a per-page script, then edit it here directly.",
   "editor.emptyScriptHint": "This slide's script is empty. Regenerate the script.",
   "editor.scriptMode": "Script mode",

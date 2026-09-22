@@ -62,6 +62,20 @@ function identityHeaders(identity: ClientIdentity): Record<string, string> {
   };
 }
 
+// 项目讲稿语言偏好：讲稿/配音等端点按请求头 Accept-Language 选择语言。
+// 编辑器设置后，所有 API 请求携带该语言，避免"一键成稿生成英文但面板仍显示中文"。
+let preferredScriptLanguage: string | undefined;
+
+export function setScriptLanguagePreference(language?: string): void {
+  preferredScriptLanguage = language && language.trim() ? language.trim() : undefined;
+}
+
+function languageHeader(): Record<string, string> {
+  return preferredScriptLanguage
+    ? { 'X-PPTS-Language': preferredScriptLanguage, 'Accept-Language': preferredScriptLanguage }
+    : {};
+}
+
 // RevisionDiff 是两次源版本之间的页级差异。
 export type RevisionDiff = {
   added: Array<{ slideId: string; name: string; pageCount: number }>;
@@ -208,6 +222,7 @@ async function connectJSON<T>(identity: ClientIdentity, procedure: string, body:
     headers: {
       'Content-Type': 'application/json',
       ...identityHeaders(identity),
+      ...languageHeader(),
       ...extraHeaders
     },
     body: JSON.stringify(body)
@@ -231,7 +246,7 @@ async function connectJSON<T>(identity: ClientIdentity, procedure: string, body:
 async function getJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
   const response = await fetch(path, {
     method: 'GET',
-    headers: { ...identityHeaders(identity) }
+    headers: { ...identityHeaders(identity), ...languageHeader() }
   });
   if (!response.ok) {
     let code = `http_${response.status}`;
@@ -252,7 +267,7 @@ async function getJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
 async function putJSON<T>(identity: ClientIdentity, path: string, body: Record<string, unknown>): Promise<T> {
   const response = await fetch(path, {
     method: 'PUT',
-    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
+    headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   if (!response.ok) {
@@ -274,7 +289,7 @@ async function putJSON<T>(identity: ClientIdentity, path: string, body: Record<s
 async function postJSON<T>(identity: ClientIdentity, path: string, body: Record<string, unknown>): Promise<T> {
   const response = await fetch(path, {
     method: 'POST',
-    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
+    headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   if (!response.ok) {

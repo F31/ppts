@@ -302,7 +302,12 @@ func requireProjectSlide(projectID, slideID string) error {
 }
 
 func requestLanguage(header httpHeader) string {
-	language := strings.TrimSpace(strings.Split(header.Get("Accept-Language"), ",")[0])
+	// 显式语言头优先：浏览器可自由设置它（Accept-Language 在部分实现中受限），
+	// 编辑器用它保证"生成的讲稿语言"与"面板展示的语言"一致。
+	language := strings.TrimSpace(header.Get("X-PPTS-Language"))
+	if language == "" {
+		language = strings.TrimSpace(strings.Split(header.Get("Accept-Language"), ",")[0])
+	}
 	if language == "" {
 		return defaultLanguage
 	}

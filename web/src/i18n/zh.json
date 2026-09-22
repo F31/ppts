@@ -594,6 +594,8 @@
   "editor.notesPlaceholder": "无备注，点击编辑…",
   "editor.notesSaveFailed": "备注保存失败",
   "editor.scriptEyebrow": "讲稿",
+  "editor.scriptLanguage": "讲稿语言",
+  "editor.scriptLanguageTitle": "切换讲稿语言（一键成稿/配音按此语言）",
   "editor.draftHint": "解析完成。选择讲稿模式后生成逐页讲稿，生成后可直接在此编辑。",
   "editor.emptyScriptHint": "当前页讲稿为空，请重新生成讲稿。",
   "editor.scriptMode": "讲稿模式",

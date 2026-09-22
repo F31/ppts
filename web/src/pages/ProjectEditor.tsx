@@ -27,6 +27,7 @@ import {
   regenerateScriptDraft,
   regenerateSegments,
   saveVoiceSettings,
+  setScriptLanguagePreference,
   setSlideScriptSource,
   updateScript as updateScriptApi,
   type ClientIdentity,
@@ -246,7 +247,23 @@ export function ProjectEditor({
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [oneDraftOpen, setOneDraftOpen] = useState(false);
   const oneDraftDialogRef = useDialogA11y<HTMLElement>(() => setOneDraftOpen(false));
-  const [oneDraftLanguage, setOneDraftLanguage] = useState<'zh-CN' | 'en-US'>('zh-CN');
+  // 项目讲稿语言：'' = 浏览器默认；一键成稿选定语言后切换，使面板与生成的讲稿一致。
+  const [scriptLanguage, setScriptLanguage] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(`ppts:script-language:${projectId}`) ?? '';
+    } catch {
+      return '';
+    }
+  });
+  // 一键成稿完成后强制重载讲稿（语言未变时也要刷新）。
+  const [scriptsRefreshNonce, setScriptsRefreshNonce] = useState(0);
+  const [oneDraftLanguage, setOneDraftLanguage] = useState<'zh-CN' | 'en-US'>(() => {
+    try {
+      return window.localStorage.getItem(`ppts:script-language:${projectId}`) === 'en-US' ? 'en-US' : 'zh-CN';
+    } catch {
+      return 'zh-CN';
+    }
+  });
   const [oneDraftSource, setOneDraftSource] = useState<'notes_first' | 'page_content' | 'notes_only'>('notes_first');
   const [oneDraftMode, setOneDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
   const [oneDraftLength, setOneDraftLength] = useState<'brief' | 'standard' | 'detailed'>('standard');
@@ -416,6 +433,20 @@ export function ProjectEditor({
     return () => window.clearInterval(timer);
   }, [refreshActiveGenJobs]);
 
+  // 先于数据请求同步讲稿语言偏好（effect 按声明顺序执行）。
+  useEffect(() => {
+    setScriptLanguagePreference(scriptLanguage || undefined);
+  }, [scriptLanguage]);
+
+  const persistScriptLanguage = (language: string) => {
+    setScriptLanguage(language);
+    try {
+      window.localStorage.setItem(`ppts:script-language:${projectId}`, language);
+    } catch {
+      /* ignore */
+    }
+  };
+
   // 已有讲稿
   useEffect(() => {
     if (slidesState.mode !== 'real') return;
@@ -440,7 +471,7 @@ export function ProjectEditor({
     return () => {
       cancelled = true;
     };
-  }, [slidesState, identity, projectId]);
+  }, [slidesState, identity, projectId, scriptLanguage, scriptsRefreshNonce]);
 
   // 语音属性：加载项目已保存的（模型/音色/语速）+ 可选模型与音色（来自 TTS 网关配置）。
   // 音色优先取接口返回；接口不可用或未配置音色时，退到开发音色并显式标注为"模拟音色"。
@@ -560,6 +591,7 @@ export function ProjectEditor({
               }
             }));
             if (!cancelled && Object.keys(found).length > 0) setRealScripts((current) => ({ ...current, ...found }));
+            if (!cancelled) setScriptsRefreshNonce((n) => n + 1);
           }
           return;
         }
@@ -888,6 +920,9 @@ export function ProjectEditor({
     if (slidesState.mode !== 'real' || oneDraftRunning) return;
     const slideIds = slidesState.slides.map((slide) => slide.slideId);
     const targetSeconds = oneDraftLength === 'brief' ? 30 : oneDraftLength === 'detailed' ? 90 : 60;
+    // 生成语言即讲稿展示语言：先切换偏好，面板随后按该语言加载生成结果。
+    setScriptLanguagePreference(oneDraftLanguage);
+    persistScriptLanguage(oneDraftLanguage);
     setOneDraftRunning(true);
     setOneDraftProgress({ done: 0, total: slideIds.length, message: t('editor.oneDraftProgressStart') });
     try {
@@ -1318,6 +1353,16 @@ export function ProjectEditor({
               ›
             </button>
             <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
+            <label className="script-language" title={t('editor.scriptLanguageTitle')}>
+              <select
+                value={scriptLanguage || 'zh-CN'}
+                onChange={(e) => persistScriptLanguage(e.currentTarget.value)}
+                aria-label={t('editor.scriptLanguage')}
+              >
+                <option value="zh-CN">{t('editor.languageChinese')}</option>
+                <option value="en-US">{t('editor.languageEnglish')}</option>
+              </select>
+            </label>
           </div>
           <div className="script-column-body">
             {activeRealScript ? (
