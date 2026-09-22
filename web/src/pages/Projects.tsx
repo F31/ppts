@@ -467,7 +467,7 @@ export function Projects({
   const renderVersionList = (project: Project) => {
     const state = versionsByProject[project.id];
     if (!state || state.loading) return <p className="cell-sub">{t('common.loading')}</p>;
-    if (state.error) return <p className="api-status error">{state.error}</p>;
+    if (state.error) return <p className="api-status error" role="alert">{state.error}</p>;
     if (state.revisions.length === 0) return <p className="cell-sub">{t('projects.noPpts')}</p>;
     const editKey = (revNo: number) => `${project.id}:${revNo}`;
     const startEdit = (revNo: number) => setEditingCell(editKey(revNo));
@@ -888,10 +888,12 @@ export function Projects({
         </div>
       </section>
 
-      {error && <p className="form-error">{error}</p>}
-      {orgError && <p className="form-error">{orgError}</p>}
+      {/* 错误必须播报（role="alert"）；通知是信息性内容，用 polite 的 live region，
+          避免与错误抢屏（全仓仅此三处通知，此前都是裸 <p>）。 */}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {orgError && <p className="form-error" role="alert">{orgError}</p>}
       {notices.map((notice) => (
-        <p key={notice.id} className="floating-notice">
+        <p key={notice.id} className="floating-notice" role="status" aria-live="polite">
           {notice.text}
         </p>
       ))}

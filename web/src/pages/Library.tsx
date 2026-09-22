@@ -204,7 +204,7 @@ export function Library({ identity }: { identity: ClientIdentity }) {
                 ))}
               </ul>
             )}
-            {downloadError && <p className="form-error">{downloadError}</p>}
+            {downloadError && <p className="form-error" role="alert">{downloadError}</p>}
           </section>
         </>
       )}

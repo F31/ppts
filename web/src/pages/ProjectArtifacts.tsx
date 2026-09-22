@@ -259,7 +259,7 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
                 ))}
               </div>
             )}
-            {downloadError && <p className="form-error">{downloadError}</p>}
+            {downloadError && <p className="form-error" role="alert">{downloadError}</p>}
           </section>
         </>
       )}
@@ -284,7 +284,7 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
               {t('public.publishSummaryLabel')}
               <textarea value={pubSummary} onChange={(e) => setPubSummary(e.currentTarget.value)} rows={3} />
             </label>
-            {pubStatus.phase === 'error' && <p className="form-error">{pubStatus.message}</p>}
+            {pubStatus.phase === 'error' && <p className="form-error" role="alert">{pubStatus.message}</p>}
             <div className="draft-actions">
               <button type="button" className="primary" disabled={pubStatus.phase === 'submitting'} onClick={() => void submitPublish()}>
                 {pubStatus.phase === 'submitting' ? `${t('public.publishSubmit')}…` : t('public.publishSubmit')}

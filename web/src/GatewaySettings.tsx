@@ -307,7 +307,7 @@ export function GatewaySettings({
           </button>
         )}
       </header>
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
         {!loading && !error && (
           <div className={`service-banner ${ttsState}`} role="status">
             <strong>{t('gateway.serviceTitle')}</strong>

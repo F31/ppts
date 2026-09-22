@@ -34,7 +34,7 @@ export function AuditPanel({ identity }: Props) {
   const [action, setAction] = useState('');
   const [resourceType, setResourceType] = useState('');
   const [sinceHours, setSinceHours] = useState('24');
-  const [state, setState] = useState<AuditState>(emptyState);
+  const [state, setState] = useState<AuditState>({ ...emptyState, loading: true });
 
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: '' }));
@@ -87,9 +87,17 @@ export function AuditPanel({ identity }: Props) {
           <option value="0">{t('audit.all')}</option>
         </select>
       </div>
-      {state.error && <p className="api-status error">{state.error}</p>}
+      {state.error && (
+        <p className="api-status error" role="alert">
+          {state.error}
+        </p>
+      )}
       <div className="audit-list">
-        {state.events.length === 0 && !state.error ? (
+        {/* 首次加载必须与"确实没有事件"区分：原先 loading 只用于禁用刷新按钮，
+            于是首屏（含 300ms 防抖窗口）显示的是「暂无审计事件」。 */}
+        {state.loading && state.events.length === 0 ? (
+          <p className="empty-state">{t('common.loading')}</p>
+        ) : state.events.length === 0 && !state.error ? (
           <p className="empty-state">{t('audit.empty')}</p>
         ) : (
           state.events.map((event) => (
@@ -106,7 +114,9 @@ export function AuditPanel({ identity }: Props) {
       </div>
       <div className="archive-list">
         <strong>{t('audit.archives')}</strong>
-        {state.archives.length === 0 ? (
+        {state.loading && state.archives.length === 0 ? (
+          <p>{t('common.loading')}</p>
+        ) : state.archives.length === 0 ? (
           <p>{t('audit.noArchives')}</p>
         ) : (
           state.archives.map((file) => (

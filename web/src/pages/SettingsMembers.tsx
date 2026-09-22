@@ -134,8 +134,8 @@ export function SettingsMembers({ identity }: { identity: ClientIdentity }) {
         </div>
       </section>
 
-      {error && <p className="form-error">{error}</p>}
-      {notice && <p className="floating-notice">{notice}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {notice && <p className="floating-notice" role="status" aria-live="polite">{notice}</p>}
 
       {form && (
         <section className="panel editor-form">

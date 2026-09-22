@@ -93,7 +93,7 @@ export function ExportDialog({
             </label>
             <p className="form-hint">{t('editor.exportBurnNote')}</p>
             <p className="form-hint">{t('editor.exportResolutionNote')}</p>
-            {mp4NoPages && <p className="form-error">{t('editor.exportMp4NoPages')}</p>}
+            {mp4NoPages && <p className="form-error" role="alert">{t('editor.exportMp4NoPages')}</p>}
           </div>
         )}
 
@@ -111,7 +111,7 @@ export function ExportDialog({
 
         <p className="export-snapshot">{t('editor.exportSnapshotNote', { snapshot: snapshotTail })}</p>
 
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
 
         <div className="modal-actions">
           <button type="button" className="button-ghost" onClick={onClose} disabled={busy}>

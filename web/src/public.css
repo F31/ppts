@@ -234,3 +234,40 @@
 .watch-error .btn {
   margin-top: 16px;
 }
+
+/* 窄屏适配（#8）：此前本文件 @media 数量为 0，公开区（广场 + 观看页）完全没有适配，
+   320–720px 下 hero 过大、卡片被挤到换行、顶栏溢出。公开区没有控制台侧边栏，
+   布局约束与控制台不同，故断点按内容宽度定（不沿用 styles.css 的 767px）。 */
+
+@media (max-width: 860px) {
+  .public-topbar {
+    flex-wrap: wrap;
+    gap: 10px 14px;
+    padding: 12px 16px;
+  }
+  /* 换行后 margin-left:auto 会把导航顶到右侧，改成顺序排列。 */
+  .public-topbar .topbar-actions { margin-left: 0; }
+  .public-content { padding: 24px 16px 40px; }
+
+  .explore-hero { margin-bottom: 20px; }
+  .explore-hero h1 { font-size: 24px; }
+  .explore-tabs { margin-bottom: 20px; }
+
+  .work-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+  }
+
+  .watch-info h1 { font-size: 20px; }
+  .watch-cover { max-height: 52vh; }
+  .watch-summary { max-width: 100%; }
+}
+
+@media (max-width: 520px) {
+  .public-content { padding: 18px 12px 32px; }
+  /* 单列：360px 屏减去左右内边距只剩 336px，minmax(220px) 会把卡片挤成两列窄条。 */
+  .work-grid { grid-template-columns: 1fr; }
+  .explore-hero h1 { font-size: 21px; }
+  .explore-tabs .tab { flex: 1 1 0; text-align: center; padding: 8px 12px; }
+  .watch-loading, .watch-error, .explore-loading, .explore-empty { padding: 36px 0; }
+}

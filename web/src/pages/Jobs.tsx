@@ -380,7 +380,7 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
         </div>
       </section>
 
-      {error && <p className="form-error">{error}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
 
       {selectedJob ? (
         <JobDetailPanel
@@ -459,7 +459,7 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
 
         {/* 范围读取失败：显式报错 + 重试，不把失败渲染成空白单元格（A26）。 */}
         {extrasError && (
-          <div className="load-failure">
+          <div className="load-failure" role="alert">
             <p className="form-error">{extrasError}</p>
             <button type="button" onClick={() => void loadExtras()}>
               {t('common.retry')}
@@ -608,7 +608,7 @@ function JobDetailPanel({
       </header>
 
       {loadError && (
-        <div className="load-failure">
+        <div className="load-failure" role="alert">
           <p className="form-error">{loadError}</p>
           <button type="button" onClick={onRetryLoad}>
             {t('common.retry')}
@@ -702,7 +702,7 @@ function JobDetailPanel({
           <p className="empty-state">{t('common.loading')}</p>
         ) : detail?.stepsError ? (
           // 步骤不可用：「后端未提供该能力」与「读取失败」必须可区分，且都给重试入口。
-          <div className="load-failure load-failure-stack">
+          <div className="load-failure load-failure-stack" role="alert">
             <p className="form-error">
               {detail.stepsError === 'unsupported' ? t('jobs.stepsUnsupported') : t('jobs.stepsLoadFailed', { msg: t('err.unavailable') })}
             </p>

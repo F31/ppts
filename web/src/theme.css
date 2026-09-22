@@ -38,7 +38,6 @@ html[data-theme="light"] .console-topbar {
 }
 html[data-theme="light"] .breadcrumb-sep { color: #94a3b8; }
 html[data-theme="light"] .eyebrow { color: #64748b; }
-html[data-theme="light"] .topbar-action-btn + .topbar-action-btn { color: #0f172a; background: rgba(15, 23, 42, .06); }
 html[data-theme="light"] .lang-toggle {
   color: #0f172a; border-color: rgba(15, 23, 42, .16); background: rgba(15, 23, 42, .05);
 }
@@ -126,8 +125,6 @@ html[data-theme="light"] .slide-rail-v2 button.selected {
 html[data-theme="light"] .slide-rail-v2 span,
 html[data-theme="light"] .slide-rail-v2 em { color: #64748b; }
 html[data-theme="light"] .field-label { color: #64748b; }
-html[data-theme="light"] .page-preview-text { color: #334155; }
-html[data-theme="light"] .page-preview-text.muted { color: #94a3b8; }
 html[data-theme="light"] .narration-note { color: #334155; }
 html[data-theme="light"] .status-marker { color: #334155; border-color: rgba(15, 23, 42, .14); }
 html[data-theme="light"] .status-marker.muted { opacity: .6; }

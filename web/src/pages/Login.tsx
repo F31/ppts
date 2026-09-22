@@ -298,7 +298,7 @@ export function Login() {
         ) : !showOIDC && emailEnabled === false ? (
           <p className="login-unconfigured">{t('login.unconfigured')}</p>
         ) : null}
-        {error && <p className="form-error">{error}</p>}
+        {error && <p className="form-error" role="alert">{error}</p>}
       </section>
     </main>
   );

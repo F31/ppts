@@ -15,11 +15,9 @@ import {
   getProject,
   getProjectSlides,
   getSourceRevisions,
-  getRevisionDiff,
   getSlideNotes,
   setSlideNotes,
   type SourceRevisionSummary,
-  type RevisionDiff,
   getScript,
   getSlideRenderURLs,
   getSlideScriptSources,
@@ -38,7 +36,7 @@ import {
   type SlideScriptSource,
   type VoiceModel
 } from '../api';
-import { describeApiError } from '../apiError';
+import { describeApiError, isNotFound, isUnimplemented } from '../apiError';
 import { Player } from '../Player';
 import { can } from '../permissions';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
@@ -55,6 +53,21 @@ type SlidesState =
   | { mode: 'empty' }
   | { mode: 'failed'; message: string }
   | { mode: 'real'; slides: SlideSummary[]; revisionNo: number };
+
+// 编辑器内的"探测类"请求（版本列表/项目信息/配音状态/缩略图/讲稿来源/语音属性）。
+// 这些请求失败后原先只是"保持空态"，界面与"确实没有"完全同貌（A26 禁止的形态）。
+// 统一收进 probeErrors，并按渲染位置分两组：顶部失败带 / 语音抽屉内。
+type ProbeId =
+  | 'revisions'
+  | 'project'
+  | 'narration'
+  | 'thumbnails'
+  | 'scriptSources'
+  | 'voiceModels'
+  | 'voiceSettings'
+  | 'voiceStale';
+// 顶部失败带覆盖的探测项（其余在语音抽屉内就地渲染）。
+const topProbeIds: ProbeId[] = ['revisions', 'project', 'narration', 'thumbnails', 'scriptSources'];
 
 type DraftStatus = { phase: 'idle' | 'generating' | 'ready' | 'error'; message: string };
 type ConflictState = { slideId: string; localText: string; latest: ScriptRevision } | null;
@@ -113,6 +126,32 @@ export function ProjectEditor({
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   // 页面列表加载失败后的重试计数（与 scriptsRefreshNonce 同款：变化即重跑加载 effect）。
   const [slidesReloadKey, setSlidesReloadKey] = useState(0);
+  // 探测类请求的失败原因（按 ProbeId 归档）。空对象 = 全部正常。
+  const [probeErrors, setProbeErrors] = useState<Partial<Record<ProbeId, string>>>({});
+  // 顶层探测的重试计数；变化即重跑全部顶层探测 effect。
+  const [probesReloadKey, setProbesReloadKey] = useState(0);
+  const clearProbe = useCallback((id: ProbeId) => {
+    setProbeErrors((cur) => {
+      if (!(id in cur)) return cur;
+      const next = { ...cur };
+      delete next[id];
+      return next;
+    });
+  }, []);
+  // reportProbe 是探测失败的统一入口。两类"非故障"必须放行、不得报错：
+  //   ① isNotFound —— 资源确实不存在（如"尚未生成配音"）是正常业务语义；
+  //   ② isUnimplemented —— 本部署未提供该能力（503 feature_disabled / 501），
+  //      按 A26 应隐藏入口，而不是把部署差异渲染成故障。
+  const reportProbe = useCallback(
+    (id: ProbeId, err: unknown, fallbackKey: string) => {
+      if (isNotFound(err) || isUnimplemented(err)) {
+        clearProbe(id);
+        return;
+      }
+      setProbeErrors((cur) => ({ ...cur, [id]: describeApiError(err, t(fallbackKey), t) }));
+    },
+    [clearProbe, t]
+  );
   const [activeSlideID, setActiveSlideID] = useState('');
   // 右侧讲稿栏：可折叠为抽屉（默认展开）。
   const [scriptOpen, setScriptOpen] = useState(true);
@@ -142,15 +181,15 @@ export function ProjectEditor({
   const [voiceStaleIds, setVoiceStaleIds] = useState<string[]>([]);
   const [voiceStaleLoading, setVoiceStaleLoading] = useState(false);
   const exportQueryHandledRef = useRef(false);
-  // 版本历史（P0 多版本查看）：列历史版本 + 抽屉预览，只读，不切换生效版本。
+  // 版本历史（P0 多版本查看）：只读列出，供顶部版本下拉切换生效版本。
+  // #9 处置：此处原有 previewRev/previewSlides/previewLoading/diffRevB/diffResult/diffLoading
+  // 六个 state 与 computeDiff/openVersionPreview 两个 useCallback，构成一套"版本抽屉预览 +
+  // 两版本差异对比"，但**从未接入任何 JSX**（state 只被 set、回调从未被调用），界面上看不出。
+  // 依"接回或删除，二者选一、不能留着误导"选择删除；需要时从 git 历史恢复即可
+  // （后端端点 GET /projects/{pid}/revisions/{revA}/diff/{revB} 与 api.ts 的 getRevisionDiff
+  //  绑定保留不删——属"后端有、前端无 UI"的未接线能力）。
   const [revisions, setRevisions] = useState<SourceRevisionSummary[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
-  const [previewRev, setPreviewRev] = useState<number | null>(null);
-  const [previewSlides, setPreviewSlides] = useState<SlideSummary[] | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [diffRevB, setDiffRevB] = useState<number | null>(null);
-  const [diffResult, setDiffResult] = useState<RevisionDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
   // 项目标题与当前 PPT 展示名（用于回退链接）
   const [projectTitle, setProjectTitle] = useState('');
   const [pptDisplayName, setPptDisplayName] = useState('');
@@ -166,21 +205,30 @@ export function ProjectEditor({
     getSourceRevisions(identity, projectId)
       .then((r) => {
         if (cancelled) return;
+        clearProbe('revisions');
         setRevisions(r.revisions);
         setCurrentRevision(r.currentRevision);
         const cur = r.revisions.find((rv) => rv.isCurrent);
         setPptDisplayName(cur?.displayName ?? '');
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // 失败时版本下拉会整体不渲染（功能消失），比报错更难排查 → 必须显式说明。
+        if (!cancelled) reportProbe('revisions', err, 'editor.revisionsFailed');
+      });
     getProject(identity, projectId)
       .then((p) => {
-        if (!cancelled) setProjectTitle(p.title);
+        if (cancelled) return;
+        clearProbe('project');
+        setProjectTitle(p.title);
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // 失败时标题回退成 projectId（一串 ID）→ 需说明"这是降级显示"。
+        if (!cancelled) reportProbe('project', err, 'editor.projectMetaFailed');
+      });
     return () => {
       cancelled = true;
     };
-  }, [identity, projectId]);
+  }, [identity, projectId, probesReloadKey, reportProbe, clearProbe]);
 
   // 加载/保存当前幻灯片备注（切换幻灯片或修订号时自动加载，失焦时延迟保存）。
   const loadSlideNotes = useCallback(async (sid: string, revNo: number) => {
@@ -209,38 +257,6 @@ export function ProjectEditor({
     }, 600);
   }, [identity, projectId, t]);
 
-  const computeDiff = useCallback(
-    async (revB: number) => {
-      if (previewRev == null) return;
-      setDiffRevB(revB);
-      setDiffLoading(true);
-      try {
-        const d = await getRevisionDiff(identity, projectId, previewRev, revB);
-        setDiffResult(d);
-      } catch {
-        setDiffResult(null);
-      } finally {
-        setDiffLoading(false);
-      }
-    },
-    [identity, projectId, previewRev],
-  );
-
-  const openVersionPreview = useCallback(
-    async (revNo: number) => {
-      setPreviewRev(revNo);
-      setPreviewLoading(true);
-      try {
-        const res = await getProjectSlides(identity, projectId, revNo);
-        setPreviewSlides(res.slides);
-      } catch {
-        setPreviewSlides([]);
-      } finally {
-        setPreviewLoading(false);
-      }
-    },
-    [identity, projectId]
-  );
   // M4 ⑦：生成范围 + 待确认稿数（C-5 前置检查）。
   // 讲稿改动后是否待重新生成语音（用于讲稿栏提示）。
   const [voiceDirty, setVoiceDirty] = useState(false);
@@ -346,6 +362,7 @@ export function ProjectEditor({
     (async () => {
       try {
         const status = await getNarration(identity, projectId);
+        clearProbe('narration');
         if (cancelled || !status.ready || !status.timelineKey) return;
         if (status.revisionNo !== slidesState.revisionNo) {
           setRealManifest(null);
@@ -368,14 +385,16 @@ export function ProjectEditor({
           phase: 'ready',
           message: (status.pagePngKeys?.length ?? 0) > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
         });
-      } catch {
-        // 尚未生成配音或端点未就绪：保持空态，不阻塞讲稿编辑。
+      } catch (err: unknown) {
+        // 「尚未生成配音」是 404（正常业务语义），reportProbe 会放行不报错；
+        // 其余失败必须说明——否则"已有配音却读不出来"会被读成"没生成过配音"。
+        if (!cancelled) reportProbe('narration', err, 'editor.narrationStatusFailed');
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [slidesState, identity, projectId, t]);
+  }, [slidesState, identity, projectId, t, probesReloadKey, reportProbe, clearProbe]);
 
   // 当前页备注：幻灯片或修订号变化时自动加载（含首次进入）。
   useEffect(() => {
@@ -394,17 +413,19 @@ export function ProjectEditor({
     getSlideRenderURLs(identity, projectId, slidesState.revisionNo)
       .then((res) => {
         if (cancelled) return;
+        clearProbe('thumbnails');
         const map: Record<string, string> = {};
         for (const item of res.slides) map[item.slideId] = item.url;
         setRenderUrls(map);
       })
-      .catch(() => {
-        // 渲染图不可用（解析未完成 / 端点未就绪），保持空映射，前端降级展示。
+      .catch((err: unknown) => {
+        // 失败后前端降级成"序号缩略图"，外观与"这页本来就没有渲染图"一样 → 需说明。
+        if (!cancelled) reportProbe('thumbnails', err, 'editor.thumbnailsFailed');
       });
     return () => {
       cancelled = true;
     };
-  }, [slidesState, identity, projectId]);
+  }, [slidesState, identity, projectId, probesReloadKey, reportProbe, clearProbe]);
 
   // M3 ⑥：加载项目内"无备注页讲稿来源"选择（持久化，供生成草稿时 Worker 尊重）。
   useEffect(() => {
@@ -416,17 +437,19 @@ export function ProjectEditor({
     getSlideScriptSources(identity, projectId)
       .then((res) => {
         if (cancelled) return;
+        clearProbe('scriptSources');
         const map: Record<string, SlideScriptSource> = {};
         for (const item of res.sources) map[item.slideId] = item;
         setSlideSources(map);
       })
-      .catch(() => {
-        // 端点未就绪（store 未配置）或权限不足，保持空映射，来源选择降级为不可见。
+      .catch((err: unknown) => {
+        // 失败后来源选择整体不可见（功能消失）；"未配置 store"属未提供能力，reportProbe 会放行。
+        if (!cancelled) reportProbe('scriptSources', err, 'editor.scriptSourceFailed');
       });
     return () => {
       cancelled = true;
     };
-  }, [slidesState, identity, projectId]);
+  }, [slidesState, identity, projectId, probesReloadKey, reportProbe, clearProbe]);
 
   // B3-M5：感知本项目活跃的生成任务（配音/讲稿），驱动"生成中继续编辑"顶部快照提示。
   // 生成任务以创建时已确认的讲稿快照为输入（C-5：lockConfirmedOnly），故生成期间仍可继续编辑，
@@ -509,14 +532,19 @@ export function ProjectEditor({
       let models: VoiceModel[] = [];
       try {
         models = await listVoiceModels(identity, projectId);
-      } catch {
-        // 网关未启用/无权限：保持空列表，使用开发兜底。
+        clearProbe('voiceModels');
+      } catch (err: unknown) {
+        // 网关未启用（isUnimplemented）→ 保持空列表走开发兜底，reportProbe 会放行；
+        // 否则必须报错：此时界面会说"无可用语音模型"，等于把故障说成"平台没这能力"。
+        if (!cancelled) reportProbe('voiceModels', err, 'editor.voiceModelsFailed');
       }
       let saved: ProjectVoiceSettings | null = null;
       try {
         saved = await getVoiceSettings(identity, projectId);
-      } catch {
-        // 端点不可用：使用缺省。
+        clearProbe('voiceSettings');
+      } catch (err: unknown) {
+        // 失败时下面的取值会退回缺省（语速 100%、开发音色）→ 用户已存的音色像被清空了。
+        if (!cancelled) reportProbe('voiceSettings', err, 'editor.voiceSettingsFailed');
       }
       if (cancelled) return;
       setVoiceModels(models);
@@ -533,7 +561,7 @@ export function ProjectEditor({
     return () => {
       cancelled = true;
     };
-  }, [identity, projectId]);
+  }, [identity, projectId, probesReloadKey, reportProbe, clearProbe]);
 
   // B2 M2 ⑧：Ctrl/Cmd+S 立即保存当前页草稿（阻止浏览器保存网页）。
   useEffect(() => {
@@ -837,9 +865,12 @@ export function ProjectEditor({
     setVoiceStaleLoading(true);
     try {
       const res = await getNarrationStale(identity, projectId);
+      clearProbe('voiceStale');
       setVoiceStaleIds(res.slides.filter((slide) => slide.stale).map((slide) => slide.slideId));
-    } catch {
+    } catch (err: unknown) {
+      // 原实现失败即置空数组 → 界面提示"语音全部最新"，与"确实无需更新"完全同貌（A26）。
       setVoiceStaleIds([]);
+      reportProbe('voiceStale', err, 'editor.voiceStaleFailed');
     } finally {
       setVoiceStaleLoading(false);
     }
@@ -1358,6 +1389,23 @@ export function ProjectEditor({
         </div>
       )}
 
+      {/* A26：探测类请求（版本列表 / 项目信息 / 配音状态 / 缩略图 / 讲稿来源）失败必须可见。
+          此前它们各自"保持空态"，界面与"确实没有"完全一样；此处给原因 + 一个统一重试入口。 */}
+      {topProbeIds.some((id) => probeErrors[id]) && (
+        <div className="load-failure load-failure-stack" role="alert">
+          {topProbeIds.map((id) =>
+            probeErrors[id] ? (
+              <p key={id} className="form-error">
+                {probeErrors[id]}
+              </p>
+            ) : null
+          )}
+          <button type="button" onClick={() => setProbesReloadKey((key) => key + 1)}>
+            {t('common.retry')}
+          </button>
+        </div>
+      )}
+
       <div className={`editor-layout${scriptOpen ? '' : ' script-collapsed'}${scriptResizing ? ' script-resizing' : ''}`} ref={editorLayoutRef}>
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
@@ -1444,7 +1492,7 @@ export function ProjectEditor({
                 placeholder={t('editor.notesPlaceholder')}
                 rows={3}
               />
-              {notesError && <p className="form-error">{notesError}</p>}
+              {notesError && <p className="form-error" role="alert">{notesError}</p>}
             </section>
           )}
         </section>
@@ -1641,7 +1689,10 @@ export function ProjectEditor({
                   onChange={(e) => selectVoiceModel(e.currentTarget.value)}
                   disabled={voiceModels.length === 0}
                 >
-                  {voiceModels.length === 0 && <option value="">{t('editor.voiceModelEmpty')}</option>}
+                  {voiceModels.length === 0 && (
+                    // 读取失败时不能说"无可用语音模型"——那是把故障说成"平台没这个能力"。
+                    <option value="">{probeErrors.voiceModels ? t('err.unavailable') : t('editor.voiceModelEmpty')}</option>
+                  )}
                   {voiceModels.map((model) => (
                     <option key={model.name} value={model.name}>
                       {model.model || model.name}
@@ -1688,17 +1739,38 @@ export function ProjectEditor({
                 </select>
               </label>
 
-              <p className="narration-note">
-                {voiceStaleLoading
-                  ? t('editor.voiceStaleLoading')
-                  : voiceGenMode === 'full'
-                    ? t('editor.voiceFullHint', { total: scriptReadyCount })
-                    : t('editor.voiceStaleHint', { stale: voiceStaleIds.length, total: scriptReadyCount })}
-              </p>
+              {probeErrors.voiceStale ? (
+                // 原实现失败即置空数组，这里会显示"语音全部最新"——与"确实无需更新"完全同貌（A26）。
+                <div className="load-failure" role="alert">
+                  <p className="form-error">{probeErrors.voiceStale}</p>
+                  <button type="button" onClick={() => void refreshVoiceStale()}>
+                    {t('common.retry')}
+                  </button>
+                </div>
+              ) : (
+                <p className="narration-note">
+                  {voiceStaleLoading
+                    ? t('editor.voiceStaleLoading')
+                    : voiceGenMode === 'full'
+                      ? t('editor.voiceFullHint', { total: scriptReadyCount })
+                      : t('editor.voiceStaleHint', { stale: voiceStaleIds.length, total: scriptReadyCount })}
+                </p>
+              )}
 
-              {voiceModels.length === 0 && <p className="narration-note">{t('editor.voiceModelEmpty')}</p>}
+              {(probeErrors.voiceModels || probeErrors.voiceSettings) && (
+                // 已存音色读取失败时下面会退回缺省（语速 100% / 开发音色），
+                // 不说明的话用户会以为"我保存的音色被清空了"。
+                <div className="load-failure load-failure-stack" role="alert">
+                  {probeErrors.voiceModels && <p className="form-error">{probeErrors.voiceModels}</p>}
+                  {probeErrors.voiceSettings && <p className="form-error">{probeErrors.voiceSettings}</p>}
+                  <button type="button" onClick={() => setProbesReloadKey((key) => key + 1)}>
+                    {t('common.retry')}
+                  </button>
+                </div>
+              )}
+              {!probeErrors.voiceModels && voiceModels.length === 0 && <p className="narration-note">{t('editor.voiceModelEmpty')}</p>}
               {voiceModels.length > 0 && <p className="narration-note">{t('editor.voiceModelNote')}</p>}
-              {voiceSaveError && <p className="form-error">{voiceSaveError}</p>}
+              {voiceSaveError && <p className="form-error" role="alert">{voiceSaveError}</p>}
 
               <div className="draft-actions">
                 <button type="button" className="primary" disabled={voiceSaving || !canEditScript} onClick={() => void voiceDialogGenerate()}>
