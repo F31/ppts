@@ -1,0 +1,26 @@
+{
+  "dynamicPrefixes": {
+    "gateway.health": "运行时拼接兜底（自动检测于 src/GatewaySettings.tsx）：该族 5 条由 t(`gateway.health${healthKeySuffix[health]}`) 构造，后缀表在 src/gatewayState.ts",
+    "gateway.service": "运行时拼接兜底（自动检测于 src/GatewaySettings.tsx）：该族 5 条由 t(`gateway.service${serviceKeySuffix[ttsState]}`) 构造，后缀表在 src/gatewayState.ts",
+    "members.gender.": "运行时拼接兜底（自动检测于 src/pages/SettingsMembers.tsx）：t(`members.gender.${g}`)；该族 4 条另有 src/pages/Login.tsx:251-254 的显式引用"
+  },
+  "orphans": {
+    "editor.fixVoice": "模拟音色提示簇（1/3）：疑似 A26 回归 —— 提示 UI 已丢失。若后端仍返回 simulated 音色，用户会拿到非正式产物而无感知。保留作为该提醒的载体，待核实后端行为后决定「接回提示」或「删除」",
+    "editor.simulatedVoice": "模拟音色提示簇（2/3）：见 editor.fixVoice",
+    "editor.simulatedVoiceNote": "模拟音色提示簇（3/3）：见 editor.fixVoice",
+    "members.ownerRoleNewOnly": "约束真实（新增成员不能直接指定 OWNER），现用 <option disabled> 兜住但未说明原因；文案本身正确，属「该接未接」",
+    "versions.count": "版本历史面板簇（旧侧栏文案）：现版本切换已改为 header 的 <select>（用 versions.openTitle / versions.current）。⚠️ 按既有判据更接近死文案，与 diff 簇同前缀一并保留，建议再审",
+    "versions.diffAdded": "未接线能力：后端 GET /projects/{pid}/revisions/{revA}/diff/{revB} 已有端点（internal/api/editor.go）+ api.ts:getRevisionDiff 绑定保留，仅缺前端 UI",
+    "versions.diffChanged": "未接线能力：同 versions.diffAdded（同一 diff 端点）",
+    "versions.diffNone": "未接线能力：同 versions.diffAdded（同一 diff 端点）",
+    "versions.diffRemoved": "未接线能力：同 versions.diffAdded（同一 diff 端点）",
+    "versions.diffSelectLabel": "未接线能力：同 versions.diffAdded（同一 diff 端点）",
+    "versions.diffSelectPlaceholder": "未接线能力：同 versions.diffAdded（同一 diff 端点）",
+    "versions.diffSummary": "未接线能力：同 versions.diffAdded（同一 diff 端点）",
+    "versions.pages": "版本历史面板簇（旧侧栏条目）：见 versions.count。⚠️ 建议再审",
+    "versions.previewOf": "版本历史面板簇（旧预览文案）：见 versions.count。⚠️ 建议再审",
+    "versions.selectHint": "版本历史面板簇（旧侧栏操作提示）：见 versions.count。⚠️ 建议再审",
+    "versions.switchNote": "版本历史面板簇：⚠️ 文案称「切换生效版本功能即将上线」，但后端至今没有该能力（PATCH /revisions/{no} 实为改显示名，不是切换生效版本）→ 按判据属死文案，建议再审",
+    "versions.title": "版本历史面板簇（旧面板标题）：见 versions.count。⚠️ 建议再审"
+  }
+}
