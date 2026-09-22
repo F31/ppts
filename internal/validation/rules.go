@@ -36,6 +36,10 @@ type Rules struct {
 	PlainUnits []string `json:"plainUnits"`
 	// ModelAliasGroups：缩写与其通用全称的语言级同义，组内首个为规范写法。
 	ModelAliasGroups [][]string `json:"modelAliasGroups"`
+	// MeasureGroups：量词按**语义家族**分组（M16）。同族可互换（个/项/条/款），
+	// 异族不可（页 ≠ 个）——"3 页"与"3 个项目"是两件事，而"3 个"与"3 条"是同一件事。
+	// 只登记确定可互换的；吃不准的量词**单独成组**（跨族即判违规，取保守侧）。
+	MeasureGroups [][]string `json:"measureGroups"`
 }
 
 // defaultRules 是进程内唯一的一份规则表；加载或校验失败直接 panic——
@@ -48,6 +52,7 @@ var (
 	unitAliasGroups  = defaultRules.UnitAliasGroups
 	plainUnits       = defaultRules.PlainUnits
 	modelAliasGroups = defaultRules.ModelAliasGroups
+	measureGroups    = defaultRules.MeasureGroups
 )
 
 // RulesVersion 返回当前规则表版本，供回放报告/基线留痕。
@@ -89,8 +94,9 @@ func ValidateRules(r Rules) []string {
 	if strings.TrimSpace(r.Version) == "" {
 		problems = append(problems, "version 不能为空（改表必须留痕）")
 	}
-	if len(r.UnitAliasGroups) == 0 && len(r.PlainUnits) == 0 && len(r.ModelAliasGroups) == 0 {
-		problems = append(problems, "三张表全空：门禁会退化成几乎不校验")
+	if len(r.UnitAliasGroups) == 0 && len(r.PlainUnits) == 0 &&
+		len(r.ModelAliasGroups) == 0 && len(r.MeasureGroups) == 0 {
+		problems = append(problems, "四张子表全空：门禁会退化成几乎不校验")
 	}
 
 	check := func(ns string, owner map[string]string, where, token string) {
@@ -134,6 +140,28 @@ func ValidateRules(r Rules) []string {
 		}
 		for _, t := range g {
 			check("型号", models, where, t)
+		}
+	}
+
+	// 量词组与上面两组规则不同：**允许只有一个量词**——吃不准能否互换的量词应当单独成组
+	// （跨族即判违规，取保守侧），而不是为了凑够两个而硬拉一个近似词进组。
+	measures := map[string]string{}
+	for i, g := range r.MeasureGroups {
+		where := fmt.Sprintf("measureGroups[%d]", i)
+		if len(g) == 0 {
+			problems = append(problems, where+" 为空：空组没有意义，要么删掉要么填量词")
+			continue
+		}
+		for _, t := range g {
+			tl := strings.ToLower(strings.TrimSpace(t))
+			if tl != "" {
+				if prev, isUnit := units[tl]; isUnit {
+					problems = append(problems, fmt.Sprintf(
+						"量词 %q 同时登记为单位（%s）：抽取时会被单位规则先吃掉，量词判定失效", t, prev))
+					continue
+				}
+			}
+			check("量词", measures, where, t)
 		}
 	}
 	return problems

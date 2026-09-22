@@ -142,5 +142,41 @@
     "tag": "number-changed",
     "provenance": "authored",
     "note": "计数被改：3 → 4"
+  },
+  {
+    "id": "auth-measure-cross-family-page",
+    "source": "本章共 3 页",
+    "target": "本章共 3 个部分。",
+    "want": "block",
+    "tag": "measure",
+    "provenance": "authored",
+    "note": "量词异族：页 → 个（数字没变但事实变了，M16 前会被放行）"
+  },
+  {
+    "id": "auth-measure-cross-family-count",
+    "source": "采购 3 个",
+    "target": "采购 3 台。",
+    "want": "block",
+    "tag": "measure",
+    "provenance": "authored",
+    "note": "量词异族：个 → 台"
+  },
+  {
+    "id": "auth-measure-same-family",
+    "source": "本页有 3 个要点",
+    "target": "本页一共有 3 条要点。",
+    "want": "pass",
+    "tag": "measure",
+    "provenance": "authored",
+    "note": "同族量词互换：个 ↔ 条（无害改写，必须放行）"
+  },
+  {
+    "id": "auth-measure-omitted",
+    "source": "示例 2 个",
+    "target": "示例 2。",
+    "want": "pass",
+    "tag": "measure",
+    "provenance": "authored",
+    "note": "目标省略量词：任一侧缺量词视为兼容（避免新增误杀）"
   }
 ]

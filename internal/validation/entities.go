@@ -18,9 +18,14 @@ import (
 // 「数字被改」（80GB→96GB）、「数字被删」（98 分→得分很高）、「原文无数字时模型自行编号」
 // 依然判违规（见 entities_test.go 的守门用例）。
 //
-// 等价关系只在本文件声明一次。提示词侧通过 FormatEquivalenceHint 取同一张表，
-// 避免出现「指令说可以这样写、校验器却拒绝」的漂移——M1/M3 的教训就是
-// 同一件事在两处各判一次、迟早不一致。
+// 等价关系只声明一次（rules.json），提示词侧通过 FormatEquivalenceHint /
+// FormatMeasureHint 取同一张表，避免出现「指令说可以这样写、校验器却拒绝」的漂移——
+// M1/M3 的教训就是同一件事在两处各判一次、迟早不一致。
+//
+// 量词（M16，2026-09-22）：数量后面跟的中文量词按**语义家族**参与比较。
+// 「3 页」与「3 个项目」是两件事（量词异族 → 判违规），而「3 个」与「3 条」是同一件事
+// （同族 → 放行）。任一侧**没写**量词视为兼容——成稿常省略或改换说法，这与"事实被改"不同；
+// 只有两侧都写了量词且不同族才算冲突。这样既不放过"页→个"，也不误杀"个→条"。
 
 // numberPat 是数量本体：优先匹配带千分位的写法（1,000），否则普通十进制。
 // 千分位必须进正则：`\d+` 遇到 "1,000" 会先咬住 "1"，再从左边的逗号后咬住 "000"，
@@ -53,6 +58,11 @@ var (
 	modelRe = regexp.MustCompile(`\b[A-Za-z]+[A-Za-z0-9._-]*\d[A-Za-z0-9._-]*\b`)
 
 	modelAliasRes = buildModelAliasRes()
+
+	// measureRe：数量（含单位）之后紧跟的量词。只在**已匹配数量的位置之后**尝试，
+	// 不做全局扫描——量词单字（如「个」「页」）在正文里到处都是，全局扫会制造噪声实体。
+	measureRe        = buildMeasureRe()
+	measureCanonical = buildMeasureCanonical()
 )
 
 // foldMultiplier 把 `x8` / `×8` 折成裸数量（保留数字、去掉前缀字母）。
@@ -70,7 +80,7 @@ func foldMultiplier(s string) string {
 
 // 等价表已数据化（M15）：声明在 rules.json，由 rules.go 内嵌加载并做启动期校验
 // （空组、token 落两组、仅大小写不同的重复等只能靠校验发现的表错误）。
-// 本文件只**消费**三个视图变量 unitAliasGroups / plainUnits / modelAliasGroups。
+// 本文件只**消费**视图变量 unitAliasGroups / plainUnits / modelAliasGroups / measureGroups。
 // 新增等价写法：改 rules.json，不要在本文件里再造一张表——两份必然漂移。
 
 func buildNumberUnitRe() *regexp.Regexp {
@@ -85,6 +95,40 @@ func buildNumberUnitRe() *regexp.Regexp {
 	// 不在单位后加 \b：`%` 后面常跟中文标点，`\b` 在「%」与「，」之间不成立，
 	// 会让 `%` 分支永远匹配不上；改用 ExtractEntities 里的边界后置检查代替。
 	return regexp.MustCompile(`(?i)\b(` + numberPat + `)([ \t]*(?:` + strings.Join(esc, "|") + `))?`)
+}
+
+// buildMeasureRe 由量词表生成「位置 0 处的量词」正则（长词优先，避免短词咬住长词前缀）。
+func buildMeasureRe() *regexp.Regexp {
+	words := allMeasures()
+	sort.SliceStable(words, func(i, j int) bool { return len(words[i]) > len(words[j]) })
+	esc := make([]string, 0, len(words))
+	for _, w := range words {
+		esc = append(esc, regexp.QuoteMeta(w))
+	}
+	return regexp.MustCompile(`^[ \t]*(` + strings.Join(esc, "|") + `)`)
+}
+
+// buildMeasureCanonical 把量词映射到**族名**（组内首个量词）。
+// 族名只用于比较与诊断，不写进提示词的实体清单（那是给模型看的，不该暴露内部取值）。
+func buildMeasureCanonical() map[string]string {
+	m := map[string]string{}
+	for _, g := range measureGroups {
+		if len(g) == 0 {
+			continue
+		}
+		for _, w := range g {
+			m[w] = g[0]
+		}
+	}
+	return m
+}
+
+func allMeasures() []string {
+	out := make([]string, 0, len(measureGroups))
+	for _, g := range measureGroups {
+		out = append(out, g...)
+	}
+	return out
 }
 
 func buildModelAliasRes() []*regexp.Regexp {
@@ -136,6 +180,10 @@ var modelAliasCanonical = func() map[string]string {
 type Entity struct {
 	Text string
 	Kind string // number | date | model
+	// Measure 是数量后的量词**族名**（仅 number 且原文/目标写了量词时非空）。
+	// 它不参与 Text（提示词与既有调用方看到的仍是 number:3），只在比较时决定
+	// 「3 个」与「3 条」兼容、「3 页」与「3 个项目」冲突。
+	Measure string
 }
 
 // Report is the preservation result for source-vs-target text.
@@ -153,16 +201,16 @@ func (r Report) OK() bool { return len(r.Missing) == 0 && len(r.Inserted) == 0 }
 func ExtractEntities(text string) []Entity {
 	seen := map[string]bool{}
 	out := []Entity{}
-	add := func(kind, canonical string) {
+	add := func(kind, canonical, measure string) {
 		if canonical == "" {
 			return
 		}
-		key := kind + ":" + canonical
+		key := kind + ":" + canonical + "@" + measure
 		if seen[key] {
 			return
 		}
 		seen[key] = true
-		out = append(out, Entity{Text: canonical, Kind: kind})
+		out = append(out, Entity{Text: canonical, Kind: kind, Measure: measure})
 	}
 
 	// 全角 → 半角先做，使 １２ 与 12、Ａ１００ 与 A100 同键。
@@ -173,15 +221,15 @@ func ExtractEntities(text string) []Entity {
 
 	// ① 日期：先登记，再把区间挖成等长空白，免得内部数字参与后面的数量抽取。
 	rest = dateFullRe.ReplaceAllStringFunc(rest, func(m string) string {
-		add("date", canonicalDate(m))
+		add("date", canonicalDate(m), "")
 		return maskOf(m)
 	})
 	rest = dateYmRe.ReplaceAllStringFunc(rest, func(m string) string {
-		add("date", canonicalDate(m))
+		add("date", canonicalDate(m), "")
 		return maskOf(m)
 	})
 
-	// ② 数量 + 单位。
+	// ② 数量 + 单位（+ 可选量词）。
 	for _, m := range numberUnitRe.FindAllStringSubmatchIndex(rest, -1) {
 		num := rest[m[2]:m[3]]
 		// numEnd / matchEnd 必须分开：边界检查要看**数量结束处**的字符。
@@ -200,63 +248,99 @@ func ExtractEntities(text string) []Entity {
 			// （modelRe 要求字母打头）。保持既有行为：不作为实体。
 			continue
 		}
-		add("number", canonicalNumber(num)+unit)
+		add("number", canonicalNumber(num)+unit, measureAfter(rest, matchEnd))
 	}
 
 	// ③ 型号（字母打头且含数字）。
 	for _, m := range modelRe.FindAllString(rest, -1) {
-		add("model", canonicalModel(m))
+		add("model", canonicalModel(m), "")
 	}
 
 	// ④ 已登记的等效写法：目标里写全称（Kubernetes）也必须算同一个型号。
 	for i, re := range modelAliasRes {
 		if re.MatchString(rest) {
-			add("model", strings.ToLower(modelAliasGroups[i][0]))
+			add("model", strings.ToLower(modelAliasGroups[i][0]), "")
 		}
 	}
 	return out
 }
 
+// measureAfter 返回 pos 位置起的量词族名（无则空串）。只在数量匹配的紧邻位置调用。
+func measureAfter(s string, pos int) string {
+	if pos >= len(s) {
+		return ""
+	}
+	sub := measureRe.FindStringSubmatch(s[pos:])
+	if sub == nil {
+		return ""
+	}
+	return measureCanonical[sub[1]]
+}
+
 // CheckPreserved ensures the target did not drop source entities and did not add new ones.
+//
+// 比较按「同 Kind + 同 Text + 量词兼容」配对（见 measuresCompatible），而不是纯集合查表：
+// 集合查表无法表达"量词缺省即兼容、量词异族即冲突"这条规则。
 func CheckPreserved(source, target string) Report {
 	src := ExtractEntities(source)
 	dst := ExtractEntities(target)
-	dstSet := entitySet(dst)
-	srcSet := entitySet(src)
 	missing := make([]Entity, 0)
 	inserted := make([]Entity, 0)
 	for _, e := range src {
-		if !dstSet[e.Kind+":"+e.Text] {
+		if !hasCompatible(dst, e) {
 			missing = append(missing, e)
 		}
 	}
 	for _, e := range dst {
-		if !srcSet[e.Kind+":"+e.Text] {
+		if !hasCompatible(src, e) {
 			inserted = append(inserted, e)
 		}
 	}
 	return Report{Source: src, Missing: missing, Inserted: inserted}
 }
 
-func entitySet(in []Entity) map[string]bool {
-	out := make(map[string]bool, len(in))
-	for _, e := range in {
-		out[e.Kind+":"+e.Text] = true
+// hasCompatible 在 hay 里找是否存在与 needle 同 Kind、同 Text 且量词兼容的实体。
+// 不做"已匹配"标记：目标里只写一次裸数字时，允许它同时满足源里「3 个」与「3 页」
+// 两条记录——这是**有意偏宽容**的一侧（宁可少判违规，也不因成稿的合并表述误杀）。
+func hasCompatible(hay []Entity, needle Entity) bool {
+	for _, e := range hay {
+		if e.Kind != needle.Kind || e.Text != needle.Text {
+			continue
+		}
+		if measuresCompatible(needle.Measure, e.Measure) {
+			return true
+		}
 	}
-	return out
+	return false
+}
+
+// measuresCompatible：任一侧未写量词视为兼容（成稿常省略/改换说法，与"事实被改"不同）；
+// 两侧都写了量词时，必须同族（族名相同）。
+func measuresCompatible(a, b string) bool {
+	return a == "" || b == "" || a == b
 }
 
 // FormatEntities returns stable strings for prompts and tests.
+//
+// 量词**不进**这个字符串（族名是内部取值，不该出现在给模型的指令里）——所以同一数量
+// 可能对应两条实体（如「3 个」与「3 页」），此处按字符串去重，避免指令里出现
+// "number:3, number:3" 这种让模型困惑的重复项。
 func FormatEntities(in []Entity) []string {
+	seen := map[string]bool{}
 	out := make([]string, 0, len(in))
 	for _, e := range in {
-		out = append(out, e.Kind+":"+e.Text)
+		s := e.Kind + ":" + e.Text
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
 	}
 	sort.Strings(out)
 	return out
 }
 
-// FormatEquivalenceHint 返回给提示词用的「等价写法」说明。**与校验器共用本文件的等价表**：
+// FormatEquivalenceHint 返回给提示词用的「等价写法」说明。**与校验器共用 rules.json**：
 // 指令里说「可以这样写」，校验器就必须接受；否则会出现「模型照着指令写、仍被判违规」
 // 的假失败——那不是模型的问题，是指令与校验器各写了一份标准（M1/M3 的教训）。
 //
@@ -276,6 +360,26 @@ func FormatEquivalenceHint() string {
 		out += "以下写法视为同一型号：" + strings.Join(aliases, "、") + "。"
 	}
 	return out
+}
+
+// FormatMeasureHint 返回量词约束说明，与校验器共用同一张量词族表。
+//
+// 为什么必须由校验器生成而不是在提示词里另写一句：量词已参与判违规（M16），
+// 若指令不说，模型把「3 页」改写成「3 个项目」就会整页回退原文，而用户不知道
+// 是哪条规则触发的——正是 M1/M3「指令与校验器各写一份」的老问题。
+func FormatMeasureHint() string {
+	families := make([]string, 0, len(measureGroups))
+	for _, g := range measureGroups {
+		if len(g) == 0 {
+			continue
+		}
+		families = append(families, strings.Join(g, "/"))
+	}
+	if len(families) == 0 {
+		return ""
+	}
+	return "数字后的量词不要替换成别的量词（同组可互换：" + strings.Join(families, "，") +
+		"；不同组的量词含义不同，例如「页」与「个」不可互换）。"
 }
 
 func aliasHints() []string {

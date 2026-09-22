@@ -536,13 +536,15 @@ func draftInstructions(mode narration.ScriptMode, kind draftInputKind, snap Scri
 	if snap.TargetSeconds > 0 {
 		parts = append(parts, fmt.Sprintf("控制成适合约 %d 秒口播的长度。", snap.TargetSeconds))
 	}
-	// 数字/单位/型号的约束**与校验器同源**：等价写法说明直接取自 validation 包，
+	// 数字/单位/型号/量词的约束**与校验器同源**：等价写法与量词族说明直接取自 validation 包，
 	// 避免出现「指令说可以这样写、校验器却拒绝」的假失败——模型照着指令写、仍被判违规，
 	// 用户只看到整页回退原文，却查不出是谁的问题（M1/M3 的教训：同一件事两处各写一份必然漂移）。
+	// 量词自 M16 起参与判违规（"3 页" ≠ "3 个项目"），因此必须由校验器一并说明。
 	suffix := strings.Join(parts, "") +
 		"硬约束：① 原文中的数字、单位、日期、型号必须逐一保留，不得改写、替换或省略；" +
 		"② 原文没有出现的数字一律不得新增——不要自行编号或计数（例如不要写「第 1 步」「3 个要点」）；" +
 		"③ 型号与缩写保持原样，不要擅自改写、展开或省略。" +
+		validation.FormatMeasureHint() +
 		validation.FormatEquivalenceHint() +
 		"只输出正文。"
 

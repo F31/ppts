@@ -180,11 +180,15 @@ func evalPage(ctx context.Context, polisher llm.TextRewriter, deck string, pg *p
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
 		result, err = polisher.Rewrite(ctx, llm.RewriteRequest{
-			LogicalOpID:  "ai-eval:" + deck + ":" + pg.SlideID,
-			Mode:         "polish",
-			Language:     "zh-CN",
-			SourceText:   source,
-			Instructions: "把原文改写为更适合 PPT 演示讲解的自然口播稿；必须逐字保留所有数字、单位、日期、型号，不新增未经原文支持的数字。只输出正文。",
+			LogicalOpID: "ai-eval:" + deck + ":" + pg.SlideID,
+			Mode:        "polish",
+			Language:    "zh-CN",
+			SourceText:  source,
+			// 评测指令必须与**生产校验器同源**（等价写法 + 量词族说明都取自 validation）。
+			// 否则测到的是另一套规则：模型按指令写成"12 毫秒"却被按字面判违规，
+			// 通过率失真，还会把问题归因给模型。
+			Instructions: "把原文改写为更适合 PPT 演示讲解的自然口播稿；必须逐字保留所有数字、单位、日期、型号，不新增未经原文支持的数字。" +
+				validation.FormatMeasureHint() + validation.FormatEquivalenceHint() + "只输出正文。",
 		})
 		if err == nil {
 			break

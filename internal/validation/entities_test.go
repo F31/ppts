@@ -220,3 +220,65 @@ func TestExtractEntitiesEdgeCases(t *testing.T) {
 		t.Errorf("3x → %v, want [number:3x]", got)
 	}
 }
+
+// TestMeasureFamiliesDecideEquivalence 是 M16 的行为守门：量词按族可比。
+//
+// 为什么需要这一层：量词此前**完全不参与比较**，于是「3 页」改写成「3 个项目」
+// 会被放行——数字没变、事实却变了（实测确认过）。而把所有量词都纳入逐字比对又会误杀
+// 「3 个」↔「3 条」这类无害改写。族分组就是这两者之间的取舍点。
+func TestMeasureFamiliesDecideEquivalence(t *testing.T) {
+	pass := []struct{ name, source, target string }{
+		{name: "同族量词可互换（个↔条）", source: "本页有 3 个要点", target: "本页一共有 3 条要点。"},
+		{name: "同族量词可互换（项↔款）", source: "新增 4 项", target: "新增了 4 款。"},
+		{name: "目标省略量词", source: "示例 2 个", target: "示例 2。"},
+		{name: "目标增补未登记量词", source: "评分 85", target: "评分 85 分。"},
+	}
+	for _, c := range pass {
+		if r := CheckPreserved(c.source, c.target); !r.OK() {
+			t.Errorf("[%s] 应通过却报违规：missing=%v inserted=%v",
+				c.name, FormatEntities(r.Missing), FormatEntities(r.Inserted))
+		}
+	}
+
+	block := []struct{ name, source, target string }{
+		{name: "量词异族：页→个", source: "本章共 3 页", target: "本章共 3 个部分。"},
+		{name: "量词异族：个→台", source: "采购 3 个", target: "采购 3 台。"},
+		{name: "量词异族：次→位", source: "重试 2 次", target: "重试了 2 位。"},
+	}
+	for _, c := range block {
+		if r := CheckPreserved(c.source, c.target); r.OK() {
+			t.Errorf("[%s] 应拦下却通过了：source=%v target=%v",
+				c.name, FormatEntities(r.Source), FormatEntities(ExtractEntities(c.target)))
+		}
+	}
+}
+
+// TestMeasureHintCoversAllFamilies 是「单一来源」在量词上的延伸：量词已参与判违规，
+// 提示词说明就必须覆盖每一族，否则模型无从知道「页不能改成个」，用户只会看到整页回退原文。
+func TestMeasureHintCoversAllFamilies(t *testing.T) {
+	hint := FormatMeasureHint()
+	if hint == "" {
+		t.Fatal("量词说明为空：规则已生效却不告诉模型，会把责任推给模型")
+	}
+	for _, g := range measureGroups {
+		if len(g) == 0 {
+			continue
+		}
+		if !strings.Contains(hint, strings.Join(g, "/")) {
+			t.Errorf("量词组 %v 未出现在提示词说明里：%s", g, hint)
+		}
+	}
+}
+
+// TestMeasureNotLeakedIntoEntityText：量词族名是内部取值，不得出现在给模型的实体串里
+// （FormatEntities 是提示词输入）。同一数量带不同量词时也要去重，
+// 否则指令里会出现 "number:3, number:3" 这种让人困惑的重复项。
+func TestMeasureNotLeakedIntoEntityText(t *testing.T) {
+	if got := FormatEntities(ExtractEntities("共 3 页")); !reflect.DeepEqual(got, []string{"number:3"}) {
+		t.Errorf("共 3 页 → %v, want [number:3]（不得泄漏量词族名）", got)
+	}
+	got := FormatEntities(ExtractEntities("3 页，另有 3 个要点"))
+	if !reflect.DeepEqual(got, []string{"number:3"}) {
+		t.Errorf("两处数量 3 → %v, want [number:3]（应去重）", got)
+	}
+}

@@ -178,6 +178,12 @@ func TestDraftInstructionsCarryHardConstraints(t *testing.T) {
 	if strings.TrimSpace(hint) == "" {
 		t.Fatal("等价写法说明为空：断言会退化为恒真")
 	}
+	// 量词自 M16 起参与判违规，说明也必须同源传入（否则模型把"3 页"写成"3 个项目"
+	// 会整页回退原文，用户查不出原因）。
+	measureHint := validation.FormatMeasureHint()
+	if strings.TrimSpace(measureHint) == "" {
+		t.Fatal("量词说明为空：断言会退化为恒真")
+	}
 	modes := []narration.ScriptMode{narration.ModePolish, narration.ModeAIGenerated}
 	kinds := []draftInputKind{inputPage, inputNotes, inputCustom, inputExisting}
 	for _, mode := range modes {
@@ -185,6 +191,9 @@ func TestDraftInstructionsCarryHardConstraints(t *testing.T) {
 			got := draftInstructions(mode, kind, ScriptDraftSnapshot{})
 			if !strings.Contains(got, hint) {
 				t.Errorf("mode=%s kind=%s：指令未带上校验器的等价写法说明%q", mode, kind, hint)
+			}
+			if !strings.Contains(got, measureHint) {
+				t.Errorf("mode=%s kind=%s：指令未带上校验器的量词说明%q", mode, kind, measureHint)
 			}
 			// 与校验器守门用例（序号不豁免）一一对应：原文没有的数字不得自行新增。
 			if !strings.Contains(got, "不得新增") {

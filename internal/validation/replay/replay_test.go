@@ -20,6 +20,7 @@ var requiredTags = []string{
 	"number-changed",
 	"number-dropped",
 	"number-inserted",
+	"measure",
 }
 
 // corpusDir 定位语料目录（从包目录上溯到含 go.mod 的仓库根）。
