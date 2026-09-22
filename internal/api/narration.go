@@ -15,6 +15,7 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
@@ -39,16 +40,52 @@ type QuotaManager interface {
 // NarrationGenerationService creates revision-bound narration jobs.
 type NarrationGenerationService struct {
 	pptsv1connect.UnimplementedNarrationServiceHandler
-	scripts narration.Store
-	jobs    JobCreator
-	quota   QuotaManager
-	policy  TenantPolicyReader
-	members membership.Reader
+	scripts  narration.Store
+	jobs     JobCreator
+	projects project.ProjectStore
+	objects  objectstore.ObjectStore
+	quota    QuotaManager
+	policy   TenantPolicyReader
+	members  membership.Reader
 }
 
 // NewNarrationGenerationService creates a narration task service.
-func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, quota QuotaManager, policy TenantPolicyReader, members membership.Reader) *NarrationGenerationService {
-	return &NarrationGenerationService{scripts: scripts, jobs: jobs, quota: quota, policy: policy, members: members}
+func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, projects project.ProjectStore, objects objectstore.ObjectStore, quota QuotaManager, policy TenantPolicyReader, members membership.Reader) *NarrationGenerationService {
+	return &NarrationGenerationService{scripts: scripts, jobs: jobs, projects: projects, objects: objects, quota: quota, policy: policy, members: members}
+}
+
+// validateSlidesInCurrentRevision 校验待配音的 slide 都属于项目当前版本。
+// 上传新版本后，编辑器若仍持有旧版本的 slideId，会把历史页混进当前配音时间轴，
+// 导致播放器在缺失页面图的旧页上只能显示字幕占位。解析产物缺失时跳过校验（不误伤）。
+func (s *NarrationGenerationService) validateSlidesInCurrentRevision(ctx context.Context, tenantID, userID, projectID string, slideIDs []string) error {
+	if s.projects == nil || s.objects == nil {
+		return nil
+	}
+	proj, err := s.projects.GetProject(ctx, tenantID, userID, projectID)
+	if err != nil || proj == nil || proj.CurrentRevision == 0 {
+		return nil
+	}
+	docs, err := loadProjectDocuments(ctx, s.projects, s.objects, tenantID, projectID, int(proj.CurrentRevision), int(proj.CurrentRevision))
+	if err != nil {
+		return nil
+	}
+	doc := docs[int(proj.CurrentRevision)]
+	if doc == nil || len(doc.Pages) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(doc.Pages))
+	for _, pg := range doc.Pages {
+		if pg != nil && pg.SlideID != "" {
+			allowed[pg.SlideID] = struct{}{}
+		}
+	}
+	for _, slideID := range slideIDs {
+		if _, ok := allowed[slideID]; !ok {
+			return connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("slide "+slideID+" does not belong to the current PPT revision; refresh the editor and retry"))
+		}
+	}
+	return nil
 }
 
 type activeJobCounter interface {
@@ -92,7 +129,13 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		Language: language, VoiceID: voiceID, RequireConfirmed: req.Msg.GetLockConfirmedOnly(),
 		SpeechControl: tts.SpeechControl{RatePercent: rate}, SampleRate: 16000,
 	}
+	if s.projects != nil {
+		if proj, perr := s.projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); perr == nil {
+			snapshot.RevisionNo = int(proj.CurrentRevision)
+		}
+	}
 	seen := make(map[string]struct{}, len(req.Msg.GetSlideIds()))
+	slideOrder := make([]string, 0, len(req.Msg.GetSlideIds()))
 	totalRunes := 0
 	for _, rawSlideID := range req.Msg.GetSlideIds() {
 		slideID := strings.TrimSpace(rawSlideID)
@@ -103,6 +146,7 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("duplicate slide_id"))
 		}
 		seen[slideID] = struct{}{}
+		slideOrder = append(slideOrder, slideID)
 		revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, slideID, language)
 		if err != nil {
 			return nil, scriptError(err)
@@ -118,6 +162,9 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		snapshot.Slides = append(snapshot.Slides, app.NarrationSlideSnapshot{
 			SlideID: slideID, ScriptRevision: revision.Revision,
 		})
+	}
+	if err := s.validateSlidesInCurrentRevision(ctx, principal.TenantID, principal.UserID, projectID, slideOrder); err != nil {
+		return nil, err
 	}
 	snapshotBytes, err := json.Marshal(snapshot)
 	if err != nil {
@@ -183,12 +230,20 @@ func (s *NarrationGenerationService) RegenerateSegments(ctx context.Context, req
 	if len(revision.Segments) == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("slide has no segments to regenerate"))
 	}
+	if err := s.validateSlidesInCurrentRevision(ctx, principal.TenantID, principal.UserID, projectID, []string{slideID}); err != nil {
+		return nil, err
+	}
 	snapshot := app.NarrationSnapshot{
 		Language:      language,
 		VoiceID:       voiceID,
 		SegmentIDs:    req.Msg.GetSegmentIds(),
 		SpeechControl: tts.SpeechControl{RatePercent: 100},
 		SampleRate:    16000,
+	}
+	if s.projects != nil {
+		if proj, perr := s.projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); perr == nil {
+			snapshot.RevisionNo = int(proj.CurrentRevision)
+		}
 	}
 	filter := make(map[string]struct{}, len(req.Msg.GetSegmentIds()))
 	for _, id := range req.Msg.GetSegmentIds() {

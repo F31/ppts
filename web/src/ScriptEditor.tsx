@@ -24,6 +24,8 @@ export type ScriptEditorHandle = {
 
 type Props = {
   script: ScriptRevision;
+  // slideTitle：展示给用户看的页标题，来自左侧缩略图/页清单；不要暴露内部 slideId。
+  slideTitle?: string;
   onChange: (script: ScriptRevision) => void;
   // commit：把指定页（slideId）的讲稿提交到服务端。**必须支持提交非当前显示页** ——
   // 提交在途时用户可能已切到别的页，原页在途期间的编辑仍须能落库（R-13）。
@@ -39,8 +41,10 @@ type Props = {
   onRegenerateScript?: (mode: ScriptMode) => void;
   // scriptBusy：讲稿正在后台重新生成。
   scriptBusy?: boolean;
-  // scriptStatusText：讲稿生成中的状态短文案。
+  // scriptStatusText：讲稿生成的状态短文案（生成中/完成/失败）。
   scriptStatusText?: string;
+  // scriptError：scriptStatusText 为失败信息时置 true（红色显示）。
+  scriptError?: boolean;
   // onRegenerateVoice：按当前讲稿重新生成语音（TTS）。
   onRegenerateVoice?: () => void;
   // voiceBusy：语音正在生成中（禁用按钮并显示进行中文案）。
@@ -74,7 +78,7 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, regeneratingIds, onRegenerate, onAddToDictionary },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, regeneratingIds, onRegenerate, onAddToDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -86,8 +90,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useDialogA11y<HTMLDivElement>(() => setPopoverOpen(false));
-  // 重新生成讲稿：模式下拉菜单。
+  // 重新生成讲稿：模式下拉菜单 + 记住上次选择的模式（主按钮直接按该模式生成）。
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [lastRegenMode, setLastRegenMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
   const modeMenuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!modeMenuOpen) return;
@@ -398,7 +403,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       <header>
         <div>
           <span className="eyebrow">{t('script.currentSlide')}</span>
-          <h2>{script.slideId}</h2>
+          <h2>{slideTitle || script.slideId}</h2>
         </div>
         <div className="script-header-right">
           <span className={`save-state ${saveState}`}>
@@ -533,17 +538,29 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           操作顺序：先「重新生成讲稿」（选模式），改动后再出现「重新生成语音」。 */}
       <footer className="review-actions">
         <div className="script-regen" ref={modeMenuRef}>
-          <button
-            type="button"
-            className="button-ghost"
-            disabled={!canEdit || scriptBusy || !onRegenerateScript}
-            onClick={() => setModeMenuOpen((value) => !value)}
-            aria-haspopup="menu"
-            aria-expanded={modeMenuOpen}
-          >
-            {scriptBusy ? t('editor.scriptRegenerating') : t('editor.regenerateScript')}
-            <span aria-hidden="true"> ▾</span>
-          </button>
+          <div className="script-regen-split">
+            <button
+              type="button"
+              className="button-ghost script-regen-main"
+              disabled={!canEdit || scriptBusy || !onRegenerateScript}
+              onClick={() => onRegenerateScript?.(lastRegenMode)}
+              title={t('editor.regenerateScriptWith', { mode: t(SCRIPT_REGEN_MODES.find((m) => m.value === lastRegenMode)?.labelKey ?? 'editor.modes.polish') })}
+            >
+              {scriptBusy ? t('editor.scriptRegenerating') : t('editor.regenerateScript')}
+            </button>
+            <button
+              type="button"
+              className="button-ghost script-regen-caret"
+              disabled={!canEdit || scriptBusy || !onRegenerateScript}
+              onClick={() => setModeMenuOpen((value) => !value)}
+              aria-haspopup="menu"
+              aria-expanded={modeMenuOpen}
+              aria-label={t('editor.regenerateScriptMode')}
+              title={t('editor.regenerateScriptMode')}
+            >
+              <span aria-hidden="true">▾</span>
+            </button>
+          </div>
           {modeMenuOpen && (
             <div className="script-mode-menu" role="menu">
               {SCRIPT_REGEN_MODES.map((option) => (
@@ -553,6 +570,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   role="menuitem"
                   onClick={() => {
                     setModeMenuOpen(false);
+                    setLastRegenMode(option.value);
                     onRegenerateScript?.(option.value);
                   }}
                 >
@@ -562,7 +580,11 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
               ))}
             </div>
           )}
-          {scriptBusy && <span className="script-regen-status">{scriptStatusText ?? t('editor.scriptRegenerating')}</span>}
+          {scriptBusy ? (
+            <span className="script-regen-status">{scriptStatusText ?? t('editor.scriptRegenerating')}</span>
+          ) : (
+            scriptStatusText && <span className={`script-regen-status${scriptError ? ' error' : ''}`}>{scriptStatusText}</span>
+          )}
         </div>
 
         {(voiceNeedsUpdate || voiceBusy) && (

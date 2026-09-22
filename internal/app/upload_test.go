@@ -57,6 +57,13 @@ func TestUploadDirectFlow(t *testing.T) {
 	if revID == "" || jobID == "" {
 		t.Fatalf("result = %q %q", revID, jobID)
 	}
+	rev, err := env.projects.GetSourceRevision(ctx, appTenant, appProject, 1)
+	if err != nil {
+		t.Fatalf("GetSourceRevision: %v", err)
+	}
+	if rev.DisplayName != "demo.pptx" {
+		t.Fatalf("display name = %q, want original filename", rev.DisplayName)
+	}
 
 	// 幂等重放：同上传会话返回同一源版本与任务。
 	revID2, jobID2, err := svc.CompleteUpload(ctx, appTenant, res.Session.ID, hash, int64(len(data)))

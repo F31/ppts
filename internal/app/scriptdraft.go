@@ -19,13 +19,18 @@ import (
 )
 
 // ScriptDraftSnapshot 是 script_draft 任务的输入快照。
-// Mode 指定生成模式；original 直接提取原文，polish 经 LLM 润色并由确定性校验兜底。
+// Mode 指定生成模式；original 直接提取备注原文，polish/ai_generated 经 LLM 润色并由确定性校验兜底。
 type ScriptDraftSnapshot struct {
 	ProjectID  string   `json:"projectId"`
 	RevisionNo int      `json:"revisionNo"` // 0 = 当前最新已解析版本
 	Language   string   `json:"language"`
 	Mode       string   `json:"mode"`               // original / polish / ai_generated
 	SlideIDs   []string `json:"slideIds,omitempty"` // 空 = 全部页面
+	// SourceMode 是批量成稿的来源策略：notes_first=备注优先、page_content=页面内容。
+	SourceMode    string `json:"sourceMode,omitempty"`
+	Audience      string `json:"audience,omitempty"`
+	Style         string `json:"style,omitempty"`
+	TargetSeconds int    `json:"targetSeconds,omitempty"`
 	// Sources 是"无备注页"显式指定的讲稿来源（slideID → kind：layout/title/body/notes/custom）。
 	// 由 GenerateDraft handler 注入已存选择；script_draft worker 在 pgText/pgAnchors 中尊重。
 	Sources map[string]string `json:"sources,omitempty"`
@@ -141,18 +146,26 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 	for _, id := range snap.SlideIDs {
 		want[id] = true
 	}
+	targets := make([]parsedPage, 0, len(pages))
 	for _, pg := range pages {
 		if len(want) > 0 && !want[pg.SlideID] {
 			continue
 		}
+		targets = append(targets, pg)
+	}
+	if len(targets) > 0 {
+		_ = pipeline.ReportProgress(ctx, 0)
+	}
+	for i, pg := range targets {
 		source := snap.Sources[pg.SlideID]
 		custom := snap.CustomSources[pg.SlideID]
-		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap.Overwrite); err != nil {
+		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap); err != nil {
 			if retry := pipeline.AsRetry(err); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
 				return retry.Err
 			}
 			return err
 		}
+		_ = pipeline.ReportProgress(ctx, ((i+1)*100)/len(targets))
 	}
 	return nil
 }
@@ -200,13 +213,13 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 
 // ensureDraft 为单个页面生成草稿。已存在讲稿（含占位或用户已编辑）则跳过，不覆盖。
 // source/custom 为该页显式选择的讲稿来源（无备注页）；为空时回退默认行为。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, overwrite bool) error {
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot) error {
 	slideID := pg.SlideID
 	if slideID == "" {
 		return nil
 	}
 	rev, err := h.scripts.Get(ctx, tenantID, projectID, slideID, language)
-	if err == nil && len(rev.Segments) > 0 && !overwrite {
+	if err == nil && len(rev.Segments) > 0 && !snap.Overwrite {
 		return nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
 	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
 		return err
@@ -214,7 +227,15 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		rev = nil
 	}
 
-	text := pgText(pg, source, custom)
+	text := pgTextForMode(pg, source, custom, snap.SourceMode)
+	if mode == narration.ModeOriginal && strings.TrimSpace(snap.SourceMode) == "" {
+		text = strings.TrimSpace(pg.NotesText)
+	} else if snap.Overwrite && rev != nil {
+		// 显式重新生成时，润色/AI 生成以用户当前讲稿为输入，而不是重新从 PPT 版面抽取。
+		if current := revisionText(rev); current != "" {
+			text = current
+		}
+	}
 	if text == "" {
 		return nil // 无正文/备注，不生成空讲稿。
 	}
@@ -228,7 +249,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if len(refs) == 0 {
 		refs = []string{slideID}
 	}
-	displayText, spokenText, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, text)
+	displayText, spokenText, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, text, snap)
 	if err != nil {
 		return err
 	}
@@ -301,7 +322,7 @@ func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.Visio
 	return out
 }
 
-func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, source string) (string, string, error) {
+func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, source string, snap ScriptDraftSnapshot) (string, string, error) {
 	if mode == narration.ModeOriginal {
 		return source, source, nil
 	}
@@ -318,7 +339,7 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		Mode:         string(mode),
 		Language:     language,
 		SourceText:   source,
-		Instructions: draftInstructions(mode),
+		Instructions: draftInstructions(mode, snap),
 	})
 	if err != nil {
 		return "", "", classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
@@ -375,12 +396,42 @@ func (h *ScriptDraftHandler) settleLLMTokens(ctx context.Context, tenantID, opID
 	}
 }
 
-func draftInstructions(mode narration.ScriptMode) string {
-	suffix := "必须逐字保留所有数字、单位、日期、型号，不新增未经原文支持的数字。只输出正文。"
-	if mode == narration.ModeAIGenerated {
-		return "基于原文生成一段更完整、自然、适合客户演示的讲解稿；可以补足衔接和解释，但不得引入原文没有支持的事实。" + suffix
+func draftInstructions(mode narration.ScriptMode, snap ScriptDraftSnapshot) string {
+	parts := []string{}
+	if strings.TrimSpace(snap.Audience) != "" {
+		parts = append(parts, "目标受众："+strings.TrimSpace(snap.Audience)+"。")
 	}
-	return "把原文改写为更适合 PPT 演示讲解的自然口播稿；" + suffix
+	if strings.TrimSpace(snap.Style) != "" {
+		parts = append(parts, "讲解风格："+strings.TrimSpace(snap.Style)+"。")
+	}
+	if snap.TargetSeconds > 0 {
+		parts = append(parts, fmt.Sprintf("控制成适合约 %d 秒口播的长度。", snap.TargetSeconds))
+	}
+	suffix := strings.Join(parts, "") + "必须逐字保留所有数字、单位、日期、型号，不新增未经原文支持的数字。只输出正文。"
+	if mode == narration.ModeAIGenerated {
+		return "基于当前讲稿生成一段更完整、自然、适合客户演示的讲解稿；可以补足衔接和解释，但不得引入当前讲稿没有支持的事实。" + suffix
+	}
+	return "把当前讲稿润色为更适合 PPT 演示讲解的自然口播稿；" + suffix
+}
+
+func revisionText(rev *narration.Revision) string {
+	if rev == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(rev.Segments))
+	for _, seg := range rev.Segments {
+		if seg == nil {
+			continue
+		}
+		text := strings.TrimSpace(seg.DisplayText)
+		if text == "" {
+			text = strings.TrimSpace(seg.SpokenText)
+		}
+		if text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
 func classifyLLMError(err error) error {
@@ -482,4 +533,20 @@ func pgText(pg parsedPage, source, custom string) string {
 		text = strings.TrimSpace(pg.NotesText)
 	}
 	return text
+}
+
+func pgTextForMode(pg parsedPage, source, custom, sourceMode string) string {
+	switch strings.TrimSpace(sourceMode) {
+	case "notes_first":
+		if notes := strings.TrimSpace(pg.NotesText); notes != "" {
+			return notes
+		}
+		return pgText(pg, "layout", "")
+	case "notes_only":
+		return strings.TrimSpace(pg.NotesText)
+	case "page_content":
+		return pgText(pg, "layout", "")
+	default:
+		return pgText(pg, source, custom)
+	}
 }

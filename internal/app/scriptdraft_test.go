@@ -22,10 +22,12 @@ type fakePolisher struct {
 	visual      []llm.VisualAnchor
 	calls       int
 	visualCalls int
+	sources     []string
 }
 
 func (p *fakePolisher) Rewrite(_ context.Context, req llm.RewriteRequest) (llm.RewriteResult, error) {
 	p.calls++
+	p.sources = append(p.sources, req.SourceText)
 	if p.calls <= len(p.outputs) {
 		return llm.RewriteResult{Text: p.outputs[p.calls-1]}, nil
 	}
@@ -170,6 +172,70 @@ func TestScriptDraftSkipsEmptyPages(t *testing.T) {
 	store := narration.NewPGStore(env.pool)
 	if _, err := store.Get(ctx, appTenant, appProject, "slide-1", "zh-CN"); err != narration.ErrNotFound {
 		t.Fatalf("slide-1 should have no draft, got err=%v", err)
+	}
+}
+
+func TestScriptDraftOriginalUsesNotesOnly(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","notesText":"备注原文","shapes":[{"id":"shape-1","kind":"text","text":"版面文字不应被原文朗读采用"}]},{"index":1,"slideId":"slide-2","shapes":[{"text":"无备注页版面文字"}]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "original"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-original-notes", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := narration.NewPGStore(env.pool)
+	handler := NewScriptDraftHandler(store, env.objects)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rev, err := store.Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rev.Segments[0].DisplayText; got != "备注原文" {
+		t.Fatalf("original text = %q", got)
+	}
+	if _, err := store.Get(ctx, appTenant, appProject, "slide-2", "zh-CN"); err != narration.ErrNotFound {
+		t.Fatalf("slide-2 should have no original draft without notes, got err=%v", err)
+	}
+}
+
+func TestScriptDraftOverwritePolishUsesCurrentScript(t *testing.T) {
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","shapes":[{"id":"shape-1","kind":"text","text":"版面原文"}]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	store := narration.NewPGStore(env.pool)
+	rev, err := store.EnsureExists(ctx, appTenant, appProject, "slide-1", "zh-CN", narration.ModePolish)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := "用户当前讲稿，应该作为润色输入。"
+	if _, err := store.Update(ctx, appTenant, appProject, "slide-1", "zh-CN", rev.Revision, []*narration.Segment{{SegmentID: "seg-01", DisplayText: current, SpokenText: current, Status: narration.StatusDraft}}); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "polish", SlideIDs: []string{"slide-1"}, Overwrite: true}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-polish-current", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	polisher := &fakePolisher{outputs: []string{"润色后的当前讲稿。"}}
+	handler := NewScriptDraftHandler(store, env.objects).WithPolisher(polisher)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(polisher.sources) != 1 || polisher.sources[0] != current {
+		t.Fatalf("polisher source = %#v", polisher.sources)
 	}
 }
 

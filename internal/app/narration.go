@@ -33,6 +33,7 @@ const sharedCacheProject = "shared"
 // NarrationSnapshot fixes all inputs used by a narration job. A later script
 // edit must enqueue a new job rather than changing an in-flight job's inputs.
 type NarrationSnapshot struct {
+	RevisionNo       int                      `json:"revisionNo,omitempty"`
 	Slides           []NarrationSlideSnapshot `json:"slides"`
 	SegmentIDs       []string                 `json:"segmentIds,omitempty"`       // G2-5 空=全量；非空=仅重生成指定分段
 	TargetDurationMS int64                    `json:"targetDurationMs,omitempty"` // G2-5 目标总时长(ms)，0=不限
@@ -217,10 +218,12 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			if segment == nil || segment.SegmentID == "" || strings.TrimSpace(segment.SpokenText) == "" {
 				return errors.New("narration job: segment id and spoken text are required")
 			}
-			if _, exists := seenSegments[segment.SegmentID]; exists {
-				return fmt.Errorf("narration job: duplicate segment %s", segment.SegmentID)
+			// 分段 id 只需在同一页内唯一；时间轴按"页:段"做全局键，避免不同页复用 seg-01/seg-02 时误判重复。
+			scoped := scopedSegmentID(slide.SlideID, segment.SegmentID)
+			if _, exists := seenSegments[scoped]; exists {
+				return fmt.Errorf("narration job: duplicate segment %s", scoped)
 			}
-			seenSegments[segment.SegmentID] = struct{}{}
+			seenSegments[scoped] = struct{}{}
 			if capabilities.MaxInputChars > 0 && utf8.RuneCountInString(segment.SpokenText) > capabilities.MaxInputChars {
 				return fmt.Errorf("narration job: segment %s exceeds voice input limit", segment.SegmentID)
 			}
@@ -255,7 +258,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			}
 			totalMS += asset.DurationMS
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
-				SegmentID: segment.SegmentID, DisplayText: segment.DisplayText,
+				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: segment.DisplayText,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
 			})
 			if segmentFilter == nil {
@@ -537,7 +540,7 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 			}
 			totalMS += asset.DurationMS
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
-				SegmentID: segment.SegmentID, DisplayText: segment.DisplayText,
+				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: segment.DisplayText,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
 			})
 		}
@@ -723,4 +726,10 @@ func ttsErrorFlags(err error) (retryable bool, throttled bool) {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// scopedSegmentID 生成时间轴使用的全局分段键：分段 id 只需页内唯一，
+// 但时间轴/字幕/播放清单要求全局唯一，因此统一以「页:段」作为键。
+func scopedSegmentID(slideID, segmentID string) string {
+	return slideID + ":" + segmentID
 }

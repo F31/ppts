@@ -6,7 +6,8 @@ import {
   createExport,
   createGeneration,
   estimateNarration,
-  generateDraft,
+  getNarrationStale,
+  getJob,
   getNarration,
   getPlaybackManifest,
   getVoiceSettings,
@@ -23,7 +24,6 @@ import {
   getSlideScriptSources,
   listJobsPage,
   listVoiceModels,
-  publishWork,
   regenerateScriptDraft,
   regenerateSegments,
   saveVoiceSettings,
@@ -62,6 +62,16 @@ const genActiveStates = [
   'JOB_STATE_UNKNOWN_PROVIDER_RESULT'
 ];
 
+function manifestMatchesSlides(manifest: PlaybackManifest, slides: SlideSummary[]): boolean {
+  const allowed = new Set(slides.map((slide) => slide.slideId));
+  try {
+    const timeline = JSON.parse(manifest.timelineJson) as { slides?: Array<{ slideId?: string }> };
+    return (timeline.slides ?? []).every((slide) => Boolean(slide.slideId && allowed.has(slide.slideId)));
+  } catch {
+    return false;
+  }
+}
+
 const scriptModeOptions: Array<{ value: ScriptMode; labelKey: string; descKey: string }> = [
   { value: 'SCRIPT_MODE_ORIGINAL', labelKey: 'editor.modes.original', descKey: 'editor.modes.originalDesc' },
   { value: 'SCRIPT_MODE_POLISH', labelKey: 'editor.modes.polish', descKey: 'editor.modes.polishDesc' },
@@ -79,6 +89,7 @@ export function ProjectEditor({
   identity,
   projectId,
   draftRequested,
+  openExport = false,
   revisionNo: initRevisionNo,
   role,
   roleReady = true
@@ -86,6 +97,7 @@ export function ProjectEditor({
   identity: ClientIdentity;
   projectId: string;
   draftRequested?: boolean;
+  openExport?: boolean;
   revisionNo?: number;
   role?: Role;
   roleReady?: boolean;
@@ -96,6 +108,8 @@ export function ProjectEditor({
   // 右侧讲稿栏：可折叠为抽屉（默认展开）。
   const [scriptOpen, setScriptOpen] = useState(true);
   const [realScripts, setRealScripts] = useState<Record<string, ScriptRevision>>({});
+  // scriptsLoaded：已有讲稿是否已加载完成。用于避免加载窗口内误判"该页没有讲稿"而自动补建。
+  const [scriptsLoaded, setScriptsLoaded] = useState(false);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
   const [draftMode, setDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
   const [narrationStatus, setNarrationStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
@@ -112,6 +126,11 @@ export function ProjectEditor({
   const [voiceDraftRate, setVoiceDraftRate] = useState(100);
   const [voiceSaving, setVoiceSaving] = useState(false);
   const [voiceSaveError, setVoiceSaveError] = useState('');
+  // 配音生成方式：incremental=只补未配音/讲稿已更新的页；full=全部重新生成并覆盖。
+  const [voiceGenMode, setVoiceGenMode] = useState<'incremental' | 'full'>('incremental');
+  const [voiceStaleIds, setVoiceStaleIds] = useState<string[]>([]);
+  const [voiceStaleLoading, setVoiceStaleLoading] = useState(false);
+  const exportQueryHandledRef = useRef(false);
   // 版本历史（P0 多版本查看）：列历史版本 + 抽屉预览，只读，不切换生效版本。
   const [revisions, setRevisions] = useState<SourceRevisionSummary[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
@@ -126,6 +145,7 @@ export function ProjectEditor({
   const [pptDisplayName, setPptDisplayName] = useState('');
   // 当前幻灯片备注编辑
   const [slideNotesText, setSlideNotesText] = useState('');
+  const [notesSlideID, setNotesSlideID] = useState('');
   const [notesSaving, setNotesSaving] = useState(false);
   const [notesError, setNotesError] = useState('');
   const notesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -157,6 +177,7 @@ export function ProjectEditor({
     try {
       const notes = await getSlideNotes(identity, projectId, sid, revNo);
       setSlideNotesText(notes ?? '');
+      setNotesSlideID(sid);
     } catch (err) {
       setNotesError(err instanceof Error ? err.message : '');
     }
@@ -219,25 +240,41 @@ export function ProjectEditor({
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportError, setExportError] = useState('');
-  const [pubOpen, setPubOpen] = useState(false);
-  const pubDialogRef = useDialogA11y<HTMLDivElement>(() => setPubOpen(false));
-  const [pubTitle, setPubTitle] = useState('');
-  const [pubSummary, setPubSummary] = useState('');
-  const [pubStatus, setPubStatus] = useState<{ phase: 'idle' | 'submitting' | 'done' | 'error'; message: string }>({ phase: 'idle', message: '' });
   // B2 M2：真实渲染缩略图 / 属性抽屉 / 未保存状态。
   const [renderUrls, setRenderUrls] = useState<Record<string, string>>({});
   const [propsOpen, setPropsOpen] = useState(false);
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
+  const [oneDraftOpen, setOneDraftOpen] = useState(false);
+  const oneDraftDialogRef = useDialogA11y<HTMLElement>(() => setOneDraftOpen(false));
+  const [oneDraftLanguage, setOneDraftLanguage] = useState<'zh-CN' | 'en-US'>('zh-CN');
+  const [oneDraftSource, setOneDraftSource] = useState<'notes_first' | 'page_content' | 'notes_only'>('notes_first');
+  const [oneDraftMode, setOneDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
+  const [oneDraftLength, setOneDraftLength] = useState<'brief' | 'standard' | 'detailed'>('standard');
+  const [oneDraftStyle, setOneDraftStyle] = useState('专业正式');
+  const [oneDraftAudience, setOneDraftAudience] = useState('通用听众');
+  const [oneDraftOverwrite, setOneDraftOverwrite] = useState<'fill_empty' | 'overwrite_all'>('fill_empty');
+  const [oneDraftRunning, setOneDraftRunning] = useState(false);
+  const [oneDraftProgress, setOneDraftProgress] = useState({ done: 0, total: 0, message: '' });
+  const [oneDraftJobId, setOneDraftJobId] = useState('');
   const [unsaved, setUnsaved] = useState(false);
   // 编辑区网格容器 + 讲稿栏宽度拖拽（CSS 变量 --script-panel-width，仅当前会话生效）。
   const editorLayoutRef = useRef<HTMLDivElement>(null);
   const [scriptResizing, setScriptResizing] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
+  const autoNotesDraftRef = useRef<Set<string>>(new Set());
+  const [autoNotesFailed, setAutoNotesFailed] = useState<string[]>([]);
   // B4-M1 权限边界（A22）：能力判定统一走 permissions.can，逐条镜像服务端 requireRole。
   // 角色未解析完成时不渲染需要权限的按钮（避免闪现假能力）。
   const canEditScript = roleReady && can(role, 'script.edit'); // 讲稿编辑：EDITOR+（script.go:55,120）
   const canGenerate = roleReady && can(role, 'narration.generate'); // 配音生成：EDITOR+（narration.go:65,167）
   const canExport = roleReady && can(role, 'export.create'); // 导出：EDITOR+（export.go:39）
+
+  useEffect(() => {
+    if (!openExport || exportQueryHandledRef.current || !canExport || !realManifest) return;
+    exportQueryHandledRef.current = true;
+    setExportOpen(true);
+  }, [openExport, canExport, realManifest]);
+
   // M3 ②：正在局部重生成的段落（按当前页 segmentId）。
   const [regeneratingIds, setRegeneratingIds] = useState<string[]>([]);
   // M3 ⑥：无备注页讲稿来源选择（持久化）。
@@ -249,6 +286,7 @@ export function ProjectEditor({
     let cancelled = false;
     setSlidesState({ mode: 'loading' });
     setRealScripts({});
+    setScriptsLoaded(false);
     setDraftStatus({ phase: 'idle', message: '' });
     setNarrationStatus({ phase: 'idle', message: '' });
     setRealManifest(null);
@@ -277,6 +315,10 @@ export function ProjectEditor({
       try {
         const status = await getNarration(identity, projectId);
         if (cancelled || !status.ready || !status.timelineKey) return;
+        if (status.revisionNo !== slidesState.revisionNo) {
+          setRealManifest(null);
+          return;
+        }
         const manifest = await getPlaybackManifest({
           identity,
           projectId,
@@ -285,6 +327,10 @@ export function ProjectEditor({
           ttlSeconds: 900
         });
         if (cancelled) return;
+        if (!manifestMatchesSlides(manifest, slidesState.slides)) {
+          setRealManifest(null);
+          return;
+        }
         setRealManifest(manifest);
         setNarrationStatus({
           phase: 'ready',
@@ -313,7 +359,7 @@ export function ProjectEditor({
       return;
     }
     let cancelled = false;
-    getSlideRenderURLs(identity, projectId)
+    getSlideRenderURLs(identity, projectId, slidesState.revisionNo)
       .then((res) => {
         if (cancelled) return;
         const map: Record<string, string> = {};
@@ -385,7 +431,10 @@ export function ProjectEditor({
           // 未生成讲稿时跳过。
         }
       }
-      if (!cancelled) setRealScripts(found);
+      if (!cancelled) {
+        setRealScripts(found);
+        setScriptsLoaded(true);
+      }
     };
     void fetchExisting();
     return () => {
@@ -460,6 +509,16 @@ export function ProjectEditor({
   // 当前页的讲稿来源选择（无备注页）。
   const activeSource = activeSlide ? slideSources[activeSlide.slideId]?.source ?? 'layout' : 'layout';
   const activeCustom = activeSlide ? slideSources[activeSlide.slideId]?.customText ?? '' : '';
+  const canAutoCreateScriptFromNotes = Boolean(
+    isReady &&
+      activeSlideID &&
+      activeSlide?.hasNotes &&
+      !activeRealScript &&
+      scriptsLoaded &&
+      notesSlideID === activeSlideID &&
+      slideNotesText.trim() &&
+      !autoNotesFailed.includes(activeSlideID)
+  );
 
   // 语音生成进度：来自对活跃任务的 5s 轮询，用于讲稿栏按钮后的进度/状态指示。
   const activeNarrationJob = activeGenJobs.find((job) => job.kind === 'narration');
@@ -470,6 +529,58 @@ export function ProjectEditor({
     (activeNarrationJob.state === 'JOB_STATE_QUEUED' || activeNarrationJob.state === 'JOB_STATE_RETRY_WAIT')
       ? t('editor.voiceProgressQueued')
       : t('editor.voiceProgressRunning');
+
+  const oneDraftStorageKey = `ppts:one-draft:${projectId}`;
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem(oneDraftStorageKey);
+    if (saved) setOneDraftJobId(saved);
+  }, [oneDraftStorageKey]);
+
+  useEffect(() => {
+    if (!oneDraftJobId) return;
+    let cancelled = false;
+    const total = slidesState.mode === 'real' ? slidesState.slides.length : 0;
+    const refresh = async () => {
+      try {
+        const job = await getJob(identity, oneDraftJobId);
+        if (cancelled) return;
+        const pct = Math.max(0, Math.min(100, job.progressPercent || 0));
+        const done = total > 0 ? Math.round((pct / 100) * total) : pct;
+        if (job.state === 'JOB_STATE_SUCCEEDED') {
+          setOneDraftRunning(false);
+          setOneDraftProgress({ done: total || 100, total: total || 100, message: t('editor.oneDraftProgressComplete', { total: total || 100 }) });
+          if (slidesState.mode === 'real') {
+            const found: Record<string, ScriptRevision> = {};
+            await Promise.all(slidesState.slides.map(async (slide) => {
+              try {
+                found[slide.slideId] = await getScript(identity, projectId, slide.slideId);
+              } catch {
+                // 单页刷新失败不影响任务完成提示。
+              }
+            }));
+            if (!cancelled && Object.keys(found).length > 0) setRealScripts((current) => ({ ...current, ...found }));
+          }
+          return;
+        }
+        if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
+          setOneDraftRunning(false);
+          setOneDraftProgress({ done, total: total || 100, message: friendlyOneDraftError(job.lastError?.message || '') });
+          return;
+        }
+        setOneDraftRunning(true);
+        setOneDraftProgress({ done, total: total || 100, message: t('editor.oneDraftProgressPercent', { percent: pct }) });
+      } catch (error) {
+        if (!cancelled) setOneDraftProgress((current) => ({ ...current, message: friendlyOneDraftError(error instanceof Error ? error.message : '') }));
+      }
+    };
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [identity, oneDraftJobId, projectId, slidesState, t]);
 
   // 提交通道：**按传入的 slideId** 提交（不再闭包 activeSlideID）——
   // 提交在途时用户可能已切页，原页在途期间的编辑仍须能落库（R-13，见 ScriptEditor 草案表）。
@@ -568,13 +679,40 @@ export function ProjectEditor({
 
   // 语音属性弹窗：可用音色（来自所选模型的网关配置）。
   const voicesForModel = (name: string): string[] => voiceModels.find((m) => m.name === name)?.voices ?? [];
+  const voiceDisplayName = (voice: string): string => {
+    const raw = voice.trim();
+    const suffix = raw.includes(':') ? raw.split(':').pop() || raw : raw;
+    return suffix || raw;
+  };
+
+  const friendlyOneDraftError = (message: string): string => {
+    if (/context deadline exceeded|Client\.Timeout|awaiting headers/i.test(message)) {
+      return t('editor.oneDraftTimeout');
+    }
+    return message || t('editor.oneDraftProgressJobFailed');
+  };
+
+  // 读取"未配音/讲稿已更新"的页，供弹窗展示增量范围。
+  const refreshVoiceStale = async () => {
+    setVoiceStaleLoading(true);
+    try {
+      const res = await getNarrationStale(identity, projectId);
+      setVoiceStaleIds(res.slides.filter((slide) => slide.stale).map((slide) => slide.slideId));
+    } catch {
+      setVoiceStaleIds([]);
+    } finally {
+      setVoiceStaleLoading(false);
+    }
+  };
 
   const openVoiceDialog = () => {
     setVoiceSaveError('');
     setVoiceDraftModel(voiceModelName);
     setVoiceDraftVoice(voiceId);
     setVoiceDraftRate(ratePercent);
+    setVoiceGenMode('incremental');
     setPropsOpen(true);
+    void refreshVoiceStale();
   };
 
   const selectVoiceModel = (name: string) => {
@@ -583,8 +721,8 @@ export function ProjectEditor({
     setVoiceDraftVoice(voices[0] ?? '');
   };
 
-  // 保存语音属性到数据库，并同步生成时使用的模型/音色/语速。
-  const saveVoiceDialog = async () => {
+  // 「配音」：先保存语音配置，再按所选生成方式发起配音任务。
+  const voiceDialogGenerate = async () => {
     setVoiceSaving(true);
     setVoiceSaveError('');
     try {
@@ -597,9 +735,14 @@ export function ProjectEditor({
       setRatePercent(saved.ratePercent || 100);
       if (saved.voice) setVoiceId(saved.voice);
       setPropsOpen(false);
+      setVoiceSaving(false);
+      // 生成在弹窗关闭后继续；进度显示在讲稿栏与顶部任务提示。
+      void runVoiceGeneration(voiceGenMode, {
+        voiceId: saved.voice || voiceDraftVoice,
+        ratePercent: saved.ratePercent || voiceDraftRate
+      });
     } catch (error) {
       setVoiceSaveError(error instanceof Error ? error.message : t('editor.voiceSaveFailed'));
-    } finally {
       setVoiceSaving(false);
     }
   };
@@ -663,21 +806,29 @@ export function ProjectEditor({
   };
 
   // 生成/重新生成讲稿：按模式对指定页生成，轮询直到 revision 变化（避免读到旧稿）。
-  const generateScript = async (mode: ScriptMode, slideIds: string[], overwrite = false) => {
-    if (!isReady || draftStatus.phase === 'generating') return;
+  const generateScript = async (
+    mode: ScriptMode,
+    slideIds: string[],
+    overwrite = false,
+    options: { language?: string; sourceMode?: 'notes_first' | 'page_content' | 'notes_only' } = {}
+  ) => {
+    if (!isReady || draftStatus.phase === 'generating') return false;
     if (slideIds.length === 0) {
       setDraftStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
-      return;
+      return false;
     }
     // 记录基线 revision：只有拿到不同的 revision 才认为新稿已落库。
     const baseline: Record<string, number> = {};
-    for (const id of slideIds) baseline[id] = Number(realScripts[id]?.revision ?? -1);
+    const baselineText: Record<string, string> = {};
+    for (const id of slideIds) {
+      baseline[id] = Number(realScripts[id]?.revision ?? -1);
+      baselineText[id] = (realScripts[id]?.segments ?? []).map((segment) => segment.displayText).join('\n');
+    }
 
     setDraftStatus({ phase: 'generating', message: t('editor.generateQueued', { mode: modeLabel(mode, t) }) });
     try {
-      // 显式"重新生成讲稿"走 overwrite 端点（覆盖已有分段）；首次生成沿用幂等生成。
-      if (overwrite) await regenerateScriptDraft(identity, projectId, slideIds, mode);
-      else await generateDraft(identity, projectId, slideIds, mode);
+      // 统一走原生端点：它会绑定项目当前版本，并支持来源/受众/风格/长度与覆盖策略。
+      await regenerateScriptDraft(identity, projectId, slideIds, mode, { ...options, overwrite });
       const targets = slidesState.mode === 'real' ? slidesState.slides.filter((slide) => slideIds.includes(slide.slideId)) : [];
       const found: Record<string, ScriptRevision> = {};
       const deadline = Date.now() + 120_000;
@@ -696,20 +847,101 @@ export function ProjectEditor({
         await sleep(1500);
       }
       const ready = targets.length > 0 && targets.every((slide) => found[slide.slideId]);
-      // 讲稿内容已变，语音需要重新生成。
-      setVoiceDirty(true);
+      // 与生成前文本对比：内容未变时给出明确反馈（如原文朗读对已是原文的页）。
+      const textOf = (rev: ScriptRevision) => rev.segments.map((segment) => segment.displayText).join('\n');
+      const changed = targets.some(
+        (slide) => found[slide.slideId] && textOf(found[slide.slideId]) !== (baselineText[slide.slideId] ?? '')
+      );
+      // 讲稿内容确实变化时才标记"语音待更新"，避免无变化的空操作也提示。
+      if (changed) setVoiceDirty(true);
       setDraftStatus(
         ready
-          ? { phase: 'ready', message: t('editor.generateDone', { count: targets.length }) }
+          ? {
+              phase: 'ready',
+              message: changed
+                ? t('editor.generateDone', { count: targets.length })
+                : t('editor.scriptUnchanged')
+            }
           : { phase: 'error', message: t('editor.generateBackground') }
       );
+      return ready;
     } catch (error) {
       setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.generateFailed') });
+      return false;
     }
   };
 
   // 生成面板（语音抽屉）沿用所选模式，针对当前页。
   const generateAll = () => void generateScript(draftMode, [activeSlideID]);
+
+  useEffect(() => {
+    if (!canAutoCreateScriptFromNotes || !activeSlideID) return;
+    if (autoNotesDraftRef.current.has(activeSlideID)) return;
+    if (draftStatus.phase === 'generating' || oneDraftRunning) return;
+    autoNotesDraftRef.current.add(activeSlideID);
+    void generateScript('SCRIPT_MODE_ORIGINAL', [activeSlideID], false, { sourceMode: 'notes_only' }).then((ok) => {
+      if (!ok) setAutoNotesFailed((prev) => (prev.includes(activeSlideID) ? prev : [...prev, activeSlideID]));
+    });
+  }, [activeSlideID, canAutoCreateScriptFromNotes, draftStatus.phase, oneDraftRunning]);
+
+  const submitOneDraft = async () => {
+    if (slidesState.mode !== 'real' || oneDraftRunning) return;
+    const slideIds = slidesState.slides.map((slide) => slide.slideId);
+    const targetSeconds = oneDraftLength === 'brief' ? 30 : oneDraftLength === 'detailed' ? 90 : 60;
+    setOneDraftRunning(true);
+    setOneDraftProgress({ done: 0, total: slideIds.length, message: t('editor.oneDraftProgressStart') });
+    try {
+      const result = await regenerateScriptDraft(identity, projectId, slideIds, oneDraftMode, {
+        language: oneDraftLanguage,
+        sourceMode: oneDraftSource,
+        audience: oneDraftAudience,
+        style: oneDraftStyle,
+        targetSeconds,
+        overwrite: oneDraftOverwrite === 'overwrite_all'
+      });
+      window.localStorage.setItem(oneDraftStorageKey, result.jobId);
+      setOneDraftJobId(result.jobId);
+      setOneDraftProgress({ done: 0, total: slideIds.length, message: t('editor.oneDraftProgressQueued') });
+    } catch (error) {
+      setOneDraftRunning(false);
+      setOneDraftProgress({ done: 0, total: slideIds.length, message: friendlyOneDraftError(error instanceof Error ? error.message : t('editor.generateFailed')) });
+    }
+  };
+
+  // 原文朗读：直接用当前页 PPT 备注栏文本覆盖讲稿，避免后台从版面文字误取源。
+  const copyNotesToScriptActive = async () => {
+    if (!activeSlideID || !activeRealScript) return;
+    const notes = slideNotesText.trim();
+    if (!notes) {
+      setDraftStatus({ phase: 'error', message: t('editor.originalNeedsNotes') });
+      return;
+    }
+    setDraftStatus({ phase: 'generating', message: t('editor.copyingOriginalNotes') });
+    try {
+      const current = await getScript(identity, projectId, activeSlideID).catch(() => activeRealScript);
+      const base = current.segments[0];
+      const segment: ScriptSegment = {
+        segmentId: base?.segmentId || 'seg-01',
+        slideId: activeSlideID,
+        displayText: notes,
+        spokenText: notes,
+        sourceRefs: [activeSlideID],
+        sourceAnchors: [{ slideId: activeSlideID, shapeId: '', kind: 'notes', raw: notes, confidence: 1 }],
+        status: 'draft'
+      };
+      const result = await updateScriptApi(identity, projectId, activeSlideID, current.revision, [segment]);
+      if (result.conflict && result.latest) {
+        setRealScripts((current) => ({ ...current, [activeSlideID]: result.latest! }));
+        setDraftStatus({ phase: 'error', message: t('script.conflict') });
+        return;
+      }
+      setRealScripts((current) => ({ ...current, [activeSlideID]: result.revision }));
+      setVoiceDirty(true);
+      setDraftStatus({ phase: 'ready', message: t('editor.originalCopied') });
+    } catch (error) {
+      setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.generateFailed') });
+    }
+  };
 
   // 讲稿栏「重新生成讲稿」：先落库本页未保存编辑，再按所选模式重新生成当前页。
   const regenerateScriptActive = async (mode: ScriptMode) => {
@@ -718,6 +950,10 @@ export function ProjectEditor({
     const waitDeadline = Date.now() + 5000;
     while (scriptEditorRef.current?.isDirty() && Date.now() < waitDeadline) {
       await sleep(200);
+    }
+    if (mode === 'SCRIPT_MODE_ORIGINAL') {
+      await copyNotesToScriptActive();
+      return;
     }
     await generateScript(mode, [activeSlideID], true);
   };
@@ -734,17 +970,21 @@ export function ProjectEditor({
   // 核心配音流程：创建生成任务 → 轮询 narration → 构建播放清单。
   // 讲稿随时可编辑、自动保存，不再要求"确认/锁定"（lockConfirmedOnly=false，后端 narration.go:92/110
   // 仅在 RequireConfirmed 时才校验状态）。
-  const generateNarrationFor = async (slideIds: string[]) => {
+  const generateNarrationFor = async (
+    slideIds: string[],
+    override: { voiceId?: string; ratePercent?: number } = {}
+  ) => {
     if (!isReady || narrationStatus.phase === 'generating') return;
     if (slideIds.length === 0) {
       setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
       return;
     }
-    const selectedVoice = voiceId || devNarrationVoiceID;
+    const selectedVoice = override.voiceId || voiceId || devNarrationVoiceID;
+    const selectedRate = override.ratePercent ?? ratePercent;
     setNarrationStatus({ phase: 'generating', message: t('editor.narrationQueued') });
     try {
       try {
-        const est = await estimateNarration(identity, projectId, slideIds, selectedVoice, ratePercent);
+        const est = await estimateNarration(identity, projectId, slideIds, selectedVoice, selectedRate);
         setNarrationEstimate(est);
         setNarrationStatus({
           phase: 'generating',
@@ -753,21 +993,33 @@ export function ProjectEditor({
       } catch {
         // 预估失败不阻塞生成。
       }
+      const previousTimelineKey = realManifest?.timelineKey ?? '';
       const idempotencyKey = `narration-${projectId}-${Date.now()}`;
-      await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey, {
-        ratePercent,
+      const generation = await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey, {
+        ratePercent: selectedRate,
         lockConfirmedOnly: false
       });
       // B3-M5：生成任务已创建，立即刷新活跃任务，让顶部快照提示尽快出现。
       void refreshActiveGenJobs();
       const deadline = Date.now() + 120_000;
       let status;
+      let jobSucceeded = false;
       while (Date.now() < deadline) {
         await sleep(1500);
+        try {
+          const job = await getJob(identity, generation.jobId);
+          if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
+            setNarrationStatus({ phase: 'error', message: job.lastError?.message || t('editor.narrationFailed') });
+            return;
+          }
+          if (job.state === 'JOB_STATE_SUCCEEDED') jobSucceeded = true;
+        } catch {
+          // 任务查询失败不阻塞，继续用 narration 状态兜底。
+        }
         status = await getNarration(identity, projectId);
-        if (status.ready) break;
+        if (status.ready && (jobSucceeded || !previousTimelineKey || status.timelineKey !== previousTimelineKey)) break;
       }
-      if (!status || !status.ready) {
+      if (!status || !status.ready || (!jobSucceeded && previousTimelineKey && status.timelineKey === previousTimelineKey)) {
         setNarrationStatus({ phase: 'error', message: t('editor.narrationBackground') });
         return;
       }
@@ -778,8 +1030,14 @@ export function ProjectEditor({
         pagePngKeys: status.pagePngKeys,
         ttlSeconds: 900
       });
+      if (slidesState.mode === 'real' && !manifestMatchesSlides(manifest, slidesState.slides)) {
+        setRealManifest(null);
+        setNarrationStatus({ phase: 'error', message: t('editor.narrationVersionMismatch') });
+        return;
+      }
       setRealManifest(manifest);
       setVoiceDirty(false);
+      void refreshVoiceStale();
       setNarrationStatus({
         phase: 'ready',
         message: status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
@@ -796,9 +1054,41 @@ export function ProjectEditor({
     }
   };
 
+  // 配音生成：后端每次都会重建整条时间轴，因此两种模式都提交"全部有讲稿的页"以保留其他页。
+  // 区别在语义：增量只在存在"未配音/讲稿已更新"的页时才发起（其余段落按内容哈希命中缓存）；
+  // 全部始终发起，配合新音色/语速会重新合成全部段落并覆盖旧音频。
+  const runVoiceGeneration = async (
+    mode: 'incremental' | 'full',
+    override: { voiceId?: string; ratePercent?: number } = {}
+  ) => {
+    scriptEditorRef.current?.flush();
+    const waitDeadline = Date.now() + 5000;
+    while (scriptEditorRef.current?.isDirty() && Date.now() < waitDeadline) {
+      await sleep(200);
+    }
+    const ids = allScriptSlideIds();
+    if (ids.length === 0) {
+      setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
+      return;
+    }
+    if (mode === 'incremental') {
+      let stale = voiceStaleIds;
+      try {
+        const res = await getNarrationStale(identity, projectId);
+        stale = res.slides.filter((slide) => slide.stale).map((slide) => slide.slideId);
+        setVoiceStaleIds(stale);
+      } catch {
+        // 统计失败时按"有待生成页"处理，避免静默跳过用户的配音请求。
+      }
+      if (stale.length === 0) {
+        setNarrationStatus({ phase: 'ready', message: t('editor.voiceAllFresh') });
+        return;
+      }
+    }
+    await generateNarrationFor(ids, override);
+  };
+
   // 讲稿栏「重新生成语音」：先落库本页未保存编辑，再生成。
-  // 后端每次都会重建整条时间轴，故提交"全部已有讲稿的页"以保留其他页；未改动的段落按内容哈希
-  // 命中缓存，几乎不增加 TTS 成本。当前页的改动会被重新合成。
   const regenerateVoiceActive = async () => {
     if (!activeRealScript) return;
     scriptEditorRef.current?.flush();
@@ -848,27 +1138,6 @@ export function ProjectEditor({
         : t('editor.status.scriptReady');
   }, [isReady, scriptReadyCount, pageCount, narrationStatus, t]);
 
-  const submitPublish = async () => {
-    const title = pubTitle.trim();
-    if (!title) {
-      setPubStatus({ phase: 'error', message: t('public.publishTitleRequired') });
-      return;
-    }
-    setPubStatus({ phase: 'submitting', message: '' });
-    try {
-      await publishWork(identity, { projectId, title, summary: pubSummary.trim() });
-      setPubStatus({ phase: 'done', message: '' });
-      setPubOpen(false);
-      setPubTitle('');
-      setPubSummary('');
-    } catch (err) {
-      setPubStatus({
-        phase: 'error',
-        message: err instanceof Error ? err.message : t('public.publishFailed')
-      });
-    }
-  };
-
   return (
     <div className="workspace-v2">
       <header className="editor-header">
@@ -906,8 +1175,11 @@ export function ProjectEditor({
           <span className={`status-marker ${unsaved ? 'unsaved' : ''} ${isReady ? '' : 'muted'}`}>
             {unsaved ? t('editor.unsaved') : statusMarker}
           </span>
+          <button type="button" className="button-ghost" onClick={() => setOneDraftOpen(true)} disabled={!isReady || draftStatus.phase === 'generating'}>
+            {t('editor.oneDraft')}
+          </button>
           <button type="button" className="button-ghost" onClick={openVoiceDialog} title={t('editor.propertiesTitle')}>
-            {t('editor.properties')}
+            {t('editor.voiceButton')}
           </button>
           {/* B4-M1：导出要求 EDITOR（export.go:39）；无配音快照时无处可导，不渲染。 */}
           {canExport && realManifest && (
@@ -923,9 +1195,6 @@ export function ProjectEditor({
               {t('editor.export')}
             </button>
           )}
-          <button type="button" className="button-ghost" onClick={() => setPubOpen(true)}>
-            {t('editor.publish')}
-          </button>
         </div>
       </header>
 
@@ -1055,6 +1324,7 @@ export function ProjectEditor({
             <ScriptEditor
               ref={scriptEditorRef}
               script={activeRealScript}
+              slideTitle={activeSlide?.title || activeSlideID}
               onChange={(next) => setRealScripts((current) => ({ ...current, [next.slideId]: next }))}
               commit={commitRealScript}
               onCommitError={commitError}
@@ -1064,6 +1334,7 @@ export function ProjectEditor({
               onRegenerateScript={canEditScript ? regenerateScriptActive : undefined}
               scriptBusy={draftStatus.phase === 'generating'}
               scriptStatusText={draftStatus.message}
+              scriptError={draftStatus.phase === 'error'}
               onRegenerateVoice={canGenerate ? regenerateVoiceActive : undefined}
               voiceBusy={voiceBusy}
               voiceProgress={voiceProgress}
@@ -1078,21 +1349,25 @@ export function ProjectEditor({
               <header>
                 <div>
                   <span className="eyebrow">{t('editor.scriptEyebrow')}</span>
-                  <h2>{activeSlideID || t('editor.scriptEyebrow')}</h2>
+                  <h2>{activeSlide?.title || activeSlideID || t('editor.scriptEyebrow')}</h2>
                 </div>
               </header>
               {isReady ? (
                 <>
-                  <p className="empty-state">{draftStatus.message || t('editor.draftHint')}</p>
-                  <div className="draft-options" aria-label={t('editor.scriptMode')}>
-                    {scriptModeOptions.map((option) => (
-                      <label key={option.value} className={draftMode === option.value ? 'selected' : ''}>
-                        <input type="radio" name="draft-mode" value={option.value} checked={draftMode === option.value} onChange={() => setDraftMode(option.value)} />
-                        <span>{t(option.labelKey)}</span>
-                        <small>{t(option.descKey)}</small>
-                      </label>
-                    ))}
-                  </div>
+                  <p className="empty-state">
+                    {canAutoCreateScriptFromNotes ? t('editor.creatingScriptFromNotes') : draftStatus.message || t('editor.draftHint')}
+                  </p>
+                  {!canAutoCreateScriptFromNotes && (
+                    <div className="draft-options" aria-label={t('editor.scriptMode')}>
+                      {scriptModeOptions.map((option) => (
+                        <label key={option.value} className={draftMode === option.value ? 'selected' : ''}>
+                          <input type="radio" name="draft-mode" value={option.value} checked={draftMode === option.value} onChange={() => setDraftMode(option.value)} />
+                          <span>{t(option.labelKey)}</span>
+                          <small>{t(option.descKey)}</small>
+                        </label>
+                      ))}
+                    </div>
+                  )}
 
                   {/* M3 ⑥：无备注页显式选择讲稿来源（仅当前页，随左侧页面切换；持久化后由 Worker 尊重）。 */}
                   {activeSlide && !activeSlide.hasNotes && (
@@ -1139,15 +1414,17 @@ export function ProjectEditor({
                       </div>
                     </div>
                   )}
-                  <div className="draft-actions">
-                    <button type="button" disabled={draftStatus.phase === 'generating'} onClick={() => void generateAll()}>
-                      {draftStatus.phase === 'generating'
-                        ? t('editor.generating')
-                        : draftRequested
-                          ? t('editor.startGenerate')
-                          : t('editor.generateMode', { mode: modeLabel(draftMode, t) })}
-                    </button>
-                  </div>
+                  {!canAutoCreateScriptFromNotes && (
+                    <div className="draft-actions">
+                      <button type="button" disabled={draftStatus.phase === 'generating'} onClick={() => void generateAll()}>
+                        {draftStatus.phase === 'generating'
+                          ? t('editor.generating')
+                          : draftRequested
+                            ? t('editor.startGenerate')
+                            : t('editor.generateMode', { mode: modeLabel(draftMode, t) })}
+                      </button>
+                    </div>
+                  )}
                 </>
               ) : (
                 <p className="empty-state">{t('editor.notParsed')}</p>
@@ -1177,9 +1454,12 @@ export function ProjectEditor({
         <div className="drawer-backdrop" onClick={() => setPropsOpen(false)}>
           <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()} ref={propsDialogRef}>
             <header>
-              <span className="eyebrow">{t('editor.properties')}</span>
-              <button type="button" onClick={() => setPropsOpen(false)} aria-label={t('common.close')}>
-                {t('common.close')}
+              <div>
+                <span className="eyebrow">{t('editor.properties')}</span>
+                <h2>{t('editor.properties')}</h2>
+              </div>
+              <button type="button" className="dialog-close-icon" onClick={() => setPropsOpen(false)} aria-label={t('common.close')} title={t('common.close')}>
+                ×
               </button>
             </header>
             <section className="panel nested">
@@ -1212,7 +1492,7 @@ export function ProjectEditor({
                     : [voiceDraftVoice || devNarrationVoiceID]
                   ).map((voice) => (
                     <option key={voice} value={voice}>
-                      {voice}
+                      {voiceDisplayName(voice)}
                     </option>
                   ))}
                 </select>
@@ -1229,18 +1509,128 @@ export function ProjectEditor({
                 </select>
               </label>
 
+              <label className="field-label">
+                {t('editor.voiceGenerateMode')}
+                <select value={voiceGenMode} onChange={(e) => setVoiceGenMode(e.currentTarget.value as 'incremental' | 'full')}>
+                  <option value="incremental">{t('editor.voiceModeIncremental')}</option>
+                  <option value="full">{t('editor.voiceModeFull')}</option>
+                </select>
+              </label>
+
+              <p className="narration-note">
+                {voiceStaleLoading
+                  ? t('editor.voiceStaleLoading')
+                  : voiceGenMode === 'full'
+                    ? t('editor.voiceFullHint', { total: scriptReadyCount })
+                    : t('editor.voiceStaleHint', { stale: voiceStaleIds.length, total: scriptReadyCount })}
+              </p>
+
               {voiceModels.length === 0 && <p className="narration-note">{t('editor.voiceModelEmpty')}</p>}
               {voiceModels.length > 0 && <p className="narration-note">{t('editor.voiceModelNote')}</p>}
               {voiceSaveError && <p className="form-error">{voiceSaveError}</p>}
 
               <div className="draft-actions">
-                <button type="button" className="primary" disabled={voiceSaving || !canEditScript} onClick={() => void saveVoiceDialog()}>
-                  {voiceSaving ? t('editor.saving') : t('common.save')}
+                <button type="button" className="primary" disabled={voiceSaving || !canEditScript} onClick={() => void voiceDialogGenerate()}>
+                  {voiceSaving ? t('editor.saving') : t('editor.voiceSubmit')}
                 </button>
                 <button type="button" className="button-ghost" onClick={() => setPropsOpen(false)}>
                   {t('common.cancel')}
                 </button>
               </div>
+              {!canEditScript && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
+            </section>
+          </aside>
+        </div>
+      )}
+
+      {oneDraftOpen && (
+        <div className="drawer-backdrop" onClick={() => setOneDraftOpen(false)}>
+          <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.oneDraft')} onClick={(event) => event.stopPropagation()} ref={oneDraftDialogRef}>
+            <header>
+              <div>
+                <span className="eyebrow">{t('editor.oneDraftEyebrow')}</span>
+                <h2>{t('editor.oneDraft')}</h2>
+              </div>
+              <button type="button" className="dialog-close-icon" onClick={() => setOneDraftOpen(false)} aria-label={t('common.close')} title={t('common.close')}>
+                ×
+              </button>
+            </header>
+            <section className="panel nested">
+              <p className="narration-note">{t('editor.oneDraftNote')}</p>
+              <label className="field-label">
+                {t('editor.oneDraftLanguage')}
+                <select value={oneDraftLanguage} disabled={oneDraftRunning} onChange={(e) => setOneDraftLanguage(e.currentTarget.value as 'zh-CN' | 'en-US')}>
+                  <option value="zh-CN">{t('editor.languageChinese')}</option>
+                  <option value="en-US">{t('editor.languageEnglish')}</option>
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.oneDraftSource')}
+                <select value={oneDraftSource} disabled={oneDraftRunning} onChange={(e) => setOneDraftSource(e.currentTarget.value as 'notes_first' | 'page_content' | 'notes_only')}>
+                  <option value="notes_first">{t('editor.sourceNotesFirst')}</option>
+                  <option value="notes_only">{t('editor.sourceNotesOnly')}</option>
+                  <option value="page_content">{t('editor.sourcePageContent')}</option>
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.oneDraftMode')}
+                <select value={oneDraftMode} disabled={oneDraftRunning} onChange={(e) => setOneDraftMode(e.currentTarget.value as ScriptMode)}>
+                  <option value="SCRIPT_MODE_ORIGINAL">{t('editor.mode.original')}</option>
+                  <option value="SCRIPT_MODE_POLISH">{t('editor.mode.polish')}</option>
+                  <option value="SCRIPT_MODE_AI_GENERATED">{t('editor.mode.ai')}</option>
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.oneDraftLength')}
+                <select value={oneDraftLength} disabled={oneDraftRunning} onChange={(e) => setOneDraftLength(e.currentTarget.value as 'brief' | 'standard' | 'detailed')}>
+                  <option value="brief">{t('editor.lengthBrief')}</option>
+                  <option value="standard">{t('editor.lengthStandard')}</option>
+                  <option value="detailed">{t('editor.lengthDetailed')}</option>
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.oneDraftStyle')}
+                <select value={oneDraftStyle} disabled={oneDraftRunning} onChange={(e) => setOneDraftStyle(e.currentTarget.value)}>
+                  <option value="专业正式">{t('editor.styleFormal')}</option>
+                  <option value="销售演示">{t('editor.styleSales')}</option>
+                  <option value="培训讲解">{t('editor.styleTraining')}</option>
+                  <option value="口语自然">{t('editor.styleCasual')}</option>
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.oneDraftAudience')}
+                <select value={oneDraftAudience} disabled={oneDraftRunning} onChange={(e) => setOneDraftAudience(e.currentTarget.value)}>
+                  <option value="通用听众">{t('editor.audienceGeneral')}</option>
+                  <option value="客户/甲方">{t('editor.audienceClient')}</option>
+                  <option value="内部汇报">{t('editor.audienceInternal')}</option>
+                  <option value="技术团队">{t('editor.audienceTechnical')}</option>
+                  <option value="管理层/投资人">{t('editor.audienceExecutive')}</option>
+                </select>
+              </label>
+              <label className="field-label">
+                {t('editor.oneDraftOverwrite')}
+                <select value={oneDraftOverwrite} disabled={oneDraftRunning} onChange={(e) => setOneDraftOverwrite(e.currentTarget.value as 'fill_empty' | 'overwrite_all')}>
+                  <option value="fill_empty">{t('editor.overwriteFillEmpty')}</option>
+                  <option value="overwrite_all">{t('editor.overwriteAll')}</option>
+                </select>
+              </label>
+              <p className="narration-note">{t('editor.oneDraftGuardrails')}</p>
+              <div className="draft-actions">
+                <button type="button" className="primary" disabled={!canEditScript || oneDraftRunning || draftStatus.phase === 'generating'} onClick={() => void submitOneDraft()}>
+                  {oneDraftRunning ? t('editor.scriptRegenerating') : t('editor.oneDraftSubmit')}
+                </button>
+                <button type="button" className="button-ghost" onClick={() => setOneDraftOpen(false)}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+              {oneDraftProgress.total > 0 && (
+                <div className="one-draft-progress" role="status" aria-live="polite">
+                  <div className="one-draft-progress-bar" aria-hidden="true">
+                    <span style={{ width: `${Math.round((oneDraftProgress.done / Math.max(1, oneDraftProgress.total)) * 100)}%` }} />
+                  </div>
+                  <span>{oneDraftProgress.message}</span>
+                </div>
+              )}
               {!canEditScript && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
             </section>
           </aside>
@@ -1283,39 +1673,6 @@ export function ProjectEditor({
           onClose={() => setExportOpen(false)}
           onSubmit={(format, options) => void runExport(format, options)}
         />
-      )}
-      {pubOpen && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('public.publishTitle')} ref={pubDialogRef}>
-          <section className="modal-card">
-            <header>
-              <div>
-                <span className="eyebrow">{t('public.publish')}</span>
-                <h2>{t('public.publishTitle')}</h2>
-              </div>
-              <button type="button" onClick={() => setPubOpen(false)}>
-                {t('common.close')}
-              </button>
-            </header>
-            <p className="muted">{t('public.publishSummary')}</p>
-            <label className="field-label">
-              {t('public.publishTitleLabel')}
-              <input value={pubTitle} onChange={(e) => setPubTitle(e.currentTarget.value)} placeholder={t('public.publishTitleLabel')} />
-            </label>
-            <label className="field-label">
-              {t('public.publishSummaryLabel')}
-              <textarea value={pubSummary} onChange={(e) => setPubSummary(e.currentTarget.value)} rows={3} />
-            </label>
-            {pubStatus.phase === 'error' && <p className="form-error">{pubStatus.message}</p>}
-            <div className="draft-actions">
-              <button type="button" className="primary" disabled={pubStatus.phase === 'submitting'} onClick={() => void submitPublish()}>
-                {pubStatus.phase === 'submitting' ? `${t('public.publishSubmit')}…` : t('public.publishSubmit')}
-              </button>
-              <button type="button" onClick={() => setPubOpen(false)}>
-                {t('public.publishCancel')}
-              </button>
-            </div>
-          </section>
-        </div>
       )}
     </div>
   );

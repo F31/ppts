@@ -164,7 +164,7 @@ func (s *UploadService) CompleteUpload(ctx context.Context, tenantID, uploadID, 
 
 	rev, err := s.projects.CreateSourceRevision(ctx, tenantID, project.NewSourceRevision{
 		ProjectID: ses.ProjectID, SourceHash: actualHash, ObjectKey: srcKey.String(), ParserVersion: ParserVersion,
-		UploadID: uploadID,
+		UploadID: uploadID, Filename: ses.Filename,
 	})
 	if err != nil {
 		return "", "", fmt.Errorf("upload: create source revision: %w", err)

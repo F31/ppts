@@ -101,7 +101,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members, scriptSources), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, opt.Quota, opt.Policy, opt.Members), handlerOpts...)
+	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -156,7 +156,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
 	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
-	registerEditorRoutes(mux, jobs, objects, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
+	registerEditorRoutes(mux, jobs, objects, scripts, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。
 	registerJobDetailRoutes(mux, jobs, auth)
 	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。

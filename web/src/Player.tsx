@@ -15,8 +15,6 @@ type PlayerProps = {
 };
 
 const SPEEDS = [0.5, 1, 1.25, 1.5, 2];
-// B4-M4（A25）：方向键快进/快退步长。
-const SEEK_STEP_US = 5_000_000;
 
 type AudioSegment = { startUs: number; endUs: number; url: string };
 
@@ -63,6 +61,8 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   const cardRef = useRef<HTMLDivElement | null>(null);
   const currentIndexRef = useRef(-1);
   const seekingRef = useRef(false);
+  // 上一次由父级传入的 activeSlideId；用于区分"父级换页"与"播放位置跨页"。
+  const lastRequestedSlideIdRef = useRef<string | undefined>(undefined);
   const hideControlsTimerRef = useRef<number | null>(null);
 
   const activeSlide = slideAt(timeline, positionUs);
@@ -71,8 +71,8 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
     (r: PlaybackResource) => r.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG' && r.slideId === activeSlide.slideId
   );
   const showingExternalSlide = Boolean(activeSlideId && !requestedTimelineSlide && activeImageUrl);
-  const displayImageUrl = showingExternalSlide ? activeImageUrl : pageResource?.signedUrl;
-  const displayImageAlt = showingExternalSlide ? (activeImageLabel ?? activeSlideId) : activeSlide.slideId;
+  const displayImageUrl = showingExternalSlide ? activeImageUrl : (pageResource?.signedUrl ?? activeImageUrl);
+  const displayImageAlt = showingExternalSlide || !pageResource ? (activeImageLabel ?? activeSlideId ?? activeSlide.slideId) : activeSlide.slideId;
   const selectedSlideHasAudio = !activeSlideId || Boolean(requestedTimelineSlide);
   const displaySubtitle = showingExternalSlide ? null : activeSubtitle;
 
@@ -101,12 +101,20 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   }, [activeSlide.slideId]);
 
   useLayoutEffect(() => {
+    // 只在父级"显式换了页"（activeSlideId 变化）时才回流 seek。
+    // 播放/拖动进度导致的跨页由 onSlideChange 上报父级，位置是权威来源；
+    // 若这里也按父级 activeSlideId 反向吸附，两者会互相拉扯形成无限更新（React #185）。
+    const changedByParent = lastRequestedSlideIdRef.current !== activeSlideId;
+    lastRequestedSlideIdRef.current = activeSlideId;
     if (!activeSlideId) return;
     if (!requestedTimelineSlide) {
-      setPlaying(false);
-      currentIndexRef.current = -1;
+      if (changedByParent) {
+        setPlaying(false);
+        currentIndexRef.current = -1;
+      }
       return;
     }
+    if (!changedByParent) return;
     if (requestedTimelineSlide.slideId === activeSlide.slideId) return;
     if (hasAudio) seekingRef.current = true;
     currentIndexRef.current = -1;
@@ -280,6 +288,20 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
     setPlaying(false);
   };
 
+  // 翻页：跳到下一页/上一页的时间轴起点，并同步通知父级切换当前页。
+  // 与 seek 不同，这里不依赖 selectedSlideHasAudio——只要时间轴里有该页就允许翻页。
+  const currentSlideIndex = timeline.slides.findIndex((slide) => slide.slideId === activeSlide.slideId);
+  const stepSlide = (delta: number) => {
+    const next = timeline.slides[currentSlideIndex + delta];
+    if (!next) return;
+    if (hasAudio) seekingRef.current = true;
+    currentIndexRef.current = -1;
+    setPositionUs(next.startUs);
+    onSlideChangeRef.current?.(next.slideId);
+  };
+  const canPrevSlide = currentSlideIndex > 0;
+  const canNextSlide = currentSlideIndex >= 0 && currentSlideIndex < timeline.slides.length - 1;
+
   const toggleFullscreen = () => {
     const el = cardRef.current;
     if (!el) return;
@@ -300,34 +322,26 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
   keyHandlerRef.current = (event) => {
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-    const active = document.activeElement;
-    if (active) {
-      const tag = active.tagName.toLowerCase();
-      const ownsKeyboard =
-        tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'button' || tag === 'a';
-      if (ownsKeyboard || (active as HTMLElement).isContentEditable) return;
-    }
+    const active = document.activeElement as HTMLElement | null;
+    const tag = active ? active.tagName.toLowerCase() : '';
+    // 文本/下拉等输入控件完全让位；按钮/链接只让空格（避免误触聚焦的按钮），方向键仍归播放器。
+    const isTextInput = tag === 'input' || tag === 'select' || tag === 'textarea' || Boolean(active?.isContentEditable);
     switch (event.key) {
       case ' ':
       case 'Spacebar':
+        if (isTextInput || tag === 'button' || tag === 'a') return;
         event.preventDefault();
         if (selectedSlideHasAudio) setPlaying((value) => !value);
         return;
       case 'ArrowLeft':
-      case 'ArrowRight': {
-        event.preventDefault();
-        const delta = event.key === 'ArrowLeft' ? -SEEK_STEP_US : SEEK_STEP_US;
-        const target = Math.min(timeline.durationUs, Math.max(0, positionUs + delta));
-        if (hasAudio) seekingRef.current = true;
-        setPositionUs(target);
-        return;
-      }
+      case 'ArrowRight':
       case 'ArrowUp':
       case 'ArrowDown': {
+        if (isTextInput) return;
+        // 方向键翻页（全屏/内嵌一致）：左右与上下都切上一页/下一页。
         event.preventDefault();
-        const index = timeline.slides.findIndex((slide) => slide.slideId === activeSlide.slideId);
-        const next = timeline.slides[index + (event.key === 'ArrowUp' ? -1 : 1)];
-        if (next) seek(progress(next.startUs, timeline.durationUs));
+        const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+        stepSlide(delta);
         return;
       }
       default:
@@ -376,6 +390,26 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
       {/* B4-M4（A25）：控制条 + 进度条收进 .player-dock，移动端吸附到视口底部（<768px）。 */}
       <div className="player-dock" aria-label={t('player.dock')} onFocus={showFullscreenControls} onMouseEnter={showFullscreenControls}>
         <div className="player-controls">
+          <button
+            type="button"
+            className="player-step"
+            disabled={!canPrevSlide}
+            title={t('player.prevSlide')}
+            aria-label={t('player.prevSlide')}
+            onClick={() => stepSlide(-1)}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            className="player-step"
+            disabled={!canNextSlide}
+            title={t('player.nextSlide')}
+            aria-label={t('player.nextSlide')}
+            onClick={() => stepSlide(1)}
+          >
+            ›
+          </button>
           <button type="button" disabled={!selectedSlideHasAudio} onClick={() => setPlaying((value) => !value)}>
             {playing ? t('player.pause') : t('player.play')}
           </button>

@@ -53,6 +53,10 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 		return connect.NewResponse(&pptsv1.GetNarrationResponse{Ready: false}), nil
 	}
 	resp := &pptsv1.GetNarrationResponse{Ready: true, TimelineKey: timelineKey}
+	var snap app.NarrationSnapshot
+	if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err == nil && snap.RevisionNo > 0 {
+		resp.RevisionNo = int64(snap.RevisionNo)
+	}
 	if pages, err := resolvePagePngKeys(ctx, s.jobs, s.objects, p.TenantID, projectID, timelineKey); err == nil {
 		resp.PagePngKeys = pages
 	}

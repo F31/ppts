@@ -433,6 +433,29 @@ export async function updatePptDisplayName(identity: ClientIdentity, projectId: 
   }
 }
 
+export async function downloadSourceRevision(
+  identity: ClientIdentity,
+  projectId: string,
+  revisionNo: number,
+  filename: string
+): Promise<void> {
+  const response = await fetch(`/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}/download`, {
+    headers: identityHeaders(identity)
+  });
+  if (!response.ok) {
+    throw new Error(`download source revision failed: HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename || `presentation-v${revisionNo}.pptx`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 // getSlideNotes 读取单页备注（空字符串 = 无备注）。
 export async function getSlideNotes(identity: ClientIdentity, projectId: string, slideId: string, revisionNo: number): Promise<string> {
   const r = await getJSON<{ notes: string }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/notes?revision_no=${revisionNo}`);
@@ -462,9 +485,11 @@ export type SlideRenderURL = { slideId: string; url: string };
 // 解析未完成或页面图缺失时返回空列表，前端优雅降级为序号/标题缩略图。
 export async function getSlideRenderURLs(
   identity: ClientIdentity,
-  projectId: string
+  projectId: string,
+  revisionNo?: number
 ): Promise<{ slides: SlideRenderURL[] }> {
-  return getJSON<{ slides: SlideRenderURL[] }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/render`);
+  const qs = revisionNo && revisionNo > 0 ? `?revision_no=${revisionNo}` : '';
+  return getJSON<{ slides: SlideRenderURL[] }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/render${qs}`);
 }
 
 export type SlideScriptSource = { slideId: string; source: string; customText: string };
@@ -580,7 +605,7 @@ export async function generateDraft(
   projectId: string,
   slideIds: string[],
   mode: ScriptMode = 'SCRIPT_MODE_ORIGINAL',
-  options: { audience?: string; style?: string; totalSeconds?: number } = {}
+  options: { audience?: string; style?: string; totalSeconds?: number; language?: string } = {}
 ): Promise<{ jobId: string; fullySupported: boolean }> {
   const idempotencyKey = `draft-${projectId}-${mode}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return connectJSON<{ jobId: string; fullySupported: boolean }>(
@@ -594,21 +619,34 @@ export async function generateDraft(
       style: options.style,
       duration: options.totalSeconds ? { totalSeconds: options.totalSeconds } : undefined
     },
-    { 'Idempotency-Key': idempotencyKey }
+    { 'Idempotency-Key': idempotencyKey, ...(options.language ? { 'Accept-Language': options.language } : {}) }
   );
 }
 
-// regenerateScriptDraft 重新生成讲稿（覆盖已有讲稿）。原生 HTTP 端点，后端以 overwrite=true 入队，
-// 与 GenerateDraft 的"已有分段不覆盖"语义区分开。
+// regenerateScriptDraft 重新生成讲稿。默认 overwrite=true；一键成稿可传 overwrite=false 只填充空白页。
 export async function regenerateScriptDraft(
   identity: ClientIdentity,
   projectId: string,
   slideIds: string[],
-  mode: ScriptMode
+  mode: ScriptMode,
+  options: {
+    language?: string;
+    sourceMode?: 'notes_first' | 'page_content' | 'notes_only';
+    audience?: string;
+    style?: string;
+    targetSeconds?: number;
+    overwrite?: boolean;
+  } = {}
 ): Promise<{ jobId: string }> {
   return postJSON<{ jobId: string }>(identity, `/projects/${encodeURIComponent(projectId)}/script-draft`, {
     slideIds,
-    mode
+    mode,
+    language: options.language,
+    sourceMode: options.sourceMode,
+    audience: options.audience,
+    style: options.style,
+    targetSeconds: options.targetSeconds,
+    overwrite: options.overwrite
   });
 }
 
@@ -711,6 +749,27 @@ export async function getLibraryArtifacts(identity: ClientIdentity): Promise<{ a
 }
 
 export type NarrationSlideStale = { slideId: string; stale: boolean };
+
+export type RevisionVoiceStatus = {
+  revisionNo: number;
+  status: 'not_voiced' | 'partial' | 'complete' | 'stale';
+  pageCount: number;
+  voicedPages: number;
+  missingPages: number;
+  stalePages: number;
+  missingSlideIds?: string[];
+  staleSlideIds?: string[];
+};
+
+export async function getRevisionVoiceStatus(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<{ revisions: RevisionVoiceStatus[] }> {
+  return getJSON<{ revisions: RevisionVoiceStatus[] }>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/revisions/voice-status`
+  );
+}
 
 // getNarrationStale 读取项目内"讲稿已改、配音未重生成"的页（首页「音频需更新」的真实信号）。
 // 后端判定：audio_revision < revision（internal/api/narration.go:373），要求 editor 角色。

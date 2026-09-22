@@ -4,11 +4,13 @@ import {
   getProjectSlides,
   getProjectArtifacts,
   createDownload,
+  publishWork,
   type ClientIdentity,
   type ProjectArtifact
 } from '../api';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
+import { useDialogA11y } from '../a11y';
 
 type SnapshotState = {
   loading: boolean;
@@ -53,6 +55,11 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
   const [artifacts, setArtifacts] = useState<ProjectArtifact[]>([]);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [pubOpen, setPubOpen] = useState(false);
+  const pubDialogRef = useDialogA11y<HTMLDivElement>(() => setPubOpen(false));
+  const [pubTitle, setPubTitle] = useState('');
+  const [pubSummary, setPubSummary] = useState('');
+  const [pubStatus, setPubStatus] = useState<{ phase: 'idle' | 'submitting' | 'done' | 'error'; message: string }>({ phase: 'idle', message: '' });
 
   const load = useCallback(async () => {
     setSnap((c) => ({ ...c, loading: true }));
@@ -120,6 +127,24 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
     [identity, t]
   );
 
+  const submitPublish = useCallback(async () => {
+    const title = pubTitle.trim();
+    if (!title) {
+      setPubStatus({ phase: 'error', message: t('public.publishTitleRequired') });
+      return;
+    }
+    setPubStatus({ phase: 'submitting', message: '' });
+    try {
+      await publishWork(identity, { projectId, title, summary: pubSummary.trim() });
+      setPubStatus({ phase: 'done', message: '' });
+      setPubOpen(false);
+      setPubTitle('');
+      setPubSummary('');
+    } catch (err) {
+      setPubStatus({ phase: 'error', message: err instanceof Error ? err.message : t('public.publishFailed') });
+    }
+  }, [identity, projectId, pubSummary, pubTitle, t]);
+
   return (
     <div className="page-stack">
       <section className="page-header-row">
@@ -129,6 +154,9 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
           <small className="page-sub">{t('artifacts.subtitle')}</small>
         </div>
         <div className="page-actions">
+          <button type="button" className="button-primary" onClick={() => setPubOpen(true)}>
+            {t('editor.publish')}
+          </button>
           <Link to={`/projects/${projectId}/editor`} className="button-primary">
             {t('artifacts.back')}
           </Link>
@@ -234,6 +262,39 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
             {downloadError && <p className="form-error">{downloadError}</p>}
           </section>
         </>
+      )}
+      {pubOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('public.publishTitle')} ref={pubDialogRef}>
+          <section className="modal-card">
+            <header>
+              <div>
+                <span className="eyebrow">{t('public.publish')}</span>
+                <h2>{t('public.publishTitle')}</h2>
+              </div>
+              <button type="button" className="dialog-close-icon" onClick={() => setPubOpen(false)} aria-label={t('common.close')} title={t('common.close')}>
+                ×
+              </button>
+            </header>
+            <p className="muted">{t('public.publishSummary')}</p>
+            <label className="field-label">
+              {t('public.publishTitleLabel')}
+              <input value={pubTitle} onChange={(e) => setPubTitle(e.currentTarget.value)} placeholder={t('public.publishTitleLabel')} />
+            </label>
+            <label className="field-label">
+              {t('public.publishSummaryLabel')}
+              <textarea value={pubSummary} onChange={(e) => setPubSummary(e.currentTarget.value)} rows={3} />
+            </label>
+            {pubStatus.phase === 'error' && <p className="form-error">{pubStatus.message}</p>}
+            <div className="draft-actions">
+              <button type="button" className="primary" disabled={pubStatus.phase === 'submitting'} onClick={() => void submitPublish()}>
+                {pubStatus.phase === 'submitting' ? `${t('public.publishSubmit')}…` : t('public.publishSubmit')}
+              </button>
+              <button type="button" className="button-ghost" onClick={() => setPubOpen(false)}>
+                {t('public.publishCancel')}
+              </button>
+            </div>
+          </section>
+        </div>
       )}
     </div>
   );

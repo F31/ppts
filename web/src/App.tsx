@@ -218,7 +218,7 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
         // 成品列表端点要求 EDITOR（artifact.go:27），故整页按 artifact.list 门控。
         if (projectId && parts[2] === 'artifacts') return guard('artifact.list', <ProjectArtifacts identity={identity} projectId={projectId} />);
         if (projectId && parts[2] === 'editor' || (projectId && !parts[2])) {
-          return <ProjectEditor identity={identity} projectId={projectId} draftRequested={query.get('draft') === '1'} revisionNo={query.get('rev') ? Number(query.get('rev')) : undefined} role={role} roleReady={roleReady} />;
+          return <ProjectEditor identity={identity} projectId={projectId} draftRequested={query.get('draft') === '1'} openExport={query.get('export') === '1'} revisionNo={query.get('rev') ? Number(query.get('rev')) : undefined} role={role} roleReady={roleReady} />;
         }
         return <Projects identity={identity} role={role} roleReady={roleReady} />;
       }

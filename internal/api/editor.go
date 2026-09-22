@@ -16,6 +16,7 @@ import (
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
@@ -27,9 +28,12 @@ import (
 // GET /projects/{pid}/slides/render 返回每页渲染 PNG 的短期签名可读 URL，按 slideId 对齐，供编辑器缩略图与 PPT 预览。
 // PUT /projects/{pid}/slides/{sid}/source + GET /projects/{pid}/slides/sources 管理"无备注页讲稿来源"选择。
 // 均受 auth 中间件保护（仅项目所属租户成员可访问）。
-func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, srcStore app.ScriptSourceStore, voiceStore app.VoiceSettingsStore, gatewayStore gateway.StoreResolver, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
+func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, scripts narration.Store, srcStore app.ScriptSourceStore, voiceStore app.VoiceSettingsStore, gatewayStore gateway.StoreResolver, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/slides/render", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorSlideRender(w, r, jobs, objects, projects, members, recorder)
+	})))
+	mux.Handle("GET /projects/{pid}/revisions/voice-status", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorRevisionVoiceStatus(w, r, jobs, objects, scripts, projects, members, recorder)
 	})))
 	// M3 ⑥：无备注页讲稿来源选择。
 	mux.Handle("PUT /projects/{pid}/slides/{sid}/source", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,22 +161,118 @@ func editorVoiceModels(w http.ResponseWriter, r *http.Request, gatewayStore gate
 		if gw == nil || !gw.Enabled {
 			continue
 		}
-		voices := make([]string, 0, 4)
-		seen := map[string]struct{}{}
-		for _, raw := range strings.Split(gw.Voice, ",") {
-			v := strings.TrimSpace(raw)
-			if v == "" {
-				continue
-			}
-			if _, dup := seen[v]; dup {
-				continue
-			}
-			seen[v] = struct{}{}
-			voices = append(voices, v)
+		voices := remoteTTSVoices(r.Context(), gatewayStore, principal.TenantID, gw)
+		if len(voices) == 0 {
+			voices = configuredTTSVoices(gw)
 		}
 		items = append(items, voiceModelItem{Name: gw.Name, Model: gw.Model, Voices: voices, IsDefault: gw.IsDefault})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"models": items})
+}
+
+func configuredTTSVoices(gw *gateway.Gateway) []string {
+	voices := make([]string, 0, 4)
+	seen := map[string]struct{}{}
+	add := func(raw string) {
+		v := strings.TrimSpace(raw)
+		if v == "" || (gw.Model != "" && v == gw.Model) {
+			return
+		}
+		if _, dup := seen[v]; dup {
+			return
+		}
+		seen[v] = struct{}{}
+		voices = append(voices, v)
+	}
+	for _, raw := range strings.Split(gw.Voice, ",") {
+		add(raw)
+	}
+	if len(voices) == 0 && strings.TrimSpace(gw.Model) != "" {
+		add(tts.DefaultSiliconFlowVoice(gw.Model))
+	}
+	return voices
+}
+
+func remoteTTSVoices(ctx context.Context, store gateway.StoreResolver, tenantID string, gw *gateway.Gateway) []string {
+	cfg, err := store.ResolveNamed(ctx, tenantID, gw.Name, gateway.KindTTS)
+	if err != nil || cfg == nil || strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, path := range []string{"/v1/audio/voices", "/v1/voices"} {
+		voices := fetchTTSVoices(ctx, cfg, path)
+		if len(voices) > 0 {
+			return voices
+		}
+	}
+	return nil
+}
+
+func fetchTTSVoices(ctx context.Context, cfg *gateway.Config, path string) []string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.BaseURL, "/")+path, nil)
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil
+	}
+	return parseVoiceList(body, cfg.Model)
+}
+
+func parseVoiceList(body []byte, model string) []string {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := []string{}
+	var add func(any)
+	add = func(v any) {
+		switch x := v.(type) {
+		case string:
+			id := strings.TrimSpace(x)
+			if id == "" || id == model {
+				return
+			}
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				out = append(out, id)
+			}
+		case map[string]any:
+			for _, key := range []string{"id", "voice", "voice_id", "name"} {
+				if raw, ok := x[key]; ok {
+					add(raw)
+					return
+				}
+			}
+		case []any:
+			for _, item := range x {
+				add(item)
+			}
+		}
+	}
+	switch root := payload.(type) {
+	case []any:
+		add(root)
+	case map[string]any:
+		for _, key := range []string{"voices", "data", "items", "result"} {
+			if raw, ok := root[key]; ok {
+				add(raw)
+			}
+		}
+	}
+	return out
 }
 
 // editorRegenerateScriptDraft 以 overwrite=true 入队 script_draft 任务：覆盖已有讲稿。
@@ -192,16 +292,39 @@ func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs Jo
 		return
 	}
 	var body struct {
-		SlideIDs []string `json:"slideIds"`
-		Mode     string   `json:"mode"`
+		SlideIDs      []string `json:"slideIds"`
+		Mode          string   `json:"mode"`
+		Language      string   `json:"language"`
+		SourceMode    string   `json:"sourceMode"`
+		Audience      string   `json:"audience"`
+		Style         string   `json:"style"`
+		TargetSeconds int      `json:"targetSeconds"`
+		Overwrite     *bool    `json:"overwrite"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_argument", "message": "invalid JSON body"})
 		return
 	}
 	mode := scriptModeFromString(body.Mode)
+	language := strings.TrimSpace(body.Language)
+	if language == "" {
+		language = requestLanguage(r.Header)
+	}
+	overwrite := true
+	if body.Overwrite != nil {
+		overwrite = *body.Overwrite
+	}
 	snap := app.ScriptDraftSnapshot{
-		ProjectID: projectID, Language: requestLanguage(r.Header), Mode: string(mode), Overwrite: true,
+		ProjectID: projectID, Language: language, Mode: string(mode), SourceMode: strings.TrimSpace(body.SourceMode),
+		Audience: strings.TrimSpace(body.Audience), Style: strings.TrimSpace(body.Style), TargetSeconds: body.TargetSeconds,
+		Overwrite: overwrite,
+	}
+	// 解析脚本必须基于项目当前版本：worker 在 RevisionNo=0 时会回退到首个版本，
+	// 而旧版本可能页数不足/没有备注，导致"有备注的页没有讲稿"。此处显式绑定当前版本。
+	if userID, ok := projectAccessUser(r.Context(), members); ok {
+		if proj, perr := projects.GetProject(r.Context(), principal.TenantID, userID, projectID); perr == nil && proj != nil {
+			snap.RevisionNo = int(proj.CurrentRevision)
+		}
 	}
 	if srcStore != nil {
 		if choices, lerr := srcStore.List(r.Context(), principal.TenantID, projectID); lerr == nil && len(choices) > 0 {
@@ -285,6 +408,23 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if revStr := r.URL.Query().Get("revision_no"); revStr != "" {
+		revNo, perr := strconv.Atoi(revStr)
+		if perr != nil {
+			writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revision_no")))
+			return
+		}
+		matched, merr := parseJobForRevision(ctx, jobs, principal.TenantID, projectID, revNo)
+		if errors.Is(merr, pipeline.ErrNoSucceededJob) {
+			writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+			return
+		}
+		if merr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		job = matched
+	}
 	ref, err := jobs.StepResultRef(tenant.WithContext(ctx, principal.TenantID), job.ID, "pages")
 	if err != nil || ref == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
@@ -320,6 +460,182 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 		out = append(out, editorSlideRenderItem{SlideID: pg.SlideID, URL: url})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"slides": out})
+}
+
+type revisionVoiceStatus struct {
+	RevisionNo   int      `json:"revisionNo"`
+	Status       string   `json:"status"`
+	PageCount    int      `json:"pageCount"`
+	VoicedPages  int      `json:"voicedPages"`
+	MissingPages int      `json:"missingPages"`
+	StalePages   int      `json:"stalePages"`
+	MissingIDs   []string `json:"missingSlideIds,omitempty"`
+	StaleIDs     []string `json:"staleSlideIds,omitempty"`
+}
+
+type revisionPages struct {
+	count int
+	ids   map[string]struct{}
+}
+
+func editorRevisionVoiceStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, scripts narration.Store, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	revs, err := projects.ListSourceRevisions(r.Context(), principal.TenantID, projectID)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	language := requestLanguage(r.Header)
+	currentScripts, _ := scripts.ListByProject(r.Context(), principal.TenantID, projectID, language)
+	currentBySlide := make(map[string]*narration.Revision, len(currentScripts))
+	for _, rev := range currentScripts {
+		currentBySlide[rev.SlideID] = rev
+	}
+	pagesByRev := make(map[int]revisionPages, len(revs))
+	for _, rv := range revs {
+		docs, _ := loadProjectDocuments(r.Context(), projects, objects, principal.TenantID, projectID, rv.RevisionNo, rv.RevisionNo)
+		ids := map[string]struct{}{}
+		count := rv.PageCount
+		if doc := docs[rv.RevisionNo]; doc != nil {
+			count = len(doc.Pages)
+			for _, pg := range doc.Pages {
+				if pg != nil && pg.SlideID != "" {
+					ids[pg.SlideID] = struct{}{}
+				}
+			}
+		}
+		pagesByRev[rv.RevisionNo] = revisionPages{count: count, ids: ids}
+	}
+	voicedByRev := map[int]map[string]int64{}
+	if jobs != nil {
+		var cursor string
+		for {
+			page, next, jerr := jobs.List(r.Context(), principal.TenantID, projectID, string(pipeline.StateSucceeded), cursor, 100)
+			if jerr != nil {
+				writeConnectError(w, connect.NewError(connect.CodeInternal, jerr))
+				return
+			}
+			for _, job := range page {
+				if job.Kind != pipeline.KindNarration {
+					continue
+				}
+				var snap app.NarrationSnapshot
+				if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err != nil {
+					continue
+				}
+				revNo := snap.RevisionNo
+				if revNo == 0 {
+					revNo = inferNarrationRevision(snap, revs, pagesByRev)
+				}
+				if revNo == 0 {
+					continue
+				}
+				m := voicedByRev[revNo]
+				if m == nil {
+					m = map[string]int64{}
+					voicedByRev[revNo] = m
+				}
+				for _, slide := range snap.Slides {
+					if slide.SlideID == "" {
+						continue
+					}
+					if slide.ScriptRevision > m[slide.SlideID] {
+						m[slide.SlideID] = slide.ScriptRevision
+					}
+				}
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+	}
+	out := make([]revisionVoiceStatus, 0, len(revs))
+	for _, rv := range revs {
+		pages := pagesByRev[rv.RevisionNo]
+		voiced := voicedByRev[rv.RevisionNo]
+		item := revisionVoiceStatus{RevisionNo: rv.RevisionNo, PageCount: pages.count, Status: "not_voiced"}
+		for slideID := range pages.ids {
+			scriptRev, ok := voiced[slideID]
+			if !ok {
+				item.MissingIDs = append(item.MissingIDs, slideID)
+				continue
+			}
+			item.VoicedPages++
+			if cur := currentBySlide[slideID]; cur != nil && cur.Revision > scriptRev {
+				item.StalePages++
+				item.StaleIDs = append(item.StaleIDs, slideID)
+			}
+		}
+		item.MissingPages = len(item.MissingIDs)
+		switch {
+		case item.VoicedPages == 0:
+			item.Status = "not_voiced"
+		case item.PageCount == 0 || item.VoicedPages < item.PageCount:
+			item.Status = "partial"
+		case item.StalePages > 0:
+			item.Status = "stale"
+		default:
+			item.Status = "complete"
+		}
+		out = append(out, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"revisions": out})
+}
+
+func inferNarrationRevision(snap app.NarrationSnapshot, revs []*project.SourceRevision, pagesByRev map[int]revisionPages) int {
+	if len(snap.Slides) == 0 {
+		return 0
+	}
+	for _, rv := range revs {
+		pages := pagesByRev[rv.RevisionNo]
+		if len(pages.ids) == 0 {
+			continue
+		}
+		matched := true
+		for _, slide := range snap.Slides {
+			if _, ok := pages.ids[slide.SlideID]; !ok {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return rv.RevisionNo
+		}
+	}
+	return 0
+}
+
+func parseJobForRevision(ctx context.Context, jobs JobStore, tenantID, projectID string, revisionNo int) (*pipeline.Job, error) {
+	var cursor string
+	for {
+		page, next, err := jobs.List(ctx, tenantID, projectID, string(pipeline.StateSucceeded), cursor, 100)
+		if err != nil {
+			return nil, err
+		}
+		for _, job := range page {
+			if job.Kind != pipeline.KindParse {
+				continue
+			}
+			var snap app.ParseSnapshot
+			if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err == nil && snap.RevisionNo == revisionNo {
+				return job, nil
+			}
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	return nil, pipeline.ErrNoSucceededJob
 }
 
 type editorSlideSourceItem struct {
@@ -417,6 +733,9 @@ func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, m
 	mux.Handle("PATCH /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorUpdateRevisionDisplayName(w, r, projects, members, recorder)
 	})))
+	mux.Handle("GET /projects/{pid}/revisions/{revisionNo}/download", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorDownloadRevision(w, r, projects, members, recorder, objects)
+	})))
 	mux.Handle("DELETE /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorDeleteRevision(w, r, projects, members, recorder)
 	})))
@@ -505,6 +824,56 @@ func editorUpdateRevisionDisplayName(w http.ResponseWriter, r *http.Request, pro
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// editorDownloadRevision 下载指定源版本的原始 PPTX（项目可访问即可下载）。
+func editorDownloadRevision(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, objects objectstore.ObjectStore) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	projectID := r.PathValue("pid")
+	revStr := r.PathValue("revisionNo")
+	if projectID == "" || revStr == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("pid and revisionNo required")))
+		return
+	}
+	revNo, err := strconv.Atoi(revStr)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revisionNo")))
+		return
+	}
+	rv, err := projects.GetSourceRevision(r.Context(), principal.TenantID, projectID, revNo)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
+		return
+	}
+	key, err := objectstore.Parse(rv.ObjectKey)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	rc, meta, err := objects.Get(r.Context(), key)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
+		return
+	}
+	defer rc.Close()
+	name := strings.TrimSpace(rv.DisplayName)
+	if name == "" {
+		name = "presentation.pptx"
+	}
+	name = strings.ReplaceAll(name, "\"", "'")
+	w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+name+"\"")
+	if meta.Size > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+	}
+	_, _ = io.Copy(w, rc)
 }
 
 // editorDeleteRevision 软删指定源版本（禁止删除当前生效版本）。
@@ -602,7 +971,7 @@ func editorDiffRevisions(w http.ResponseWriter, r *http.Request, projects projec
 func loadProjectDocuments(ctx context.Context, projects project.ProjectStore, objects objectstore.ObjectStore, tenantID, projectID string, revA, revB int) (map[int]*project.Document, error) {
 	out := make(map[int]*project.Document, 2)
 	for _, rev := range [...]int{revA, revB} {
-	_, err := projects.GetSourceRevision(ctx, tenantID, projectID, rev)
+		_, err := projects.GetSourceRevision(ctx, tenantID, projectID, rev)
 		if err != nil {
 			out[rev] = nil
 			continue
@@ -669,12 +1038,12 @@ func diffDocuments(oldDoc, newDoc *project.Document) map[string]any {
 		}
 		if oldPg.Name != newPg.Name || oldPg.NotesText != newPg.NotesText {
 			changed = append(changed, map[string]any{
-				"slideId":    id,
-				"oldName":    oldPg.Name,
-				"newName":    newPg.Name,
-				"oldNotes":   truncate(oldPg.NotesText, 80),
-				"newNotes":   truncate(newPg.NotesText, 80),
-				"pageCount":  newDoc.Features.PageCount,
+				"slideId":   id,
+				"oldName":   oldPg.Name,
+				"newName":   newPg.Name,
+				"oldNotes":  truncate(oldPg.NotesText, 80),
+				"newNotes":  truncate(newPg.NotesText, 80),
+				"pageCount": newDoc.Features.PageCount,
 			})
 		}
 	}
@@ -684,7 +1053,6 @@ func diffDocuments(oldDoc, newDoc *project.Document) map[string]any {
 		"changed": changed,
 	}
 }
-
 
 // registerDiffRevisionRoutes 挂载源版本 diff 端点。
 func registerDiffRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {

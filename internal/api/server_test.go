@@ -663,6 +663,46 @@ func TestCreateGenerationPersistsRevisionBoundSnapshot(t *testing.T) {
 	}
 }
 
+// docProjectStore 让 GetSourceRevision 成功，供"当前版本页校验"测试加载 document.json。
+type docProjectStore struct{ *fakeProjectStore }
+
+func (s *docProjectStore) GetSourceRevision(context.Context, string, string, int) (*project.SourceRevision, error) {
+	return &project.SourceRevision{}, nil
+}
+
+// TestCreateGenerationRejectsSlideOutsideCurrentRevision 覆盖竞态：
+// 上传新版本后编辑器仍持有旧版本 slideId 时，配音任务不得把旧页混进当前时间轴。
+func TestCreateGenerationRejectsSlideOutsideCurrentRevision(t *testing.T) {
+	projects := &docProjectStore{&fakeProjectStore{projects: []*project.Project{{
+		ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "配音项目", CurrentRevision: 1, CreatedAt: time.Unix(90, 0),
+	}}}}
+	objects := testObjects(t)
+	docKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1",
+		Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json",
+	}
+	putAPIObject(t, objects, docKey, []byte(`{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1"}],"features":{"pageCount":1}}`), "application/json")
+	store := &fakeScriptStore{revision: newTestRevision()}
+	jobs := &jobCreatorStub{}
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
+
+	// 当前版本只有 slide-1：旧版本页 slide-2 必须被拒绝。
+	req := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-2"}, VoiceId: "voice-1"})
+	req.Header().Set("Idempotency-Key", "stale-slide")
+	if _, err := client.CreateGeneration(context.Background(), req); connect.CodeOf(err) != connect.CodeFailedPrecondition {
+		t.Fatalf("want failed_precondition, got code=%v err=%v", connect.CodeOf(err), err)
+	}
+
+	// 当前版本内的 slide-1 正常通过。
+	ok := authRequest(&pptsv1.CreateGenerationRequest{ProjectId: "project-1", SlideIds: []string{"slide-1"}, VoiceId: "voice-1"})
+	ok.Header().Set("Idempotency-Key", "valid-slide")
+	if _, err := client.CreateGeneration(context.Background(), ok); err != nil {
+		t.Fatalf("CreateGeneration(slide-1): %v", err)
+	}
+}
+
 func TestCreateGenerationRejectsIdempotencyKeyReuseWithDifferentSnapshot(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{job: &pipeline.Job{ID: "existing", InputSnapshot: `{"different":true}`}}

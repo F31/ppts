@@ -50,13 +50,26 @@ func NewSiliconFlowProvider(cfg SiliconFlowConfig) (*SiliconFlowProvider, error)
 	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = llmTimeoutFromEnv()
 	}
 	client := cfg.Client
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
 	return &SiliconFlowProvider{baseURL: base, apiKey: cfg.APIKey, model: model, visionModel: visionModel, client: client}, nil
+}
+
+func llmTimeoutFromEnv() time.Duration {
+	for _, name := range []string{"PPTS_LLM_TIMEOUT", "PPTS_LLM_REQUEST_TIMEOUT"} {
+		raw := strings.TrimSpace(os.Getenv(name))
+		if raw == "" {
+			continue
+		}
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 180 * time.Second
 }
 
 // FromEnv returns the configured text rewriter. Empty provider disables LLM features.

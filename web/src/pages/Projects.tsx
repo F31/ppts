@@ -8,8 +8,8 @@ import {
   deleteFolder,
   deleteSourceRevision,
   detachTag,
-  getNarration,
-  getProjectSlides,
+  downloadSourceRevision,
+  getRevisionVoiceStatus,
   getSourceRevisions,
   listFolders,
   listProjectOrganization,
@@ -19,6 +19,7 @@ import {
   renameFolder,
   updatePptDisplayName,
   type ClientIdentity,
+  type RevisionVoiceStatus,
   type SourceRevisionSummary
 } from '../api';
 import { ImportDialog } from '../components/ImportDialog';
@@ -28,16 +29,11 @@ import { Link, navigate } from '../router';
 import { can, type Capability } from '../permissions';
 import { type Folder, type Project, type ProjectOrg, type Role, type Tag } from '../types';
 
-type RowMeta = {
-  slideCount: number;
-  voiced: boolean;
-  lastError?: string;
-};
-
 type ProjectVersionsState = {
   loading: boolean;
   error: string;
   revisions: SourceRevisionSummary[];
+  voice: Record<number, RevisionVoiceStatus>;
 };
 
 type SortKey = 'created_desc' | 'created_asc' | 'name_asc' | 'name_desc';
@@ -85,7 +81,6 @@ export function Projects({
   const confirmDialog = useConfirmDialog();
   const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [projects, setProjects] = useState<Project[]>([]);
-  const [meta, setMeta] = useState<Record<string, RowMeta>>({});
   const [title, setTitle] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -155,32 +150,6 @@ export function Projects({
     }
   }, [view]);
 
-  const refreshMeta = useCallback(
-    async (items: Project[]) => {
-      const entries = await Promise.all(
-        items.map(async (project) => {
-          let slideCount = 0;
-          let voiced = false;
-          try {
-            const slides = await getProjectSlides(identity, project.id);
-            slideCount = slides.slides.length;
-          } catch {
-            slideCount = 0;
-          }
-          try {
-            const narration = await getNarration(identity, project.id);
-            voiced = narration.ready;
-          } catch {
-            voiced = false;
-          }
-          return [project.id, { slideCount, voiced, lastError: undefined }] as const;
-        })
-      );
-      setMeta(Object.fromEntries(entries));
-    },
-    [identity]
-  );
-
   const refreshOrg = useCallback(async () => {
     setOrgError('');
     try {
@@ -204,14 +173,14 @@ export function Projects({
       try {
         const list = await listProjects(identity);
         setProjects(list);
-        await Promise.all([refreshMeta(list), refreshOrg()]);
+        await refreshOrg();
       } catch (err) {
         setError(err instanceof Error ? err.message : t('projects.loadFailed'));
       } finally {
         setLoading(false);
       }
     },
-    [identity, refreshMeta, refreshOrg, t]
+    [identity, refreshOrg, t]
   );
 
   useEffect(() => {
@@ -255,13 +224,17 @@ export function Projects({
     if (versionsByProject[project.id]) return;
     setVersionsByProject((current) => ({
       ...current,
-      [project.id]: { loading: true, error: '', revisions: [] }
+      [project.id]: { loading: true, error: '', revisions: [], voice: {} }
     }));
     try {
-      const result = await getSourceRevisions(identity, project.id);
+      const [result, voice] = await Promise.all([
+        getSourceRevisions(identity, project.id),
+        getRevisionVoiceStatus(identity, project.id)
+      ]);
+      const voiceMap = Object.fromEntries((voice.revisions ?? []).map((item) => [item.revisionNo, item]));
       setVersionsByProject((current) => ({
         ...current,
-        [project.id]: { loading: false, error: '', revisions: result.revisions }
+        [project.id]: { loading: false, error: '', revisions: result.revisions, voice: voiceMap }
       }));
     } catch (err) {
       setVersionsByProject((current) => ({
@@ -269,7 +242,8 @@ export function Projects({
         [project.id]: {
           loading: false,
           error: err instanceof Error ? err.message : t('projects.versionsFailed'),
-          revisions: []
+          revisions: [],
+          voice: {}
         }
       }));
     }
@@ -479,7 +453,6 @@ export function Projects({
 
   const renderVersionList = (project: Project) => {
     const state = versionsByProject[project.id];
-    const row = meta[project.id];
     if (!state || state.loading) return <p className="cell-sub">{t('common.loading')}</p>;
     if (state.error) return <p className="api-status error">{state.error}</p>;
     if (state.revisions.length === 0) return <p className="cell-sub">{t('projects.noPpts')}</p>;
@@ -498,6 +471,42 @@ export function Projects({
     };
     const getDisplayName = (rev: SourceRevisionSummary) =>
       (editableNames[project.id]?.[rev.revisionNo] ?? rev.displayName) || rev.displayName;
+    const statusClass = (status?: RevisionVoiceStatus) => {
+      if (!status) return 'empty';
+      if (status.status === 'complete') return 'succeeded';
+      if (status.status === 'partial' || status.status === 'stale') return 'queued';
+      return 'empty';
+    };
+    const statusLabel = (status?: RevisionVoiceStatus) => {
+      if (!status) return '…';
+      const values = { voiced: status.voicedPages, total: status.pageCount, missing: status.missingPages, stale: status.stalePages };
+      switch (status.status) {
+        case 'complete':
+          return t('projects.voiceComplete', values);
+        case 'partial':
+          return t('projects.voicePartial', values);
+        case 'stale':
+          return t('projects.voiceStale', values);
+        default:
+          return t('projects.voiceNotVoiced', values);
+      }
+    };
+    const statusTitle = (status?: RevisionVoiceStatus) => {
+      if (!status) return '';
+      return t('projects.voiceStatusDetail', {
+        voiced: status.voicedPages,
+        total: status.pageCount,
+        missing: status.missingPages,
+        stale: status.stalePages
+      });
+    };
+    const downloadRevision = async (rev: SourceRevisionSummary) => {
+      try {
+        await downloadSourceRevision(identity, project.id, rev.revisionNo, getDisplayName(rev));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t('projects.downloadFailed'));
+      }
+    };
     return (
       <table className="data-table nested-table">
         <thead>
@@ -514,6 +523,8 @@ export function Projects({
         <tbody>
           {state.revisions.map((revision) => {
             const isEditing = editingCell === editKey(revision.revisionNo);
+            const voiceStatus = state.voice[revision.revisionNo];
+            const canExportRevision = voiceStatus?.status === 'complete';
             return (
             <tr key={revision.revisionNo}>
               <td className="col-ppt-name">
@@ -557,13 +568,9 @@ export function Projects({
                 <td>v{revision.revisionNo}</td>
                 <td>{new Date(revision.createdAt).toLocaleString()}</td>
                 <td>
-                  {revision.isCurrent ? (
-                    <span className={`state-tag ${row?.voiced ? 'succeeded' : 'empty'}`}>
-                      {row ? (row.voiced ? t('projects.voiced') : t('projects.notVoiced')) : '…'}
-                    </span>
-                  ) : (
-                    '—'
-                  )}
+                  <span className={`state-tag ${statusClass(voiceStatus)}`} title={statusTitle(voiceStatus)}>
+                    {statusLabel(voiceStatus)}
+                  </span>
                 </td>
                 <td>
                   <TagChips projectId={project.id} />
@@ -577,14 +584,25 @@ export function Projects({
                   >
                     {t('projects.view')}
                   </button>
-                  <button
-                    type="button"
-                    className="button-ghost"
-                    onClick={() => navigate(`/projects/${project.id}/editor?export&rev=${revision.revisionNo}`)}
-                    title={t('projects.export')}
-                  >
-                    {t('projects.export')}
-                  </button>
+                  {canExportRevision ? (
+                    <button
+                      type="button"
+                      className="button-ghost"
+                      onClick={() => navigate(`/projects/${project.id}/editor?export=1&rev=${revision.revisionNo}`)}
+                      title={t('projects.export')}
+                    >
+                      {t('projects.export')}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="button-ghost"
+                      onClick={() => void downloadRevision(revision)}
+                      title={t('projects.downloadPpt')}
+                    >
+                      {t('projects.downloadPpt')}
+                    </button>
+                  )}
                   {!revision.isCurrent && (
                     <button
                       type="button"
