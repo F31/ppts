@@ -199,7 +199,7 @@ func TestCreateSourceRevisionIdempotentByUpload(t *testing.T) {
 	if second.ID != first.ID || second.RevisionNo != first.RevisionNo {
 		t.Fatalf("retry duplicated source revision: %+v vs %+v", second, first)
 	}
-	p, err := env.projects.GetProject(ctx, appTenant, appProject)
+	p, err := env.projects.GetProject(ctx, appTenant, "", appProject)
 	if err != nil {
 		t.Fatalf("GetProject: %v", err)
 	}
