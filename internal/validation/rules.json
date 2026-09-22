@@ -1,0 +1,23 @@
+{
+  "_note": "校验规则的等价表。改这个文件不需要改 Go 逻辑，但必须跑 `go test ./internal/validation/...`——规则表错误由 rules.go 的 ValidateRules 与回放门禁一起兜住。只登记**语言级**等价（英文缩写 ↔ 中文量词），不做领域换算（不登记 1GB=1024MB 这类）。领域私有型号不得猜测式登记：宁可让一次真实改动落到「保留原文、待人工确认」（可见、可修），也不要把型号改动静默放行（不可见）。",
+  "version": "2026-09-22.1",
+  "unitAliasGroups": [
+    ["%", "pct"],
+    ["x", "倍"],
+    ["s", "sec", "秒"],
+    ["ms", "毫秒"],
+    ["min", "分钟"],
+    ["h", "hr", "小时"],
+    ["hz", "赫兹"]
+  ],
+  "plainUnits": [
+    "bps", "usd", "rmb", "cny",
+    "tb", "gb", "mb", "kb", "b",
+    "kw", "mw", "w", "v", "a",
+    "khz", "mhz", "ghz",
+    "元", "万元", "亿元"
+  ],
+  "modelAliasGroups": [
+    ["k8s", "kubernetes"]
+  ]
+}

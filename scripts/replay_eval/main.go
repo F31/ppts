@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/F31/ppts/internal/validation"
 	"github.com/F31/ppts/internal/validation/replay"
 )
 
@@ -36,16 +37,17 @@ const (
 )
 
 type jsonReport struct {
-	GeneratedAt string         `json:"generatedAt"`
-	Total       int            `json:"total"`
-	Passed      int            `json:"passed"`
-	Blocked     int            `json:"blocked"`
-	FalseBlock  int            `json:"falseBlock"`
-	FalsePass   int            `json:"falsePass"`
-	ByProv      map[string]int `json:"byProvenance"`
-	ByTag       map[string]int `json:"byTag"`
-	Gaps        []jsonGap      `json:"gaps,omitempty"`
-	Flips       []string       `json:"flips,omitempty"`
+	GeneratedAt  string         `json:"generatedAt"`
+	RulesVersion string         `json:"rulesVersion"`
+	Total        int            `json:"total"`
+	Passed       int            `json:"passed"`
+	Blocked      int            `json:"blocked"`
+	FalseBlock   int            `json:"falseBlock"`
+	FalsePass    int            `json:"falsePass"`
+	ByProv       map[string]int `json:"byProvenance"`
+	ByTag        map[string]int `json:"byTag"`
+	Gaps         []jsonGap      `json:"gaps,omitempty"`
+	Flips        []string       `json:"flips,omitempty"`
 }
 
 type jsonGap struct {
@@ -69,6 +71,7 @@ func main() {
 		fatal(fmt.Errorf("语料为空：%s", *dir))
 	}
 	sum := replay.Run(cases)
+	fmt.Printf("规则表版本：%s\n", validation.RulesVersion())
 	fmt.Print(sum.Report())
 
 	basePath := filepath.Join(*dir, "baseline.json")
@@ -88,14 +91,15 @@ func main() {
 	}
 
 	rep := jsonReport{
-		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
-		Total:       sum.Total,
-		Passed:      sum.Passed,
-		Blocked:     sum.Blocked,
-		FalseBlock:  sum.FalseBlock,
-		FalsePass:   sum.FalsePass,
-		ByProv:      sum.ByProv,
-		ByTag:       tagCounts(cases),
+		GeneratedAt:  time.Now().UTC().Format(time.RFC3339),
+		RulesVersion: validation.RulesVersion(),
+		Total:        sum.Total,
+		Passed:       sum.Passed,
+		Blocked:      sum.Blocked,
+		FalseBlock:   sum.FalseBlock,
+		FalsePass:    sum.FalsePass,
+		ByProv:       sum.ByProv,
+		ByTag:        tagCounts(cases),
 	}
 	for _, g := range sum.Gaps {
 		rep.Gaps = append(rep.Gaps, jsonGap{

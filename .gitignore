@@ -61,3 +61,7 @@ web/dist/*
 
 # 对象存储本地适配器根目录（单机开发）
 /var/ppts-objects/
+
+# 校验回放报告是 CI 产物，不入库；要留痕的是语料与判定基线
+# （internal/validation/replay/testdata/*.json）
+testdata/validation/replay-report.json

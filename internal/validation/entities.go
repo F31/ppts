@@ -68,39 +68,10 @@ func foldMultiplier(s string) string {
 	})
 }
 
-// unitAliasGroups 是**同一物理量**的不同写法，归一到组内首个写法。组内顺序：
-// 规范写法在前，其余为已确认的等价写法。
-//
-// 只登记**语言级**等价（英文缩写 ↔ 中文量词），不做领域换算（不登记 1GB=1024MB 这类）。
-// 新增等价对必须同时被 FormatEquivalenceHint 覆盖，否则模型无从知道「这样写也行」——
-// 有守门用例保证两者不会脱节。
-var unitAliasGroups = [][]string{
-	{"%", "pct"},
-	{"x", "倍"},
-	{"s", "sec", "秒"},
-	{"ms", "毫秒"},
-	{"min", "分钟"},
-	{"h", "hr", "小时"},
-	{"hz", "赫兹"},
-}
-
-// plainUnits 是只有一种写法的单位（中文技术文案里直接沿用英文缩写，无需等价表）。
-var plainUnits = []string{
-	"bps", "usd", "rmb", "cny",
-	"tb", "gb", "mb", "kb", "b",
-	"kw", "mw", "w", "v", "a",
-	"khz", "mhz", "ghz",
-	"元", "万元", "亿元",
-}
-
-// modelAliasGroups 登记「缩写与其通用全称」的语言级同义（组内首个为规范写法）。
-//
-// 只登记跨领域通用的写法。领域私有型号**不得**猜测式登记：宁可让一次真实改动落到
-// 「保留原文、待人工确认」（可见、可修），也不要把一次型号改动静默放行（不可见）。
-// 需要新增时把等价写法加进组内即可，提示词说明会自动带上（见 FormatEquivalenceHint）。
-var modelAliasGroups = [][]string{
-	{"k8s", "kubernetes"},
-}
+// 等价表已数据化（M15）：声明在 rules.json，由 rules.go 内嵌加载并做启动期校验
+// （空组、token 落两组、仅大小写不同的重复等只能靠校验发现的表错误）。
+// 本文件只**消费**三个视图变量 unitAliasGroups / plainUnits / modelAliasGroups。
+// 新增等价写法：改 rules.json，不要在本文件里再造一张表——两份必然漂移。
 
 func buildNumberUnitRe() *regexp.Regexp {
 	units := allUnits()
