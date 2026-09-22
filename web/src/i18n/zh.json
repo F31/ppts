@@ -876,6 +876,8 @@
   "artifacts.status": "状态",
   "artifacts.voiced": "已配音",
   "artifacts.pageCount": "页面数",
+  "artifacts.notParsed": "尚未解析",
+  "artifacts.pageCountFailed": "页面数读取失败",
   "artifacts.pageRenders": "页面渲染图",
   "artifacts.pageCountValue": "{count} 张",
   "artifacts.notRendered": "未渲染（音频+字幕可播）",

@@ -876,6 +876,8 @@
   "artifacts.status": "Status",
   "artifacts.voiced": "Voiced",
   "artifacts.pageCount": "Pages",
+  "artifacts.notParsed": "Not parsed yet",
+  "artifacts.pageCountFailed": "Failed to read page count",
   "artifacts.pageRenders": "Page renders",
   "artifacts.pageCountValue": "{count}",
   "artifacts.notRendered": "Not rendered (audio + subtitles playable)",

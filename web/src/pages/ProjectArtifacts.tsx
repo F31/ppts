@@ -9,12 +9,23 @@ import {
   type ProjectArtifact
 } from '../api';
 import { useI18n } from '../i18n';
+import { describeApiError, isNotFound, isUnimplemented } from '../apiError';
 import { Link } from '../router';
 import { useDialogA11y } from '../a11y';
 
 type SnapshotState = {
   loading: boolean;
-  slideCount: number;
+  /**
+   * slideCount：当前源版本的页面数。
+   * `null` = 未知——后端尚未解析该版本（正常态，见 slideUnparsed），或页数读取失败（见 slideError）。
+   * 不能用 0 表示未知：0 是"确实零页"，两者外观相同就会把故障读成事实（A26）。
+   * 与迁移 0027 的 durationMs 同约定：0/空 = 未知 → 显示占位符，不伪造。
+   */
+  slideCount: number | null;
+  /** slideUnparsed：后端明确回 NotFound「project has no parsed document yet」——正常业务态，非故障。 */
+  slideUnparsed: boolean;
+  /** slideError：仅"真故障"才有值（非 NotFound、非 Unimplemented）；带原因 + 就地重试。 */
+  slideError?: string;
   ready: boolean;
   timelineKey: string;
   pagePngCount: number;
@@ -46,7 +57,8 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
   const { t } = useI18n();
   const [snap, setSnap] = useState<SnapshotState>({
     loading: true,
-    slideCount: 0,
+    slideCount: null,
+    slideUnparsed: false,
     ready: false,
     timelineKey: '',
     pagePngCount: 0,
@@ -63,18 +75,30 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
 
   const load = useCallback(async () => {
     setSnap((c) => ({ ...c, loading: true }));
+    // 页数单独取：读不到页数不应让整个面板转失败态（narration 与成品列表仍是有效信息），
+    // 只在「页面数」行显示未知 + 就地给原因与重试。
+    let slideCount: number | null = null;
+    let slideUnparsed = false;
+    let slideError: string | undefined;
     try {
-      let slideCount = 0;
-      try {
-        const slides = await getProjectSlides(identity, projectId);
-        slideCount = slides.slides.length;
-      } catch {
-        // 解析未完成或不可用。
+      const slides = await getProjectSlides(identity, projectId);
+      slideCount = slides.slides.length;
+    } catch (err) {
+      if (isNotFound(err)) {
+        // 该版本尚未解析出页面（刚导入 / 解析任务仍在跑）——正常业务态，按 A26 不报故障。
+        slideUnparsed = true;
+      } else if (!isUnimplemented(err)) {
+        // 部署未提供该能力时按 A26 隐藏；其余才算真故障，给出原因 + 重试。
+        slideError = describeApiError(err, t('artifacts.pageCountFailed'), t);
       }
+    }
+    try {
       const narration = await getNarration(identity, projectId);
       setSnap({
         loading: false,
         slideCount,
+        slideUnparsed,
+        slideError,
         ready: narration.ready,
         timelineKey: narration.timelineKey,
         pagePngCount: narration.pagePngKeys?.length ?? 0,
@@ -182,7 +206,13 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
                 </div>
                 <div>
                   <dt>{t('artifacts.pageCount')}</dt>
-                  <dd>{snap.slideCount}</dd>
+                  <dd>
+                    {snap.slideCount !== null
+                      ? snap.slideCount
+                      : snap.slideUnparsed
+                        ? t('artifacts.notParsed')
+                        : t('common.none')}
+                  </dd>
                 </div>
                 <div>
                   <dt>{t('artifacts.pageRenders')}</dt>
@@ -211,6 +241,15 @@ export function ProjectArtifacts({ identity, projectId }: { identity: ClientIden
                 <Link to={`/projects/${projectId}/editor`} className="button-primary">
                   {t('artifacts.goGenerate')}
                 </Link>
+              </div>
+            )}
+            {/* 页数读取失败只影响「页面数」一行，故就地报错 + 重试，不把整个快照面板转失败态。 */}
+            {snap.ready && snap.slideError && (
+              <div className="load-failure" role="alert">
+                <p className="form-error">{snap.slideError}</p>
+                <button type="button" onClick={() => void load()}>
+                  {t('common.retry')}
+                </button>
               </div>
             )}
           </section>
