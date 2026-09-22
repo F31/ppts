@@ -33,9 +33,10 @@ const canRetry: JobState[] = ['JOB_STATE_FAILED', 'JOB_STATE_UNKNOWN_PROVIDER_RE
 
 const PAGE_SIZES = [10, 20, 30];
 
-// worker 实际写入的步骤类型（app/ingest.go "pages"、app/narration.go "tts_segment"/"timeline"、
-// app/export.go "export"）。step_type 在库内是自由文本，未登记的取值在筛选里按原文出现，不猜测翻译。
-const KNOWN_STEP_TYPES = ['pages', 'tts_segment', 'timeline', 'export'];
+// worker 实际写入的步骤类型（app/ingest.go "pages"、app/scriptdraft.go "page"（逐页成稿）、
+// app/narration.go "tts_segment"/"timeline"、app/export.go "export"）。step_type 在库内是自由文本，
+// 未登记的取值在筛选里按原文出现，不猜测翻译。
+const KNOWN_STEP_TYPES = ['pages', 'page', 'tts_segment', 'timeline', 'export'];
 
 const SORT_KEYS: JobListSort[] = ['created', 'updated', 'phase', 'pages'];
 

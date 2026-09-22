@@ -92,7 +92,7 @@ func runWorker() error {
 	}
 	stores.applyPriceBook(priceBook)
 	usageStore := stores.usage
-	scriptDraftHandler := app.NewScriptDraftHandler(stores.scripts, objects).WithPolisher(polisher).WithTokenAccounting(usageStore)
+	scriptDraftHandler := app.NewScriptDraftHandler(stores.scripts, objects).WithPolisher(polisher).WithTokenAccounting(usageStore).WithSteps(jobs)
 	if vision, ok := polisher.(llm.VisionExtractor); ok {
 		scriptDraftHandler = scriptDraftHandler.WithVisualExtractor(vision)
 	}

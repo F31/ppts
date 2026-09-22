@@ -203,6 +203,7 @@ export const jobKindKey: Record<string, string> = {
 // app/export.go:64 "export"）；未登记的值界面直接显示原文，不做猜测性翻译。
 export const jobStepTypeKey: Record<string, string> = {
   pages: 'enum.jobStepType.pages',
+  page: 'enum.jobStepType.page',
   tts_segment: 'enum.jobStepType.ttsSegment',
   timeline: 'enum.jobStepType.timeline',
   export: 'enum.jobStepType.export'

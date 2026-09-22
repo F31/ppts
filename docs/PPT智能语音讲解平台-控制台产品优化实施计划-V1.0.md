@@ -620,6 +620,36 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
 
 **验证**：`gofmt` 清白；`go build ./...` + `go vet ./internal/...` + `go test ./internal/...` ✅（22 包全绿、**0 FAIL**）；`tsc -b` ✅ + `vite build` ✅（CSS 50.01 kB、`dist/favicon.svg` 就位）；迁移以 `sqlglot` Postgres 方言校验（0027 单语句 OK）。
 
+### 一键成稿来源优先级缺陷修复（2026-09-22，非批次里程碑）
+
+**缺陷（用户报告）**：一键成稿选「讲稿来源 = 页面内容」，产出并非页面内容的解析结果。
+
+**根因（按代码核实，非推测）**：`internal/app/scriptdraft.go` 的 `ensureDraft` 先按来源算出页面文字，紧接着被
+`else if snap.Overwrite && rev != nil { text = revisionText(rev) }` **无条件覆盖**为旧讲稿 —— 即「来源=页面内容 + 覆盖全部」
+实际只是把旧讲稿重润一遍，**页面文字从未进入提示词**。现场证据：任务快照
+`{"slideIds":["slide-257","slide-258"],"sourceMode":"page_content","mode":"polish","overwrite":true}`；slide-257 有页面文字（拓扑图）**且**有备注，
+产出却是备注的润色版；对照 slide-258（无旧稿）→ 正确取了页面文字。
+
+**修复（M1 + M2）**：
+- **来源优先级收敛为单源**：新增纯函数 `selectDraftInput(pg, source, custom, sourceMode, mode, overwrite, existing)`——
+  显式来源（批量 `sourceMode` 或页面级 `source`）**永远优先**，即使 `overwrite=true` 也不得用旧讲稿顶替；仅在**未显式指定**时保留历史行为
+  （原文模式取备注；`overwrite` 且有旧稿时以旧稿为输入，即单页「重新生成讲稿」的润色语义）。原覆盖分支删除。
+- **跳过必须可见**：`ensureDraft` 改返回 `draftOutcome ∈ {generated, skipped_existing, skipped_no_text}`；新增 `markPageStep`
+  以 `page:v1:<slideId>` 为幂等键（`job_steps` 有 `UNIQUE(job_id, step_key)`，重试不翻倍）登记 `success`/`skipped`；`cmd/ppts/worker.go`
+  以 `.WithSteps(jobs)` 注入。此前「仅补空」对已有讲稿的页静默 `return nil`，界面仍报「成稿完成：共 N 页」。
+- **前端如实展示**（`web/src/pages/ProjectEditor.tsx`）：抽屉新增生成前**预估**（生成 / 跳过 / 无素材页数；讲稿语言与目标语言不一致时标注为估算）、
+  `页面内容 + 原文`「不做 AI 加工」提示、「仅补空会跳过有备注页」提示（按裁定**保留**自动按备注建稿行为，改为在面板说明）、
+  完成后读 `getJobDetail` 展示**逐页结果**（`stepsError`/异常 → 明确标注统计不可用，不编造数字）。新增步骤类型 `page`（讲稿页）已登记到
+  `types.ts` 的 `jobStepTypeKey` + `Jobs.tsx` 的 `KNOWN_STEP_TYPES` + 中英文案。
+- **顺带修复（同一代码路径）**：成稿任务的轮询定时器此前**到达终态后仍不停**（每 2s 继续 `getJob` + 全量 `getScript`），改为终态即 `stopPolling()`——否则新增的逐页结果会被后续 tick 反复覆写，且停留越久请求越多。
+
+**验证**：`gofmt` 清白；`go build ./...` ✅、`go vet ./internal/...` ✅、`go test ./internal/...` ✅（0 FAIL；16 项 SKIP 全为环境依赖型，`internal/api` **0 SKIP**）；
+新增**无 DB** 单测 `internal/app/scriptdraft_input_test.go`（12 例，前 3 例即本缺陷守门人：页面内容/页面级来源/自定义文本优先于沿用旧稿）✅；
+`tsc -b` ✅ + `vite build` ✅（CSS 81.59 kB 未变，本次未加样式）。
+
+**遗留（未在本次范围）**：`draftInstructions` 仍恒为「把当前讲稿润色…」，不随来源变化（M3）；原生端点不校验 `sourceMode` 白名单（M4）；
+`web/src/api.ts` 的 `generateDraft` 为死导出且未设 `RevisionNo/SourceMode`（M6）。
+
 ### B5 可选增强（独立立项，2026-09-16 范围裁定）
 
 **范围裁定（B5-C1）**：本轮原定做 **3 块**——命令面板、全局成品库、**用户作品公开发布与撤回（A29）**；**邮箱自助注册**原延后立项（自注册用户如何归属租户风险最高，C-8 原计划 4 块中的该块）。**现已单独立项 B5-M4 并实施**（决策 ①A 自注册创建个人租户/首个用户为 owner、②A 注册即信任不做邮件验证、③A HS256 自签名 JWT 与 OIDC 并存），详见下方里程碑表与 C-8。

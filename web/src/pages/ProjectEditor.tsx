@@ -8,6 +8,7 @@ import {
   estimateNarration,
   getNarrationStale,
   getJob,
+  getJobDetail,
   getNarration,
   getPlaybackManifest,
   getVoiceSettings,
@@ -273,6 +274,10 @@ export function ProjectEditor({
   const [oneDraftRunning, setOneDraftRunning] = useState(false);
   const [oneDraftProgress, setOneDraftProgress] = useState({ done: 0, total: 0, message: '' });
   const [oneDraftJobId, setOneDraftJobId] = useState('');
+  // 成稿逐页结果（来自任务步骤计数）。任务"成功"不等于"有页被更新"——
+  // 「仅补空」可能把每一页都跳过，必须把两个数字分开显示，否则用户会以为来源选择没生效。
+  const [oneDraftResult, setOneDraftResult] = useState<{ generated: number; skipped: number } | null>(null);
+  const [oneDraftResultUnavailable, setOneDraftResultUnavailable] = useState(false);
   const [unsaved, setUnsaved] = useState(false);
   // 编辑区网格容器 + 讲稿栏宽度拖拽（CSS 变量 --script-panel-width，仅当前会话生效）。
   const editorLayoutRef = useRef<HTMLDivElement>(null);
@@ -563,6 +568,48 @@ export function ProjectEditor({
 
   const oneDraftStorageKey = `ppts:one-draft:${projectId}`;
 
+  // 成稿前的跳过预估（**估算**，非承诺值；后端逐页结果以任务步骤为准）。
+  // slide.preview 由后端按「备注优先，其次首个非空形状文字」生成：
+  //  - notes_only：「有备注」即可成稿，preview 不作判据；
+  //  - 其余来源：preview 为空 ⇒ 备注与形状文字皆空 ⇒ 必然跳过；
+  //    但 preview 非空**不保证**页面文字可抽取（仅备注页在 page_content 下仍会被后端跳过），
+  //    故这类漏计只会让预估偏乐观，不会漏报真正会生成的页。
+  // realScripts 只含**当前讲稿语言**的讲稿，故仅当生成语言与面板语言一致时跳过数才精确，
+  // 否则标注为按目标语言的估算。
+  const oneDraftPlan = useMemo(() => {
+    if (slidesState.mode !== 'real') return null;
+    const slides = slidesState.slides;
+    let generate = 0;
+    let skippedExisting = 0;
+    let noText = 0;
+    // withNotes 用于说明「打开有备注的页面会自动用备注建一版原文稿」——
+    // 这会让「仅补空」在后续成稿时把这些页判为已有讲稿而跳过。
+    let withNotes = 0;
+    for (const slide of slides) {
+      if (slide.hasNotes) withNotes += 1;
+      const hasMaterial =
+        oneDraftSource === 'notes_only' ? Boolean(slide.hasNotes) : Boolean((slide.preview ?? '').trim());
+      if (!hasMaterial) {
+        noText += 1;
+        continue;
+      }
+      const hasScript = (realScripts[slide.slideId]?.segments.length ?? 0) > 0;
+      if (hasScript && oneDraftOverwrite === 'fill_empty') {
+        skippedExisting += 1;
+        continue;
+      }
+      generate += 1;
+    }
+    return {
+      generate,
+      skippedExisting,
+      noText,
+      withNotes,
+      total: slides.length,
+      reliable: oneDraftLanguage === (scriptLanguage || 'zh-CN')
+    };
+  }, [slidesState, realScripts, oneDraftSource, oneDraftOverwrite, oneDraftLanguage, scriptLanguage]);
+
   useEffect(() => {
     const saved = window.localStorage.getItem(oneDraftStorageKey);
     if (saved) setOneDraftJobId(saved);
@@ -571,6 +618,17 @@ export function ProjectEditor({
   useEffect(() => {
     if (!oneDraftJobId) return;
     let cancelled = false;
+    // 任务到达终态后必须停止轮询：此前定时器会一直跑（每 2s 一次 getJob + 全量 getScript），
+    // 页面停留越久请求越多；新增的逐页结果读取也会被后续 tick 反复覆写。
+    let stopped = false;
+    let timer: number | undefined;
+    const stopPolling = () => {
+      stopped = true;
+      if (timer !== undefined) {
+        window.clearInterval(timer);
+        timer = undefined;
+      }
+    };
     const total = slidesState.mode === 'real' ? slidesState.slides.length : 0;
     const refresh = async () => {
       try {
@@ -579,8 +637,29 @@ export function ProjectEditor({
         const pct = Math.max(0, Math.min(100, job.progressPercent || 0));
         const done = total > 0 ? Math.round((pct / 100) * total) : pct;
         if (job.state === 'JOB_STATE_SUCCEEDED') {
+          stopPolling();
           setOneDraftRunning(false);
           setOneDraftProgress({ done: total || 100, total: total || 100, message: t('editor.oneDraftProgressComplete', { total: total || 100 }) });
+          // 逐页结果：进度百分比只说明"跑完了"，跳过的页不会体现在百分比里。
+          // 步骤计数是后端逐页登记的结果（success=生成 / skipped=跳过），失败时明确标注不可用。
+          try {
+            const detail = await getJobDetail(identity, oneDraftJobId);
+            if (!cancelled) {
+              if (detail.stepsError) {
+                setOneDraftResult(null);
+                setOneDraftResultUnavailable(true);
+              } else {
+                const counts = detail.stepCounts ?? {};
+                setOneDraftResult({ generated: counts.success ?? 0, skipped: counts.skipped ?? 0 });
+                setOneDraftResultUnavailable(false);
+              }
+            }
+          } catch {
+            if (!cancelled) {
+              setOneDraftResult(null);
+              setOneDraftResultUnavailable(true);
+            }
+          }
           if (slidesState.mode === 'real') {
             const found: Record<string, ScriptRevision> = {};
             await Promise.all(slidesState.slides.map(async (slide) => {
@@ -596,6 +675,7 @@ export function ProjectEditor({
           return;
         }
         if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
+          stopPolling();
           setOneDraftRunning(false);
           setOneDraftProgress({ done, total: total || 100, message: friendlyOneDraftError(job.lastError?.message || '') });
           return;
@@ -607,10 +687,10 @@ export function ProjectEditor({
       }
     };
     void refresh();
-    const timer = window.setInterval(() => void refresh(), 2000);
+    if (!stopped) timer = window.setInterval(() => { if (!stopped) void refresh(); }, 2000);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      stopPolling();
     };
   }, [identity, oneDraftJobId, projectId, slidesState, t]);
 
@@ -924,6 +1004,8 @@ export function ProjectEditor({
     setScriptLanguagePreference(oneDraftLanguage);
     persistScriptLanguage(oneDraftLanguage);
     setOneDraftRunning(true);
+    setOneDraftResult(null);
+    setOneDraftResultUnavailable(false);
     setOneDraftProgress({ done: 0, total: slideIds.length, message: t('editor.oneDraftProgressStart') });
     try {
       const result = await regenerateScriptDraft(identity, projectId, slideIds, oneDraftMode, {
@@ -1660,6 +1742,21 @@ export function ProjectEditor({
                 </select>
               </label>
               <p className="narration-note">{t('editor.oneDraftGuardrails')}</p>
+              {oneDraftPlan && (
+                <p className="narration-note">
+                  {t('editor.oneDraftPlan', { generate: oneDraftPlan.generate, skip: oneDraftPlan.skippedExisting })}
+                  {oneDraftPlan.reliable ? '' : ` ${t('editor.oneDraftPlanEstimate')}`}
+                </p>
+              )}
+              {oneDraftPlan && oneDraftPlan.noText > 0 && (
+                <p className="narration-note warn">{t('editor.oneDraftPlanNoText', { count: oneDraftPlan.noText })}</p>
+              )}
+              {oneDraftSource === 'page_content' && oneDraftMode === 'SCRIPT_MODE_ORIGINAL' && (
+                <p className="narration-note warn">{t('editor.oneDraftPageContentOriginalHint')}</p>
+              )}
+              {oneDraftOverwrite === 'fill_empty' && (oneDraftPlan?.withNotes ?? 0) > 0 && (
+                <p className="narration-note warn">{t('editor.oneDraftAutoNotesNote')}</p>
+              )}
               <div className="draft-actions">
                 <button type="button" className="primary" disabled={!canEditScript || oneDraftRunning || draftStatus.phase === 'generating'} onClick={() => void submitOneDraft()}>
                   {oneDraftRunning ? t('editor.scriptRegenerating') : t('editor.oneDraftSubmit')}
@@ -1675,6 +1772,14 @@ export function ProjectEditor({
                   </div>
                   <span>{oneDraftProgress.message}</span>
                 </div>
+              )}
+              {oneDraftResult && (
+                <p className="narration-note" role="status">
+                  {t('editor.oneDraftResult', { generated: oneDraftResult.generated, skipped: oneDraftResult.skipped })}
+                </p>
+              )}
+              {!oneDraftResult && oneDraftResultUnavailable && (
+                <p className="narration-note warn" role="status">{t('editor.oneDraftResultUnknown')}</p>
               )}
               {!canEditScript && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
             </section>

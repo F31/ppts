@@ -51,7 +51,29 @@ type ScriptDraftHandler struct {
 	// 按租户解析的 LLM 供应商（模型网关）；优先于固定注入。
 	polisherFor func(ctx context.Context, tenantID string) (llm.TextRewriter, error)
 	visionFor   func(ctx context.Context, tenantID string) (llm.VisionExtractor, error)
+	// steps 逐页登记处理结果（生成/跳过），供任务详情与成稿面板计数。
+	// 未注入时只跑业务不记账（测试/私有化场景）。
+	steps interface {
+		MarkStep(context.Context, pipeline.JobStep) error
+	}
 }
+
+// draftOutcome 是单页成稿的处理结果。跳过**必须可区分原因**：此前静默 return 让
+// 「一键成稿」在全部页被跳过时仍显示成功，用户无从判断来源选择是否生效。
+type draftOutcome string
+
+const (
+	// draftGenerated 该页写出了新讲稿。
+	draftGenerated draftOutcome = "generated"
+	// draftSkippedExisting 该页已有讲稿且未选择覆盖（默认「仅补空」策略）。
+	draftSkippedExisting draftOutcome = "skipped_existing"
+	// draftSkippedNoText 该页页面文字与备注均为空，没有可用的成稿素材。
+	draftSkippedNoText draftOutcome = "skipped_no_text"
+)
+
+// stepTypePage 是逐页成稿步骤的 step_type（与 ingest 的 "pages"、narration 的
+// "tts_segment" 同级；前端 enum.jobStepType.page 有对应文案）。
+const stepTypePage = "page"
 
 const maxScriptDraftRetryAttempts = 3
 
@@ -75,6 +97,14 @@ func (h *ScriptDraftHandler) WithPolisher(p llm.TextRewriter) *ScriptDraftHandle
 // WithVisualExtractor 注入可选视觉通道；失败时保留结构通道结果。
 func (h *ScriptDraftHandler) WithVisualExtractor(v llm.VisionExtractor) *ScriptDraftHandler {
 	h.vision = v
+	return h
+}
+
+// WithSteps 注入逐页步骤记录器，登记每页是生成还是跳过（供任务详情计数）。
+func (h *ScriptDraftHandler) WithSteps(s interface {
+	MarkStep(context.Context, pipeline.JobStep) error
+}) *ScriptDraftHandler {
+	h.steps = s
 	return h
 }
 
@@ -159,12 +189,16 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 	for i, pg := range targets {
 		source := snap.Sources[pg.SlideID]
 		custom := snap.CustomSources[pg.SlideID]
-		if err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap); err != nil {
+		outcome, err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap)
+		if err != nil {
 			if retry := pipeline.AsRetry(err); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
 				return retry.Err
 			}
 			return err
 		}
+		// 逐页记账：任务成功但全部跳过时，用户能从任务详情看到「跳过」而不是
+		// 一个没有任何解释的成功（A26：失败与未生效都必须可见）。
+		h.markPageStep(ctx, job, pg, outcome)
 		_ = pipeline.ReportProgress(ctx, ((i+1)*100)/len(targets))
 	}
 	return nil
@@ -211,33 +245,25 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 	return doc.Pages, nil
 }
 
-// ensureDraft 为单个页面生成草稿。已存在讲稿（含占位或用户已编辑）则跳过，不覆盖。
-// source/custom 为该页显式选择的讲稿来源（无备注页）；为空时回退默认行为。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot) error {
+// ensureDraft 为单个页面生成草稿，返回该页的处理结果（生成/跳过及原因）。
+// source/custom 为该页显式选择的讲稿来源；为空时回退默认行为（见 selectDraftInput）。
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot) (draftOutcome, error) {
 	slideID := pg.SlideID
 	if slideID == "" {
-		return nil
+		return draftSkippedNoText, nil
 	}
 	rev, err := h.scripts.Get(ctx, tenantID, projectID, slideID, language)
 	if err == nil && len(rev.Segments) > 0 && !snap.Overwrite {
-		return nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
+		return draftSkippedExisting, nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
 	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
-		return err
+		return "", err
 	} else if err != nil {
 		rev = nil
 	}
 
-	text := pgTextForMode(pg, source, custom, snap.SourceMode)
-	if mode == narration.ModeOriginal && strings.TrimSpace(snap.SourceMode) == "" {
-		text = strings.TrimSpace(pg.NotesText)
-	} else if snap.Overwrite && rev != nil {
-		// 显式重新生成时，润色/AI 生成以用户当前讲稿为输入，而不是重新从 PPT 版面抽取。
-		if current := revisionText(rev); current != "" {
-			text = current
-		}
-	}
+	text := selectDraftInput(pg, source, custom, snap.SourceMode, mode, snap.Overwrite, revisionText(rev))
 	if text == "" {
-		return nil // 无正文/备注，不生成空讲稿。
+		return draftSkippedNoText, nil // 无正文/备注，不生成空讲稿。
 	}
 	var vision llm.VisionExtractor
 	if v, err := h.visionForTenant(ctx, tenantID); err == nil {
@@ -251,12 +277,12 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	}
 	displayText, spokenText, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, text, snap)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if rev == nil {
 		rev, err = h.scripts.EnsureExists(ctx, tenantID, projectID, slideID, language, mode)
 		if err != nil {
-			return fmt.Errorf("script_draft: ensure script: %w", err)
+			return "", fmt.Errorf("script_draft: ensure script: %w", err)
 		}
 	}
 	segment := &narration.Segment{
@@ -268,9 +294,30 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		Status:        narration.StatusDraft,
 	}
 	if _, err := h.scripts.Update(ctx, tenantID, projectID, slideID, language, rev.Revision, []*narration.Segment{segment}); err != nil {
-		return fmt.Errorf("script_draft: write draft: %w", err)
+		return "", fmt.Errorf("script_draft: write draft: %w", err)
 	}
-	return nil
+	return draftGenerated, nil
+}
+
+// markPageStep 登记单页处理结果。步骤写失败不影响已完成的成稿（计数缺一条好过整任务失败）。
+//
+// step_key 以 slideId 为幂等键：同一任务的同一页重复执行只留一条步骤（job_steps 有
+// UNIQUE(job_id, step_key)），重试不会把计数翻倍。
+func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome) {
+	if h.steps == nil || pg.SlideID == "" {
+		return
+	}
+	state := pipeline.StepSkipped
+	if outcome == draftGenerated {
+		state = pipeline.StepSuccess
+	}
+	step := pipeline.JobStep{
+		JobID: job.ID, TenantID: job.TenantID,
+		StepType: stepTypePage,
+		StepKey:  "page:v1:" + pg.SlideID,
+		State:    state,
+	}
+	_ = h.steps.MarkStep(ctx, step)
 }
 
 func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.VisionExtractor, tenantID, projectID string, revisionNo int, language string, pg parsedPage) []narration.SourceAnchor {
@@ -549,4 +596,33 @@ func pgTextForMode(pg parsedPage, source, custom, sourceMode string) string {
 	default:
 		return pgText(pg, source, custom)
 	}
+}
+
+// selectDraftInput 决定单页成稿的来源文本（空串 = 该页没有可用素材，应跳过）。
+//
+// **来源优先级是本函数的唯一职责**，也是曾经的缺陷所在：
+//
+//	① 用户显式指定的来源（批量 sourceMode，或页面级 source）永远优先——即使 overwrite=true，
+//	   也不得用已有讲稿顶替用户选择的来源；
+//	② 只有在「未显式指定来源」时才沿用历史行为：
+//	   - 原文模式：取备注（无备注则不生成）；
+//	   - overwrite=true：以当前讲稿为输入（单页「重新生成讲稿」= 润色现有稿）。
+//
+// 缺陷史（2026-09-22）：原实现先按来源算好页面文字，再用 `overwrite && rev != nil` 无条件
+// 覆盖成旧讲稿。于是「一键成稿 · 来源=页面内容 · 覆盖全部」实际是把旧讲稿润色一遍，
+// 页面文字从未进入提示词；产出看起来"没按页面内容生成"。
+func selectDraftInput(pg parsedPage, source, custom, sourceMode string, mode narration.ScriptMode, overwrite bool, existing string) string {
+	explicit := strings.TrimSpace(sourceMode) != "" || strings.TrimSpace(source) != ""
+	if !explicit {
+		if mode == narration.ModeOriginal {
+			return strings.TrimSpace(pg.NotesText)
+		}
+		// 显式重新生成时，润色/AI 生成以用户当前讲稿为输入，而不是重新从 PPT 版面抽取。
+		if overwrite {
+			if current := strings.TrimSpace(existing); current != "" {
+				return current
+			}
+		}
+	}
+	return pgTextForMode(pg, source, custom, sourceMode)
 }
