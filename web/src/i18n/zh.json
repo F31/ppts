@@ -725,6 +725,7 @@
   "editor.oneDraftAutoNotesNote": "提示：打开有备注的页面时会自动用备注生成一版原文稿，「仅补空」会跳过这些页；要按页面文字重写全部页，请把覆盖策略改为「覆盖全部」。",
   "editor.oneDraftResult": "本次完成：更新 {generated} 页 · 跳过 {skipped} 页",
   "editor.oneDraftResultUnknown": "成稿完成，但未能取到逐页统计（任务步骤不可读）。",
+  "editor.scriptsLoadFailed": "讲稿加载失败，当前显示的\"没有讲稿\"不代表真的没有",
   "editor.oneDraftTimeout": "模型服务响应超时。系统已调大超时时间；如仍失败，请稍后重试或选择更短讲稿长度。",
   "editor.unsaved": "未保存",
   "editor.slidePreview": "幻灯片预览",

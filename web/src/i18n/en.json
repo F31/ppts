@@ -725,6 +725,7 @@
   "editor.oneDraftAutoNotesNote": "Note: opening a slide that has speaker notes auto-creates an original draft from those notes, and \"fill empty only\" skips such slides. Choose \"overwrite all\" to rewrite every slide from the selected source.",
   "editor.oneDraftResult": "Finished: {generated} slides updated, {skipped} skipped",
   "editor.oneDraftResultUnknown": "Script generation finished, but per-slide counts are unavailable (job steps unreadable).",
+  "editor.scriptsLoadFailed": "Failed to load scripts — \"no script\" shown here does not mean none exists",
   "editor.oneDraftTimeout": "The model service timed out. The request timeout has been increased; if it still fails, retry later or choose a shorter script length.",
   "editor.unsaved": "Unsaved",
   "editor.slidePreview": "Slide preview",

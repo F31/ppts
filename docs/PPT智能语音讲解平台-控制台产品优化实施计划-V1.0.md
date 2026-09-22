@@ -710,6 +710,28 @@ location /healthz { proxy_pass http://127.0.0.1:8080; }
   `SlideRenderURL`/`UpdateScriptResult`/`UploadSession`）——去掉 `export` 收益低、改动面大。
 - **验证**：`tsc -b` ✅ + `vite build` ✅；`grep -rn generateDraft web/src` 只剩说明注释。
 
+**M7：编辑器讲稿加载 O(N) 串行 → 一次批量（同日续作，用户报告的"主打胶片切页看不到讲稿"）**
+
+- **现象**（用户报告）：同一个控制台里，`人工智能`（2 页）点左侧缩略图能正常切换预览与讲稿，`主打胶片`（38 页）不行。
+- **定位**：数据侧完全正常——`主打胶片` 38 页都有渲染图（`GET /projects/{pid}/slides/render` 实测返回 38 条）
+  与讲稿（批量端点实测返回 31 条）。问题在 `web/src/pages/ProjectEditor.tsx` 的"已有讲稿" effect：
+  它**逐页串行**调用 `ScriptService/Get`（O(N) 次往返），并且在**循环结束后**才 `setRealScripts(found)`。
+- **实测代价**（本地实例、同一台机）：38 次串行 Get = **5760 ms**；项目自带的批量端点
+  `GET /projects/{pid}/scripts` = **171 ms**（**34 倍**）。2 页项目只要 ~300 ms，人眼不易察觉 —— 这正是
+  "有项目差异"的来源。加载窗口内 `realScripts` 为空 → 右侧讲稿区空白数秒，期间点缩略图看起来"讲稿不跟着切"。
+- **修复**：改用批量端点（一次请求）；失败不再静默：
+  - 批量端点按**项目**列出，会带回**其它版本残留**的 slideId（人工智能实测 4 条，当前版本只有 2 页）。
+    而 `realScripts` 的键数被当"已生成页数"用（`scriptReadyCount`、配音页数提示），故必须**按当前版本页集过滤**
+    后入库，否则 "已生成 N / M 页" 会虚高（人工智能会显示 4/2）。
+  - 失败改走 `describeApiError` 给出**原因 + 重试**（新增 `editor.scriptsLoadFailed` 中英文案；重试复用
+    `scriptsRefreshNonce`——该 setter 此前声明后从未被调用）。原实现是 `catch {}` 静默跳过，
+    把"加载失败"渲染成"这些页没有讲稿"（A26 禁止的错误压平形态）。
+- **顺带**：`listProjectScripts` 由死导出变成唯一消费方——M6 清单里"后端有、前端未接线"的一项被消掉。
+- **仍需确认（无法在本机判定）**：若 `主打胶片` 是**持续**没有讲稿（而不是几秒后才出现），另有两个待查项——
+  ① 右侧语言选择器停在 `en-US` 而该项目只有 `zh-CN` 讲稿（端点按语言过滤 → 整个项目返回空）；
+  ② 该项目 38 页中确有 7 页没有讲稿（`voice-status` 的 `missingSlideIds`），那几页本就该是空态。
+- **验证**：`tsc -b` ✅ + `vite build` ✅（CSS 81.59 kB 未变；JS 442.38 → 442.84 kB）。
+
 **遗留（未在本次范围）**：
 - **降级落库不可见（M3 续作时发现，需 schema 变更）**：数字/单位/型号校验两次不过时 `draftText` 会 `return source` ——
   把**原始素材**（来源=页面内容时即页面要点片段）直接当成稿落库，而调用方只看到"成功"。`job_steps.state` 受

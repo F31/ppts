@@ -24,6 +24,7 @@ import {
   getSlideRenderURLs,
   getSlideScriptSources,
   listJobsPage,
+  listProjectScripts,
   listVoiceModels,
   regenerateScriptDraft,
   regenerateSegments,
@@ -37,6 +38,7 @@ import {
   type SlideScriptSource,
   type VoiceModel
 } from '../api';
+import { describeApiError } from '../apiError';
 import { Player } from '../Player';
 import { can } from '../permissions';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
@@ -112,6 +114,8 @@ export function ProjectEditor({
   const [realScripts, setRealScripts] = useState<Record<string, ScriptRevision>>({});
   // scriptsLoaded：已有讲稿是否已加载完成。用于避免加载窗口内误判"该页没有讲稿"而自动补建。
   const [scriptsLoaded, setScriptsLoaded] = useState(false);
+  // scriptsLoadError：批量拉取讲稿失败的原因（A26：不许把接口错误压成"这些页没有讲稿"）。
+  const [scriptsLoadError, setScriptsLoadError] = useState<string | null>(null);
   const [draftStatus, setDraftStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
   const [draftMode, setDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
   const [narrationStatus, setNarrationStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
@@ -452,31 +456,44 @@ export function ProjectEditor({
     }
   };
 
-  // 已有讲稿
+  // 已有讲稿：**一次批量拉取**（GET /projects/{pid}/scripts），不再逐页串行 Get。
+  //
+  // 逐页串行是 O(N) 次往返，页数越多越明显：实测 38 页项目 5760ms，而批量端点 171ms（34×）。
+  // 更关键的是 realScripts 直到循环结束才整体赋值，所以页数多的项目右侧讲稿区会**空白数秒**，
+  // 期间点缩略图切页看起来"讲稿不跟着切"（2 页项目 ~300ms，不易察觉 —— 这正是"有项目差异"的原因）。
+  // 批量端点还顺带避免了 N 次全量 revision 负载（每页都带回全部 segments）。
+  //
+  // 失败不静默（A26）：区分「这些页确实没有讲稿」（端点不返回该 slideId）与
+  // 「加载失败」（请求出错 → 给原因 + 重试），否则"加载失败"会被渲染成"没有讲稿"。
   useEffect(() => {
-    if (slidesState.mode !== 'real') return;
+    if (slidesState.mode !== 'real') return undefined;
     let cancelled = false;
-    const found: Record<string, ScriptRevision> = {};
-    const fetchExisting = async () => {
-      for (const slide of slidesState.slides) {
+    void (async () => {
+      try {
+        const { scripts } = await listProjectScripts(identity, projectId);
         if (cancelled) return;
-        try {
-          const rev = await getScript(identity, projectId, slide.slideId);
-          if (!cancelled) found[slide.slideId] = rev;
-        } catch {
-          // 未生成讲稿时跳过。
+        const found: Record<string, ScriptRevision> = {};
+        // 端点按项目列出（含**其它版本残留**的 slideId，如上一版才有的页），
+        // 必须按当前版本的页集过滤：realScripts 的键数被当作"已生成页数"用
+        // （scriptReadyCount / 配音页数提示），全收会让 "已生成 N / M 页" 虚高。
+        const allowed = new Set(slidesState.slides.map((slide) => slide.slideId));
+        for (const rev of scripts) {
+          if (rev.slideId && allowed.has(rev.slideId)) found[rev.slideId] = rev;
         }
-      }
-      if (!cancelled) {
         setRealScripts(found);
-        setScriptsLoaded(true);
+        setScriptsLoadError(null);
+      } catch (error) {
+        if (cancelled) return;
+        setRealScripts({});
+        setScriptsLoadError(describeApiError(error, t('editor.scriptsLoadFailed'), t));
+      } finally {
+        if (!cancelled) setScriptsLoaded(true);
       }
-    };
-    void fetchExisting();
+    })();
     return () => {
       cancelled = true;
     };
-  }, [slidesState, identity, projectId, scriptLanguage, scriptsRefreshNonce]);
+  }, [slidesState, identity, projectId, scriptLanguage, scriptsRefreshNonce, t]);
 
   // 语音属性：加载项目已保存的（模型/音色/语速）+ 可选模型与音色（来自 TTS 网关配置）。
   // 音色优先取接口返回；接口不可用或未配置音色时，退到开发音色并显式标注为"模拟音色"。
@@ -1447,6 +1464,12 @@ export function ProjectEditor({
             </label>
           </div>
           <div className="script-column-body">
+            {scriptsLoadError && (
+              <div className="load-failure" role="alert">
+                <p className="form-error">{scriptsLoadError}</p>
+                <button type="button" onClick={() => setScriptsRefreshNonce((nonce) => nonce + 1)}>{t('common.retry')}</button>
+              </div>
+            )}
             {activeRealScript ? (
             <ScriptEditor
               ref={scriptEditorRef}
