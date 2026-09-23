@@ -229,6 +229,37 @@ export function Projects({
     }
   };
 
+  const fetchVersions = useCallback(
+    async (project: Project) => {
+      setVersionsByProject((current) => ({
+        ...current,
+        [project.id]: { loading: true, error: '', revisions: [], voice: {} }
+      }));
+      try {
+        const [result, voice] = await Promise.all([
+          getSourceRevisions(identity, project.id),
+          getRevisionVoiceStatus(identity, project.id)
+        ]);
+        const voiceMap = Object.fromEntries((voice.revisions ?? []).map((item) => [item.revisionNo, item]));
+        setVersionsByProject((current) => ({
+          ...current,
+          [project.id]: { loading: false, error: '', revisions: result.revisions, voice: voiceMap }
+        }));
+      } catch (err) {
+        setVersionsByProject((current) => ({
+          ...current,
+          [project.id]: {
+            loading: false,
+            error: err instanceof Error ? err.message : t('projects.versionsFailed'),
+            revisions: [],
+            voice: {}
+          }
+        }));
+      }
+    },
+    [identity, t]
+  );
+
   const toggleVersions = async (project: Project) => {
     if (expandedProjectId === project.id) {
       setExpandedProjectId('');
@@ -236,31 +267,7 @@ export function Projects({
     }
     setExpandedProjectId(project.id);
     if (versionsByProject[project.id]) return;
-    setVersionsByProject((current) => ({
-      ...current,
-      [project.id]: { loading: true, error: '', revisions: [], voice: {} }
-    }));
-    try {
-      const [result, voice] = await Promise.all([
-        getSourceRevisions(identity, project.id),
-        getRevisionVoiceStatus(identity, project.id)
-      ]);
-      const voiceMap = Object.fromEntries((voice.revisions ?? []).map((item) => [item.revisionNo, item]));
-      setVersionsByProject((current) => ({
-        ...current,
-        [project.id]: { loading: false, error: '', revisions: result.revisions, voice: voiceMap }
-      }));
-    } catch (err) {
-      setVersionsByProject((current) => ({
-        ...current,
-        [project.id]: {
-          loading: false,
-          error: err instanceof Error ? err.message : t('projects.versionsFailed'),
-          revisions: [],
-          voice: {}
-        }
-      }));
-    }
+    void fetchVersions(project);
   };
 
   const clearFilters = () => {
@@ -1310,7 +1317,17 @@ export function Projects({
           onClose={() => setImportTarget(null)}
           onCompleted={() => {
             pushNotice(t('projects.queued'));
+            const pid = importTarget.id;
+            // 导入会新增一个源版本：失效该项目已缓存的版本列表；若正展开则立即重载，
+            // 否则列表要等手动刷新才出现新版本（本 bug）。
+            setVersionsByProject((current) => {
+              if (!(pid in current)) return current;
+              const next = { ...current };
+              delete next[pid];
+              return next;
+            });
             void load(true);
+            if (expandedProjectId === pid) void fetchVersions(importTarget);
           }}
         />
       )}
