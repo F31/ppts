@@ -4,6 +4,7 @@ import {
   getJobDetail,
   getJobsPage,
   getJobsSummary,
+  listAllProjects,
   retryFailedJob,
   watchJobEvents,
   type ClientIdentity,
@@ -18,7 +19,7 @@ import {
 import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
-import { jobKindKey, jobScopeKindKey, jobStateKey, jobStepStateKey, jobStepTypeKey, type Job, type JobState } from '../types';
+import { jobKindKey, jobScopeKindKey, jobStateKey, jobStepStateKey, jobStepTypeKey, type Job, type JobState, type Project } from '../types';
 
 const activeStates: JobState[] = [
   'JOB_STATE_QUEUED',
@@ -46,6 +47,22 @@ const SORT_KEYS: JobListSort[] = ['created', 'updated', 'phase', 'pages'];
 // 于是状态标签一直只有默认外观、没有任何状态配色。
 const stateClass = (state: JobState) => state.replace(/^JOB_STATE_/, '').toLowerCase();
 
+// jobRevisionNo 从任务输入快照解析源版本号（不同 kind 的字段名不同）；解析失败返回 0。
+function jobRevisionNo(snapshot: string): number {
+  if (!snapshot) return 0;
+  try {
+    const s = JSON.parse(snapshot) as Record<string, unknown>;
+    for (const k of ['revisionNo', 'revision_no', 'sourceRevisionNo', 'source_revision_no', 'inputRevision']) {
+      const v = s[k];
+      if (typeof v === 'number' && v > 0) return v;
+      if (typeof v === 'string' && Number(v) > 0) return Number(v);
+    }
+  } catch {
+    /* 非 JSON 快照，忽略 */
+  }
+  return 0;
+}
+
 export function Jobs({ identity }: { identity: ClientIdentity }) {
   const route = useRoute();
   const { t } = useI18n();
@@ -66,6 +83,8 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   const [detail, setDetail] = useState<JobDetail | null>(null);
   const [detailError, setDetailError] = useState('');
   const [detailLoading, setDetailLoading] = useState(false);
+  // 项目元信息（标题/当前版本）映射，用于列表显示“哪个 PPT / 版本”。
+  const [projectMeta, setProjectMeta] = useState<Record<string, Project>>({});
 
   // 筛选/排序条件写在 URL（对齐设计方案 §206「筛选条件写 URL」），因此刷新/分享链接能保持视图。
   // 这里都收敛成原始字符串再使用：route.query 每次渲染都是新对象，直接作依赖会反复触发请求。
@@ -125,6 +144,24 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   useEffect(() => {
     void loadFirst();
   }, [loadFirst]);
+
+  // 加载项目标题映射（仅展示用；失败回退为 id 前缀，不阻塞列表）。
+  useEffect(() => {
+    let cancelled = false;
+    listAllProjects(identity)
+      .then((list) => {
+        if (cancelled) return;
+        const map: Record<string, Project> = {};
+        for (const p of list) map[p.id] = p;
+        setProjectMeta(map);
+      })
+      .catch(() => {
+        /* 标题仅展示用，失败静默回退 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity]);
 
   // 重新拉取当前已加载的所有页（保持分页位置），用于轮询与手动刷新。
   const refreshLoaded = useCallback(async () => {
@@ -396,6 +433,9 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
           onRetry={() => void onRetry(selectedJob)}
           canCancelJob={canCancel.includes(selectedJob.state)}
           canRetryJob={canRetry.includes(selectedJob.state)}
+          projectTitle={projectMeta[selectedJob.projectId]?.title}
+          projectRevision={jobRevisionNo(selectedJob.inputSnapshot)}
+          projectIsCurrent={projectMeta[selectedJob.projectId]?.currentRevision === jobRevisionNo(selectedJob.inputSnapshot)}
         />
       ) : null}
 
@@ -513,9 +553,23 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
                     </td>
                     <td>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '—'}</td>
                     <td>
-                      <Link to={`/projects/${job.projectId}/editor`} className="cell-project">
-                        {job.projectId.slice(0, 12)}
-                      </Link>
+                      {(() => {
+                        const meta = projectMeta[job.projectId];
+                        const revNo = jobRevisionNo(job.inputSnapshot);
+                        const isCurrent = !!meta && revNo === meta.currentRevision;
+                        const to = `/projects/${job.projectId}/editor${revNo > 0 && !isCurrent ? `?rev=${revNo}` : ''}`;
+                        return (
+                          <>
+                            <Link to={to} className="cell-project" title={job.projectId}>
+                              {meta?.title ?? job.projectId.slice(0, 12)}
+                            </Link>
+                            <small className="cell-sub block-sub">
+                              {revNo > 0 ? `v${revNo}` : t('common.none')}
+                              {isCurrent ? ` · ${t('jobs.currentVersion')}` : ''}
+                            </small>
+                          </>
+                        );
+                      })()}
                     </td>
                     <td>{new Date(job.createdAtUnix * 1000).toLocaleString()}</td>
                     <td className="col-actions">
@@ -565,7 +619,10 @@ function JobDetailPanel({
   onCancel,
   onRetry,
   canCancelJob,
-  canRetryJob
+  canRetryJob,
+  projectTitle,
+  projectRevision,
+  projectIsCurrent
 }: {
   job: Job;
   detail: JobDetail | null;
@@ -579,6 +636,9 @@ function JobDetailPanel({
   onRetry: () => void;
   canCancelJob: boolean;
   canRetryJob: boolean;
+  projectTitle?: string;
+  projectRevision: number;
+  projectIsCurrent: boolean;
 }) {
   const { t } = useI18n();
   const pages = scope?.affectedPages ?? [];
@@ -629,7 +689,7 @@ function JobDetailPanel({
         </div>
         <div>
           <dt>{t('jobs.fieldProject')}</dt>
-          <dd>{job.projectId}</dd>
+          <dd>{projectTitle ?? job.projectId}{projectRevision > 0 ? ` · v${projectRevision}${projectIsCurrent ? `（${t('jobs.currentVersion')}）` : ''}` : ''}</dd>
         </div>
         <div>
           <dt>{t('jobs.fieldScope')}</dt>

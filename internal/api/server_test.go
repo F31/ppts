@@ -77,6 +77,19 @@ func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, userID, i
 	return p, nil
 }
 
+func (s *fakeProjectStore) ListArchivedProjects(_ context.Context, _, _, _ string, _ int) ([]*project.Project, string, error) {
+	return nil, "", nil
+}
+
+func (s *fakeProjectStore) UnarchiveProject(_ context.Context, tenantID, userID, id string) (*project.Project, error) {
+	p, err := s.GetProject(context.Background(), tenantID, "", id)
+	if err != nil {
+		return nil, err
+	}
+	p.Archived = false
+	return p, nil
+}
+
 func (s *fakeProjectStore) CreateSourceRevision(ctx context.Context, tenantID string, in project.NewSourceRevision) (*project.SourceRevision, error) {
 	if _, err := s.GetProject(ctx, tenantID, "", in.ProjectID); err != nil {
 		return nil, err

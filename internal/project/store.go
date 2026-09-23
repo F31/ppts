@@ -171,6 +171,10 @@ type ProjectStore interface {
 	GetProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
 	ListProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error)
 	ArchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
+	// ListArchivedProjects 列出已归档项目（供恢复入口）。
+	ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error)
+	// UnarchiveProject 取消归档（恢复为正常项目）。
+	UnarchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
 	// CreateSourceRevision 原子递增 current_revision 并写入不可变源版本。
 	CreateSourceRevision(ctx context.Context, tenantID string, in NewSourceRevision) (*SourceRevision, error)
 	// GetSourceRevision 按项目与 revision 号查询。
@@ -285,15 +289,28 @@ func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, userID, id st
 }
 
 func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
+	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, false)
+}
+
+// ListArchivedProjects 列出已归档项目（供恢复入口）。
+func (s *PGProjectStore) ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
+	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, true)
+}
+
+func (s *PGProjectStore) listProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int, archived bool) ([]*Project, string, error) {
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 50
+	}
+	archivedLit := "false"
+	if archived {
+		archivedLit = "true"
 	}
 	var projects []*Project
 	next := ""
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var rows pgx.Rows
 		var err error
-		baseWhere := `tenant_id=$1 AND archived=false` +
+		baseWhere := `tenant_id=$1 AND archived=` + archivedLit +
 			` AND ($2 = '' OR owner_user = $2 OR EXISTS (` +
 			`  SELECT 1 FROM project_collaborators pc` +
 			`   WHERE pc.project_id = projects.id AND pc.user_id = $2))`
@@ -347,6 +364,28 @@ func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, userID, i
 		var e error
 		p, e = scanProject(tx.QueryRow(ctx,
 			`UPDATE projects SET archived=true, updated_at=now()
+			 WHERE id=$3 AND tenant_id=$2
+			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
+			    SELECT 1 FROM project_collaborators pc
+			     WHERE pc.project_id = projects.id AND pc.user_id = $1))
+			 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
+			   delete_source_after, created_at, updated_at`,
+			userID, tenantID, id))
+		return e
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrProjectNotFound
+	}
+	return p, err
+}
+
+// UnarchiveProject 取消归档（恢复为正常项目）。
+func (s *PGProjectStore) UnarchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
+	var p *Project
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var e error
+		p, e = scanProject(tx.QueryRow(ctx,
+			`UPDATE projects SET archived=false, updated_at=now()
 			 WHERE id=$3 AND tenant_id=$2
 			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
 			    SELECT 1 FROM project_collaborators pc

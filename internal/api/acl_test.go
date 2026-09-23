@@ -78,6 +78,19 @@ func (s *fakeACLProjectStore) ArchiveProject(_ context.Context, tenantID, userID
 	return p, nil
 }
 
+func (s *fakeACLProjectStore) ListArchivedProjects(_ context.Context, _, _, _ string, _ int) ([]*project.Project, string, error) {
+	return nil, "", nil
+}
+
+func (s *fakeACLProjectStore) UnarchiveProject(_ context.Context, tenantID, userID, id string) (*project.Project, error) {
+	p, err := s.GetProject(context.Background(), tenantID, userID, id)
+	if err != nil {
+		return nil, err
+	}
+	p.Archived = false
+	return p, nil
+}
+
 func (s *fakeACLProjectStore) CreateProject(_ context.Context, _, _, _ string) (*project.Project, error) {
 	return nil, nil
 }

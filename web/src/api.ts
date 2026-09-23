@@ -402,6 +402,29 @@ export async function listProjects(identity: ClientIdentity): Promise<Project[]>
   return data.projects ?? [];
 }
 
+// listArchivedProjects 读取已归档项目（原生 HTTP），供“已归档”视图与恢复入口。
+export async function listArchivedProjects(identity: ClientIdentity): Promise<Project[]> {
+  const data = await getJSON<{ projects?: Project[] }>(identity, '/projects/archived');
+  return data.projects ?? [];
+}
+
+// listAllProjects 分页拉取全部未归档项目（上限 cap），供任务列表映射 projectId → 标题/版本。
+export async function listAllProjects(identity: ClientIdentity, cap = 500): Promise<Project[]> {
+  const out: Project[] = [];
+  let cursor = '';
+  do {
+    const page = await listProjectsPage(identity, { cursor, pageSize: 100 });
+    out.push(...page.projects);
+    cursor = page.nextCursor;
+  } while (cursor && out.length < cap);
+  return out;
+}
+
+// restoreProject 恢复已归档项目（需 ADMIN，与归档同级）。
+export async function restoreProject(identity: ClientIdentity, projectId: string): Promise<void> {
+  await postJSON(identity, `/projects/${encodeURIComponent(projectId)}/restore`, {});
+}
+
 export type ProjectPage = { projects: Project[]; nextCursor: string };
 
 // listProjectsPage 带游标读取项目列表。

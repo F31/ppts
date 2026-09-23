@@ -904,6 +904,13 @@ func registerRevisionRoutes(mux *http.ServeMux, projects project.ProjectStore, m
 	mux.Handle("DELETE /projects/{pid}/revisions/{revisionNo}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorDeleteRevision(w, r, projects, members, recorder)
 	})))
+	// 已归档项目列表与恢复（原生 HTTP，绕过 proto）：GET /projects/archived、POST /projects/{pid}/restore。
+	mux.Handle("GET /projects/archived", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorListArchivedProjects(w, r, projects, members)
+	})))
+	mux.Handle("POST /projects/{pid}/restore", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorRestoreProject(w, r, projects, members, recorder)
+	})))
 	if notesStore != nil {
 		mux.Handle("GET /projects/{pid}/slides/{sid}/notes", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			editorGetSlideNotes(w, r, notesStore, objects)
@@ -1343,4 +1350,78 @@ func editorSetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore proj
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// editorListArchivedProjects 返回已归档项目列表（供恢复入口）。
+// 原生 HTTP：GET /projects/archived → {"projects":[{id,tenantId,owner,title,currentRevision,archived,createdAtUnix}]}。
+func editorListArchivedProjects(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleViewer); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	list, _, err := projects.ListArchivedProjects(r.Context(), principal.TenantID, principal.UserID, "", 100)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, p := range list {
+		out = append(out, map[string]any{
+			"id":              p.ID,
+			"tenantId":        p.TenantID,
+			"owner":           p.OwnerUser,
+			"title":           p.Title,
+			"currentRevision": p.CurrentRevision,
+			"archived":        p.Archived,
+			"createdAtUnix":   p.CreatedAt.Unix(),
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"projects": out})
+}
+
+// editorRestoreProject 恢复已归档项目。POST /projects/{pid}/restore（需 ADMIN，与归档同级）。
+func editorRestoreProject(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if err := requireRole(r.Context(), members, membership.RoleAdmin); err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	projectID := r.PathValue("pid")
+	if projectID == "" {
+		http.Error(w, "pid required", http.StatusBadRequest)
+		return
+	}
+	p, err := projects.UnarchiveProject(r.Context(), principal.TenantID, "", projectID)
+	if err != nil {
+		if errors.Is(err, project.ErrProjectNotFound) {
+			writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if recorder != nil {
+		recorder.Record(r.Context(), audit.Event{
+			TenantID: principal.TenantID, ActorUser: principal.UserID,
+			Action: "project.restore", ResourceType: "project", ResourceID: projectID,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":              p.ID,
+		"tenantId":        p.TenantID,
+		"owner":           p.OwnerUser,
+		"title":           p.Title,
+		"currentRevision": p.CurrentRevision,
+		"archived":        p.Archived,
+		"createdAtUnix":   p.CreatedAt.Unix(),
+	})
 }

@@ -15,11 +15,13 @@ import {
   getRevisionVoiceStatus,
   getSourceRevisions,
   listFolders,
+  listArchivedProjects,
   listProjectOrganization,
   listProjects,
   listTags,
   moveProject,
   renameFolder,
+  restoreProject,
   updatePptDisplayName,
   type ClientIdentity,
   type RevisionVoiceStatus,
@@ -90,6 +92,10 @@ export function Projects({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [importTarget, setImportTarget] = useState<Project | null>(null);
+  // 已归档项目视图：开关 + 列表 + 加载态（供恢复入口）。
+  const [showArchived, setShowArchived] = useState(false);
+  const [archived, setArchived] = useState<Project[]>([]);
+  const [archivedBusy, setArchivedBusy] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState('');
   // 导出弹窗：目标版本 + 已构建的播放清单（就地弹 ExportDialog，不再跳到编辑器）。
   const [exportTarget, setExportTarget] = useState<{ projectId: string; revisionNo: number } | null>(null);
@@ -276,6 +282,38 @@ export function Projects({
     setFilter('all');
     setFolderSel('all');
     setSelectedTags([]);
+  };
+
+  // 切换“已归档”视图；展开时拉取一次归档列表。
+  const openArchived = async () => {
+    if (showArchived) {
+      setShowArchived(false);
+      return;
+    }
+    setShowArchived(true);
+    setArchivedBusy(true);
+    try {
+      setArchived(await listArchivedProjects(identity));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('projects.loadFailed'));
+    } finally {
+      setArchivedBusy(false);
+    }
+  };
+
+  // 恢复已归档项目：成功后从归档列表移除并刷新正常列表。
+  const restore = async (p: Project) => {
+    setArchivedBusy(true);
+    try {
+      await restoreProject(identity, p.id);
+      setArchived((cur) => cur.filter((x) => x.id !== p.id));
+      pushNotice(t('projects.restored', { title: p.title }));
+      void load(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('projects.restoreFailed'));
+    } finally {
+      setArchivedBusy(false);
+    }
   };
 
   // 就地导出：读该版本的配音状态 → 构建播放清单 → 弹 ExportDialog（不再跳去编辑器）。
@@ -962,6 +1000,14 @@ export function Projects({
           </div>
           <button
             type="button"
+            className="button-ghost"
+            onClick={() => void openArchived()}
+            title={t('projects.archivedToggle')}
+          >
+            {t('projects.archivedToggle')}{showArchived && archived.length > 0 ? ` (${archived.length})` : ''}
+          </button>
+          <button
+            type="button"
             className="button-primary"
             onClick={() => void load(true)}
             title={t('common.refresh')}
@@ -970,6 +1016,36 @@ export function Projects({
           </button>
         </div>
       </section>
+
+      {showArchived && (
+        <section className="panel">
+          <h2>{t('projects.archivedTitle')}</h2>
+          {archivedBusy && <p className="cell-sub">{t('common.loading')}</p>}
+          {!archivedBusy && archived.length === 0 && <p className="cell-sub">{t('projects.archivedEmpty')}</p>}
+          {archived.length > 0 && (
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>{t('projects.archivedName')}</th>
+                  <th className="col-actions">{t('projects.colActions')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {archived.map((p) => (
+                  <tr key={p.id}>
+                    <td>{p.title}</td>
+                    <td className="col-actions">
+                      <button type="button" className="button-ghost" disabled={archivedBusy} onClick={() => void restore(p)}>
+                        {t('projects.restore')}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
       {/* 错误必须播报（role="alert"）；通知是信息性内容，用 polite 的 live region，
           避免与错误抢屏（全仓仅此三处通知，此前都是裸 <p>）。 */}

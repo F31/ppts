@@ -115,6 +115,15 @@ func (s *SQLiteStore) GetProject(ctx context.Context, tenantID, userID, id strin
 }
 
 func (s *SQLiteStore) ListProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
+	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, 0)
+}
+
+// ListArchivedProjects 列出已归档项目（供恢复入口）。
+func (s *SQLiteStore) ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
+	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, 1)
+}
+
+func (s *SQLiteStore) listProjects(ctx context.Context, tenantID, userID, cursor string, pageSize, archived int) ([]*Project, string, error) {
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 50
 	}
@@ -126,16 +135,16 @@ func (s *SQLiteStore) ListProjects(ctx context.Context, tenantID, userID, cursor
 	if cursor == "" {
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT `+sqProjectColumns+` FROM projects
-			 WHERE tenant_id = ? AND archived = 0 AND `+acl+`
+			 WHERE tenant_id = ? AND archived = ? AND `+acl+`
 			 ORDER BY created_at DESC LIMIT ?`,
-			tenantID, userID, userID, userID, pageSize+1)
+			tenantID, archived, userID, userID, userID, pageSize+1)
 	} else {
 		before := db.FormatTime(db.ParseTime(cursor))
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT `+sqProjectColumns+` FROM projects
-			 WHERE tenant_id = ? AND archived = 0 AND `+acl+` AND created_at < ?
+			 WHERE tenant_id = ? AND archived = ? AND `+acl+` AND created_at < ?
 			 ORDER BY created_at DESC LIMIT ?`,
-			tenantID, userID, userID, userID, before, pageSize+1)
+			tenantID, archived, userID, userID, userID, before, pageSize+1)
 	}
 	if err != nil {
 		return nil, "", err
@@ -165,6 +174,25 @@ func (s *SQLiteStore) ArchiveProject(ctx context.Context, tenantID, userID, id s
 	now := sqNow()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE projects SET archived = 1, updated_at = ?
+		 WHERE id = ? AND tenant_id = ?
+		   AND (? = '' OR owner_user = ? OR EXISTS (
+		     SELECT 1 FROM project_collaborators pc
+		      WHERE pc.project_id = projects.id AND pc.user_id = ?))`,
+		now, id, tenantID, userID, userID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, ErrProjectNotFound
+	}
+	return s.GetProject(ctx, tenantID, userID, id)
+}
+
+// UnarchiveProject 取消归档（恢复为正常项目）。
+func (s *SQLiteStore) UnarchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
+	now := sqNow()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE projects SET archived = 0, updated_at = ?
 		 WHERE id = ? AND tenant_id = ?
 		   AND (? = '' OR owner_user = ? OR EXISTS (
 		     SELECT 1 FROM project_collaborators pc
