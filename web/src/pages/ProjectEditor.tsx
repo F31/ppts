@@ -7,9 +7,9 @@ import {
   createGeneration,
   estimateNarration,
   getNarrationStale,
+  getRevisionNarration,
   getJob,
   getJobDetail,
-  getNarration,
   getPlaybackManifest,
   getVoiceSettings,
   getProject,
@@ -90,6 +90,17 @@ function manifestMatchesSlides(manifest: PlaybackManifest, slides: SlideSummary[
     return (timeline.slides ?? []).every((slide) => Boolean(slide.slideId && allowed.has(slide.slideId)));
   } catch {
     return false;
+  }
+}
+
+// jobRevisionNo 从任务快照里取源版本号（配音任务快照含 revisionNo）。取不到返回 0。
+// 用于把"正在生成语音"的状态限定到当前展示的版本，避免别的版本在生成时影响本版本的讲稿栏。
+function jobRevisionNo(job: Job): number {
+  try {
+    const snap = JSON.parse(job.inputSnapshot) as { revisionNo?: number | string };
+    return Number(snap.revisionNo) || 0;
+  } catch {
+    return 0;
   }
 }
 
@@ -364,10 +375,17 @@ export function ProjectEditor({
     let cancelled = false;
     (async () => {
       try {
-        const status = await getNarration(identity, projectId);
+        // 按**当前展示的源版本**取配音：项目级"最新配音"可能是另一个版本（例如后完成的旧版本
+        // 任务），会与本页 slides 的版本号不一致而被下面的守卫误判为不匹配、隐藏播放器。
+        const revNo = Number(slidesState.revisionNo) || 0;
+        if (!revNo) {
+          setRealManifest(null);
+          return;
+        }
+        const status = await getRevisionNarration(identity, projectId, revNo);
         clearProbe('narration');
         if (cancelled || !status.ready || !status.timelineKey) return;
-        if (status.revisionNo !== slidesState.revisionNo) {
+        if (Number(status.revisionNo) !== revNo) {
           setRealManifest(null);
           return;
         }
@@ -461,11 +479,13 @@ export function ProjectEditor({
   // 主路径（挂载 + 同步轮询成功）各有自己的错误处理，这里只在可得时更新。
   const refreshNarrationManifest = useCallback(async () => {
     if (slidesState.mode !== 'real') return;
+    const revNo = Number(slidesState.revisionNo) || 0;
+    if (!revNo) return;
     try {
-      const status = await getNarration(identity, projectId);
+      const status = await getRevisionNarration(identity, projectId, revNo);
       clearProbe('narration');
       if (!status.ready || !status.timelineKey) return;
-      if (status.revisionNo !== slidesState.revisionNo) return;
+      if (Number(status.revisionNo) !== revNo) return;
       const manifest = await getPlaybackManifest({
         identity,
         projectId,
@@ -655,7 +675,11 @@ export function ProjectEditor({
   );
 
   // 语音生成进度：来自对活跃任务的 5s 轮询，用于讲稿栏按钮后的进度/状态指示。
-  const activeNarrationJob = activeGenJobs.find((job) => job.kind === 'narration');
+  // 只认**当前展示版本**的配音任务：项目里别的版本在生成时不应让本版本的讲稿栏显示"正在生成语音"。
+  const currentRevNo = Number(slidesState.mode === 'real' ? slidesState.revisionNo : 0) || 0;
+  const activeNarrationJob = activeGenJobs.find(
+    (job) => job.kind === 'narration' && currentRevNo > 0 && jobRevisionNo(job) === currentRevNo
+  );
   const voiceBusy = narrationStatus.phase === 'generating' || Boolean(activeNarrationJob);
   const voiceProgress = activeNarrationJob ? activeNarrationJob.progressPercent : -1;
   const voiceStatusText =
@@ -1292,7 +1316,7 @@ export function ProjectEditor({
         } catch {
           // 任务查询失败不阻塞，继续用 narration 状态兜底。
         }
-        status = await getNarration(identity, projectId);
+        status = await getRevisionNarration(identity, projectId, Number(slidesState.revisionNo) || 0);
         if (status.ready && (jobSucceeded || !previousTimelineKey || status.timelineKey !== previousTimelineKey)) break;
       }
       if (!status || !status.ready || (!jobSucceeded && previousTimelineKey && status.timelineKey === previousTimelineKey)) {

@@ -388,11 +388,14 @@ export async function getProjectSlides(
   projectId: string,
   revisionNo?: number
 ): Promise<{ revisionNo: number; slides: SlideSummary[] }> {
-  return connectJSON<{ revisionNo: number; slides: SlideSummary[] }>(
+  const data = await connectJSON<{ revisionNo: number | string; slides?: SlideSummary[] }>(
     identity,
     '/ppts.v1.ProjectService/GetSlides',
     revisionNo && revisionNo > 0 ? { projectId, revisionNo } : { projectId }
   );
+  // protojson 把 int64 序列化为字符串；这里统一归一为 number，避免与 REST 端点的 number
+  // 做 `!==` 比较时恒为真（曾导致"配音版本与页面版本不匹配"而隐藏播放器）。
+  return { slides: data.slides ?? [], revisionNo: Number(data.revisionNo) || 0 };
 }
 
 // SourceRevisionSummary 是版本历史列表项（原生 HTTP GET /projects/{pid}/revisions 返回）。
@@ -807,7 +810,13 @@ export type NarrationStatus = {
 };
 
 export async function getNarration(identity: ClientIdentity, projectId: string): Promise<NarrationStatus> {
-  return connectJSON<NarrationStatus>(identity, '/ppts.v1.PlaybackService/GetNarration', { projectId });
+  const data = await connectJSON<NarrationStatus & { revisionNo?: number | string }>(
+    identity,
+    '/ppts.v1.PlaybackService/GetNarration',
+    { projectId }
+  );
+  // protojson 的 int64 → 字符串，归一为 number（见 getProjectSlides 注释）。
+  return { ...data, revisionNo: Number(data.revisionNo) || 0 };
 }
 
 // getRevisionNarration 读取指定源版本的配音状态（ready/timelineKey/pagePngKeys/revisionNo）。
@@ -818,10 +827,11 @@ export async function getRevisionNarration(
   projectId: string,
   revisionNo: number
 ): Promise<NarrationStatus> {
-  return getJSON<NarrationStatus>(
+  const data = await getJSON<NarrationStatus & { revisionNo?: number | string }>(
     identity,
     `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}/narration`
   );
+  return { ...data, revisionNo: Number(data.revisionNo) || 0 };
 }
 
 export type UploadSession = {
