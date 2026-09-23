@@ -176,6 +176,8 @@ export function ProjectEditor({
   const [draftMode, setDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
   const [narrationStatus, setNarrationStatus] = useState<DraftStatus>({ phase: 'idle', message: '' });
   const [realManifest, setRealManifest] = useState<PlaybackManifest | null>(null);
+  // 按 slide 对齐的页图键（缺图位置为空串），导出 MP4 时透传给后端做缺图降级。
+  const [exportPagePngKeys, setExportPagePngKeys] = useState<string[]>([]);
   const [conflict, setConflict] = useState<ConflictState>(null);
   const [narrationEstimate, setNarrationEstimate] = useState<NarrationEstimate | null>(null);
   const [voiceId, setVoiceId] = useState('');
@@ -384,6 +386,7 @@ export function ProjectEditor({
         }
         const status = await getRevisionNarration(identity, projectId, revNo);
         clearProbe('narration');
+        setExportPagePngKeys(status.pagePngKeys ?? []);
         if (cancelled || !status.ready || !status.timelineKey) return;
         if (Number(status.revisionNo) !== revNo) {
           setRealManifest(null);
@@ -484,6 +487,7 @@ export function ProjectEditor({
     try {
       const status = await getRevisionNarration(identity, projectId, revNo);
       clearProbe('narration');
+      setExportPagePngKeys(status.pagePngKeys ?? []);
       if (!status.ready || !status.timelineKey) return;
       if (Number(status.revisionNo) !== revNo) return;
       const manifest = await getPlaybackManifest({
@@ -1317,6 +1321,7 @@ export function ProjectEditor({
           // 任务查询失败不阻塞，继续用 narration 状态兜底。
         }
         status = await getRevisionNarration(identity, projectId, Number(slidesState.revisionNo) || 0);
+        setExportPagePngKeys(status.pagePngKeys ?? []);
         if (status.ready && (jobSucceeded || !previousTimelineKey || status.timelineKey !== previousTimelineKey)) break;
       }
       if (!status || !status.ready || (!jobSucceeded && previousTimelineKey && status.timelineKey === previousTimelineKey)) {
@@ -1405,9 +1410,8 @@ export function ProjectEditor({
     setExportError('');
     setNarrationStatus({ phase: 'idle', message: t('editor.exportQueued') });
     try {
-      const pagePngKeys = realManifest.resources
-        .filter((resource) => resource.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG')
-        .map((resource) => resource.key);
+      // 透传「按 slide 对齐」的页图键（缺图位置为空串）；后端据此缺图降级，而非因一页缺失整单失败。
+      const pagePngKeys = format === 'ARTIFACT_FORMAT_MP4' ? exportPagePngKeys : [];
       const result = await createExport(identity, {
         projectId,
         format,

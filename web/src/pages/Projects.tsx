@@ -275,6 +275,8 @@ export function Projects({
   // ExportDialog 需要 manifest（页图数/快照尾），因此先取素材再弹窗；失败可视并给原因。
   const [exportBusy, setExportBusy] = useState(false);
   const [exportError, setExportError] = useState('');
+  // 按 slide 对齐的页图键（缺图位置为空串），经 getRevisionNarration 取得，导出时透传给后端做缺图降级。
+  const [exportPagePngKeys, setExportPagePngKeys] = useState<string[]>([]);
   const openExport = async (projectId: string, revisionNo: number) => {
     const reqId = ++exportReqRef.current;
     setExportError('');
@@ -283,6 +285,7 @@ export function Projects({
       const status = await getRevisionNarration(identity, projectId, revisionNo);
       if (reqId !== exportReqRef.current) return;
       if (!status.ready || !status.timelineKey) throw new Error(t('projects.exportNoNarration'));
+      setExportPagePngKeys(status.pagePngKeys ?? []);
       const manifest = await getPlaybackManifest({
         identity,
         projectId,
@@ -312,9 +315,8 @@ export function Projects({
     setExportBusy(true);
     setExportError('');
     try {
-      const pagePngKeys = exportManifest.resources
-        .filter((resource) => resource.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG')
-        .map((resource) => resource.key);
+      // 透传「按 slide 对齐」的页图键（缺图位置为空串）；后端据此缺图降级，而非因一页缺失整单失败。
+      const pagePngKeys = format === 'ARTIFACT_FORMAT_MP4' ? exportPagePngKeys : [];
       const result = await createExport(identity, {
         projectId: exportTarget.projectId,
         format,

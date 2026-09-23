@@ -43,7 +43,8 @@ export function ExportDialog({
   const [includeNotes, setIncludeNotes] = useState(true);
 
   const pagePngCount = manifest.resources.filter((r) => r.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG').length;
-  const mp4NoPages = format === 'ARTIFACT_FORMAT_MP4' && pagePngCount === 0;
+  // 页图是可选增强：缺图不再拦截导出（后端缺图页降级为沿用上一页/占位），仅在完全无页图时给出提示性说明。
+  const mp4NoImages = format === 'ARTIFACT_FORMAT_MP4' && pagePngCount === 0;
   const snapshotTail = manifest.timelineKey.split('/').slice(-1)[0] || manifest.timelineKey;
 
   return (
@@ -93,7 +94,7 @@ export function ExportDialog({
             </label>
             <p className="form-hint">{t('editor.exportBurnNote')}</p>
             <p className="form-hint">{t('editor.exportResolutionNote')}</p>
-            {mp4NoPages && <p className="form-error" role="alert">{t('editor.exportMp4NoPages')}</p>}
+            {mp4NoImages && <p className="form-hint" role="note">{t('editor.exportMp4NoPages')}</p>}
           </div>
         )}
 
@@ -120,7 +121,7 @@ export function ExportDialog({
           <button
             type="button"
             className="button-primary"
-            disabled={busy || mp4NoPages}
+            disabled={busy}
             onClick={() => onSubmit(format, { burnSubtitles, includeNotes })}
           >
             {busy ? t('editor.exporting') : t('editor.exportSubmit')}

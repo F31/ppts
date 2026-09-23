@@ -63,8 +63,11 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 	return connect.NewResponse(resp), nil
 }
 
-// resolvePagePngKeys 按 timeline 页序返回页面 PNG 键；解析阶段未渲染或页数不齐时返回空（优雅降级为音频+字幕）。
-// 供控制台 GetNarration 与公开区匿名清单复用。
+// resolvePagePngKeys 按 timeline 页序返回页面 PNG 键；解析阶段未渲染、页数不齐或某些页
+// （如隐藏页）没有渲染图时，对应位置返回空串而非整体失败 —— 页面图是可选增强，缺图时
+// 导出/播放应优雅降级（沿用上一页画面 / 占位），而不是整单拦截。
+// 返回列表长度恒为时间轴 slides 数：有图填键，无图填空串；调用方据此逐页降级。
+// 供控制台 GetNarration、公开区匿名清单、编辑器版本配音状态、成品清单复用。
 func resolvePagePngKeys(ctx context.Context, jobs JobCreator, objects objectstore.ObjectStore, tenantID, projectID, timelineKey string) ([]string, error) {
 	parseJob, err := jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
 	if errors.Is(err, pipeline.ErrNoSucceededJob) {
@@ -91,13 +94,10 @@ func resolvePagePngKeys(ctx context.Context, jobs JobCreator, objects objectstor
 			bySlide[pg.SlideID] = pg.Key
 		}
 	}
-	out := make([]string, 0, len(bundle.Timeline.Slides))
-	for _, slide := range bundle.Timeline.Slides {
-		key, ok := bySlide[slide.SlideID]
-		if !ok {
-			return nil, nil
-		}
-		out = append(out, key)
+	// 与时间轴逐页对齐：有图填键，无图填空串（缺图页由导出/播放侧降级，而非因一页缺失整段失败）。
+	out := make([]string, len(bundle.Timeline.Slides))
+	for i, slide := range bundle.Timeline.Slides {
+		out[i] = bySlide[slide.SlideID] // map 缺键 → ""
 	}
 	return out, nil
 }
@@ -105,8 +105,9 @@ func resolvePagePngKeys(ctx context.Context, jobs JobCreator, objects objectstor
 // signManifestResources 为 timeline 清单生成签名资源列表（timeline 包、SRT/VTT 字幕、页面 PNG、去重音频段）。
 // 控制台 GetManifest 与公开区匿名清单共用，保证前端 Player 拿到的资源结构完全一致。
 func signManifestResources(ctx context.Context, objects objectstore.ObjectStore, parser signedURLParser, tenantID, timelineKey string, bundle *app.TimelineAsset, pagePngKeys []string, ttl time.Duration) ([]*pptsv1.PlaybackResource, error) {
-	if len(pagePngKeys) != 0 && len(pagePngKeys) != len(bundle.Timeline.Slides) {
-		return nil, errors.New("page_png_keys count must match timeline slides when provided")
+	// 页面图为可选增强：允许缺图（pagePngKeys 为对齐列表、缺图位置为空串，或整体短于 slides）。
+	if len(pagePngKeys) > len(bundle.Timeline.Slides) {
+		return nil, errors.New("page_png_keys count must not exceed timeline slides")
 	}
 	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(pagePngKeys)+len(bundle.Timeline.Slides))
 	appendSigned := func(rawKey string, typ pptsv1.PlaybackResourceType, slideID, segmentID string) error {
@@ -135,6 +136,9 @@ func signManifestResources(ctx context.Context, objects objectstore.ObjectStore,
 		return nil, err
 	}
 	for i, rawKey := range pagePngKeys {
+		if rawKey == "" {
+			continue // 缺图页：跳过签名，由导出/播放侧降级
+		}
 		if err := appendSigned(rawKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG, bundle.Timeline.Slides[i].SlideID, ""); err != nil {
 			return nil, err
 		}
@@ -195,8 +199,9 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	pagePNGKeys := req.Msg.GetPagePngKeys()
-	if len(pagePNGKeys) != 0 && len(pagePNGKeys) != len(bundle.Timeline.Slides) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("page_png_keys count must match timeline slides when provided"))
+	// 页面图为可选增强：允许缺图（空串）或整体短于 slides，仅拒绝超出。
+	if len(pagePNGKeys) > len(bundle.Timeline.Slides) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("page_png_keys count must not exceed timeline slides"))
 	}
 	expires := time.Now().Add(ttl).Unix()
 	resources := make([]*pptsv1.PlaybackResource, 0, 2+len(pagePNGKeys)+len(bundle.Timeline.Slides))
@@ -226,6 +231,9 @@ func (s *PlaybackService) GetManifest(ctx context.Context, req *connect.Request[
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	for i, rawKey := range pagePNGKeys {
+		if rawKey == "" {
+			continue // 缺图页：跳过签名，由导出/播放侧降级
+		}
 		if err := appendSigned(rawKey, pptsv1.PlaybackResourceType_PLAYBACK_RESOURCE_TYPE_PAGE_PNG, bundle.Timeline.Slides[i].SlideID, ""); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}

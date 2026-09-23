@@ -620,7 +620,7 @@
   "editor.exportBurnSubtitles": "导出视频包含字幕",
   "editor.exportBurnNote": "关闭后导出的 MP4 只有画面和语音；开启后会把同一时间轴的字幕压入视频画面。",
   "editor.exportResolutionNote": "MP4 分辨率 1920×1080 · 30fps（服务端固定）",
-  "editor.exportMp4NoPages": "当前快照没有页面 PNG，无法导出 MP4。",
+  "editor.exportMp4NoPages": "当前快照没有页面 PNG，导出的 MP4 将以占位画面呈现（仅含语音与字幕）。",
   "editor.exportIncludeNotes": "保留备注元数据",
   "editor.exportIncludeNotesNote": "备注元数据暂未写入任何产物；该选项目前只影响导出快照标识（会生成一个内容相同的独立成品版本）。",
   "editor.exportSnapshotNote": "绑定快照：{snapshot}",

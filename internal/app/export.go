@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"os"
 	"path/filepath"
@@ -230,15 +233,35 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	if h.encoder == nil {
 		return nil, errors.New("export job: mp4 encoder is not configured")
 	}
-	if len(snapshot.PagePNGKeys) != len(bundle.Timeline.Slides) {
-		return nil, errors.New("export job: page png count does not match timeline")
+	if len(snapshot.PagePNGKeys) > len(bundle.Timeline.Slides) {
+		return nil, errors.New("export job: page png count exceeds timeline")
 	}
-	pagePNGs := make([][]byte, 0, len(snapshot.PagePNGKeys))
-	for _, rawKey := range snapshot.PagePNGKeys {
+	// 页面图为可选增强：按 slide 位置对齐，缺图（空键）或单页读取失败 → 沿用上一页画面，
+	// 首屏缺失/全缺 → 用深色占位图。这样隐藏页、渲染缺失、渲染器不可用都不会拦死 MP4 导出。
+	pagePNGs := make([][]byte, 0, len(bundle.Timeline.Slides))
+	var prev []byte
+	for i := range bundle.Timeline.Slides {
+		var rawKey string
+		if i < len(snapshot.PagePNGKeys) {
+			rawKey = snapshot.PagePNGKeys[i]
+		}
+		if rawKey == "" {
+			if prev == nil {
+				prev = blankPagePNG(snapshot.Width, snapshot.Height)
+			}
+			pagePNGs = append(pagePNGs, prev)
+			continue
+		}
 		data, err := h.readTenantObject(ctx, job.TenantID, rawKey)
 		if err != nil {
-			return nil, err
+			// A26：单页对象读不到是「能力缺失」而非「内容错误」，降级为沿用上一页而非整单失败。
+			if prev == nil {
+				prev = blankPagePNG(snapshot.Width, snapshot.Height)
+			}
+			pagePNGs = append(pagePNGs, prev)
+			continue
 		}
+		prev = data
 		pagePNGs = append(pagePNGs, data)
 	}
 	clips := map[string][]byte{}
@@ -276,13 +299,29 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 		BurnSubtitles: snapshot.BurnSubtitles, SubtitleASS: subtitleASS,
 		SubtitleFontName: h.subtitleFontName,
 	}); err != nil {
-		if errors.Is(err, media.ErrSubtitlesUnavailable) {
-			// A26：能力缺失必须明确说明原因，而不是静默产出一段没有字幕的视频。
-			return nil, fmt.Errorf("export job: burning subtitles is unavailable on this server: %w", err)
-		}
-		return nil, err
+		return nil, classifyEncodeError(err)
 	}
 	return os.ReadFile(tmp)
+}
+
+// classifyEncodeError 把 MP4 编码错误映射为 worker 可识别的错误：
+//   - 字幕能力缺失 → 带明确原因的永久错误（A26）；
+//   - 校验类失败（ffprobe/抽帧）→ 多为瞬时（ffprobe 偶发段错误、读取共享音频缓存时撞上
+//     并发写入），转 *pipeline.RetryError 由 worker 退避重跑整个编码（受 MaxAttempts 上限
+//     约束），避免一次偶发校验失败就把已成功编码的导出判为永久失败；
+//   - 其余保持原样（编码失败等）。
+func classifyEncodeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, media.ErrSubtitlesUnavailable) {
+		return fmt.Errorf("export job: burning subtitles is unavailable on this server: %w", err)
+	}
+	var ve *media.VerifyError
+	if errors.As(err, &ve) {
+		return &pipeline.RetryError{Err: err}
+	}
+	return err
 }
 
 // subtitleASSForBurning 取烧录用字幕（ASS：逐行轮换 + 已朗读位置高亮）。未勾选烧录时返回 nil。
@@ -309,4 +348,30 @@ func (h *ExportHandler) subtitleASSForBurning(snapshot ExportSnapshot, bundle *T
 		return nil, fmt.Errorf("export job: render burned subtitles: %w", err)
 	}
 	return ass, nil
+}
+
+// blankPagePNG 生成一张深色占位页面图（与播放器暗色主题一致），用于缺图页 / 首屏缺失 /
+// 渲染器不可用的降级场景：导出 MP4 时这些位置以静态占位画面呈现，而非整单失败。
+// 仅用标准库，无外部依赖。
+func blankPagePNG(w, h int) []byte {
+	if w <= 0 {
+		w = 1920
+	}
+	if h <= 0 {
+		h = 1080
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	c := color.RGBA{R: 24, G: 26, B: 32, A: 255}
+	// 整幅填充：直接写像素缓冲，避免逐像素 Set 的反射开销。
+	for i := 0; i < len(img.Pix); i += 4 {
+		img.Pix[i] = c.R
+		img.Pix[i+1] = c.G
+		img.Pix[i+2] = c.B
+		img.Pix[i+3] = c.A
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }

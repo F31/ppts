@@ -620,7 +620,7 @@
   "editor.exportBurnSubtitles": "Include subtitles in exported video",
   "editor.exportBurnNote": "Turn off for MP4 with slides and voice only; turn on to burn timeline subtitles into the video.",
   "editor.exportResolutionNote": "MP4 resolution 1920×1080 · 30fps (fixed by server)",
-  "editor.exportMp4NoPages": "The current snapshot has no page PNGs, so MP4 export is unavailable.",
+  "editor.exportMp4NoPages": "The current snapshot has no page PNGs; the exported MP4 will use placeholder frames (audio and subtitles only).",
   "editor.exportIncludeNotes": "Keep notes metadata",
   "editor.exportIncludeNotesNote": "Notes metadata is not written into any artifact yet; the option currently only affects the export snapshot identity (producing a separate artifact version with identical content).",
   "editor.exportSnapshotNote": "Bound snapshot: {snapshot}",
