@@ -197,6 +197,13 @@ func (s *SQLiteStore) CreateSourceRevision(ctx context.Context, tenantID string,
 		}
 		return nil, err
 	}
+	// 版本号取 MAX(revision_no)+1（含软删行），避免回退当前版本后复用号。
+	var next int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(revision_no),0)+1 FROM source_revisions WHERE tenant_id = ? AND project_id = ?`,
+		tenantID, in.ProjectID).Scan(&next); err != nil {
+		return nil, err
+	}
 
 	// 上传链路幂等：同一 upload_id 已建源版本时返回既有版本。
 	if in.UploadID != "" {
@@ -212,7 +219,7 @@ func (s *SQLiteStore) CreateSourceRevision(ctx context.Context, tenantID string,
 	}
 
 	sr := &SourceRevision{
-		ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: current + 1,
+		ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: next,
 		SourceHash: in.SourceHash, ObjectKey: in.ObjectKey, ParserVersion: in.ParserVersion,
 		UploadID: in.UploadID, DisplayName: in.Filename,
 	}
@@ -299,7 +306,30 @@ func (s *SQLiteStore) DeleteSourceRevision(ctx context.Context, tenantID, projec
 		return err
 	}
 	if revisionNo == current {
-		return ErrDeleteCurrentRevision
+		// 允许删除当前版本，但需回退到「最新的其它未删除版本」；没有其它版本则拒绝。
+		var fallback int
+		err := tx.QueryRowContext(ctx,
+			`SELECT revision_no FROM source_revisions
+			 WHERE tenant_id = ? AND project_id = ? AND revision_no <> ? AND source_deleted_at IS NULL
+			 ORDER BY revision_no DESC LIMIT 1`,
+			tenantID, projectID, revisionNo).Scan(&fallback)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrDeleteLastRevision
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE source_revisions SET source_deleted_at = ? WHERE tenant_id = ? AND project_id = ? AND revision_no = ?`,
+			sqNow(), tenantID, projectID, revisionNo); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE projects SET current_revision = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+			fallback, sqNow(), projectID, tenantID); err != nil {
+			return err
+		}
+		return tx.Commit()
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE source_revisions SET source_deleted_at = ? WHERE tenant_id = ? AND project_id = ? AND revision_no = ?`,

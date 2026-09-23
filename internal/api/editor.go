@@ -1070,7 +1070,7 @@ func editorDeleteRevision(w http.ResponseWriter, r *http.Request, projects proje
 		switch {
 		case errors.Is(err, project.ErrProjectNotFound):
 			writeConnectError(w, connect.NewError(connect.CodeNotFound, err))
-		case errors.Is(err, project.ErrDeleteCurrentRevision):
+		case errors.Is(err, project.ErrDeleteCurrentRevision), errors.Is(err, project.ErrDeleteLastRevision):
 			writeConnectError(w, connect.NewError(connect.CodeFailedPrecondition, err))
 		default:
 			writeConnectError(w, connect.NewError(connect.CodeInternal, err))

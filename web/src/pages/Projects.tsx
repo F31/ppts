@@ -710,35 +710,36 @@ export function Projects({
                       {t('projects.downloadPpt')}
                     </button>
                   )}
-                  {!revision.isCurrent && (
-                    <button
-                      type="button"
-                      className="button-ghost danger"
-                      onClick={async () => {
-                        const ok = await confirmAsk({ kind: 'confirm', titleKey: 'projects.deletePptTitle', messageKey: 'projects.deletePptConfirm', messageValues: { name: getDisplayName(revision), no: revision.revisionNo }, confirmKey: 'common.delete', danger: true });
-                        if (!ok) return;
-                        try {
-                          await deleteSourceRevision(identity, project.id, revision.revisionNo);
-                          setVersionsByProject((cur) => {
-                            const s = cur[project.id];
-                            if (!s) return cur;
-                            return {
-                              ...cur,
-                              [project.id]: { ...s, revisions: s.revisions.filter((r) => r.revisionNo !== revision.revisionNo) }
-                            };
-                          });
-                          pushNotice(t('projects.pptDeleted', { name: getDisplayName(revision) }));
-                        } catch (err) {
-                          const msg = err instanceof Error ? err.message : t('projects.deletePptFailed');
-                          if (msg.includes('当前生效版本')) setError(t('projects.deleteCurrentBlocked'));
-                          else setError(msg);
-                        }
-                      }}
-                      title={t('projects.deletePpt')}
-                    >
-                      {t('projects.deletePpt')}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="button-ghost danger"
+                    onClick={async () => {
+                      const ok = await confirmAsk({
+                        kind: 'confirm',
+                        titleKey: revision.isCurrent ? 'projects.deleteCurrentPptTitle' : 'projects.deletePptTitle',
+                        messageKey: revision.isCurrent ? 'projects.deleteCurrentPptConfirm' : 'projects.deletePptConfirm',
+                        messageValues: { name: getDisplayName(revision), no: revision.revisionNo },
+                        confirmKey: 'common.delete',
+                        danger: true
+                      });
+                      if (!ok) return;
+                      try {
+                        await deleteSourceRevision(identity, project.id, revision.revisionNo);
+                        pushNotice(t('projects.pptDeleted', { name: getDisplayName(revision) }));
+                        // 删除当前版本会回退到上一版：刷新项目（current_revision 变化）与该项目的版本列表。
+                        void load(true);
+                        void fetchVersions(project);
+                      } catch (err) {
+                        const msg = err instanceof Error ? err.message : t('projects.deletePptFailed');
+                        if (msg.includes('only revision') || msg.includes('唯一')) setError(t('projects.deleteLastBlocked'));
+                        else if (msg.includes('current revision') || msg.includes('当前生效版本')) setError(t('projects.deleteCurrentBlocked'));
+                        else setError(msg);
+                      }
+                    }}
+                    title={t('projects.deletePpt')}
+                  >
+                    {t('projects.deletePpt')}
+                  </button>
                 </td>
               </tr>
             );

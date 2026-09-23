@@ -365,12 +365,18 @@ func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, userID, i
 func (s *PGProjectStore) CreateSourceRevision(ctx context.Context, tenantID string, in NewSourceRevision) (*SourceRevision, error) {
 	var sr *SourceRevision
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		// 锁定项目行，串行化 current_revision 递增。
+		// 锁定项目行，串行化源版本创建；版本号取 MAX(revision_no)+1（含软删行，避免回退当前版本后复用号）。
 		var current int
 		if err := tx.QueryRow(ctx,
 			`SELECT current_revision FROM projects WHERE id=$1 AND tenant_id=$2 FOR UPDATE`,
 			in.ProjectID, tenantID).Scan(&current); err != nil {
 			return errors.Join(ErrProjectNotFound, err)
+		}
+		var next int
+		if err := tx.QueryRow(ctx,
+			`SELECT COALESCE(MAX(revision_no),0)+1 FROM source_revisions WHERE tenant_id=$1 AND project_id=$2`,
+			tenantID, in.ProjectID).Scan(&next); err != nil {
+			return err
 		}
 
 		// 上传链路幂等：同一 upload_id 已建源版本时返回既有版本，不重复递增。
@@ -389,7 +395,7 @@ func (s *PGProjectStore) CreateSourceRevision(ctx context.Context, tenantID stri
 		}
 
 		sr = &SourceRevision{
-			ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: current + 1,
+			ProjectID: in.ProjectID, TenantID: tenantID, RevisionNo: next,
 			SourceHash: in.SourceHash, ObjectKey: in.ObjectKey, ParserVersion: in.ParserVersion,
 			UploadID: in.UploadID, DisplayName: in.Filename,
 		}
@@ -470,7 +476,11 @@ func (s *PGProjectStore) UpdateSourceRevisionDisplayName(ctx context.Context, te
 	})
 }
 
+// ErrDeleteCurrentRevision 表示试图删除当前生效版本（仅在没有任何其它版本时才会拒绝）。
 var ErrDeleteCurrentRevision = errors.New("project: cannot delete current revision")
+
+// ErrDeleteLastRevision 表示试图删除项目唯一的（当前）版本——不允许把项目删成零版本。
+var ErrDeleteLastRevision = errors.New("project: cannot delete the only revision")
 
 func (s *PGProjectStore) DeleteSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) error {
 	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -484,7 +494,30 @@ func (s *PGProjectStore) DeleteSourceRevision(ctx context.Context, tenantID, pro
 			return err
 		}
 		if revisionNo == current {
-			return ErrDeleteCurrentRevision
+			// 允许删除当前版本，但需回退到「最新的其它未删除版本」；没有其它版本则拒绝。
+			var fallback int
+			err := tx.QueryRow(ctx,
+				`SELECT revision_no FROM source_revisions
+				 WHERE tenant_id=$1 AND project_id=$2 AND revision_no<>$3 AND source_deleted_at IS NULL
+				 ORDER BY revision_no DESC LIMIT 1`,
+				tenantID, projectID, revisionNo).Scan(&fallback)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrDeleteLastRevision
+			}
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx,
+				`UPDATE source_revisions SET source_deleted_at = now() WHERE tenant_id = $1 AND project_id = $2 AND revision_no = $3`,
+				tenantID, projectID, revisionNo); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx,
+				`UPDATE projects SET current_revision = $3, updated_at = now() WHERE id = $1 AND tenant_id = $2`,
+				projectID, tenantID, fallback); err != nil {
+				return err
+			}
+			return nil
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE source_revisions SET source_deleted_at = now() WHERE tenant_id = $1 AND project_id = $2 AND revision_no = $3`,
