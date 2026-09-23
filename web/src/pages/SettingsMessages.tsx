@@ -184,7 +184,19 @@ function EmailChannel({
         </label>
         <label className="field">
           <span className="field-label">{t('messages.port')}</span>
-          <input value={port} onChange={(e) => setPort(e.currentTarget.value)} placeholder="587" />
+          <input
+            value={port}
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              setPort(v);
+              // 端口变化时自动匹配加密方式，避免 465+STARTTLS 这类不匹配（126/163 常见坑）。
+              const n = Number(v);
+              if (n === 465 || n === 994) setTlsMode('tls');
+              else if (n === 587) setTlsMode('starttls');
+              else if (n === 25) setTlsMode('none');
+            }}
+            placeholder="465 / 587"
+          />
         </label>
         <label className="field">
           <span className="field-label">{t('messages.username')}</span>
@@ -216,6 +228,7 @@ function EmailChannel({
             <option value="tls">TLS (465)</option>
             <option value="none">None (25)</option>
           </select>
+          <small className="field-hint">{t('messages.smtpHint')}</small>
         </label>
       </div>
       {error && <p className="form-error" role="alert">{error}</p>}

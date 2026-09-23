@@ -47,6 +47,7 @@
   "messages.passwordHint": "Leave blank to keep the existing password. For 126/163, use the app authorization code, not the login password.",
   "messages.fromName": "From name",
   "messages.fromAddress": "From address",
+  "messages.smtpHint": "For 126/163 use 465 + TLS with the authorization code; generic providers use 587 + STARTTLS.",
   "messages.tlsMode": "Encryption",
   "messages.testTitle": "Send test email",
   "messages.testHint": "Send a test email using the saved configuration.",

@@ -47,6 +47,7 @@
   "messages.passwordHint": "留空表示保持原密码不变。126/163 等邮箱请填「授权码」（非登录密码）。",
   "messages.fromName": "发件人名称",
   "messages.fromAddress": "发件人地址",
+  "messages.smtpHint": "126/163 等邮箱请用 465 + TLS，密码填「授权码」；普通服务商 587 + STARTTLS。",
   "messages.tlsMode": "加密方式",
   "messages.testTitle": "发送测试邮件",
   "messages.testHint": "使用已保存的配置向指定地址发送一封测试邮件。",

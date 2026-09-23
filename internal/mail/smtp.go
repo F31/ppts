@@ -126,7 +126,7 @@ func (s *smtpSender) Send(ctx context.Context, m Message) error {
 	c, err := smtp.NewClient(conn, s.cfg.Host)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("mail: smtp client: %w", err)
+		return fmt.Errorf("mail: SMTP handshake failed (mode=%s port=%d): %w — check that port and encryption match (126/163 use 465 with implicit TLS)", s.cfg.Mode, s.cfg.Port, err)
 	}
 	defer c.Close()
 
