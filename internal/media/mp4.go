@@ -366,19 +366,38 @@ func subtitleStage(fontName, file string) string {
 	return s + ":force_style='FontName=" + fontName + "'"
 }
 
+// VerifyError 表示编码完成后的 ffprobe/抽帧校验失败。与 ffmpeg 编码失败区分：
+// 校验失败可能是瞬时性的（例如 ffprobe 在特定环境下偶发段错误），调用方据此按
+// 可重试错误处理，而不是把一段已成功编码的视频判为永久失败。
+type VerifyError struct {
+	Stage  string // "ffprobe" | "frame"
+	Detail string // 命令输出（stderr），便于诊断
+	Err    error
+}
+
+func (e *VerifyError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("media: verify %s failed: %v\n%s", e.Stage, e.Err, e.Detail)
+	}
+	return fmt.Sprintf("media: verify %s failed: %v", e.Stage, e.Err)
+}
+
+func (e *VerifyError) Unwrap() error { return e.Err }
+
 // verify 用 ffprobe 校验封装格式与流，并抽帧验证画面非空。
 func (e *MP4Encoder) verify(ctx context.Context, out string) (*MP4EncodeResult, error) {
-	outJSON, err := exec.CommandContext(ctx, e.ffprobe,
+	cmd := exec.CommandContext(ctx, e.ffprobe,
 		"-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height,duration",
-		"-of", "json", out).Output()
+		"-of", "json", out)
+	outJSON, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("media: ffprobe failed: %w", err)
+		return nil, &VerifyError{Stage: "ffprobe", Detail: string(outJSON), Err: err}
 	}
 	var probe struct {
 		Streams []ffprobeStream `json:"streams"`
 	}
 	if err := json.Unmarshal(outJSON, &probe); err != nil {
-		return nil, fmt.Errorf("media: parse ffprobe output: %w", err)
+		return nil, &VerifyError{Stage: "ffprobe", Detail: string(outJSON), Err: err}
 	}
 	res := &MP4EncodeResult{OutPath: out}
 	for _, s := range probe.Streams {
@@ -400,7 +419,7 @@ func (e *MP4Encoder) verify(ctx context.Context, out string) (*MP4EncodeResult, 
 	if res.Duration > 0 {
 		dst := filepath.Join(filepath.Dir(out), ".ppts-verify-frame.png")
 		if err := extractFrame(ctx, e.ffmpeg, out, "0", dst); err != nil {
-			return nil, err
+			return nil, &VerifyError{Stage: "frame", Err: err}
 		}
 	}
 	return res, nil

@@ -10,6 +10,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,4 +318,30 @@ func pcmWAVForExportTest(sampleRate uint32, frames int) []byte {
 func putLE16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
 func putLE32(b []byte, v uint32) {
 	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
+}
+
+// TestClassifyEncodeErrorVerifyIsRetryable 覆盖校验类失败（ffprobe/抽帧偶发段错误）
+// 被转成 *pipeline.RetryError（由 worker 退避重试），而不是判为永久失败。
+func TestClassifyEncodeErrorVerifyIsRetryable(t *testing.T) {
+	ve := &media.VerifyError{Stage: "ffprobe", Detail: "signal: segmentation fault", Err: errors.New("exit status 2")}
+	got := classifyEncodeError(ve)
+	var retry *pipeline.RetryError
+	if !errors.As(got, &retry) {
+		t.Fatalf("verify error should map to RetryError, got %T: %v", got, got)
+	}
+}
+
+// TestClassifyEncodeErrorPermanentStaysPermanent 覆盖字幕能力缺失与普通编码错误保持永久失败。
+func TestClassifyEncodeErrorPermanentStaysPermanent(t *testing.T) {
+	sub := classifyEncodeError(media.ErrSubtitlesUnavailable)
+	if errors.As(sub, new(*pipeline.RetryError)) {
+		t.Fatalf("subtitles-unavailable should stay permanent: %v", sub)
+	}
+	if !strings.Contains(sub.Error(), "unavailable") {
+		t.Fatalf("subtitles error should carry the reason: %v", sub)
+	}
+	plain := errors.New("media: ffmpeg encode failed")
+	if got := classifyEncodeError(plain); got != plain {
+		t.Fatalf("plain encode error should pass through unchanged: %v", got)
+	}
 }

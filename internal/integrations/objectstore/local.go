@@ -42,6 +42,8 @@ func (l *LocalFS) pathFor(key ObjectKey) (string, error) {
 }
 
 // Put 写对象（覆盖同键旧对象）。调用方保证 key 的租户/项目前缀已获授权。
+// 采用「临时文件 + rename」原子替换：并发读（如导出读取共享音频缓存）不会读到半截文件，
+// 避免因读到截断对象导致下游（ffprobe 校验等）间歇性失败。
 func (l *LocalFS) Put(_ context.Context, key ObjectKey, r io.Reader, meta ObjectMeta) error {
 	full, err := l.pathFor(key)
 	if err != nil {
@@ -50,17 +52,26 @@ func (l *LocalFS) Put(_ context.Context, key ObjectKey, r io.Reader, meta Object
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	f, err := os.Create(full)
+	tmp, err := os.CreateTemp(filepath.Dir(full), ".ppts-put-*")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		os.Remove(full)
+	if _, err := io.Copy(tmp, r); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
 		return err
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(full)
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	// rename 同目录内原子替换；保留 mode 权限。
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Rename(tmp.Name(), full); err != nil {
+		os.Remove(tmp.Name())
 		return err
 	}
 	return nil
