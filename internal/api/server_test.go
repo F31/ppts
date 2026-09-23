@@ -261,6 +261,7 @@ type jobCreatorStub struct {
 
 type fakeArtifactStore struct {
 	artifact *artifact.Artifact
+	deleted  bool
 }
 
 type fakeAuditStore struct {
@@ -321,6 +322,16 @@ func (s *fakeArtifactStore) ListAll(_ context.Context, tenantID string) ([]*arti
 		return nil, nil
 	}
 	return []*artifact.Artifact{s.artifact}, nil
+}
+
+// Delete 对应成品库删除（artifact.Store 接口新增方法）：按租户 + id 删单条。
+func (s *fakeArtifactStore) Delete(_ context.Context, tenantID, id string) error {
+	if s.artifact == nil || s.artifact.TenantID != tenantID || s.artifact.ID != id {
+		return artifact.ErrNotFound
+	}
+	s.deleted = true
+	s.artifact = nil
+	return nil
 }
 
 func testObjects(t *testing.T) objectstore.ObjectStore {
@@ -412,7 +423,7 @@ func (s *jobCreatorStub) RetryFailed(context.Context, string, string) (*pipeline
 	return s.job, nil
 }
 
-func (s *fakeScriptStore) Get(_ context.Context, tenantID, _, _, language string) (*narration.Revision, error) {
+func (s *fakeScriptStore) Get(_ context.Context, tenantID, _ string, _ int, _, language string) (*narration.Revision, error) {
 	s.lastTenantID, s.lastLanguage = tenantID, language
 	if s.revision == nil {
 		return nil, narration.ErrNotFound
@@ -420,7 +431,7 @@ func (s *fakeScriptStore) Get(_ context.Context, tenantID, _, _, language string
 	return s.revision, nil
 }
 
-func (s *fakeScriptStore) Update(_ context.Context, tenantID, _, _, language string, expected int64, segments []*narration.Segment) (*narration.Revision, error) {
+func (s *fakeScriptStore) Update(_ context.Context, tenantID, _ string, _ int, _, language string, expected int64, segments []*narration.Segment) (*narration.Revision, error) {
 	s.lastTenantID, s.lastLanguage = tenantID, language
 	if s.revision == nil {
 		return nil, narration.ErrNotFound
@@ -433,7 +444,7 @@ func (s *fakeScriptStore) Update(_ context.Context, tenantID, _, _, language str
 	return s.revision, nil
 }
 
-func (s *fakeScriptStore) SetStatus(_ context.Context, tenantID, _, _, language string, status narration.ScriptStatus) (*narration.Revision, error) {
+func (s *fakeScriptStore) SetStatus(_ context.Context, tenantID, _ string, _ int, _, language string, status narration.ScriptStatus) (*narration.Revision, error) {
 	s.lastTenantID, s.lastLanguage = tenantID, language
 	if s.revision == nil {
 		return nil, narration.ErrNotFound
@@ -445,7 +456,7 @@ func (s *fakeScriptStore) SetStatus(_ context.Context, tenantID, _, _, language 
 	return s.revision, nil
 }
 
-func (s *fakeScriptStore) EnsureExists(context.Context, string, string, string, string, narration.ScriptMode) (*narration.Revision, error) {
+func (s *fakeScriptStore) EnsureExists(context.Context, string, string, int, string, string, narration.ScriptMode) (*narration.Revision, error) {
 	return nil, errors.New("not used")
 }
 
@@ -453,11 +464,11 @@ func (*fakeScriptStore) CountDraftSegments(context.Context, string, string) (int
 	return 0, nil
 }
 
-func (*fakeScriptStore) MarkAudioRevision(context.Context, string, string, string, string, int64) error {
+func (*fakeScriptStore) MarkAudioRevision(context.Context, string, string, int, string, string, int64) error {
 	return nil
 }
 
-func (*fakeScriptStore) ListByProject(context.Context, string, string, string) ([]*narration.Revision, error) {
+func (*fakeScriptStore) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
 	return nil, nil
 }
 
@@ -1618,6 +1629,143 @@ func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 	}
 }
 
+// TestTenantUsageSupplierCostGate 验证供应商成本仅 admin/owner 可见：普通角色拿到的
+// supplier_cost 为 0（前端据此隐藏卡片），user_amount 全员可见（租户自己的账单）。
+func TestTenantUsageSupplierCostGate(t *testing.T) {
+	u := &fakeTenantUsage{seconds: 120, cost: 1.2, supplierCost: 0.48}
+	for _, tc := range []struct {
+		name      string
+		role      membership.Role
+		wantCost  float64
+		wantUser  float64
+	}{
+		{name: "viewer_hides_supplier_cost", role: membership.RoleViewer, wantCost: 0, wantUser: 1.2},
+		{name: "editor_hides_supplier_cost", role: membership.RoleEditor, wantCost: 0, wantUser: 1.2},
+		{name: "admin_sees_supplier_cost", role: membership.RoleAdmin, wantCost: 0.48, wantUser: 1.2},
+		{name: "owner_sees_supplier_cost", role: membership.RoleOwner, wantCost: 0.48, wantUser: 1.2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			members := &fakeRoleReader{role: tc.role}
+			server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Usage: u, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
+			t.Cleanup(server.Close)
+			client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
+			resp, err := client.Usage(context.Background(), authRequest(&pptsv1.GetUsageRequest{Month: "2026-09"}))
+			if err != nil {
+				t.Fatalf("Usage: %v", err)
+			}
+			if got := resp.Msg.GetSupplierCost(); got != tc.wantCost {
+				t.Fatalf("supplier_cost = %v want %v (role %s)", got, tc.wantCost, tc.role)
+			}
+			if got := resp.Msg.GetUserAmount(); got != tc.wantUser {
+				t.Fatalf("user_amount = %v want %v (role %s)", got, tc.wantUser, tc.role)
+			}
+		})
+	}
+}
+
+// TestEditorRevisionNarration 验证 GET /projects/{pid}/revisions/{rev}/narration：
+// 按 snapshot.RevisionNo 归集成功配音任务，返回该版本自己的 timeline/pagePngKeys，
+// 而非 GetNarration 的“最新任务”。供 PPT 列表页导出弹窗取素材。
+func TestEditorRevisionNarration(t *testing.T) {
+	jobs := &revisionNarrationJobStub{
+		jobs: []*pipeline.Job{
+			{ID: "narr-v1", Kind: pipeline.KindNarration, InputSnapshot: `{"revisionNo":1,"slides":[{"slideId":"slide-2","scriptRevision":1}]}`},
+		},
+		timelineRefs: map[string]string{"narr-v1": "tenant-1/project-1/narration-narr-v1/timeline/tl.json"},
+	}
+	members := &fakeRoleReader{role: membership.RoleOwner}
+	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "导出测试"}}}
+	server := httptest.NewServer(NewHandler(
+		projects, newFakeUploadStore(), &fakeScriptStore{}, jobs,
+		&fakeArtifactStore{}, testObjects(t), nil, Options{Members: members},
+	))
+	t.Cleanup(server.Close)
+
+	// v1：有成功配音 → ready=true，带该版本的 timelineKey。
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/projects/project-1/revisions/1/narration", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(tenantHeader, "tenant-1")
+	req.Header.Set(userHeader, "user-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("rev1 narration: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rev1 status = %d body = %s", resp.StatusCode, body)
+	}
+	var v1 struct {
+		Ready       bool     `json:"ready"`
+		TimelineKey string   `json:"timelineKey"`
+		PagePngKeys []string `json:"pagePngKeys"`
+		RevisionNo  int      `json:"revisionNo"`
+		JobID       string   `json:"jobId"`
+	}
+	if err := json.Unmarshal(body, &v1); err != nil {
+		t.Fatalf("rev1 json: %v body = %s", err, body)
+	}
+	if !v1.Ready || v1.TimelineKey != "tenant-1/project-1/narration-narr-v1/timeline/tl.json" || v1.JobID != "narr-v1" {
+		t.Fatalf("rev1 narration = %+v", v1)
+	}
+
+	// v2：该版本无成功配音 → ready=false（不是“最新任务”兜底的那种假就绪）。
+	req2, err := http.NewRequest(http.MethodGet, server.URL+"/projects/project-1/revisions/2/narration", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.Header.Set(tenantHeader, "tenant-1")
+	req2.Header.Set(userHeader, "user-1")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("rev2 narration: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("rev2 status = %d body = %s", resp2.StatusCode, body2)
+	}
+	var v2 struct {
+		Ready bool `json:"ready"`
+	}
+	if err := json.Unmarshal(body2, &v2); err != nil {
+		t.Fatalf("rev2 json: %v body = %s", err, body2)
+	}
+	if v2.Ready {
+		t.Fatalf("rev2 ready = true, should be false (no narration for that revision)")
+	}
+}
+
+// revisionNarrationJobStub 提供 revision-narration 端点所需的最小 JobStore。
+type revisionNarrationJobStub struct {
+	jobs         []*pipeline.Job
+	timelineRefs map[string]string
+}
+
+func (s *revisionNarrationJobStub) Create(context.Context, string, string, string, string, string, time.Time) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
+}
+func (s *revisionNarrationJobStub) LatestSucceededJob(context.Context, string, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrNoSucceededJob
+}
+func (s *revisionNarrationJobStub) StepResultRef(_ context.Context, jobID, stepType string) (string, error) {
+	return s.timelineRefs[jobID], nil
+}
+func (s *revisionNarrationJobStub) List(_ context.Context, _ string, _ string, _ string, _ string, _ int) ([]*pipeline.Job, string, error) {
+	return s.jobs, "", nil
+}
+func (s *revisionNarrationJobStub) Get(context.Context, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
+}
+func (s *revisionNarrationJobStub) Cancel(context.Context, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
+}
+func (s *revisionNarrationJobStub) RetryFailed(context.Context, string, string) (*pipeline.Job, error) {
+	return nil, pipeline.ErrJobNotFound
+}
+
 func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
@@ -1654,6 +1802,24 @@ func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T
 	_, err = client.CreateExport(context.Background(), badReq)
 	if connect.CodeOf(err) != connect.CodePermissionDenied {
 		t.Fatalf("cross tenant code=%v err=%v", connect.CodeOf(err), err)
+	}
+}
+
+// TestCreateExportRejectsCrossProjectTimelineKey 守护：时间轴必须属于本次导出的项目。
+// 跨项目时间轴会产出"内容来自 A、却挂在 B 名下"的成品，成品库预览页图/字幕对不上（历史事故）。
+func TestCreateExportRejectsCrossProjectTimelineKey(t *testing.T) {
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
+
+	req := authRequest(&pptsv1.CreateExportRequest{
+		ProjectId: "project-1", Format: pptsv1.ArtifactFormat_ARTIFACT_FORMAT_WEB_PROJECT,
+		TimelineKey: "tenant-1/other-project/narration/timeline/tl.json",
+	})
+	req.Header().Set("Idempotency-Key", "export-xproject")
+	_, err := client.CreateExport(context.Background(), req)
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("cross-project code=%v err=%v", connect.CodeOf(err), err)
 	}
 }
 
@@ -2348,5 +2514,207 @@ func TestRequestLanguagePrefersExplicitHeader(t *testing.T) {
 		if got := requestLanguage(tc.header); got != tc.want {
 			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestArtifactManifestRouteMounted 守护成品内嵌预览路由（GET /artifacts/{id}/manifest）：
+// 成品绑定时间轴 → 返回 JSON 播放清单（资源为本地签名链接）；历史成品（无时间轴绑定）
+// → 404，前端据此降级为"仅下载"而不是播放与下载不同源的另一版内容。
+func TestArtifactManifestRouteMounted(t *testing.T) {
+	objects := testObjects(t)
+	timeline, err := media.BuildTimeline([]media.SlideInput{{
+		SlideID:  "slide-1",
+		Segments: []media.SegmentInput{{SegmentID: "seg-1", DisplayText: "字幕", AudioKey: "tenant-1/project-1/cache/audio/a.wav", DurationMS: 100}},
+	}}, media.Timing{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srtKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "subtitle", AssetID: "sub", Ext: "srt"}
+	vttKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "subtitle", AssetID: "sub", Ext: "vtt"}
+	timelineKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "timeline", AssetID: "tl", Ext: "json"}
+	audioKey, _ := objectstore.Parse(timeline.Slides[0].Segments[0].AudioKey)
+	putAPIObject(t, objects, srtKey, []byte("srt"), "application/x-subrip")
+	putAPIObject(t, objects, vttKey, []byte("vtt"), "text/vtt")
+	putAPIObject(t, objects, audioKey, []byte("wav"), "audio/wav")
+	bundle, _ := json.Marshal(app.TimelineAsset{Timeline: timeline, SRTKey: srtKey.String(), VTTKey: vttKey.String()})
+	putAPIObject(t, objects, timelineKey, bundle, "application/json")
+
+	members := &fakeRoleReader{role: membership.RoleOwner}
+	artifacts := &fakeArtifactStore{artifact: &artifact.Artifact{
+		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1", ProjectName: "Demo",
+		Format: artifact.FormatWebProject, ObjectKey: "tenant-1/project-1/artifact/artifact/x.zip",
+		TimelineKey: timelineKey.String(), CreatedAt: time.Unix(1, 0),
+	}}
+	server := httptest.NewServer(NewHandler(
+		&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
+		artifacts, objects, nil, Options{Members: members},
+	))
+	t.Cleanup(server.Close)
+
+	get := func(path string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(tenantHeader, "tenant-1")
+		req.Header.Set(userHeader, "user-1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp, body
+	}
+
+	resp, body := get("/artifacts/artifact-1/manifest")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d body = %s", resp.StatusCode, body)
+	}
+	if strings.Contains(strings.ToLower(string(body)), "<!doctype") {
+		t.Fatalf("manifest 命中 SPA 兜底返回了 HTML（路由未挂载）: %s", body)
+	}
+	var payload struct {
+		TimelineJson string `json:"timelineJson"`
+		Resources    []struct {
+			Type      string `json:"type"`
+			SignedUrl string `json:"signedUrl"`
+		} `json:"resources"`
+		ExpiresAtUnix int64 `json:"expiresAtUnix"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("响应不是 JSON: %v body = %s", err, body)
+	}
+	if payload.TimelineJson == "" || payload.ExpiresAtUnix <= time.Now().Unix() || len(payload.Resources) != 4 {
+		t.Fatalf("manifest = %+v", payload)
+	}
+	for _, res := range payload.Resources {
+		if !strings.HasPrefix(res.SignedUrl, "/ppts/object/") {
+			t.Fatalf("resource url not rewritten: %+v", res)
+		}
+	}
+
+	// 历史成品（0040 之前导出）：没有时间轴绑定 → 404，而不是回退到"项目最新讲解"。
+	artifacts.artifact.TimelineKey = ""
+	resp, _ = get("/artifacts/artifact-1/manifest")
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("legacy artifact status = %d，应为 404", resp.StatusCode)
+	}
+}
+
+// TestDeleteArtifactRouteOwnerOnly 守护成品库删除路由（DELETE /artifacts/{id}）：
+// viewer 被拒（403），owner 删除成功（200 + 记录消失），重复删除 404。
+func TestDeleteArtifactRouteOwnerOnly(t *testing.T) {
+	objects := testObjects(t)
+	artifacts := &fakeArtifactStore{artifact: &artifact.Artifact{
+		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1",
+		Format:    artifact.FormatMP4,
+		ObjectKey: "tenant-1/project-1/artifact/artifact/x.mp4", CreatedAt: time.Unix(1, 0),
+	}}
+	newServer := func(role membership.Role) *httptest.Server {
+		return httptest.NewServer(NewHandler(
+			&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
+			artifacts, objects, nil, Options{Members: &fakeRoleReader{role: role}},
+		))
+	}
+	do := func(srv *httptest.Server, id string) (*http.Response, []byte) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodDelete, srv.URL+"/artifacts/"+id, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set(tenantHeader, "tenant-1")
+		req.Header.Set(userHeader, "user-1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp, body
+	}
+
+	viewerSrv := newServer(membership.RoleViewer)
+	t.Cleanup(viewerSrv.Close)
+	if resp, _ := do(viewerSrv, "artifact-1"); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("viewer delete status = %d，应为 403", resp.StatusCode)
+	}
+	if artifacts.deleted {
+		t.Fatal("viewer 不应删除成功")
+	}
+
+	ownerSrv := newServer(membership.RoleOwner)
+	t.Cleanup(ownerSrv.Close)
+	resp, body := do(ownerSrv, "artifact-1")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("owner delete status = %d body = %s", resp.StatusCode, body)
+	}
+	if !artifacts.deleted {
+		t.Fatal("owner 删除应成功")
+	}
+	if resp, _ := do(ownerSrv, "artifact-1"); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("重复删除 status = %d，应为 404", resp.StatusCode)
+	}
+}
+
+// TestSignedObjectReadSupportsRange 守护本地对象端点的 HTTP Range 支持：
+// 视频 <video> 拖动进度条依赖 206 部分响应；此前读分支全量 io.Copy，只能从头顺放。
+func TestSignedObjectReadSupportsRange(t *testing.T) {
+	objects := testObjects(t)
+	key := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "artifact", AssetType: "artifact", AssetID: "mp4", Ext: "mp4"}
+	payload := []byte("0123456789")
+	if err := objects.Put(context.Background(), key, bytes.NewReader(payload), objectstore.ObjectMeta{ContentType: "video/mp4", Size: int64(len(payload))}); err != nil {
+		t.Fatal(err)
+	}
+	signed, err := objects.SignedURL(context.Background(), key, objectstore.OpRead, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parser, ok := objects.(signedURLParser)
+	if !ok {
+		t.Fatal("local store must implement signedURLParser")
+	}
+	url := rewriteLocalSignedURL(parser, signed)
+	if url == signed {
+		t.Fatalf("local signed url not rewritten: %q", signed)
+	}
+
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil))
+	t.Cleanup(server.Close)
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=2-5")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("status = %d，Range 请求应为 206；body = %s", resp.StatusCode, body)
+	}
+	if string(body) != "2345" {
+		t.Fatalf("partial body = %q want %q", body, "2345")
+	}
+	if got := resp.Header.Get("Content-Range"); got != "bytes 2-5/10" {
+		t.Fatalf("Content-Range = %q", got)
+	}
+	if resp.Header.Get("Accept-Ranges") != "bytes" {
+		t.Fatalf("Accept-Ranges = %q", resp.Header.Get("Accept-Ranges"))
+	}
+
+	// 无 Range 时保持整体 200 全量语义（回归：ServeContent 不应改变普通下载行为）。
+	respFull, err := http.DefaultClient.Get(server.URL + url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respFull.Body.Close()
+	full, _ := io.ReadAll(respFull.Body)
+	if respFull.StatusCode != http.StatusOK || string(full) != string(payload) {
+		t.Fatalf("full read status=%d body=%q", respFull.StatusCode, full)
 	}
 }

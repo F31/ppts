@@ -6,7 +6,8 @@ const stateKey = 'pptsOIDCState';
 const devIdentityKey = 'pptsDevIdentity';
 
 // tenantType 仅本地模式（SQLite）写入：该模式恒为个人账号，用于隐藏成员管理入口。
-export type DevIdentity = { tenantId: string; userId: string; tenantType?: string };
+// tenantName 同样仅本地模式由 /auth/config 带回，供个人信息弹窗显示租户名（ID 降为灰字）。
+export type DevIdentity = { tenantId: string; userId: string; tenantType?: string; tenantName?: string };
 
 export function storedDevIdentity(): DevIdentity | null {
   // A02：开发身份不得混入生产。未开放该能力的构建里，即使浏览器残留 pptsDevIdentity

@@ -1,12 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   getLibraryArtifacts,
+  getArtifactManifest,
   createDownload,
+  deleteArtifact,
   type ClientIdentity,
   type LibraryArtifact
 } from '../api';
+import type { PlaybackManifest, Role } from '../types';
 import { useI18n } from '../i18n';
 import { Link } from '../router';
+import { Player } from '../Player';
+import { useConfirmDialog } from '../components/ConfirmDialog';
+import { can } from '../permissions';
 
 const FORMAT_KEY: Record<string, string> = {
   mp4: 'artifacts.formatMp4',
@@ -37,8 +43,134 @@ function formatDuration(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
-export function Library({ identity }: { identity: ClientIdentity }) {
+// canPreview 判定成品能否内嵌预览：
+//   - mp4：文件本体可读即可（历史行同样支持，播放不需要时间轴绑定）；
+//   - web_project：zip 数据包没有可打开的 HTML，预览等价于用其绑定时间轴走 Player，
+//     因此要求 previewable（迁移 0040 之前的历史行无时间轴绑定，降级为仅下载）；
+//   - srt/vtt：文本字幕，无播放形态，不提供预览。
+function canPreview(a: LibraryArtifact): boolean {
+  if (a.format === 'mp4') return a.downloadable;
+  if (a.format === 'web_project') return a.previewable;
+  return false;
+}
+
+type PreviewState =
+  | { kind: 'video'; artifact: LibraryArtifact; url: string }
+  | { kind: 'manifest'; artifact: LibraryArtifact; manifest: PlaybackManifest };
+
+// ProjectFilter 是可搜索的项目筛选器：项目数可能远超 10，用原生 <select> 会拉出一长条
+// 无法检索的列表。这里用「触发器 + 搜索框 + 可滚动列表」的组合框：输入即过滤、方向键导航、
+// Esc 关闭、点击外部关闭，兼顾键盘与鼠标。
+function ProjectFilter({
+  options,
+  value,
+  onChange
+}: {
+  options: [string, string][];
+  value: string;
+  onChange: (value: string) => void;
+}) {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [active, setActive] = useState(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (event: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [open]);
+
+  const selectedLabel = value === 'all' ? t('library.allProjects') : (options.find(([id]) => id === value)?.[1] ?? value.slice(0, 8));
+  const items = useMemo(() => {
+    const all: [string, string][] = [['all', t('library.allProjects')], ...options];
+    const q = query.trim().toLowerCase();
+    return q ? all.filter(([, name]) => name.toLowerCase().includes(q)) : all;
+  }, [options, query, t]);
+
+  const choose = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setQuery('');
+  };
+
+  return (
+    <div className="project-filter" ref={rootRef}>
+      <button
+        type="button"
+        className="library-select project-filter-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => {
+          setOpen((v) => !v);
+          setQuery('');
+          setActive(0);
+        }}
+      >
+        <span className="project-filter-label" title={selectedLabel}>{selectedLabel}</span>
+        <span className="project-filter-caret" aria-hidden>▾</span>
+      </button>
+      {open && (
+        <div className="project-filter-panel">
+          <input
+            className="project-filter-search"
+            autoFocus
+            placeholder={t('library.searchProject')}
+            value={query}
+            onChange={(e) => {
+              setQuery(e.currentTarget.value);
+              setActive(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setOpen(false);
+              else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                setActive((a) => Math.min(a + 1, items.length - 1));
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                setActive((a) => Math.max(a - 1, 0));
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const picked = items[active] ?? items[0];
+                if (picked) choose(picked[0]);
+              }
+            }}
+          />
+          <ul className="project-filter-list" role="listbox">
+            {items.length === 0 ? (
+              <li className="project-filter-empty">{t('library.noProjectMatch')}</li>
+            ) : (
+              items.map(([id, name], i) => (
+                <li key={id}>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={id === value}
+                    className={id === value ? 'selected' : i === active ? 'active' : ''}
+                    onMouseEnter={() => setActive(i)}
+                    onClick={() => choose(id)}
+                  >
+                    {name}
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function Library({ identity, role }: { identity: ClientIdentity; role?: Role }) {
+  const { t } = useI18n();
+  const confirmDialog = useConfirmDialog();
+  const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
+  const canDelete = can(role, 'artifact.delete');
   const [artifacts, setArtifacts] = useState<LibraryArtifact[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -47,7 +179,12 @@ export function Library({ identity }: { identity: ClientIdentity }) {
   const [projectId, setProjectId] = useState<string>('all');
   const [range, setRange] = useState<string>('all');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [previewLoadingId, setPreviewLoadingId] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -89,7 +226,32 @@ export function Library({ identity }: { identity: ClientIdentity }) {
       }
       return true;
     });
-  }, [artifacts, format, projectId, rangeDays, now]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [artifacts, format, projectId, rangeDays]);
+
+  // onPreview 打开内嵌预览：mp4 用签名 URL 直接喂 <video>；web_project 取成品绑定的
+  // 时间轴清单喂 <Player>（与下载的 zip 同源，不会预览另一版内容）。
+  const onPreview = useCallback(
+    async (a: LibraryArtifact) => {
+      setPreviewLoadingId(a.id);
+      setPreviewError(null);
+      try {
+        if (a.format === 'mp4') {
+          // ttl 1h：覆盖整段视频的观看时长，避免放到一半签名过期。
+          const { signedUrl } = await createDownload(identity, a.id, 3600);
+          setPreview({ kind: 'video', artifact: a, url: signedUrl });
+        } else {
+          const manifest = await getArtifactManifest(identity, a.id);
+          setPreview({ kind: 'manifest', artifact: a, manifest });
+        }
+      } catch (e) {
+        setPreviewError(e instanceof Error ? e.message : t('library.previewFailed'));
+      } finally {
+        setPreviewLoadingId(null);
+      }
+    },
+    [identity, t]
+  );
 
   const onDownload = useCallback(
     async (a: LibraryArtifact) => {
@@ -110,6 +272,35 @@ export function Library({ identity }: { identity: ClientIdentity }) {
       }
     },
     [identity, t]
+  );
+
+  const onDelete = useCallback(
+    async (a: LibraryArtifact) => {
+      const name = a.projectName || a.projectId.slice(0, 8);
+      const fmt = t(FORMAT_KEY[a.format] ?? a.format);
+      const ok = await confirmAsk({
+        kind: 'confirm',
+        titleKey: 'library.deleteTitle',
+        messageKey: 'library.deleteConfirm',
+        messageValues: { name, format: fmt },
+        confirmKey: 'common.delete',
+        danger: true
+      });
+      if (!ok) return;
+      setDeletingId(a.id);
+      setDownloadError(null);
+      try {
+        await deleteArtifact(identity, a.id);
+        setArtifacts((cur) => cur.filter((x) => x.id !== a.id));
+        setPreview((cur) => (cur && cur.artifact.id === a.id ? null : cur));
+        setNotice(t('library.deleted', { name, format: fmt }));
+      } catch (e) {
+        setDownloadError(e instanceof Error ? e.message : t('library.deleteFailed'));
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [confirmAsk, identity, t]
   );
 
   return (
@@ -148,15 +339,10 @@ export function Library({ identity }: { identity: ClientIdentity }) {
                   ))}
                 </select>
               </label>
-              <label className="filter-field">
+              <div className="filter-field">
                 <span>{t('library.filterProject')}</span>
-                <select className="library-select" value={projectId} onChange={(e) => setProjectId(e.currentTarget.value)}>
-                  <option value="all">{t('library.allProjects')}</option>
-                  {projectOptions.map(([id, name]) => (
-                    <option key={id} value={id}>{name}</option>
-                  ))}
-                </select>
-              </label>
+                <ProjectFilter options={projectOptions} value={projectId} onChange={setProjectId} />
+              </div>
               <label className="filter-field">
                 <span>{t('library.filterTime')}</span>
                 <select className="library-select" value={range} onChange={(e) => setRange(e.currentTarget.value)}>
@@ -175,39 +361,102 @@ export function Library({ identity }: { identity: ClientIdentity }) {
             ) : (
               <ul className="library-grid">
                 {filtered.map((a) => (
-                  <li className="library-row" key={a.id}>
-                    <span className="library-proj">
+                  <li className="library-card" key={a.id}>
+                    <div className="library-card-head">
                       <Link to={`/projects/${a.projectId}/artifacts`} className="library-proj-link" title={a.projectName || a.projectId}>
                         {a.projectName || a.projectId.slice(0, 8)}
                       </Link>
-                    </span>
-                    <span className={`artifact-badge artifact-${a.format}`}>{t(FORMAT_KEY[a.format] ?? a.format)}</span>
-                    <span className="artifact-meta">
-                      {t('artifacts.duration')}: {a.durationMs > 0 ? formatDuration(a.durationMs) : t('common.none')}
-                    </span>
-                    <span className="artifact-meta">
-                      {t('artifacts.size')}: {formatSize(a.sizeBytes)}
-                    </span>
-                    <span className="artifact-meta nowrap-ellipsis">{new Date(a.createdAt).toLocaleString()}</span>
-                    <button
-                      type="button"
-                      className="button-ghost artifact-download"
-                      disabled={!a.downloadable || downloadingId === a.id}
-                      title={a.downloadable ? t('artifacts.downloadHint') : t('artifacts.downloadBlocked')}
-                      onClick={() => void onDownload(a)}
-                    >
-                      {downloadingId === a.id ? t('artifacts.downloading') : t('artifacts.download')}
-                    </button>
+                      <span className={`artifact-badge artifact-${a.format}`}>{t(FORMAT_KEY[a.format] ?? a.format)}</span>
+                    </div>
+                    <dl className="library-card-meta">
+                      <div>
+                        <dt>{t('artifacts.duration')}</dt>
+                        <dd>{a.durationMs > 0 ? formatDuration(a.durationMs) : t('common.none')}</dd>
+                      </div>
+                      <div>
+                        <dt>{t('artifacts.size')}</dt>
+                        <dd>{formatSize(a.sizeBytes)}</dd>
+                      </div>
+                      <div>
+                        <dt>{t('library.createdAt')}</dt>
+                        <dd>{new Date(a.createdAt).toLocaleString()}</dd>
+                      </div>
+                    </dl>
+                    <div className="library-card-actions">
+                      {canPreview(a) && (
+                        <button
+                          type="button"
+                          className="button-ghost artifact-preview"
+                          disabled={previewLoadingId === a.id}
+                          title={t('library.previewHint')}
+                          onClick={() => void onPreview(a)}
+                        >
+                          {previewLoadingId === a.id ? t('library.previewing') : t('library.preview')}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="button-ghost artifact-download"
+                        disabled={!a.downloadable || downloadingId === a.id}
+                        title={a.downloadable ? t('artifacts.downloadHint') : t('artifacts.downloadBlocked')}
+                        onClick={() => void onDownload(a)}
+                      >
+                        {downloadingId === a.id ? t('artifacts.downloading') : t('artifacts.download')}
+                      </button>
+                      {canDelete && (
+                        <button
+                          type="button"
+                          className="button-ghost danger artifact-delete"
+                          disabled={deletingId === a.id}
+                          title={t('library.deleteHint')}
+                          onClick={() => void onDelete(a)}
+                        >
+                          {deletingId === a.id ? t('library.deleting') : t('library.delete')}
+                        </button>
+                      )}
+                    </div>
                     {/* A26：不可下载时必须说明原因，不留"点了没反应"的假按钮。 */}
-                    {!a.downloadable && <span className="artifact-meta muted">{t('artifacts.downloadBlockedShort')}</span>}
+                    {!a.downloadable && <p className="library-card-blocked">{t('artifacts.downloadBlockedShort')}</p>}
                   </li>
                 ))}
               </ul>
             )}
+            {notice && <p className="form-notice" role="status">{notice}</p>}
             {downloadError && <p className="form-error" role="alert">{downloadError}</p>}
+            {previewError && <p className="form-error" role="alert">{previewError}</p>}
           </section>
         </>
       )}
+
+      {preview && (
+        <div
+          className="modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t('library.previewTitle')}
+          onClick={() => setPreview(null)}
+        >
+          {/* 阻止冒泡：点击弹层内容不应关闭。 */}
+          <section className="modal-card library-preview" onClick={(e) => e.stopPropagation()}>
+            <header>
+              <div>
+                <span className="eyebrow">{t('library.previewEyebrow')}</span>
+                <h2>{preview.artifact.projectName || preview.artifact.projectId.slice(0, 8)}</h2>
+              </div>
+              <button type="button" onClick={() => setPreview(null)}>{t('common.close')}</button>
+            </header>
+            {preview.kind === 'video' ? (
+              <video className="library-preview-video" src={preview.url} controls playsInline preload="metadata" />
+            ) : (
+              <div className="library-preview-player">
+                <Player manifest={preview.manifest} embedded />
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {confirmDialogEl}
     </div>
   );
 }

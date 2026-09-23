@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { getPolicy, getQuota, getStorageUsage, getUsage, type ClientIdentity } from '../api';
 import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
-import type { StorageUsage, TenantPolicy, TenantQuota, TenantUsage } from '../types';
+import { can } from '../permissions';
+import type { Role, StorageUsage, TenantPolicy, TenantQuota, TenantUsage } from '../types';
 
 // 后端走 Protobuf-JSON：int64 字段编码为字符串，且零值字段会被省略（undefined）。
 // 这里统一按数字解析，缺失/非法值按 0 处理，避免 undefined.toFixed 抛错导致整页白屏。
@@ -24,8 +25,16 @@ function fmtMinutes(seconds: number): string {
   return s <= 0 ? '0' : `${Math.round((s / 60) * 10) / 10}`;
 }
 
-export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
+// 金额展示统一保留 2 位小数（用户计费金额 / 供应商成本），缺失或非法按 0 处理。
+function fmtMoney(value: number): string {
+  return (Number(value) || 0).toFixed(2);
+}
+
+export function SettingsUsage({ identity, role }: { identity: ClientIdentity; role?: Role }) {
   const { t } = useI18n();
+  // 供应商成本（采买成本/毛利口径）仅 admin/owner 可见；镜像后端 tenant.go Usage 的
+  // requireRole(RoleAdmin) 门禁。role 未解析（成员体系未配置/读取失败）时放行，与服务端一致。
+  const canViewSupplierCost = can(role, 'usage.supplierCost');
   const [quota, setQuota] = useState<TenantQuota | null>(null);
   const [usage, setUsage] = useState<TenantUsage | null>(null);
   const [storage, setStorage] = useState<StorageUsage | null>(null);
@@ -112,8 +121,10 @@ export function SettingsUsage({ identity }: { identity: ClientIdentity }) {
       </section>
 
       <section className="stat-grid" aria-label={t('usage.supplierCost')}>
-        <Stat label={t('usage.userAmount')} value={usage ? `${usage.currency} ${usage.userAmount ?? 0}` : '—'} note={t('usage.byPricing')} />
-        <Stat label={t('usage.supplierCost')} value={usage ? `${usage.currency} ${usage.supplierCost ?? 0}` : '—'} note={t('usage.splitBilling')} />
+        <Stat label={t('usage.userAmount')} value={usage ? `${usage.currency} ${fmtMoney(usage.userAmount)}` : '—'} note={t('usage.byPricing')} />
+        {canViewSupplierCost && (
+          <Stat label={t('usage.supplierCost')} value={usage ? `${usage.currency} ${fmtMoney(usage.supplierCost)}` : '—'} note={t('usage.splitBilling')} />
+        )}
         <Stat label={t('usage.costUnits')} value={usage ? String(usage.costUnits ?? 0) : '—'} note={t('usage.monthlyUnits')} />
       </section>
 

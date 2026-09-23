@@ -34,16 +34,16 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 	const tenant = db.LocalTenantID
 	const project, slide, lang = "p1", "slide-1", "zh-CN"
 
-	if _, err := s.Get(ctx, tenant, project, slide, lang); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Get(ctx, tenant, project, 0, slide, lang); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("get missing should be not found, got %v", err)
 	}
 
-	rev, err := s.EnsureExists(ctx, tenant, project, slide, lang, ModeOriginal)
+	rev, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModeOriginal)
 	if err != nil || rev.Revision != 0 {
 		t.Fatalf("ensure: err=%v rev=%+v", err, rev)
 	}
 	// 幂等
-	rev2, err := s.EnsureExists(ctx, tenant, project, slide, lang, ModeOriginal)
+	rev2, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModeOriginal)
 	if err != nil || rev2.ID != rev.ID {
 		t.Fatalf("ensure idempotent: err=%v id=%s want=%s", err, rev2.ID, rev.ID)
 	}
@@ -54,7 +54,7 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 		SourceRefs:    []string{"shape-1"},
 		SourceAnchors: []SourceAnchor{{SlideID: slide, ShapeID: "shape-1", Kind: "body"}},
 	}}
-	updated, err := s.Update(ctx, tenant, project, slide, lang, 0, segs)
+	updated, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, segs)
 	if err != nil || updated.Revision != 1 || len(updated.Segments) != 1 {
 		t.Fatalf("update: err=%v rev=%+v", err, updated)
 	}
@@ -66,7 +66,7 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 	}
 
 	// 乐观锁冲突
-	if _, err := s.Update(ctx, tenant, project, slide, lang, 0, segs); err == nil {
+	if _, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, segs); err == nil {
 		t.Fatal("stale expected_revision should conflict")
 	} else {
 		var conflict *ErrConflict
@@ -79,21 +79,21 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 	}
 
 	// 状态流转 draft → approved → locked
-	if _, err := s.SetStatus(ctx, tenant, project, slide, lang, StatusApproved); err != nil {
+	if _, err := s.SetStatus(ctx, tenant, project, 0, slide, lang, StatusApproved); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if _, err := s.SetStatus(ctx, tenant, project, slide, lang, StatusLocked); err != nil {
+	if _, err := s.SetStatus(ctx, tenant, project, 0, slide, lang, StatusLocked); err != nil {
 		t.Fatalf("lock: %v", err)
 	}
 	// Legacy locks do not require a separate unlock before editing.
-	if _, err := s.Update(ctx, tenant, project, slide, lang, 0, segs); err == nil {
+	if _, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, segs); err == nil {
 		t.Fatal("locked script must still reject a stale revision")
 	}
-	edited, err := s.Update(ctx, tenant, project, slide, lang, 1, segs)
+	edited, err := s.Update(ctx, tenant, project, 0, slide, lang, 1, segs)
 	if err != nil || edited.Status != StatusDraft || edited.Revision != 2 {
 		t.Fatalf("direct edit of locked script: %+v, %v", edited, err)
 	}
-	if unlocked, err := s.SetStatus(ctx, tenant, project, slide, lang, StatusApproved); err != nil || unlocked.Status != StatusApproved {
+	if unlocked, err := s.SetStatus(ctx, tenant, project, 0, slide, lang, StatusApproved); err != nil || unlocked.Status != StatusApproved {
 		t.Fatalf("unlock = %+v, %v", unlocked, err)
 	}
 
@@ -104,14 +104,81 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 	}
 
 	// MarkAudioRevision
-	if err := s.MarkAudioRevision(ctx, tenant, project, slide, lang, 1); err != nil {
+	if err := s.MarkAudioRevision(ctx, tenant, project, 0, slide, lang, 1); err != nil {
 		t.Fatalf("mark audio: %v", err)
 	}
-	list, err := s.ListByProject(ctx, tenant, project, lang)
+	list, err := s.ListByProject(ctx, tenant, project, 0, lang)
 	if err != nil || len(list) != 1 || list[0].AudioRevision != 1 || len(list[0].Segments) != 1 {
 		t.Fatalf("list by project: err=%v list=%+v", err, list)
 	}
 	if list[0].AudioRevision >= list[0].Revision {
 		t.Fatal("editing must leave the previous audio marked stale")
 	}
+}
+
+// TestSQLiteScriptsIsolatedBySourceRevision 验证「按源版本隔离」与 legacy 回退：
+// 同一 slide_id 在不同源版本下必须是两份独立讲稿；引入隔离前的存量稿(rev=0)作为回退仍可见，
+// 且在某版本首次编辑后，该版本与 legacy 互不影响。
+func TestSQLiteScriptsIsolatedBySourceRevision(t *testing.T) {
+	ctx := context.Background()
+	s := newNarrationStore(t)
+	const tenant = db.LocalTenantID
+	const project, slide, lang = "p1", "slide-258", "zh-CN"
+
+	// legacy 存量稿（rev=0，模拟隔离前数据）。
+	if _, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModePolish); err != nil {
+		t.Fatalf("ensure legacy: %v", err)
+	}
+	if _, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, oneSeg("legacy")); err != nil {
+		t.Fatalf("update legacy: %v", err)
+	}
+
+	// v4/v5 读取都回退可见到 legacy。
+	for _, rev := range []int{4, 5} {
+		got, err := s.Get(ctx, tenant, project, rev, slide, lang)
+		if err != nil {
+			t.Fatalf("get rev=%d fallback: %v", rev, err)
+		}
+		if got.SourceRevisionNo != 0 || len(got.Segments) != 1 || got.Segments[0].DisplayText != "legacy" {
+			t.Fatalf("rev=%d expected legacy fallback, got %+v", rev, got)
+		}
+	}
+
+	// 在 v5 上首次编辑：应从 legacy 分叉，写入 v5 独立稿，legacy 保持不变。
+	cur, err := s.Get(ctx, tenant, project, 5, slide, lang)
+	if err != nil {
+		t.Fatalf("get v5: %v", err)
+	}
+	if _, err := s.Update(ctx, tenant, project, 5, slide, lang, cur.Revision, oneSeg("v5 script")); err != nil {
+		t.Fatalf("update v5: %v", err)
+	}
+
+	v5, err := s.Get(ctx, tenant, project, 5, slide, lang)
+	if err != nil || len(v5.Segments) != 1 || v5.Segments[0].DisplayText != "v5 script" {
+		t.Fatalf("v5 should be independent, got %+v err=%v", v5, err)
+	}
+	v4, err := s.Get(ctx, tenant, project, 4, slide, lang)
+	if err != nil || len(v4.Segments) != 1 || v4.Segments[0].DisplayText != "legacy" {
+		t.Fatalf("v4 should still see legacy, got %+v err=%v", v4, err)
+	}
+
+	// 在 v4 上也编辑：v4 独立成稿，legacy 仍在，v5 不受影响。
+	if _, err := s.Update(ctx, tenant, project, 4, slide, lang, v4.Revision, oneSeg("v4 script")); err != nil {
+		t.Fatalf("update v4: %v", err)
+	}
+	v4b, _ := s.Get(ctx, tenant, project, 4, slide, lang)
+	v5b, _ := s.Get(ctx, tenant, project, 5, slide, lang)
+	if v4b.Segments[0].DisplayText != "v4 script" || v5b.Segments[0].DisplayText != "v5 script" {
+		t.Fatalf("v4/v5 must stay independent: v4=%q v5=%q", v4b.Segments[0].DisplayText, v5b.Segments[0].DisplayText)
+	}
+
+	// ListByProject 每个版本各一条，且不含重复 slide。
+	list4, err := s.ListByProject(ctx, tenant, project, 4, lang)
+	if err != nil || len(list4) != 1 || list4[0].SourceRevisionNo != 4 {
+		t.Fatalf("list rev=4 should return the version row, got %+v err=%v", list4, err)
+	}
+}
+
+func oneSeg(text string) []*Segment {
+	return []*Segment{{SegmentID: "seg-01", DisplayText: text, SpokenText: text}}
 }

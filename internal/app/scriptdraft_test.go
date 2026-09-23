@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -347,6 +349,12 @@ func TestScriptDraftAddsVisualAnchorsWhenPagePNGExists(t *testing.T) {
 	if err := env.objects.Put(ctx, pageKey, bytes.NewReader([]byte("png")), objectstore.ObjectMeta{ContentType: "image/png"}); err != nil {
 		t.Fatal(err)
 	}
+	// 视觉锚点按渲染清单取图（清单是 slideId→页图的权威映射）。
+	manifest := `{"revisionNo":1,"pages":[{"slideId":"slide-1","index":0,"key":"` + pageKey.String() + `"}]}`
+	manifestKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "render", AssetID: "pages", Ext: "json"}
+	if err := env.objects.Put(ctx, manifestKey, bytes.NewReader([]byte(manifest)), objectstore.ObjectMeta{ContentType: "application/json"}); err != nil {
+		t.Fatal(err)
+	}
 	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "polish"}
 	snapBytes, _ := json.Marshal(snap)
 	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-visual", string(snapBytes), time.Time{})
@@ -368,5 +376,71 @@ func TestScriptDraftAddsVisualAnchorsWhenPagePNGExists(t *testing.T) {
 	anchors := rev.Segments[0].SourceAnchors
 	if len(anchors) != 2 || anchors[1].Kind != "visual_text" || anchors[1].Raw != "图中可见 42%" || anchors[1].Confidence != 0.8 {
 		t.Fatalf("anchors = %+v", anchors)
+	}
+}
+
+func TestScriptDraftUsesUserEditedNotes(t *testing.T) {
+	// 解析原件里该页无备注、无正文；用户后来在控制台手写了备注。
+	// 成稿必须基于用户备注（侧载 notes 文件）生成——此前 worker 只读解析原件，
+	// 该页会被判为 skipped_no_text（明明有备注却不生成讲稿）。
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","shapes":[]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	notes := project.NewPgSlideNotesStore(env.objects)
+	if err := notes.Set(ctx, appTenant, appProject, 1, "slide-1", "用户手写的备注：先讲背景，再讲结论。"); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "original"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-notes", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewScriptDraftHandler(narration.NewPGStore(env.pool), env.objects).WithSlideNotes(notes)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	if err != nil {
+		t.Fatalf("Get script: %v", err)
+	}
+	if len(rev.Segments) != 1 || !strings.Contains(rev.Segments[0].DisplayText, "用户手写的备注") {
+		t.Fatalf("segments = %+v，应基于用户编辑的备注成稿", rev.Segments)
+	}
+}
+
+func TestScriptDraftRespectsClearedUserNotes(t *testing.T) {
+	// 用户显式清空备注（空串）：覆盖解析所得原备注，该页不再成稿（保持原备注会"复活"已删内容）。
+	env := setupApp(t)
+	ctx := context.Background()
+	docKey := objectstore.ObjectKey{TenantID: appTenant, ProjectID: appProject, Revision: "src-01", AssetType: "document", AssetID: "extracted", Ext: "json"}
+	doc := `{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1","notesText":"解析所得的原备注","shapes":[]}]}`
+	if err := env.objects.Put(ctx, docKey, bytes.NewReader([]byte(doc)), objectstore.ObjectMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	notes := project.NewPgSlideNotesStore(env.objects)
+	if err := notes.Set(ctx, appTenant, appProject, 1, "slide-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "original"}
+	snapBytes, _ := json.Marshal(snap)
+	job, err := env.jobs.Create(ctx, appTenant, appProject, string(pipeline.KindScriptDraft), "draft-notes-cleared", string(snapBytes), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := &stepRecorder{}
+	handler := NewScriptDraftHandler(narration.NewPGStore(env.pool), env.objects).WithSlideNotes(notes).WithSteps(steps)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN"); !errors.Is(err, narration.ErrNotFound) {
+		t.Fatalf("cleared notes must not produce a draft, got err=%v", err)
+	}
+	if step := steps.latest["page:v1:slide-1"]; step.State != pipeline.StepSkipped {
+		t.Fatalf("page step = %+v，清空备注后应为 skipped", step)
 	}
 }

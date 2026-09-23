@@ -67,7 +67,7 @@ func TestNarrationUpdateAndConflict(t *testing.T) {
 	s := nrStore(t)
 	ctx := context.Background()
 
-	rev, err := s.EnsureExists(ctx, nrTenant, nrProject, nrSlide, lang, ModeOriginal)
+	rev, err := s.EnsureExists(ctx, nrTenant, nrProject, 0, nrSlide, lang, ModeOriginal)
 	if err != nil {
 		t.Fatalf("EnsureExists: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestNarrationUpdateAndConflict(t *testing.T) {
 	}
 
 	// 第一次编辑（expected=0）成功。
-	upd, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 0,
+	upd, err := s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, 0,
 		segs(seg("seg-01", "本页介绍 PCIe 5.0"), seg("seg-02", "采用 x16 通道")))
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -86,7 +86,7 @@ func TestNarrationUpdateAndConflict(t *testing.T) {
 	}
 
 	// 并发冲突：用过期 expected=0 再写 → ErrConflict 返回最新版。
-	_, err = s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 0,
+	_, err = s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, 0,
 		segs(seg("seg-01", "覆盖写入")))
 	var conflict *ErrConflict
 	if !errors.As(err, &conflict) {
@@ -100,7 +100,7 @@ func TestNarrationUpdateAndConflict(t *testing.T) {
 	}
 
 	// 正确 expected 后再次更新成功。
-	upd2, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 1,
+	upd2, err := s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, 1,
 		segs(seg("seg-01", "修改后的第一段")))
 	if err != nil {
 		t.Fatalf("Update#2: %v", err)
@@ -113,18 +113,18 @@ func TestNarrationUpdateAndConflict(t *testing.T) {
 func TestNarrationLockedScriptDirectEdit(t *testing.T) {
 	s := nrStore(t)
 	ctx := context.Background()
-	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, nrSlide, lang, ModeOriginal); err != nil {
+	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, 0, nrSlide, lang, ModeOriginal); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 0,
+	if _, err := s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, 0,
 		segs(seg("seg-1", "draft content"))); err != nil {
 		t.Fatal(err)
 	}
 	// draft → approved → locked
-	if _, err := s.SetStatus(ctx, nrTenant, nrProject, nrSlide, lang, StatusApproved); err != nil {
+	if _, err := s.SetStatus(ctx, nrTenant, nrProject, 0, nrSlide, lang, StatusApproved); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	locked, err := s.SetStatus(ctx, nrTenant, nrProject, nrSlide, lang, StatusLocked)
+	locked, err := s.SetStatus(ctx, nrTenant, nrProject, 0, nrSlide, lang, StatusLocked)
 	if err != nil {
 		t.Fatalf("lock: %v", err)
 	}
@@ -132,17 +132,17 @@ func TestNarrationLockedScriptDirectEdit(t *testing.T) {
 		t.Fatalf("locked status: %+v", locked)
 	}
 	// Revision protection remains in force for legacy locked scripts.
-	_, err = s.Update(ctx, nrTenant, nrProject, nrSlide, lang, locked.Revision-1, segs(seg("seg-1", "stale")))
+	_, err = s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, locked.Revision-1, segs(seg("seg-1", "stale")))
 	var conflict *ErrConflict
 	if !errors.As(err, &conflict) {
 		t.Fatalf("stale update: got %v, want ErrConflict", err)
 	}
-	edited, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, locked.Revision, segs(seg("seg-1", "new draft")))
+	edited, err := s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, locked.Revision, segs(seg("seg-1", "new draft")))
 	if err != nil || edited.Status != StatusDraft || edited.Revision != locked.Revision+1 {
 		t.Fatalf("direct edit: %+v, %v", edited, err)
 	}
 	// 锁定后可回到 approved，供用户重新编辑并重新生成语音。
-	unlocked, err := s.SetStatus(ctx, nrTenant, nrProject, nrSlide, lang, StatusApproved)
+	unlocked, err := s.SetStatus(ctx, nrTenant, nrProject, 0, nrSlide, lang, StatusApproved)
 	if err != nil {
 		t.Fatalf("unlock: %v", err)
 	}
@@ -154,11 +154,11 @@ func TestNarrationLockedScriptDirectEdit(t *testing.T) {
 func TestNarrationUpdateStoresAndPreservesSourceAnchors(t *testing.T) {
 	s := nrStore(t)
 	ctx := context.Background()
-	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, nrSlide, lang, ModePolish); err != nil {
+	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, 0, nrSlide, lang, ModePolish); err != nil {
 		t.Fatal(err)
 	}
 	anchors := []SourceAnchor{{SlideID: nrSlide, ShapeID: "shape-1", Kind: "shape_text", Raw: "PCIe 5.0", Confidence: 1}}
-	upd, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, 0, []*Segment{{
+	upd, err := s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, 0, []*Segment{{
 		SegmentID: "seg-01", DisplayText: "介绍 PCIe 5.0", SpokenText: "介绍 PCIe 5.0",
 		SourceRefs: []string{nrSlide + "/shape-1"}, SourceAnchors: anchors,
 	}})
@@ -170,7 +170,7 @@ func TestNarrationUpdateStoresAndPreservesSourceAnchors(t *testing.T) {
 	}
 
 	// User-facing Update sends nil anchors; store preserves server provenance by segment_id.
-	upd2, err := s.Update(ctx, nrTenant, nrProject, nrSlide, lang, upd.Revision, []*Segment{{
+	upd2, err := s.Update(ctx, nrTenant, nrProject, 0, nrSlide, lang, upd.Revision, []*Segment{{
 		SegmentID: "seg-01", DisplayText: "用户修改 PCIe 5.0", SpokenText: "用户修改 PCIe 5.0",
 		SourceRefs: []string{nrSlide + "/shape-1"},
 	}})

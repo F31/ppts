@@ -53,6 +53,15 @@ func (s *artifactStoreStub) ListAll(_ context.Context, tenantID string) ([]*arti
 	return []*artifact.Artifact{s.created}, nil
 }
 
+// Delete 对应成品库删除（artifact.Store 接口新增方法）。
+func (s *artifactStoreStub) Delete(_ context.Context, tenantID, id string) error {
+	if s.created == nil || s.created.TenantID != tenantID || s.created.ID != id {
+		return artifact.ErrNotFound
+	}
+	s.created = nil
+	return nil
+}
+
 func exportJob(t *testing.T, snapshot ExportSnapshot) *pipeline.Job {
 	t.Helper()
 	b, err := json.Marshal(snapshot)
@@ -174,49 +183,44 @@ func TestExportHandlerPublishesWebProjectArtifact(t *testing.T) {
 	}
 }
 
-// TestSubtitleForBurningUsesTheSameTimelineBundle 覆盖烧录字幕的来源不变式：
-// 字幕必须取自**同一个时间轴产物**的 SRT（与下载的 .srt 同源），未勾选烧录时不得读对象。
-// 不需要 ffmpeg，因此在本机（无 ffmpeg）也会真正执行。
-func TestSubtitleForBurningUsesTheSameTimelineBundle(t *testing.T) {
+// TestSubtitleASSForBurningDerivesFromTimeline 覆盖烧录字幕的来源不变式：
+// 烧进视频的字幕由**同一时间轴 cue** 渲染为 ASS（逐行轮换 + 朗读高亮，与下载的 .srt 同源内容），
+// 未勾选烧录时不渲染。不需要 ffmpeg，因此在本机（无 ffmpeg）也会真正执行。
+func TestSubtitleASSForBurningDerivesFromTimeline(t *testing.T) {
 	objects := objectstore.NewLocal(t.TempDir(), nil)
 	bundle, _ := seedTimelineBundle(t, objects)
 	handler := NewExportHandler(&artifactStoreStub{}, &stepRecorder{}, objects, nil)
-	job := exportJob(t, ExportSnapshot{Format: artifact.FormatMP4, TimelineKey: "unused"})
 
-	// 未勾选 → 不读对象、返回 nil。
-	got, err := handler.subtitleForBurning(context.Background(), job, ExportSnapshot{}, &bundle)
+	got, err := handler.subtitleASSForBurning(ExportSnapshot{}, &bundle)
 	if err != nil {
-		t.Fatalf("subtitleForBurning: %v", err)
+		t.Fatalf("subtitleASSForBurning: %v", err)
 	}
 	if got != nil {
 		t.Fatalf("subtitle = %q, want nil when burning is off", got)
 	}
 
-	// 勾选 → 返回该时间轴产物里的 SRT 原文。
-	got, err = handler.subtitleForBurning(context.Background(), job, ExportSnapshot{BurnSubtitles: true}, &bundle)
+	got, err = handler.subtitleASSForBurning(ExportSnapshot{BurnSubtitles: true, Width: 1920, Height: 1080}, &bundle)
 	if err != nil {
-		t.Fatalf("subtitleForBurning: %v", err)
+		t.Fatalf("subtitleASSForBurning: %v", err)
 	}
-	srtKey, _ := objectstore.Parse(bundle.SRTKey)
-	if want := readAll(t, objects, srtKey); !bytes.Equal(got, want) {
-		t.Fatalf("subtitle mismatch\n got: %q\nwant: %q", got, want)
-	}
-	if !bytes.Contains(got, []byte("字幕")) {
+	if !bytes.Contains(got, []byte("字")) || !bytes.Contains(got, []byte("幕")) {
 		t.Fatalf("subtitle should carry the narration text, got %q", got)
+	}
+	if !bytes.Contains(got, []byte("Dialogue:")) || !bytes.Contains(got, []byte("\\k")) {
+		t.Fatalf("subtitle should be ASS with karaoke dialogue events, got %q", got)
 	}
 }
 
-// TestSubtitleForBurningFailsWhenSRTIsMissing 确保字幕读取失败时明确报错，
+// TestSubtitleASSForBurningFailsWithoutSubtitles 确保没有字幕时明确报错，
 // 而不是让编码器拿到空字幕、静默产出无字幕视频（A26）。
-func TestSubtitleForBurningFailsWhenSRTIsMissing(t *testing.T) {
+func TestSubtitleASSForBurningFailsWithoutSubtitles(t *testing.T) {
 	objects := objectstore.NewLocal(t.TempDir(), nil)
 	handler := NewExportHandler(&artifactStoreStub{}, &stepRecorder{}, objects, nil)
-	job := exportJob(t, ExportSnapshot{Format: artifact.FormatMP4, TimelineKey: "unused"})
-	missing := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration-job", AssetType: "subtitle", AssetID: "nope", Ext: "srt"}
-	_, err := handler.subtitleForBurning(context.Background(), job, ExportSnapshot{BurnSubtitles: true},
-		&TimelineAsset{SRTKey: missing.String()})
-	if err == nil {
-		t.Fatal("missing SRT must fail the export rather than silently burn nothing")
+	if _, err := handler.subtitleASSForBurning(ExportSnapshot{BurnSubtitles: true}, &TimelineAsset{}); err == nil {
+		t.Fatal("missing timeline must fail the export rather than silently burn nothing")
+	}
+	if _, err := handler.subtitleASSForBurning(ExportSnapshot{BurnSubtitles: true}, &TimelineAsset{Timeline: &media.Timeline{}}); err == nil {
+		t.Fatal("timeline without cues must fail")
 	}
 }
 

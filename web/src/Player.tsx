@@ -338,7 +338,10 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
       case 'ArrowUp':
       case 'ArrowDown': {
         if (isTextInput) return;
-        // 方向键翻页（全屏/内嵌一致）：左右与上下都切上一页/下一页。
+        // 内嵌在编辑器（ProjectEditor）时，方向键翻页由父级基于真实页面列表接管
+        // （缩略图/阅览区/讲稿栏联动，全屏下依然生效），这里不能重复执行以免一次按键翻两页。
+        if (embedded) return;
+        // 方向键翻页（全屏/独立页一致）：左右与上下都切上一页/下一页。
         event.preventDefault();
         const delta = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
         stepSlide(delta);

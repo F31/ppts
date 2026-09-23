@@ -33,8 +33,10 @@ export type Capability =
   | 'public.recall'
   | 'tenant.danger'
   | 'library.view'
+  | 'artifact.delete'
   | 'project.organize'
-  | 'project.share';
+  | 'project.share'
+  | 'usage.supplierCost';
 
 // minRole：每项能力的最低角色，逐条对齐服务端校验点。
 // | capability          | 最低角色 | 服务端依据                                                        |
@@ -78,10 +80,14 @@ export const minRole: Record<Capability, Role> = {
   'public.recall': 'ROLE_ADMIN',
   'tenant.danger': 'ROLE_OWNER',
   'library.view': 'ROLE_OWNER',
+  // 成品库删除（DELETE /artifacts/{id}）与跨项目成品库曝光同门禁（owner）。
+  'artifact.delete': 'ROLE_OWNER',
   'project.organize': 'ROLE_EDITOR',
   // 私密分享写入（邀请协作者 / 生成链接 / 撤回）由 collab.go 的 requireRole RoleEditor 守护；
   // 读取（看协作者列表、看链接列表）只要求已认证，与后端一致。
-  'project.share': 'ROLE_EDITOR'
+  'project.share': 'ROLE_EDITOR',
+  // 供应商成本（采买成本/毛利口径）仅 admin/owner 可见；backend tenant.go Usage 同款门禁。
+  'usage.supplierCost': 'ROLE_ADMIN'
 };
 
 export function roleRank(role: Role | undefined): number {

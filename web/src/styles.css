@@ -429,9 +429,11 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .col-actions .button-ghost.danger:hover { color: #f87171; }
 .cell-sub { color: var(--text-dim); font-size: 11px; }
 .project-detail-row td { background: var(--bg-elevated); padding: 12px; }
-.nested-table { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; width: 100%; max-width: 960px; }
-.nested-table th, .nested-table td { font-size: 12px; }
-.nested-table td.col-ppt-name { max-width: 300px; overflow: hidden; }
+.nested-table { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 10px; overflow: hidden; width: 100%; }
+.nested-table th, .nested-table td { font-size: 12px; white-space: nowrap; }
+.nested-table td.col-ppt-name { max-width: 300px; overflow: hidden; white-space: normal; }
+.nested-table td.col-ppt-name .ppt-name-wrap { max-width: 300px; }
+.nested-table .col-actions { text-align: right; white-space: nowrap; }
 .block-sub { display: block; margin-top: 2px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cell-project { color: #a9e7ff; text-decoration: none; }
 .nowrap-ellipsis { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -838,7 +840,12 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 }
 
 /* B5-M2 跨项目成品库（/library） */
-.library-filters .filter-row { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-end; }
+/* 筛选元素要求单行排列：不换行；筛选器数量固定（格式/项目/时间 + 计数），
+   项目筛选用可搜索组合框，避免项目多时下拉过长。窄屏仍允许换行以免溢出。 */
+.library-filters .filter-row { display: flex; flex-wrap: nowrap; gap: 16px; align-items: flex-end; }
+@media (max-width: 860px) {
+  .library-filters .filter-row { flex-wrap: wrap; }
+}
 .filter-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
 .library-select {
   font: inherit;
@@ -849,23 +856,98 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
   color: var(--text-body);
   min-height: 38px;
 }
-.library-count { margin-left: auto; align-self: center; color: var(--text-faint); font-size: 13px; }
-.library-grid { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.library-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1.4fr) auto auto auto minmax(160px, 1.4fr) auto auto;
+.library-count { margin-left: auto; align-self: center; color: var(--text-faint); font-size: 13px; white-space: nowrap; }
+
+/* 项目筛选组合框：触发器 + 搜索 + 可滚动列表。 */
+.project-filter { position: relative; }
+.project-filter-trigger {
+  display: inline-flex;
   align-items: center;
-  gap: 14px;
-  padding: 10px 12px;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 180px;
+  max-width: 260px;
+  cursor: pointer;
+  text-align: left;
+}
+.project-filter-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.project-filter-caret { flex: none; color: var(--text-faint); }
+.project-filter-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  width: max(230px, 100%);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-panel);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+.project-filter-search { width: 100%; padding: 7px 8px; font-size: 13px; }
+.project-filter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 264px;
+  overflow-y: auto;
+  display: grid;
+  gap: 2px;
+}
+.project-filter-list button {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text-body);
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-filter-list button.active { background: var(--bg-inset); }
+.project-filter-list button.selected { background: rgba(103, 232, 249, .14); color: #7dd3fc; font-weight: 700; }
+.project-filter-empty { padding: 8px; color: var(--text-faint); font-size: 12px; }
+
+/* 卡片式成品列表：自适应列宽，卡片内展示项目/格式/时长/大小/导出时间与操作。 */
+.library-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+.library-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg-row);
 }
+.library-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.library-card-head .library-proj-link { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-card-meta { margin: 0; display: grid; gap: 6px; }
+.library-card-meta > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.library-card-meta dt { color: var(--text-faint); font-size: 12px; }
+.library-card-meta dd { margin: 0; color: var(--text-body); font-size: 13px; text-align: right; }
+.library-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+.library-card-actions .button-ghost { padding: 6px 12px; }
+.library-card-blocked { margin: 0; font-size: 12px; color: var(--text-faint); }
 .library-proj-link { color: var(--accent); text-decoration: none; font-weight: 600; }
 .library-proj-link:hover { text-decoration: underline; }
-@media (max-width: 720px) {
-  .library-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-}
+.form-notice { margin: 10px 0 0; padding: 8px 10px; border-radius: 10px; background: rgba(103, 232, 249, .12); color: #7dd3fc; font-size: 13px; }
+/* 成品库内嵌预览：视频与播放器需要比表单弹层更宽的画面区（弹层结构复用 .modal-card）。 */
+.library-preview { width: min(960px, 100%); }
+.library-preview-video { width: 100%; display: block; border-radius: 10px; background: #000; }
+.library-preview-player { border-radius: 10px; overflow: hidden; }
 
 /* ============================================================
    B5-M1 命令面板（Cmd/Ctrl+K）

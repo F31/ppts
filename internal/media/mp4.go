@@ -20,10 +20,13 @@ var ErrFFmpegUnavailable = errors.New("media: ffmpeg or ffprobe not found")
 // 单独作为哨兵错误：调用方据此给出「明确不可用 + 原因」，而不是让用户拿到一段没有字幕的视频（A26）。
 var ErrSubtitlesUnavailable = errors.New("media: ffmpeg lacks the subtitles filter (libass)")
 
-// subtitleFileName 是烧录用字幕在工作目录内的固定文件名。
+// subtitleFileName 是烧录用字幕在工作目录内的固定文件名（SRT 回退路径）。
 // 以 basename（而非绝对路径）引用：filtergraph 中的路径转义（Windows 盘符冒号、反斜杠）极易出错，
 // 改用相对路径 + exec.Cmd.Dir 可完全规避。文件名由服务端生成，不含需转义字符。
 const subtitleFileName = "subtitles.srt"
+
+// subtitleASSFileName 是烧录用 ASS 字幕的固定文件名（逐行轮换 + 朗读位置高亮路径）。
+const subtitleASSFileName = "subtitles.ass"
 
 // MP4EncodeOptions 是 MP4 静态画面合成参数（G0-3 最小链路；G1 起由时间轴驱动）。
 // 结果 must 通过 ffprobe + 抽帧验证（V4.0 §9.2）。
@@ -37,9 +40,12 @@ type MP4EncodeOptions struct {
 	PageDurationsMS []int64
 	AudioWAV        []byte  // 可选：音频（WAV）；nil 时用静音轨填充
 	Totals          float64 // 总时长（秒）显式给定；0 = len(PagePNGs)/FPS
-	// BurnSubtitles 为 true 时把 SubtitleSRT 压进画面（设计方案 V1_6 §338「字幕烧录选项」）。
+	// BurnSubtitles 为 true 时把 SubtitleASS（优先）或 SubtitleSRT 压进画面
+	// （设计方案 V1_6 §338「字幕烧录选项」）。
 	BurnSubtitles bool
-	// SubtitleSRT 为 UTF-8 编码的 SRT 内容；BurnSubtitles 为 true 时必填（缺失即报错，不静默降级）。
+	// SubtitleASS 为 UTF-8 编码的 ASS 内容（逐行轮换 + 朗读高亮）；优先于 SubtitleSRT。
+	SubtitleASS []byte
+	// SubtitleSRT 为 UTF-8 编码的 SRT 内容（回退路径）；BurnSubtitles 为 true 时二者必有一。
 	SubtitleSRT []byte
 	// SubtitleFontName 为烧录时锁定的字体族名（fontconfig family），经 subtitles 滤镜的
 	// force_style=FontName=... 注入；非空时绕过 fontconfig 默认选择，保证中文渲染在各环境一致
@@ -118,6 +124,8 @@ type encodeInputs struct {
 	PagePattern string
 	// AudioFile 非空 = 使用该 WAV；空 = 由 lavfi 生成静音轨。
 	AudioFile string
+	// SubtitleFile 为工作目录内字幕文件的 basename；空 = subtitleFileName（SRT）。
+	SubtitleFile string
 }
 
 // compileEncodeArgs 由编码选项与输入落点构造完整的 ffmpeg 参数与目标总时长。
@@ -135,7 +143,7 @@ func compileEncodeArgs(opts MP4EncodeOptions, in encodeInputs) ([]string, float6
 	if variablePageTiming && opts.Totals > 0 {
 		return nil, 0, errors.New("media: PageDurationsMS and Totals are mutually exclusive")
 	}
-	if opts.BurnSubtitles && len(opts.SubtitleSRT) == 0 {
+	if opts.BurnSubtitles && len(opts.SubtitleASS) == 0 && len(opts.SubtitleSRT) == 0 {
 		return nil, 0, errors.New("media: burn subtitles requested without subtitle data")
 	}
 	if len(in.PageFiles) != len(opts.PagePNGs) {
@@ -208,7 +216,11 @@ func compileEncodeArgs(opts MP4EncodeOptions, in encodeInputs) ([]string, float6
 	subtitle := ""
 	if opts.BurnSubtitles {
 		// 相对 basename（cwd = in.WorkDir），规避 filtergraph 路径转义；字体名锁定见 subtitleStage。
-		subtitle = subtitleStage(opts.SubtitleFontName)
+		name := in.SubtitleFile
+		if name == "" {
+			name = subtitleFileName
+		}
+		subtitle = subtitleStage(opts.SubtitleFontName, name)
 	}
 	if variablePageTiming {
 		var filter strings.Builder
@@ -240,19 +252,21 @@ func compileEncodeArgs(opts MP4EncodeOptions, in encodeInputs) ([]string, float6
 		args = append(args, "-vf", vf)
 	}
 	args = append(args, "-t", strconv.FormatFloat(total, 'f', 6, 64))
+	// moov 前置：浏览器 <video> 无需下载完整文件即可起播/拖动（配合对象端点的 Range 支持）。
+	args = append(args, "-movflags", "+faststart")
 	args = append(args, opts.OutPath)
 	return args, total, nil
 }
 
 // Encode 由页面图序列合成 MP4。页面图写入临时目录以 img-%d.png 命名，
 // 经输入序列喂给 FFmpeg；画面在目标框内等比适配留边（不拉伸，V4.0 §3.4）。
-// BurnSubtitles 为 true 时把 SubtitleSRT 压进画面（ffmpeg 需带 libass）。
+// BurnSubtitles 为 true 时把 SubtitleASS（优先）或 SubtitleSRT 压进画面（ffmpeg 需带 libass）。
 func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4EncodeResult, error) {
 	if len(opts.PagePNGs) == 0 {
 		return nil, errors.New("media: no page images to encode")
 	}
 	if opts.BurnSubtitles {
-		if len(opts.SubtitleSRT) == 0 {
+		if len(opts.SubtitleASS) == 0 && len(opts.SubtitleSRT) == 0 {
 			return nil, errors.New("media: burn subtitles requested without subtitle data")
 		}
 		// 能力前置校验：缺 libass 时明确失败，不产出无字幕的视频（A26）。
@@ -308,8 +322,17 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 		in.AudioFile = audio
 	}
 	if opts.BurnSubtitles {
-		if err := os.WriteFile(filepath.Join(work, subtitleFileName), opts.SubtitleSRT, 0o644); err != nil {
-			return nil, err
+		// ASS 优先（逐行轮换 + 朗读高亮）；否则回退 SRT。
+		if len(opts.SubtitleASS) > 0 {
+			in.SubtitleFile = subtitleASSFileName
+			if err := os.WriteFile(filepath.Join(work, subtitleASSFileName), opts.SubtitleASS, 0o644); err != nil {
+				return nil, err
+			}
+		} else {
+			in.SubtitleFile = subtitleFileName
+			if err := os.WriteFile(filepath.Join(work, subtitleFileName), opts.SubtitleSRT, 0o644); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -333,9 +356,9 @@ func millisecondsDecimal(milliseconds int64) string {
 
 // subtitleStage 构造字幕烧录滤镜段。fontName 非空时追加 force_style=FontName=... 锁定字体，
 // 避免依赖 fontconfig 默认选择导致中文渲染结果在各部署环境不一致（V1_6 §338）。
-// 字幕以固定 basename 相对引用（见 subtitleFileName），规避 filtergraph 路径转义。
-func subtitleStage(fontName string) string {
-	s := "subtitles=filename=" + subtitleFileName
+// 字幕以固定 basename 相对引用（file 为 work 目录内的文件名），规避 filtergraph 路径转义。
+func subtitleStage(fontName, file string) string {
+	s := "subtitles=filename=" + file
 	if fontName == "" {
 		return s
 	}

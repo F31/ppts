@@ -192,7 +192,7 @@ func (s *storeSet) localPrincipalFor() *api.Principal {
 	if !s.isSQLite() {
 		return nil
 	}
-	return &api.Principal{TenantID: db.LocalTenantID, UserID: db.LocalUserID}
+	return &api.Principal{TenantID: db.LocalTenantID, UserID: db.LocalUserID, TenantName: db.LocalTenantName}
 }
 
 func (s *storeSet) scriptSourceStore() app.ScriptSourceStore {

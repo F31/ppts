@@ -100,6 +100,10 @@ func deckBytes(t *testing.T) []byte {
 	}); err != nil {
 		t.Fatalf("AddTextBox: %v", err)
 	}
+	// 备注是「原文模式」成稿的唯一素材（无备注页不生成讲稿），夹具需带备注供成稿链路测试使用。
+	if err := slide.SetSpeakerNotes("本页讲解 PCIe 5.0 的入库链路。"); err != nil {
+		t.Fatalf("SetSpeakerNotes: %v", err)
+	}
 	var buf bytes.Buffer
 	if _, err := p.Write(context.Background(), &buf); err != nil {
 		t.Fatalf("Write: %v", err)

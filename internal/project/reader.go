@@ -91,6 +91,11 @@ func (g *GoPPTXReader) extract(p *pptx.Presentation) (*Document, error) {
 			Name:      s.Name(),
 			HasTiming: s.HasTiming(),
 		}
+		// 隐藏页（p:sldId@show="0"）：放映与 PDF 导出都会跳过。读取失败则保持 nil（无法确定），
+		// 消费方（如渲染页对齐）按"可见"保守处理。
+		if hidden, err := s.Hidden(); err == nil {
+			pg.Hidden = &hidden
+		}
 		if notes, err := s.SpeakerNotesText(); err == nil {
 			pg.NotesText = notes
 		}

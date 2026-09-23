@@ -36,7 +36,7 @@ const emptyForm: FormState = {
   baseUrl: 'https://api.siliconflow.cn',
   apiKey: '',
   model: 'FunAudioLLM/CosyVoice2-0.5B',
-  visionModel: 'Qwen/Qwen3-VL-8B-Instruct',
+  visionModel: '',
   voice: '',
   isDefault: true
 };
@@ -99,8 +99,8 @@ export function GatewaySettings({
           baseUrl: form.baseUrl,
           apiKey: form.apiKey,
           model: form.model,
-          visionModel: form.visionModel || undefined,
-          voice: form.voice || undefined,
+          visionModel: form.kind === 'llm' ? form.visionModel || undefined : undefined,
+          voice: form.kind === 'tts' ? form.voice || undefined : undefined,
           isDefault: form.isDefault
         });
       } else {
@@ -111,8 +111,8 @@ export function GatewaySettings({
           baseUrl: form.baseUrl,
           apiKey: form.apiKey,
           model: form.model,
-          visionModel: form.visionModel || undefined,
-          voice: form.voice || undefined,
+          visionModel: form.kind === 'llm' ? form.visionModel || undefined : undefined,
+          voice: form.kind === 'tts' ? form.voice || undefined : undefined,
           isDefault: form.isDefault
         });
       }
@@ -251,15 +251,7 @@ export function GatewaySettings({
           </label>
         </div>
         <div className="form-row">
-          {form.kind === 'llm' ? (
-            <label>
-              {t('gateway.visionLabel')}
-              <input
-                value={form.visionModel}
-                onChange={(e) => setForm((f) => f && { ...f, visionModel: e.target.value })}
-              />
-            </label>
-          ) : (
+          {form.kind === 'tts' ? (
             <label>
               {t('gateway.voiceLabel')}
               <input
@@ -267,6 +259,16 @@ export function GatewaySettings({
                 placeholder={t('gateway.voicePlaceholder')}
                 onChange={(e) => setForm((f) => f && { ...f, voice: e.target.value })}
               />
+            </label>
+          ) : (
+            <label>
+              {t('gateway.visionLabel')}
+              <input
+                value={form.visionModel}
+                placeholder="Qwen/Qwen3-VL-8B-Instruct"
+                onChange={(e) => setForm((f) => f && { ...f, visionModel: e.target.value })}
+              />
+              <span className="form-hint">{t('gateway.visionHint')}</span>
             </label>
           )}
         </div>
@@ -337,7 +339,7 @@ export function GatewaySettings({
                     <span className={`health-tag ${health}`}>{t(`gateway.health${healthKeySuffix[health]}`)}</span>
                     <small>
                       {gw.baseUrl} · {gw.model}
-                      {gw.visionModel ? ` · ${gw.visionModel}` : ''}
+                      {gw.kind === 'llm' && gw.visionModel ? ` · ${gw.visionModel}` : ''}
                     </small>
                     <small>
                       {t('gateway.providerLabel')}: {gw.provider || defaultProvider}

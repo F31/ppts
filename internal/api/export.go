@@ -50,6 +50,11 @@ func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[p
 	if err := ensureTenantKey(p.TenantID, req.Msg.GetTimelineKey()); err != nil {
 		return nil, err
 	}
+	// 时间轴必须属于本次导出的项目：跨项目时间轴会产出"内容来自 A、却挂在 B 名下"的成品，
+	// 成品库预览时页图/字幕与项目对不上（历史事故）。此处显式拒绝。
+	if err := ensureProjectKey(p.TenantID, projectID, req.Msg.GetTimelineKey()); err != nil {
+		return nil, err
+	}
 	pageKeys := append([]string(nil), req.Msg.GetPagePngKeys()...)
 	if format == artifact.FormatMP4 && len(pageKeys) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("page_png_keys are required for mp4 export"))
@@ -143,6 +148,21 @@ func ensureTenantKey(tenantID, rawKey string) error {
 	}
 	if err := key.EnsureTenant(tenantID); err != nil {
 		return connect.NewError(connect.CodePermissionDenied, err)
+	}
+	return nil
+}
+
+// ensureProjectKey 校验对象键属于指定项目，避免跨项目引用（成品绑定了别的项目的时间轴）。
+func ensureProjectKey(tenantID, projectID, rawKey string) error {
+	key, err := objectstore.Parse(rawKey)
+	if err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	if err := key.EnsureTenant(tenantID); err != nil {
+		return connect.NewError(connect.CodePermissionDenied, err)
+	}
+	if key.ProjectID != projectID {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("timeline_key does not belong to the project"))
 	}
 	return nil
 }

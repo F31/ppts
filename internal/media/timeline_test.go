@@ -120,6 +120,51 @@ func TestRenderSRTAndWebVTTUseSameCues(t *testing.T) {
 	}
 }
 
+// TestRenderASSSplitsLinesAndKaraoke 守护烧录字幕的逐行轮换 + 朗读高亮：
+// 每个 cue 的文本按换行/长度切成多个 Dialogue 事件（一行一个），行内用 \k 卡拉OK 标签
+// 让已朗读部分变色（与网页播放器一致）；ASS 特殊字符需转义。
+func TestRenderASSSplitsLinesAndKaraoke(t *testing.T) {
+	text := "第一行内容测试\n第二行内容测试\n第三行内容测试"
+	runes := []rune(text)
+	chars := make([]CharCue, len(runes))
+	for i, r := range runes {
+		start := int64(200_000 + i*100_000)
+		chars[i] = CharCue{StartUS: start, EndUS: start + 100_000, Char: string(r)}
+	}
+	cues := []SubtitleCue{{
+		SlideID: "s1", SegmentID: "a",
+		StartUS: 200_000, EndUS: 200_000 + int64(len(runes))*100_000,
+		Text: text, Chars: chars,
+	}}
+	ass, err := RenderASS(cues, ASSOptions{PlayResX: 1920, PlayResY: 1080})
+	if err != nil {
+		t.Fatalf("RenderASS: %v", err)
+	}
+	s := string(ass)
+	parts := strings.Split(s, "Dialogue: ")
+	if got := len(parts) - 1; got != 3 {
+		t.Fatalf("dialogue lines = %d, want 3\n%s", got, s)
+	}
+	if !strings.Contains(parts[1], "{\\k") {
+		t.Fatalf("missing karaoke tags: %q", parts[1])
+	}
+	// 去掉行内 \k 卡拉OK标签后应为该行纯文本（每字符 100ms → \k10）。
+	firstLine := strings.ReplaceAll(parts[1], "{\\k10}", "")
+	if !strings.Contains(firstLine, "第一行内容测试") || strings.Contains(firstLine, "第二行") {
+		t.Fatalf("first dialogue should contain only its own line: %q", firstLine)
+	}
+
+	escaped, err := RenderASS([]SubtitleCue{{StartUS: 0, EndUS: 1_000_000, Text: "a{b}c\\d"}}, ASSOptions{})
+	if err != nil {
+		t.Fatalf("RenderASS escape: %v", err)
+	}
+	// 去掉卡拉OK标签后校验转义：花括号与反斜杠必须被转义。
+	escapedText := strings.ReplaceAll(string(escaped), "{\\k14}", "")
+	if !strings.Contains(escapedText, "a\\{b\\}c\\\\d") {
+		t.Fatalf("ASS special chars not escaped: %q", escapedText)
+	}
+}
+
 func TestSubtitleRendererRejectsOverlap(t *testing.T) {
 	_, err := RenderWebVTT([]SubtitleCue{
 		{StartUS: 0, EndUS: 2_000, Text: "a"},

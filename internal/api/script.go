@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,23 @@ import (
 )
 
 const defaultLanguage = "zh-CN"
+
+// sourceRevisionHeader 是「当前查看的源版本」显式头。浏览器可自由设置它（Accept-Language
+// 在部分实现中受限），用于让讲稿/配音读写在正确的源版本上进行。缺失/非法 = 0（legacy）。
+const sourceRevisionHeader = "X-PPTS-Source-Revision"
+
+// requestSourceRevision 解析源版本头；缺失或非法返回 0（legacy：读路径会回退到存量稿）。
+func requestSourceRevision(header httpHeader) int {
+	raw := strings.TrimSpace(header.Get(sourceRevisionHeader))
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
 
 // ScriptService exposes the narration revision domain over Connect.
 type ScriptService struct {
@@ -50,7 +68,7 @@ func registerScriptRoutes(mux *http.ServeMux, scripts narration.Store, members m
 		if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
 			return
 		}
-		revs, err := scripts.ListByProject(r.Context(), principal.TenantID, r.PathValue("pid"), requestLanguage(r.Header))
+		revs, err := scripts.ListByProject(r.Context(), principal.TenantID, r.PathValue("pid"), requestSourceRevision(r.Header), requestLanguage(r.Header))
 		if err != nil {
 			writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 			return
@@ -144,7 +162,7 @@ func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.Get
 	if err := requireProjectSlide(req.Msg.GetProjectId(), req.Msg.GetSlideId()); err != nil {
 		return nil, err
 	}
-	rev, err := s.store.Get(ctx, p.TenantID, req.Msg.GetProjectId(), req.Msg.GetSlideId(), requestLanguage(req.Header()))
+	rev, err := s.store.Get(ctx, p.TenantID, req.Msg.GetProjectId(), requestSourceRevision(req.Header()), req.Msg.GetSlideId(), requestLanguage(req.Header()))
 	if err != nil {
 		return nil, scriptError(err)
 	}
@@ -166,7 +184,7 @@ func (s *ScriptService) Update(ctx context.Context, req *connect.Request[pptsv1.
 	if err != nil {
 		return nil, err
 	}
-	rev, err := s.store.Update(ctx, p.TenantID, req.Msg.GetProjectId(), req.Msg.GetSlideId(), requestLanguage(req.Header()), req.Msg.GetExpectedRevision(), segments)
+	rev, err := s.store.Update(ctx, p.TenantID, req.Msg.GetProjectId(), requestSourceRevision(req.Header()), req.Msg.GetSlideId(), requestLanguage(req.Header()), req.Msg.GetExpectedRevision(), segments)
 	var conflict *narration.ErrConflict
 	if errors.As(err, &conflict) {
 		return connect.NewResponse(&pptsv1.UpdateScriptResponse{Conflict: true, Latest: toProtoRevision(conflict.Latest)}), nil
@@ -188,7 +206,7 @@ func (s *ScriptService) Approve(ctx context.Context, req *connect.Request[pptsv1
 	if err := requireProjectSlide(req.Msg.GetProjectId(), req.Msg.GetSlideId()); err != nil {
 		return nil, err
 	}
-	rev, err := s.store.SetStatus(ctx, p.TenantID, req.Msg.GetProjectId(), req.Msg.GetSlideId(), requestLanguage(req.Header()), narration.StatusApproved)
+	rev, err := s.store.SetStatus(ctx, p.TenantID, req.Msg.GetProjectId(), requestSourceRevision(req.Header()), req.Msg.GetSlideId(), requestLanguage(req.Header()), narration.StatusApproved)
 	if err != nil {
 		return nil, scriptError(err)
 	}
@@ -210,7 +228,7 @@ func (s *ScriptService) Lock(ctx context.Context, req *connect.Request[pptsv1.Lo
 	if !req.Msg.GetLock() {
 		status = narration.StatusApproved
 	}
-	rev, err := s.store.SetStatus(ctx, p.TenantID, req.Msg.GetProjectId(), req.Msg.GetSlideId(), requestLanguage(req.Header()), status)
+	rev, err := s.store.SetStatus(ctx, p.TenantID, req.Msg.GetProjectId(), requestSourceRevision(req.Header()), req.Msg.GetSlideId(), requestLanguage(req.Header()), status)
 	if err != nil {
 		return nil, scriptError(err)
 	}
@@ -236,10 +254,11 @@ func (s *ScriptService) GenerateDraft(ctx context.Context, req *connect.Request[
 	mode := toDomainMode(req.Msg.GetMode())
 	snapshot := app.ScriptDraftSnapshot{
 		ProjectID: projectID, Language: requestLanguage(req.Header()), Mode: string(mode),
+		RevisionNo: requestSourceRevision(req.Header()),
 	}
 	// M3 ⑥：注入已存的"无备注页讲稿来源"选择，使 worker 在 pgInput/pgAnchors 中尊重用户显式来源。
 	if s.srcStore != nil {
-		if choices, lerr := s.srcStore.List(ctx, p.TenantID, projectID); lerr == nil && len(choices) > 0 {
+		if choices, lerr := s.srcStore.List(ctx, p.TenantID, projectID, requestSourceRevision(req.Header())); lerr == nil && len(choices) > 0 {
 			sources := make(map[string]string, len(choices))
 			customs := make(map[string]string, len(choices))
 			for slideID, choice := range choices {

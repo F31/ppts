@@ -37,7 +37,7 @@ function AppContent() {
     if (email) return email;
     // 单租户本地模式（SQLite）：后端无登录，刷新后直接以固定本地身份进入。
     const local = storedLocalIdentity();
-    if (local) return { tenantId: local.tenantId, userId: local.userId, tenantType: local.tenantType };
+    if (local) return { tenantId: local.tenantId, userId: local.userId, tenantType: local.tenantType, tenantName: local.tenantName };
     const dev = storedDevIdentity();
     const token = storedAccessToken();
     if (dev) {
@@ -54,18 +54,18 @@ function AppContent() {
 
   // 单租户本地模式自动进入：探测 /auth/config，local=true 时以固定本地身份进入，无需登录。
   // PostgreSQL 多租户模式返回 email_password（无 local 字段），不触发自动进入。
+  // 注意：必须无条件探测、不能因已有身份提前返回——否则从多租户模式切换到本地模式后，
+  // 浏览器残留的旧邮箱身份（含旧 UUID）会继续生效，界面显示的不是用户名。
   useEffect(() => {
-    if (identity) {
-      setLocalAuthDone(true);
-      return;
-    }
     let cancelled = false;
     getAuthConfig()
       .then((cfg) => {
         if (cancelled) return;
         if (cfg.local && cfg.tenant_id && cfg.user_id) {
-          saveLocalIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type });
-          setIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type });
+          // 模式已切为本地单租户：丢弃旧邮箱/开发身份（含过期 token），换为固定本地身份。
+          clearAllIdentity();
+          saveLocalIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type, tenantName: cfg.tenant_name });
+          setIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type, tenantName: cfg.tenant_name });
         }
       })
       .catch(() => {
@@ -77,7 +77,7 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
-  }, [identity]);
+  }, []);
 
   // OIDC 回调：登录成功后优先按 OIDC 身份进入。
   useEffect(() => {
@@ -224,7 +224,7 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
       }
       case 'library':
         // B5-M2 跨项目成品库：owner 级（与后端 GET /artifacts requireRole RoleOwner 一致）。
-        return guard('library.view', <Library identity={identity} />);
+        return guard('library.view', <Library identity={identity} role={role} />);
       case 'jobs':
         return <Jobs identity={identity} />;
       case 'settings':
@@ -235,9 +235,9 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
           // 词典：仅要求已认证（pronunciation.go:23-26），不做角色门控。
           case 'dictionary':
             return <SettingsDictionary identity={identity} />;
-          // 用量：仅要求已认证（tenant.go:231），不做角色门控。
+          // 用量：仅要求已认证（tenant.go:231），不做角色门控；供应商成本卡片按角色隐藏。
           case 'usage':
-            return <SettingsUsage identity={identity} />;
+            return <SettingsUsage identity={identity} role={role} />;
           // 审计：ADMIN（tenant.go:326,370）。
           case 'audit':
             return guard('audit.read', <SettingsAudit identity={identity} />);

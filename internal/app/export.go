@@ -121,6 +121,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
 		ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: int64(len(data)),
 		DurationMS: durationMS,
+		// 记录本成品绑定的时间轴（迁移 0040）：成品库内嵌预览据此构建播放清单，
+		// 保证预览内容与下载文件同源（而不是"项目最新讲解"的另一个版本）。
+		TimelineKey: snapshot.TimelineKey,
 	})
 	if err != nil {
 		return failStep(err)
@@ -259,9 +262,9 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	for _, slide := range bundle.Timeline.Slides {
 		pageDurations = append(pageDurations, (slide.EndUS-slide.StartUS)/1000)
 	}
-	// 字幕烧录（设计方案 V1_6 §338）：复用时间轴产物里的 SRT —— 画面字幕与 SRT/VTT 产物同源，
-	// 不会出现"烧进视频的字幕和下载的 .srt 不一致"。
-	subtitleSRT, err := h.subtitleForBurning(ctx, job, snapshot, bundle)
+	// 字幕烧录（设计方案 V1_6 §338）：由时间轴 cue（含字符级时间戳）渲染 ASS ——
+	// 与下载的 SRT/VTT 同源内容，但按播放器同规则逐行轮换 + 已朗读高亮，而不是一次铺满整段。
+	subtitleASS, err := h.subtitleASSForBurning(snapshot, bundle)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +273,7 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	if _, err := h.encoder.Encode(ctx, media.MP4EncodeOptions{
 		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
 		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioWAV: audio,
-		BurnSubtitles: snapshot.BurnSubtitles, SubtitleSRT: subtitleSRT,
+		BurnSubtitles: snapshot.BurnSubtitles, SubtitleASS: subtitleASS,
 		SubtitleFontName: h.subtitleFontName,
 	}); err != nil {
 		if errors.Is(err, media.ErrSubtitlesUnavailable) {
@@ -282,15 +285,28 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	return os.ReadFile(tmp)
 }
 
-// subtitleForBurning 取烧录用字幕（UTF-8 SRT）。未勾选烧录时返回 nil（不读对象）。
-// 独立成方法是为了能在无 ffmpeg 的机器上单测「字幕取自同一时间轴产物」这条不变式。
-func (h *ExportHandler) subtitleForBurning(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset) ([]byte, error) {
+// subtitleASSForBurning 取烧录用字幕（ASS：逐行轮换 + 已朗读位置高亮）。未勾选烧录时返回 nil。
+// 以时间轴 cue（含字符级时间戳）为唯一来源，内容与下载的 .srt/.vtt 同源，只是呈现方式不同。
+func (h *ExportHandler) subtitleASSForBurning(snapshot ExportSnapshot, bundle *TimelineAsset) ([]byte, error) {
 	if !snapshot.BurnSubtitles {
 		return nil, nil
 	}
-	data, err := h.readTenantObject(ctx, job.TenantID, bundle.SRTKey)
-	if err != nil {
-		return nil, fmt.Errorf("export job: read subtitles for burning: %w", err)
+	if bundle.Timeline == nil || len(bundle.Timeline.Subtitles) == 0 {
+		return nil, errors.New("export job: timeline has no subtitles to burn")
 	}
-	return data, nil
+	// 字号按输出高度缩放（1080p 约 48px）；缺省 52。
+	fontSize := 52
+	if snapshot.Height > 0 {
+		fontSize = snapshot.Height * 48 / 1080
+		if fontSize < 16 {
+			fontSize = 16
+		}
+	}
+	ass, err := media.RenderASS(bundle.Timeline.Subtitles, media.ASSOptions{
+		FontName: h.subtitleFontName, PlayResX: snapshot.Width, PlayResY: snapshot.Height, FontSize: fontSize,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("export job: render burned subtitles: %w", err)
+	}
+	return ass, nil
 }

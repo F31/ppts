@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -92,9 +93,18 @@ func runWorker() error {
 	}
 	stores.applyPriceBook(priceBook)
 	usageStore := stores.usage
-	scriptDraftHandler := app.NewScriptDraftHandler(stores.scripts, objects).WithPolisher(polisher).WithTokenAccounting(usageStore).WithSteps(jobs)
-	if vision, ok := polisher.(llm.VisionExtractor); ok {
-		scriptDraftHandler = scriptDraftHandler.WithVisualExtractor(vision)
+	scriptDraftHandler := app.NewScriptDraftHandler(stores.scripts, objects).WithPolisher(polisher).WithTokenAccounting(usageStore).WithSteps(jobs).
+		WithSlideNotes(project.NewPgSlideNotesStore(objects)).
+		WithConcurrency(envInt("PPTS_SCRIPT_DRAFT_CONCURRENCY", 3))
+	if !envBool("PPTS_SCRIPT_DRAFT_CACHE", true) {
+		scriptDraftHandler = scriptDraftHandler.WithCacheDisabled()
+	}
+	// 视觉锚点是 LLM 配置的能力开关（见 attachGateway 的 WithTenantVision）。
+	// 此 env 路径仅用于未启用网关（无 AES key）的纯环境变量部署：显式设置 PPTS_LLM_VISION_MODEL 才接入。
+	if strings.TrimSpace(os.Getenv("PPTS_LLM_VISION_MODEL")) != "" {
+		if vision, ok := polisher.(llm.VisionExtractor); ok {
+			scriptDraftHandler = scriptDraftHandler.WithVisualExtractor(vision)
+		}
 	}
 	metrics := observability.NewPipelineMetrics()
 	ttsProvider := ttsProviderFromEnv()
@@ -146,13 +156,31 @@ func runWorker() error {
 		startBackgroundLoops(ctx, stores, objects, auditStore, stdLogger)
 	}
 
-	if tenantID == "" {
-		logger.Info("worker started", "mode", "cross-tenant", "owner", owner, "driver", stores.cfg.Driver)
-	} else {
-		logger.Info("worker started", "mode", "tenant", "tenant_id", tenantID, "owner", owner, "driver", stores.cfg.Driver)
+	// 任务级并发：单进程内跑 N 个执行循环（领取已加进程内互斥，处理仍并发）。
+	// 默认 2：让「一键成稿」与「配音」等任务可并行，而不是排队；SQLite 单写者可调小到 1。
+	workerConcurrency := envInt("PPTS_WORKER_CONCURRENCY", 2)
+	if workerConcurrency < 1 {
+		workerConcurrency = 1
 	}
-	runErr := worker.Run(ctx)
-	if runErr != nil && !errors.Is(ctx.Err(), context.Canceled) {
+	if tenantID == "" {
+		logger.Info("worker started", "mode", "cross-tenant", "owner", owner, "driver", stores.cfg.Driver, "concurrency", workerConcurrency)
+	} else {
+		logger.Info("worker started", "mode", "tenant", "tenant_id", tenantID, "owner", owner, "driver", stores.cfg.Driver, "concurrency", workerConcurrency)
+	}
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	errCh := make(chan error, workerConcurrency)
+	for i := 0; i < workerConcurrency; i++ {
+		go func() { errCh <- worker.Run(runCtx) }()
+	}
+	var runErr error
+	for i := 0; i < workerConcurrency; i++ {
+		if err := <-errCh; err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
+			runErr = err
+			cancelRun() // 任一执行器致命失败即整体停机，交由上层重启/告警
+		}
+	}
+	if runErr != nil {
 		return runErr
 	}
 	return nil
@@ -261,6 +289,22 @@ func envInt(name string, fallback int) int {
 	return n
 }
 
+// envBool 读取布尔环境变量（1/true/yes/on，大小写不敏感）；缺失或非法返回 fallback。
+func envBool(name string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if raw == "" {
+		return fallback
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
 // attachGateway 接入模型网关（G3 可视化配置）：DB 有配置时优先，否则回退 env 供应商。
 // 加密密钥未配置或 DB 不可用时静默回退 env，不阻断 worker 启动。
 func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, draft *app.ScriptDraftHandler, narr *app.NarrationHandler, envPolisher llm.TextRewriter, envTTS tts.TTSProvider) {
@@ -284,14 +328,24 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 		return envPolisher, nil
 	})
 	draft.WithTenantVision(func(ctx context.Context, tenantID string) (llm.VisionExtractor, error) {
-		p, err := draftTenantPolisher(ctx, store, providers, tenantID)
+		// 视觉锚点是 LLM 配置的能力开关：该租户的 LLM 配置 enabled 且 vision_model 非空时开启，
+		// 留空即关闭（返回 nil,nil，不报错）。无需单独的类型或环境变量。
+		cfg, err := store.Resolve(ctx, tenantID, gateway.KindLLM)
+		if err != nil {
+			if errors.Is(err, gateway.ErrNotFound) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if strings.TrimSpace(cfg.VisionModel) == "" {
+			return nil, nil
+		}
+		p, err := providers.LLM(cfg)
 		if err != nil || p == nil {
 			return nil, err
 		}
-		if v, ok := p.(llm.VisionExtractor); ok {
-			return v, nil
-		}
-		return nil, errors.New("worker: LLM provider does not support vision")
+		// SiliconFlowProvider 始终实现 VisionExtractor（多模态能力由所用模型决定）。
+		return p, nil
 	})
 	narr.WithTenantProvider(func(ctx context.Context, tenantID string) (tts.TTSProvider, error) {
 		if cfg, err := store.Resolve(ctx, tenantID, gateway.KindTTS); err == nil {
@@ -303,15 +357,6 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 		return envTTS, nil
 	})
 	logger.Info("model gateway attached", "ttl", "30s")
-}
-
-// draftTenantPolisher 与 attachGateway 的 LLM 解析保持一致（供 vision 复用同一实例）。
-func draftTenantPolisher(ctx context.Context, store gateway.StoreResolver, providers *gateway.ProviderCache, tenantID string) (llm.TextRewriter, error) {
-	cfg, err := store.Resolve(ctx, tenantID, gateway.KindLLM)
-	if err != nil {
-		return nil, err
-	}
-	return providers.LLM(cfg)
 }
 
 // ttsProviderFromEnv 按 PPTS_TTS_PROVIDER 构建 TTS 供应商。

@@ -19,6 +19,9 @@ type principalKey struct{}
 type Principal struct {
 	TenantID string
 	UserID   string
+	// TenantName 仅展示用途（本地模式 /auth/config 回传，前端个人信息弹窗显示租户名）；
+	// 为空时前端回退显示 TenantID。不参与鉴权判定。
+	TenantName string
 }
 
 // TenantStatusChecker 检查租户生命周期状态（G3-4）。

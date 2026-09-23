@@ -1,12 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/usage"
 	"github.com/F31/ppts/internal/validation"
 )
@@ -56,6 +60,26 @@ type ScriptDraftHandler struct {
 	steps interface {
 		MarkStep(context.Context, pipeline.JobStep) error
 	}
+	// notes 是用户在控制台编辑过的单页备注（对象存储侧载文件）；非 nil 时覆盖解析所得备注。
+	notes project.SlideNotesStore
+	// concurrency 是逐页成稿的并发度（>1 时并行调用 LLM，显著缩短整任务墙钟时间）。
+	// <=0 视为 1（串行）。LLM 供应商限流时应调小。
+	concurrency int
+	// disableCache 关闭内容缓存。默认开启：相同（模式+语言+指令+素材）复用上次产出。
+	// 关闭后每次都会调用模型（"重新生成"想要不同措辞时可关）。
+	disableCache bool
+}
+
+// WithCacheDisabled 关闭讲稿内容缓存（默认开启）。
+func (h *ScriptDraftHandler) WithCacheDisabled() *ScriptDraftHandler {
+	h.disableCache = true
+	return h
+}
+
+// stepLister 是 steps 的可选扩展：读取任务已登记的步骤（供重试跳过已完成页）。
+// 未实现时重试会从头跑（语义正确但有重复模型调用）。
+type stepLister interface {
+	ListSteps(ctx context.Context, tenantID, jobID string) ([]pipeline.JobStep, error)
 }
 
 // draftOutcome 是单页成稿的处理结果。跳过**必须可区分原因**：此前静默 return 让
@@ -101,6 +125,9 @@ type draftInput struct {
 // "tts_segment" 同级；前端 enum.jobStepType.page 有对应文案）。
 const stepTypePage = "page"
 
+// pageStepKey 是逐页步骤的幂等键（重试时据此判断该页是否已在本任务中成功产出）。
+func pageStepKey(slideID string) string { return "page:v1:" + slideID }
+
 const maxScriptDraftRetryAttempts = 3
 
 // LLMTokenAccountant 是 script_draft 任务预占/结算 LLM token 额度所需的窄能力（G2-5）。
@@ -131,6 +158,19 @@ func (h *ScriptDraftHandler) WithSteps(s interface {
 	MarkStep(context.Context, pipeline.JobStep) error
 }) *ScriptDraftHandler {
 	h.steps = s
+	return h
+}
+
+// WithSlideNotes 注入用户备注存储：成稿时用户编辑过的备注覆盖解析所得备注（空串=显式清空）。
+func (h *ScriptDraftHandler) WithSlideNotes(n project.SlideNotesStore) *ScriptDraftHandler {
+	h.notes = n
+	return h
+}
+
+// WithConcurrency 设置逐页成稿的并发度（默认 1=串行）。>1 时并行调用 LLM，
+// 让整任务的墙钟时间随并发度下降；需注意供应商限流（可配小一些）。
+func (h *ScriptDraftHandler) WithConcurrency(n int) *ScriptDraftHandler {
+	h.concurrency = n
 	return h
 }
 
@@ -198,6 +238,23 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 	if err != nil {
 		return err
 	}
+	// 合并用户在控制台编辑过的备注（与读路径 internal/api/project.go 语义一致）：
+	// 用户备注优先于解析所得备注，空串表示显式清空。此前只有读路径合并，
+	// 成稿 worker 读的是解析原件 → 讲稿基于旧备注，且"原 PPT 无备注、用户手写备注"的页
+	// 会被判为 skipped_no_text（有备注却不生成）。
+	if h.notes != nil {
+		revisionNo := snap.RevisionNo
+		if revisionNo == 0 {
+			revisionNo = 1
+		}
+		if stored, err := h.notes.Get(ctx, job.TenantID, snap.ProjectID, revisionNo); err == nil && stored != nil {
+			for i := range pages {
+				if n, ok := stored[pages[i].SlideID]; ok {
+					pages[i].NotesText = n
+				}
+			}
+		}
+	}
 	want := map[string]bool{}
 	for _, id := range snap.SlideIDs {
 		want[id] = true
@@ -209,23 +266,117 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 		}
 		targets = append(targets, pg)
 	}
-	if len(targets) > 0 {
-		_ = pipeline.ReportProgress(ctx, 0)
+	if len(targets) == 0 {
+		return nil
 	}
-	for i, pg := range targets {
-		source := snap.Sources[pg.SlideID]
-		custom := snap.CustomSources[pg.SlideID]
-		outcome, err := h.ensureDraft(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap)
-		if err != nil {
-			if retry := pipeline.AsRetry(err); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
-				return retry.Err
+	// 重试优化：上一轮已成功/降级产出的页直接跳过，避免整任务重跑时重复调用模型（双倍耗时与费用）。
+	if job.Attempt > 0 && h.steps != nil {
+		if lister, ok := h.steps.(stepLister); ok {
+			if steps, err := lister.ListSteps(ctx, job.TenantID, job.ID); err == nil {
+				done := make(map[string]struct{}, len(steps))
+				for _, st := range steps {
+					if st.StepType == stepTypePage && (st.State == pipeline.StepSuccess || st.State == pipeline.StepDegraded) {
+						done[st.StepKey] = struct{}{}
+					}
+				}
+				if len(done) > 0 {
+					kept := targets[:0]
+					for _, pg := range targets {
+						if _, ok := done[pageStepKey(pg.SlideID)]; ok {
+							continue
+						}
+						kept = append(kept, pg)
+					}
+					targets = kept
+				}
 			}
-			return err
 		}
-		// 逐页记账：任务成功但全部跳过时，用户能从任务详情看到「跳过」而不是
-		// 一个没有任何解释的成功（A26：失败与未生效都必须可见）。
-		h.markPageStep(ctx, job, pg, outcome)
-		_ = pipeline.ReportProgress(ctx, ((i+1)*100)/len(targets))
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	_ = pipeline.ReportProgress(ctx, 0)
+	// 页图映射以渲染清单为准（渲染跳过隐藏页，按页序号推算会整体错位），逐页复用同一份清单。
+	renderKeys := h.renderKeysBySlide(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo)
+	// 按租户解析 LLM 供应商**一次**（此前每页都查一次网关库），供所有页面复用。
+	var polisher llm.TextRewriter
+	if mode != narration.ModeOriginal {
+		p, perr := h.polisherForTenant(ctx, job.TenantID)
+		if perr != nil {
+			return perr
+		}
+		polisher = p
+	}
+	vision, _ := h.visionForTenant(ctx, job.TenantID)
+
+	// 逐页成稿**有界并发**：页面之间无依赖，串行会让整任务墙钟时间 = Σ单页 LLM 延迟。
+	// 并发度可配（h.concurrency，默认 1）；低于供应商限流时调小即可。
+	concurrency := h.concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > len(targets) {
+		concurrency = len(targets)
+	}
+
+	runCtx := ctx
+	var (
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, concurrency)
+		errMu    sync.Mutex
+		dbMu     sync.Mutex // 串行化 SQLite 写：逐页步骤记录与进度上报
+		firstErr error
+		done     atomic.Int64
+		total    = int64(len(targets))
+	)
+	reportDone := func() {
+		n := done.Add(1)
+		dbMu.Lock()
+		_ = pipeline.ReportProgress(runCtx, int(n*100/total))
+		dbMu.Unlock()
+	}
+	for _, pg := range targets {
+		pg := pg
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if runCtx.Err() != nil {
+				return
+			}
+			source := snap.Sources[pg.SlideID]
+			custom := snap.CustomSources[pg.SlideID]
+			outcome, err := h.ensureDraft(runCtx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap, renderKeys, polisher, vision)
+			if err != nil {
+				// 单页失败**不牵连其它页**：记该页失败步骤后继续。整任务最终仍返回错误，
+				// 借助「重试跳过已完成页」补跑，避免一页超时就让已完成的页白跑一遍。
+				if runCtx.Err() != nil {
+					return // worker 停机/取消：不写终态，靠租约重领
+				}
+				dbMu.Lock()
+				h.markPageStepState(runCtx, job, pg, pipeline.StepFailed)
+				dbMu.Unlock()
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+				reportDone()
+				return
+			}
+			dbMu.Lock()
+			h.markPageStep(runCtx, job, pg, outcome)
+			dbMu.Unlock()
+			reportDone()
+		}()
+	}
+	wg.Wait()
+	if firstErr != nil {
+		if retry := pipeline.AsRetry(firstErr); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
+			return retry.Err
+		}
+		return firstErr
 	}
 	return nil
 }
@@ -273,12 +424,14 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 
 // ensureDraft 为单个页面生成草稿，返回该页的处理结果（生成/跳过及原因）。
 // source/custom 为该页显式选择的讲稿来源；为空时回退默认行为（见 selectDraftInput）。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot) (draftOutcome, error) {
+// renderKeys 为 slideId → 页面 PNG 对象键（来自渲染清单），用于视觉锚点取图。
+// polisher/vision 由调用方按任务解析一次后复用（避免每页查网关库）。
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot, renderKeys map[string]string, polisher llm.TextRewriter, vision llm.VisionExtractor) (draftOutcome, error) {
 	slideID := pg.SlideID
 	if slideID == "" {
 		return draftSkippedNoText, nil
 	}
-	rev, err := h.scripts.Get(ctx, tenantID, projectID, slideID, language)
+	rev, err := h.scripts.Get(ctx, tenantID, projectID, revisionNo, slideID, language)
 	if err == nil && len(rev.Segments) > 0 && !snap.Overwrite {
 		return draftSkippedExisting, nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
 	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
@@ -293,22 +446,18 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if in.Text == "" {
 		return draftSkippedNoText, nil // 无正文/备注，不生成空讲稿。
 	}
-	var vision llm.VisionExtractor
-	if v, err := h.visionForTenant(ctx, tenantID); err == nil {
-		vision = v
-	}
 	anchors := pgAnchors(pg, source)
-	anchors = append(anchors, h.visualAnchors(ctx, vision, tenantID, projectID, revisionNo, language, pg)...)
+	anchors = append(anchors, h.visualAnchors(ctx, vision, tenantID, projectID, language, pg, renderKeys)...)
 	refs := sourceRefsFromAnchors(slideID, anchors)
 	if len(refs) == 0 {
 		refs = []string{slideID}
 	}
-	displayText, spokenText, degraded, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, snap)
+	displayText, spokenText, degraded, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, snap, polisher)
 	if err != nil {
 		return "", err
 	}
 	if rev == nil {
-		rev, err = h.scripts.EnsureExists(ctx, tenantID, projectID, slideID, language, mode)
+		rev, err = h.scripts.EnsureExists(ctx, tenantID, projectID, revisionNo, slideID, language, mode)
 		if err != nil {
 			return "", fmt.Errorf("script_draft: ensure script: %w", err)
 		}
@@ -321,7 +470,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		SourceAnchors: anchors,
 		Status:        narration.StatusDraft,
 	}
-	if _, err := h.scripts.Update(ctx, tenantID, projectID, slideID, language, rev.Revision, []*narration.Segment{segment}); err != nil {
+	if _, err := h.scripts.Update(ctx, tenantID, projectID, revisionNo, slideID, language, rev.Revision, []*narration.Segment{segment}); err != nil {
 		return "", fmt.Errorf("script_draft: write draft: %w", err)
 	}
 	if degraded {
@@ -351,29 +500,63 @@ func pageStepState(outcome draftOutcome) pipeline.JobStepState {
 }
 
 func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome) {
+	h.markPageStepState(ctx, job, pg, pageStepState(outcome))
+}
+
+// markPageStepState 以显式状态登记单页步骤（供 outcome 映射与失败页记录复用）。
+func (h *ScriptDraftHandler) markPageStepState(ctx context.Context, job *pipeline.Job, pg parsedPage, state pipeline.JobStepState) {
 	if h.steps == nil || pg.SlideID == "" {
 		return
 	}
-	state := pageStepState(outcome)
 	step := pipeline.JobStep{
 		JobID: job.ID, TenantID: job.TenantID,
 		StepType: stepTypePage,
-		StepKey:  "page:v1:" + pg.SlideID,
+		StepKey:  pageStepKey(pg.SlideID),
 		State:    state,
 	}
 	_ = h.steps.MarkStep(ctx, step)
 }
 
-func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.VisionExtractor, tenantID, projectID string, revisionNo int, language string, pg parsedPage) []narration.SourceAnchor {
-	if vision == nil || pg.SlideID == "" {
-		return nil
-	}
+// renderKeysBySlide 读取页面渲染清单（render/pages.json），返回 slideId → PNG 对象键。
+// 页图与源页的对应必须以清单为准：LibreOffice 渲染会跳过隐藏页，按页序号推算（page-%04d）
+// 会从第一张隐藏页起整体错位，让视觉锚点读到别的页面。
+func (h *ScriptDraftHandler) renderKeysBySlide(ctx context.Context, tenantID, projectID string, revisionNo int) map[string]string {
 	if revisionNo == 0 {
 		revisionNo = 1
 	}
 	key := objectstore.ObjectKey{
 		TenantID: tenantID, ProjectID: projectID, Revision: srcRevString(revisionNo),
-		AssetType: "render", AssetID: fmt.Sprintf("page-%04d", pg.Index+1), Ext: "png",
+		AssetType: "render", AssetID: "pages", Ext: "json",
+	}
+	rc, _, err := h.objects.Get(ctx, key)
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	var manifest PageManifest
+	if err := json.NewDecoder(rc).Decode(&manifest); err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(manifest.Pages))
+	for _, pg := range manifest.Pages {
+		if pg.SlideID != "" && pg.Key != "" {
+			out[pg.SlideID] = pg.Key
+		}
+	}
+	return out
+}
+
+func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.VisionExtractor, tenantID, projectID, language string, pg parsedPage, renderKeys map[string]string) []narration.SourceAnchor {
+	if vision == nil || pg.SlideID == "" {
+		return nil
+	}
+	rawKey, ok := renderKeys[pg.SlideID]
+	if !ok {
+		return nil
+	}
+	key, err := objectstore.Parse(rawKey)
+	if err != nil {
+		return nil
 	}
 	r, _, err := h.objects.Get(ctx, key)
 	if err != nil {
@@ -440,14 +623,23 @@ func guardInstructions(report validation.Report) string {
 // degraded=true 表示数字/单位/型号校验两轮仍不过，已**保守回退为原始素材原文**（未经 AI 加工）：
 // 落库的是页面要点片段而非讲解稿。该标志必须向上传递——当作成功会让界面把要点片段报告成
 // "成稿完成"（A26：不得假成功）。
-func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, snap ScriptDraftSnapshot) (string, string, bool, error) {
+func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, snap ScriptDraftSnapshot, polisher llm.TextRewriter) (string, string, bool, error) {
 	source := in.Text
 	if mode == narration.ModeOriginal {
 		return source, source, false, nil
 	}
-	polisher, err := h.polisherForTenant(ctx, tenantID)
-	if err != nil {
-		return "", "", false, err
+	if polisher == nil {
+		return "", "", false, errors.New("script_draft: LLM draft mode requires configured text rewriter")
+	}
+	instructions := draftInstructions(mode, in.Kind, snap)
+	// 内容寻址缓存：相同（模式+语言+指令+素材）直接复用上次产出，避免重复调用模型。
+	// 同一份稿子/同一批参数反复生成（补页、重试、改投影前后）时命中率很高。
+	var cacheKey objectstore.ObjectKey
+	if !h.disableCache {
+		cacheKey = h.scriptCacheKey(tenantID, mode, language, instructions, source)
+		if cached, ok := h.loadScriptCache(ctx, cacheKey); ok {
+			return cached, cached, false, nil
+		}
 	}
 	opID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode)
 	if err := h.reserveLLMTokens(ctx, tenantID, opID, source); err != nil {
@@ -458,7 +650,7 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		Mode:         string(mode),
 		Language:     language,
 		SourceText:   source,
-		Instructions: draftInstructions(mode, in.Kind, snap),
+		Instructions: instructions,
 	})
 	if err != nil {
 		return "", "", false, classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
@@ -467,6 +659,9 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 	text := strings.TrimSpace(result.Text)
 	report := validation.CheckPreserved(source, text)
 	if report.OK() {
+		if !h.disableCache {
+			h.saveScriptCache(ctx, cacheKey, text)
+		}
 		return text, text, false, nil
 	}
 	// 第二轮是**定点修补**：把上一版文案本身当作待修的稿子，只列出违规项。
@@ -487,12 +682,70 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		h.settleLLMTokens(ctx, tenantID, guardOpID, fix)
 		fixed := strings.TrimSpace(fix.Text)
 		if validation.CheckPreserved(source, fixed).OK() {
+			if !h.disableCache {
+				h.saveScriptCache(ctx, cacheKey, fixed)
+			}
 			return fixed, fixed, false, nil
 		}
 	}
 	// 两轮校验都不过：保守回退为原始素材原文，并以 degraded=true 告知调用方——落库的是
 	// 页面要点片段，界面必须显示"已保留原文、待人工确认"，不得报告成稿完成。
 	return source, source, true, nil
+}
+
+// scriptDraftCacheAssetType 是讲稿内容缓存的资产类型（租户级共享缓存段）。
+const scriptDraftCacheAssetType = "scriptdraft"
+
+// scriptCacheKey 由「租户 + 模式 + 语言 + 指令 + 素材」派生内容地址。
+// 指令已编码 audience/style/length/targetSeconds 等参数，故参数变化会自然落到不同缓存。
+func (h *ScriptDraftHandler) scriptCacheKey(tenantID string, mode narration.ScriptMode, language, instructions, source string) objectstore.ObjectKey {
+	sum := hashBytes([]byte(string(mode) + "\x00" + language + "\x00" + instructions + "\x00" + source))
+	return objectstore.ObjectKey{
+		TenantID: tenantID, ProjectID: sharedCacheProject, Revision: "cache",
+		AssetType: scriptDraftCacheAssetType, AssetID: sum, Ext: "json",
+	}
+}
+
+type scriptDraftCacheEntry struct {
+	Text string `json:"text"`
+}
+
+// loadScriptCache 命中返回缓存正文；未命中/读取失败返回 ("", false)（缓存不可用不影响生成）。
+func (h *ScriptDraftHandler) loadScriptCache(ctx context.Context, key objectstore.ObjectKey) (string, bool) {
+	if h.objects == nil {
+		return "", false
+	}
+	rc, _, err := h.objects.Get(ctx, key)
+	if err != nil {
+		return "", false
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return "", false
+	}
+	var entry scriptDraftCacheEntry
+	if err := json.Unmarshal(data, &entry); err != nil {
+		return "", false
+	}
+	if strings.TrimSpace(entry.Text) == "" {
+		return "", false
+	}
+	return entry.Text, true
+}
+
+// saveScriptCache 写入内容缓存；失败静默（缓存只是优化，不影响正确性）。
+func (h *ScriptDraftHandler) saveScriptCache(ctx context.Context, key objectstore.ObjectKey, text string) {
+	if h.objects == nil || strings.TrimSpace(text) == "" {
+		return
+	}
+	data, err := json.Marshal(scriptDraftCacheEntry{Text: text})
+	if err != nil {
+		return
+	}
+	_ = h.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{
+		ContentType: "application/json", ContentHash: hashBytes(data), Size: int64(len(data)),
+	})
 }
 
 // reserveLLMTokens 预占 LLM token 额度（G2-5）；超出上限时任务失败。

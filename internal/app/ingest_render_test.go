@@ -101,6 +101,100 @@ func TestParseHandlerStoresRenderedPages(t *testing.T) {
 	}
 }
 
+// hiddenPage 构造隐藏页（p:sldId@show="0"），放映与 PDF 导出都会跳过。
+func hiddenPage(index int, slideID string) *project.Page {
+	hidden := true
+	return &project.Page{Index: index, SlideID: slideID, Hidden: &hidden}
+}
+
+func TestParseHandlerAlignsRenderedPagesToVisibleSlides(t *testing.T) {
+	// 隐藏页不进 PDF：渲染结果只有 2 页，必须映射到可见页 slide-1/slide-3。
+	// 若按解析索引对齐，会把第二张图挂到 slide-2（隐藏页）上，隐藏页之后整体错位。
+	ctx := context.Background()
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	sourceKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src", AssetType: "source", AssetID: "deck", Ext: "pptx",
+	}
+	if err := objects.Put(ctx, sourceKey, bytes.NewReader([]byte("pptx")), objectstore.ObjectMeta{ContentType: "application/octet-stream"}); err != nil {
+		t.Fatal(err)
+	}
+	doc := &project.Document{Pages: []*project.Page{
+		{Index: 0, SlideID: "slide-1"},
+		hiddenPage(1, "slide-2"),
+		{Index: 2, SlideID: "slide-3"},
+	}}
+	renderer := stubRenderer{res: &render.RenderResult{
+		Pages: []render.PageImage{
+			{Index: 0, PNG: []byte("png-0")},
+			{Index: 1, PNG: []byte("png-1")},
+		},
+		Report: render.RenderReport{Renderer: "stub", PageCount: 2},
+	}}
+	steps := &stepRecorder{}
+	handler := NewParseHandler(objects, stubReader{doc: doc}).WithRenderer(renderer).WithSteps(steps)
+
+	if err := handler.Handle(ctx, renderParseJob(t, sourceKey.String())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	step := steps.latest["pages:v1:deck"]
+	if step.State != pipeline.StepSuccess || step.ResultRef == "" {
+		t.Fatalf("render step = %+v", step)
+	}
+	manifestKey, err := objectstore.Parse(step.ResultRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := objects.Get(ctx, manifestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(r)
+	r.Close()
+	var manifest PageManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if len(manifest.Pages) != 2 {
+		t.Fatalf("manifest pages = %+v", manifest.Pages)
+	}
+	if manifest.Pages[0].SlideID != "slide-1" || manifest.Pages[0].Index != 0 {
+		t.Fatalf("page[0] = %+v，应为 slide-1", manifest.Pages[0])
+	}
+	if manifest.Pages[1].SlideID != "slide-3" || manifest.Pages[1].Index != 2 {
+		t.Fatalf("page[1] = %+v，应跳过隐藏页映射到 slide-3", manifest.Pages[1])
+	}
+}
+
+func TestParseHandlerPageCountMismatchMarksStepFailed(t *testing.T) {
+	// 渲染页数与可见页数不一致（渲染器漏页）：宁缺毋错，不落清单并标记步骤失败。
+	ctx := context.Background()
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	sourceKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src", AssetType: "source", AssetID: "deck", Ext: "pptx",
+	}
+	if err := objects.Put(ctx, sourceKey, bytes.NewReader([]byte("pptx")), objectstore.ObjectMeta{ContentType: "application/octet-stream"}); err != nil {
+		t.Fatal(err)
+	}
+	doc := &project.Document{Pages: []*project.Page{
+		{Index: 0, SlideID: "slide-1"},
+		{Index: 1, SlideID: "slide-2"},
+	}}
+	renderer := stubRenderer{res: &render.RenderResult{
+		Pages:  []render.PageImage{{Index: 0, PNG: []byte("png-0")}},
+		Report: render.RenderReport{Renderer: "stub", PageCount: 1},
+	}}
+	steps := &stepRecorder{}
+	handler := NewParseHandler(objects, stubReader{doc: doc}).WithRenderer(renderer).WithSteps(steps)
+
+	if err := handler.Handle(ctx, renderParseJob(t, sourceKey.String())); err != nil {
+		t.Fatalf("parse should succeed without page manifest: %v", err)
+	}
+	step := steps.latest["pages:v1:deck"]
+	if step.State != pipeline.StepFailed || step.ResultRef != "" {
+		t.Fatalf("render step = %+v，页数失配时应失败且不落清单", step)
+	}
+}
+
 func TestParseHandlerRenderFailureIsNonFatal(t *testing.T) {
 	ctx := context.Background()
 	objects := objectstore.NewLocal(t.TempDir(), nil)

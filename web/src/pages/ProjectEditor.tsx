@@ -28,6 +28,7 @@ import {
   regenerateSegments,
   saveVoiceSettings,
   setScriptLanguagePreference,
+  setSourceRevisionPreference,
   setSlideScriptSource,
   updateScript as updateScriptApi,
   type ClientIdentity,
@@ -309,6 +310,8 @@ export function ProjectEditor({
   const editorLayoutRef = useRef<HTMLDivElement>(null);
   const [scriptResizing, setScriptResizing] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
+  // 配音任务活跃标志（供 5s 轮询判断"配音任务刚结束"→ 重建播放清单，见 refreshActiveGenJobs）。
+  const narrationActiveRef = useRef(false);
   const autoNotesDraftRef = useRef<Set<string>>(new Set());
   const [autoNotesFailed, setAutoNotesFailed] = useState<string[]>([]);
   // B4-M1 权限边界（A22）：能力判定统一走 permissions.can，逐条镜像服务端 requireRole。
@@ -451,25 +454,69 @@ export function ProjectEditor({
     };
   }, [slidesState, identity, projectId, probesReloadKey, reportProbe, clearProbe]);
 
+  // 重建当前配音的播放清单（getNarration → manifest → realManifest）。
+  // 作为「生成完成后的兜底"刷新"」：同步轮询窗口（generateNarrationFor 的 120s）结束后，
+  // 若配音任务仍在后台生成（超长 PPT/慢 TTS），本函数在任务结束被 5s 轮询发现时执行，
+  // 让中间预览区的播放器自动出现，无需用户手工刷新浏览器。失败静默（不打扰编辑），
+  // 主路径（挂载 + 同步轮询成功）各有自己的错误处理，这里只在可得时更新。
+  const refreshNarrationManifest = useCallback(async () => {
+    if (slidesState.mode !== 'real') return;
+    try {
+      const status = await getNarration(identity, projectId);
+      clearProbe('narration');
+      if (!status.ready || !status.timelineKey) return;
+      if (status.revisionNo !== slidesState.revisionNo) return;
+      const manifest = await getPlaybackManifest({
+        identity,
+        projectId,
+        timelineKey: status.timelineKey,
+        pagePngKeys: status.pagePngKeys ?? [],
+        ttlSeconds: 900
+      });
+      if (!manifestMatchesSlides(manifest, slidesState.slides)) return;
+      setRealManifest(manifest);
+      setNarrationStatus({
+        phase: 'ready',
+        message: (status.pagePngKeys ?? []).length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
+      });
+    } catch {
+      // 后台刷新失败不升级为错误（任务结束动作各有自己的错误路径）。
+    }
+  }, [slidesState, identity, projectId, t, clearProbe]);
+
   // B3-M5：感知本项目活跃的生成任务（配音/讲稿），驱动"生成中继续编辑"顶部快照提示。
   // 生成任务以创建时已确认的讲稿快照为输入（C-5：lockConfirmedOnly），故生成期间仍可继续编辑，
   // 新改动需下一次生成才生效。此处用 5s 轮询（与任务中心断线回退频率一致），避免在编辑器内持有长连接。
   const refreshActiveGenJobs = useCallback(async () => {
     try {
       const page = await listJobsPage(identity, { projectId, pageSize: 20 });
-      setActiveGenJobs(
-        page.jobs.filter((job) => genJobKinds.includes(job.kind) && genActiveStates.includes(job.state))
-      );
+      const active = page.jobs.filter((job) => genJobKinds.includes(job.kind) && genActiveStates.includes(job.state));
+      // 配音任务由"活跃"转为"结束"（成功/失败/取消）时立即重建播放清单：
+      // 同步轮询（generateNarrationFor）超过 120s 窗口而让位的场景，靠这里补上 manifest，
+      // 否则播放器只有在手工刷新（重新挂载）后才会出现。
+      const hadActiveNarration = narrationActiveRef.current;
+      const hasActiveNarration = active.some((job) => job.kind === 'narration');
+      narrationActiveRef.current = hasActiveNarration;
+      setActiveGenJobs(active);
+      if (hadActiveNarration && !hasActiveNarration) {
+        void refreshNarrationManifest();
+      }
     } catch {
       // 任务服务不可用时保持上一次结果，不打扰编辑。
     }
-  }, [identity, projectId]);
+  }, [identity, projectId, refreshNarrationManifest]);
 
   useEffect(() => {
     void refreshActiveGenJobs();
     const timer = window.setInterval(() => void refreshActiveGenJobs(), 5000);
     return () => window.clearInterval(timer);
   }, [refreshActiveGenJobs]);
+
+  // 先于数据请求同步"当前查看的源版本"：讲稿/来源/配音按 (源版本, slide_id) 隔离，
+  // 版本切换后所有请求都必须携带新版本，否则会读写到别的版本（slide_id 跨版本会重复）。
+  useEffect(() => {
+    setSourceRevisionPreference(slidesState.mode === 'real' ? slidesState.revisionNo : undefined);
+  }, [slidesState]);
 
   // 先于数据请求同步讲稿语言偏好（effect 按声明顺序执行）。
   useEffect(() => {
@@ -673,6 +720,8 @@ export function ProjectEditor({
     // 页面停留越久请求越多；新增的逐页结果读取也会被后续 tick 反复覆写。
     let stopped = false;
     let timer: number | undefined;
+    // 进度前进时增量刷新讲稿：让已完成的页**边跑边显示**，而不是整任务结束后才出现。
+    let lastPct = -1;
     const stopPolling = () => {
       stopped = true;
       if (timer !== undefined) {
@@ -738,6 +787,27 @@ export function ProjectEditor({
         }
         setOneDraftRunning(true);
         setOneDraftProgress({ done, total: total || 100, message: t('editor.oneDraftProgressPercent', { percent: pct }) });
+        // 进度前进 = 有页已完成：批量拉一次讲稿并合并（增量可见）。失败不影响任务本身。
+        if (pct > lastPct) {
+          lastPct = pct;
+          if (slidesState.mode === 'real') {
+            try {
+              const { scripts } = await listProjectScripts(identity, projectId);
+              if (!cancelled) {
+                const allowed = new Set(slidesState.slides.map((slide) => slide.slideId));
+                const found: Record<string, ScriptRevision> = {};
+                for (const rev of scripts) {
+                  if (allowed.has(rev.slideId)) found[rev.slideId] = rev;
+                }
+                if (Object.keys(found).length > 0) {
+                  setRealScripts((current) => ({ ...current, ...found }));
+                }
+              }
+            } catch {
+              // 增量刷新失败不提示：任务完成时会再做一次完整刷新。
+            }
+          }
+        }
       } catch (error) {
         if (!cancelled) setOneDraftProgress((current) => ({ ...current, message: friendlyOneDraftError(error instanceof Error ? error.message : '') }));
       }
@@ -776,6 +846,36 @@ export function ProjectEditor({
     scriptEditorRef.current?.flush();
     setActiveSlideID(slideId);
   };
+
+  // 方向键翻页：基于真实页面列表（非配音时间轴），缩略图轨 / 阅览区 / 讲稿栏随
+  // activeSlideID 一起联动。用 latest-ref 只挂一次监听。
+  //   - 窗口级监听 → 浏览器全屏与 Player 全屏下同样生效；
+  //   - 内嵌 Player 已让出方向键（见 Player.tsx），此处是唯一翻页入口，不会一次按键翻两页；
+  //   - 焦点在 input/select/textarea/contenteditable 时不接管（编辑不丢光标）；
+  //   - 对话框（一键成稿 / 语音属性 / 导出）打开时不翻页。
+  const arrowNavRef = useRef<(event: KeyboardEvent) => void>(() => {});
+  arrowNavRef.current = (event) => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (oneDraftOpen || propsOpen || exportOpen) return;
+    const active = document.activeElement as HTMLElement | null;
+    const tag = active ? active.tagName.toLowerCase() : '';
+    const isTextInput =
+      tag === 'input' || tag === 'select' || tag === 'textarea' || Boolean(active?.isContentEditable);
+    if (isTextInput) return;
+    if (slidesState.mode !== 'real' || slidesState.slides.length === 0) return;
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+    const idx = slidesState.slides.findIndex((slide) => slide.slideId === activeSlideID);
+    if (idx < 0) return;
+    const next = slidesState.slides[idx + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1)];
+    if (!next) return;
+    event.preventDefault();
+    handleSlideSelect(next.slideId);
+  };
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => arrowNavRef.current(event);
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, []);
 
   // M3 ②：局部重生成选中分段（RegenerateSegments）。轮询讲稿直到 revision 变化或超时后刷新。
   const regenerateActive = useCallback(

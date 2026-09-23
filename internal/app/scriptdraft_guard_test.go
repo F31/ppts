@@ -36,7 +36,7 @@ func newDraftHandlerForTest(f *fakeRewriter) *ScriptDraftHandler {
 func runDraftText(t *testing.T, h *ScriptDraftHandler, kind draftInputKind, source string) (string, bool) {
 	t.Helper()
 	text, _, degraded, err := h.draftText(context.Background(), "tenant-1", "project-1", "slide-1", "zh-CN",
-		narration.ModePolish, draftInput{Kind: kind, Text: source}, ScriptDraftSnapshot{})
+		narration.ModePolish, draftInput{Kind: kind, Text: source}, ScriptDraftSnapshot{}, h.polisher)
 	if err != nil {
 		t.Fatalf("draftText 意外报错：%v", err)
 	}

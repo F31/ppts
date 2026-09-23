@@ -65,6 +65,13 @@ fi
 ffmpeg_filters="$(build/ffmpeg/ffmpeg -hide_banner -filters 2>/dev/null)"
 grep -q "subtitles" <<<"$ffmpeg_filters" \
   || { echo "[package] ERROR: ffmpeg 缺 subtitles 滤镜（libass）" >&2; exit 1; }
+# 二进制完整性：曾出现下载被截断（file 报 missing section headers、执行即段错误），
+# 而旧校验只跑 ffmpeg -filters，漏检 ffprobe —— 结果 MP4 导出在 worker 里恒定失败。
+# 这里显式要求两者都能正常启动。
+build/ffmpeg/ffmpeg -version >/dev/null 2>&1 \
+  || { echo "[package] ERROR: ffmpeg 无法运行（下载可能被截断）" >&2; exit 1; }
+build/ffmpeg/ffprobe -version >/dev/null 2>&1 \
+  || { echo "[package] ERROR: ffprobe 无法运行（下载可能被截断）" >&2; exit 1; }
 install -m 0755 build/ffmpeg/ffmpeg build/ffmpeg/ffprobe "$STAGE/bin/"
 
 # ---------- 4. 打包资产 ----------

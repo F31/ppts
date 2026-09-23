@@ -52,6 +52,28 @@ func TestAssembleTimelineWAVPlacesClipsAndSilence(t *testing.T) {
 	assertSampleRange(t, wav.data, 350, 500, 0)
 }
 
+func TestAssembleTimelineWAVAllowsSubMillisecondTail(t *testing.T) {
+	// 时间轴以整毫秒声明时长，而真实 WAV 常带亚毫秒尾差（如 59117.625ms）。
+	// 装配必须容忍最多 2ms 的取整误差，否则导出会误报失败。
+	timeline, err := BuildTimeline([]SlideInput{{
+		SlideID:  "slide-1",
+		Segments: []SegmentInput{{SegmentID: "seg-1", DisplayText: "one", AudioKey: "audio-1", DurationMS: 59117}},
+	}}, Timing{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 16kHz，59117.625ms ≈ 945882 帧；时间轴期望 945872 帧（差 10 帧，<2ms 容差）。
+	clips := map[string][]byte{"audio-1": pcmWAVForTest(16000, make([]int16, 945882))}
+	if _, err := AssembleTimelineWAV(timeline, clips); err != nil {
+		t.Fatalf("sub-ms tail should be tolerated: %v", err)
+	}
+	// 但真正的时长错配（差 10ms）必须仍被拒绝。
+	clipsBad := map[string][]byte{"audio-1": pcmWAVForTest(16000, make([]int16, 945872+160))}
+	if _, err := AssembleTimelineWAV(timeline, clipsBad); err == nil {
+		t.Fatal("expected duration mismatch")
+	}
+}
+
 func TestAssembleTimelineWAVRejectsDurationAndFormatMismatch(t *testing.T) {
 	timeline, err := BuildTimeline([]SlideInput{{
 		SlideID:  "slide-1",

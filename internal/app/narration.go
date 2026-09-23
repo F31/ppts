@@ -201,7 +201,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			return fmt.Errorf("narration job: duplicate slide %s", slide.SlideID)
 		}
 		seenSlides[slide.SlideID] = struct{}{}
-		revision, err := h.scripts.Get(ctx, job.TenantID, job.ProjectID, slide.SlideID, snapshot.Language)
+		revision, err := h.scripts.Get(ctx, job.TenantID, job.ProjectID, snapshot.RevisionNo, slide.SlideID, snapshot.Language)
 		if err != nil {
 			return fmt.Errorf("narration job: load script: %w", err)
 		}
@@ -304,7 +304,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 	}
 	// 回写 audio_revision：标记每段最近一次配音对应的脚本修订号（stale 判定）。
 	for _, slide := range planned {
-		if err := h.scripts.MarkAudioRevision(ctx, job.TenantID, job.ProjectID, slide.snapshot.SlideID, snapshot.Language, slide.snapshot.ScriptRevision); err != nil {
+		if err := h.scripts.MarkAudioRevision(ctx, job.TenantID, job.ProjectID, snapshot.RevisionNo, slide.snapshot.SlideID, snapshot.Language, slide.snapshot.ScriptRevision); err != nil {
 			// 非致命：stale 信号缺失不影响已生成音频的可用性。
 			continue
 		}

@@ -132,11 +132,21 @@ fi
 # 迁移（含建角色 ppts_app/ppts_migrator 与 pgcrypto 扩展）需要 superuser，走本地 socket peer 认证。
 sudo -u postgres env PPTS_MIGRATE_DATABASE_URL="postgres:///$DB_NAME?host=/var/run/postgresql&port=$PG_PORT" \
   "$PREFIX/bin/ppts" migrate
-# 统一运行账号口令（角色可能由迁移创建，也可能由旧配置保留）
-pg_exec "ALTER ROLE $DB_USER LOGIN PASSWORD '$DB_PW';"
+# 统一运行账号口令（角色可能由迁移创建，也可能由旧配置保留）。
+# 注意：SQLite 单租户配置里没有 PG 口令，此时**必须跳过** ALTER ROLE——
+# 空口令会把角色口令清掉，回退 PG 模式时全部连接失败。
+if [[ -n "$DB_PW" ]]; then
+  pg_exec "ALTER ROLE $DB_USER LOGIN PASSWORD '$DB_PW';"
+else
+  log "配置非 PostgreSQL 模式（无运行账号口令），跳过 ALTER ROLE $DB_USER"
+fi
 # 调度账号口令（角色由 0013 迁移创建；worker 跨租户领取任务走 PPTS_SCHEDULER_DATABASE_URL）
-pg_exec "ALTER ROLE ppts_scheduler LOGIN PASSWORD '$SCHED_PW';"
-log "数据库迁移完成，运行账号 $DB_USER / ppts_scheduler 口令已同步"
+if [[ -n "$SCHED_PW" ]]; then
+  pg_exec "ALTER ROLE ppts_scheduler LOGIN PASSWORD '$SCHED_PW';"
+  log "数据库迁移完成，运行账号 $DB_USER / ppts_scheduler 口令已同步"
+else
+  log "数据库迁移完成（未同步 PG 角色口令）"
+fi
 
 # ---------- 6. systemd ----------
 install -m 0644 "$SRC_DIR/systemd/ppts-api.service" "$SRC_DIR/systemd/ppts-worker.service" /etc/systemd/system/

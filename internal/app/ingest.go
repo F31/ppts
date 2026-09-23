@@ -150,15 +150,29 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 		fail()
 		return
 	}
-	slideByIndex := make(map[int]string, len(doc.Pages))
+	// 渲染页与解析页的对齐必须以"可见页"为基准：LibreOffice 转 PDF 会跳过隐藏页
+	// （p:sldId@show="0"），渲染结果里没有它们的位置。若用解析索引直接对齐，
+	// 第一张隐藏页之后的所有页面图都会挂到错误的 slideId 上（缩略图/播放/导出全错位）。
+	visible := make([]*project.Page, 0, len(doc.Pages))
 	for _, pg := range doc.Pages {
-		if pg != nil {
-			slideByIndex[pg.Index] = pg.SlideID
+		if pg == nil {
+			continue
 		}
+		if pg.Hidden != nil && *pg.Hidden {
+			continue
+		}
+		visible = append(visible, pg)
+	}
+	if len(res.Pages) != len(visible) {
+		// 页数不匹配说明渲染结果与解析结果无法可靠对应（渲染器漏页/多页）。
+		// 宁缺毋错：不落清单，标记步骤失败，避免把错位映射写进产物。
+		fail()
+		return
 	}
 	revision := srcRevString(snap.RevisionNo)
 	entries := make([]PageEntry, 0, len(res.Pages))
-	for _, page := range res.Pages {
+	for i, page := range res.Pages {
+		src := visible[i]
 		key := objectstore.ObjectKey{
 			TenantID: srcKey.TenantID, ProjectID: snap.ProjectID, Revision: revision,
 			AssetType: "render", AssetID: fmt.Sprintf("page-%04d", page.Index+1), Ext: "png",
@@ -169,7 +183,7 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 			fail()
 			return
 		}
-		entries = append(entries, PageEntry{SlideID: slideByIndex[page.Index], Index: page.Index, Key: key.String()})
+		entries = append(entries, PageEntry{SlideID: src.SlideID, Index: src.Index, Key: key.String()})
 	}
 	manifest := PageManifest{RevisionNo: snap.RevisionNo, Renderer: res.Report.Renderer, Pages: entries}
 	manifestBytes, err := json.Marshal(manifest)

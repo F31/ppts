@@ -41,9 +41,11 @@ type ScriptSourceChoice struct {
 }
 
 // ScriptSourceStore 持久化每页讲稿来源选择（无备注页显式指定驱动草稿来源）。
+// 与讲稿一致，按「源版本」隔离：slide_id 只在单个 PPTX 内唯一，必须靠 sourceRevisionNo 区分。
+// sourceRevisionNo==0 表示 legacy：List 在指定版本缺失时回退 legacy，保证存量选择可见。
 type ScriptSourceStore interface {
-	Set(ctx context.Context, tenantID, projectID, slideID string, kind ScriptSourceKind, customText string) error
-	List(ctx context.Context, tenantID, projectID string) (map[string]ScriptSourceChoice, error)
+	Set(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID string, kind ScriptSourceKind, customText string) error
+	List(ctx context.Context, tenantID, projectID string, sourceRevisionNo int) (map[string]ScriptSourceChoice, error)
 }
 
 type scriptSourcePGStore struct {
@@ -64,7 +66,7 @@ func NewSQLiteScriptSourceStore(db *sql.DB) ScriptSourceStore {
 	return &scriptSourceSQLiteStore{db: db}
 }
 
-func (s *scriptSourcePGStore) Set(ctx context.Context, tenantID, projectID, slideID string, kind ScriptSourceKind, customText string) error {
+func (s *scriptSourcePGStore) Set(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID string, kind ScriptSourceKind, customText string) error {
 	if tenantID == "" || projectID == "" || slideID == "" {
 		return errors.New("script_source: tenant/project/slide id required")
 	}
@@ -75,19 +77,20 @@ func (s *scriptSourcePGStore) Set(ctx context.Context, tenantID, projectID, slid
 		customText = ""
 	}
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO slide_script_sources (tenant_id, project_id, slide_id, source, custom_text, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (tenant_id, project_id, slide_id)
+		INSERT INTO slide_script_sources (tenant_id, project_id, source_revision_no, slide_id, source, custom_text, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
+		ON CONFLICT (tenant_id, project_id, source_revision_no, slide_id)
 		DO UPDATE SET source = EXCLUDED.source, custom_text = EXCLUDED.custom_text, updated_at = now()
-	`, tenantID, projectID, slideID, string(kind), customText)
+	`, tenantID, projectID, sourceRevisionNo, slideID, string(kind), customText)
 	return err
 }
 
-func (s *scriptSourcePGStore) List(ctx context.Context, tenantID, projectID string) (map[string]ScriptSourceChoice, error) {
+func (s *scriptSourcePGStore) List(ctx context.Context, tenantID, projectID string, sourceRevisionNo int) (map[string]ScriptSourceChoice, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT slide_id, source, custom_text FROM slide_script_sources
-		WHERE tenant_id = $1 AND project_id = $2
-	`, tenantID, projectID)
+		WHERE tenant_id = $1 AND project_id = $2 AND source_revision_no IN ($3, 0)
+		ORDER BY slide_id, source_revision_no DESC
+	`, tenantID, projectID, sourceRevisionNo)
 	if err != nil {
 		return nil, err
 	}
@@ -98,12 +101,15 @@ func (s *scriptSourcePGStore) List(ctx context.Context, tenantID, projectID stri
 		if err := rows.Scan(&slideID, &source, &custom); err != nil {
 			return nil, err
 		}
+		if _, exists := out[slideID]; exists {
+			continue // 已取到更精确的版本行
+		}
 		out[slideID] = ScriptSourceChoice{SlideID: slideID, Kind: ScriptSourceKind(source), CustomText: custom}
 	}
 	return out, rows.Err()
 }
 
-func (s *scriptSourceSQLiteStore) Set(ctx context.Context, tenantID, projectID, slideID string, kind ScriptSourceKind, customText string) error {
+func (s *scriptSourceSQLiteStore) Set(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID string, kind ScriptSourceKind, customText string) error {
 	if tenantID == "" || projectID == "" || slideID == "" {
 		return errors.New("script_source: tenant/project/slide id required")
 	}
@@ -114,20 +120,21 @@ func (s *scriptSourceSQLiteStore) Set(ctx context.Context, tenantID, projectID, 
 		customText = ""
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO slide_script_sources (tenant_id, project_id, slide_id, source, custom_text, updated_at)
-		VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-		ON CONFLICT (tenant_id, project_id, slide_id)
+		INSERT INTO slide_script_sources (tenant_id, project_id, source_revision_no, slide_id, source, custom_text, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+		ON CONFLICT (tenant_id, project_id, source_revision_no, slide_id)
 		DO UPDATE SET source = excluded.source, custom_text = excluded.custom_text,
 			updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-	`, tenantID, projectID, slideID, string(kind), customText)
+	`, tenantID, projectID, sourceRevisionNo, slideID, string(kind), customText)
 	return err
 }
 
-func (s *scriptSourceSQLiteStore) List(ctx context.Context, tenantID, projectID string) (map[string]ScriptSourceChoice, error) {
+func (s *scriptSourceSQLiteStore) List(ctx context.Context, tenantID, projectID string, sourceRevisionNo int) (map[string]ScriptSourceChoice, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT slide_id, source, custom_text FROM slide_script_sources
-		WHERE tenant_id = ? AND project_id = ?
-	`, tenantID, projectID)
+		WHERE tenant_id = ? AND project_id = ? AND source_revision_no IN (?, 0)
+		ORDER BY slide_id, source_revision_no DESC
+	`, tenantID, projectID, sourceRevisionNo)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +144,9 @@ func (s *scriptSourceSQLiteStore) List(ctx context.Context, tenantID, projectID 
 		var slideID, source, custom string
 		if err := rows.Scan(&slideID, &source, &custom); err != nil {
 			return nil, err
+		}
+		if _, exists := out[slideID]; exists {
+			continue
 		}
 		out[slideID] = ScriptSourceChoice{SlideID: slideID, Kind: ScriptSourceKind(source), CustomText: custom}
 	}

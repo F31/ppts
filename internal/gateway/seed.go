@@ -75,8 +75,9 @@ func SeedFromEnv(ctx context.Context, store Store, env Env) error {
 		if err := seedKind(ctx, store, KindLLM, env.LLMAPIKey, &Gateway{
 			TenantID: PlatformTenantID, Name: "env", Kind: KindLLM,
 			Provider: "openai_compatible", BaseURL: defaultIfEmpty(env.LLMBaseURL, "https://api.siliconflow.cn"),
-			Model:       defaultIfEmpty(env.LLMModel, "Qwen/Qwen2.5-7B-Instruct"),
-			VisionModel: defaultIfEmpty(env.LLMVision, "Qwen/Qwen3-VL-8B-Instruct"),
+			Model: defaultIfEmpty(env.LLMModel, "Qwen/Qwen2.5-7B-Instruct"),
+			// 视觉模型**不填默认值**：留空即表示不启用"视觉锚点"。需要时显式设置 PPTS_LLM_VISION_MODEL。
+			VisionModel: strings.TrimSpace(env.LLMVision),
 			IsDefault:   true, Enabled: true,
 		}); err != nil {
 			return err

@@ -58,6 +58,11 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/voice-models", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorVoiceModels(w, r, gatewayStore, projects, members, recorder)
 	})))
+	// 按源版本读取配音状态：供 PPT 列表页「导出」按钮就地弹窗（ExportDialog）时
+	// 拿到该版本自己的 timeline/pagePngKeys，而不是 GetNarration 的最新任务。
+	mux.Handle("GET /projects/{pid}/revisions/{rev}/narration", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorRevisionNarration(w, r, jobs, objects, projects, members, recorder)
+	})))
 }
 
 type projectVoiceSettingsPayload struct {
@@ -314,15 +319,22 @@ func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs Jo
 		Audience: params.Audience, Style: params.Style, TargetSeconds: params.TargetSeconds,
 		Overwrite: params.Overwrite, SlideIDs: params.SlideIDs,
 	}
-	// 解析脚本必须基于项目当前版本：worker 在 RevisionNo=0 时会回退到首个版本，
-	// 而旧版本可能页数不足/没有备注，导致"有备注的页没有讲稿"。此处显式绑定当前版本。
-	if userID, ok := projectAccessUser(r.Context(), members); ok {
-		if proj, perr := projects.GetProject(r.Context(), principal.TenantID, userID, projectID); perr == nil && proj != nil {
-			snap.RevisionNo = int(proj.CurrentRevision)
+	// 解析脚本必须基于一个明确的源版本：优先请求指定的"当前查看版本"；缺失则回退项目当前版本。
+	// worker 在 RevisionNo=0 时会回退到首个版本 —— 旧版本可能页数不足/没有备注，
+	// 导致"有备注的页没有讲稿"，因此这里始终显式绑定一个版本。
+	snap.RevisionNo = params.RevisionNo
+	if snap.RevisionNo <= 0 {
+		snap.RevisionNo = requestSourceRevision(r.Header)
+	}
+	if snap.RevisionNo <= 0 {
+		if userID, ok := projectAccessUser(r.Context(), members); ok {
+			if proj, perr := projects.GetProject(r.Context(), principal.TenantID, userID, projectID); perr == nil && proj != nil {
+				snap.RevisionNo = int(proj.CurrentRevision)
+			}
 		}
 	}
 	if srcStore != nil {
-		if choices, lerr := srcStore.List(r.Context(), principal.TenantID, projectID); lerr == nil && len(choices) > 0 {
+		if choices, lerr := srcStore.List(r.Context(), principal.TenantID, projectID, snap.RevisionNo); lerr == nil && len(choices) > 0 {
 			sources := make(map[string]string, len(choices))
 			customs := make(map[string]string, len(choices))
 			for slideID, choice := range choices {
@@ -362,6 +374,8 @@ type scriptDraftBody struct {
 	Style         string   `json:"style"`
 	TargetSeconds int      `json:"targetSeconds"`
 	Overwrite     *bool    `json:"overwrite"`
+	// RevisionNo 是"当前查看的源版本"。>0 时按该版本解析并落稿；缺失/0 回退当前版本（向后兼容）。
+	RevisionNo int `json:"revisionNo"`
 }
 
 // scriptDraftParams 是校验并归一化后的入参（不含需要查库的 ProjectID/RevisionNo/Sources）。
@@ -374,6 +388,7 @@ type scriptDraftParams struct {
 	Style         string
 	TargetSeconds int
 	Overwrite     bool
+	RevisionNo    int
 }
 
 // scriptSourceModes 是批量成稿来源的白名单。
@@ -402,6 +417,7 @@ func parseScriptDraftParams(body scriptDraftBody, headerLanguage string) (script
 		Style:         strings.TrimSpace(body.Style),
 		TargetSeconds: body.TargetSeconds,
 		Overwrite:     true,
+		RevisionNo:    body.RevisionNo,
 	}
 	if out.Language == "" {
 		out.Language = strings.TrimSpace(headerLanguage)
@@ -566,12 +582,9 @@ func editorRevisionVoiceStatus(w http.ResponseWriter, r *http.Request, jobs JobS
 		return
 	}
 	language := requestLanguage(r.Header)
-	currentScripts, _ := scripts.ListByProject(r.Context(), principal.TenantID, projectID, language)
-	currentBySlide := make(map[string]*narration.Revision, len(currentScripts))
-	for _, rev := range currentScripts {
-		currentBySlide[rev.SlideID] = rev
-	}
 	pagesByRev := make(map[int]revisionPages, len(revs))
+	// 讲稿按源版本隔离：逐版本取稿，避免同 slide_id 跨版本串扰。
+	currentByRev := make(map[int]map[string]*narration.Revision, len(revs))
 	for _, rv := range revs {
 		docs, _ := loadProjectDocuments(r.Context(), projects, objects, principal.TenantID, projectID, rv.RevisionNo, rv.RevisionNo)
 		ids := map[string]struct{}{}
@@ -585,6 +598,12 @@ func editorRevisionVoiceStatus(w http.ResponseWriter, r *http.Request, jobs JobS
 			}
 		}
 		pagesByRev[rv.RevisionNo] = revisionPages{count: count, ids: ids}
+		list, _ := scripts.ListByProject(r.Context(), principal.TenantID, projectID, rv.RevisionNo, language)
+		m := make(map[string]*narration.Revision, len(list))
+		for _, s := range list {
+			m[s.SlideID] = s
+		}
+		currentByRev[rv.RevisionNo] = m
 	}
 	voicedByRev := map[int]map[string]int64{}
 	if jobs != nil {
@@ -642,7 +661,7 @@ func editorRevisionVoiceStatus(w http.ResponseWriter, r *http.Request, jobs JobS
 				continue
 			}
 			item.VoicedPages++
-			if cur := currentBySlide[slideID]; cur != nil && cur.Revision > scriptRev {
+			if cur := currentByRev[rv.RevisionNo][slideID]; cur != nil && cur.Revision > scriptRev {
 				item.StalePages++
 				item.StaleIDs = append(item.StaleIDs, slideID)
 			}
@@ -661,6 +680,70 @@ func editorRevisionVoiceStatus(w http.ResponseWriter, r *http.Request, jobs JobS
 		out = append(out, item)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"revisions": out})
+}
+
+// editorRevisionNarration 读取指定源版本的配音状态（ready/timelineKey/pagePngKeys/revisionNo）。
+// 供 PPT 列表页「导出」按钮就地弹 ExportDialog：只取该版本自己的配音任务（按 snapshot.RevisionNo
+// 归集，复刻 editorRevisionVoiceStatus 的扫描逻辑），避免 GetNarration 只回“最新成功任务”导致
+// 旧版本弹窗无素材。
+func editorRevisionNarration(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	revNo, err := strconv.Atoi(r.PathValue("rev"))
+	if err != nil || revNo <= 0 {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid revision_no")))
+		return
+	}
+	ctx := r.Context()
+	// 找该版本匹配的成功配音任务（与 editorRevisionVoiceStatus 相同的按版本归集口径）。
+	var timelineKey string
+	var jobID string
+	var cursor string
+	for {
+		page, next, jerr := jobs.List(ctx, principal.TenantID, projectID, string(pipeline.StateSucceeded), cursor, 100)
+		if jerr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		for _, job := range page {
+			if job.Kind != pipeline.KindNarration {
+				continue
+			}
+			var snap app.NarrationSnapshot
+			if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err != nil {
+				continue
+			}
+			if snap.RevisionNo != revNo {
+				continue
+			}
+			ref, rerr := jobs.StepResultRef(tenant.WithContext(ctx, principal.TenantID), job.ID, "timeline")
+			if rerr != nil || ref == "" {
+				continue
+			}
+			timelineKey = ref
+			jobID = job.ID
+			break
+		}
+		if timelineKey != "" || next == "" {
+			break
+		}
+		cursor = next
+	}
+	if timelineKey == "" {
+		writeJSON(w, http.StatusOK, map[string]any{"ready": false, "timelineKey": "", "pagePngKeys": []string{}, "revisionNo": revNo})
+		return
+	}
+	pagePngKeys, _ := resolvePagePngKeys(ctx, jobs, objects, principal.TenantID, projectID, timelineKey)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ready": true, "timelineKey": timelineKey, "pagePngKeys": pagePngKeys, "revisionNo": revNo, "jobId": jobID,
+	})
 }
 
 func inferNarrationRevision(snap app.NarrationSnapshot, revs []*project.SourceRevision, pagesByRev map[int]revisionPages) int {
@@ -740,6 +823,7 @@ func editorSetSlideSource(w http.ResponseWriter, r *http.Request, srcStore app.S
 	var body struct {
 		Source     string `json:"source"`
 		CustomText string `json:"customText"`
+		RevisionNo int    `json:"revisionNo"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
@@ -754,7 +838,12 @@ func editorSetSlideSource(w http.ResponseWriter, r *http.Request, srcStore app.S
 		http.Error(w, "custom source requires customText", http.StatusBadRequest)
 		return
 	}
-	if err := srcStore.Set(tenant.WithContext(r.Context(), principal.TenantID), principal.TenantID, projectID, slideID, kind, body.CustomText); err != nil {
+	// 源版本优先取显式头；缺失时回退 body.revisionNo（旧客户端）。
+	srcRev := requestSourceRevision(r.Header)
+	if srcRev <= 0 {
+		srcRev = body.RevisionNo
+	}
+	if err := srcStore.Set(tenant.WithContext(r.Context(), principal.TenantID), principal.TenantID, projectID, srcRev, slideID, kind, body.CustomText); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -780,7 +869,11 @@ func editorListSlideSources(w http.ResponseWriter, r *http.Request, srcStore app
 		http.Error(w, "project_id is required", http.StatusBadRequest)
 		return
 	}
-	choices, err := srcStore.List(tenant.WithContext(r.Context(), principal.TenantID), principal.TenantID, projectID)
+	srcRev := requestSourceRevision(r.Header)
+	if srcRev <= 0 {
+		srcRev, _ = strconv.Atoi(r.URL.Query().Get("revision_no"))
+	}
+	choices, err := srcStore.List(tenant.WithContext(r.Context(), principal.TenantID), principal.TenantID, projectID, srcRev)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

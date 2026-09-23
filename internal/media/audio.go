@@ -54,7 +54,11 @@ func AssembleTimelineWAV(timeline *Timeline, clips map[string][]byte) ([]byte, e
 			}
 			expectedFrames := samplePosition(segment.EndUS-segment.StartUS, sampleRate)
 			actualFrames := int64(len(wav.data)) / int64(wav.blockAlign)
-			if distance(expectedFrames, actualFrames) > 1 {
+			// 时间轴时长以整毫秒声明，而 WAV 实际时长含亚毫秒尾差（解码按
+			// float 秒折算、再取整毫秒，最多引入约 1ms 误差）。允许 2ms 容差，
+			// 仍能拦截真正错误的素材（时长差以毫秒计）。
+			toleranceFrames := samplePosition(2_000, sampleRate)
+			if distance(expectedFrames, actualFrames) > toleranceFrames {
 				return nil, fmt.Errorf("media: audio clip %q duration differs from timeline", segment.AudioKey)
 			}
 		}

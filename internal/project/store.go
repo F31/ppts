@@ -397,7 +397,7 @@ func (s *PGProjectStore) CreateSourceRevision(ctx context.Context, tenantID stri
 			`INSERT INTO source_revisions (id, project_id, tenant_id, revision_no, source_hash, object_key, parser_version, upload_id, display_name)
 			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,$8)
 			 RETURNING id, created_at`,
-			sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey, sr.ParserVersion, sr.UploadID, nullIfEmpty(sr.DisplayName),
+			sr.ProjectID, sr.TenantID, sr.RevisionNo, sr.SourceHash, sr.ObjectKey, sr.ParserVersion, sr.UploadID, sr.DisplayName,
 		).Scan(&sr.ID, &sr.CreatedAt); err != nil {
 			return err
 		}

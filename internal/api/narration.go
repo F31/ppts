@@ -54,10 +54,10 @@ func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, pro
 	return &NarrationGenerationService{scripts: scripts, jobs: jobs, projects: projects, objects: objects, quota: quota, policy: policy, members: members}
 }
 
-// validateSlidesInCurrentRevision 校验待配音的 slide 都属于项目当前版本。
-// 上传新版本后，编辑器若仍持有旧版本的 slideId，会把历史页混进当前配音时间轴，
-// 导致播放器在缺失页面图的旧页上只能显示字幕占位。解析产物缺失时跳过校验（不误伤）。
-func (s *NarrationGenerationService) validateSlidesInCurrentRevision(ctx context.Context, tenantID, userID, projectID string, slideIDs []string) error {
+// validateSlidesInRevision 校验待配音的 slide 都属于指定源版本（revisionNo<=0 时回退当前版本）。
+// 引入按版本隔离后，编辑旧版本只能对旧版本的页配音；旧版页不属于当前版本是正常现象，
+// 不能再用"必须属于当前版本"来拒绝。此处按请求的源版本校验，防止版本与页表错配。
+func (s *NarrationGenerationService) validateSlidesInRevision(ctx context.Context, tenantID, userID, projectID string, revisionNo int, slideIDs []string) error {
 	if s.projects == nil || s.objects == nil {
 		return nil
 	}
@@ -65,11 +65,14 @@ func (s *NarrationGenerationService) validateSlidesInCurrentRevision(ctx context
 	if err != nil || proj == nil || proj.CurrentRevision == 0 {
 		return nil
 	}
-	docs, err := loadProjectDocuments(ctx, s.projects, s.objects, tenantID, projectID, int(proj.CurrentRevision), int(proj.CurrentRevision))
+	if revisionNo <= 0 {
+		revisionNo = int(proj.CurrentRevision)
+	}
+	docs, err := loadProjectDocuments(ctx, s.projects, s.objects, tenantID, projectID, revisionNo, revisionNo)
 	if err != nil {
 		return nil
 	}
-	doc := docs[int(proj.CurrentRevision)]
+	doc := docs[revisionNo]
 	if doc == nil || len(doc.Pages) == 0 {
 		return nil
 	}
@@ -82,7 +85,7 @@ func (s *NarrationGenerationService) validateSlidesInCurrentRevision(ctx context
 	for _, slideID := range slideIDs {
 		if _, ok := allowed[slideID]; !ok {
 			return connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("slide "+slideID+" does not belong to the current PPT revision; refresh the editor and retry"))
+				errors.New("slide "+slideID+" does not belong to the selected PPT revision; refresh the editor and retry"))
 		}
 	}
 	return nil
@@ -125,14 +128,17 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 	}
 
 	language := requestLanguage(req.Header())
+	// 源版本：优先显式头（编辑器当前查看的版本）；缺失时回退当前版本（向后兼容）。
+	sourceRevision := requestSourceRevision(req.Header())
+	if sourceRevision <= 0 && s.projects != nil {
+		if proj, perr := s.projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); perr == nil && proj != nil {
+			sourceRevision = int(proj.CurrentRevision)
+		}
+	}
 	snapshot := app.NarrationSnapshot{
 		Language: language, VoiceID: voiceID, RequireConfirmed: req.Msg.GetLockConfirmedOnly(),
 		SpeechControl: tts.SpeechControl{RatePercent: rate}, SampleRate: 16000,
-	}
-	if s.projects != nil {
-		if proj, perr := s.projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); perr == nil {
-			snapshot.RevisionNo = int(proj.CurrentRevision)
-		}
+		RevisionNo: sourceRevision,
 	}
 	seen := make(map[string]struct{}, len(req.Msg.GetSlideIds()))
 	slideOrder := make([]string, 0, len(req.Msg.GetSlideIds()))
@@ -147,7 +153,7 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		}
 		seen[slideID] = struct{}{}
 		slideOrder = append(slideOrder, slideID)
-		revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, slideID, language)
+		revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, sourceRevision, slideID, language)
 		if err != nil {
 			return nil, scriptError(err)
 		}
@@ -163,7 +169,7 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 			SlideID: slideID, ScriptRevision: revision.Revision,
 		})
 	}
-	if err := s.validateSlidesInCurrentRevision(ctx, principal.TenantID, principal.UserID, projectID, slideOrder); err != nil {
+	if err := s.validateSlidesInRevision(ctx, principal.TenantID, principal.UserID, projectID, sourceRevision, slideOrder); err != nil {
 		return nil, err
 	}
 	snapshotBytes, err := json.Marshal(snapshot)
@@ -223,14 +229,20 @@ func (s *NarrationGenerationService) RegenerateSegments(ctx context.Context, req
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id, slide_id and voice_id are required"))
 	}
 	language := requestLanguage(req.Header())
-	revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, slideID, language)
+	sourceRevision := requestSourceRevision(req.Header())
+	if sourceRevision <= 0 && s.projects != nil {
+		if proj, perr := s.projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); perr == nil && proj != nil {
+			sourceRevision = int(proj.CurrentRevision)
+		}
+	}
+	revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, sourceRevision, slideID, language)
 	if err != nil {
 		return nil, scriptError(err)
 	}
 	if len(revision.Segments) == 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("slide has no segments to regenerate"))
 	}
-	if err := s.validateSlidesInCurrentRevision(ctx, principal.TenantID, principal.UserID, projectID, []string{slideID}); err != nil {
+	if err := s.validateSlidesInRevision(ctx, principal.TenantID, principal.UserID, projectID, sourceRevision, []string{slideID}); err != nil {
 		return nil, err
 	}
 	snapshot := app.NarrationSnapshot{
@@ -239,11 +251,7 @@ func (s *NarrationGenerationService) RegenerateSegments(ctx context.Context, req
 		SegmentIDs:    req.Msg.GetSegmentIds(),
 		SpeechControl: tts.SpeechControl{RatePercent: 100},
 		SampleRate:    16000,
-	}
-	if s.projects != nil {
-		if proj, perr := s.projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); perr == nil {
-			snapshot.RevisionNo = int(proj.CurrentRevision)
-		}
+		RevisionNo:    sourceRevision,
 	}
 	filter := make(map[string]struct{}, len(req.Msg.GetSegmentIds()))
 	for _, id := range req.Msg.GetSegmentIds() {
@@ -355,13 +363,14 @@ func (s *NarrationGenerationService) Estimate(ctx context.Context, req *connect.
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("project_id and slide_ids are required"))
 	}
 	language := requestLanguage(req.Header())
+	sourceRevision := requestSourceRevision(req.Header())
 	totalRunes := 0
 	for _, rawSlideID := range req.Msg.GetSlideIds() {
 		slideID := strings.TrimSpace(rawSlideID)
 		if slideID == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("slide_id cannot be empty"))
 		}
-		revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, slideID, language)
+		revision, err := s.scripts.Get(ctx, principal.TenantID, projectID, sourceRevision, slideID, language)
 		if err != nil {
 			return nil, scriptError(err)
 		}
@@ -424,7 +433,7 @@ func publicNarrationStale(w http.ResponseWriter, r *http.Request, scripts narrat
 	}
 	pid := r.PathValue("pid")
 	language := requestLanguage(r.Header)
-	revs, err := scripts.ListByProject(r.Context(), principal.TenantID, pid, language)
+	revs, err := scripts.ListByProject(r.Context(), principal.TenantID, pid, requestSourceRevision(r.Header), language)
 	if err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return

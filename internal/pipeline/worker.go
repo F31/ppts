@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +39,9 @@ type Worker struct {
 	logger     *log.Logger
 	metrics    WorkerMetrics
 	onCanceled func(context.Context, *Job) error
+	// claimMu 串行化进程内的领取。SQLite 的 ClaimNext 是「SELECT 后 UPDATE」的延迟事务，
+	// 多 goroutine 并发领取会相互 BUSY/重领；领取本身极短，加锁成本可忽略，处理仍并发。
+	claimMu sync.Mutex
 }
 
 // WorkerOptions Worker 构造参数（零值给默认）。
@@ -123,6 +127,8 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 func (w *Worker) claimNext(ctx context.Context) (*Job, error) {
+	w.claimMu.Lock()
+	defer w.claimMu.Unlock()
 	if w.claimer != nil {
 		if w.tenantID == "" {
 			return w.claimer.ClaimNextAny(ctx, w.owner, w.leaseFor)

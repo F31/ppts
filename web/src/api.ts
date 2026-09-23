@@ -70,10 +70,24 @@ export function setScriptLanguagePreference(language?: string): void {
   preferredScriptLanguage = language && language.trim() ? language.trim() : undefined;
 }
 
+// 当前查看的源版本：讲稿/来源/配音按 (源版本, slide_id) 隔离。slide_id 只在单个 PPTX
+// 内唯一，改版重传会重复；编辑器设置后所有 API 请求携带该版本，读写落在正确的版本上。
+let preferredSourceRevision: number | undefined;
+
+export function setSourceRevisionPreference(revision?: number): void {
+  preferredSourceRevision = revision && revision > 0 ? revision : undefined;
+}
+
 function languageHeader(): Record<string, string> {
-  return preferredScriptLanguage
-    ? { 'X-PPTS-Language': preferredScriptLanguage, 'Accept-Language': preferredScriptLanguage }
-    : {};
+  const headers: Record<string, string> = {};
+  if (preferredScriptLanguage) {
+    headers['X-PPTS-Language'] = preferredScriptLanguage;
+    headers['Accept-Language'] = preferredScriptLanguage;
+  }
+  if (preferredSourceRevision) {
+    headers['X-PPTS-Source-Revision'] = String(preferredSourceRevision);
+  }
+  return headers;
 }
 
 // RevisionDiff 是两次源版本之间的页级差异。
@@ -125,6 +139,8 @@ export type AuthConfig = {
   tenant_id?: string;
   user_id?: string;
   tenant_type?: string;
+  // tenant_name 仅本地模式回传（种子租户显示名），供个人信息弹窗/欢迎语展示。
+  tenant_name?: string;
 };
 
 // getAuthConfig 探测后端认证能力（无认证端点）；登录页据此显隐邮箱入口，
@@ -728,10 +744,24 @@ export type LibraryArtifact = {
   durationMs: number;
   createdAt: string;
   downloadable: boolean;
+  // previewable：成品绑定了导出时的时间轴（迁移 0040 之后导出），可内嵌预览；
+  // false（历史行）时前端隐藏"预览"按钮，降级为仅下载。
+  previewable: boolean;
 };
 
 export async function getLibraryArtifacts(identity: ClientIdentity): Promise<{ artifacts: LibraryArtifact[] }> {
   return getJSON<{ artifacts: LibraryArtifact[] }>(identity, '/artifacts');
+}
+
+// getArtifactManifest 取成品内嵌预览用的播放清单（GET /artifacts/{id}/manifest）：
+// 以成品绑定的时间轴为数据源，与下载文件同源；返回结构与 Player 的 PlaybackManifest 一致。
+export async function getArtifactManifest(identity: ClientIdentity, artifactId: string): Promise<PlaybackManifest> {
+  return getJSON<PlaybackManifest>(identity, `/artifacts/${encodeURIComponent(artifactId)}/manifest`);
+}
+
+// deleteArtifact 删除成品库中的成品（DELETE /artifacts/{id}，owner 级，与 GET /artifacts 同门禁）。
+export async function deleteArtifact(identity: ClientIdentity, artifactId: string): Promise<{ deleted: boolean; id: string }> {
+  return deleteJSON<{ deleted: boolean; id: string }>(identity, `/artifacts/${encodeURIComponent(artifactId)}`);
 }
 
 export type NarrationSlideStale = { slideId: string; stale: boolean };
@@ -778,6 +808,20 @@ export type NarrationStatus = {
 
 export async function getNarration(identity: ClientIdentity, projectId: string): Promise<NarrationStatus> {
   return connectJSON<NarrationStatus>(identity, '/ppts.v1.PlaybackService/GetNarration', { projectId });
+}
+
+// getRevisionNarration 读取指定源版本的配音状态（ready/timelineKey/pagePngKeys/revisionNo）。
+// 后端按 snapshot.RevisionNo 归集该版本自己的成功配音任务（见 editorRevisionNarration），
+// 供 PPT 列表页「导出」按钮就地弹 ExportDialog 时取素材。
+export async function getRevisionNarration(
+  identity: ClientIdentity,
+  projectId: string,
+  revisionNo: number
+): Promise<NarrationStatus> {
+  return getJSON<NarrationStatus>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}/narration`
+  );
 }
 
 export type UploadSession = {

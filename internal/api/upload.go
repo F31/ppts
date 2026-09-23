@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
@@ -180,6 +181,12 @@ func (h *signedObjectHandler) serve(methodOp objectstore.Operation, w http.Respo
 		defer rc.Close()
 		if meta.ContentType != "" {
 			w.Header().Set("Content-Type", meta.ContentType)
+		}
+		// 可 Seek 的后端（本地文件系统）走 ServeContent：处理 Range/If-Range/If-Modified-Since，
+		// 视频播放才能拖动进度条（否则 <video> 只能从头顺放，且无法跳过未下载部分）。
+		if rs, ok := rc.(io.ReadSeeker); ok {
+			http.ServeContent(w, r, "", time.Time{}, rs)
+			return
 		}
 		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 		_, _ = io.Copy(w, rc)

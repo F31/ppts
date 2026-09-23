@@ -277,12 +277,24 @@ func (s *TenantService) Usage(ctx context.Context, req *connect.Request[pptsv1.G
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return connect.NewResponse(&pptsv1.GetUsageResponse{
-		SecondsUsed:  int64(seconds),
-		UserAmount:   userAmount,
-		SupplierCost: supplierCost,
-		Currency:     s.usage.Currency(),
-	}), nil
+	resp := &pptsv1.GetUsageResponse{
+		SecondsUsed: int64(seconds),
+		Currency:    s.usage.Currency(),
+	}
+	// 用户计费金额是租户自己的账单，所有成员可见；供应商成本是平台的采买成本，
+	// 属敏感的毛利口径，仅 admin/owner 可见（前端同款隐藏，见 SettingsUsage）。
+	if s.members == nil {
+		// 未配置成员体系（开发/私有化）按 requireRole 的放行语义：全部返回。
+		resp.UserAmount = userAmount
+		resp.SupplierCost = supplierCost
+		return connect.NewResponse(resp), nil
+	}
+	role, rerr := s.members.GetRole(ctx, p.TenantID, p.UserID)
+	resp.UserAmount = userAmount
+	if rerr == nil && roleRank(role) >= roleRank(membership.RoleAdmin) {
+		resp.SupplierCost = supplierCost
+	}
+	return connect.NewResponse(resp), nil
 }
 
 func (s *TenantService) ProjectUsage(ctx context.Context, req *connect.Request[pptsv1.GetProjectUsageRequest]) (*connect.Response[pptsv1.GetProjectUsageResponse], error) {

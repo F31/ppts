@@ -21,19 +21,19 @@ type narrationStoreStub struct {
 	err      error
 }
 
-func (s *narrationStoreStub) Get(context.Context, string, string, string, string) (*narration.Revision, error) {
+func (s *narrationStoreStub) Get(context.Context, string, string, int, string, string) (*narration.Revision, error) {
 	return s.revision, s.err
 }
 
-func (*narrationStoreStub) Update(context.Context, string, string, string, string, int64, []*narration.Segment) (*narration.Revision, error) {
+func (*narrationStoreStub) Update(context.Context, string, string, int, string, string, int64, []*narration.Segment) (*narration.Revision, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (*narrationStoreStub) SetStatus(context.Context, string, string, string, string, narration.ScriptStatus) (*narration.Revision, error) {
+func (*narrationStoreStub) SetStatus(context.Context, string, string, int, string, string, narration.ScriptStatus) (*narration.Revision, error) {
 	return nil, errors.New("not implemented")
 }
 
-func (*narrationStoreStub) EnsureExists(context.Context, string, string, string, string, narration.ScriptMode) (*narration.Revision, error) {
+func (*narrationStoreStub) EnsureExists(context.Context, string, string, int, string, string, narration.ScriptMode) (*narration.Revision, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -41,11 +41,11 @@ func (*narrationStoreStub) CountDraftSegments(context.Context, string, string) (
 	return 0, nil
 }
 
-func (*narrationStoreStub) MarkAudioRevision(context.Context, string, string, string, string, int64) error {
+func (*narrationStoreStub) MarkAudioRevision(context.Context, string, string, int, string, string, int64) error {
 	return nil
 }
 
-func (*narrationStoreStub) ListByProject(context.Context, string, string, string) ([]*narration.Revision, error) {
+func (*narrationStoreStub) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
 	return nil, nil
 }
 

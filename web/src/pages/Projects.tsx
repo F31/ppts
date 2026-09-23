@@ -1,7 +1,8 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   archiveProject,
   attachTag,
+  createExport,
   createFolder,
   createProject,
   createTag,
@@ -9,6 +10,8 @@ import {
   deleteSourceRevision,
   detachTag,
   downloadSourceRevision,
+  getPlaybackManifest,
+  getRevisionNarration,
   getRevisionVoiceStatus,
   getSourceRevisions,
   listFolders,
@@ -23,12 +26,13 @@ import {
   type SourceRevisionSummary
 } from '../api';
 import { describeApiError } from '../apiError';
+import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { ImportDialog } from '../components/ImportDialog';
 import { useConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
 import { can, type Capability } from '../permissions';
-import { type Folder, type Project, type ProjectOrg, type Role, type Tag } from '../types';
+import { type ArtifactFormat, type Folder, type PlaybackManifest, type Project, type ProjectOrg, type Role, type Tag } from '../types';
 
 type ProjectVersionsState = {
   loading: boolean;
@@ -87,6 +91,12 @@ export function Projects({
   const [error, setError] = useState('');
   const [importTarget, setImportTarget] = useState<Project | null>(null);
   const [expandedProjectId, setExpandedProjectId] = useState('');
+  // 导出弹窗：目标版本 + 已构建的播放清单（就地弹 ExportDialog，不再跳到编辑器）。
+  const [exportTarget, setExportTarget] = useState<{ projectId: string; revisionNo: number } | null>(null);
+  const [exportManifest, setExportManifest] = useState<PlaybackManifest | null>(null);
+  // 导出素材请求序号：并发点击不同项目的「导出」时，丢弃过期响应，避免"清单来自 A、
+  // 目标却是 B"的错配（历史事故：产物挂 B 名下、内容来自 A，预览页图/字幕对不上）。
+  const exportReqRef = useRef(0);
   const [versionsByProject, setVersionsByProject] = useState<Record<string, ProjectVersionsState>>({});
   // 每个 project+revision 的 PPT 展示名（本地暂存，刷新重置）。
   const [editableNames, setEditableNames] = useState<Record<string, Record<number, string>>>({});
@@ -259,6 +269,69 @@ export function Projects({
     setFilter('all');
     setFolderSel('all');
     setSelectedTags([]);
+  };
+
+  // 就地导出：读该版本的配音状态 → 构建播放清单 → 弹 ExportDialog（不再跳去编辑器）。
+  // ExportDialog 需要 manifest（页图数/快照尾），因此先取素材再弹窗；失败可视并给原因。
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState('');
+  const openExport = async (projectId: string, revisionNo: number) => {
+    const reqId = ++exportReqRef.current;
+    setExportError('');
+    setExportBusy(true);
+    try {
+      const status = await getRevisionNarration(identity, projectId, revisionNo);
+      if (reqId !== exportReqRef.current) return;
+      if (!status.ready || !status.timelineKey) throw new Error(t('projects.exportNoNarration'));
+      const manifest = await getPlaybackManifest({
+        identity,
+        projectId,
+        timelineKey: status.timelineKey,
+        pagePngKeys: status.pagePngKeys ?? [],
+        ttlSeconds: 900
+      });
+      if (reqId !== exportReqRef.current) return;
+      // 双保险：清单必须与请求的项目 + 时间轴同源，否则拒绝（防止并发/缓存错配）。
+      if (manifest.projectId !== projectId || manifest.timelineKey !== status.timelineKey) {
+        throw new Error(t('projects.exportPrepareFailed'));
+      }
+      setExportManifest(manifest);
+      setExportTarget({ projectId, revisionNo });
+    } catch (err) {
+      if (reqId !== exportReqRef.current) return;
+      setExportManifest(null);
+      setExportError(describeApiError(err, t('projects.exportPrepareFailed'), t));
+      setExportTarget({ projectId, revisionNo });
+    } finally {
+      if (reqId === exportReqRef.current) setExportBusy(false);
+    }
+  };
+
+  const runExport = async (format: ArtifactFormat, options: ExportOptions) => {
+    if (!exportManifest || !exportTarget) return;
+    setExportBusy(true);
+    setExportError('');
+    try {
+      const pagePngKeys = exportManifest.resources
+        .filter((resource) => resource.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG')
+        .map((resource) => resource.key);
+      const result = await createExport(identity, {
+        projectId: exportTarget.projectId,
+        format,
+        timelineKey: exportManifest.timelineKey,
+        pagePngKeys: format === 'ARTIFACT_FORMAT_MP4' ? pagePngKeys : [],
+        burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
+        includeNotes: options.includeNotes,
+        idempotencyKey: `export-${exportTarget.projectId}-${Date.now()}`
+      });
+      setExportTarget(null);
+      setExportManifest(null);
+      pushNotice(t('projects.exportQueued', { jobId: result.jobId }));
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : t('editor.exportFailed'));
+    } finally {
+      setExportBusy(false);
+    }
   };
 
   // 项目 → 组织关联（folderId / tagIds）。
@@ -613,7 +686,7 @@ export function Projects({
                     <button
                       type="button"
                       className="button-ghost"
-                      onClick={() => navigate(`/projects/${project.id}/editor?export=1&rev=${revision.revisionNo}`)}
+                      onClick={() => void openExport(project.id, revision.revisionNo)}
                       title={t('projects.export')}
                     >
                       {t('projects.export')}
@@ -1237,6 +1310,18 @@ export function Projects({
             pushNotice(t('projects.queued'));
             void load(true);
           }}
+        />
+      )}
+      {exportTarget && exportManifest && (
+        <ExportDialog
+          manifest={exportManifest}
+          busy={exportBusy}
+          error={exportError}
+          onClose={() => {
+            setExportTarget(null);
+            setExportError('');
+          }}
+          onSubmit={(format, options) => void runExport(format, options)}
         />
       )}
       {confirmDialogEl}

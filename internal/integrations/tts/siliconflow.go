@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -187,7 +188,9 @@ func wavDurationMSFromRIFF(data []byte) (int64, error) {
 	if byteRate == 0 || sampleRate == 0 || dataSize <= 0 {
 		return 0, errors.New("wav missing fmt/data chunks")
 	}
-	return int64(float64(dataSize) / float64(byteRate) * 1000), nil
+	// 四舍五入到整毫秒，避免截断引入最长近 1ms 的负误差（该时长同时用于
+	// 时间轴声明与额度结算）。
+	return int64(math.Round(float64(dataSize) / float64(byteRate) * 1000)), nil
 }
 
 func le32(b []byte) uint32 {

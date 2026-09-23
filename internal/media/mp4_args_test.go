@@ -129,9 +129,10 @@ func TestCompileEncodeArgsTimelineFilterChainPinsPageDurations(t *testing.T) {
 		t.Fatalf("total = %v, want (700+300)/1000 = 1", total)
 	}
 	// 注意：可变时长路径下每个输入各自带 -t（页时长），故输出总时长必须看**末尾**的 -t。
-	tail := args[len(args)-3:]
-	if tail[0] != "-t" || tail[1] != "1.000000" || tail[2] != "/out/v.mp4" {
-		t.Fatalf("tail = %v, want [-t 1.000000 /out/v.mp4]", tail)
+	// 其后固定跟 -movflags +faststart（moov 前置，浏览器可渐进播放/拖动）。
+	tail := args[len(args)-5:]
+	if tail[0] != "-t" || tail[1] != "1.000000" || tail[2] != "-movflags" || tail[3] != "+faststart" || tail[4] != "/out/v.mp4" {
+		t.Fatalf("tail = %v, want [-t 1.000000 -movflags +faststart /out/v.mp4]", tail)
 	}
 }
 
@@ -150,6 +151,24 @@ func TestCompileEncodeArgsBurnsSubtitlesIntoVideoFilter(t *testing.T) {
 	}
 	if strings.Contains(vf, "/work") {
 		t.Fatalf("subtitle path must be a relative basename, got %q", vf)
+	}
+}
+
+// TestCompileEncodeArgsUsesASSSubtitleFile 守护 ASS 烧录路径：in.SubtitleFile 指向 ASS 时，
+// 滤镜必须引用 subtitles.ass（逐行轮换 + 朗读高亮），而不是默认的 subtitles.srt。
+func TestCompileEncodeArgsUsesASSSubtitleFile(t *testing.T) {
+	in := inputsFor(1, false)
+	in.SubtitleFile = subtitleASSFileName
+	args, _, err := compileEncodeArgs(MP4EncodeOptions{
+		OutPath: "/out/v.mp4", FPS: 1, Width: 320, Height: 180,
+		PagePNGs: [][]byte{{1}}, BurnSubtitles: true, SubtitleASS: []byte("[Script Info]\n"),
+	}, in)
+	if err != nil {
+		t.Fatalf("compileEncodeArgs: %v", err)
+	}
+	vf, _ := argsValue(args, "-vf")
+	if !strings.HasSuffix(vf, ",subtitles=filename="+subtitleASSFileName) {
+		t.Fatalf("vf must reference the ASS file: %q", vf)
 	}
 }
 

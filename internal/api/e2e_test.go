@@ -66,6 +66,11 @@ func setupE2E(t *testing.T) (*pgxpool.Pool, *pipeline.PGStore, objectstore.Objec
 	if _, err := pool.Exec(ctx, "INSERT INTO tenants(id,name) VALUES ($1,$2)", e2eTenant, "e2e"); err != nil {
 		t.Fatalf("seed tenant: %v", err)
 	}
+	// 建项目会写入 project_collaborators（owner 行），其 user_id 外键指向 users，
+	// 因此测试用户必须先落库。
+	if _, err := pool.Exec(ctx, "INSERT INTO users(id, email) VALUES ($1,$2) ON CONFLICT DO NOTHING", e2eUser, e2eUser+"@e2e.local"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
 	jobs, err := pipeline.NewPGStore(ctx, dsn)
 	if err != nil {
 		t.Fatalf("jobs: %v", err)

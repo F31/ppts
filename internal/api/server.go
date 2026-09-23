@@ -143,6 +143,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 				"email_password": false,
 				"local":          true,
 				"tenant_id":      local.TenantID,
+				"tenant_name":    local.TenantName,
 				"user_id":        local.UserID,
 				// 单租户本地模式即个人账号（1 个成员）→ 前端隐藏成员管理入口。
 				"tenant_type": accountTypePersonal,
@@ -154,7 +155,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 项目级讲稿列表：避免编辑器逐页探测不存在的讲稿导致大量 404。
 	registerScriptRoutes(mux, scripts, opt.Members, projects, opt.Audit, opt.Gateway, auth)
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
-	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, auth)
+	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, jobs, objects, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
 	registerEditorRoutes(mux, jobs, objects, scripts, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。

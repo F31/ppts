@@ -27,6 +27,7 @@ func NewTTSProvider(cfg *Config) tts.TTSProvider {
 }
 
 // NewLLMProvider 从运行时配置构建 OpenAI 兼容 LLM 供应商（文本改写 + 视觉锚点）。
+// 视觉能力由 cfg.VisionModel 决定：非空即用于多模态调用；为空表示该配置不启用视觉。
 func NewLLMProvider(cfg *Config) (*llm.SiliconFlowProvider, error) {
 	return llm.NewSiliconFlowProvider(llm.SiliconFlowConfig{
 		BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: cfg.Model, VisionModel: cfg.VisionModel,
