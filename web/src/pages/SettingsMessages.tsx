@@ -223,7 +223,17 @@ function EmailChannel({
         </label>
         <label className="field">
           <span className="field-label">{t('messages.tlsMode')}</span>
-          <select value={tlsMode} onChange={(e) => setTlsMode(e.currentTarget.value)}>
+          <select
+            value={tlsMode}
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              setTlsMode(v);
+              // 加密方式 ↔ 端口联动：切换加密方式时同步到该方式的常用端口。
+              if (v === 'tls') setPort('465');
+              else if (v === 'starttls') setPort('587');
+              else if (v === 'none') setPort('25');
+            }}
+          >
             <option value="starttls">STARTTLS (587)</option>
             <option value="tls">TLS (465)</option>
             <option value="none">None (25)</option>
