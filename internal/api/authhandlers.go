@@ -16,6 +16,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/mail"
+	"github.com/F31/ppts/internal/observability"
+	"github.com/F31/ppts/internal/usage"
 )
 
 // authDeps 是认证路由的依赖集合。
@@ -32,6 +34,12 @@ type authDeps struct {
 	requireEmailVerified bool
 	logger               *log.Logger
 	dummy                string
+	// settings 为第二批注册治理/运营商配置。
+	settings authSettings
+	// registerDaily 单 IP 每日注册上限（settings.registerDailyPerIP>0 时非 nil）。
+	registerDaily *fixedWindowLimiter
+	// quota 用于注册时发放默认免费额度；nil 时跳过。
+	quota usage.Store
 }
 
 // registerAuthRoutes 挂载邮箱/手机自助注册、登录、验证、重置、登出端点。
@@ -154,8 +162,17 @@ func (d *authDeps) sendResetEmail(ctx context.Context, to, token, base string) {
 // ---------------------------------------------------------------------------
 
 func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
+	if !d.settings.registrationEnabled {
+		observability.AuthEvent("register_disabled")
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": "registration_disabled", "message": "registration is currently disabled"})
+		return
+	}
 	if !d.limits.register.allow(d.ip(r)) {
 		d.tooMany(w)
+		return
+	}
+	if d.registerDaily != nil && !d.registerDaily.allow(d.ip(r)) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"code": "rate_limited", "message": "daily registration limit reached for this network"})
 		return
 	}
 	var body struct {
@@ -164,6 +181,7 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Password    string `json:"password"`
 		AccountType string `json:"account_type"`
 		OrgName     string `json:"org_name"`
+		InviteCode  string `json:"invite_code"`
 		Username    string `json:"username"`
 		FullName    string `json:"full_name"`
 		Gender      string `json:"gender"`
@@ -172,6 +190,11 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if d.settings.inviteCode != "" && strings.TrimSpace(body.InviteCode) != d.settings.inviteCode {
+		observability.AuthEvent("register_invalid_invite")
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": "invalid_invite_code", "message": "invalid invite code"})
 		return
 	}
 	rawAccount := body.Account
@@ -212,6 +235,7 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if exists {
+		observability.AuthEvent("register_conflict")
 		writeJSON(w, http.StatusConflict, map[string]any{"code": "registration_failed", "message": "registration failed"})
 		return
 	}
@@ -285,6 +309,14 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 发放默认免费额度（防滥用同时给新账号可用空间）；失败不影响注册成功。
+	if d.quota != nil && d.settings.defaultGenSeconds > 0 {
+		if err := d.quota.SetLimit(ctx, tenantID, usage.KindGenSeconds, d.settings.defaultGenSeconds, d.settings.priceVersion); err != nil && d.logger != nil {
+			d.logger.Printf("auth: grant default quota for tenant %s failed: %v", tenantID, err)
+		}
+	}
+
+	observability.AuthEvent("register_success")
 	token, err := issueToken(tenantID, userID, 0, d.jwtSecret)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -300,6 +332,7 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		"account":        acct.String(),
 		"account_kind":   accountKindName(acct.Kind),
 		"email_verified": acct.Kind != accountKindEmail,
+		"operator":       d.settings.isOperator(userID),
 	})
 }
 
@@ -343,6 +376,7 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	key := acct.String()
 	if d.limits.loginFail.locked(key) {
+		observability.AuthEvent("login_locked")
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"code": "account_locked", "message": "too many failed attempts, please try again later",
 		})
@@ -353,6 +387,7 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		_ = verifyPassword(d.dummy, body.Password, d.pepper)
 		d.limits.loginFail.fail(key)
+		observability.AuthEvent("login_failure")
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid account or password"})
 		return
 	}
@@ -362,6 +397,7 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if !verifyPassword(row.Hash, body.Password, d.pepper) {
 		d.limits.loginFail.fail(key)
+		observability.AuthEvent("login_failure")
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid account or password"})
 		return
 	}
@@ -378,6 +414,7 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.limits.loginFail.reset(key)
+	observability.AuthEvent("login_success")
 
 	token, err := issueToken(row.TenantID, row.UserID, row.userAccount.TokenVersion, d.jwtSecret)
 	if err != nil {
@@ -394,6 +431,7 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 		"account":        key,
 		"account_kind":   accountKindName(acct.Kind),
 		"email_verified": !isEmailAccount || emailVerified,
+		"operator":       d.settings.isOperator(row.UserID),
 	})
 }
 
@@ -424,6 +462,7 @@ func (d *authDeps) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	observability.AuthEvent("verify_email")
 	writeJSON(w, http.StatusOK, map[string]any{"email_verified": true})
 }
 
@@ -543,6 +582,7 @@ func (d *authDeps) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// 提升会话代次：重置后所有旧会话失效，需重新登录。
 	_ = d.store.bumpTokenVersion(ctx, userID)
 	d.clearSessionCookie(w)
+	observability.AuthEvent("password_reset")
 	writeJSON(w, http.StatusOK, map[string]any{"reset": true})
 }
 
@@ -555,5 +595,7 @@ func (d *authDeps) handleAuthConfig(w http.ResponseWriter, _ *http.Request) {
 		"email_password":         d.jwtSecret != "",
 		"mail_configured":        d.mailer != nil,
 		"require_email_verified": d.requireEmailVerified,
+		"registration_enabled":   d.settings.registrationEnabled,
+		"invite_required":        d.settings.inviteCode != "",
 	})
 }

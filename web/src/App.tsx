@@ -7,6 +7,7 @@ import { Home } from './pages/Home';
 import { Jobs } from './pages/Jobs';
 import { Login } from './pages/Login';
 import { AccountRecovery } from './pages/AccountRecovery';
+import { Admin } from './pages/Admin';
 import { Library } from './pages/Library';
 import { ProjectEditor } from './pages/ProjectEditor';
 import { Projects } from './pages/Projects';
@@ -244,6 +245,10 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
         return guard('library.view', <Library identity={identity} role={role} />);
       case 'jobs':
         return <Jobs identity={identity} />;
+      case 'admin':
+        // 运营商后台：仅 identity.operator（后端 PPTS_OPERATOR_USER_IDS）可见；
+        // 后端 /admin/* 另有一道 403 兜底。
+        return identity.operator ? <Admin identity={identity} /> : <NoPermissionNotice />;
       case 'settings':
         switch (parts[1]) {
           // 成员管理：变更角色/移除要求 ADMIN（tenant.go:114,142），整页门控。

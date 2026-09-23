@@ -35,6 +35,9 @@ export function Login() {
 
   // 邮箱能力探测（B5 门控：能力未配置则隐藏入口，不做假登录）。
   const [emailEnabled, setEmailEnabled] = useState<boolean | null>(null);
+  const [registerEnabled, setRegisterEnabled] = useState(true);
+  const [inviteRequired, setInviteRequired] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
   const [emailMode, setEmailMode] = useState<EmailMode>('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -54,7 +57,10 @@ export function Login() {
     let cancelled = false;
     getAuthConfig()
       .then((cfg) => {
-        if (!cancelled) setEmailEnabled(cfg.email_password);
+        if (cancelled) return;
+        setEmailEnabled(cfg.email_password);
+        setRegisterEnabled(cfg.registration_enabled !== false);
+        setInviteRequired(cfg.invite_required === true);
       })
       .catch(() => {
         if (!cancelled) setEmailEnabled(false);
@@ -135,6 +141,7 @@ export function Login() {
               password,
               accountType,
               orgName: accountType === 'organization' ? trimmedOrg : undefined,
+              inviteCode,
               username: regUsername,
               fullName: regFullName,
               gender: regGender,
@@ -149,6 +156,7 @@ export function Login() {
         account: res.account,
         accountKind: res.account_kind,
         emailVerified: res.email_verified,
+        operator: res.operator,
         tenantName: res.tenant_name,
         tenantType: res.tenant_type,
       });
@@ -169,7 +177,9 @@ export function Login() {
   // 组织名称的行内提示与提交门禁：仅在"组织"模式下校验。
   const registerOrg = emailMode === 'register' && accountType === 'organization';
   const orgErr = registerOrg && orgName.trim() !== '' ? orgNameError(orgName.trim()) : null;
-  const registerBlocked = registerOrg && orgNameError(orgName.trim()) !== null;
+  const registerBlocked =
+    (registerOrg && orgNameError(orgName.trim()) !== null) ||
+    (emailMode === 'register' && inviteRequired && inviteCode.trim() === '');
 
   return (
     <main className="login-page">
@@ -213,6 +223,16 @@ export function Login() {
                   value={password}
                   autoComplete={emailMode === 'register' ? 'new-password' : 'current-password'}
                   onChange={(e) => setPassword(e.currentTarget.value)}
+                />
+              </label>
+            )}
+            {emailMode === 'register' && inviteRequired && (
+              <label>
+                {t('login.inviteCode')}
+                <input
+                  value={inviteCode}
+                  autoComplete="off"
+                  onChange={(e) => setInviteCode(e.currentTarget.value)}
                 />
               </label>
             )}
@@ -310,9 +330,11 @@ export function Login() {
                 </button>
               ) : (
                 <>
-                  <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('register')}>
-                    {t('login.needAccount')}
-                  </button>
+                  {registerEnabled && (
+                    <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('register')}>
+                      {t('login.needAccount')}
+                    </button>
+                  )}
                   <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('forgot')}>
                     {t('login.forgotPassword')}
                   </button>

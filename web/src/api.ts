@@ -40,6 +40,8 @@ export type ClientIdentity = {
   accountKind?: string;
   // emailVerified 表示邮箱是否已验证；未验证时界面提示"验证邮箱"。
   emailVerified?: boolean;
+  // operator 表示该用户是运营商（PPTS_OPERATOR_USER_IDS），可访问 /admin 运营后台。
+  operator?: boolean;
   // tenantName 为租户显示名，仅邮箱注册/登录路径从后端 tenants.name 带回；
   // 旧会话或开发/OIDC 登录无此字段时，界面回退显示 tenantId。
   tenantName?: string;
@@ -141,6 +143,7 @@ export type EmailAuthResult = {
   account: string;
   account_kind?: string;
   email_verified?: boolean;
+  operator?: boolean;
 };
 
 // AuthConfig 是后端认证能力探测结果。
@@ -152,6 +155,10 @@ export type AuthConfig = {
   mail_configured?: boolean;
   // require_email_verified 表示后端强制邮箱验证后才能登录。
   require_email_verified?: boolean;
+  // registration_enabled=false 时隐藏"创建账户"入口（封闭注册）。
+  registration_enabled?: boolean;
+  // invite_required=true 时注册需填写邀请码。
+  invite_required?: boolean;
   local?: boolean;
   tenant_id?: string;
   user_id?: string;
@@ -177,6 +184,7 @@ export async function registerEmail(params: {
   password: string;
   accountType: 'personal' | 'organization';
   orgName?: string;
+  inviteCode?: string;
   username?: string;
   fullName?: string;
   gender?: string;
@@ -189,6 +197,7 @@ export async function registerEmail(params: {
     password: params.password,
     account_type: params.accountType,
     org_name: params.orgName ?? '',
+    invite_code: params.inviteCode ?? '',
     username: params.username ?? '',
     full_name: params.fullName ?? '',
     gender: params.gender ?? '',
@@ -1741,4 +1750,36 @@ export function shareUrl(url: string): string {
   if (!url) return '';
   if (/^https?:\/\//i.test(url)) return url;
   return `${window.location.origin}${url.startsWith('/') ? url : `/${url}`}`;
+}
+
+// ---- 运营商后台（第二批）：跨租户查看与挂起/恢复 ----
+export type AdminTenantQuota = {
+  kind: string;
+  limit_units: number;
+  reserved_units: number;
+  consumed_units: number;
+  available_units: number;
+  unlimited: boolean;
+};
+
+export type AdminTenant = {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  created_at: string;
+  quota?: AdminTenantQuota;
+};
+
+export async function listAdminTenants(identity: ClientIdentity): Promise<AdminTenant[]> {
+  const r = await getJSON<{ tenants: AdminTenant[] }>(identity, '/admin/tenants');
+  return r.tenants ?? [];
+}
+
+export async function suspendTenant(identity: ClientIdentity, tenantId: string): Promise<void> {
+  await postJSON(identity, `/admin/tenants/${encodeURIComponent(tenantId)}/suspend`, {});
+}
+
+export async function resumeTenant(identity: ClientIdentity, tenantId: string): Promise<void> {
+  await postJSON(identity, `/admin/tenants/${encodeURIComponent(tenantId)}/resume`, {});
 }

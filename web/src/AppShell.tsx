@@ -8,7 +8,7 @@ import { can, type Capability } from './permissions';
 import { useDialogA11y } from './a11y';
 import { CommandPalette } from './components/CommandPalette';
 
-export type NavItem = { key: string; to: string; labelKey: string; icon: string; need?: Capability };
+export type NavItem = { key: string; to: string; labelKey: string; icon: string; need?: Capability; operatorOnly?: boolean };
 
 export const primaryNav: NavItem[] = [
   { key: 'home', to: '/home', labelKey: 'nav.home', icon: '🏠' },
@@ -16,6 +16,8 @@ export const primaryNav: NavItem[] = [
   { key: 'jobs', to: '/jobs', labelKey: 'nav.jobs', icon: '⚙️' },
   // B5-M2：跨项目成品库（owner 级），带 need 由侧栏按角色过滤，保持「菜单与后端一致」（A22）。
   { key: 'library', to: '/library', labelKey: 'nav.library', icon: '🗃️', need: 'library.view' },
+  // 第二批：运营商后台，仅 identity.operator 可见（后端另有 403 兜底）。
+  { key: 'admin', to: '/admin', labelKey: 'nav.admin', icon: '🛡️', operatorOnly: true },
   { key: 'settings', to: '/settings/models', labelKey: 'nav.settings', icon: '🔧' }
 ];
 
@@ -83,7 +85,11 @@ export function AppShell({ children, role, roleReady = true }: { children: React
     (item) => roleReady && can(role, item.need) && !(item.hideForPersonal && personalTenant)
   );
   // B5-M2：侧栏主导航同样按 need 过滤（library 仅 owner 可见），保持「菜单与后端一致」（A22）。
-  const visiblePrimary = primaryNav.filter((item) => !item.need || (roleReady && can(role, item.need)));
+  // 第二批：operatorOnly 项仅对 operator 渲染。
+  const visiblePrimary = primaryNav.filter(
+    (item) =>
+      (!item.need || (roleReady && can(role, item.need))) && (!item.operatorOnly || identity?.operator === true)
+  );
   // 「设置」入口落到第一个可见子页；解析中先落用量页（仅需已认证，对任何角色都安全）。
   const settingsHome = visibleSettings[0]?.to ?? '/settings/usage';
 

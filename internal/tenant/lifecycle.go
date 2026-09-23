@@ -3,6 +3,7 @@ package tenant
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -62,4 +63,37 @@ func (s *PGStore) Resume(ctx context.Context, tenantID string) error {
 		return ErrTenantNotFound
 	}
 	return nil
+}
+
+// Summary 是运营商后台所需的租户概览行。
+type Summary struct {
+	ID        string
+	Name      string
+	Type      string
+	Status    Status
+	CreatedAt time.Time
+}
+
+// ListTenants 返回租户概览（按创建时间倒序，最多 limit 条）。
+func (s *PGStore) ListTenants(ctx context.Context, limit int) ([]Summary, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 200
+	}
+	rows, err := s.pool.Query(ctx,
+		`SELECT id::text, name, type, status, created_at FROM tenants ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Summary
+	for rows.Next() {
+		var sm Summary
+		var status string
+		if err := rows.Scan(&sm.ID, &sm.Name, &sm.Type, &status, &sm.CreatedAt); err != nil {
+			return nil, err
+		}
+		sm.Status = Status(status)
+		out = append(out, sm)
+	}
+	return out, rows.Err()
 }

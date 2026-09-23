@@ -27,6 +27,8 @@ func TestRegisterAccountTypes(t *testing.T) {
 		t.Skip("PPTS_TEST_DATABASE not set")
 	}
 	ctx := context.Background()
+	// 关闭每 IP 每日注册上限，保证用例内多次注册不受限流影响（限流另有专门用例）。
+	t.Setenv("PPTS_REGISTER_DAILY_PER_IP", "0")
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("pool: %v", err)

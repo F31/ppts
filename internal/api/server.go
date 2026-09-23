@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"expvar"
 	"io/fs"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -26,6 +28,7 @@ import (
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/public"
 	"github.com/F31/ppts/internal/upload"
+	"github.com/F31/ppts/internal/usage"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -45,7 +48,9 @@ func tracingInterceptor() connect.UnaryInterceptorFunc {
 // Options 是可选横切依赖（G3-2 配额预占、G3-9 租户用量/策略）。
 // tenant_id 始终由服务端从可信身份推导，客户端传入值不作授权依据。
 type Options struct {
-	Quota        QuotaManager
+	Quota QuotaManager
+	// UsageStore 是完整用量/配额存储（注册默认额发放、运营商用量视图）；Quota 是其预占子集。
+	UsageStore   usage.Store
 	Usage        TenantUsageReader
 	Policy       TenantPolicyReader
 	Audit        audit.Store
@@ -73,6 +78,8 @@ type Options struct {
 	RequireEmailVerified bool
 	// Logger 供认证流程记录降级/发送失败等。
 	Logger *log.Logger
+	// PriceVersion 是当前定价表版本，写入新租户默认配额行的 price_version。
+	PriceVersion string
 	// WebRoot 指向前端构建产物目录（vite build 输出）。非空时由 Go 直接托管静态资源与
 	// SPA history 兜底 —— 单二进制部署无需 nginx。
 	WebRoot string
@@ -96,6 +103,18 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("GET /debug/vars", expvar.Handler())
+	// Prometheus 指标：可选 token 保护（PPTS_METRICS_TOKEN）。未配置 token 时按内网抓取放行，
+	// 部署时应置于内网或反向代理鉴权之后（见 runbook）。
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if tok := os.Getenv("PPTS_METRICS_TOKEN"); tok != "" {
+			got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+			if subtle.ConstantTimeCompare([]byte(got), []byte(tok)) != 1 {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		observability.PrometheusHandler().ServeHTTP(w, r)
+	})
 	allowDevHeaders := opt.Auth == nil || opt.DevHeaders
 	auth := func(handler http.Handler) http.Handler {
 		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal})
@@ -142,6 +161,11 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	// 邮箱/手机自助注册（B5-M4）：注册/登录/验证/重置/登出端点。pool 为 nil 时不挂载（测试桩）。
 	if pool != nil {
+		settings := authSettingsFromEnv(opt.PriceVersion)
+		var registerDaily *fixedWindowLimiter
+		if settings.registerDailyPerIP > 0 {
+			registerDaily = newFixedWindowLimiter(24*time.Hour, settings.registerDailyPerIP)
+		}
 		registerAuthRoutes(mux, &authDeps{
 			pool:                 pool,
 			store:                newAuthStore(pool),
@@ -154,7 +178,20 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			requireEmailVerified: opt.RequireEmailVerified,
 			logger:               opt.Logger,
 			dummy:                precomputeDummyHash(),
+			settings:             settings,
+			registerDaily:        registerDaily,
+			quota:                opt.UsageStore,
 		})
+	}
+	// 运营商后台（第二批）：仅 PPTS_OPERATOR_USER_IDS 中的用户可访问；tenant store
+	// （opt.TenantStatus 的底层 *tenant.PGStore）实现 ListTenants/Suspend/Resume 时挂载。
+	if ta, ok := opt.TenantStatus.(TenantAdminStore); ok {
+		registerAdminRoutes(mux, &adminDeps{
+			operatorIDs: authSettingsFromEnv(opt.PriceVersion).operatorIDs,
+			tenants:     ta,
+			quota:       opt.UsageStore,
+			logger:      opt.Logger,
+		}, auth)
 	}
 	// 单租户本地模式（SQLite profile）：暴露 /auth/config 告知前端"无需登录"，
 	// 前端据此以固定本地身份自动进入，跳过登录页。local=true 时 email_password 恒 false。

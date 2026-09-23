@@ -31,6 +31,8 @@ func TestPhoneAndEmailRegistrationFlows(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
+	// 关闭每 IP 每日注册上限，保证用例内多次注册不受限流影响（限流另有专门用例）。
+	t.Setenv("PPTS_REGISTER_DAILY_PER_IP", "0")
 	const secret, pepper = "test-secret", "pepper"
 	server := httptest.NewServer(NewHandler(nil, nil, nil, nil, nil, nil, pool,
 		Options{JWTSecret: secret, PasswordPepper: pepper}))

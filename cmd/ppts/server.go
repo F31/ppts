@@ -80,7 +80,7 @@ func runServer() error {
 				api.NewHandler(stores.projects, stores.uploads, stores.scripts, stores.jobs,
 					stores.artifacts, stores.objects, handlerPool,
 					api.Options{
-						Quota: stores.usage, Usage: stores.usage, Policy: stores.tenant,
+						Quota: stores.usage, UsageStore: stores.usage, Usage: stores.usage, Policy: stores.tenant,
 						Audit: stores.audit, Members: stores.members,
 						Lifecycle: stores.tenant, Storage: stores.tenant,
 						Archive: stores.tenant, TenantStatus: stores.tenant,
@@ -93,6 +93,7 @@ func runServer() error {
 						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",
 						RequireEmailVerified: os.Getenv("PPTS_REQUIRE_EMAIL_VERIFIED") == "true",
 						Logger:               stdLogger,
+						PriceVersion:         priceBook.Version,
 						WebRoot:              os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
 					}),
 			),
