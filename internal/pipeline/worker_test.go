@@ -105,6 +105,38 @@ func TestWorkerPermanentFailure(t *testing.T) {
 	}
 }
 
+// TestWorkerRetryExhaustedMaxAttempts 覆盖可重试错误在达到 MaxAttempts 后落为失败终态，
+// 而不是无限轮换"等待重试/处理中"（例如 TTS 供应商持续 TLS 握手超时）。
+func TestWorkerRetryExhaustedMaxAttempts(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	w := NewWorker(s, "wk", testTenant, func(ctx context.Context, job *Job) error {
+		return &RetryError{Err: errors.New("tls handshake timeout")}
+	}, WorkerOptions{
+		Poll:        10 * time.Millisecond,
+		MaxAttempts: 3,
+		Backoff:     func(attempt int) time.Duration { return 10 * time.Millisecond },
+	})
+
+	j, _ := s.Create(ctx, testTenant, testProject, string(KindNarration), "w-exhaust", "snap", time.Time{})
+	runCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = w.Run(runCtx) // 循环至超时；任务应已在 attempt=3 落为 failed
+
+	got, err := s.Get(ctx, j.ID, testTenant)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != StateFailed {
+		t.Fatalf("exhausted retries: state=%s (want failed)", got.State)
+	}
+	if got.Attempt != 3 {
+		t.Fatalf("exhausted retries: attempt=%d (want 3)", got.Attempt)
+	}
+	if got.LastError == nil || got.LastError.Code != "retries_exhausted" || !got.LastError.Retryable {
+		t.Fatalf("exhausted retries last_error=%+v", got.LastError)
+	}
+}
 func TestWorkerUnknownProviderResultCanBeRetried(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()

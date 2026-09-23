@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -27,18 +28,19 @@ type Claimer interface {
 // Worker 是任务执行器（V4.0 §10.2）：
 // 短事务领取 → 事务外执行 + 心跳续租 → fencing 条件提交；崩溃不写终态、租约到期重领取。
 type Worker struct {
-	store      Store
-	claimer    Claimer
-	owner      string
-	tenantID   string
-	leaseFor   time.Duration
-	heartbeat  time.Duration
-	poll       time.Duration
-	handler    HandlerFunc
-	backoff    func(attempt int) time.Duration
-	logger     *log.Logger
-	metrics    WorkerMetrics
-	onCanceled func(context.Context, *Job) error
+	store       Store
+	claimer     Claimer
+	owner       string
+	tenantID    string
+	leaseFor    time.Duration
+	heartbeat   time.Duration
+	poll        time.Duration
+	handler     HandlerFunc
+	backoff     func(attempt int) time.Duration
+	maxAttempts int
+	logger      *log.Logger
+	metrics     WorkerMetrics
+	onCanceled  func(context.Context, *Job) error
 	// claimMu 串行化进程内的领取。SQLite 的 ClaimNext 是「SELECT 后 UPDATE」的延迟事务，
 	// 多 goroutine 并发领取会相互 BUSY/重领；领取本身极短，加锁成本可忽略，处理仍并发。
 	claimMu sync.Mutex
@@ -50,9 +52,13 @@ type WorkerOptions struct {
 	Heartbeat  time.Duration // 心跳间隔（默认 lease/3）
 	Poll       time.Duration // 无任务轮询间隔（默认 500ms）
 	Backoff    func(attempt int) time.Duration
-	Logger     *log.Logger
-	Metrics    WorkerMetrics
-	OnCanceled func(context.Context, *Job) error
+	// MaxAttempts 单任务最大执行次数（含首次）。达到上限后不再自动重试，
+	// 可重试错误也会落为失败终态，交给用户手动重试（Jobs 列表可 Retry）。
+	// 默认 10。
+	MaxAttempts int
+	Logger      *log.Logger
+	Metrics     WorkerMetrics
+	OnCanceled  func(context.Context, *Job) error
 	// Claimer 指定的独立领取器（跨租户调度连接）。nil 时使用 store 领取。
 	Claimer Claimer
 }
@@ -92,6 +98,10 @@ func NewWorker(store Store, owner, tenantID string, handler HandlerFunc, opts Wo
 	w.backoff = opts.Backoff
 	if w.backoff == nil {
 		w.backoff = func(attempt int) time.Duration { return time.Duration(1<<uint(min(attempt, 5))) * time.Second }
+	}
+	w.maxAttempts = opts.MaxAttempts
+	if w.maxAttempts <= 0 {
+		w.maxAttempts = 10
 	}
 	w.logger = opts.Logger
 	if w.logger == nil {
@@ -202,6 +212,17 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 			return
 		}
 		if retry := AsRetry(err); retry != nil {
+			if job.Attempt >= w.maxAttempts {
+				// 达到最大执行次数：不再自动重试。TTS/供应商持续不可达（如 TLS 握手超时）时，
+				// 无限轮换"等待重试/处理中"只会空耗 worker；落为失败终态，用户恢复后可在任务列表手动重试。
+				if cerr := w.store.Complete(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateFailed, marshalMaxAttemptsError(retry, w.maxAttempts)); cerr != nil {
+					w.logger.Printf("worker: complete failed after max attempts job=%s: %v", job.ID, cerr)
+				} else {
+					w.metrics.JobCompleted(job, StateFailed, time.Since(started))
+				}
+				w.logger.Printf("worker: job %s exhausted %d attempts, marked failed", job.ID, job.Attempt)
+				return
+			}
 			at := retry.At
 			if at.IsZero() {
 				at = time.Now().Add(w.backoff(job.Attempt))
@@ -289,6 +310,17 @@ func marshalRetryError(r *RetryError, at time.Time) []byte {
 	je := JobError{Code: "retryable", Message: r.Err.Error(), Retryable: true}
 	if d := time.Until(at); d > 0 {
 		je.RetryAfterSeconds = int(d / time.Second)
+	}
+	b, _ := json.Marshal(je)
+	return b
+}
+
+// marshalMaxAttemptsError 序列化"重试次数耗尽"的失败：保留底层可重试信息，提示用户手动重试。
+func marshalMaxAttemptsError(r *RetryError, attempts int) []byte {
+	je := JobError{
+		Code:      "retries_exhausted",
+		Message:   fmt.Sprintf("job failed after %d attempts: %v", attempts, r.Err),
+		Retryable: true,
 	}
 	b, _ := json.Marshal(je)
 	return b

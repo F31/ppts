@@ -136,9 +136,10 @@ func runWorker() error {
 	hostname, _ := os.Hostname()
 	owner := hostname + "-" + strconv.Itoa(os.Getpid())
 	worker := pipeline.NewWorker(jobs, owner, tenantID, dispatch, pipeline.WorkerOptions{
-		Metrics: metrics,
-		Logger:  stdLogger,
-		Claimer: claimer,
+		Metrics:     metrics,
+		Logger:      stdLogger,
+		Claimer:     claimer,
+		MaxAttempts: envInt("PPTS_WORKER_MAX_ATTEMPTS", 10),
 		OnCanceled: func(ctx context.Context, job *pipeline.Job) error {
 			if job.Kind != pipeline.KindNarration || job.IDempotencyKey == "" {
 				return nil
