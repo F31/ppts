@@ -14,12 +14,12 @@ import (
 // scan 全部复用同一顺序（同 pipeline.jobSelectColumns 的做法），避免新增列时只改一处导致
 // 扫描错位——这类错位在编译期不可见，只会在运行时把值读进错误的字段。
 const artifactColumns = `id, tenant_id, project_id, snapshot_hash, format, object_key,
-	content_hash, size_bytes, duration_ms, timeline_key, created_at`
+	content_hash, size_bytes, duration_ms, timeline_key, created_at, revision_no, source_display_name`
 
 // artifactColumnsA 是 ListAll 专用的 a 表限定版列清单：该查询 JOIN projects（同有 id/tenant_id/
 // created_at 列），未限定列名会触发 SQLSTATE 42702 ambiguous。与 artifactColumns 保持同序。
 const artifactColumnsA = `a.id, a.tenant_id, a.project_id, a.snapshot_hash, a.format, a.object_key,
-	a.content_hash, a.size_bytes, a.duration_ms, a.timeline_key, a.created_at`
+	a.content_hash, a.size_bytes, a.duration_ms, a.timeline_key, a.created_at, a.revision_no, a.source_display_name`
 
 type PGStore struct {
 	pool *pgxpool.Pool
@@ -34,14 +34,15 @@ func (s *PGStore) Create(ctx context.Context, tenantID string, in NewArtifact) (
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		a, e = scan(tx.QueryRow(ctx, `INSERT INTO artifacts
-			(id, tenant_id, project_id, snapshot_hash, format, object_key, content_hash, size_bytes, duration_ms, timeline_key)
-			VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,$8,$9)
+			(id, tenant_id, project_id, snapshot_hash, format, object_key, content_hash, size_bytes, duration_ms, timeline_key, revision_no, source_display_name)
+			VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 			ON CONFLICT (tenant_id, project_id, snapshot_hash, format) DO UPDATE
 			  SET object_key=EXCLUDED.object_key, content_hash=EXCLUDED.content_hash,
 			      size_bytes=EXCLUDED.size_bytes, duration_ms=EXCLUDED.duration_ms,
-			      timeline_key=EXCLUDED.timeline_key
+			      timeline_key=EXCLUDED.timeline_key,
+			      revision_no=EXCLUDED.revision_no, source_display_name=EXCLUDED.source_display_name
 			RETURNING `+artifactColumns,
-			tenantID, in.ProjectID, in.SnapshotHash, string(in.Format), in.ObjectKey, in.ContentHash, in.SizeBytes, in.DurationMS, in.TimelineKey))
+			tenantID, in.ProjectID, in.SnapshotHash, string(in.Format), in.ObjectKey, in.ContentHash, in.SizeBytes, in.DurationMS, in.TimelineKey, in.SourceRevisionNo, in.SourceDisplayName))
 		return e
 	})
 	return a, err
@@ -129,7 +130,7 @@ func scanRowsWithProject(row rowScanner) (*Artifact, error) {
 	var a Artifact
 	var format string
 	if err := row.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
-		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &a.CreatedAt, &a.ProjectName); err != nil {
+		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &a.CreatedAt, &a.SourceRevisionNo, &a.SourceDisplayName, &a.ProjectName); err != nil {
 		return nil, err
 	}
 	a.Format = Format(format)
@@ -145,7 +146,7 @@ func scanRows(row rowScanner) (*Artifact, error) {
 	var a Artifact
 	var format string
 	if err := row.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
-		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &a.CreatedAt); err != nil {
+		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &a.CreatedAt, &a.SourceRevisionNo, &a.SourceDisplayName); err != nil {
 		return nil, err
 	}
 	a.Format = Format(format)

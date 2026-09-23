@@ -750,6 +750,12 @@ export type LibraryArtifact = {
   // previewable：成品绑定了导出时的时间轴（迁移 0040 之后导出），可内嵌预览；
   // false（历史行）时前端隐藏"预览"按钮，降级为仅下载。
   previewable: boolean;
+  // revisionNo：成品所源自的源版本号（0 = 未知/历史行），与 sourceDisplayName 一并展示"PPT 名称 vN"；
+  // 由 narration 写入时间轴、export 落库（见 internal/app/{narration,export}.go）。
+  revisionNo?: number;
+  // sourceDisplayName：源版本展示名（source_revisions.display_name，空 = 未知），
+  // 空时前端回退到 projectName。
+  sourceDisplayName?: string;
 };
 
 export async function getLibraryArtifacts(identity: ClientIdentity): Promise<{ artifacts: LibraryArtifact[] }> {

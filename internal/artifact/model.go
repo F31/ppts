@@ -35,7 +35,13 @@ type Artifact struct {
 	// 成品库据此隐藏"预览"按钮（降级为仅下载）。与 ObjectKey 的关系：
 	// ObjectKey 是成品文件本身（mp4/zip/字幕），TimelineKey 是生成它的时间轴。
 	TimelineKey string
-	CreatedAt   time.Time
+	// SourceRevisionNo 是该成品所源自的源版本号（由 narration 写入时间轴、export 落库，见 internal/app/export.go）；
+	// 0 表示未知（历史行）。成品库据此与 SourceDisplayName 展示"PPT 名称 vN"。
+	SourceRevisionNo int
+	// SourceDisplayName 是该源版本的展示名（source_revisions.display_name）；空表示历史行未知，
+	// 前端回退到 projectName。与 SourceRevisionNo 一并，避免依赖成品↔source_revisions 缺失外键。
+	SourceDisplayName string
+	CreatedAt         time.Time
 }
 
 type NewArtifact struct {
@@ -49,6 +55,9 @@ type NewArtifact struct {
 	DurationMS int64
 	// TimelineKey 见 Artifact.TimelineKey（导出任务快照中的 timelineKey）。
 	TimelineKey string
+	// SourceRevisionNo / SourceDisplayName 见 Artifact.SourceRevisionNo / SourceDisplayName。
+	SourceRevisionNo   int
+	SourceDisplayName string
 }
 
 var ErrNotFound = errors.New("artifact: not found")

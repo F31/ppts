@@ -166,6 +166,43 @@ function ProjectFilter({
   );
 }
 
+// artifactSourceTitle 把成品来源渲染成「PPT 名称 + 版本」：优先用源版本展示名（sourceDisplayName），
+// 缺省回退到项目名称；版本号来自 narration 写入时间轴、export 落库的 revisionNo（见 internal/app）。
+// 历史成品无来源信息时退化成仅项目名称（revisionNo=0）。
+function artifactSourceTitle(a: LibraryArtifact): string {
+  const pptName = a.sourceDisplayName || a.projectName || a.projectId.slice(0, 8);
+  return a.revisionNo ? `${pptName} v${a.revisionNo}` : pptName;
+}
+
+function IconEye() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function IconDownload() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3v12" />
+      <path d="m7 11 5 5 5-5" />
+      <path d="M5 21h14" />
+    </svg>
+  );
+}
+
+function IconTrash() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M6 6l1 14h10l1-14" />
+    </svg>
+  );
+}
+
 export function Library({ identity, role }: { identity: ClientIdentity; role?: Role }) {
   const { t } = useI18n();
   const confirmDialog = useConfirmDialog();
@@ -228,6 +265,14 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [artifacts, format, projectId, rangeDays]);
+
+  // 九宫格翻页：每页 9 张；筛选条件变化时回到第一页（filtered 已按格式/项目/时间过滤）。
+  const PAGE_SIZE = 9;
+  const [page, setPage] = useState(0);
+  useEffect(() => { setPage(0); }, [format, projectId, range]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageItems = filtered.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
 
   // onPreview 打开内嵌预览：mp4 用签名 URL 直接喂 <video>；web_project 取成品绑定的
   // 时间轴清单喂 <Player>（与下载的 zip 同源，不会预览另一版内容）。
@@ -359,13 +404,19 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
             {filtered.length === 0 ? (
               <p className="empty-state">{t('library.noArtifacts')}</p>
             ) : (
+              <div>
               <ul className="library-grid">
-                {filtered.map((a) => (
+                {pageItems.map((a) => (
                   <li className="library-card" key={a.id}>
                     <div className="library-card-head">
-                      <Link to={`/projects/${a.projectId}/artifacts`} className="library-proj-link" title={a.projectName || a.projectId}>
-                        {a.projectName || a.projectId.slice(0, 8)}
-                      </Link>
+                      <div className="library-card-titles">
+                        <span className="library-source-title" title={artifactSourceTitle(a)}>
+                          {artifactSourceTitle(a)}
+                        </span>
+                        <span className="library-proj-title" title={a.projectName || a.projectId}>
+                          {a.projectName || a.projectId.slice(0, 8)}
+                        </span>
+                      </div>
                       <span className={`artifact-badge artifact-${a.format}`}>{t(FORMAT_KEY[a.format] ?? a.format)}</span>
                     </div>
                     <dl className="library-card-meta">
@@ -386,32 +437,38 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
                       {canPreview(a) && (
                         <button
                           type="button"
-                          className="button-ghost artifact-preview"
+                          className="icon-btn artifact-preview"
                           disabled={previewLoadingId === a.id}
-                          title={t('library.previewHint')}
+                          aria-busy={previewLoadingId === a.id}
+                          title={previewLoadingId === a.id ? t('library.previewing') : t('library.previewHint')}
+                          aria-label={t('library.preview')}
                           onClick={() => void onPreview(a)}
                         >
-                          {previewLoadingId === a.id ? t('library.previewing') : t('library.preview')}
+                          <IconEye />
                         </button>
                       )}
                       <button
                         type="button"
-                        className="button-ghost artifact-download"
+                        className="icon-btn artifact-download"
                         disabled={!a.downloadable || downloadingId === a.id}
+                        aria-busy={downloadingId === a.id}
                         title={a.downloadable ? t('artifacts.downloadHint') : t('artifacts.downloadBlocked')}
+                        aria-label={t('artifacts.download')}
                         onClick={() => void onDownload(a)}
                       >
-                        {downloadingId === a.id ? t('artifacts.downloading') : t('artifacts.download')}
+                        <IconDownload />
                       </button>
                       {canDelete && (
                         <button
                           type="button"
-                          className="button-ghost danger artifact-delete"
+                          className="icon-btn danger artifact-delete"
                           disabled={deletingId === a.id}
-                          title={t('library.deleteHint')}
+                          aria-busy={deletingId === a.id}
+                          title={deletingId === a.id ? t('library.deleting') : t('library.deleteHint')}
+                          aria-label={t('library.delete')}
                           onClick={() => void onDelete(a)}
                         >
-                          {deletingId === a.id ? t('library.deleting') : t('library.delete')}
+                          <IconTrash />
                         </button>
                       )}
                     </div>
@@ -420,6 +477,41 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
                   </li>
                 ))}
               </ul>
+              {filtered.length > PAGE_SIZE && pageCount > 1 && (
+                <nav className="library-pagination" aria-label={t('library.pagination')}>
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    disabled={safePage === 0}
+                    aria-label={t('library.prevPage')}
+                    onClick={() => setPage(safePage - 1)}
+                  >
+                    ‹
+                  </button>
+                  {Array.from({ length: pageCount }, (_, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className={i === safePage ? 'button-ghost active' : 'button-ghost'}
+                      aria-current={i === safePage ? 'page' : undefined}
+                      onClick={() => setPage(i)}
+                    >
+                      {i + 1}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    disabled={safePage >= pageCount - 1}
+                    aria-label={t('library.nextPage')}
+                    onClick={() => setPage(safePage + 1)}
+                  >
+                    ›
+                  </button>
+                  <span className="library-page-status">{t('library.pageStatus', { current: safePage + 1, total: pageCount })}</span>
+                </nav>
+              )}
+              </div>
             )}
             {notice && <p className="form-notice" role="status">{notice}</p>}
             {downloadError && <p className="form-error" role="alert">{downloadError}</p>}

@@ -225,6 +225,10 @@ func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.
 			"downloadable": a.ObjectKey != "",
 			// previewable=false（0040 之前的历史行）时前端隐藏"预览"按钮，降级为仅下载。
 			"previewable": a.TimelineKey != "",
+			// revisionNo / sourceDisplayName 供成品库按"PPT 名称 + 版本"展示；
+			// 历史行（无来源信息）为零值，前端回退到项目名称。
+			"revisionNo":       a.SourceRevisionNo,
+			"sourceDisplayName": a.SourceDisplayName,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": out})

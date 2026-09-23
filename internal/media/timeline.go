@@ -39,6 +39,13 @@ type Timeline struct {
 	DurationUS    int64         `json:"durationUs"`
 	Slides        []SlideCue    `json:"slides"`
 	Subtitles     []SubtitleCue `json:"subtitles"`
+	// SourceRevisionNo 是该时间轴所源自的源版本号（配音导出时由 narration 写入，见 internal/app/narration.go），
+	// 供成品库按"PPT 名称 + 版本"精确展示，避免依赖成品行到 source_revisions 缺失的外键。
+	// 0 表示未知（历史时间轴 / 测试直接构造的时间轴）。
+	SourceRevisionNo int `json:"sourceRevisionNo,omitempty"`
+	// SourceDisplayName 是该源版本的展示名（source_revisions.display_name，用户未设置时为空），
+	// 与 SourceRevisionNo 一并供成品库展示"PPT 名称 vN"。空时前端回退到项目名称或默认标签。
+	SourceDisplayName string `json:"sourceDisplayName,omitempty"`
 }
 
 // SlideCue identifies the exact interval in which one page is visible.

@@ -109,7 +109,8 @@ func runWorker() error {
 	metrics := observability.NewPipelineMetrics()
 	ttsProvider := ttsProviderFromEnv()
 	narrationHandler := app.NewNarrationHandler(stores.scripts, jobs, objects, ttsProvider).
-		WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(stores.pronunciation)
+		WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(stores.pronunciation).
+		WithSourceRevisions(stores.projects)
 	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {

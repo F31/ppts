@@ -507,7 +507,7 @@ export function Home({ identity, role, roleReady }: { identity: ClientIdentity; 
             {recentArtifacts.map(({ project, artifact }) => (
               <Link
                 key={artifact.id}
-                to={`/projects/${project.id}/artifacts`}
+                to="/library"
                 className="home-artifact-row"
                 title={t('home.artifactOpen', { title: project.title })}
               >

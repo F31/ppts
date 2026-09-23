@@ -88,6 +88,15 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if err != nil {
 		return failStep(err)
 	}
+	// 读取时间轴携带的来源（源版本号 + 展示名），落库到成品行供成品库按"PPT 名称 + 版本"展示。
+	// 来源由 narration 在生成时间轴时写入（见 internal/app/narration.go）；成品行与 source_revisions 无外键，
+	// 故在此冗余落库，避免运行时再查。历史时间轴无来源信息时两值均为零值。
+	sourceRevisionNo := 0
+	sourceDisplayName := ""
+	if bundle.Timeline != nil {
+		sourceRevisionNo = bundle.Timeline.SourceRevisionNo
+		sourceDisplayName = bundle.Timeline.SourceDisplayName
+	}
 	var data []byte
 	var contentType, ext string
 	switch snapshot.Format {
@@ -127,6 +136,10 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		// 记录本成品绑定的时间轴（迁移 0040）：成品库内嵌预览据此构建播放清单，
 		// 保证预览内容与下载文件同源（而不是"项目最新讲解"的另一个版本）。
 		TimelineKey: snapshot.TimelineKey,
+		// 冗余来源信息（源版本号 + 展示名）：成品库按"PPT 名称 + 版本"精确展示，
+		// 见 internal/media/timeline.go 与 internal/app/narration.go。
+		SourceRevisionNo:  sourceRevisionNo,
+		SourceDisplayName: sourceDisplayName,
 	})
 	if err != nil {
 		return failStep(err)

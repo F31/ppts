@@ -21,6 +21,7 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/pronunciation"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/usage"
 )
 
@@ -85,6 +86,20 @@ type NarrationHandler struct {
 	metrics     TTSMetrics
 	dictLoader  DictionaryLoader
 	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
+	// sourceRevisions 是记录时间轴来源所需的窄能力（见 WithSourceRevisions）；nil 时跳过来源记录。
+	sourceRevisions SourceRevisionLookup
+}
+
+// SourceRevisionLookup 是 narration 记录时间轴来源所需的窄能力（避免直接依赖整个 project.Store）：
+// 按项目 + 版本号取源版本展示名，供成品库展示"PPT 名称 + 版本"。
+type SourceRevisionLookup interface {
+	GetSourceRevision(ctx context.Context, tenantID, projectID string, revisionNo int) (*project.SourceRevision, error)
+}
+
+// WithSourceRevisions 注入源版本查询能力；未注入时跳过来源记录（降级：成品仅显示项目名称）。
+func (h *NarrationHandler) WithSourceRevisions(s SourceRevisionLookup) *NarrationHandler {
+	h.sourceRevisions = s
+	return h
 }
 
 // UsageSettler 是配音完成后按实际时长结算额度所需的窄能力（G3-2）。
@@ -299,7 +314,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		}
 	}
 
-	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides); err != nil {
+	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides, snapshot.RevisionNo); err != nil {
 		return err
 	}
 	// 回写 audio_revision：标记每段最近一次配音对应的脚本修订号（stale 判定）。
@@ -460,10 +475,18 @@ func (h *NarrationHandler) recordCacheHit(job *pipeline.Job, scope string) {
 	h.metrics.SegmentCacheHit(job, scope)
 }
 
-func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput) error {
+func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput, revisionNo int) error {
 	timeline, err := media.BuildTimeline(slides, timing)
 	if err != nil {
 		return err
+	}
+	// 记录时间轴来源（源版本号 + 展示名），供成品库按"PPT 名称 + 版本"精确展示：
+	// 成品行与 source_revisions 无外键，故在生成时把来源冗余进时间轴 JSON，export 落库时再写入成品。
+	if h.sourceRevisions != nil && revisionNo > 0 {
+		if rev, lerr := h.sourceRevisions.GetSourceRevision(ctx, job.TenantID, job.ProjectID, revisionNo); lerr == nil && rev != nil {
+			timeline.SourceRevisionNo = revisionNo
+			timeline.SourceDisplayName = rev.DisplayName
+		}
 	}
 	timelineBytes, err := json.Marshal(timeline)
 	if err != nil {
@@ -546,7 +569,7 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 		}
 		timelineSlides = append(timelineSlides, timelineSlide)
 	}
-	if err := h.publishTimeline(ctx, job, adjusted.Timing, timelineSlides); err != nil {
+	if err := h.publishTimeline(ctx, job, adjusted.Timing, timelineSlides, adjusted.RevisionNo); err != nil {
 		return err
 	}
 	if h.usage != nil && job.IDempotencyKey != "" {
