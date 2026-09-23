@@ -8,22 +8,11 @@
     <meta property="og:title" content="智讲 PPT · 智能语音讲解平台" />
     <meta property="og:description" content="上传 PPT，自动生成逐页讲稿与真人语音讲解，导出视频或在线播放。" />
     <meta property="og:type" content="website" />
-    <!-- theme-color 随主题切换：先给深色兜底值，随后由下方内联脚本按实际主题改写 -->
+    <!-- theme-color 随主题切换：先给深色兜底值，随后由 /theme.js 按实际主题改写。
+         独立外部脚本以满足 CSP `script-src 'self'`（内联脚本会被拦）。 -->
     <meta name="theme-color" content="#10131a" id="theme-color" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <script>
-      (function () {
-        try {
-          var t = localStorage.getItem('ppts-theme');
-          if (t !== 'dark' && t !== 'light') t = 'dark';
-          document.documentElement.dataset.theme = t;
-          var m = document.getElementById('theme-color');
-          if (m) m.setAttribute('content', t === 'light' ? '#eef1f6' : '#10131a');
-        } catch (e) {
-          document.documentElement.dataset.theme = 'dark';
-        }
-      })();
-    </script>
+    <script src="/theme.js"></script>
   </head>
   <body>
     <div id="root"></div>

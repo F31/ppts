@@ -222,6 +222,16 @@ func TestE2ERealChainOverHTTP(t *testing.T) {
 		t.Fatalf("complete = %+v", completed.Msg)
 	}
 
+	// 3a) 源版本列表可读（回归守护：PG source_revisions 的 SELECT 列数必须与 Scan 目标一致；
+	//     此前 ListSourceRevisions 漏扫 display_name，在非空表上 500）。
+	revs, err := project.NewPGProjectStore(pool).ListSourceRevisions(tenant.WithContext(ctx, e2eTenant), e2eTenant, projectID)
+	if err != nil {
+		t.Fatalf("ListSourceRevisions: %v", err)
+	}
+	if len(revs) == 0 {
+		t.Fatalf("expected at least one source revision")
+	}
+
 	// 3) 解析完成 → GetSlides 出现页面。
 	slides := waitSlides(t, ctx, projectClient, projectID)
 	if len(slides) == 0 || slides[0].GetSlideId() == "" {

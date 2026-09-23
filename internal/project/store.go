@@ -442,7 +442,7 @@ func (s *PGProjectStore) ListSourceRevisions(ctx context.Context, tenantID, proj
 		for rows.Next() {
 			var r SourceRevision
 			if e := rows.Scan(&r.ID, &r.ProjectID, &r.TenantID, &r.RevisionNo, &r.SourceHash,
-				&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &r.CreatedAt); e != nil {
+				&r.ObjectKey, &r.ParserVersion, &r.PageCount, &r.UploadID, &r.CreatedAt, &r.DisplayName); e != nil {
 				return e
 			}
 			revs = append(revs, &r)
