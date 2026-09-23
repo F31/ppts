@@ -61,7 +61,6 @@ curl -s  https://app.example.com/auth/config   # email_password=true, mail_confi
 ```
 
 ## 3. 反向代理（nginx 示例：TLS + 安全头 + 大文件上传）
-
 ```nginx
 server {
   listen 443 ssl http2;
@@ -112,3 +111,20 @@ server { listen 80; server_name app.example.com; return 301 https://$host$reques
 
 - 短信验证/找回（需短信服务商）；多实例共享限流（Redis）；运营商后台（跨租户查看/挂起/提额）；
   Prometheus 指标与告警；合规数据删除入口。
+
+## 7. 消息服务（设置 → 消息服务）
+
+配置入口：控制台「设置 → 消息服务」，两个 Tab：
+
+- **发件箱服务配置**（优先实现）：SMTP 服务器/端口/用户名/密码/发件人/TLS 方式；支持「发送测试邮件」。
+  密码以 AES-GCM 密文入库（依赖 `PPTS_GATEWAY_AES_KEY_BASE64`，AAD 绑定 tenant_id+channel）。
+  - 作用范围（仅运营商可选）：**本租户** 或 **平台默认**。平台默认用于新用户注册/验证等无租户上下文的邮件。
+- **短信网关配置**：保存服务商/接入点/签名/模板/AccessKey（当前仅保存，发送能力后续接入）。
+
+解析优先级（认证邮件）：**租户配置 → 平台默认 → 进程级 env（PPTS_SMTP_*）→ 日志**。
+因此：至少配置其一即可打通邮箱验证与密码重置。
+
+数据库表：`message_channels`（migration 0044），按 `(tenant_id, channel)` 一行；平台默认行 tenant_id=零 UUID。
+写入后最迟 30s 生效（解析带 TTL 缓存）。
+
+安全提示：设置页仅 ADMIN 可访问；「平台默认」仅 `PPTS_OPERATOR_USER_IDS` 中的运营商可写。

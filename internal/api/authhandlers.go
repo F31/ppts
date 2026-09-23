@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -40,6 +39,9 @@ type authDeps struct {
 	registerDaily *fixedWindowLimiter
 	// quota 用于注册时发放默认免费额度；nil 时跳过。
 	quota usage.Store
+	// senderForTenant 按租户解析发件箱（DB 配置→平台默认→ErrNotFound），供认证邮件使用；
+	// 未命中时回退 d.mailer（env/log）。
+	senderForTenant func(ctx context.Context, tenantID string) (mail.Sender, error)
 }
 
 // registerAuthRoutes 挂载邮箱/手机自助注册、登录、验证、重置、登出端点。
@@ -121,8 +123,20 @@ func (d *authDeps) publicBase(r *http.Request) string {
 	return scheme + "://" + r.Host
 }
 
-func (d *authDeps) sendVerifyEmail(ctx context.Context, to, token, base string) {
-	if d.mailer == nil || to == "" {
+// mailerFor 解析该租户实际使用的发件箱：优先数据库配置（租户→平台默认），
+// 未配置时回退进程级 env/log mailer（可能为 nil）。
+func (d *authDeps) mailerFor(ctx context.Context, tenantID string) mail.Sender {
+	if d.senderForTenant != nil {
+		if s, err := d.senderForTenant(ctx, tenantID); err == nil && s != nil {
+			return s
+		}
+	}
+	return d.mailer
+}
+
+func (d *authDeps) sendVerifyEmail(ctx context.Context, tenantID, to, token, base string) {
+	sender := d.mailerFor(ctx, tenantID)
+	if sender == nil || to == "" {
 		if d.logger != nil {
 			d.logger.Printf("auth: mailer not configured; email verification link for %s: %s/verify-email?token=%s", to, base, token)
 		}
@@ -134,13 +148,14 @@ func (d *authDeps) sendVerifyEmail(ctx context.Context, to, token, base string) 
 		Subject: "验证你的 PPTS 账号邮箱",
 		Text:    "欢迎使用 PPTS。请点击下面的链接完成邮箱验证（48 小时内有效）：\n\n" + link + "\n\n如果这不是你本人的操作，请忽略本邮件。",
 	}
-	if err := d.mailer.Send(ctx, msg); err != nil && d.logger != nil {
+	if err := sender.Send(ctx, msg); err != nil && d.logger != nil {
 		d.logger.Printf("auth: send verify email to %s failed: %v", to, err)
 	}
 }
 
-func (d *authDeps) sendResetEmail(ctx context.Context, to, token, base string) {
-	if d.mailer == nil || to == "" {
+func (d *authDeps) sendResetEmail(ctx context.Context, tenantID, to, token, base string) {
+	sender := d.mailerFor(ctx, tenantID)
+	if sender == nil || to == "" {
 		if d.logger != nil {
 			d.logger.Printf("auth: mailer not configured; password reset link for %s: %s/reset-password?token=%s", to, base, token)
 		}
@@ -152,7 +167,7 @@ func (d *authDeps) sendResetEmail(ctx context.Context, to, token, base string) {
 		Subject: "重置你的 PPTS 账号密码",
 		Text:    "我们收到了重置密码的请求。请点击下面的链接设置新密码（1 小时内有效）：\n\n" + link + "\n\n如果这不是你本人的操作，请忽略本邮件，你的密码不会改变。",
 	}
-	if err := d.mailer.Send(ctx, msg); err != nil && d.logger != nil {
+	if err := sender.Send(ctx, msg); err != nil && d.logger != nil {
 		d.logger.Printf("auth: send reset email to %s failed: %v", to, err)
 	}
 }
@@ -303,7 +318,7 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// 邮箱账号：签发验证令牌并发信（发信失败不影响注册成功，用户可稍后重发）。
 	if acct.Kind == accountKindEmail {
 		if token, err := d.store.issueToken(ctx, userID, purposeEmailVerify, emailVerifyTTL); err == nil {
-			d.sendVerifyEmail(ctx, acct.Email, token, d.publicBase(r))
+			d.sendVerifyEmail(ctx, tenantID, acct.Email, token, d.publicBase(r))
 		} else if d.logger != nil {
 			d.logger.Printf("auth: issue verify token for %s failed: %v", userID, err)
 		}
@@ -490,12 +505,10 @@ func (d *authDeps) handleResendVerification(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	ctx := r.Context()
-	var userID string
-	var verified *time.Time
-	err = d.pool.QueryRow(ctx, `SELECT id, email_verified_at FROM users WHERE email=$1`, acct.Email).Scan(&userID, &verified)
-	if err == nil && verified == nil {
-		if token, ierr := d.store.issueToken(ctx, userID, purposeEmailVerify, emailVerifyTTL); ierr == nil {
-			d.sendVerifyEmail(ctx, acct.Email, token, d.publicBase(r))
+	row, err := d.store.lookupLogin(ctx, acct.Email)
+	if err == nil && !row.EmailVerified {
+		if token, ierr := d.store.issueToken(ctx, row.UserID, purposeEmailVerify, emailVerifyTTL); ierr == nil {
+			d.sendVerifyEmail(ctx, row.TenantID, acct.Email, token, d.publicBase(r))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sent": true})
@@ -529,12 +542,12 @@ func (d *authDeps) handleForgotPassword(w http.ResponseWriter, r *http.Request) 
 		return // 手机号暂无短信通道，无法自助重置
 	}
 	ctx := r.Context()
-	var userID string
-	if err := d.pool.QueryRow(ctx, `SELECT id FROM users WHERE email=$1`, acct.Email).Scan(&userID); err != nil {
+	row, err := d.store.lookupLogin(ctx, acct.Email)
+	if err != nil {
 		return
 	}
-	if token, ierr := d.store.issueToken(ctx, userID, purposePasswordReset, passwordResetTTL); ierr == nil {
-		d.sendResetEmail(ctx, acct.Email, token, d.publicBase(r))
+	if token, ierr := d.store.issueToken(ctx, row.UserID, purposePasswordReset, passwordResetTTL); ierr == nil {
+		d.sendResetEmail(ctx, row.TenantID, acct.Email, token, d.publicBase(r))
 	}
 }
 

@@ -13,16 +13,56 @@ import (
 	"time"
 )
 
+// SMTPConfig 是 SMTP 发送配置（可由环境变量或数据库中的消息服务配置构建）。
+type SMTPConfig struct {
+	Host     string
+	Port     int
+	Username string
+	Password string
+	From     string
+	// Mode: starttls（默认，587）| tls（隐式 TLS，465）| none（内网明文，如 MailHog）
+	Mode string
+}
+
 // smtpSender 基于 net/smtp 的轻量发送器（STARTTLS 优先，可选隐式 TLS/无加密）。
-// 不引入第三方依赖；如需 OAuth/高级重试可后续替换实现。
 type smtpSender struct {
-	host     string
-	port     int
-	username string
-	password string
-	from     string
-	// mode: starttls（默认 587）| tls（隐式 TLS，465）| none（内网明文，如 MailHog）
-	mode string
+	cfg SMTPConfig
+}
+
+// NewSMTPSender 校验并构建 SMTP 发送器。config 中的 Host/From 必填。
+func NewSMTPSender(cfg SMTPConfig) (Sender, error) {
+	normalized, err := normalizeSMTPConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &smtpSender{cfg: normalized}, nil
+}
+
+func normalizeSMTPConfig(cfg SMTPConfig) (SMTPConfig, error) {
+	cfg.Host = strings.TrimSpace(cfg.Host)
+	if cfg.Host == "" {
+		return cfg, errors.New("mail: smtp host is required")
+	}
+	if cfg.Port <= 0 || cfg.Port > 65535 {
+		cfg.Port = 587
+	}
+	cfg.From = strings.TrimSpace(cfg.From)
+	if cfg.From == "" {
+		cfg.From = strings.TrimSpace(cfg.Username)
+	}
+	if cfg.From == "" {
+		return cfg, errors.New("mail: smtp from address is required")
+	}
+	cfg.Mode = strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if cfg.Mode == "" {
+		cfg.Mode = "starttls"
+	}
+	switch cfg.Mode {
+	case "starttls", "tls", "none":
+	default:
+		return cfg, fmt.Errorf("mail: invalid smtp tls mode %q (want starttls|tls|none)", cfg.Mode)
+	}
+	return cfg, nil
 }
 
 func newSMTPFromEnv() (Sender, error) {
@@ -38,39 +78,23 @@ func newSMTPFromEnv() (Sender, error) {
 		}
 		port = n
 	}
-	from := strings.TrimSpace(os.Getenv("PPTS_SMTP_FROM"))
-	if from == "" {
-		from = strings.TrimSpace(os.Getenv("PPTS_SMTP_USER"))
-	}
-	if from == "" {
-		return nil, errors.New("mail: PPTS_SMTP_FROM is required")
-	}
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("PPTS_SMTP_TLS")))
-	if mode == "" {
-		mode = "starttls"
-	}
-	switch mode {
-	case "starttls", "tls", "none":
-	default:
-		return nil, fmt.Errorf("mail: invalid PPTS_SMTP_TLS %q (want starttls|tls|none)", mode)
-	}
-	return &smtpSender{
-		host:     host,
-		port:     port,
-		username: os.Getenv("PPTS_SMTP_USER"),
-		password: os.Getenv("PPTS_SMTP_PASSWORD"),
-		from:     from,
-		mode:     mode,
-	}, nil
+	return NewSMTPSender(SMTPConfig{
+		Host:     host,
+		Port:     port,
+		Username: os.Getenv("PPTS_SMTP_USER"),
+		Password: os.Getenv("PPTS_SMTP_PASSWORD"),
+		From:     os.Getenv("PPTS_SMTP_FROM"),
+		Mode:     os.Getenv("PPTS_SMTP_TLS"),
+	})
 }
 
 func (s *smtpSender) Send(ctx context.Context, m Message) error {
-	addr := net.JoinHostPort(s.host, strconv.Itoa(s.port))
+	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	var conn net.Conn
 	var err error
-	if s.mode == "tls" {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: s.host})
+	if s.cfg.Mode == "tls" {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: s.cfg.Host})
 	} else {
 		conn, err = dialer.DialContext(ctx, "tcp", addr)
 	}
@@ -78,27 +102,27 @@ func (s *smtpSender) Send(ctx context.Context, m Message) error {
 		return fmt.Errorf("mail: dial %s: %w", addr, err)
 	}
 
-	c, err := smtp.NewClient(conn, s.host)
+	c, err := smtp.NewClient(conn, s.cfg.Host)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("mail: smtp client: %w", err)
 	}
 	defer c.Close()
 
-	if s.mode == "starttls" {
+	if s.cfg.Mode == "starttls" {
 		if ok, _ := c.Extension("STARTTLS"); ok {
-			if err := c.StartTLS(&tls.Config{ServerName: s.host}); err != nil {
+			if err := c.StartTLS(&tls.Config{ServerName: s.cfg.Host}); err != nil {
 				return fmt.Errorf("mail: starttls: %w", err)
 			}
 		}
 	}
-	if s.username != "" {
-		auth := smtp.PlainAuth("", s.username, s.password, s.host)
+	if s.cfg.Username != "" {
+		auth := smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
 		if err := c.Auth(auth); err != nil {
 			return fmt.Errorf("mail: auth: %w", err)
 		}
 	}
-	if err := c.Mail(s.from); err != nil {
+	if err := c.Mail(s.cfg.From); err != nil {
 		return fmt.Errorf("mail: mail from: %w", err)
 	}
 	if err := c.Rcpt(m.To); err != nil {
@@ -108,7 +132,7 @@ func (s *smtpSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("mail: data: %w", err)
 	}
-	if _, err := w.Write(buildMessage(s.from, m)); err != nil {
+	if _, err := w.Write(buildMessage(s.cfg.From, m)); err != nil {
 		w.Close()
 		return fmt.Errorf("mail: write: %w", err)
 	}

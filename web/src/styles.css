@@ -1203,3 +1203,19 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .shared-password { display: grid; gap: 10px; justify-items: start; margin-top: 12px; }
 .shared-password label { display: grid; gap: 6px; font-size: 13px; }
 .shared-password input { min-width: 220px; }
+
+/* 消息服务设置页（第二批）：Tab + 表单网格 + 测试行 */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tab { background: none; border: none; border-bottom: 2px solid transparent; color: var(--text-muted); padding: 8px 14px; cursor: pointer; font-size: 13px; }
+.tab.selected { color: var(--text); border-bottom-color: var(--accent); }
+.field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 16px; margin: 12px 0; }
+.field { display: grid; gap: 6px; }
+.field-hint { font-size: 11px; color: #8aa1c4; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 8px 0; }
+.radio-row { display: flex; gap: 16px; font-size: 13px; }
+.radio-row label { display: flex; align-items: center; gap: 6px; }
+.actions-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.actions-row input { min-width: 220px; }
+.divider { border: none; border-top: 1px solid var(--border); margin: 20px 0 12px; }
+.notice { background: var(--accent-soft); border: 1px solid var(--accent-border); color: var(--text-muted); border-radius: 8px; padding: 10px 12px; font-size: 12px; margin: 0 0 12px; }
+.form-success { color: var(--accent); font-size: 13px; margin: 8px 0 0; }

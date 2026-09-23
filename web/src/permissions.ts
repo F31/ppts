@@ -26,6 +26,7 @@ export type Capability =
   | 'artifact.download'
   | 'job.control'
   | 'gateway.manage'
+  | 'message.manage'
   | 'member.manage'
   | 'audit.read'
   | 'public.publish'
@@ -53,6 +54,7 @@ export type Capability =
 // | artifact.download   | viewer   | export.go:102                                                     |
 // | job.control         | editor   | job.go:103、job.go:182                                            |
 // | gateway.manage      | admin    | gateway.go:85                                                     |
+// | message.manage      | admin    | message.go:requireAdmin（消息服务配置）                            |
 // | member.manage       | admin    | tenant.go:114、tenant.go:142                                      |
 // | audit.read          | admin    | tenant.go:326、tenant.go:370                                      |
 // | public.publish      | viewer   | public.go:37（POST /public/works 仅要求已认证）                     |
@@ -73,6 +75,7 @@ export const minRole: Record<Capability, Role> = {
   'artifact.download': 'ROLE_VIEWER',
   'job.control': 'ROLE_EDITOR',
   'gateway.manage': 'ROLE_ADMIN',
+  'message.manage': 'ROLE_ADMIN',
   'member.manage': 'ROLE_ADMIN',
   'audit.read': 'ROLE_ADMIN',
   'public.publish': 'ROLE_VIEWER',

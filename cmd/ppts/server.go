@@ -17,6 +17,7 @@ import (
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/mail"
+	"github.com/F31/ppts/internal/messaging"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/web"
@@ -66,6 +67,7 @@ func runServer() error {
 		logger.Info("mail disabled: verification/reset links will be logged, not emailed")
 	}
 	gatewayStore := gatewayStoreFromEnv(ctx, logger, stores)
+	messagingStore := messagingStoreFromEnv(logger, stores)
 
 	// SQLite 单租户模式：本地固定身份、无登录；不挂载 auth/public 路由（pool 传 nil）。
 	localPrincipal := stores.localPrincipalFor()
@@ -94,6 +96,7 @@ func runServer() error {
 						RequireEmailVerified: os.Getenv("PPTS_REQUIRE_EMAIL_VERIFIED") == "true",
 						Logger:               stdLogger,
 						PriceVersion:         priceBook.Version,
+						Messages:             messagingStore,
 						WebRoot:              os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
 					}),
 			),
@@ -131,6 +134,20 @@ func gatewayStoreFromEnv(ctx context.Context, logger *slog.Logger, stores *store
 		logger.Warn("gateway seed from env failed", "error", err)
 	}
 	return store
+}
+
+// messagingStoreFromEnv 构建消息服务（发件箱/短信）存储；AES 密钥未配置或非 PG 时返回 nil
+// （相关端点返回 503，认证邮件回退 env/log mailer）。
+func messagingStoreFromEnv(logger *slog.Logger, stores *storeSet) messaging.Store {
+	if stores.pg == nil {
+		return nil
+	}
+	cipher, err := gateway.CipherFromEnv()
+	if err != nil {
+		logger.Info("message service disabled (no AES key)")
+		return nil
+	}
+	return messaging.NewPGStore(stores.pg, cipher)
 }
 
 func oidcAuthenticatorFromEnv(ctx context.Context) (*api.OIDCAuthenticator, error) {

@@ -22,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/membership"
+	"github.com/F31/ppts/internal/messaging"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/project"
@@ -80,6 +81,8 @@ type Options struct {
 	Logger *log.Logger
 	// PriceVersion 是当前定价表版本，写入新租户默认配额行的 price_version。
 	PriceVersion string
+	// Messages 是消息服务配置（发件箱/短信网关）；为 nil 时相关端点返回 503。
+	Messages messaging.Store
 	// WebRoot 指向前端构建产物目录（vite build 输出）。非空时由 Go 直接托管静态资源与
 	// SPA history 兜底 —— 单二进制部署无需 nginx。
 	WebRoot string
@@ -148,6 +151,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 网关路由始终注册：未配置 AES 密钥时 store 为 nil，handler 返回明确 503 feature_disabled，
 	// 避免此前漏挂导致的静默 404。
 	NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)
+	// 消息服务配置（发件箱/短信网关）：未配置 AES 密钥时统一 503。
+	NewMessageHandler(opt.Messages, opt.Members, opt.Audit, authSettingsFromEnv(opt.PriceVersion).operatorIDs).Register(mux, auth)
 	// 公开区路由（匿名只读 + 受保护写/审核）；B3 播放清单依赖 jobs。
 	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
 	if pool != nil {
@@ -181,6 +186,12 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			settings:             settings,
 			registerDaily:        registerDaily,
 			quota:                opt.UsageStore,
+			senderForTenant: func(ctx context.Context, tenantID string) (mail.Sender, error) {
+				if opt.Messages == nil {
+					return nil, messaging.ErrNotFound
+				}
+				return opt.Messages.ResolveSender(ctx, tenantID)
+			},
 		})
 	}
 	// 运营商后台（第二批）：仅 PPTS_OPERATOR_USER_IDS 中的用户可访问；tenant store

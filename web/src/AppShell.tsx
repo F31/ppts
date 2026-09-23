@@ -35,6 +35,7 @@ export type SettingsNavItem = {
 // 个人账号（tenantType=personal）另按 hideForPersonal 过滤：成员管理对其无意义（恒 1 个成员）。
 export const settingsMenus: SettingsNavItem[] = [
   { key: 'models', to: '/settings/models', labelKey: 'nav.settingsModels', need: 'gateway.manage' },
+  { key: 'messages', to: '/settings/messages', labelKey: 'nav.settingsMessages', need: 'message.manage' },
   { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers', need: 'member.manage', hideForPersonal: true },
   { key: 'dictionary', to: '/settings/dictionary', labelKey: 'nav.settingsDictionary', need: 'project.read' },
   { key: 'usage', to: '/settings/usage', labelKey: 'nav.settingsUsage', need: 'project.read' },

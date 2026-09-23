@@ -16,6 +16,7 @@ import { SettingsDictionary } from './pages/SettingsDictionary';
 import { SettingsMembers } from './pages/SettingsMembers';
 import { SettingsTags } from './pages/SettingsTags';
 import { SettingsModels } from './pages/SettingsModels';
+import { SettingsMessages } from './pages/SettingsMessages';
 import { SettingsUsage } from './pages/SettingsUsage';
 import { SessionContext, type Session } from './session';
 import { useI18n } from './i18n';
@@ -269,10 +270,12 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
           // 标签与分组：editor 及以上（project.organize，对应后端 requireRole RoleEditor）。
           case 'tags':
             return guard('project.organize', <SettingsTags identity={identity} />);
+          // 消息服务（发件箱/短信网关）：ADMIN（message.go:requireAdmin）。
+          case 'messages':
+            return guard('message.manage', <SettingsMessages identity={identity} />);
           // 模型服务：读写与测试均要求 ADMIN（gateway.go:85）。
           default:
-            return guard('gateway.manage', <SettingsModels identity={identity} />);
-        }
+            return guard('gateway.manage', <SettingsModels identity={identity} />);        }
       case 'home':
       default:
         if (section === 'home') return <Home identity={identity} role={role} roleReady={roleReady} />;
