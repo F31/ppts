@@ -9,7 +9,9 @@ ALTER TABLE users ADD COLUMN email_verified_at TEXT;
 ALTER TABLE users ADD COLUMN phone_verified_at TEXT;
 ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
-ALTER TABLE users ADD COLUMN updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- SQLite 的 ALTER TABLE ADD COLUMN 不允许非恒定默认值（如 strftime(...)），故先加可空列再回填。
+ALTER TABLE users ADD COLUMN updated_at TEXT;
+UPDATE users SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE updated_at IS NULL;
 
 ALTER TABLE credentials ADD COLUMN phone TEXT;
 
