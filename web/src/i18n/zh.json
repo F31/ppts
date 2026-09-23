@@ -44,7 +44,7 @@
   "messages.port": "端口",
   "messages.username": "用户名",
   "messages.password": "密码",
-  "messages.passwordHint": "留空表示保持原密码不变。",
+  "messages.passwordHint": "留空表示保持原密码不变。126/163 等邮箱请填「授权码」（非登录密码）。",
   "messages.fromName": "发件人名称",
   "messages.fromAddress": "发件人地址",
   "messages.tlsMode": "加密方式",

@@ -289,13 +289,9 @@ func BuildSender(rt *EmailRuntime) (mail.Sender, error) {
 	if rt == nil {
 		return nil, ErrNotFound
 	}
-	from := strings.TrimSpace(rt.FromAddress)
-	if name := strings.TrimSpace(rt.FromName); name != "" {
-		from = fmt.Sprintf("%s <%s>", name, from)
-	}
 	return mail.NewSMTPSender(mail.SMTPConfig{
 		Host: rt.Host, Port: rt.Port, Username: rt.Username, Password: rt.Password,
-		From: from, Mode: rt.TLSMode,
+		From: rt.FromAddress, FromName: rt.FromName, Mode: rt.TLSMode,
 	})
 }
 

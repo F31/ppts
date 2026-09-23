@@ -19,7 +19,11 @@ type SMTPConfig struct {
 	Port     int
 	Username string
 	Password string
-	From     string
+	// From 是信封发件地址（MAIL FROM），必须是纯地址（如 no-reply@126.com）。
+	// 若传入 "显示名 <地址>" 形式，normalizeSMTPConfig 会拆分出地址与显示名。
+	From string
+	// FromName 是邮件头 From 的显示名（可选）。
+	FromName string
 	// Mode: starttls（默认，587）| tls（隐式 TLS，465）| none（内网明文，如 MailHog）
 	Mode string
 }
@@ -46,6 +50,23 @@ func normalizeSMTPConfig(cfg SMTPConfig) (SMTPConfig, error) {
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		cfg.Port = 587
 	}
+	// 拆分 "显示名 <地址>"：信封只能用纯地址；显示名进邮件头。
+	if from := strings.TrimSpace(cfg.From); from != "" {
+		if i := strings.IndexByte(from, '<'); i >= 0 {
+			if j := strings.IndexByte(from[i:], '>'); j > 0 {
+				addr := strings.TrimSpace(from[i+1 : i+j])
+				name := strings.Trim(strings.TrimSpace(from[:i]), `"`)
+				if addr != "" {
+					from = addr
+					if cfg.FromName == "" {
+						cfg.FromName = name
+					}
+				}
+			}
+		}
+		cfg.From = from
+	}
+	cfg.FromName = strings.TrimSpace(cfg.FromName)
 	cfg.From = strings.TrimSpace(cfg.From)
 	if cfg.From == "" {
 		cfg.From = strings.TrimSpace(cfg.Username)
@@ -132,7 +153,7 @@ func (s *smtpSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("mail: data: %w", err)
 	}
-	if _, err := w.Write(buildMessage(s.cfg.From, m)); err != nil {
+	if _, err := w.Write(buildMessage(s.headerFrom(), m)); err != nil {
 		w.Close()
 		return fmt.Errorf("mail: write: %w", err)
 	}
@@ -140,6 +161,14 @@ func (s *smtpSender) Send(ctx context.Context, m Message) error {
 		return fmt.Errorf("mail: close: %w", err)
 	}
 	return c.Quit()
+}
+
+// headerFrom 返回邮件头 From 值（含显示名时用 "Name <addr>"）。
+func (s *smtpSender) headerFrom() string {
+	if s.cfg.FromName == "" {
+		return s.cfg.From
+	}
+	return s.cfg.FromName + " <" + s.cfg.From + ">"
 }
 
 // buildMessage 组装 RFC 5322 纯文本邮件（UTF-8）。
