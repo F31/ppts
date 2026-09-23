@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getAuthConfig, listMembers, type ClientIdentity } from './api';
+import { getAuthConfig, listMembers, logoutSession, type ClientIdentity } from './api';
 import { AppShell } from './AppShell';
 import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, storedLocalIdentity, saveLocalIdentity, saveDevIdentity, storedIdentity, saveIdentity } from './auth';
 import { navigate, useRoute } from './router';
 import { Home } from './pages/Home';
 import { Jobs } from './pages/Jobs';
 import { Login } from './pages/Login';
+import { AccountRecovery } from './pages/AccountRecovery';
 import { Library } from './pages/Library';
 import { ProjectEditor } from './pages/ProjectEditor';
 import { Projects } from './pages/Projects';
@@ -117,6 +118,7 @@ function AppContent() {
   }, []);
 
   const logout = useCallback(() => {
+    void logoutSession();
     clearAllIdentity();
     setIdentity(null);
     navigate('/login');
@@ -138,6 +140,22 @@ function AppContent() {
     return (
       <SessionContext.Provider value={session}>
         <PublicApp parts={route.parts} query={route.query} />
+      </SessionContext.Provider>
+    );
+  }
+
+  // 无认证账号恢复页：邮箱验证 / 密码重置（通过邮件链接进入，无需登录）。
+  if (route.parts[0] === 'verify-email') {
+    return (
+      <SessionContext.Provider value={session}>
+        <AccountRecovery mode="verify" token={route.query.get('token') ?? ''} />
+      </SessionContext.Provider>
+    );
+  }
+  if (route.parts[0] === 'reset-password') {
+    return (
+      <SessionContext.Provider value={session}>
+        <AccountRecovery mode="reset" token={route.query.get('token') ?? ''} />
       </SessionContext.Provider>
     );
   }

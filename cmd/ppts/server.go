@@ -8,11 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/gateway"
+	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/web"
@@ -46,11 +50,21 @@ func runServer() error {
 	}
 	stores.applyPriceBook(priceBook)
 
-	authenticator, err := authFromEnv(ctx)
+	configureJWTTTLFromEnv()
+
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	stdLogger := slog.NewLogLogger(logger.Handler(), slog.LevelInfo)
+	authenticator, err := authFromEnv(ctx, stores.pg)
 	if err != nil {
 		return err
 	}
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	mailer, err := mail.FromEnv(stdLogger)
+	if err != nil {
+		return err
+	}
+	if mailer == nil {
+		logger.Info("mail disabled: verification/reset links will be logged, not emailed")
+	}
 	gatewayStore := gatewayStoreFromEnv(ctx, logger, stores)
 
 	// SQLite 单租户模式：本地固定身份、无登录；不挂载 auth/public 路由（pool 传 nil）。
@@ -62,20 +76,26 @@ func runServer() error {
 	server := &http.Server{
 		Addr: addr,
 		Handler: observability.RequestLogger(
-			api.NewHandler(stores.projects, stores.uploads, stores.scripts, stores.jobs,
-				stores.artifacts, stores.objects, handlerPool,
-				api.Options{
-					Quota: stores.usage, Usage: stores.usage, Policy: stores.tenant,
-					Audit: stores.audit, Members: stores.members,
-					Lifecycle: stores.tenant, Storage: stores.tenant,
-					Archive: stores.tenant, TenantStatus: stores.tenant,
-					Auth:           authenticator,
-					DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
-					LocalPrincipal: localPrincipal,
-					Pronunciation:  stores.pronunciation, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
-					JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
-					WebRoot: os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
-				}),
+			api.SecurityHeaders(
+				api.NewHandler(stores.projects, stores.uploads, stores.scripts, stores.jobs,
+					stores.artifacts, stores.objects, handlerPool,
+					api.Options{
+						Quota: stores.usage, Usage: stores.usage, Policy: stores.tenant,
+						Audit: stores.audit, Members: stores.members,
+						Lifecycle: stores.tenant, Storage: stores.tenant,
+						Archive: stores.tenant, TenantStatus: stores.tenant,
+						Auth:           authenticator,
+						DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
+						LocalPrincipal: localPrincipal,
+						Pronunciation:  stores.pronunciation, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
+						JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
+						Mailer:               mailer,
+						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",
+						RequireEmailVerified: os.Getenv("PPTS_REQUIRE_EMAIL_VERIFIED") == "true",
+						Logger:               stdLogger,
+						WebRoot:              os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
+					}),
+			),
 			logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -125,9 +145,10 @@ func oidcAuthenticatorFromEnv(ctx context.Context) (*api.OIDCAuthenticator, erro
 	})
 }
 
-// authFromEnv 组合 OIDC（external IdP bearer）与自签名 JWT（邮箱注册，HS256）。
-// 两者皆未配置时返回 nil（退化为开发头，行为同前）。
-func authFromEnv(ctx context.Context) (api.Authenticator, error) {
+// authFromEnv 组合 OIDC（external IdP bearer）与自签名 JWT（邮箱/手机注册，HS256）。
+// 两者皆未配置时返回 nil（退化为开发头，行为同前）。pool 非空时为 JWT 注入会话校验
+// （改密/全端登出后旧令牌立即失效）。
+func authFromEnv(ctx context.Context, pool *pgxpool.Pool) (api.Authenticator, error) {
 	oidc, err := oidcAuthenticatorFromEnv(ctx)
 	if err != nil {
 		return nil, err
@@ -136,9 +157,23 @@ func authFromEnv(ctx context.Context) (api.Authenticator, error) {
 	var jwtAuth *api.JWTAuthenticator
 	if secret != "" {
 		jwtAuth = api.NewJWTAuthenticator(secret)
+		if pool != nil {
+			jwtAuth.WithSessionValidator(api.NewPGSessionValidator(pool))
+		}
 	}
 	if oidc == nil && jwtAuth == nil {
 		return nil, nil
 	}
 	return api.NewCombinedAuthenticator(oidc, jwtAuth), nil
+}
+
+// configureJWTTTLFromEnv 从 PPTS_JWT_TTL 解析会话有效期（如 "24h"）；非法/缺失用默认 24h。
+func configureJWTTTLFromEnv() {
+	raw := strings.TrimSpace(os.Getenv("PPTS_JWT_TTL"))
+	if raw == "" {
+		return
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		api.SetJWTTTL(d)
+	}
 }

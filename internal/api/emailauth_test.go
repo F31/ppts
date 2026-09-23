@@ -22,7 +22,7 @@ func makeToken(t *testing.T, secret string, claims jwtClaims) string {
 }
 
 func TestIssueVerifyTokenRoundtrip(t *testing.T) {
-	token, err := issueToken("tenant-1", "user-1", "secret")
+	token, err := issueToken("tenant-1", "user-1", 0, "secret")
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -39,14 +39,14 @@ func TestIssueVerifyTokenRoundtrip(t *testing.T) {
 }
 
 func TestVerifyTokenWrongSecret(t *testing.T) {
-	token, _ := issueToken("tenant-1", "user-1", "secret")
+	token, _ := issueToken("tenant-1", "user-1", 0, "secret")
 	if _, ok := verifyToken(token, "other"); ok {
 		t.Fatal("token must not verify under wrong secret")
 	}
 }
 
 func TestVerifyTokenTampered(t *testing.T) {
-	token, _ := issueToken("tenant-1", "user-1", "secret")
+	token, _ := issueToken("tenant-1", "user-1", 0, "secret")
 	// 篡改签名段。
 	parts := strings.Split(token, ".")
 	parts[2] = parts[2] + "x"
@@ -150,7 +150,7 @@ func TestValidAccount(t *testing.T) {
 
 func TestCombinedAuthenticatorJWTOnly(t *testing.T) {
 	auth := NewCombinedAuthenticator(nil, NewJWTAuthenticator("secret"))
-	token, _ := issueToken("tenant-9", "user-9", "secret")
+	token, _ := issueToken("tenant-9", "user-9", 0, "secret")
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/email-login", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

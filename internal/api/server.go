@@ -4,6 +4,7 @@ import (
 	"context"
 	"expvar"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"path"
@@ -17,6 +18,7 @@ import (
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/observability"
@@ -63,6 +65,14 @@ type Options struct {
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
+	// WS2/WS3：邮件发送器（注册验证/密码重置）；nil 时对应流程降级为记录链接到日志。
+	Mailer mail.Sender
+	// TrustProxy 为 true 时信任 X-Forwarded-For/Proto（置于受控反向代理之后）。
+	TrustProxy bool
+	// RequireEmailVerified 为 true 时未验证邮箱的账号禁止登录（默认软提示）。
+	RequireEmailVerified bool
+	// Logger 供认证流程记录降级/发送失败等。
+	Logger *log.Logger
 	// WebRoot 指向前端构建产物目录（vite build 输出）。非空时由 Go 直接托管静态资源与
 	// SPA history 兜底 —— 单二进制部署无需 nginx。
 	WebRoot string
@@ -130,9 +140,21 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		mux.HandleFunc("/public/", featureDisabledHandler("public area"))
 		mux.HandleFunc("/showcase/", featureDisabledHandler("public area"))
 	}
-	// 邮箱自助注册（B5-M4）：注册/登录/能力探测端点。pool 为 nil 时不挂载（测试桩）。
+	// 邮箱/手机自助注册（B5-M4）：注册/登录/验证/重置/登出端点。pool 为 nil 时不挂载（测试桩）。
 	if pool != nil {
-		registerAuthRoutes(mux, pool, opt.JWTSecret, opt.PasswordPepper)
+		registerAuthRoutes(mux, &authDeps{
+			pool:                 pool,
+			store:                newAuthStore(pool),
+			jwtSecret:            opt.JWTSecret,
+			pepper:               opt.PasswordPepper,
+			mailer:               opt.Mailer,
+			baseURL:              os.Getenv("PPTS_PUBLIC_BASE_URL"),
+			limits:               newAuthLimits(defaultAuthRateConfig()),
+			trustProxy:           opt.TrustProxy,
+			requireEmailVerified: opt.RequireEmailVerified,
+			logger:               opt.Logger,
+			dummy:                precomputeDummyHash(),
+		})
 	}
 	// 单租户本地模式（SQLite profile）：暴露 /auth/config 告知前端"无需登录"，
 	// 前端据此以固定本地身份自动进入，跳过登录页。local=true 时 email_password 恒 false。

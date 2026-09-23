@@ -30,9 +30,16 @@ export type ClientIdentity = {
   tenantId: string;
   userId: string;
   accessToken?: string;
+  // cookieSession 为 true 时，会话令牌由后端 HttpOnly Cookie 承载（邮箱/手机注册登录路径），
+  // 前端不持有 token，也不再发送 Authorization/X-PPTS 头（同源 Cookie 自动携带）。
+  cookieSession?: boolean;
   // account 为登录账号（邮箱或手机号），仅邮箱注册/登录路径写入，用于界面展示；
   // 旧会话（localStorage 无此字段）回退显示 userId。
   account?: string;
+  // accountKind 为账号形态（email/phone），用于界面提示。
+  accountKind?: string;
+  // emailVerified 表示邮箱是否已验证；未验证时界面提示"验证邮箱"。
+  emailVerified?: boolean;
   // tenantName 为租户显示名，仅邮箱注册/登录路径从后端 tenants.name 带回；
   // 旧会话或开发/OIDC 登录无此字段时，界面回退显示 tenantId。
   tenantName?: string;
@@ -53,6 +60,10 @@ export class ConnectError extends Error {
 }
 
 function identityHeaders(identity: ClientIdentity): Record<string, string> {
+  // Cookie 会话：令牌在 HttpOnly Cookie 中，同源请求自动携带，不额外加认证头。
+  if (identity.cookieSession) {
+    return {};
+  }
   if (identity.accessToken) {
     return { Authorization: `Bearer ${identity.accessToken}` };
   }
@@ -120,7 +131,7 @@ export async function getRevisionDiff(
 }
 
 
-// ---- 邮箱自助注册（B5-M4）----
+// ---- 邮箱/手机自助注册与登录（B5-M4 + 第一批认证闭环）----
 export type EmailAuthResult = {
   access_token: string;
   tenant_id: string;
@@ -128,6 +139,8 @@ export type EmailAuthResult = {
   tenant_type: string;
   user_id: string;
   account: string;
+  account_kind?: string;
+  email_verified?: boolean;
 };
 
 // AuthConfig 是后端认证能力探测结果。
@@ -135,6 +148,10 @@ export type EmailAuthResult = {
 // 固定身份自动进入。email_password 控制邮箱登录入口显隐。
 export type AuthConfig = {
   email_password: boolean;
+  // mail_configured 表示后端已配置邮件发送（未配置时验证/重置链接会打到服务端日志）。
+  mail_configured?: boolean;
+  // require_email_verified 表示后端强制邮箱验证后才能登录。
+  require_email_verified?: boolean;
   local?: boolean;
   tenant_id?: string;
   user_id?: string;
@@ -153,10 +170,10 @@ export async function getAuthConfig(): Promise<AuthConfig> {
   return (await response.json()) as AuthConfig;
 }
 
-// registerEmail 自助注册：后端按 accountType 创建个人/组织租户并签发 JWT，无需邮件验证（决策 ②A）。
-// 请求体字段名与后端 internal/api/emailauth.go 的 json tag 一一对应（显式映射，避免驼峰字段被静默丢弃）。
+// registerEmail 自助注册：账号支持邮箱或手机号（后端自动识别并分列落库），返回会话。
+// 请求体字段名与后端 internal/api/authhandlers.go 的 json tag 一一对应。
 export async function registerEmail(params: {
-  email: string;
+  account: string;
   password: string;
   accountType: 'personal' | 'organization';
   orgName?: string;
@@ -166,8 +183,9 @@ export async function registerEmail(params: {
   birthDate?: string;
   phone?: string;
 }): Promise<EmailAuthResult> {
-  return postAuth('/auth/register', {
-    email: params.email,
+  return (await postAuth('/auth/register', {
+    account: params.account,
+    email: params.account,
     password: params.password,
     account_type: params.accountType,
     org_name: params.orgName ?? '',
@@ -176,16 +194,41 @@ export async function registerEmail(params: {
     gender: params.gender ?? '',
     birth_date: params.birthDate ?? '',
     phone: params.phone ?? ''
-  });
+  })) as EmailAuthResult;
 }
 
-// loginEmail 邮箱登录：后端校验凭证并签发 JWT。
-export async function loginEmail(params: { email: string; password: string }): Promise<EmailAuthResult> {
-  return postAuth('/auth/email-login', params);
+// loginEmail 账号登录（邮箱或手机号）：后端校验凭证并建立 Cookie 会话。
+export async function loginEmail(params: { account: string; password: string }): Promise<EmailAuthResult> {
+  return (await postAuth('/auth/email-login', { account: params.account, email: params.account, password: params.password })) as EmailAuthResult;
 }
 
-// postAuth 通用无认证 POST（注册/登录），解析后端 {code,message} 错误体。
-async function postAuth(path: string, body: Record<string, unknown>): Promise<EmailAuthResult> {
+// logoutSession 清除后端 Cookie 会话。
+export async function logoutSession(): Promise<void> {
+  await fetch('/auth/logout', { method: 'POST' });
+}
+
+// verifyEmail 消费邮箱验证令牌。
+export async function verifyEmail(token: string): Promise<void> {
+  await postAuth('/auth/verify-email', { token });
+}
+
+// resendVerification 重新发送验证邮件（统一响应，不泄露账号是否存在）。
+export async function resendVerification(account: string): Promise<void> {
+  await postAuth('/auth/resend-verification', { account, email: account });
+}
+
+// forgotPassword 请求密码重置邮件（统一响应）。
+export async function forgotPassword(account: string): Promise<void> {
+  await postAuth('/auth/forgot-password', { account, email: account });
+}
+
+// resetPassword 用令牌设置新密码。
+export async function resetPassword(token: string, password: string): Promise<void> {
+  await postAuth('/auth/reset-password', { token, password });
+}
+
+// postAuth 通用无认证 POST（注册/登录/验证/重置），解析后端 {code,message} 错误体。
+async function postAuth(path: string, body: Record<string, unknown>): Promise<unknown> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -203,7 +246,8 @@ async function postAuth(path: string, body: Record<string, unknown>): Promise<Em
     }
     throw new ConnectError(code, message);
   }
-  return (await response.json()) as EmailAuthResult;
+  const text = await response.text();
+  return text ? JSON.parse(text) : {};
 }
 
 export async function getPlaybackManifest(params: {

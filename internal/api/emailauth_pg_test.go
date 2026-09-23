@@ -67,7 +67,7 @@ func TestRegisterAccountTypes(t *testing.T) {
 
 	// 1) 个人成功：默认名 "{账号@前} 的空间"，type=personal，落库一致。
 	resp, out := register(map[string]any{
-		"email": email("p1"), "password": "password123", "account_type": "personal",
+		"email": email("p1"), "password": "Str0ng-Passw0rd-9", "account_type": "personal",
 	})
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("personal register status = %d body=%v", resp.StatusCode, out)
@@ -85,7 +85,7 @@ func TestRegisterAccountTypes(t *testing.T) {
 
 	// 2) 个人携带 org_name 被忽略（不报错，仍用默认名）。
 	resp, out = register(map[string]any{
-		"email": email("p2"), "password": "password123",
+		"email": email("p2"), "password": "Str0ng-Passw0rd-9",
 		"account_type": "personal", "org_name": "Should Be Ignored",
 	})
 	if resp.StatusCode != http.StatusCreated || out["tenant_name"] != defaultPersonalTenantName(email("p2")) {
@@ -94,7 +94,7 @@ func TestRegisterAccountTypes(t *testing.T) {
 
 	// 3) 组织成功：采用传入的组织名。
 	resp, out = register(map[string]any{
-		"email": email("o1"), "password": "password123",
+		"email": email("o1"), "password": "Str0ng-Passw0rd-9",
 		"account_type": "organization", "org_name": "Acme 北京",
 	})
 	if resp.StatusCode != http.StatusCreated || out["tenant_type"] != "organization" || out["tenant_name"] != "Acme 北京" {
@@ -104,7 +104,7 @@ func TestRegisterAccountTypes(t *testing.T) {
 	// 4) 组织缺名 / 非法字符 / 超长 → 400。
 	for _, bad := range []string{"", "bad/name", strings.Repeat("x", maxOrgName+1)} {
 		resp, _ = register(map[string]any{
-			"email": email("o2"), "password": "password123",
+			"email": email("o2"), "password": "Str0ng-Passw0rd-9",
 			"account_type": "organization", "org_name": bad,
 		})
 		if resp.StatusCode != http.StatusBadRequest {
@@ -115,7 +115,7 @@ func TestRegisterAccountTypes(t *testing.T) {
 	// 5) 缺失/非法 account_type → 400（不做猜测式兜底）。
 	for _, bad := range []string{"", "team"} {
 		resp, _ = register(map[string]any{
-			"email": email("x1"), "password": "password123", "account_type": bad,
+			"email": email("x1"), "password": "Str0ng-Passw0rd-9", "account_type": bad,
 		})
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("account_type %q status = %d want 400", bad, resp.StatusCode)

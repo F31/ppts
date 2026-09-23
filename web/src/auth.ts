@@ -71,7 +71,8 @@ export function storedIdentity(): ClientIdentity | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as ClientIdentity;
-    if (parsed.tenantId && parsed.userId && parsed.accessToken) return parsed;
+    // Cookie 会话不持有 accessToken；旧会话（含 token）继续兼容。
+    if (parsed.tenantId && parsed.userId && (parsed.accessToken || parsed.cookieSession)) return parsed;
     return null;
   } catch {
     return null;

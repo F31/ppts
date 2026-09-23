@@ -1634,10 +1634,10 @@ func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 func TestTenantUsageSupplierCostGate(t *testing.T) {
 	u := &fakeTenantUsage{seconds: 120, cost: 1.2, supplierCost: 0.48}
 	for _, tc := range []struct {
-		name      string
-		role      membership.Role
-		wantCost  float64
-		wantUser  float64
+		name     string
+		role     membership.Role
+		wantCost float64
+		wantUser float64
 	}{
 		{name: "viewer_hides_supplier_cost", role: membership.RoleViewer, wantCost: 0, wantUser: 1.2},
 		{name: "editor_hides_supplier_cost", role: membership.RoleEditor, wantCost: 0, wantUser: 1.2},

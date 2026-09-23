@@ -14,9 +14,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -31,10 +28,12 @@ import (
 const (
 	jwtIssuer     = "ppts"
 	jwtAudience   = "ppts-console"
-	jwtTTL        = 7 * 24 * time.Hour
-	minPassword   = 8
 	dummyPassword = "dummy-password-for-timing-only"
 )
+
+// jwtTTL 是自签名会话令牌有效期，可由 PPTS_JWT_TTL 覆盖（默认 24h，较原 7 天显著缩短）。
+// 以包级变量（非 const）便于 env 注入与测试覆盖。
+var jwtTTL = 24 * time.Hour
 
 // 账号类型：注册时一次性选定，之后不变（不做个人→组织升级）。
 //   - personal：个人账号 = 只有一个成员的租户，前端隐藏成员管理/邀请协作者入口；
@@ -94,6 +93,7 @@ func b64urlDecode(s string) ([]byte, error) { return base64.RawURLEncoding.Decod
 type jwtClaims struct {
 	Sub string `json:"sub"` // user_id
 	Tid string `json:"tid"` // tenant_id
+	Tv  int    `json:"tv"`  // 会话代次（users.token_version）；改密/全端登出后旧令牌失效
 	Iss string `json:"iss"`
 	Aud string `json:"aud"`
 	Exp int64  `json:"exp"`
@@ -106,8 +106,8 @@ func signHS256(signingInput string, secret []byte) string {
 	return b64urlEncode(mac.Sum(nil))
 }
 
-// issueToken 签发 HS256 JWT（sub=user_id, tid=tenant_id）。
-func issueToken(tenantID, userID, secret string) (string, error) {
+// issueToken 签发 HS256 JWT（sub=user_id, tid=tenant_id, tv=会话代次）。
+func issueToken(tenantID, userID string, tokenVersion int, secret string) (string, error) {
 	if secret == "" {
 		return "", errors.New("jwt: secret not configured")
 	}
@@ -115,6 +115,7 @@ func issueToken(tenantID, userID, secret string) (string, error) {
 	claims := jwtClaims{
 		Sub: userID,
 		Tid: tenantID,
+		Tv:  tokenVersion,
 		Iss: jwtIssuer,
 		Aud: jwtAudience,
 		Exp: now.Add(jwtTTL).Unix(),
@@ -167,32 +168,67 @@ func verifyToken(token, secret string) (jwtClaims, bool) {
 	return claims, true
 }
 
+// SessionValidator 校验会话仍有效（users.status=active 且 token_version 未被提升）。
+// 由 PG 实现；未注入时跳过（开发/测试/单机）。
+type SessionValidator interface {
+	ValidateSession(ctx context.Context, userID string, tokenVersion int) (bool, error)
+}
+
+// SessionCookieName 是浏览器会话 Cookie 名（HttpOnly）。
+const SessionCookieName = "ppts_session"
+
 // JWTAuthenticator 校验本系统自签名的 HS256 JWT；非本系统令牌返回 (false,nil) 以回退 OIDC。
+// 令牌来源优先 HttpOnly Cookie（浏览器），其次 Authorization: Bearer（API 客户端/OIDC 回退）。
 type JWTAuthenticator struct {
-	secret []byte
+	secret   []byte
+	sessions SessionValidator
 }
 
 func NewJWTAuthenticator(secret string) *JWTAuthenticator {
 	return &JWTAuthenticator{secret: []byte(secret)}
 }
 
-func (a *JWTAuthenticator) Authenticate(_ context.Context, r *http.Request) (Principal, bool, error) {
-	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+// WithSessionValidator 注入会话有效性校验（改密/全端登出后旧令牌立即失效）。
+func (a *JWTAuthenticator) WithSessionValidator(v SessionValidator) *JWTAuthenticator {
+	a.sessions = v
+	return a
+}
+
+func (a *JWTAuthenticator) Authenticate(ctx context.Context, r *http.Request) (Principal, bool, error) {
+	raw := tokenFromRequest(r)
 	if raw == "" {
 		return Principal{}, false, nil
 	}
-	parts := strings.Fields(raw)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return Principal{}, false, nil
-	}
-	claims, ok := verifyToken(parts[1], string(a.secret))
+	claims, ok := verifyToken(raw, string(a.secret))
 	if !ok {
 		return Principal{}, false, nil
 	}
 	if claims.Sub == "" || claims.Tid == "" {
 		return Principal{}, false, nil
 	}
+	if a.sessions != nil {
+		ok, err := a.sessions.ValidateSession(ctx, claims.Sub, claims.Tv)
+		if err != nil {
+			return Principal{}, false, err
+		}
+		if !ok {
+			return Principal{}, false, nil
+		}
+	}
 	return Principal{TenantID: claims.Tid, UserID: claims.Sub}, true, nil
+}
+
+// tokenFromRequest 取令牌：优先 HttpOnly Cookie，其次 Authorization: Bearer。
+func tokenFromRequest(r *http.Request) string {
+	if c, err := r.Cookie(SessionCookieName); err == nil && strings.TrimSpace(c.Value) != "" {
+		return strings.TrimSpace(c.Value)
+	}
+	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+	parts := strings.Fields(raw)
+	if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
+		return parts[1]
+	}
+	return ""
 }
 
 // CombinedAuthenticator 优先校验自签名 JWT，失败再回退 OIDC（external IdP bearer）。
@@ -238,239 +274,9 @@ func precomputeDummyHash() string {
 	return string(h)
 }
 
-// ---------------------------------------------------------------------------
-// 路由注册（无认证端点；能力未配置时自降级为 503）
-// ---------------------------------------------------------------------------
-
-func registerAuthRoutes(mux *http.ServeMux, pool *pgxpool.Pool, jwtSecret, pepper string) {
-	dummy := precomputeDummyHash()
-	mux.HandleFunc("POST /auth/register", func(w http.ResponseWriter, r *http.Request) {
-		authRegister(w, r, pool, jwtSecret, pepper)
-	})
-	mux.HandleFunc("POST /auth/email-login", func(w http.ResponseWriter, r *http.Request) {
-		authEmailLogin(w, r, pool, jwtSecret, pepper, dummy)
-	})
-	mux.HandleFunc("GET /auth/config", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"email_password": jwtSecret != ""})
-	})
-}
-
-// ---------------------------------------------------------------------------
-// 注册端点
-// ---------------------------------------------------------------------------
-
-func authRegister(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jwtSecret, pepper string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+// SetJWTTTL 设置自签名会话有效期（cmd/ppts 从 PPTS_JWT_TTL 注入）。
+func SetJWTTTL(d time.Duration) {
+	if d > 0 {
+		jwtTTL = d
 	}
-	var body struct {
-		Email       string `json:"email"`
-		Password    string `json:"password"`
-		AccountType string `json:"account_type"`
-		OrgName     string `json:"org_name"`
-		Username    string `json:"username"`
-		FullName    string `json:"full_name"`
-		Gender      string `json:"gender"`
-		BirthDate   string `json:"birth_date"`
-		Phone       string `json:"phone"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	email := strings.TrimSpace(strings.ToLower(body.Email))
-	if !validAccount(email) {
-		http.Error(w, "invalid account", http.StatusBadRequest)
-		return
-	}
-	if len(body.Password) < minPassword {
-		http.Error(w, "password too short", http.StatusBadRequest)
-		return
-	}
-	// 账号类型必须显式声明（不做"猜测式兜底"）；组织账号需合规的组织名称。
-	accountType := strings.TrimSpace(body.AccountType)
-	if accountType != accountTypePersonal && accountType != accountTypeOrganization {
-		http.Error(w, "account_type must be personal or organization", http.StatusBadRequest)
-		return
-	}
-	tenantName := defaultPersonalTenantName(email)
-	if accountType == accountTypeOrganization {
-		if err := validateOrgName(strings.TrimSpace(body.OrgName)); err != nil {
-			http.Error(w, "invalid org_name: "+err.Error(), http.StatusBadRequest)
-			return
-		}
-		tenantName = strings.TrimSpace(body.OrgName)
-	}
-	if jwtSecret == "" {
-		http.Error(w, "email registration is not enabled", http.StatusServiceUnavailable)
-		return
-	}
-	ctx := r.Context()
-
-	// 重复账号检查（users 无 RLS，可直接查）。
-	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT true FROM users WHERE email=$1`, email).Scan(&exists); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if exists {
-		// 统一响应，不泄露账号是否已注册（R-16）。
-		writeJSON(w, http.StatusConflict, map[string]any{"code": "registration_failed", "message": "registration failed"})
-		return
-	}
-
-	hash, err := hashPassword(body.Password, pepper)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	// 事务：创建租户（个人/组织）+ owner 成员 + 用户 + 凭证。
-	tenantID := uuid.New().String()
-	userID := uuid.New().String()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-
-	if _, err := tx.Exec(ctx, `INSERT INTO tenants(id, name, status, type) VALUES($1,$2,'active',$3)`, tenantID, tenantName, accountType); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	// 设置事务局部租户上下文，满足 tenant_members / credentials 的 RLS WITH CHECK。
-	if _, err := tx.Exec(ctx, `SELECT set_config('app.tenant_id', $1, true)`, tenantID); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO users(id, email) VALUES($1,$2)`, userID, email); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	// 成员档案（0030）：注册时一并采集可选档案字段；空值以 NULL 存入。
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO user_profiles (user_id, username, full_name, gender, birth_date, phone)
-		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::date, NULLIF($6, ''))
-		 ON CONFLICT (user_id) DO NOTHING`,
-		userID, body.Username, body.FullName, body.Gender, body.BirthDate, body.Phone); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO tenant_members(tenant_id, user_id, role) VALUES($1,$2,'owner')`, tenantID, userID); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO credentials(tenant_id, user_id, email, password_hash, algo) VALUES($1,$2,$3,$4,'bcrypt')`,
-		tenantID, userID, email, hash); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if err := tx.Commit(context.Background()); err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-
-	token, err := issueToken(tenantID, userID, jwtSecret)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"access_token": token,
-		"tenant_id":    tenantID,
-		"tenant_name":  tenantName,
-		"tenant_type":  accountType,
-		"user_id":      userID,
-		"account":      email,
-	})
-}
-
-// authEmailLogin 账号登录（邮箱或手机号）：auth_lookup_credential 跨租户定位凭证（SECURITY DEFINER 绕过 RLS）。
-// 未命中也做一次 bcrypt 比对以恒定耗时；所有失败统一 401 文案，不区分用户是否存在（R-16）。
-func authEmailLogin(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, jwtSecret, pepper, dummyHash string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body struct {
-		Email     string `json:"email"`
-		Password  string `json:"password"`
-		Username  string `json:"username"`
-		FullName  string `json:"full_name"`
-		Gender    string `json:"gender"`
-		BirthDate string `json:"birth_date"`
-		Phone     string `json:"phone"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "invalid body", http.StatusBadRequest)
-		return
-	}
-	email := strings.TrimSpace(strings.ToLower(body.Email))
-	if !validAccount(email) {
-		http.Error(w, "invalid account", http.StatusBadRequest)
-		return
-	}
-	if jwtSecret == "" {
-		http.Error(w, "email authentication is not enabled", http.StatusServiceUnavailable)
-		return
-	}
-	ctx := r.Context()
-	var tenantID, userID, hash, tenantName, tenantType string
-	err := pool.QueryRow(ctx,
-		`SELECT c.tenant_id, c.user_id, c.password_hash, t.name, t.type
-		 FROM auth_lookup_credential($1) c
-		 JOIN tenants t ON t.id = c.tenant_id`,
-		email).
-		Scan(&tenantID, &userID, &hash, &tenantName, &tenantType)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// 未命中：仍做一次 bcrypt 比对以恒定耗时，防止通过响应时间/状态枚举账号（R-16）。
-		_ = bcrypt.CompareHashAndPassword([]byte(dummyHash), []byte(body.Password+pepper))
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid email or password"})
-		return
-	}
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if !verifyPassword(hash, body.Password, pepper) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "invalid_credentials", "message": "invalid email or password"})
-		return
-	}
-	token, err := issueToken(tenantID, userID, jwtSecret)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"access_token": token,
-		"tenant_id":    tenantID,
-		"tenant_name":  tenantName,
-		"tenant_type":  tenantType,
-		"user_id":      userID,
-		"account":      email,
-	})
-}
-
-// validAccount 校验登录账号：邮箱（含 @）或手机号（可选 + 前缀，5-15 位数字）。
-// 存储上复用 users.email / credentials.email 列作为账号列，两种形态同列共存。
-func validAccount(account string) bool {
-	if len(account) > 254 || strings.Contains(account, " ") {
-		return false
-	}
-	if strings.Contains(account, "@") {
-		return len(account) > 3 && !strings.Contains(account, "..")
-	}
-	digits := strings.TrimPrefix(account, "+")
-	if len(digits) < 5 || len(digits) > 15 {
-		return false
-	}
-	for _, r := range digits {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
 }

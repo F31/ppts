@@ -227,7 +227,7 @@ func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.
 			"previewable": a.TimelineKey != "",
 			// revisionNo / sourceDisplayName 供成品库按"PPT 名称 + 版本"展示；
 			// 历史行（无来源信息）为零值，前端回退到项目名称。
-			"revisionNo":       a.SourceRevisionNo,
+			"revisionNo":        a.SourceRevisionNo,
 			"sourceDisplayName": a.SourceDisplayName,
 		})
 	}

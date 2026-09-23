@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { ClientIdentity } from '../api';
 import { oidcConfigured, isDevIdentityEnabled, startOIDCLogin } from '../auth';
-import { getAuthConfig, loginEmail, registerEmail } from '../api';
+import { getAuthConfig, loginEmail, registerEmail, forgotPassword } from '../api';
 import { useI18n } from '../i18n';
 import { useSession } from '../session';
 import { describeApiError } from '../apiError';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
-type EmailMode = 'signin' | 'register';
+type EmailMode = 'signin' | 'register' | 'forgot';
 type AccountType = 'personal' | 'organization';
 
 // 组织名称校验规则（与后端 internal/api/emailauth.go 的 validateOrgName 一致）：
@@ -47,6 +47,8 @@ export function Login() {
   const [regGender, setRegGender] = useState('');
   const [regBirthDate, setRegBirthDate] = useState('');
   const [regPhone, setRegPhone] = useState('');
+  // forgotSent：忘记密码提交后的统一提示（不泄露账号是否存在）。
+  const [forgotSent, setForgotSent] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -95,7 +97,23 @@ export function Login() {
     setSubmitting(true);
     setError('');
     const trimmedEmail = email.trim();
-    if (!trimmedEmail || !password) {
+    if (!trimmedEmail) {
+      setError(t('login.emailRequired'));
+      setSubmitting(false);
+      return;
+    }
+    if (emailMode === 'forgot') {
+      try {
+        await forgotPassword(trimmedEmail);
+        setForgotSent(true);
+      } catch (err) {
+        setError(describeApiError(err, t('login.forgotFailed'), t));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+    if (!password) {
       setError(t('login.emailRequired'));
       setSubmitting(false);
       return;
@@ -113,7 +131,7 @@ export function Login() {
       const res =
         emailMode === 'register'
           ? await registerEmail({
-              email: trimmedEmail,
+              account: trimmedEmail,
               password,
               accountType,
               orgName: accountType === 'organization' ? trimmedOrg : undefined,
@@ -123,12 +141,14 @@ export function Login() {
               birthDate: regBirthDate,
               phone: regPhone,
             })
-          : await loginEmail({ email: trimmedEmail, password });
+          : await loginEmail({ account: trimmedEmail, password });
       loginEmailSession({
         tenantId: res.tenant_id,
         userId: res.user_id,
-        accessToken: res.access_token,
+        cookieSession: true,
         account: res.account,
+        accountKind: res.account_kind,
+        emailVerified: res.email_verified,
         tenantName: res.tenant_name,
         tenantType: res.tenant_type,
       });
@@ -185,15 +205,17 @@ export function Login() {
                 onChange={(e) => setEmail(e.currentTarget.value)}
               />
             </label>
-            <label>
-              {t('login.password')}
-              <input
-                type="password"
-                value={password}
-                autoComplete={emailMode === 'register' ? 'new-password' : 'current-password'}
-                onChange={(e) => setPassword(e.currentTarget.value)}
-              />
-            </label>
+            {emailMode !== 'forgot' && (
+              <label>
+                {t('login.password')}
+                <input
+                  type="password"
+                  value={password}
+                  autoComplete={emailMode === 'register' ? 'new-password' : 'current-password'}
+                  onChange={(e) => setPassword(e.currentTarget.value)}
+                />
+              </label>
+            )}
             {emailMode === 'register' && (
               <fieldset className="account-type">
                 <legend>{t('login.accountType')}</legend>
@@ -264,18 +286,37 @@ export function Login() {
                 </label>
               </div>
             )}
-            <button type="button" className="primary-login" disabled={submitting || registerBlocked} onClick={() => void submitEmail()}>
-              {submitting ? t('login.submitting') : emailMode === 'register' ? t('login.register') : t('login.signIn')}
-            </button>
+            {forgotSent ? (
+              <p className="form-success" role="status">{t('login.forgotSent')}</p>
+            ) : (
+              <button type="button" className="primary-login" disabled={submitting || registerBlocked} onClick={() => void submitEmail()}>
+                {submitting
+                  ? t('login.submitting')
+                  : emailMode === 'register'
+                    ? t('login.register')
+                    : emailMode === 'forgot'
+                      ? t('login.forgotSubmit')
+                      : t('login.signIn')}
+              </button>
+            )}
             <p className="email-switch">
               {emailMode === 'register' ? (
                 <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('signin')}>
                   {t('login.alreadyHave')}
                 </button>
-              ) : (
-                <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('register')}>
-                  {t('login.needAccount')}
+              ) : emailMode === 'forgot' ? (
+                <button type="button" className="email-link" disabled={submitting} onClick={() => { setEmailMode('signin'); setForgotSent(false); }}>
+                  {t('login.backToSignIn')}
                 </button>
+              ) : (
+                <>
+                  <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('register')}>
+                    {t('login.needAccount')}
+                  </button>
+                  <button type="button" className="email-link" disabled={submitting} onClick={() => setEmailMode('forgot')}>
+                    {t('login.forgotPassword')}
+                  </button>
+                </>
               )}
             </p>
           </div>
