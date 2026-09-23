@@ -103,6 +103,10 @@ const (
 	AlignProvider AlignmentMethod = "provider_timestamps" // 供应商原生时间戳
 	AlignForced   AlignmentMethod = "forced_alignment"    // 经验证的强制对齐
 	AlignEstimate AlignmentMethod = "estimated"           // 明确标记为估算
+	// AlignEstimateVAD 是"静音锚点 + 分段匀速"估算（阶段一）：在真实音频里检测停顿点，
+	// 把停顿锚到文本标点上，再在锚点分割的小区间内做匀速字符分布。无新依赖的本地信号处理，
+	// 精度介于纯估算与强制对齐之间；VAD 无效（无静音/无标点/无语音）时降级为 AlignEstimate。
+	AlignEstimateVAD AlignmentMethod = "estimated_vad"
 )
 
 // SynthesisResult 合成结果（V4.0 §8.1）。

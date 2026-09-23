@@ -1,4 +1,4 @@
-export type AlignmentMethod = 'provider_timestamps' | 'forced_alignment' | 'estimated';
+export type AlignmentMethod = 'provider_timestamps' | 'forced_alignment' | 'estimated' | 'estimated_vad';
 
 export type SegmentCue = {
   segmentId: string;

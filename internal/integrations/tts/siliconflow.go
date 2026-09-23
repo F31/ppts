@@ -117,7 +117,9 @@ func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisReque
 	if err != nil {
 		return SynthesisResult{}, fmt.Errorf("tts: normalize siliconflow wav: %w", err)
 	}
-	alignment := buildEstimatedAlignment(req.Text, durationMS)
+	// 阶段一：先在真实音频上做静音锚点估算（estimated_vad）；VAD 无效时该方法内部
+	// 自动回退到整体匀速估算（estimated）。两者都满足 validateSynthesisResult 的边界校验。
+	alignment := buildEstimatedVADAlignment(req.Text, audio, durationMS)
 	chars := len([]rune(req.Text))
 	return SynthesisResult{
 		Audio:           audio,

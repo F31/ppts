@@ -354,3 +354,32 @@ func TestNarrationHandlerRejectsRevisionDrift(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, provider.calls)
 	}
 }
+
+// TestValidateSynthesisResultAcceptsAlignMethods 守护：新增的 AlignMethod（estimated_vad /
+// forced_alignment）必须能被 validateSynthesisResult 正常识别并通过，不得因新增枚举值报错。
+func TestValidateSynthesisResultAcceptsAlignMethods(t *testing.T) {
+	text := "甲乙丙"
+	tokens := []tts.TokenOffset{
+		{StartUS: 200_000, EndUS: 400_000, Char: "甲"},
+		{StartUS: 400_000, EndUS: 600_000, Char: "乙"},
+		{StartUS: 600_000, EndUS: 800_000, Char: "丙"},
+	}
+	for _, method := range []tts.AlignmentMethod{tts.AlignProvider, tts.AlignForced, tts.AlignEstimate, tts.AlignEstimateVAD} {
+		res := tts.SynthesisResult{
+			Audio: []byte{1}, RealDurationMS: 1000,
+			Alignment: &tts.Alignment{Text: text, Tokens: tokens, Method: method},
+		}
+		if err := validateSynthesisResult(text, res); err != nil {
+			t.Fatalf("method %s 应通过校验，却报错: %v", method, err)
+		}
+	}
+	// 越界 token 仍须被拒绝（方法名不改变边界校验）。
+	bad := tts.SynthesisResult{
+		Audio: []byte{1}, RealDurationMS: 1000,
+		Alignment: &tts.Alignment{Text: text, Method: tts.AlignEstimateVAD,
+			Tokens: []tts.TokenOffset{{StartUS: 0, EndUS: 1_500_000, Char: "甲"}}},
+	}
+	if err := validateSynthesisResult(text, bad); err == nil {
+		t.Fatal("越界 token 应被拒绝")
+	}
+}

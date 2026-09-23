@@ -165,6 +165,46 @@ func TestRenderASSSplitsLinesAndKaraoke(t *testing.T) {
 	}
 }
 
+// TestRenderASSUsesTimelineAlignmentChars 守护"网页高亮与 MP4 烧录同源"：
+// BuildTimeline 把 AlignProvider/estimated/estimated_vad/forced 的 tokens 转成 SubtitleCue.Chars；
+// 播放器（前端）与 RenderASS（MP4 烧录）消费的是同一份 timeline 数据。这里验证 RenderASS
+// 直接从 timeline.Subtitles 生成，字符内容与时间轴一致，不依赖任何独立的时间轴来源。
+func TestRenderASSUsesTimelineAlignmentChars(t *testing.T) {
+	text := "甲乙丙。"
+	runes := []rune(text)
+	tokens := make([]tts.TokenOffset, len(runes))
+	for i, r := range runes {
+		start := int64(200_000 + i*200_000)
+		tokens[i] = tts.TokenOffset{StartUS: start, EndUS: start + 200_000, Char: string(r)}
+	}
+	timeline, err := BuildTimeline([]SlideInput{{
+		SlideID: "s1",
+		Segments: []SegmentInput{{
+			SegmentID: "seg-1", DisplayText: text, AudioKey: "k.wav", DurationMS: 1000,
+			Alignment: &tts.Alignment{Text: text, Method: tts.AlignEstimateVAD, Tokens: tokens},
+		}},
+	}}, Timing{})
+	if err != nil {
+		t.Fatalf("BuildTimeline: %v", err)
+	}
+	cue := timeline.Subtitles[0]
+	if len(cue.Chars) != len(runes) {
+		t.Fatalf("cue.Chars = %d, want %d", len(cue.Chars), len(runes))
+	}
+	ass, err := RenderASS(timeline.Subtitles, ASSOptions{})
+	if err != nil {
+		t.Fatalf("RenderASS: %v", err)
+	}
+	s := string(ass)
+	if !strings.Contains(s, "Dialogue:") || !strings.Contains(s, "甲") || !strings.Contains(s, "丙") {
+		t.Fatalf("RenderASS 未消费 timeline 的字符时间戳: %s", s)
+	}
+	// 段落的 AlignmentMethod 也随 timeline 落盘，便于前端/排查区分来源。
+	if timeline.Slides[0].Segments[0].AlignmentMethod != tts.AlignEstimateVAD {
+		t.Fatalf("segment method = %s", timeline.Slides[0].Segments[0].AlignmentMethod)
+	}
+}
+
 func TestSubtitleRendererRejectsOverlap(t *testing.T) {
 	_, err := RenderWebVTT([]SubtitleCue{
 		{StartUS: 0, EndUS: 2_000, Text: "a"},
