@@ -68,7 +68,7 @@ func (s *fakeProjectStore) ListProjects(context.Context, string, string, string,
 	return s.projects, "", nil
 }
 
-func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, userID, id string) (*project.Project, error) {
+func (s *fakeProjectStore) ArchiveProject(_ context.Context, tenantID, userID, actorID, id string) (*project.Project, error) {
 	p, err := s.GetProject(context.Background(), tenantID, "", id)
 	if err != nil {
 		return nil, err

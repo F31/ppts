@@ -81,7 +81,7 @@ func TestSQLiteProjectCRUDAndACL(t *testing.T) {
 	}
 
 	// 归档
-	archived, err := s.ArchiveProject(ctx, testTenant, testOwner, p.ID)
+	archived, err := s.ArchiveProject(ctx, testTenant, testOwner, testOwner, p.ID)
 	if err != nil || !archived.Archived {
 		t.Fatalf("archive: %v %+v", err, archived)
 	}

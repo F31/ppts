@@ -1371,7 +1371,7 @@ func editorListArchivedProjects(w http.ResponseWriter, r *http.Request, projects
 	}
 	out := make([]map[string]any, 0, len(list))
 	for _, p := range list {
-		out = append(out, map[string]any{
+		m := map[string]any{
 			"id":              p.ID,
 			"tenantId":        p.TenantID,
 			"owner":           p.OwnerUser,
@@ -1379,7 +1379,14 @@ func editorListArchivedProjects(w http.ResponseWriter, r *http.Request, projects
 			"currentRevision": p.CurrentRevision,
 			"archived":        p.Archived,
 			"createdAtUnix":   p.CreatedAt.Unix(),
-		})
+			"archivedBy":      p.ArchivedBy,
+			"archivedByName":  p.ArchivedByName,
+			"archivedByEmail": p.ArchivedByEmail,
+		}
+		if !p.ArchivedAt.IsZero() {
+			m["archivedAtUnix"] = p.ArchivedAt.Unix()
+		}
+		out = append(out, m)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"projects": out})
 }

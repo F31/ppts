@@ -402,9 +402,16 @@ export async function listProjects(identity: ClientIdentity): Promise<Project[]>
   return data.projects ?? [];
 }
 
-// listArchivedProjects 读取已归档项目（原生 HTTP），供“已归档”视图与恢复入口。
-export async function listArchivedProjects(identity: ClientIdentity): Promise<Project[]> {
-  const data = await getJSON<{ projects?: Project[] }>(identity, '/projects/archived');
+// listArchivedProjects 读取已归档项目（原生 HTTP），供“已归档”抽屉与恢复入口。
+export type ArchivedProject = Project & {
+  archivedAtUnix?: number;
+  archivedBy?: string;
+  archivedByName?: string;
+  archivedByEmail?: string;
+};
+
+export async function listArchivedProjects(identity: ClientIdentity): Promise<ArchivedProject[]> {
+  const data = await getJSON<{ projects?: ArchivedProject[] }>(identity, '/projects/archived');
   return data.projects ?? [];
 }
 

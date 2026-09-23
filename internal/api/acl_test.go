@@ -69,12 +69,13 @@ func (s *fakeACLProjectStore) ListProjects(_ context.Context, tenantID, userID, 
 	return out, "", nil
 }
 
-func (s *fakeACLProjectStore) ArchiveProject(_ context.Context, tenantID, userID, id string) (*project.Project, error) {
+func (s *fakeACLProjectStore) ArchiveProject(_ context.Context, tenantID, userID, actorID, id string) (*project.Project, error) {
 	p, err := s.GetProject(context.Background(), tenantID, userID, id)
 	if err != nil {
 		return nil, err
 	}
 	p.Archived = true
+	p.ArchivedBy = actorID
 	return p, nil
 }
 

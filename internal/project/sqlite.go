@@ -118,9 +118,52 @@ func (s *SQLiteStore) ListProjects(ctx context.Context, tenantID, userID, cursor
 	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, 0)
 }
 
-// ListArchivedProjects 列出已归档项目（供恢复入口）。
+// ListArchivedProjects 列出已归档项目（含归档时间与归档人展示名），供恢复抽屉。
 func (s *SQLiteStore) ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
-	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, 1)
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT p.id, p.tenant_id, p.owner_user, p.title, p.current_revision, p.policy, p.archived,
+		        p.delete_source_after, p.created_at, p.updated_at,
+		        COALESCE(p.archived_at, ''), COALESCE(p.archived_by, ''),
+		        COALESCE(up.username, ''), COALESCE(up.full_name, ''), COALESCE(u.email, '')
+		 FROM projects p
+		 LEFT JOIN user_profiles up ON up.user_id = p.archived_by
+		 LEFT JOIN users u ON u.id = p.archived_by
+		 WHERE p.tenant_id = ? AND p.archived = 1
+		   AND (? = '' OR p.owner_user = ? OR EXISTS (
+		     SELECT 1 FROM project_collaborators pc
+		      WHERE pc.project_id = p.id AND pc.user_id = ?))
+		 ORDER BY COALESCE(NULLIF(p.archived_at,''), p.updated_at) DESC
+		 LIMIT ?`,
+		tenantID, userID, userID, userID, pageSize)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	out := make([]*Project, 0)
+	for rows.Next() {
+		var p Project
+		var archivedAt, username, fullName string
+		var createdAt, updatedAt string
+		if err := rows.Scan(&p.ID, &p.TenantID, &p.OwnerUser, &p.Title, &p.CurrentRevision,
+			&p.Policy, &p.Archived, &p.DeleteSourceAfter, &createdAt, &updatedAt,
+			&archivedAt, &p.ArchivedBy, &username, &fullName, &p.ArchivedByEmail); err != nil {
+			return nil, "", err
+		}
+		p.CreatedAt = db.ParseTime(createdAt)
+		p.UpdatedAt = db.ParseTime(updatedAt)
+		if archivedAt != "" {
+			p.ArchivedAt = db.ParseTime(archivedAt)
+		}
+		p.ArchivedByName = firstNonEmpty(fullName, username, p.ArchivedByEmail)
+		out = append(out, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	return out, "", nil
 }
 
 func (s *SQLiteStore) listProjects(ctx context.Context, tenantID, userID, cursor string, pageSize, archived int) ([]*Project, string, error) {
@@ -170,15 +213,15 @@ func (s *SQLiteStore) listProjects(ctx context.Context, tenantID, userID, cursor
 	return out, next, nil
 }
 
-func (s *SQLiteStore) ArchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
+func (s *SQLiteStore) ArchiveProject(ctx context.Context, tenantID, userID, actorID, id string) (*Project, error) {
 	now := sqNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE projects SET archived = 1, updated_at = ?
+		`UPDATE projects SET archived = 1, archived_at = ?, archived_by = ?, updated_at = ?
 		 WHERE id = ? AND tenant_id = ?
 		   AND (? = '' OR owner_user = ? OR EXISTS (
 		     SELECT 1 FROM project_collaborators pc
 		      WHERE pc.project_id = projects.id AND pc.user_id = ?))`,
-		now, id, tenantID, userID, userID, userID)
+		now, nullIfEmptySQL(actorID), now, id, tenantID, userID, userID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -188,11 +231,19 @@ func (s *SQLiteStore) ArchiveProject(ctx context.Context, tenantID, userID, id s
 	return s.GetProject(ctx, tenantID, userID, id)
 }
 
+// nullIfEmptySQL 空串转 NULL（SQLite 无 NULLIF 简写也可用，但显式更清晰）。
+func nullIfEmptySQL(v string) any {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	return v
+}
+
 // UnarchiveProject 取消归档（恢复为正常项目）。
 func (s *SQLiteStore) UnarchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
 	now := sqNow()
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE projects SET archived = 0, updated_at = ?
+		`UPDATE projects SET archived = 0, archived_at = NULL, archived_by = NULL, updated_at = ?
 		 WHERE id = ? AND tenant_id = ?
 		   AND (? = '' OR owner_user = ? OR EXISTS (
 		     SELECT 1 FROM project_collaborators pc

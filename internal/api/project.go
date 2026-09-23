@@ -95,7 +95,7 @@ func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv
 	} else if override {
 		recordAdminOverride(ctx, s.audit, "project.admin_override_archive", req.Msg.GetId(), map[string]any{"surface": "rpc.Archive"})
 	}
-	archived, err := s.store.ArchiveProject(ctx, p.TenantID, "", req.Msg.GetId())
+	archived, err := s.store.ArchiveProject(ctx, p.TenantID, "", p.UserID, req.Msg.GetId())
 	if err != nil {
 		return nil, projectError(err)
 	}

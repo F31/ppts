@@ -16,6 +16,7 @@ import {
   getSourceRevisions,
   listFolders,
   listArchivedProjects,
+  type ArchivedProject,
   listProjectOrganization,
   listProjects,
   listTags,
@@ -94,7 +95,7 @@ export function Projects({
   const [importTarget, setImportTarget] = useState<Project | null>(null);
   // 已归档项目视图：开关 + 列表 + 加载态（供恢复入口）。
   const [showArchived, setShowArchived] = useState(false);
-  const [archived, setArchived] = useState<Project[]>([]);
+  const [archived, setArchived] = useState<ArchivedProject[]>([]);
   const [archivedBusy, setArchivedBusy] = useState(false);
   const [expandedProjectId, setExpandedProjectId] = useState('');
   // 导出弹窗：目标版本 + 已构建的播放清单（就地弹 ExportDialog，不再跳到编辑器）。
@@ -1018,33 +1019,37 @@ export function Projects({
       </section>
 
       {showArchived && (
-        <section className="panel">
-          <h2>{t('projects.archivedTitle')}</h2>
-          {archivedBusy && <p className="cell-sub">{t('common.loading')}</p>}
-          {!archivedBusy && archived.length === 0 && <p className="cell-sub">{t('projects.archivedEmpty')}</p>}
-          {archived.length > 0 && (
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>{t('projects.archivedName')}</th>
-                  <th className="col-actions">{t('projects.colActions')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {archived.map((p) => (
-                  <tr key={p.id}>
-                    <td>{p.title}</td>
-                    <td className="col-actions">
-                      <button type="button" className="button-ghost" disabled={archivedBusy} onClick={() => void restore(p)}>
-                        {t('projects.restore')}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+        <div className="drawer-backdrop" role="dialog" aria-modal="true" aria-label={t('projects.archivedTitle')} onClick={() => setShowArchived(false)}>
+          <aside className="drawer-card" onClick={(e) => e.stopPropagation()}>
+            <header className="drawer-head">
+              <h2>{t('projects.archivedTitle')}</h2>
+              <button type="button" onClick={() => setShowArchived(false)} aria-label={t('common.close')}>
+                {t('common.close')}
+              </button>
+            </header>
+            {archivedBusy && <p className="cell-sub">{t('common.loading')}</p>}
+            {!archivedBusy && archived.length === 0 && <p className="cell-sub">{t('projects.archivedEmpty')}</p>}
+            <ul className="drawer-list">
+              {archived.map((p) => (
+                <li key={p.id} className="drawer-item">
+                  <div className="drawer-item-main">
+                    <strong>{p.title}</strong>
+                    <small className="cell-sub">
+                      {t('projects.archivedBy')}: {p.archivedByName || p.archivedByEmail || p.archivedBy || t('common.none')}
+                    </small>
+                    <small className="cell-sub">
+                      {t('projects.archivedAt')}:{' '}
+                      {p.archivedAtUnix ? new Date(p.archivedAtUnix * 1000).toLocaleString() : t('common.none')}
+                    </small>
+                  </div>
+                  <button type="button" className="button-ghost" disabled={archivedBusy} onClick={() => void restore(p)}>
+                    {t('projects.restore')}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        </div>
       )}
 
       {/* 错误必须播报（role="alert"）；通知是信息性内容，用 polite 的 live region，

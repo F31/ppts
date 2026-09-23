@@ -23,8 +23,14 @@ type Project struct {
 	Policy            []byte // 租户策略 jsonb
 	Archived          bool
 	DeleteSourceAfter bool
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	// 归档元信息（仅归档相关路径填充）：ArchivedAt/ArchivedBy 来自 projects 列；
+	// ArchivedByName/Email 由归档列表联表 user_profiles/users 得出，供界面展示"谁归档的"。
+	ArchivedAt      time.Time
+	ArchivedBy      string
+	ArchivedByName  string
+	ArchivedByEmail string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // SourceRevision 是源文件不可变版本（V4.0 §7.1）。
@@ -170,7 +176,9 @@ type ProjectStore interface {
 	CreateProject(ctx context.Context, tenantID, owner, title string) (*Project, error)
 	GetProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
 	ListProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error)
-	ArchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error)
+	// ArchiveProject 归档项目；userID 用于 ACL 匹配（"" 表示已由上层授权、按租户放行），
+	// actorID 记录归档人（写入 archived_by）。
+	ArchiveProject(ctx context.Context, tenantID, userID, actorID, id string) (*Project, error)
 	// ListArchivedProjects 列出已归档项目（供恢复入口）。
 	ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error)
 	// UnarchiveProject 取消归档（恢复为正常项目）。
@@ -292,9 +300,62 @@ func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, userID, cur
 	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, false)
 }
 
-// ListArchivedProjects 列出已归档项目（供恢复入口）。
+// ListArchivedProjects 列出已归档项目（含归档时间与归档人展示名），供恢复抽屉。
 func (s *PGProjectStore) ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
-	return s.listProjects(ctx, tenantID, userID, cursor, pageSize, true)
+	if pageSize <= 0 || pageSize > 200 {
+		pageSize = 100
+	}
+	var out []*Project
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT p.id, p.tenant_id, p.owner_user, p.title, p.current_revision, p.policy, p.archived,
+			        p.delete_source_after, p.created_at, p.updated_at,
+			        COALESCE(EXTRACT(EPOCH FROM p.archived_at)::bigint, 0),
+			        COALESCE(p.archived_by, ''),
+			        COALESCE(up.username, ''), COALESCE(up.full_name, ''), COALESCE(u.email, '')
+			 FROM projects p
+			 LEFT JOIN user_profiles up ON up.user_id = p.archived_by
+			 LEFT JOIN users u ON u.id = p.archived_by
+			 WHERE p.tenant_id=$1 AND p.archived=true
+			   AND ($2 = '' OR p.owner_user = $2 OR EXISTS (
+			     SELECT 1 FROM project_collaborators pc
+			      WHERE pc.project_id = p.id AND pc.user_id = $2))
+			 ORDER BY COALESCE(p.archived_at, p.updated_at) DESC
+			 LIMIT $3`, tenantID, userID, pageSize)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var p Project
+			var archivedAtUnix int64
+			var username, fullName string
+			if err := rows.Scan(&p.ID, &p.TenantID, &p.OwnerUser, &p.Title, &p.CurrentRevision,
+				&p.Policy, &p.Archived, &p.DeleteSourceAfter, &p.CreatedAt, &p.UpdatedAt,
+				&archivedAtUnix, &p.ArchivedBy, &username, &fullName, &p.ArchivedByEmail); err != nil {
+				return err
+			}
+			if archivedAtUnix > 0 {
+				p.ArchivedAt = time.Unix(archivedAtUnix, 0)
+			}
+			p.ArchivedByName = firstNonEmpty(fullName, username, p.ArchivedByEmail)
+			out = append(out, &p)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return out, "", nil
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (s *PGProjectStore) listProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int, archived bool) ([]*Project, string, error) {
@@ -358,19 +419,19 @@ func (s *PGProjectStore) listProjects(ctx context.Context, tenantID, userID, cur
 	return projects, next, nil
 }
 
-func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
+func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, userID, actorID, id string) (*Project, error) {
 	var p *Project
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		p, e = scanProject(tx.QueryRow(ctx,
-			`UPDATE projects SET archived=true, updated_at=now()
+			`UPDATE projects SET archived=true, archived_at=now(), archived_by=NULLIF($4,''), updated_at=now()
 			 WHERE id=$3 AND tenant_id=$2
 			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
 			    SELECT 1 FROM project_collaborators pc
 			     WHERE pc.project_id = projects.id AND pc.user_id = $1))
 			 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
 			   delete_source_after, created_at, updated_at`,
-			userID, tenantID, id))
+			userID, tenantID, id, actorID))
 		return e
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -385,7 +446,7 @@ func (s *PGProjectStore) UnarchiveProject(ctx context.Context, tenantID, userID,
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error
 		p, e = scanProject(tx.QueryRow(ctx,
-			`UPDATE projects SET archived=false, updated_at=now()
+			`UPDATE projects SET archived=false, archived_at=NULL, archived_by=NULL, updated_at=now()
 			 WHERE id=$3 AND tenant_id=$2
 			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
 			    SELECT 1 FROM project_collaborators pc
