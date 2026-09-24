@@ -181,3 +181,25 @@ func TestNarrationUpdateStoresAndPreservesSourceAnchors(t *testing.T) {
 		t.Fatalf("anchors not preserved: %+v", upd2.Segments[0].SourceAnchors)
 	}
 }
+
+// TestNarrationListByProjectReturnsSegments 回归守护：pgx 单连接下，ListByProject 必须
+// 先关闭外层游标再加载分段，否则报 "conn busy"（此前 /projects/{pid}/scripts 返回 500）。
+func TestNarrationListByProjectReturnsSegments(t *testing.T) {
+	s := nrStore(t)
+	ctx := context.Background()
+	const rev = 5
+	if _, err := s.EnsureExists(ctx, nrTenant, nrProject, rev, nrSlide, lang, ModePolish); err != nil {
+		t.Fatalf("EnsureExists: %v", err)
+	}
+	if _, err := s.Update(ctx, nrTenant, nrProject, rev, nrSlide, lang, 0,
+		segs(seg("seg-01", "第一段"), seg("seg-02", "第二段"))); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	list, err := s.ListByProject(ctx, nrTenant, nrProject, rev, lang)
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	if len(list) != 1 || len(list[0].Segments) != 2 || list[0].Segments[0].DisplayText != "第一段" {
+		t.Fatalf("list = %+v", list)
+	}
+}

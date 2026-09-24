@@ -376,6 +376,7 @@ func (s *SQLiteStore) ListByProject(ctx context.Context, tenantID, projectID str
 	defer rows.Close()
 	var revs []*Revision
 	seen := map[string]bool{}
+	var collected []*Revision
 	for rows.Next() {
 		r, err := sqScanScript(rows)
 		if err != nil {
@@ -385,12 +386,20 @@ func (s *SQLiteStore) ListByProject(ctx context.Context, tenantID, projectID str
 			continue // 同一 slide 已取到更精确的版本行
 		}
 		seen[r.SlideID] = true
+		collected = append(collected, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// 先关闭游标再加载分段，避免在结果集未关闭时发起新查询（部分驱动会报错）。
+	rows.Close()
+	for _, r := range collected {
 		if _, err := s.sqWithSegments(ctx, s.db, r); err != nil {
 			return nil, err
 		}
 		revs = append(revs, r)
 	}
-	return revs, rows.Err()
+	return revs, nil
 }
 
 // sqRevisionTx 读取完整讲稿（含分段），供 ErrConflict.Latest。

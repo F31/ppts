@@ -248,6 +248,7 @@ func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID string,
 		}
 		defer rows.Close()
 		seen := map[string]bool{}
+		var collected []*Revision
 		for rows.Next() {
 			var r Revision
 			if serr := rows.Scan(&r.ID, &r.TenantID, &r.ProjectID, &r.SlideID, &r.Language,
@@ -258,14 +259,22 @@ func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID string,
 				continue
 			}
 			seen[r.SlideID] = true
+			collected = append(collected, &r)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		// pgx 单连接不允许在结果集未关闭时发起新查询（否则 "conn busy"）；先关闭游标再加载分段。
+		rows.Close()
+		for _, r := range collected {
 			segs, serr := loadSegmentsTx(ctx, tx, r.ID)
 			if serr != nil {
 				return serr
 			}
 			r.Segments = segs
-			revs = append(revs, &r)
+			revs = append(revs, r)
 		}
-		return rows.Err()
+		return nil
 	})
 	return revs, err
 }
