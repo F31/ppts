@@ -130,6 +130,9 @@ func pageStepKey(slideID string) string { return "page:v1:" + slideID }
 
 const maxScriptDraftRetryAttempts = 3
 
+// llm429Backoff 是无 Retry-After 头时 429 限流的默认重试退避（通常覆盖一分钟窗口）。
+const llm429Backoff = 15 * time.Second
+
 // LLMTokenAccountant 是 script_draft 任务预占/结算 LLM token 额度所需的窄能力（G2-5）。
 type LLMTokenAccountant interface {
 	Reserve(ctx context.Context, tenantID, logicalOperationID string, kind usage.Kind, units float64) (*usage.Reservation, error)
@@ -848,14 +851,16 @@ func classifyLLMError(err error) error {
 	if !errors.As(err, &retryable) {
 		return err
 	}
-	// 429 速率限制（含免费用户配额耗尽）不可重试：重试只会继续 429，浪费 worker 资源。
-	var httpErr interface{ HTTPStatus() int }
-	if errors.As(retryable.Err, &httpErr) && httpErr.HTTPStatus() == 429 {
-		return retryable.Err // 不包装为 RetryError，pipeline 视为非可重试
-	}
 	retry := &pipeline.RetryError{Err: err}
 	if retryable.RetryAfter > 0 {
 		retry.At = time.Now().Add(retryable.RetryAfter)
+		return retry
+	}
+	// 429 速率/配额限流：多数供应商按分钟窗口恢复。带 Retry-After 的按它退避；没有的
+	// 用固定退避重试（成稿任务并行度高，单次突发打爆窗口很常见；一击失败会把整单挂掉）。
+	var httpErr interface{ HTTPStatus() int }
+	if errors.As(retryable.Err, &httpErr) && httpErr.HTTPStatus() == 429 {
+		retry.At = time.Now().Add(llm429Backoff)
 	}
 	return retry
 }
