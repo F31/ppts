@@ -109,7 +109,7 @@ func TestScriptDraftProducesOriginalDraftFromParsedDocument(t *testing.T) {
 
 	// 该页讲稿已存在且带原文分段。
 	slideID := parsedSlideID(t, env, 1)
-	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, slideID, "zh-CN")
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, slideID, "zh-CN")
 	if err != nil {
 		t.Fatalf("Get script: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestScriptDraftProducesOriginalDraftFromParsedDocument(t *testing.T) {
 	if err := handler.Handle(context.Background(), job2); err != nil {
 		t.Fatalf("Handle#2: %v", err)
 	}
-	after, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, slideID, "zh-CN")
+	after, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, slideID, "zh-CN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestScriptDraftSkipsEmptyPages(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	store := narration.NewPGStore(env.pool)
-	if _, err := store.Get(ctx, appTenant, appProject, "slide-1", "zh-CN"); err != narration.ErrNotFound {
+	if _, err := store.Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN"); err != narration.ErrNotFound {
 		t.Fatalf("slide-1 should have no draft, got err=%v", err)
 	}
 }
@@ -196,14 +196,14 @@ func TestScriptDraftOriginalUsesNotesOnly(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	rev, err := store.Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	rev, err := store.Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := rev.Segments[0].DisplayText; got != "备注原文" {
 		t.Fatalf("original text = %q", got)
 	}
-	if _, err := store.Get(ctx, appTenant, appProject, "slide-2", "zh-CN"); err != narration.ErrNotFound {
+	if _, err := store.Get(ctx, appTenant, appProject, 0, "slide-2", "zh-CN"); err != narration.ErrNotFound {
 		t.Fatalf("slide-2 should have no original draft without notes, got err=%v", err)
 	}
 }
@@ -217,12 +217,12 @@ func TestScriptDraftOverwritePolishUsesCurrentScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := narration.NewPGStore(env.pool)
-	rev, err := store.EnsureExists(ctx, appTenant, appProject, "slide-1", "zh-CN", narration.ModePolish)
+	rev, err := store.EnsureExists(ctx, appTenant, appProject, 0, "slide-1", "zh-CN", narration.ModePolish)
 	if err != nil {
 		t.Fatal(err)
 	}
 	current := "用户当前讲稿，应该作为润色输入。"
-	if _, err := store.Update(ctx, appTenant, appProject, "slide-1", "zh-CN", rev.Revision, []*narration.Segment{{SegmentID: "seg-01", DisplayText: current, SpokenText: current, Status: narration.StatusDraft}}); err != nil {
+	if _, err := store.Update(ctx, appTenant, appProject, 0, "slide-1", "zh-CN", rev.Revision, []*narration.Segment{{SegmentID: "seg-01", DisplayText: current, SpokenText: current, Status: narration.StatusDraft}}); err != nil {
 		t.Fatal(err)
 	}
 	snap := ScriptDraftSnapshot{ProjectID: appProject, RevisionNo: 1, Language: "zh-CN", Mode: "polish", SlideIDs: []string{"slide-1"}, Overwrite: true}
@@ -260,7 +260,7 @@ func TestScriptDraftPolishUsesLLMWhenEntitiesPreserved(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestScriptDraftPolishFallsBackWhenEntityGuardStillFails(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestScriptDraftAIGeneratedUsesLLMWithEntityGuard(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestScriptDraftAddsVisualAnchorsWhenPagePNGExists(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestScriptDraftUsesUserEditedNotes(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN")
+	rev, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN")
 	if err != nil {
 		t.Fatalf("Get script: %v", err)
 	}
@@ -437,7 +437,7 @@ func TestScriptDraftRespectsClearedUserNotes(t *testing.T) {
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
-	if _, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, "slide-1", "zh-CN"); !errors.Is(err, narration.ErrNotFound) {
+	if _, err := narration.NewPGStore(env.pool).Get(ctx, appTenant, appProject, 0, "slide-1", "zh-CN"); !errors.Is(err, narration.ErrNotFound) {
 		t.Fatalf("cleared notes must not produce a draft, got err=%v", err)
 	}
 	if step := steps.latest["page:v1:slide-1"]; step.State != pipeline.StepSkipped {

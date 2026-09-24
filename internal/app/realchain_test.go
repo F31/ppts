@@ -41,7 +41,7 @@ func TestRealChainUploadParseDraftNarration(t *testing.T) {
 	if err := draftHandler.Handle(ctx, draftJob); err != nil {
 		t.Fatalf("draft: %v", err)
 	}
-	rev, err := scripts.Get(ctx, appTenant, appProject, slideID, "zh-CN")
+	rev, err := scripts.Get(ctx, appTenant, appProject, 0, slideID, "zh-CN")
 	if err != nil {
 		t.Fatalf("Get script: %v", err)
 	}

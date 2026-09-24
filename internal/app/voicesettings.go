@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // VoiceSettings 是项目级语音属性（语音模型 / 音色 / 语速）。
@@ -57,15 +59,27 @@ func (s *voiceSettingsPGStore) Get(ctx context.Context, tenantID, projectID stri
 		return DefaultVoiceSettings(), errors.New("voice_settings: tenant/project id required")
 	}
 	var out VoiceSettings
-	err := s.pool.QueryRow(ctx, `
-		SELECT model, voice, rate_percent FROM project_voice_settings
-		WHERE tenant_id = $1 AND project_id = $2
-	`, tenantID, projectID).Scan(&out.Model, &out.Voice, &out.RatePercent)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return DefaultVoiceSettings(), nil
-	}
+	found := false
+	// project_voice_settings 启用 FORCE RLS：必须在设置 app.tenant_id 的事务内查询。
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		e := tx.QueryRow(ctx, `
+			SELECT model, voice, rate_percent FROM project_voice_settings
+			WHERE tenant_id = $1 AND project_id = $2
+		`, tenantID, projectID).Scan(&out.Model, &out.Voice, &out.RatePercent)
+		if errors.Is(e, pgx.ErrNoRows) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		found = true
+		return nil
+	})
 	if err != nil {
 		return DefaultVoiceSettings(), err
+	}
+	if !found {
+		return DefaultVoiceSettings(), nil
 	}
 	return normalizeVoiceSettings(out), nil
 }
@@ -75,14 +89,16 @@ func (s *voiceSettingsPGStore) Save(ctx context.Context, tenantID, projectID str
 		return errors.New("voice_settings: tenant/project id required")
 	}
 	settings = normalizeVoiceSettings(settings)
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO project_voice_settings (tenant_id, project_id, model, voice, rate_percent, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (tenant_id, project_id)
-		DO UPDATE SET model = EXCLUDED.model, voice = EXCLUDED.voice,
-			rate_percent = EXCLUDED.rate_percent, updated_at = now()
-	`, tenantID, projectID, settings.Model, settings.Voice, settings.RatePercent)
-	return err
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO project_voice_settings (tenant_id, project_id, model, voice, rate_percent, updated_at)
+			VALUES ($1, $2, $3, $4, $5, now())
+			ON CONFLICT (tenant_id, project_id)
+			DO UPDATE SET model = EXCLUDED.model, voice = EXCLUDED.voice,
+				rate_percent = EXCLUDED.rate_percent, updated_at = now()
+		`, tenantID, projectID, settings.Model, settings.Voice, settings.RatePercent)
+		return err
+	})
 }
 
 func (s *voiceSettingsSQLiteStore) Get(ctx context.Context, tenantID, projectID string) (VoiceSettings, error) {

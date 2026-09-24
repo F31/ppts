@@ -20,8 +20,8 @@ import (
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
-	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/usage"
 )
 

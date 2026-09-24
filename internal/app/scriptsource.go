@@ -5,7 +5,10 @@ import (
 	"database/sql"
 	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // ScriptSourceKind 是用户为"无备注页"显式选择的讲稿来源（驱动草稿生成文本来源）。
@@ -76,37 +79,44 @@ func (s *scriptSourcePGStore) Set(ctx context.Context, tenantID, projectID strin
 	if kind != ScriptSourceCustom {
 		customText = ""
 	}
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO slide_script_sources (tenant_id, project_id, source_revision_no, slide_id, source, custom_text, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
-		ON CONFLICT (tenant_id, project_id, source_revision_no, slide_id)
-		DO UPDATE SET source = EXCLUDED.source, custom_text = EXCLUDED.custom_text, updated_at = now()
-	`, tenantID, projectID, sourceRevisionNo, slideID, string(kind), customText)
-	return err
+	// slide_script_sources 启用 FORCE RLS：必须在设置 app.tenant_id 的事务内写入。
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO slide_script_sources (tenant_id, project_id, source_revision_no, slide_id, source, custom_text, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, now())
+			ON CONFLICT (tenant_id, project_id, source_revision_no, slide_id)
+			DO UPDATE SET source = EXCLUDED.source, custom_text = EXCLUDED.custom_text, updated_at = now()
+		`, tenantID, projectID, sourceRevisionNo, slideID, string(kind), customText)
+		return err
+	})
 }
 
 func (s *scriptSourcePGStore) List(ctx context.Context, tenantID, projectID string, sourceRevisionNo int) (map[string]ScriptSourceChoice, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT slide_id, source, custom_text FROM slide_script_sources
-		WHERE tenant_id = $1 AND project_id = $2 AND source_revision_no IN ($3, 0)
-		ORDER BY slide_id, source_revision_no DESC
-	`, tenantID, projectID, sourceRevisionNo)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
 	out := map[string]ScriptSourceChoice{}
-	for rows.Next() {
-		var slideID, source, custom string
-		if err := rows.Scan(&slideID, &source, &custom); err != nil {
-			return nil, err
+	// slide_script_sources 启用 FORCE RLS：必须在设置 app.tenant_id 的事务内查询。
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT slide_id, source, custom_text FROM slide_script_sources
+			WHERE tenant_id = $1 AND project_id = $2 AND source_revision_no IN ($3, 0)
+			ORDER BY slide_id, source_revision_no DESC
+		`, tenantID, projectID, sourceRevisionNo)
+		if err != nil {
+			return err
 		}
-		if _, exists := out[slideID]; exists {
-			continue // 已取到更精确的版本行
+		defer rows.Close()
+		for rows.Next() {
+			var slideID, source, custom string
+			if err := rows.Scan(&slideID, &source, &custom); err != nil {
+				return err
+			}
+			if _, exists := out[slideID]; exists {
+				continue // 已取到更精确的版本行
+			}
+			out[slideID] = ScriptSourceChoice{SlideID: slideID, Kind: ScriptSourceKind(source), CustomText: custom}
 		}
-		out[slideID] = ScriptSourceChoice{SlideID: slideID, Kind: ScriptSourceKind(source), CustomText: custom}
-	}
-	return out, rows.Err()
+		return rows.Err()
+	})
+	return out, err
 }
 
 func (s *scriptSourceSQLiteStore) Set(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID string, kind ScriptSourceKind, customText string) error {
