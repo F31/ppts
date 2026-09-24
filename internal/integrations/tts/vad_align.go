@@ -429,3 +429,9 @@ func allocateWeighted(runes []rune, tStart, tEnd int64) ([]TokenOffset, bool) {
 	}
 	return tokens, true
 }
+
+// RecomputeAlignment 用已缓存的音频与文本重新生成字级对齐（不重新合成音频）。用于对齐算法
+// 升级后对既有缓存做"仅重算对齐"的迁移：音频非 PCM16 WAV / VAD 失败时回退为整体估算。
+func RecomputeAlignment(text string, wav []byte, durationMS int64) Alignment {
+	return buildEstimatedVADAlignment(text, wav, durationMS)
+}

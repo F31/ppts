@@ -53,6 +53,11 @@ type NarrationSlideSnapshot struct {
 }
 
 // SegmentAsset is the immutable manifest consumed by timeline assembly.
+// alignmentCacheVersion 标识字级对齐算法的缓存版本；提升它会让既有分段清单失效，并触发
+// "仅重算对齐"（复用缓存音频，不重新合成）。P2（estimated_vad 增强）对应版本 2。
+const alignmentCacheVersion = 2
+
+// SegmentAsset 是单段合成产物（音频 + 字级对齐）的缓存清单。
 type SegmentAsset struct {
 	SegmentID         string         `json:"segmentId"`
 	AudioKey          string         `json:"audioKey"`
@@ -340,7 +345,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 	if err != nil {
 		return nil, err
 	}
-	manifestID := hashBytes([]byte(slide.SlideID + ":" + segment.SegmentID + ":" + configHash))
+	manifestID := hashBytes([]byte(slide.SlideID + ":" + segment.SegmentID + ":" + configHash + fmt.Sprintf(":a%d", alignmentCacheVersion)))
 	manifestKey := objectstore.ObjectKey{
 		TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "cache",
 		AssetType: "alignment", AssetID: manifestID, Ext: "json",
@@ -373,6 +378,10 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		return nil, err
 	} else if ok {
 		h.recordCacheHit(job, "shared")
+		// 对齐算法升级（alignmentCacheVersion）后：复用缓存音频，仅重算对齐，避免重新合成。
+		if upgraded, ok := h.realignSharedSegment(ctx, shared, effectiveText); ok {
+			shared = upgraded
+		}
 		manifestBytes, err := json.Marshal(shared)
 		if err != nil {
 			return nil, err
@@ -672,6 +681,41 @@ func (h *NarrationHandler) loadSharedSegment(ctx context.Context, key objectstor
 		return nil, false, err
 	}
 	return &manifest, true, nil
+}
+
+// realignSharedSegment 复用已缓存音频，用当前对齐算法重算字级时间戳（不重新合成、不额外计费）。
+// 仅当原对齐为估算类（estimated/estimated_vad，即非供应商原生时间戳/强制对齐）且新算法确有
+// 改进（VAD 生效）时才替换，避免把更可信的时间戳降级。
+func (h *NarrationHandler) realignSharedSegment(ctx context.Context, seg *SegmentAsset, text string) (*SegmentAsset, bool) {
+	if seg == nil || seg.Alignment == nil || seg.DurationMS <= 0 {
+		return nil, false
+	}
+	switch seg.Alignment.Method {
+	case tts.AlignEstimate, tts.AlignEstimateVAD:
+		// 估算类才重算。
+	default:
+		return nil, false
+	}
+	audioKey, err := objectstore.Parse(seg.AudioKey)
+	if err != nil {
+		return nil, false
+	}
+	r, _, err := h.objects.Get(ctx, audioKey)
+	if err != nil {
+		return nil, false
+	}
+	wav, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		return nil, false
+	}
+	align := tts.RecomputeAlignment(text, wav, seg.DurationMS)
+	if align.Method != tts.AlignEstimateVAD {
+		return nil, false // VAD 未生效，保留原结果
+	}
+	upgraded := *seg
+	upgraded.Alignment = &align
+	return &upgraded, true
 }
 
 func synthesisHash(snapshot NarrationSnapshot, capabilities tts.VoiceCapabilities, text string) (string, error) {
