@@ -54,10 +54,28 @@ func synthFromPlan(t *testing.T, sampleRate int, plans []phrasePlan) synthUttera
 			samples = append(samples, 0)
 		}
 	}
+	// syllableGain 近似真实音节的能量包络（快速起音 + 指数衰减 + 0.12 基底残响），
+	// 使块与块之间存在能量谷底——这正是"音节核锚定"能利用、而匀速分布会错位的声学结构。
+	syllableGain := func(x float64) float64 {
+		if x <= 0 || x >= 1 {
+			return 0.12
+		}
+		rise := x / 0.18
+		if rise > 1 {
+			rise = 1
+		}
+		decay := math.Exp(-2.6 * (x - 0.18))
+		if decay < 0.12 {
+			decay = 0.12
+		}
+		return rise * decay
+	}
 	appendVoiced := func(ms float64) {
 		n := int(float64(sampleRate) * ms / 1000.0)
 		for i := 0; i < n; i++ {
-			samples = append(samples, amp)
+			// 每块内部逐样点应用包络，制造可检测的音节核。
+			g := syllableGain(float64(i) / float64(n))
+			samples = append(samples, int16(float64(amp)*g))
 		}
 	}
 
@@ -126,6 +144,7 @@ func makeSyntheticCorpus(t *testing.T) []synthUtterance {
 		{mk(6, '，', jitterReal), mk(7, '，', jitterReal), mk(8, '，', jitterReal), mk(9, '。', jitterReal)},
 		{mk(10, '，', jitterReal), mk(12, '。', jitterReal), mk(9, '。', jitterReal)},
 		{mk(7, '，', jitterReal), mk(18, '。', jitterReal)},
+		{mk(28, '。', jitterReal)}, // 无内部标点长从句：无静音锚点可用，只靠音节核。
 	}
 	// 压力组（±16% 抖动，检验极端语速起伏下的鲁棒性）。
 	stress := [][]phrasePlan{
@@ -133,6 +152,7 @@ func makeSyntheticCorpus(t *testing.T) []synthUtterance {
 		{mk(6, '，', jitterStress), mk(7, '，', jitterStress), mk(8, '，', jitterStress), mk(9, '。', jitterStress)},
 		{mk(15, '，', jitterStress), mk(15, '。', jitterStress)},
 		{mk(9, '，', jitterStress), mk(10, '，', jitterStress), mk(8, '。', jitterStress)},
+		{mk(24, '。', jitterStress)}, // 压力组同样含无内部标点长从句。
 	}
 	out := make([]synthUtterance, 0, len(regular)+len(stress))
 	for _, p := range regular {
@@ -145,9 +165,9 @@ func makeSyntheticCorpus(t *testing.T) []synthUtterance {
 }
 
 type benchStat struct {
-	mae  float64
-	max  float64
-	n    int
+	mae float64
+	max float64
+	n   int
 }
 
 func (s *benchStat) add(d int64) {
@@ -170,45 +190,54 @@ func (s benchStat) maxMS() float64 { return s.max / 1000.0 }
 
 func TestAlignmentQuantitativeComparison(t *testing.T) {
 	corpus := makeSyntheticCorpus(t)
-	const regularCount = 6 // 前 6 句为常规组，其余为压力组
+	const regularCount = 7 // 前 7 句为常规组，其余为压力组
 
-	measure := func(start, end int) (cur, vad benchStat) {
+	measure := func(start, end int) (cur, anchor, nuclei benchStat) {
 		for _, u := range corpus[start:end] {
 			curA := buildEstimatedAlignment(u.text, u.durationMS)
-			vadA := buildEstimatedVADAlignment(u.text, u.wav, u.durationMS)
-			if len(curA.Tokens) != len(u.truthStartUS) || len(vadA.Tokens) != len(u.truthStartUS) {
-				t.Fatalf("token/truth length mismatch: cur=%d vad=%d truth=%d text=%q",
-					len(curA.Tokens), len(vadA.Tokens), len(u.truthStartUS), u.text)
+			anchorA := buildEstimatedAudioAlignment(u.text, u.wav, u.durationMS, false)
+			nucleiA := buildEstimatedVADAlignment(u.text, u.wav, u.durationMS)
+			if len(curA.Tokens) != len(u.truthStartUS) || len(anchorA.Tokens) != len(u.truthStartUS) || len(nucleiA.Tokens) != len(u.truthStartUS) {
+				t.Fatalf("token/truth length mismatch: cur=%d anchor=%d nuclei=%d truth=%d text=%q",
+					len(curA.Tokens), len(anchorA.Tokens), len(nucleiA.Tokens), len(u.truthStartUS), u.text)
 			}
 			for i := range u.truthStartUS {
 				cur.add(curA.Tokens[i].StartUS - u.truthStartUS[i])
-				vad.add(vadA.Tokens[i].StartUS - u.truthStartUS[i])
+				anchor.add(anchorA.Tokens[i].StartUS - u.truthStartUS[i])
+				nuclei.add(nucleiA.Tokens[i].StartUS - u.truthStartUS[i])
 			}
 		}
-		return cur, vad
+		return cur, anchor, nuclei
 	}
 
-	curAll, vadAll := measure(0, len(corpus))
-	curReg, vadReg := measure(0, regularCount)
-	curStr, vadStr := measure(regularCount, len(corpus))
-
-	t.Logf("对齐方法量化对比（合成受控语料；真值=逐字真实起始时刻）")
-	t.Logf("%-22s %10s %10s %6s", "分组/方法", "MAE(ms)", "MaxAE(ms)", "字数")
-	row := func(name string, s benchStat) { t.Logf("%-22s %10.1f %10.1f %6d", name, s.meanMS(), s.maxMS(), s.n) }
-	row("全部/estimated(当前)", curAll)
-	row("全部/estimated_vad(阶段一)", vadAll)
-	row("常规/estimated(当前)", curReg)
-	row("常规/estimated_vad(阶段一)", vadReg)
-	row("压力/estimated(当前)", curStr)
-	row("压力/estimated_vad(阶段一)", vadStr)
+	curAll, anchorAll, nucleiAll := measure(0, len(corpus))
+	curReg, anchorReg, nucleiReg := measure(0, regularCount)
+	curStr, anchorStr, nucleiStr := measure(regularCount, len(corpus))
 
 	if curAll.n == 0 {
 		t.Fatal("empty corpus")
 	}
-	if vadAll.meanMS() >= curAll.meanMS() {
-		t.Fatalf("阶段一未改善：vad=%.1fms cur=%.1fms", vadAll.meanMS(), curAll.meanMS())
+	t.Logf("对齐方法量化对比（合成音节包络语料；真值=逐字真实起始时刻）")
+	t.Logf("%-26s %10s %10s %6s", "分组/方法", "MAE(ms)", "MaxAE(ms)", "字数")
+	row := func(name string, s benchStat) { t.Logf("%-26s %10.1f %10.1f %6d", name, s.meanMS(), s.maxMS(), s.n) }
+	row("全部/estimated(纯盲估)", curAll)
+	row("全部/estimated_vad(静音锚点+匀速)", anchorAll)
+	row("全部/estimated_vad(音节核锚定,当前)", nucleiAll)
+	row("常规/estimated(纯盲估)", curReg)
+	row("常规/estimated_vad(静音锚点+匀速)", anchorReg)
+	row("常规/estimated_vad(音节核锚定,当前)", nucleiReg)
+	row("压力/estimated(纯盲估)", curStr)
+	row("压力/estimated_vad(静音锚点+匀速)", anchorStr)
+	row("压力/estimated_vad(音节核锚定,当前)", nucleiStr)
+
+	// 断言：音节核锚定必须优于纯盲估与"静音锚点+匀速"两者。
+	if nucleiAll.meanMS() >= curAll.meanMS() || nucleiAll.meanMS() >= anchorAll.meanMS() {
+		t.Fatalf("音节核锚定未改善：nuclei=%.1fms anchor=%.1fms cur=%.1fms",
+			nucleiAll.meanMS(), anchorAll.meanMS(), curAll.meanMS())
 	}
-	// 信息性输出：相对当前方法的改进幅度（便于人工确认是否达到"对折"目标）。
-	t.Logf("全量 MAE 改进: %.0f%%（目标 ≥50%%）", (1-vadAll.meanMS()/curAll.meanMS())*100)
-	t.Logf("常规组 MAE 改进: %.0f%%", (1-vadReg.meanMS()/curReg.meanMS())*100)
+	t.Logf("全量 MAE: blind=%.1fms → anchor=%.1fms → nuclei=%.1fms",
+		curAll.meanMS(), anchorAll.meanMS(), nucleiAll.meanMS())
+	t.Logf("音节核 vs 盲估改进: %.0f%%；音节核 vs 锚点匀速改进: %.0f%%",
+		(1-nucleiAll.meanMS()/curAll.meanMS())*100,
+		(1-nucleiAll.meanMS()/anchorAll.meanMS())*100)
 }

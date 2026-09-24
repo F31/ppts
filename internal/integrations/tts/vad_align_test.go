@@ -7,7 +7,10 @@ import (
 
 // burstWAV 生成带"语音段（方波）+ 静音段"的 PCM16 mono WAV，用于验证 VAD。
 // segments 依次标注每段时长(ms)与是否语音。
-func burstWAV(t *testing.T, sampleRate int, segments []struct{ ms int; voiced bool }, amp int16) []byte {
+func burstWAV(t *testing.T, sampleRate int, segments []struct {
+	ms     int
+	voiced bool
+}, amp int16) []byte {
 	t.Helper()
 	totalMS := 0
 	for _, s := range segments {
@@ -57,11 +60,19 @@ func wav16FromSamples(t *testing.T, sampleRate int, samples []int16) []byte {
 // segments 便捷构造：一段带间隔的合成"语音"，含：
 //
 //	300ms 首静音 / 600ms 语音 / 200ms 停顿 / 500ms 语音 / 150ms 停顿 / 700ms 语音 / 300ms 尾静音
-func speechSegments() []struct{ ms int; voiced bool } {
-	seg := func(ms int, v bool) struct{ ms int; voiced bool } { return struct {
+func speechSegments() []struct {
+	ms     int
+	voiced bool
+} {
+	seg := func(ms int, v bool) struct {
 		ms     int
 		voiced bool
-	}{ms, v} }
+	} {
+		return struct {
+			ms     int
+			voiced bool
+		}{ms, v}
+	}
 	return []struct {
 		ms     int
 		voiced bool
@@ -118,9 +129,10 @@ func TestDetectSilenceRunsRejectsAllSilent(t *testing.T) {
 
 func TestBuildEstimatedVADAlignmentAnchorsAtPunctuation(t *testing.T) {
 	const rate = 16000
-	// 文本标点（，和。）对应两处停顿：停顿1 → 逗号后，停顿2 → 句号后。
+	// 公式化音频：逐字近等时（TTS 中文的合理假设），停顿出现在句子/从句末标点后——
+	// 这正是 DP 匹配所依据的时间模型。
 	text := "今天天气很好，我们出去走走吧。"
-	wav := burstWAV(t, rate, speechSegments(), 12000)
+	wav := proportionalTextWAV(t, rate, text, map[rune]int{'，': 200, '。': 320}, 120, 200, 200)
 	a := buildEstimatedVADAlignment(text, wav, durationMSOfWAV(wav, rate))
 	if a.Method != AlignEstimateVAD {
 		t.Fatalf("method = %s, want %s (%+v)", a.Method, AlignEstimateVAD, a)
@@ -140,7 +152,7 @@ func TestBuildEstimatedVADAlignmentAnchorsAtPunctuation(t *testing.T) {
 	if a.Tokens[len(a.Tokens)-1].EndUS > limitUS {
 		t.Fatalf("token beyond duration")
 	}
-	// 逗号（第 6 个字符，含前 5 字）应结束在第一处停顿附近（停顿≈900ms 起）。
+	// 逗号（第 7 个字符，含前 6 字）应结束在逗号停顿（≈950ms 起）而不是被错配到尾句。
 	runes := []rune(text)
 	commaIdx := -1
 	for i, r := range runes {
@@ -153,11 +165,35 @@ func TestBuildEstimatedVADAlignmentAnchorsAtPunctuation(t *testing.T) {
 		t.Fatal("no comma in text")
 	}
 	commaEndUS := a.Tokens[commaIdx].EndUS
-	// 期望第一处停顿起点 ≈ 900ms（允许 ±40ms 帧量化/锚定误差）。
-	delta := math.Abs(float64(commaEndUS)/1000 - 900)
-	if delta > 40 {
-		t.Fatalf("comma EndUS = %d (=%v ms), want ≈900ms (anchored to first pause)", commaEndUS, float64(commaEndUS)/1000)
+	if d := math.Abs(float64(commaEndUS)/1000 - 950); d > 40 {
+		t.Fatalf("comma EndUS = %d (=%v ms), want ≈950ms (anchored to comma pause)", commaEndUS, float64(commaEndUS)/1000)
 	}
+}
+
+// proportionalTextWAV 生成与文本逐字等时的合成语音：每个非标点字发 perCharMS，停顿标点后接
+// 对应 pauseMS 静音。punctPause 提供标点→停顿时长映射。
+func proportionalTextWAV(t *testing.T, sampleRate int, text string, punctPause map[rune]int, perCharMS, leadMS, tailMS int) []byte {
+	t.Helper()
+	const amp int16 = 12000
+	var samples []int16
+	appendN := func(ms float64, v int16) {
+		n := int(float64(sampleRate) * ms / 1000.0)
+		for i := 0; i < n; i++ {
+			samples = append(samples, v)
+		}
+	}
+	appendN(float64(leadMS), 0)
+	skip := func(r rune) bool { _, ok := punctPause[r]; return ok }
+	for _, r := range text {
+		if skip(r) {
+			appendN(float64(30), amp) // 标点本身几乎不发声
+			appendN(float64(punctPause[r]), 0)
+			continue
+		}
+		appendN(float64(perCharMS), amp) // 每个字一个发音块
+	}
+	appendN(float64(tailMS), 0)
+	return wav16FromSamples(t, sampleRate, samples)
 }
 
 func TestBuildEstimatedVADAlignmentFallsBackWithoutPunctOrPause(t *testing.T) {

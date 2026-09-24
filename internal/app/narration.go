@@ -54,8 +54,9 @@ type NarrationSlideSnapshot struct {
 
 // SegmentAsset is the immutable manifest consumed by timeline assembly.
 // alignmentCacheVersion 标识字级对齐算法的缓存版本；提升它会让既有分段清单失效，并触发
-// "仅重算对齐"（复用缓存音频，不重新合成）。P2（estimated_vad 增强）对应版本 2。
-const alignmentCacheVersion = 2
+// "仅重算对齐"（复用缓存音频，不重新合成）。P2（estimated_vad 增强）对应版本 2，
+// P-音节核锚定对应版本 3。
+const alignmentCacheVersion = 3
 
 // SegmentAsset 是单段合成产物（音频 + 字级对齐）的缓存清单。
 type SegmentAsset struct {
