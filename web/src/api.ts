@@ -692,12 +692,15 @@ export async function regenerateSegments(
   }, { 'Idempotency-Key': idempotencyKey });
 }
 
+// RewriteAction：段落工具栏"缩短/润色/衔接"对应的 LLM 改写动作，以及全页 AI 生成。
+export type RewriteAction = 'shorten' | 'polish' | 'transition' | 'ai_generated';
+
 export async function rewriteScriptText(
   identity: ClientIdentity,
   projectId: string,
   slideId: string,
   text: string,
-  action: 'shorten' | 'polish' | 'transition' | 'ai_generated'
+  action: RewriteAction
 ): Promise<{ text: string }> {
   return postJSON<{ text: string }>(identity, `/projects/${encodeURIComponent(projectId)}/scripts/rewrite`, {
     slideId,

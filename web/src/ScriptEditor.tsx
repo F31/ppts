@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { useI18n } from './i18n';
 import type { ScriptMode, ScriptRevision, ScriptSegment } from './types';
+import type { RewriteAction } from './api';
 import { useDialogA11y } from './a11y';
 
 export type ScriptEditorStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
@@ -55,10 +56,11 @@ type Props = {
   voiceStatusText?: string;
   // voiceNeedsUpdate：讲稿在最近一次配音后又被编辑过。
   voiceNeedsUpdate?: boolean;
-  // regeneratingIds：后端正在局部重生成的段落（显示占位、禁用编辑）。
-  regeneratingIds?: string[];
-  // onRegenerate：段落工具栏"缩短/润色/衔接"触发（M1 RegenerateSegments）。
-  onRegenerate?: (segmentIds: string[]) => void;
+  // onRewriteText：段落工具栏"缩短/润色/衔接"触发 LLM 改写（同步返回新文本）。
+  // 成功后的文本经本地草稿自动保存落库；失败抛错由 onRewriteError 呈现。
+  onRewriteText?: (text: string, action: RewriteAction) => Promise<string>;
+  // onRewriteError：改写失败（LLM 不可用/超限等）时上报错误文案。
+  onRewriteError?: (message: string) => void;
   // onAddToDictionary：M4 ⑤ 读音调整弹窗"添加到租户词典"（pattern=原词, replacement=读音）。
   onAddToDictionary?: (word: string, reading: string) => void;
 };
@@ -78,7 +80,7 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, regeneratingIds, onRegenerate, onAddToDictionary },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onAddToDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -87,6 +89,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [saveState, setSaveState] = useState<ScriptEditorStatus>('saved');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusedId, setFocusedId] = useState<string | null>(script.segments[0]?.segmentId ?? null);
+  // 段落改写（缩短/润色/衔接）进行中的段落 + 同步防重入标志（按钮禁用立即可见，防连点）。
+  const [rewritingSegs, setRewritingSegs] = useState<Set<string>>(new Set());
+  const rewritingRef = useRef(false);
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useDialogA11y<HTMLDivElement>(() => setPopoverOpen(false));
@@ -326,10 +331,37 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     return [];
   };
 
-  const handleRegenerate = () => {
-    const ids = targetIds().filter((id) => !(regeneratingIds ?? []).includes(id));
-    if (ids.length === 0 || !onRegenerate) return;
-    onRegenerate(ids);
+  // 段落改写（缩短/润色/衔接）：逐段串行调用 LLM（避免突发顶爆限流），成功即经本地草稿
+  // 自动保存落库并点亮"语音待更新"；进行中整条工具栏禁用防止重复频繁点击。
+  const handleRewrite = async (action: RewriteAction) => {
+    if (rewritingRef.current || !onRewriteText) return;
+    const slideId = script.slideId;
+    const ids = targetIds();
+    if (ids.length === 0) return;
+    rewritingRef.current = true;
+    setRewritingSegs(new Set(ids));
+    try {
+      for (const id of ids) {
+        // 改写过程用户切页：中止后续段落，避免把别页状态写坏。
+        if (displayedSlideIdRef.current !== slideId) break;
+        const src = (texts[id] ?? '').trim();
+        if (!src) continue;
+        try {
+          const next = (await onRewriteText(src, action)).trim();
+          if (next && next !== src && displayedSlideIdRef.current === slideId) {
+            editSegment(id, next);
+          }
+        } catch (err) {
+          if (displayedSlideIdRef.current === slideId) {
+            onRewriteError?.(err instanceof Error ? err.message : String(err));
+          }
+          break;
+        }
+      }
+    } finally {
+      rewritingRef.current = false;
+      setRewritingSegs(new Set());
+    }
   };
 
   // M4 ⑤：打开读音调整 popover（预填当前目标段文本为原词，影响范围实时估算）。
@@ -363,7 +395,6 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     });
   };
 
-  const regenSet = new Set(regeneratingIds ?? []);
   const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
   const visualCount = anchors.filter((anchor) => anchor.kind.startsWith('visual_')).length;
   // 来源锚点只展示类型（备注/标题/内容/表格…），不展示具体内容。
@@ -422,23 +453,24 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       {/* B4-M1：只读说明（Viewer/Reviewer 可审阅但不可改稿，服务端 Update 要求 EDITOR）。 */}
       {!canEdit && <p className="perm-hint">{t('script.readOnlyNote')}</p>}
 
-      {/* 段落工具栏（M3 ②）：缩短/润色/衔接 → 局部重生成；发音/停顿 → 插入朗读标记。
+      {/* 段落工具栏：缩短/润色/衔接 → LLM 改写选中/当前段落（串行防突发）并本地落库；
+          发音/停顿 → 插入朗读标记。改写进行中整条禁用，防止重复频繁点击产生重复 LLM 调用。
           B4-M1：无编辑权限（EDITOR 以下）时整体禁用，避免出现必然 403 的假能力（A22）。 */}
       <div className="paragraph-toolbar" role="toolbar" aria-label={t('editor.toolbar')}>
-        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={handleRegenerate} title={t('editor.shortenHint')}>
+        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => handleRewrite('shorten')} title={t('editor.shortenHint')}>
           {t('editor.shorten')}
         </button>
-        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={handleRegenerate} title={t('editor.polishHint')}>
+        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => handleRewrite('polish')} title={t('editor.polishHint')}>
           {t('editor.polish')}
         </button>
-        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={handleRegenerate} title={t('editor.transitionHint')}>
+        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => handleRewrite('transition')} title={t('editor.transitionHint')}>
           {t('editor.transition')}
         </button>
         <span className="toolbar-sep" />
-        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={openPronounce} title={t('editor.pronounceHint')}>
+        <button type="button" disabled={!canEdit || rewritingRef.current || targetIds().length === 0} onClick={openPronounce} title={t('editor.pronounceHint')}>
           {t('editor.pronounce')}
         </button>
-        <button type="button" disabled={!canEdit || targetIds().length === 0} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
+        <button type="button" disabled={!canEdit || rewritingRef.current || targetIds().length === 0} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
           {t('editor.pause')}
         </button>
         {selected.size > 0 && (
@@ -447,6 +479,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           </button>
         )}
       </div>
+      {rewritingRef.current && <p className="rewriting-hint">{t('editor.rewritingHint', { count: rewritingSegs.size })}</p>}
 
       {/* M4 ⑤ 读音调整 popover：原词 + 读音 + 本处插入 / 添加到租户词典 + 影响范围回执。 */}
       {popoverOpen && (
@@ -483,25 +516,25 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       {/* 分段编辑（M3 ②）：每段独立卡片，可勾选、独立状态徽标。 */}
       <div className="segment-list">
         {script.segments.map((segment, index) => {
-          const segRegen = regenSet.has(segment.segmentId);
+          const segRewrite = rewritingSegs.has(segment.segmentId);
           return (
-            <article key={segment.segmentId} className={`segment-card ${selected.has(segment.segmentId) ? 'selected' : ''} ${segRegen ? 'regenerating' : ''}`}>
+            <article key={segment.segmentId} className={`segment-card ${selected.has(segment.segmentId) ? 'selected' : ''} ${segRewrite ? 'regenerating' : ''}`}>
               <label className="segment-head">
                 <input
                   type="checkbox"
                   checked={selected.has(segment.segmentId)}
-                  disabled={!canEdit || segRegen}
+                  disabled={!canEdit || segRewrite || rewritingRef.current}
                   onChange={() => toggleSelect(segment.segmentId)}
                 />
                 <span className="segment-index">{index + 1}</span>
-                {segRegen && <span className="seg-badge regen">{t('editor.regenerating')}</span>}
+                {segRewrite && <span className="seg-badge regen">{t('editor.rewriting')}</span>}
               </label>
               <textarea
                 ref={(el) => {
                   textareaRefs.current[segment.segmentId] = el;
                 }}
                 value={texts[segment.segmentId] ?? ''}
-                readOnly={!canEdit || segRegen}
+                readOnly={!canEdit || segRewrite}
                 onFocus={() => setFocusedId(segment.segmentId)}
                 onClick={(e) => {
                   setFocusedId(segment.segmentId);

@@ -766,13 +766,15 @@
   "editor.transition": "衔接",
   "editor.pronounce": "发音",
   "editor.pause": "停顿",
-  "editor.shortenHint": "对选中分段做 AI 缩短重写（局部重生成）",
-  "editor.polishHint": "对选中分段做 AI 润色重写（局部重生成）",
-  "editor.transitionHint": "对选中分段做 AI 衔接重写（局部重生成）",
+  "editor.shortenHint": "对选中分段做 AI 缩短，未选时作用于当前段落",
+  "editor.polishHint": "对选中分段做 AI 润色，未选时作用于当前段落",
+  "editor.transitionHint": "对选中分段做 AI 衔接改写，未选时作用于当前段落",
   "editor.pronounceHint": "在光标处插入发音标注",
   "editor.pauseHint": "在光标处插入停顿标记",
   "editor.clearSelection": "清除选择（{count}）",
   "editor.regenerating": "重生成中",
+  "editor.rewriting": "改写中…",
+  "editor.rewritingHint": "正在改写 {count} 个段落，请勿重复点击…",
   "editor.voiceGenerating": "正在生成语音…",
   "editor.voiceProgressQueued": "排队中",
   "editor.voiceProgressRunning": "生成中",
@@ -1152,5 +1154,6 @@
   "projects.tagRemoved": "已移除标签",
   "folders.deleteBlocked": "该分组下还有项目，不能删除（请先将项目移走）",
   "folders.renamed": "已重命名分组为 \"{name}\"",
-  "gateway.visionHint": "填写即启用「视觉锚点」：按页截图提取关键事实用于溯源核对；须为多模态模型，留空则关闭。"
+  "gateway.visionHint": "填写即启用「视觉锚点」：按页截图提取关键事实用于溯源核对；须为多模态模型，留空则关闭。",
+  "editor.rewriteNotAllowed": "暂无改写权限"
 }

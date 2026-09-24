@@ -766,13 +766,15 @@
   "editor.transition": "Transition",
   "editor.pronounce": "Pronounce",
   "editor.pause": "Pause",
-  "editor.shortenHint": "AI shorten rewrite of selected segments (local regeneration)",
-  "editor.polishHint": "AI polish rewrite of selected segments (local regeneration)",
-  "editor.transitionHint": "AI transition rewrite of selected segments (local regeneration)",
+  "editor.shortenHint": "AI shorten of selected segments (or the focused one)",
+  "editor.polishHint": "AI polish of selected segments (or the focused one)",
+  "editor.transitionHint": "AI transition rewrite of selected segments (or the focused one)",
   "editor.pronounceHint": "Insert a pronunciation annotation at the cursor",
   "editor.pauseHint": "Insert a pause marker at the cursor",
   "editor.clearSelection": "Clear selection ({count})",
   "editor.regenerating": "Regenerating",
+  "editor.rewriting": "Rewriting…",
+  "editor.rewritingHint": "Rewriting {count} segments — please wait…",
   "editor.voiceGenerating": "Generating audio…",
   "editor.voiceProgressQueued": "Queued",
   "editor.voiceProgressRunning": "Generating",
@@ -1152,5 +1154,6 @@
   "projects.tagAdded": "Tag added",
   "projects.tagRemoved": "Tag removed",
   "folders.renamed": "Renamed folder to \"{name}\"",
-  "gateway.visionHint": "Fill to enable visual anchors (per-page screenshot facts for provenance); must be a multimodal model. Leave empty to disable."
+  "gateway.visionHint": "Fill to enable visual anchors (per-page screenshot facts for provenance); must be a multimodal model. Leave empty to disable.",
+  "editor.rewriteNotAllowed": "Rewrite requires editor access"
 }

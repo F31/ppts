@@ -25,7 +25,7 @@ import {
   listProjectScripts,
   listVoiceModels,
   regenerateScriptDraft,
-  regenerateSegments,
+  rewriteScriptText,
   saveVoiceSettings,
   setScriptLanguagePreference,
   setSourceRevisionPreference,
@@ -34,6 +34,7 @@ import {
   type ClientIdentity,
   type NarrationEstimate,
   type ProjectVoiceSettings,
+  type RewriteAction,
   type SlideScriptSource,
   type VoiceModel
 } from '../api';
@@ -339,8 +340,6 @@ export function ProjectEditor({
     setExportOpen(true);
   }, [openExport, canExport, realManifest]);
 
-  // M3 ②：正在局部重生成的段落（按当前页 segmentId）。
-  const [regeneratingIds, setRegeneratingIds] = useState<string[]>([]);
   // M3 ⑥：无备注页讲稿来源选择（持久化）。
   const [slideSources, setSlideSources] = useState<Record<string, SlideScriptSource>>({});
   const [dictNotice, setDictNotice] = useState<string>('');
@@ -905,35 +904,22 @@ export function ProjectEditor({
     return () => window.removeEventListener('keydown', listener);
   }, []);
 
-  // M3 ②：局部重生成选中分段（RegenerateSegments）。轮询讲稿直到 revision 变化或超时后刷新。
-  const regenerateActive = useCallback(
-    async (segmentIds: string[]) => {
-      if (!isReady || !activeRealScript || segmentIds.length === 0) return;
-      setRegeneratingIds(segmentIds);
-      try {
-        await regenerateSegments(identity, projectId, activeSlideID, segmentIds, voiceId || undefined);
-        const deadline = Date.now() + 120_000;
-        let refreshed: ScriptRevision | undefined;
-        while (Date.now() < deadline) {
-          await sleep(1500);
-          try {
-            const rev = await getScript(identity, projectId, activeSlideID);
-            if (rev.revision !== activeRealScript.revision) {
-              refreshed = rev;
-              break;
-            }
-          } catch {
-            // 尚未就绪，继续轮询。
-          }
-        }
-        if (refreshed) setRealScripts((current) => ({ ...current, [activeSlideID]: refreshed }));
-      } catch (error) {
-        setDraftStatus({ phase: 'error', message: error instanceof Error ? error.message : t('editor.regenerateFailed') });
-      } finally {
-        setRegeneratingIds([]);
-      }
+  // M3 ②：段落工具栏"缩短/润色/衔接"→ 同步 LLM 改写（/scripts/rewrite）。成功返回新文本，
+  // 由 ScriptEditor 经本地草稿自动保存落库并点亮"语音待更新"；失败抛错呈现。
+  const rewriteActive = useCallback(
+    async (text: string, action: RewriteAction) => {
+      if (!isReady || !canEditScript) throw new Error(t('editor.rewriteNotAllowed'));
+      const result = await rewriteScriptText(identity, projectId, activeSlideID, text, action);
+      return result.text;
     },
-    [identity, projectId, activeSlideID, isReady, activeRealScript, voiceId, t]
+    [identity, projectId, activeSlideID, isReady, canEditScript, t]
+  );
+
+  const rewriteError = useCallback(
+    (message: string) => {
+      setDraftStatus({ phase: 'error', message });
+    },
+    []
   );
 
   // M3 ⑥：保存单页讲稿来源选择（无备注页显式指定驱动草稿来源）。
@@ -1687,8 +1673,8 @@ export function ProjectEditor({
               voiceProgress={voiceProgress}
               voiceStatusText={voiceStatusText}
               voiceNeedsUpdate={voiceDirty}
-              regeneratingIds={regeneratingIds}
-              onRegenerate={regenerateActive}
+              onRewriteText={canEditScript ? rewriteActive : undefined}
+              onRewriteError={rewriteError}
               onAddToDictionary={addToDictionary}
             />
           ) : (
