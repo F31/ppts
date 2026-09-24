@@ -127,6 +127,9 @@ button, textarea, input { font: inherit; }
 .paragraph-toolbar .toolbar-clear { background: transparent; border-color: rgba(255, 184, 120, .4); color: #ffd9a8; }
 .rewriting-hint { margin: 2px 0 10px; font-size: 12px; color: #ffd9a8; animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+.rewrite-note { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; padding: 6px 10px; font-size: 12px; color: #9fe8c0; background: rgba(63, 185, 80, .12); border: 1px solid rgba(63, 185, 80, .35); border-radius: 8px; }
+.rewrite-note.stale { color: #ffd9a8; background: rgba(255, 160, 70, .10); border-color: rgba(255, 160, 70, .35); }
+.rewrite-note .note-dismiss { margin-left: auto; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
 
 /* M3 ② 分段卡片 */
 .segment-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; overflow: auto; flex: 1; min-height: 0; }

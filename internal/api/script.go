@@ -139,14 +139,14 @@ func registerScriptRoutes(mux *http.ServeMux, scripts narration.Store, members m
 }
 
 func rewriteInstructions(action string) string {
-	suffix := "必须逐字保留所有数字、单位、日期、型号、专有名词和事实，不新增原文没有的信息。只输出改写后的正文。"
+	suffix := "必须逐字保留所有数字、单位、日期、型号、专有名词和事实，不新增原文没有的信息。必须以不同措辞/句式实际改写，不得与原文逐字相同；确无改动空间时仍输出原文。只输出改写后的正文。"
 	switch action {
 	case "shorten":
-		return "请将原文压缩为更短、更适合口播的讲稿，保留关键结论和必要数据，减少重复解释。" + suffix
+		return "请将原文压缩为更短、更适合口播的讲稿，显著减少字数，保留关键结论与必要数据，删除重复与冗长解释。" + suffix
 	case "polish":
-		return "请润色原文，使其更自然、流畅、适合 PPT 演示口播。" + suffix
+		return "请润色原文，调整措辞与句式使其更自然、流畅、适合 PPT 演示口播，避免与原文逐字雷同。" + suffix
 	case "transition":
-		return "请为原文补充自然的前后衔接表达，使其更适合从上一页过渡到本页讲解。" + suffix
+		return "请在原文基础上补充一句衔接上一页内容的自然过渡语，并适当改写原文语句使其承接自然，不得照抄原文。" + suffix
 	case "ai_generated":
 		return "基于原文生成一段更完整、自然、适合客户演示的讲解稿；可以补足衔接和解释，但不得引入原文没有支持的事实。" + suffix
 	default:

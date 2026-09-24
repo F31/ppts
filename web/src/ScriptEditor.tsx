@@ -92,6 +92,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   // 段落改写（缩短/润色/衔接）进行中的段落 + 同步防重入标志（按钮禁用立即可见，防连点）。
   const [rewritingSegs, setRewritingSegs] = useState<Set<string>>(new Set());
   const rewritingRef = useRef(false);
+  // rewriteNote：改写完成后的回执文案（成功/部分/模型未改动），避免"点了没反应"。
+  const [rewriteNote, setRewriteNote] = useState<string | null>(null);
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useDialogA11y<HTMLDivElement>(() => setPopoverOpen(false));
@@ -161,6 +163,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (!switchedSlide && draftsRef.current.has(script.slideId)) return;
     setTexts(initialTexts(script));
     setSaveState('saved');
+    setRewriteNote(null);
     if (switchedSlide) {
       // 切页：丢弃组合态与选择集（新页一切从头开始）。
       // 注意**不能**清原页的待提交定时器与草案 —— 那是原页未落库的编辑，必须继续提交。
@@ -340,19 +343,29 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (ids.length === 0) return;
     rewritingRef.current = true;
     setRewritingSegs(new Set(ids));
+    setRewriteNote(null);
+    let changed = 0;
+    let stayed = 0;
     try {
       for (const id of ids) {
         // 改写过程用户切页：中止后续段落，避免把别页状态写坏。
         if (displayedSlideIdRef.current !== slideId) break;
         const src = (texts[id] ?? '').trim();
-        if (!src) continue;
+        if (!src) {
+          stayed++;
+          continue;
+        }
         try {
           const next = (await onRewriteText(src, action)).trim();
           if (next && next !== src && displayedSlideIdRef.current === slideId) {
             editSegment(id, next);
+            changed++;
+          } else {
+            stayed++; // 模型返回原文（可能已很精炼）：不静默，在回执里说明。
           }
         } catch (err) {
           if (displayedSlideIdRef.current === slideId) {
+            setRewriteNote(null);
             onRewriteError?.(err instanceof Error ? err.message : String(err));
           }
           break;
@@ -361,6 +374,11 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     } finally {
       rewritingRef.current = false;
       setRewritingSegs(new Set());
+      if (displayedSlideIdRef.current === slideId) {
+        if (changed > 0 && stayed > 0) setRewriteNote(t('editor.rewritePartial', { changed, stayed }));
+        else if (changed > 0) setRewriteNote(t('editor.rewriteDone', { count: changed }));
+        else setRewriteNote(t('editor.rewriteNoChange'));
+      }
     }
   };
 
@@ -480,6 +498,14 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         )}
       </div>
       {rewritingRef.current && <p className="rewriting-hint">{t('editor.rewritingHint', { count: rewritingSegs.size })}</p>}
+      {rewriteNote && !rewritingRef.current && (
+        <p className={`rewrite-note ${rewriteNote === t('editor.rewriteNoChange') ? 'stale' : ''}`}>
+          {rewriteNote}
+          <button type="button" className="note-dismiss" onClick={() => setRewriteNote(null)} aria-label={t('common.close')}>
+            ×
+          </button>
+        </p>
+      )}
 
       {/* M4 ⑤ 读音调整 popover：原词 + 读音 + 本处插入 / 添加到租户词典 + 影响范围回执。 */}
       {popoverOpen && (
