@@ -18,6 +18,14 @@ type SQLiteStore struct {
 // NewSQLiteStore 创建 SQLite 成品存储。
 func NewSQLiteStore(sqldb *sql.DB) *SQLiteStore { return &SQLiteStore{db: sqldb} }
 
+// sqArtifactColumns 是 SQLite 侧的**单一列清单**，顺序必须与 PG 的 artifactColumns 完全一致
+// （同等地也与 sqScanArtifact 的 Scan 目标顺序一致）。
+//
+// ⚠️ 曾在此处踩坑：新增 revision_no/source_display_name 时把列追加在 created_at 之后，
+// 却把 Scan 目标插在 &created 之前 → created_at 的文本被扫进 int 字段、revision_no 扫进
+// string 字段。这类错位在编译期完全不可见，只在运行时炸（或更糟：静默读错值）。
+// 因此本包的 SDLC 规则是：**列清单定义顺序即 Scan 顺序，二者必须相邻可读、改一处必改另一处**，
+// 并由 sqlite_test.go 的往返用例兜底。
 const sqArtifactColumns = `id, tenant_id, project_id, snapshot_hash, format, object_key,
 	content_hash, size_bytes, duration_ms, timeline_key, created_at, revision_no, source_display_name`
 
@@ -25,7 +33,7 @@ func sqScanArtifact(row rowScanner) (*Artifact, error) {
 	var a Artifact
 	var format, created string
 	if err := row.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
-		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &a.SourceRevisionNo, &a.SourceDisplayName, &created); err != nil {
+		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &created, &a.SourceRevisionNo, &a.SourceDisplayName); err != nil {
 		return nil, err
 	}
 	a.Format = Format(format)
@@ -89,7 +97,7 @@ func (s *SQLiteStore) ListByProject(ctx context.Context, tenantID, projectID str
 func (s *SQLiteStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT a.id, a.tenant_id, a.project_id, a.snapshot_hash, a.format, a.object_key,
-		        a.content_hash, a.size_bytes, a.duration_ms, a.timeline_key, a.revision_no, a.source_display_name, a.created_at, COALESCE(p.title, '')
+		        a.content_hash, a.size_bytes, a.duration_ms, a.timeline_key, a.created_at, a.revision_no, a.source_display_name, COALESCE(p.title, '')
 		 FROM artifacts a
 		 LEFT JOIN projects p ON p.id = a.project_id AND p.tenant_id = a.tenant_id
 		 WHERE a.tenant_id = ? ORDER BY a.created_at DESC`, tenantID)
@@ -101,8 +109,10 @@ func (s *SQLiteStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact
 	for rows.Next() {
 		var a Artifact
 		var format, created string
+		// 列顺序与 sqArtifactColumns 一致（a. 前缀是 JOIN projects 消歧义所需），
+		// 尾部追加 COALESCE(p.title,'')。Scan 目标顺序同步。
 		if err := rows.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
-			&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &a.SourceRevisionNo, &a.SourceDisplayName, &created, &a.ProjectName); err != nil {
+			&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &created, &a.SourceRevisionNo, &a.SourceDisplayName, &a.ProjectName); err != nil {
 			return nil, err
 		}
 		a.Format = Format(format)
