@@ -18,7 +18,8 @@ import (
 const vadFrameMS = 20
 
 // vadMinSilenceMS 是"算一个停顿"的最短静音时长；过短的停顿不锚定，避免把喘息/齿音当停顿。
-const vadMinSilenceMS = 90
+// P2 优化：从 90ms 收紧到 55ms，以捕获短句/从句间更短的换气停顿，增加锚点、缩短匀速区间。
+const vadMinSilenceMS = 55
 
 // vadSilenceRel 是相对峰值能量的静音阈值（帧 RMS < peak*此值 判为静音）。
 const vadSilenceRel = 0.08
@@ -355,21 +356,76 @@ func distributeByAnchors(runes []rune, anchors []anchor, leadUS, speechEndUS int
 		if n < 1 || sg.tEnd <= sg.tStart {
 			return nil, false
 		}
-		dur := sg.tEnd - sg.tStart
-		usPer := dur / int64(n)
-		if usPer <= 0 {
-			return nil, false // 区间时长不足以容纳字符
+		segTokens, ok := allocateWeighted(runes[sg.runeStart:sg.runeEnd+1], sg.tStart, sg.tEnd)
+		if !ok {
+			return nil, false
 		}
-		start := sg.tStart
-		for i := 0; i < n; i++ {
-			end := start + usPer
-			if i == n-1 {
-				end = sg.tEnd // 余量并入最后一个字符，保证区间精确落点
+		tokens = append(tokens, segTokens...)
+	}
+	return tokens, true
+}
+
+// charWeight 估算一个字符的"朗读时长权重"：CJK>数字>拉丁字母>空白>标点。用于在锚点区间内
+// 按权重而非纯等分分配时长，减小中英混排/标点造成的字级漂移。
+func charWeight(r rune) float64 {
+	switch {
+	case r >= 0x4E00 && r <= 0x9FFF: // CJK 统一表意
+		return 1.0
+	case r >= '0' && r <= '9':
+		return 0.6
+	case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+		return 0.55
+	case r == ' ' || r == '\t' || r == '\n':
+		return 0.3
+	case isPausePunct(r):
+		return 0.35
+	default:
+		return 0.6
+	}
+}
+
+// allocateWeighted 在 [tStart,tEnd] 内按字符权重分配时长，保证下标与区间精确落点、
+// 逐字 EndUS 单调不减且不越界（每个字符至少 1µs）。
+func allocateWeighted(runes []rune, tStart, tEnd int64) ([]TokenOffset, bool) {
+	n := len(runes)
+	dur := tEnd - tStart
+	if n == 0 || dur < int64(n) {
+		return nil, false
+	}
+	weights := make([]float64, n)
+	var sum float64
+	for i, r := range runes {
+		weights[i] = charWeight(r)
+		sum += weights[i]
+	}
+	if sum <= 0 {
+		return nil, false
+	}
+	tokens := make([]TokenOffset, 0, n)
+	cur := tStart
+	remain := dur
+	for i := 0; i < n; i++ {
+		var d int64
+		if i == n-1 {
+			d = remain
+		} else {
+			d = int64(math.Round(float64(dur) * weights[i] / sum))
+			if d < 1 {
+				d = 1
 			}
-			r := runes[sg.runeStart+i]
-			tokens = append(tokens, TokenOffset{StartUS: start, EndUS: end, Char: string(r)})
-			start = end
+			if capLeft := remain - int64(n-1-i); d > capLeft { // 给后续每字至少留 1µs
+				d = capLeft
+			}
 		}
+		if d < 1 {
+			d = 1
+		}
+		tokens = append(tokens, TokenOffset{StartUS: cur, EndUS: cur + d, Char: string(runes[i])})
+		cur += d
+		remain -= d
+	}
+	if cur != tEnd {
+		return nil, false
 	}
 	return tokens, true
 }

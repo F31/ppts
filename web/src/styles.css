@@ -1229,3 +1229,8 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .drawer-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-item); }
 .drawer-item-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .drawer-item-main strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 播放器：手动同步偏移控件 */
+.player-sync { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); }
+.player-sync button { padding: 0 6px; line-height: 1.6; }
+.player-sync-value { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }

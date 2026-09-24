@@ -43,8 +43,15 @@ func TestBuildTimelineUsesAlignmentAndPreservesSlideOrder(t *testing.T) {
 	}
 	if got := timeline.Subtitles[0]; got.StartUS != 300_000 || got.EndUS != 900_000 {
 		t.Fatalf("aligned subtitle = %+v", got)
-	} else if len(got.Chars) != 2 || got.Chars[0].Char != "A" || got.Chars[0].StartUS != 300_000 || got.Chars[1].EndUS != 900_000 {
+	} else if len(got.Chars) != len([]rune("A < B")) || got.Chars[0].Char != "A" || got.Chars[0].StartUS != 300_000 || got.Chars[len(got.Chars)-1].EndUS != 900_000 {
+		// 显示文本与对齐文本字数不同（"A < B" vs "A","B"）→ 重映射到显示文本，覆盖原区间。
 		t.Fatalf("subtitle chars = %+v", got.Chars)
+	} else {
+		for i := 1; i < len(got.Chars); i++ {
+			if got.Chars[i].StartUS < got.Chars[i-1].EndUS || got.Chars[i].EndUS <= got.Chars[i].StartUS {
+				t.Fatalf("chars not monotonic at %d: %+v", i, got.Chars)
+			}
+		}
 	}
 	if timeline.Subtitles[1].Chars != nil {
 		t.Fatalf("segment without alignment must not emit chars")
@@ -212,5 +219,40 @@ func TestSubtitleRendererRejectsOverlap(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected overlap error")
+	}
+}
+
+// TestRemapCharsToCount 守护：朗读文本与显示文本字数不同（如发音词典替换）时，字级时间戳
+// 必须重映射到显示文本，数量一致且时间单调不减、覆盖原区间。
+func TestRemapCharsToCount(t *testing.T) {
+	// 朗读 "A I" → 4 个 token；显示 "AI" → 2 个字符。
+	spoken := []CharCue{
+		{StartUS: 0, EndUS: 100},
+		{StartUS: 100, EndUS: 200},
+		{StartUS: 200, EndUS: 300},
+		{StartUS: 300, EndUS: 400},
+	}
+	out := remapCharsToCount(spoken, []rune("AI"))
+	if len(out) != 2 {
+		t.Fatalf("len = %d, want 2", len(out))
+	}
+	if string(out[0].Char) != "A" || string(out[1].Char) != "I" {
+		t.Fatalf("chars = %q%q", out[0].Char, out[1].Char)
+	}
+	if out[0].StartUS != 0 || out[len(out)-1].EndUS != 400 {
+		t.Fatalf("span = [%d,%d], want [0,400]", out[0].StartUS, out[len(out)-1].EndUS)
+	}
+	for i := 1; i < len(out); i++ {
+		if out[i].StartUS < out[i-1].EndUS {
+			t.Fatalf("not monotonic at %d: %+v", i, out)
+		}
+		if out[i].EndUS <= out[i].StartUS {
+			t.Fatalf("degenerate cue at %d: %+v", i, out[i])
+		}
+	}
+	// 同字数时恒等。
+	same := remapCharsToCount(spoken, []rune("ABCD"))
+	if len(same) != 4 || same[2].StartUS != 200 || same[2].EndUS != 300 {
+		t.Fatalf("identity mismatch: %+v", same)
 	}
 }

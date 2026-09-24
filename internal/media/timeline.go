@@ -175,6 +175,13 @@ func BuildTimeline(slides []SlideInput, timing Timing) (*Timeline, error) {
 					chars = append(chars, CharCue{StartUS: tokenStart, EndUS: tokenEnd, Char: token.Char})
 				}
 			}
+			// 显示文本与朗读文本（发音词典替换后）字数可能不同；按比例把字级时间戳重映射到
+			// 显示文本，保证高亮下标与渲染文本一一对应（否则会系统性错位）。
+			if len(chars) > 0 {
+				if runes := []rune(inputSegment.DisplayText); len(runes) != len(chars) {
+					chars = remapCharsToCount(chars, runes)
+				}
+			}
 			timeline.Subtitles = append(timeline.Subtitles, SubtitleCue{
 				SlideID: inputSlide.SlideID, SegmentID: inputSegment.SegmentID,
 				StartUS: cueStart, EndUS: cueEnd, Text: inputSegment.DisplayText, Chars: chars,
@@ -218,4 +225,56 @@ func addUS(a, b int64) (int64, error) {
 		return 0, errors.New("media: timeline duration overflow")
 	}
 	return a + b, nil
+}
+
+// remapCharsToCount 把 M 个字级时间戳按比例重映射到 N 个显示字符（M≠N，通常因发音词典
+// 把朗读文本替换成了字数不同的文本）。用「边界时间插值」生成 N 个时间单调不减、整体落在
+// [首字起点, 末字终点] 的 CharCue，供播放器按显示文本高亮，避免下标错位。
+func remapCharsToCount(chars []CharCue, runes []rune) []CharCue {
+	m := len(chars)
+	n := len(runes)
+	if m == 0 || n == 0 {
+		return nil
+	}
+	if m == n {
+		return chars
+	}
+	// b[0..m]：b[j]=chars[j].StartUS (j<m)，b[m]=chars[m-1].EndUS（单调不减）。
+	b := make([]int64, m+1)
+	for j := 0; j < m; j++ {
+		b[j] = chars[j].StartUS
+	}
+	b[m] = chars[m-1].EndUS
+	at := func(x float64) int64 {
+		if x <= 0 {
+			return b[0]
+		}
+		if x >= float64(m) {
+			return b[m]
+		}
+		j := int(x)
+		frac := x - float64(j)
+		return b[j] + int64(math.Round(frac*float64(b[j+1]-b[j])))
+	}
+	out := make([]CharCue, n)
+	prev := b[0]
+	for i := 0; i < n; i++ {
+		start := at(float64(i) * float64(m) / float64(n))
+		end := at(float64(i+1) * float64(m) / float64(n))
+		if start < prev {
+			start = prev
+		}
+		if end <= start {
+			end = start + 1
+		}
+		if end > b[m] {
+			end = b[m]
+			if end <= start {
+				end = start
+			}
+		}
+		out[i] = CharCue{StartUS: start, EndUS: end, Char: string(runes[i])}
+		prev = end
+	}
+	return out
 }

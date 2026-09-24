@@ -56,6 +56,30 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   const [fullscreen, setFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
+  // 手动同步偏移（毫秒，正=高亮延后）：按时间轴持久化到本地，用于用户微调字/语音对齐残差。
+  const syncKey = `ppts-sync-${manifest.timelineKey || manifest.projectId}`;
+  const [syncOffsetMs, setSyncOffsetMs] = useState(0);
+  useEffect(() => {
+    let n = 0;
+    try {
+      const raw = window.localStorage.getItem(syncKey);
+      n = raw ? Number(raw) : 0;
+    } catch {
+      n = 0;
+    }
+    setSyncOffsetMs(Number.isFinite(n) ? Math.max(-2000, Math.min(2000, n)) : 0);
+  }, [syncKey]);
+  const adjustSync = (delta: number) => {
+    setSyncOffsetMs((cur) => {
+      const next = Math.max(-2000, Math.min(2000, cur + delta));
+      try {
+        window.localStorage.setItem(syncKey, String(next));
+      } catch {
+        /* 隐私模式等无法写入时忽略 */
+      }
+      return next;
+    });
+  };
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -79,7 +103,7 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   // B4-M6 字幕：只显示当前朗读的那一行（按 \n 切行、随朗读位置轮换），已朗读字符用高亮色。
   const spokenSubtitle = (() => {
     if (!displaySubtitle) return null;
-    const at = spokenCharAt(displaySubtitle, positionUs);
+    const at = spokenCharAt(displaySubtitle, positionUs - syncOffsetMs * 1000);
     const lines = splitLines(displaySubtitle);
     const found = lines.findIndex((line) => at >= line.start && at < line.end);
     const lineIdx = found >= 0 ? found : at >= displaySubtitle.text.length ? lines.length - 1 : 0;
@@ -436,6 +460,29 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
                 ))}
               </select>
             </label>
+          )}
+          {hasAudio && (
+            <span className="player-sync" title={t('player.syncHint')}>
+              <span>{t('player.sync')}</span>
+              <button type="button" onClick={() => adjustSync(-50)} aria-label="-50ms">−</button>
+              <span className="player-sync-value">{syncOffsetMs > 0 ? `+${syncOffsetMs}` : syncOffsetMs}ms</span>
+              <button type="button" onClick={() => adjustSync(50)} aria-label="+50ms">＋</button>
+              {syncOffsetMs !== 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      window.localStorage.removeItem(syncKey);
+                    } catch {
+                      /* ignore */
+                    }
+                    setSyncOffsetMs(0);
+                  }}
+                >
+                  {t('player.syncReset')}
+                </button>
+              )}
+            </span>
           )}
           <button type="button" className="player-fullscreen" onClick={toggleFullscreen}>
             {fullscreen ? t('player.exitFullscreen') : t('player.fullscreen')}
