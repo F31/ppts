@@ -1262,7 +1262,10 @@ export function ProjectEditor({
   // 仅在 RequireConfirmed 时才校验状态）。
   const generateNarrationFor = async (
     slideIds: string[],
-    override: { voiceId?: string; ratePercent?: number } = {}
+    override: { voiceId?: string; ratePercent?: number } = {},
+    // bypassCache：仅当用户显式要求"重新生成"时为 true。为 true 时后端跳过内容哈希缓存、
+    // 每段真实调用语音合成（会产生真实计费）；为 false 时沿用缓存，避免无谓消耗额度。
+    bypassCache = false
   ) => {
     if (!isReady || narrationStatus.phase === 'generating') return;
     if (slideIds.length === 0) {
@@ -1287,7 +1290,8 @@ export function ProjectEditor({
       const idempotencyKey = `narration-${projectId}-${Date.now()}`;
       const generation = await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey, {
         ratePercent: selectedRate,
-        lockConfirmedOnly: false
+        lockConfirmedOnly: false,
+        bypassCache
       });
       // B3-M5：生成任务已创建，立即刷新活跃任务，让顶部快照提示尽快出现。
       void refreshActiveGenJobs();
@@ -1329,10 +1333,18 @@ export function ProjectEditor({
       setRealManifest(manifest);
       setVoiceDirty(false);
       void refreshVoiceStale();
-      setNarrationStatus({
-        phase: 'ready',
-        message: status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages')
-      });
+      // 诚实反馈：命中缓存时"重新生成"并未真的重新合成音频。必须说清，
+      // 否则用户会把"沿用既有音频"读成"已重新生成"——二者界面表现完全一致。
+      const base = status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages');
+      const synth = status.synthesis ?? null;
+      const synthNote = !synth
+        ? ''
+        : synth.synthesized === 0
+          ? ` ${t('editor.narrationAllCached', { count: synth.segments })}`
+          : synth.cached === 0
+            ? ` ${t('editor.narrationAllSynthesized', { count: synth.segments })}`
+            : ` ${t('editor.narrationMixedSynthesis', { synthesized: synth.synthesized, cached: synth.cached })}`;
+      setNarrationStatus({ phase: 'ready', message: `${base}${synthNote}` });
       // B3-M5：生成完成后立即收敛提示（无需等下一次轮询）。
       void refreshActiveGenJobs();
     } catch (error) {
@@ -1347,7 +1359,7 @@ export function ProjectEditor({
 
   // 配音生成：后端每次都会重建整条时间轴，因此两种模式都提交"全部有讲稿的页"以保留其他页。
   // 区别在语义：增量只在存在"未配音/讲稿已更新"的页时才发起（其余段落按内容哈希命中缓存）；
-  // 全部始终发起，配合新音色/语速会重新合成全部段落并覆盖旧音频。
+  // 全部是用户显式要求重新生成，因此 bypassCache=true：跳过内容哈希缓存，真实重新合成并覆盖旧音频。
   const runVoiceGeneration = async (
     mode: 'incremental' | 'full',
     override: { voiceId?: string; ratePercent?: number } = {}
@@ -1376,10 +1388,13 @@ export function ProjectEditor({
         return;
       }
     }
-    await generateNarrationFor(ids, override);
+    // 「全部」= 用户明确要求重新生成 → 真实调用语音合成（跳过缓存）；
+    // 「增量」沿用内容哈希缓存，只为真正变化的分段买单。
+    await generateNarrationFor(ids, override, mode === 'full');
   };
 
   // 讲稿栏「重新生成语音」：先落库本页未保存编辑，再生成。
+  // 同样是显式"重新生成"意图 → bypassCache=true，真实调用语音合成而非命中缓存。
   const regenerateVoiceActive = async () => {
     if (!activeRealScript) return;
     scriptEditorRef.current?.flush();
@@ -1387,7 +1402,7 @@ export function ProjectEditor({
     while (scriptEditorRef.current?.isDirty() && Date.now() < deadline) {
       await sleep(200);
     }
-    await generateNarrationFor(allScriptSlideIds());
+    await generateNarrationFor(allScriptSlideIds(), {}, true);
   };
 
   const runExport = async (format: ArtifactFormat, options: ExportOptions) => {

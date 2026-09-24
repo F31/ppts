@@ -741,8 +741,20 @@ func editorRevisionNarration(w http.ResponseWriter, r *http.Request, jobs JobSto
 		return
 	}
 	pagePngKeys, _ := resolvePagePngKeys(ctx, jobs, objects, principal.TenantID, projectID, timelineKey)
+	// 本次任务的音频来源构成（真实合成 / 命中缓存）。按 job 独立存储；旧 job 或未产出时
+	// 保持 null，前端据此不谎报——"没有统计"与"统计为 0"必须是两个状态（A26）。
+	var synthesis *app.SynthesisStats
+	if rc, _, gerr := objects.Get(ctx, app.SynthesisStatsKey(principal.TenantID, projectID, jobID)); gerr == nil {
+		var s app.SynthesisStats
+		derr := json.NewDecoder(rc).Decode(&s)
+		_ = rc.Close()
+		if derr == nil {
+			synthesis = &s
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ready": true, "timelineKey": timelineKey, "pagePngKeys": pagePngKeys, "revisionNo": revNo, "jobId": jobID,
+		"synthesis": synthesis,
 	})
 }
 

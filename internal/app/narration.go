@@ -44,6 +44,14 @@ type NarrationSnapshot struct {
 	SpeechControl    tts.SpeechControl        `json:"speechControl"`
 	SampleRate       int                      `json:"sampleRate"`
 	Timing           media.Timing             `json:"timing"`
+	// BypassCache 表示用户显式要求"重新生成"：跳过内容哈希缓存读取，每段真实调用语音合成，
+	// 并把新音频写回同一 configHash 键（覆盖旧音频对象）。
+	//
+	// 之所以"跳过读取但仍写回同一键"，是为了让强制重生成的结果成为该配置的新正本：
+	// 若改用掺 nonce 的新键，旧音频仍在共享缓存里，后续一次普通（增量）运行又会命中旧音频，
+	// 把用户刚刚强制重做的成果悄悄换回去——那比不绕过更糟。代价是同一 configHash 键下的字节被
+	// 刷新（内容寻址键此前假定"同配置=同字节"，TTS 非严格确定性时才会有毫秒级时长漂移）。
+	BypassCache bool `json:"bypassCache,omitempty"`
 }
 
 // NarrationSlideSnapshot binds one slide to the script revision being voiced.
@@ -74,6 +82,18 @@ type SegmentAsset struct {
 
 // TimelineAsset is written last and acts as the publication manifest for a
 // playable narration revision.
+// SynthesisStats 记录一次配音任务的音频来源构成。
+//
+// 存在即是为了"诚实反馈"：G2-7 内容哈希缓存让「全部（重新生成并覆盖）」在音色/讲稿/语速
+// 均未变化时命中缓存、零次 TTS 调用——时间轴重建了，音频却仍是原对象。若界面无条件报成功，
+// 用户会把"缓存命中、什么都没重新生成"误读为"已重新合成"，且二者外观完全相同（A26）。
+// 故把构成随 bundle 持久化，由状态接口透出。
+type SynthesisStats struct {
+	Segments    int `json:"segments"`    // 本次任务纳入时间轴的分段总数
+	Synthesized int `json:"synthesized"` // 真实调用 TTS 合成的分段数
+	Cached      int `json:"cached"`      // 命中 project/shared 缓存、复用既有音频的分段数
+}
+
 type TimelineAsset struct {
 	Timeline *media.Timeline `json:"timeline"`
 	SRTKey   string          `json:"srtKey"`
@@ -255,6 +275,9 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
 	completedSegments := 0
+	// 本次任务的音频来源构成（按 job 局部累计，绝不放 handler 字段：handler 跨任务共享，
+	// 并发任务会互相串数据）。
+	stats := SynthesisStats{}
 	// G2-5 进度统计：有过滤集时仅统计目标分段。
 	totalTargeted := 0
 	for _, slide := range planned {
@@ -273,9 +296,15 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 				return err
 			}
 			// synthesizeSegment 内部按 content hash 做缓存，未修改分段直接命中缓存，开销极低。
-			asset, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules)
+			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules)
 			if err != nil {
 				return err
+			}
+			stats.Segments++
+			if cached {
+				stats.Cached++
+			} else {
+				stats.Synthesized++
 			}
 			totalMS += asset.DurationMS
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
@@ -320,7 +349,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		}
 	}
 
-	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides, snapshot.RevisionNo); err != nil {
+	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides, snapshot.RevisionNo, stats); err != nil {
 		return err
 	}
 	// 回写 audio_revision：标记每段最近一次配音对应的脚本修订号（stale 判定）。
@@ -339,12 +368,18 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 	return nil
 }
 
-func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules) (*SegmentAsset, error) {
+// synthesizeSegment 合成单个分段。返回的 cached 表示该段是否命中内容哈希缓存：
+// true=复用既有音频（未调用 TTS），false=本次真实合成。调用方据此向用户如实反馈，
+// 避免把"全部命中缓存、未重新生成"报成"已重新生成"。
+//
+// snapshot.BypassCache 为真时（用户显式要求重新生成）两级缓存一律不读，直接真实合成；
+// 写回仍用同一 configHash 键，即新音频覆盖旧音频对象。
+func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules) (*SegmentAsset, bool, error) {
 	// G2-4 应用发音词典替换，effectiveText 送 TTS。
 	effectiveText := pronunciation.Apply(segment.SpokenText, dictRules)
 	configHash, err := synthesisHash(snapshot, capabilities, effectiveText)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	manifestID := hashBytes([]byte(slide.SlideID + ":" + segment.SegmentID + ":" + configHash + fmt.Sprintf(":a%d", alignmentCacheVersion)))
 	manifestKey := objectstore.ObjectKey{
@@ -356,17 +391,21 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		StepKey: "tts_segment:" + slide.SlideID + ":" + segment.SegmentID + ":" + configHash,
 	}
 
-	if manifest, ok, err := h.loadPublishedSegment(ctx, manifestKey); err != nil {
-		return nil, err
-	} else if ok {
-		h.recordCacheHit(job, "project")
-		step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
-		if err := h.steps.MarkStep(ctx, step); err != nil {
-			return nil, err
+	// 用户显式要求重新生成时跳过缓存读取（见 NarrationSnapshot.BypassCache），
+	// 直接进入真实合成分支；写回路径不变，因此新音频覆盖同一 configHash 键。
+	if !snapshot.BypassCache {
+		if manifest, ok, err := h.loadPublishedSegment(ctx, manifestKey); err != nil {
+			return nil, false, err
+		} else if ok {
+			h.recordCacheHit(job, "project")
+			step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
+			if err := h.steps.MarkStep(ctx, step); err != nil {
+				return nil, false, err
+			}
+			return manifest, true, nil
+		} else if manifest != nil {
+			return nil, false, errors.New("narration job: invalid cached segment manifest")
 		}
-		return manifest, nil
-	} else if manifest != nil {
-		return nil, errors.New("narration job: invalid cached segment manifest")
 	}
 
 	// G2-7 内容哈希去重：相同合成配置（文本+音色+语率+模型）的音频按内容寻址存放在
@@ -375,38 +414,40 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		TenantID: job.TenantID, ProjectID: sharedCacheProject, Revision: "cache",
 		AssetType: "segments", AssetID: configHash, Ext: "json",
 	}
-	if shared, ok, err := h.loadSharedSegment(ctx, sharedKey); err != nil {
-		return nil, err
-	} else if ok {
-		h.recordCacheHit(job, "shared")
-		// 对齐算法升级（alignmentCacheVersion）后：复用缓存音频，仅重算对齐，避免重新合成。
-		if upgraded, ok := h.realignSharedSegment(ctx, shared, effectiveText); ok {
-			shared = upgraded
+	if !snapshot.BypassCache {
+		if shared, ok, err := h.loadSharedSegment(ctx, sharedKey); err != nil {
+			return nil, false, err
+		} else if ok {
+			h.recordCacheHit(job, "shared")
+			// 对齐算法升级（alignmentCacheVersion）后：复用缓存音频，仅重算对齐，避免重新合成。
+			if upgraded, ok := h.realignSharedSegment(ctx, shared, effectiveText); ok {
+				shared = upgraded
+			}
+			manifestBytes, err := json.Marshal(shared)
+			if err != nil {
+				return nil, false, err
+			}
+			if err := h.objects.Put(ctx, manifestKey, bytes.NewReader(manifestBytes), objectstore.ObjectMeta{
+				ContentType: "application/json", ContentHash: hashBytes(manifestBytes), Size: int64(len(manifestBytes)),
+			}); err != nil {
+				return nil, false, fmt.Errorf("narration job: publish manifest: %w", err)
+			}
+			step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
+			if err := h.steps.MarkStep(ctx, step); err != nil {
+				return nil, false, err
+			}
+			return shared, true, nil
 		}
-		manifestBytes, err := json.Marshal(shared)
-		if err != nil {
-			return nil, err
-		}
-		if err := h.objects.Put(ctx, manifestKey, bytes.NewReader(manifestBytes), objectstore.ObjectMeta{
-			ContentType: "application/json", ContentHash: hashBytes(manifestBytes), Size: int64(len(manifestBytes)),
-		}); err != nil {
-			return nil, fmt.Errorf("narration job: publish manifest: %w", err)
-		}
-		step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
-		if err := h.steps.MarkStep(ctx, step); err != nil {
-			return nil, err
-		}
-		return shared, nil
 	}
 
 	step.State = pipeline.StepPending
 	if err := h.steps.MarkStep(ctx, step); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	failStep := func(err error) (*SegmentAsset, error) {
+	failStep := func(err error) (*SegmentAsset, bool, error) {
 		step.State = pipeline.StepFailed
 		_ = h.steps.MarkStep(ctx, step)
-		return nil, err
+		return nil, false, err
 	}
 	request := tts.SynthesisRequest{
 		LogicalOpID: job.ID + ":" + slide.SlideID + ":" + segment.SegmentID + ":" + configHash,
@@ -464,9 +505,9 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 	}
 	step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
 	if err := h.steps.MarkStep(ctx, step); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return &manifest, nil
+	return &manifest, false, nil
 }
 
 func (h *NarrationHandler) recordTTSSynthesis(job *pipeline.Job, started time.Time, err error) {
@@ -485,7 +526,30 @@ func (h *NarrationHandler) recordCacheHit(job *pipeline.Job, scope string) {
 	h.metrics.SegmentCacheHit(job, scope)
 }
 
-func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput, revisionNo int) error {
+// SynthesisStatsKey 返回某次配音任务的音频来源统计对象键（按 job 独立寻址）。
+func SynthesisStatsKey(tenantID, projectID, jobID string) objectstore.ObjectKey {
+	return objectstore.ObjectKey{
+		TenantID: tenantID, ProjectID: projectID, Revision: "narration-" + jobID,
+		AssetType: "synth", AssetID: "stats", Ext: "json",
+	}
+}
+
+// publishSynthesisStats 落一份本次任务的音频来源构成。
+//
+// 刻意不塞进 TimelineAsset：bundle 以时间轴内容寻址，且三个对象已存在时 publishTimeline
+// 会提前返回、不重写（530 行附近）。把统计放进 bundle，相同时间轴的重复运行就会一直读到
+// 首轮的旧统计——恰好在"全部命中缓存"这个最需要如实告知的场景里，报出上一次的真实合成数。
+func (h *NarrationHandler) publishSynthesisStats(ctx context.Context, job *pipeline.Job, stats SynthesisStats) error {
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	return h.objects.Put(ctx, SynthesisStatsKey(job.TenantID, job.ProjectID, job.ID), bytes.NewReader(data), objectstore.ObjectMeta{
+		ContentType: "application/json", ContentHash: hashBytes(data), Size: int64(len(data)),
+	})
+}
+
+func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput, revisionNo int, stats SynthesisStats) error {
 	timeline, err := media.BuildTimeline(slides, timing)
 	if err != nil {
 		return err
@@ -510,6 +574,11 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 	step := pipeline.JobStep{
 		JobID: job.ID, TenantID: job.TenantID, StepType: "timeline",
 		StepKey: "timeline:" + assetID, ResultRef: bundleKey.String(),
+	}
+	// 统计先于 objectsExist 短路写入：时间轴内容未变时 bundle 不重写，但本次的
+	// 缓存/合成构成必须按 job 更新，否则重复运行会一直读到首轮统计。
+	if err := h.publishSynthesisStats(ctx, job, stats); err != nil {
+		return err
 	}
 	if complete, err := h.objectsExist(ctx, srtKey, vttKey, bundleKey); err != nil {
 		return err
@@ -561,15 +630,23 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide) error {
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
+	// 语速调整后重跑：构成独立累计（同上，按 job 局部）。
+	stats := SynthesisStats{}
 	for _, slide := range planned {
 		timelineSlide := media.SlideInput{SlideID: slide.snapshot.SlideID}
 		for _, segment := range slide.revision.Segments {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			asset, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules)
+			asset, cached, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules)
 			if err != nil {
 				return err
+			}
+			stats.Segments++
+			if cached {
+				stats.Cached++
+			} else {
+				stats.Synthesized++
 			}
 			totalMS += asset.DurationMS
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
@@ -579,7 +656,7 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 		}
 		timelineSlides = append(timelineSlides, timelineSlide)
 	}
-	if err := h.publishTimeline(ctx, job, adjusted.Timing, timelineSlides, adjusted.RevisionNo); err != nil {
+	if err := h.publishTimeline(ctx, job, adjusted.Timing, timelineSlides, adjusted.RevisionNo, stats); err != nil {
 		return err
 	}
 	if h.usage != nil && job.IDempotencyKey != "" {

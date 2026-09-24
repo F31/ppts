@@ -747,10 +747,14 @@ export async function createGeneration(
   slideIds: string[],
   voiceId: string,
   idempotencyKey: string,
-  opts: { ratePercent?: number; lockConfirmedOnly?: boolean } = {}
+  opts: { ratePercent?: number; lockConfirmedOnly?: boolean; bypassCache?: boolean } = {}
 ): Promise<{ jobId: string; withinBudget: boolean }> {
   // D0-1：前端此前漏传 ratePercent / lockConfirmedOnly，导致后端 C-5 强制阻止未确认稿与
   // 配额预占比例从未生效。这里补全：ratePercent 默认 100（全速），lockConfirmedOnly 默认 false。
+  // bypassCache：用户显式要求"重新生成"时置真，要求后端跳过内容哈希缓存、真实调用语音合成
+  // （否则音色/讲稿未变时全部命中缓存，界面承诺的"重新生成并覆盖"实际什么都没合成）。
+  const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
+  if (opts.bypassCache) headers['X-PPTS-Bypass-Cache'] = 'true';
   return connectJSON<{ jobId: string; withinBudget: boolean }>(
     identity,
     '/ppts.v1.NarrationService/CreateGeneration',
@@ -761,7 +765,7 @@ export async function createGeneration(
       ratePercent: opts.ratePercent ?? 100,
       lockConfirmedOnly: opts.lockConfirmedOnly ?? false
     },
-    { 'Idempotency-Key': idempotencyKey }
+    headers
   );
 }
 
@@ -894,11 +898,23 @@ export async function getNarrationStale(
   );
 }
 
+// SynthesisStats 是本次配音任务的音频来源构成。
+//
+// 存在理由：音色/讲稿/语速均未变化时，分段会命中内容哈希缓存——时间轴重建了，但音频沿用
+// 既有对象、并未重新合成。少了它，「全部（重新生成并覆盖）」会把"复用旧音频"报成"已重新生成"。
+// 旧任务或未产出时为 undefined/null，此时不得推断，只能不提。
+export type SynthesisStats = {
+  segments: number;
+  synthesized: number;
+  cached: number;
+};
+
 export type NarrationStatus = {
   ready: boolean;
   timelineKey: string;
   pagePngKeys: string[];
   revisionNo: number;
+  synthesis?: SynthesisStats | null;
 };
 
 export async function getNarration(identity: ClientIdentity, projectId: string): Promise<NarrationStatus> {

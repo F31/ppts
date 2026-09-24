@@ -28,6 +28,20 @@ const defaultLanguage = "zh-CN"
 // 在部分实现中受限），用于让讲稿/配音读写在正确的源版本上进行。缺失/非法 = 0（legacy）。
 const sourceRevisionHeader = "X-PPTS-Source-Revision"
 
+// bypassCacheHeader 是「强制重新合成」标志头。用户显式点"全部（重新生成并覆盖）"时由前端置为
+// true，要求跳过内容哈希缓存、真实调用语音合成。缺失/非法 = false（沿用缓存，省额度）。
+const bypassCacheHeader = "X-PPTS-Bypass-Cache"
+
+// requestBypassCache 解析绕过缓存头；仅 "true"/"1" 视为真。
+func requestBypassCache(header httpHeader) bool {
+	switch strings.ToLower(strings.TrimSpace(header.Get(bypassCacheHeader))) {
+	case "true", "1":
+		return true
+	default:
+		return false
+	}
+}
+
 // requestSourceRevision 解析源版本头；缺失或非法返回 0（legacy：读路径会回退到存量稿）。
 func requestSourceRevision(header httpHeader) int {
 	raw := strings.TrimSpace(header.Get(sourceRevisionHeader))

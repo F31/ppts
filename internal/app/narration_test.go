@@ -119,10 +119,16 @@ func narrationJob(t *testing.T) *pipeline.Job {
 }
 
 func narrationJobAt(t *testing.T, jobID string, revision int64) *pipeline.Job {
+	return narrationJobWith(t, jobID, revision, false)
+}
+
+// narrationJobWith 构造配音任务；bypass=true 模拟用户显式点"重新生成并覆盖"。
+func narrationJobWith(t *testing.T, jobID string, revision int64, bypass bool) *pipeline.Job {
 	t.Helper()
 	snapshot, err := json.Marshal(NarrationSnapshot{
 		Slides:   []NarrationSlideSnapshot{{SlideID: "slide-1", ScriptRevision: revision}},
 		Language: "zh-CN", VoiceID: "voice-1", SampleRate: 16000,
+		BypassCache: bypass,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -131,6 +137,48 @@ func narrationJobAt(t *testing.T, jobID string, revision int64) *pipeline.Job {
 		ID: jobID, TenantID: "tenant-1", ProjectID: "project-1",
 		Kind: pipeline.KindNarration, InputSnapshot: string(snapshot),
 	}
+}
+
+// publishedAudioKey 取当前最新 tts_segment 步骤清单里记录的音频键。
+func publishedAudioKey(t *testing.T, objects objectstore.ObjectStore, steps *stepRecorder) string {
+	t.Helper()
+	for _, step := range steps.latest {
+		if step.StepType != "tts_segment" || step.ResultRef == "" {
+			continue
+		}
+		key, err := objectstore.Parse(step.ResultRef)
+		if err != nil {
+			t.Fatalf("parse manifest key: %v", err)
+		}
+		r, _, err := objects.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("manifest get: %v", err)
+		}
+		data, _ := io.ReadAll(r)
+		r.Close()
+		var manifest SegmentAsset
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			t.Fatalf("manifest decode: %v", err)
+		}
+		return manifest.AudioKey
+	}
+	t.Fatalf("no tts_segment step recorded")
+	return ""
+}
+
+func readSynthesisStats(t *testing.T, objects objectstore.ObjectStore, tenantID, projectID, jobID string) SynthesisStats {
+	t.Helper()
+	r, _, err := objects.Get(context.Background(), SynthesisStatsKey(tenantID, projectID, jobID))
+	if err != nil {
+		t.Fatalf("synth stats get: %v", err)
+	}
+	data, _ := io.ReadAll(r)
+	r.Close()
+	var stats SynthesisStats
+	if err := json.Unmarshal(data, &stats); err != nil {
+		t.Fatalf("synth stats decode: %v", err)
+	}
+	return stats
 }
 
 func providerForTests() *testTTSProvider {
@@ -278,6 +326,56 @@ func TestNarrationHandlerDedupsAcrossProjects(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("project-2 manifest not written: %+v", steps.latest)
+	}
+}
+
+// TestNarrationHandlerBypassCacheResynthesizes 守住"用户要求重新生成就必须真的重新生成"。
+//
+// 不加这道闸的话，界面上"全部（重新生成并覆盖）"在音色/讲稿未变时全部命中内容哈希缓存、
+// 零次 TTS 调用，而界面照样报成功——用户无法区分"真重新生成"与"什么都没做"。
+func TestNarrationHandlerBypassCacheResynthesizes(t *testing.T) {
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "第一段", SpokenText: "相同文本"},
+	)}
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := providerForTests()
+	handler := NewNarrationHandler(store, steps, objects, provider)
+	ctx := context.Background()
+
+	if err := handler.Handle(ctx, narrationJobAt(t, "job-1", 4)); err != nil {
+		t.Fatalf("first Handle: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("first run calls=%d", provider.calls)
+	}
+	firstAudioKey := publishedAudioKey(t, objects, steps)
+
+	// 对照：默认（未要求重新生成）的同配置运行命中缓存，零供应商调用。
+	if err := handler.Handle(ctx, narrationJobAt(t, "job-2", 4)); err != nil {
+		t.Fatalf("cached Handle: %v", err)
+	}
+	if provider.calls != 1 {
+		t.Fatalf("cached run called provider: calls=%d", provider.calls)
+	}
+	if stats := readSynthesisStats(t, objects, "tenant-1", "project-1", "job-2"); stats.Cached != 1 || stats.Synthesized != 0 {
+		t.Fatalf("cached stats = %+v", stats)
+	}
+
+	// 显式要求重新生成：必须真实调用供应商。
+	if err := handler.Handle(ctx, narrationJobWith(t, "job-3", 4, true)); err != nil {
+		t.Fatalf("bypass Handle: %v", err)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("bypass run did not re-synthesize: calls=%d", provider.calls)
+	}
+	if stats := readSynthesisStats(t, objects, "tenant-1", "project-1", "job-3"); stats.Segments != 1 || stats.Synthesized != 1 || stats.Cached != 0 {
+		t.Fatalf("bypass stats = %+v", stats)
+	}
+	// 写回同一 configHash 键 = 覆盖旧音频。若改为新键，后续普通运行又会命中旧音频，
+	// 把用户刚强制重做的成果悄悄换回去。
+	if key := publishedAudioKey(t, objects, steps); key != firstAudioKey {
+		t.Fatalf("forced regeneration must overwrite the same audio key: got %q want %q", key, firstAudioKey)
 	}
 }
 

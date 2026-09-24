@@ -139,6 +139,8 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		Language: language, VoiceID: voiceID, RequireConfirmed: req.Msg.GetLockConfirmedOnly(),
 		SpeechControl: tts.SpeechControl{RatePercent: rate}, SampleRate: 16000,
 		RevisionNo: sourceRevision,
+		// 用户显式要求"重新生成"时跳过缓存、真实调用 TTS（否则内容哈希命中会让界面承诺落空）。
+		BypassCache: requestBypassCache(req.Header()),
 	}
 	seen := make(map[string]struct{}, len(req.Msg.GetSlideIds()))
 	slideOrder := make([]string, 0, len(req.Msg.GetSlideIds()))
@@ -252,6 +254,8 @@ func (s *NarrationGenerationService) RegenerateSegments(ctx context.Context, req
 		SpeechControl: tts.SpeechControl{RatePercent: 100},
 		SampleRate:    16000,
 		RevisionNo:    sourceRevision,
+		// 分段级重生成同样是显式"重新生成"意图，沿用同一标志。
+		BypassCache: requestBypassCache(req.Header()),
 	}
 	filter := make(map[string]struct{}, len(req.Msg.GetSegmentIds()))
 	for _, id := range req.Msg.GetSegmentIds() {
