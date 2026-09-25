@@ -109,19 +109,36 @@ func (s *PGStore) Remove(ctx context.Context, tenantID, userID string) error {
 	})
 }
 
-// SaveProfile 写入成员档案；user_profiles 无 RLS（无租户列），直接以 user_id 定位。
-func (s *PGStore) SaveProfile(ctx context.Context, userID string, p Profile) error {
+// SaveProfile 写入成员档案。
+//
+// 归属必须由本方法显式校验：user_profiles 无租户列、不启用 RLS，只按 user_id 定位会让
+// 跨租户改写成为可达路径（Phase 0.4 修复）。因此目标 userID 必须是调用方租户的现有成员，
+// 否则返回 ErrNotFound。校验与写入在同一事务内，避免检查后成员被移除的 TOCTOU 窗口。
+func (s *PGStore) SaveProfile(ctx context.Context, tenantID, userID string, p Profile) error {
+	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return errors.New("membership: user_id is required")
+	if tenantID == "" || userID == "" {
+		return errors.New("membership: tenant_id and user_id are required")
 	}
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO user_profiles (user_id, username, full_name, gender, birth_date, phone, updated_at)
-		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::date, NULLIF($6, ''), now())
-		 ON CONFLICT (user_id) DO UPDATE
-		   SET username=EXCLUDED.username, full_name=EXCLUDED.full_name,
-		       gender=EXCLUDED.gender, birth_date=EXCLUDED.birth_date,
-		       phone=EXCLUDED.phone, updated_at=now()`,
-		userID, p.Username, p.FullName, p.Gender, p.BirthDate, p.Phone)
-	return err
+	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var member bool
+		err := tx.QueryRow(ctx,
+			"SELECT EXISTS (SELECT 1 FROM tenant_members WHERE tenant_id=$1 AND user_id=$2)",
+			tenantID, userID).Scan(&member)
+		if err != nil {
+			return err
+		}
+		if !member {
+			return ErrNotFound
+		}
+		_, err = tx.Exec(ctx,
+			`INSERT INTO user_profiles (user_id, username, full_name, gender, birth_date, phone, updated_at)
+			 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, '')::date, NULLIF($6, ''), now())
+			 ON CONFLICT (user_id) DO UPDATE
+			   SET username=EXCLUDED.username, full_name=EXCLUDED.full_name,
+			       gender=EXCLUDED.gender, birth_date=EXCLUDED.birth_date,
+			       phone=EXCLUDED.phone, updated_at=now()`,
+			userID, p.Username, p.FullName, p.Gender, p.BirthDate, p.Phone)
+		return err
+	})
 }

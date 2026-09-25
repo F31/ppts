@@ -56,8 +56,14 @@ func listEnrichedMembers(w http.ResponseWriter, r *http.Request, members members
 }
 
 // updateMemberProfile 写入成员档案（admin 级）。
+//
+// 目标 userId 取自路径，必须与调用方同租户： user_profiles 无租户列且不启用 RLS，
+// 归属校验由 membership.Store.SaveProfile 负责（同租户校验 + 写入在同一事务），
+// 这里把 ErrNotFound 翻译成 PermissionDenied —— 对调用方而言"改不了别租户的人"是授权语义，
+// 不能报成 500/404 让人误以为系统出错（A26：失败态必须携带真实原因）。
 func updateMemberProfile(w http.ResponseWriter, r *http.Request, members membership.Store) {
-	if _, err := requirePrincipal(r.Context()); err != nil {
+	principal, err := requirePrincipal(r.Context())
+	if err != nil {
 		writeConnectError(w, err)
 		return
 	}
@@ -81,13 +87,18 @@ func updateMemberProfile(w http.ResponseWriter, r *http.Request, members members
 		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
 		return
 	}
-	if err := members.SaveProfile(r.Context(), userID, membership.Profile{
+	if err := members.SaveProfile(r.Context(), principal.TenantID, userID, membership.Profile{
 		Username:  body.Username,
 		FullName:  body.FullName,
 		Gender:    body.Gender,
 		BirthDate: body.BirthDate,
 		Phone:     body.Phone,
 	}); err != nil {
+		if errors.Is(err, membership.ErrNotFound) {
+			writeConnectError(w, connect.NewError(connect.CodePermissionDenied,
+				errors.New("target user is not a member of the current tenant")))
+			return
+		}
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return
 	}

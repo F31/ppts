@@ -92,11 +92,23 @@ func (s *SQLiteStore) Remove(ctx context.Context, tenantID, userID string) error
 	return nil
 }
 
-// SaveProfile 写入成员档案（user_profiles 无租户列，按 user_id 定位）。
-func (s *SQLiteStore) SaveProfile(ctx context.Context, userID string, p Profile) error {
+// SaveProfile 写入成员档案。与 PG 实现保持同一约束：目标 userID 必须属于 tenantID 租户，
+// 否则返回 ErrNotFound（SQLite 单租户部署下这条校验通常是幂等通过，留着是为了让两侧行为一致，
+// 避免将来有人把本地实现当成"不需要校验"的反例照抄）。
+func (s *SQLiteStore) SaveProfile(ctx context.Context, tenantID, userID string, p Profile) error {
+	tenantID = strings.TrimSpace(tenantID)
 	userID = strings.TrimSpace(userID)
-	if userID == "" {
-		return errors.New("membership: user_id is required")
+	if tenantID == "" || userID == "" {
+		return errors.New("membership: tenant_id and user_id are required")
+	}
+	var member int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM tenant_members WHERE tenant_id = ? AND user_id = ?)`,
+		tenantID, userID).Scan(&member); err != nil {
+		return err
+	}
+	if member == 0 {
+		return ErrNotFound
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO user_profiles (user_id, username, full_name, gender, birth_date, phone, created_at, updated_at)

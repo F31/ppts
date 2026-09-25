@@ -526,14 +526,9 @@ func TestHandlerHealthAndAuthentication(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	resp, err = http.Get(server.URL + "/debug/vars")
-	if err != nil {
-		t.Fatalf("debug vars: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("debug vars status = %d", resp.StatusCode)
-	}
+	// /debug/vars 与 /metrics 的可访问性不再在这里断言：两者已改为 fail-closed
+	// （默认拒绝匿名读取），由 failclosed_test.go 的 TestDebugVarsAndMetricsFailClosed 守护。
+	// 本用例保留其原本职责：healthz 与身份校验。
 
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 	_, err = client.Get(context.Background(), connect.NewRequest(&pptsv1.GetScriptRequest{
@@ -1174,7 +1169,7 @@ func (f *fakeMembershipReader) Remove(_ context.Context, _, userID string) error
 	return membership.ErrNotFound
 }
 
-func (f *fakeMembershipReader) SaveProfile(_ context.Context, _ string, _ membership.Profile) error {
+func (f *fakeMembershipReader) SaveProfile(_ context.Context, _, _ string, _ membership.Profile) error {
 	return nil
 }
 
@@ -1422,7 +1417,7 @@ func (f *fakeRoleReader) Remove(_ context.Context, _, userID string) error {
 }
 
 // SaveProfile 是 membership.Store 的必需方法（#94 前已加入）；fakeRoleReader 不依赖档案，返回 nil。
-func (f *fakeRoleReader) SaveProfile(_ context.Context, _ string, _ membership.Profile) error {
+func (f *fakeRoleReader) SaveProfile(_ context.Context, _, _ string, _ membership.Profile) error {
 	return f.err
 }
 

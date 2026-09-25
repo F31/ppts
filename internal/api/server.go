@@ -105,16 +105,25 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	mux.Handle("GET /debug/vars", expvar.Handler())
-	// Prometheus 指标：可选 token 保护（PPTS_METRICS_TOKEN）。未配置 token 时按内网抓取放行，
-	// 部署时应置于内网或反向代理鉴权之后（见 runbook）。
-	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
-		if tok := os.Getenv("PPTS_METRICS_TOKEN"); tok != "" {
-			got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-			if subtle.ConstantTimeCompare([]byte(got), []byte(tok)) != 1 {
+	// fail-closed：expvar 默认导出 memstats、**完整命令行**（可能含启动参数中的密钥）以及全部
+	// 业务计数（含认证事件分布）。缺失保护不是"少一层防护"，而是可直达的秘密泄漏面，
+	// 因此与"忘了配 token"必须区分开：默认要求 PPTS_METRICS_TOKEN 的 Bearer 校验，
+	// 仅当显式 PPTS_DEBUG_VARS_PUBLIC=true（与 PPTS_AUTH_DEV_HEADERS 同构）才放行匿名读取。
+	mux.HandleFunc("GET /debug/vars", func(w http.ResponseWriter, r *http.Request) {
+		if !observability.DebugVarsPublic() {
+			if !metricsTokenOK(r) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+		}
+		expvar.Handler().ServeHTTP(w, r)
+	})
+	// Prometheus 指标：可选 token 保护（PPTS_METRICS_TOKEN）。未配置 token 时按内网抓取放行，
+	// 部署时应置于内网或反向代理鉴权之后（见 runbook）。
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if !metricsTokenOK(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
 		}
 		observability.PrometheusHandler().ServeHTTP(w, r)
 	})
@@ -249,15 +258,24 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerCollabRoutes(mux, projects, opt.Members, jobs, objects, opt.PasswordPepper, opt.Audit, auth)
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
+		// 读写**不套** auth()：这两个端点实现的是预签名直传语义，令牌即授权
+		// （HMAC-SHA256 绑定 tenant/key/op/expiry，见 internal/integrations/objectstore/sign.go），
+		// 浏览器直传时不携带会话凭证，套会话鉴权只会让上传整体失败。
 		mux.HandleFunc("GET /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {
 			objHandler.serve(objectstore.OpRead, w, r)
 		})
 		mux.HandleFunc("PUT /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {
 			objHandler.serve(objectstore.OpWrite, w, r)
 		})
-		mux.HandleFunc("DELETE /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {
-			objHandler.serve(objectstore.OpDelete, w, r)
-		})
+		// DELETE 是「验签通过即可删除任意对象」的写面，而全仓没有任何签发方产出 OpDelete 令牌
+		// （S3 后端显式返回 ErrOperationNotSupported），即这条能力当前无人使用。
+		// 按 Phase 0 治理原则默认关闭：留一个没人走的攻击面没有收益，需要时显式开启。
+		if objectDeleteEnabled() {
+			log.Printf("api: /ppts/object DELETE enabled via PPTS_OBJECT_ALLOW_DELETE (no signer issues OpDelete today; verify before relying on it)")
+			mux.HandleFunc("DELETE /ppts/object/{key...}", func(w http.ResponseWriter, r *http.Request) {
+				objHandler.serve(objectstore.OpDelete, w, r)
+			})
+		}
 	}
 	// SPA 兜底：WebRoot 或内嵌 WebFS 非空时由 Go 直接托管前端构建产物（单二进制部署，替代 nginx）。
 	// "/" 是最宽泛的模式：Go 1.22+ ServeMux 让更具体的已注册路由优先，故不会遮蔽任何 API。
@@ -268,6 +286,27 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		mux.Handle("/", spaFallbackHandler(opt.WebFS))
 	}
 	return mux
+}
+
+// metricsTokenOK 校验请求携带的 Bearer token 与 PPTS_METRICS_TOKEN 一致。
+//
+// **未配置 token 时返回 false**（与旧实现相反）：旧行为把"忘记配置"当成"内网放行"，
+// 于是最常见的部署形态恰恰是裸露的那一档。需要内网匿名抓取时应由反向代理承担鉴权，
+// 而不是让默认值替运维做决定——这与 Phase 0 的 fail-closed 原则一致。
+func metricsTokenOK(r *http.Request) bool {
+	tok := strings.TrimSpace(os.Getenv("PPTS_METRICS_TOKEN"))
+	if tok == "" {
+		return false
+	}
+	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	return subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+}
+
+// objectDeleteEnabled 指示是否挂载 DELETE /ppts/object。默认关闭：当前无签发方产出 OpDelete
+// 令牌，挂载它等于为一个没人用的写面平添风险（详见 NewHandler 内注释）。
+func objectDeleteEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("PPTS_OBJECT_ALLOW_DELETE"))
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // featureDisabledHandler 为当前部署未挂载的功能路径返回明确的 JSON 503（code=feature_disabled），

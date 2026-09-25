@@ -28,6 +28,12 @@ services:
       PPTS_DATABASE_URL: "postgres://ppts_app:ppts_dev_pw@localhost:5433/ppts_dev?sslmode=disable"
       PPTS_TEST_DATABASE: "postgres://ppts_app:ppts_dev_pw@localhost:5433/ppts_test?sslmode=disable"
       PPTS_AUTH_DEV_HEADERS: "true"
+      # 观测端点：/metrics 与 /debug/vars 默认 fail-closed（未配 token 一律拒绝），
+      # 因为 /debug/vars 会导出完整启动命令行。这里是本地开发 profile，显式放行匿名读取；
+      # 任何共享/生产环境都不能设置它——那里应改为配 PPTS_METRICS_TOKEN + Bearer 抓取。
+      PPTS_DEBUG_VARS_PUBLIC: "true"
+      # 对象删除路由：当前无签发方产出 OpDelete 令牌，默认不挂载，此处保持关闭。
+      PPTS_OBJECT_ALLOW_DELETE: "false"
       # 单进程同时提供 API 与前端静态资源（PPTS_WEB_ROOT 见 Dockerfile.api），占原先 nginx 的入口端口。
       PPTS_HTTP_ADDR: ":80"
       PPTS_WEB_ROOT: "/app/web-dist"

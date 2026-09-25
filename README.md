@@ -176,7 +176,10 @@ S3 兼容后端。
 对象信封加密：设置 `PPTS_OBJECT_ENCRYPTION_KEY_BASE64` 后，租户策略 `envelope_encryption=true` 的对象 Put/Get
 会在服务端 AES-GCM 加/解密；为避免绕过服务端加密，启用加密租户的直接预签名读写会返回不支持。
 
-API 暴露 `/debug/vars`（无需业务身份头）用于本地/CI 读取 expvar 指标。worker 已接入基础任务指标：
+API 暴露 `/debug/vars` 用于读取 expvar 指标。它与 `/metrics` 一样要求
+`Authorization: Bearer $PPTS_METRICS_TOKEN`；**未配置该环境变量时一律拒绝**（fail-closed，
+忘配 = 拒绝而非裸奔）——该端点会导出完整启动命令行，命令行参数可能含密钥。
+本机/CI 需要匿名拉取时显式设置 `PPTS_DEBUG_VARS_PUBLIC=true`。worker 已接入基础任务指标：
 `ppts_worker_jobs_total`（按事件/终态）、`ppts_worker_job_duration_ms_total`（执行时长）、
 `ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed）、
 `ppts_worker_queue_oldest_wait_seconds`（队列积压最老任务等待时长，由 `migrations/0017_queue_backlog.sql`

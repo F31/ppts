@@ -67,6 +67,9 @@ type Store interface {
 	Reader
 	SetRole(ctx context.Context, tenantID, userID string, role Role) error
 	Remove(ctx context.Context, tenantID, userID string) error
-	// SaveProfile 写入成员档案（user_profiles），用于成员列表富字段展示。
-	SaveProfile(ctx context.Context, userID string, p Profile) error
+	// SaveProfile 写入成员档案（user_profiles）。tenantID 是**必填**的归属约束而非可选元数据：
+	// user_profiles 无租户列且不启用 RLS，若实现只按 user_id 定位，一个租户的 Admin 就能改写
+	// 任意已知 userID（含其他租户用户）的档案（见 docs/架构审视与优化方案 R4）。
+	// 目标用户不属于调用方租户时返回 ErrNotFound。
+	SaveProfile(ctx context.Context, tenantID, userID string, p Profile) error
 }

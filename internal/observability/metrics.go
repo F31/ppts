@@ -106,6 +106,14 @@ func SetRenderPagesDisabled(disabled bool) { setGauge(renderPagesDisabled, disab
 // （即无真实认证）。1=任何能访问端口的人都可冒充任意租户任意用户，仅限本地开发。
 func SetAuthDevHeadersActive(active bool) { setGauge(authDevHeadersActive, active) }
 
+// DebugVarsPublic 返回 GET /debug/vars 是否允许匿名读取（PPTS_DEBUG_VARS_PUBLIC=true）。
+// 与 SetAuthDevHeadersActive 同构：把"有意放行"与"忘了配 token"区分成两种后果。
+// 该端点会导出完整命令行（可能含密钥）与全部业务计数，默认不可匿名访问。
+func DebugVarsPublic() bool {
+	v := strings.TrimSpace(os.Getenv("PPTS_DEBUG_VARS_PUBLIC"))
+	return v == "1" || strings.EqualFold(v, "true")
+}
+
 func setGauge(v *expvar.Int, on bool) {
 	if on {
 		v.Set(1)
