@@ -56,7 +56,7 @@ type NewArtifact struct {
 	// TimelineKey 见 Artifact.TimelineKey（导出任务快照中的 timelineKey）。
 	TimelineKey string
 	// SourceRevisionNo / SourceDisplayName 见 Artifact.SourceRevisionNo / SourceDisplayName。
-	SourceRevisionNo   int
+	SourceRevisionNo  int
 	SourceDisplayName string
 }
 

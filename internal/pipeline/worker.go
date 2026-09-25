@@ -48,10 +48,10 @@ type Worker struct {
 
 // WorkerOptions Worker 构造参数（零值给默认）。
 type WorkerOptions struct {
-	LeaseFor   time.Duration // 租约时长（默认 30s）
-	Heartbeat  time.Duration // 心跳间隔（默认 lease/3）
-	Poll       time.Duration // 无任务轮询间隔（默认 500ms）
-	Backoff    func(attempt int) time.Duration
+	LeaseFor  time.Duration // 租约时长（默认 30s）
+	Heartbeat time.Duration // 心跳间隔（默认 lease/3）
+	Poll      time.Duration // 无任务轮询间隔（默认 500ms）
+	Backoff   func(attempt int) time.Duration
 	// MaxAttempts 单任务最大执行次数（含首次）。达到上限后不再自动重试，
 	// 可重试错误也会落为失败终态，交给用户手动重试（Jobs 列表可 Retry）。
 	// 默认 10。
