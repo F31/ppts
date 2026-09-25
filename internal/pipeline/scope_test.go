@@ -231,20 +231,51 @@ func TestJobSortSpec(t *testing.T) {
 		"DROP TABLE": {"created_at", "timestamptz"},
 	}
 	for in, want := range cases {
-		expr, cast := jobSortSpec(in)
+		expr, cast := jobSortSpec(dialectPG, in)
 		if expr != want[0] || cast != want[1] {
-			t.Fatalf("jobSortSpec(%q) = (%q,%q) want (%q,%q)", in, expr, cast, want[0], want[1])
+			t.Fatalf("jobSortSpec(pg, %q) = (%q,%q) want (%q,%q)", in, expr, cast, want[0], want[1])
 		}
+	}
+}
+
+// SQLite 侧必须与 PG 用同一套排序键白名单（否则同一份 JobFilter 在两个 profile 下落在不同列上，
+// 排序语义会静默分叉）。差异只允许一处：json 数组长度函数名（PG 只有 jsonb_*，SQLite 只有 json_*）。
+func TestJobSortSpecSQLiteMatchesPGWhitelist(t *testing.T) {
+	same := func(pgExpr, sqExpr string) bool {
+		// 唯一允许的方言差异：json 数组长度函数名。
+		return strings.ReplaceAll(pgExpr, "jsonb_array_length", "json_array_length") == sqExpr
+	}
+	for _, in := range []string{"created", "updated", "phase", "pages", "", "DROP TABLE", "id) --"} {
+		pgExpr, _ := jobSortSpec(dialectPG, in)
+		sqExpr, _ := jobSortSpec(dialectSQLite, in)
+		if !same(pgExpr, sqExpr) {
+			t.Fatalf("jobSortSpec(%q) 排序键分叉: pg=%q sqlite=%q", in, pgExpr, sqExpr)
+		}
+	}
+	// pages 必须真的落在各自方言的数组长度函数上（而不是被"统一"成一个两种方言都不认的假列）。
+	if pgExpr, _ := jobSortSpec(dialectPG, "pages"); pgExpr != "jsonb_array_length(affected_pages)" {
+		t.Fatalf("pg pages expr = %q", pgExpr)
+	}
+	if sqExpr, _ := jobSortSpec(dialectSQLite, "pages"); sqExpr != "json_array_length(affected_pages)" {
+		t.Fatalf("sqlite pages expr = %q", sqExpr)
+	}
+	if got := jobPageExtraColumns(dialectSQLite); got != ", phase, json_array_length(affected_pages)" {
+		t.Fatalf("sqlite extra columns = %q", got)
+	}
+	if got := jobPageExtraColumns(dialectPG); got != ", phase, jsonb_array_length(affected_pages)" {
+		t.Fatalf("pg extra columns = %q", got)
 	}
 }
 
 // 排序键的 SQL 表达式绝不能来自用户输入（注入面）：白名单之外一律落到 created_at。
 func TestJobSortSpecNeverEchoesInput(t *testing.T) {
-	expr, cast := jobSortSpec("id) DROP TABLE jobs; --")
-	if strings.Contains(expr, "DROP") || strings.Contains(cast, "DROP") {
-		t.Fatalf("sort expression must not contain user input: %q / %q", expr, cast)
-	}
-	if expr != "created_at" {
-		t.Fatalf("expr = %q want created_at", expr)
+	for _, d := range []dialect{dialectPG, dialectSQLite} {
+		expr, cast := jobSortSpec(d, "id) DROP TABLE jobs; --")
+		if strings.Contains(expr, "DROP") || strings.Contains(cast, "DROP") {
+			t.Fatalf("sort expression must not contain user input: %q / %q", expr, cast)
+		}
+		if expr != "created_at" {
+			t.Fatalf("expr = %q want created_at", expr)
+		}
 	}
 }

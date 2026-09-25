@@ -40,9 +40,7 @@ func NewPGStore(ctx context.Context, dsn string) (*PGStore, error) {
 // Close 释放连接池。
 func (s *PGStore) Close() { s.pool.Close() }
 
-const jobSelectColumns = `id, tenant_id, project_id, kind, state, input_snapshot,
-	idempotency_key, attempt, lease_owner, lease_until, fencing_token,
-	run_at, progress, last_error, created_at, updated_at, traceparent`
+// （列清单 jobSelectColumns 由 columns.go 的 jobColumns 表生成；PG 侧不含自己的副本。）
 
 // jobScanBuf 承载 jobSelectColumns 的扫描目标。
 // 抽成结构体是为了让「列清单 + 追加列」（如列表页需要 phase 与受影响页数）复用同一份扫描逻辑，
@@ -58,13 +56,9 @@ type jobScanBuf struct {
 }
 
 // dest 返回与 jobSelectColumns 严格同序的扫描目标；调用方可直接在其后追加额外列的指针。
+// 顺序来自 columns.go 的 jobColumns 表（与 SELECT 文本同源），此处不再手写第二份。
 func (b *jobScanBuf) dest() []any {
-	return []any{
-		&b.j.ID, &b.j.TenantID, &b.j.ProjectID, &b.j.Kind, &b.j.State,
-		&b.j.InputSnapshot, &b.j.IDempotencyKey, &b.j.Attempt, &b.leaseOwner,
-		&b.leaseUntilPtr, &b.j.FencingToken, &b.runAtPtr, &b.j.Progress, &b.lastErr,
-		&b.createdAt, &b.updatedAt, &b.j.TraceParent,
-	}
+	return pgJobDest(jobColumns, b)
 }
 
 // job 把扫描到的原始值整理成 *Job（可空列合并、last_error 反序列化）。
@@ -191,9 +185,7 @@ func (s *PGStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string, le
 			lease_owner=$2, lease_until=now()+$3,
 			fencing_token=j.fencing_token+1, updated_at=now()
 		FROM candidate c WHERE j.id=c.id
-		RETURNING j.id, j.tenant_id, j.project_id, j.kind, j.state, j.input_snapshot,
-		          j.idempotency_key, j.attempt, j.lease_owner, j.lease_until,
-		          j.fencing_token, j.run_at, j.progress, j.last_error, j.created_at, j.updated_at, j.traceparent`,
+		RETURNING `+jobReturningList("j.", jobColumns),
 			tenantID, leaseOwner, leaseFor)
 		got, err := scanJob(row)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -711,21 +703,6 @@ func mustJSONArray(items []string) string {
 	return string(b)
 }
 
-// jobSortSpec 把排序键映射为 SQL 表达式与其类型（后者用于 keyset 游标的显式类型转换）。
-// 未知取值退回 created：api 侧已做白名单校验并会返回 400，此处只是防御性兜底。
-func jobSortSpec(sort string) (expr, cast string) {
-	switch sort {
-	case "updated":
-		return "updated_at", "timestamptz"
-	case "phase":
-		return "phase", "text"
-	case "pages":
-		return "jsonb_array_length(affected_pages)", "int"
-	default:
-		return "created_at", "timestamptz"
-	}
-}
-
 // jobCursorSep 分隔「排序键值」与「任务 id」；用不可见字符避免与时间戳/阶段名冲突。
 const jobCursorSep = "\x1f"
 
@@ -767,7 +744,7 @@ func (s *PGStore) ListPage(ctx context.Context, tenantID string, f JobFilter, cu
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
-	sortExpr, sortCast := jobSortSpec(f.Sort)
+	sortExpr, sortCast := jobSortSpec(dialectPG, f.Sort)
 	dir, cmp := "DESC", "<"
 	if !f.Desc {
 		dir, cmp = "ASC", ">"
@@ -801,7 +778,7 @@ func (s *PGStore) ListPage(ctx context.Context, tenantID string, f JobFilter, cu
 		args = append(args, pageSize+1)
 		limitPH := "$" + strconv.Itoa(len(args))
 		rows, err := tx.Query(ctx,
-			"SELECT "+jobSelectColumns+", phase, jsonb_array_length(affected_pages) FROM jobs WHERE "+where+
+			"SELECT "+jobSelectColumns+jobPageExtraColumns(dialectPG)+" FROM jobs WHERE "+where+
 				" ORDER BY "+sortExpr+" "+dir+", id "+dir+" LIMIT "+limitPH, args...)
 		if err != nil {
 			return err

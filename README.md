@@ -39,6 +39,14 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 cd web && npm ci && npm run build
 ```
 
+> **读测试输出的两条口径**：① 默认 `go test ./...` 不含 PG 用例——它们由 `-tags=pg` 打开，
+> CI 的 `postgres` job 用真实的 postgres:17 service 跑这一支，"ok 包数"因此**不是**全部用例都执行过的意思；
+> ② 依赖外部工具/凭据（ffmpeg、poppler、S3、真实音频）的用例一律 `t.Skip` 而非失败，
+> 所以 SKIP 计数必须与 ok/FAIL 一起看——SKIP 变多往往意味着环境缺了什么，而不是运气变好了。
+>
+> `cd web` 侧另有两条不进 `npm run build` 的门禁：`node contrast.mjs`（对比度）已并入 build，
+> 但 `npm run i18n:check`（i18n 孤儿/中英不对等）需单独执行，CI 的 web job 已单独挂一步。
+
 ## 容器构建与部署
 
 ```bash

@@ -3,11 +3,9 @@ package pipeline
 import (
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -36,10 +34,6 @@ func (s *SQLiteStore) Close() {}
 
 var _ Store = (*SQLiteStore)(nil)
 
-const sqJobColumns = `id, tenant_id, project_id, kind, state, input_snapshot,
-	idempotency_key, attempt, lease_owner, lease_until, fencing_token,
-	run_at, progress, last_error, created_at, updated_at, traceparent`
-
 type sqJobBuf struct {
 	j          Job
 	createdAt  string
@@ -50,13 +44,10 @@ type sqJobBuf struct {
 	lastErr    []byte
 }
 
+// dest 返回与 jobSelectColumns 严格同序的扫描目标；调用方可在其后追加额外列。
+// 顺序来自 columns.go 的 jobColumns 表（与 SELECT 文本同源），此处不再手写第二份。
 func (b *sqJobBuf) dest() []any {
-	return []any{
-		&b.j.ID, &b.j.TenantID, &b.j.ProjectID, &b.j.Kind, &b.j.State,
-		&b.j.InputSnapshot, &b.j.IDempotencyKey, &b.j.Attempt, &b.leaseOwner,
-		&b.leaseUntil, &b.j.FencingToken, &b.runAt, &b.j.Progress, &b.lastErr,
-		&b.createdAt, &b.updatedAt, &b.j.TraceParent,
-	}
+	return sqJobDest(jobColumns, b)
 }
 
 func (b *sqJobBuf) job() *Job {
@@ -149,7 +140,7 @@ func (s *SQLiteStore) Create(ctx context.Context, tenantID, projectID, kind, ide
 		if sqIsUnique(err) {
 			// 命中幂等约束：返回既有行，不重复写事件。
 			j, qerr := sqScanJob(tx.QueryRowContext(ctx,
-				`SELECT `+sqJobColumns+` FROM jobs WHERE tenant_id = ? AND idempotency_key = ? AND kind = ?`,
+				`SELECT `+jobSelectColumns+` FROM jobs WHERE tenant_id = ? AND idempotency_key = ? AND kind = ?`,
 				tenantID, idemKey, kind))
 			if qerr != nil {
 				return nil, qerr
@@ -158,7 +149,7 @@ func (s *SQLiteStore) Create(ctx context.Context, tenantID, projectID, kind, ide
 		}
 		return nil, err
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +169,7 @@ func (s *SQLiteStore) CountActive(ctx context.Context, tenantID string) (int, er
 
 func (s *SQLiteStore) ByIdempotency(ctx context.Context, tenantID, kind, idemKey string) (*Job, error) {
 	j, err := sqScanJob(s.db.QueryRowContext(ctx,
-		`SELECT `+sqJobColumns+` FROM jobs WHERE tenant_id = ? AND kind = ? AND idempotency_key = ?`,
+		`SELECT `+jobSelectColumns+` FROM jobs WHERE tenant_id = ? AND kind = ? AND idempotency_key = ?`,
 		tenantID, kind, idemKey))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrJobNotFound
@@ -220,7 +211,7 @@ func (s *SQLiteStore) ClaimNext(ctx context.Context, tenantID, leaseOwner string
 		 WHERE id = ?`, leaseOwner, leaseUntil, now, id); err != nil {
 		return nil, err
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -301,7 +292,7 @@ func (s *SQLiteStore) sqComplete(ctx context.Context, id, owner string, fencing 
 		   updated_at = ?
 		 WHERE id = ? AND lease_owner = ? AND fencing_token = ?
 		   AND state IN ('running','cancel_requested')`,
-		string(state), sqNullableBytes(errMsg), string(state), sqNow(), id, owner, fencing)
+		string(state), nullableBytes(errMsg), string(state), sqNow(), id, owner, fencing)
 	if err != nil {
 		return err
 	}
@@ -313,7 +304,7 @@ func (s *SQLiteStore) sqComplete(ctx context.Context, id, owner string, fencing 
 			return err
 		}
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return err
 	}
@@ -334,14 +325,14 @@ func (s *SQLiteStore) ScheduleRetry(ctx context.Context, id, owner string, fenci
 		`UPDATE jobs SET state = 'retry_wait', run_at = ?, lease_owner = NULL, lease_until = NULL,
 		   last_error = ?, updated_at = ?
 		 WHERE id = ? AND lease_owner = ? AND fencing_token = ? AND state = 'running'`,
-		db.FormatTime(runAt), sqNullableBytes(errMsg), sqNow(), id, owner, fencing)
+		db.FormatTime(runAt), nullableBytes(errMsg), sqNow(), id, owner, fencing)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrLeaseMismatch
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return err
 	}
@@ -401,7 +392,7 @@ func (s *SQLiteStore) UpdateProgress(ctx context.Context, id, owner string, fenc
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrLeaseMismatch
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return err
 	}
@@ -464,7 +455,7 @@ func (s *SQLiteStore) Cancel(ctx context.Context, id, tenantID string) (*Job, er
 		}
 		return nil, ErrJobNotCancelable
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +488,7 @@ func (s *SQLiteStore) RetryFailed(ctx context.Context, id, tenantID string) (*Jo
 		}
 		return nil, ErrJobNotRetryable
 	}
-	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+sqJobColumns+` FROM jobs WHERE id = ?`, id))
+	j, err := sqScanJob(tx.QueryRowContext(ctx, `SELECT `+jobSelectColumns+` FROM jobs WHERE id = ?`, id))
 	if err != nil {
 		return nil, err
 	}
@@ -527,7 +518,7 @@ func (s *SQLiteStore) List(ctx context.Context, tenantID, projectID, state, curs
 	}
 	args = append(args, pageSize+1)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+sqJobColumns+` FROM jobs WHERE `+where+` ORDER BY created_at DESC LIMIT ?`, args...)
+		`SELECT `+jobSelectColumns+` FROM jobs WHERE `+where+` ORDER BY created_at DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -556,7 +547,7 @@ func (s *SQLiteStore) UpdatedSince(ctx context.Context, tenantID, projectID stri
 		limit = 200
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+sqJobColumns+` FROM jobs
+		`SELECT `+jobSelectColumns+` FROM jobs
 		 WHERE tenant_id = ? AND project_id = ? AND updated_at > ?
 		 ORDER BY updated_at ASC LIMIT ?`,
 		tenantID, projectID, db.FormatTime(after), limit)
@@ -577,7 +568,7 @@ func (s *SQLiteStore) UpdatedSince(ctx context.Context, tenantID, projectID stri
 
 func (s *SQLiteStore) Get(ctx context.Context, id, tenantID string) (*Job, error) {
 	j, err := sqScanJob(s.db.QueryRowContext(ctx,
-		`SELECT `+sqJobColumns+` FROM jobs WHERE id = ? AND tenant_id = ?`, id, tenantID))
+		`SELECT `+jobSelectColumns+` FROM jobs WHERE id = ? AND tenant_id = ?`, id, tenantID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrJobNotFound, id)
 	}
@@ -595,7 +586,7 @@ func (s *SQLiteStore) GetMany(ctx context.Context, tenantID string, ids []string
 		args = append(args, id)
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+sqJobColumns+` FROM jobs WHERE tenant_id = ? AND id IN (`+strings.Join(ph, ",")+`)`, args...)
+		`SELECT `+jobSelectColumns+` FROM jobs WHERE tenant_id = ? AND id IN (`+strings.Join(ph, ",")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -613,7 +604,7 @@ func (s *SQLiteStore) GetMany(ctx context.Context, tenantID string, ids []string
 
 func (s *SQLiteStore) LatestSucceededJob(ctx context.Context, tenantID, projectID, kind string) (*Job, error) {
 	j, err := sqScanJob(s.db.QueryRowContext(ctx,
-		`SELECT `+sqJobColumns+` FROM jobs
+		`SELECT `+jobSelectColumns+` FROM jobs
 		 WHERE tenant_id = ? AND project_id = ? AND kind = ? AND state = 'succeeded'
 		 ORDER BY created_at DESC LIMIT 1`, tenantID, projectID, kind))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -660,24 +651,11 @@ func (s *SQLiteStore) ListSteps(ctx context.Context, tenantID, jobID string) ([]
 	return out, rows.Err()
 }
 
-func sqJobSortSpec(sort string) string {
-	switch sort {
-	case "updated":
-		return "updated_at"
-	case "phase":
-		return "phase"
-	case "pages":
-		return "json_array_length(affected_pages)"
-	default:
-		return "created_at"
-	}
-}
-
 func (s *SQLiteStore) ListPage(ctx context.Context, tenantID string, f JobFilter, cursor string, pageSize int) ([]JobPageRow, string, error) {
 	if pageSize <= 0 || pageSize > 100 {
 		pageSize = 20
 	}
-	sortExpr := sqJobSortSpec(f.Sort)
+	sortExpr, _ := jobSortSpec(dialectSQLite, f.Sort)
 	dir, cmp := "DESC", "<"
 	if !f.Desc {
 		dir, cmp = "ASC", ">"
@@ -703,7 +681,7 @@ func (s *SQLiteStore) ListPage(ctx context.Context, tenantID string, f JobFilter
 	}
 	args = append(args, pageSize+1)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+sqJobColumns+`, phase, json_array_length(affected_pages) FROM jobs WHERE `+where+
+		`SELECT `+jobSelectColumns+jobPageExtraColumns(dialectSQLite)+` FROM jobs WHERE `+where+
 			" ORDER BY "+sortExpr+" "+dir+", id "+dir+" LIMIT ?", args...)
 	if err != nil {
 		return nil, "", err
@@ -723,23 +701,10 @@ func (s *SQLiteStore) ListPage(ctx context.Context, tenantID string, f JobFilter
 	next := ""
 	if len(out) > pageSize {
 		last := out[pageSize-1]
-		next = encodeJobCursor(sqJobPageSortValue(f, last), last.Job.ID)
+		next = encodeJobCursor(jobPageSortValue(f, last), last.Job.ID)
 		out = out[:pageSize]
 	}
 	return out, next, nil
-}
-
-func sqJobPageSortValue(f JobFilter, row JobPageRow) string {
-	switch f.Sort {
-	case "updated":
-		return row.Job.UpdatedAt.Format(time.RFC3339Nano)
-	case "phase":
-		return row.Phase
-	case "pages":
-		return strconv.Itoa(row.PageCount)
-	default:
-		return row.Job.CreatedAt.Format(time.RFC3339Nano)
-	}
 }
 
 func (s *SQLiteStore) PhaseCounts(ctx context.Context, tenantID, projectID string) (map[string]int, error) {
@@ -766,16 +731,6 @@ func (s *SQLiteStore) PhaseCounts(ctx context.Context, tenantID, projectID strin
 	return out, rows.Err()
 }
 
-func sqNullableBytes(b []byte) any {
-	if b == nil {
-		return nil
-	}
-	return b
-}
-
 func sqIsUnique(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
-
-// 保证 encodeJobCursor 等由 postgres.go 提供的包级辅助被引用（避免未使用告警）。
-var _ = base64.RawURLEncoding
