@@ -118,7 +118,12 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		}
 		observability.PrometheusHandler().ServeHTTP(w, r)
 	})
-	allowDevHeaders := opt.Auth == nil || opt.DevHeaders
+	// fail-closed：开发头只能由 DevHeaders 显式开启，不再因 opt.Auth == nil自动放行。
+	// "忘记配 secret" 与 "有意开本地调试" 绝不能是同一种后果——前者是生产事故。
+	allowDevHeaders := opt.DevHeaders
+	if allowDevHeaders {
+		observability.SetAuthDevHeadersActive(true)
+	}
 	auth := func(handler http.Handler) http.Handler {
 		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal})
 	}

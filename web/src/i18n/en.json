@@ -755,6 +755,7 @@
   "editor.projectMetaFailed": "Failed to load project info; the title falls back to the project ID.",
   "editor.narrationStatusFailed": "Failed to read narration status — audio may exist but cannot be read here. Retry to confirm before regenerating.",
   "editor.thumbnailsFailed": "Failed to load page thumbnails; showing index numbers instead (this does not mean the pages are empty).",
+  "editor.rendererUnavailable": "The server has no page renderer installed (LibreOffice / poppler), so this import produced no page images and only numbered placeholders can be shown. Narration still works, but exported video will lack visuals; ask an administrator to install the renderer dependencies and re-import.",
   "editor.scriptSourceFailed": "Failed to load script-source settings; the source selector is unavailable.",
   "editor.voiceModelsFailed": "Failed to load the voice model list — the models shown are not all that the platform offers.",
   "editor.voiceSettingsFailed": "Failed to load your saved voice settings; the values below are defaults, not the ones you saved.",

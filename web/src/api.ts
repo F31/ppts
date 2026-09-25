@@ -600,13 +600,18 @@ export type SlideRenderURL = { slideId: string; url: string };
 
 // getSlideRenderURLs 返回每页渲染 PNG 的短期签名可读 URL（按 slideId 对齐），供编辑器缩略图与 PPT 预览使用。
 // 解析未完成或页面图缺失时返回空列表，前端优雅降级为序号/标题缩略图。
+// renderer：正常为空串；"unavailable" 表示服务端渲染器（LibreOffice/poppler）缺失，
+// 本次解析没有产出任何页面图。用于把"环境没配置"与"加载失败/尚未渲染"区分开。
 export async function getSlideRenderURLs(
   identity: ClientIdentity,
   projectId: string,
   revisionNo?: number
-): Promise<{ slides: SlideRenderURL[] }> {
+): Promise<{ slides: SlideRenderURL[]; renderer?: string }> {
   const qs = revisionNo && revisionNo > 0 ? `?revision_no=${revisionNo}` : '';
-  return getJSON<{ slides: SlideRenderURL[] }>(identity, `/projects/${encodeURIComponent(projectId)}/slides/render${qs}`);
+  return getJSON<{ slides: SlideRenderURL[]; renderer?: string }>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/slides/render${qs}`
+  );
 }
 
 export type SlideScriptSource = { slideId: string; source: string; customText: string };

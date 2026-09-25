@@ -284,6 +284,10 @@ export function ProjectEditor({
   const [exportError, setExportError] = useState('');
   // B2 M2：真实渲染缩略图 / 属性抽屉 / 未保存状态。
   const [renderUrls, setRenderUrls] = useState<Record<string, string>>({});
+  // 服务端渲染器（LibreOffice/poppler）缺失：解析会成功但没有页面图。
+  // 与 probeErrors.thumbnails（请求失败）刻意分成两个状态——两者外观都是"没有缩略图"，
+  // 但一个是环境未配置、一个是请求出错，混为一谈就无法定位。
+  const [renderUnavailable, setRenderUnavailable] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [oneDraftOpen, setOneDraftOpen] = useState(false);
@@ -430,6 +434,7 @@ export function ProjectEditor({
   useEffect(() => {
     if (slidesState.mode !== 'real') {
       setRenderUrls({});
+      setRenderUnavailable(false);
       return;
     }
     let cancelled = false;
@@ -440,10 +445,16 @@ export function ProjectEditor({
         const map: Record<string, string> = {};
         for (const item of res.slides) map[item.slideId] = item.url;
         setRenderUrls(map);
+        // 服务端显式声明"渲染器缺失"：这不是加载失败，而是能力缺失
+        // （LibreOffice/poppler 未安装）。必须单独告知，否则用户只能看到
+        // 一片占位缩略图，无从判断是环境没装还是后端坏了。
+        setRenderUnavailable(res.renderer === 'unavailable');
       })
       .catch((err: unknown) => {
         // 失败后前端降级成"序号缩略图"，外观与"这页本来就没有渲染图"一样 → 需说明。
-        if (!cancelled) reportProbe('thumbnails', err, 'editor.thumbnailsFailed');
+        if (cancelled) return;
+        setRenderUnavailable(false);
+        reportProbe('thumbnails', err, 'editor.thumbnailsFailed');
       });
     return () => {
       cancelled = true;
@@ -1550,7 +1561,13 @@ export function ProjectEditor({
               <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : t('editor.noSlides')}</p>
             )
           ) : (
-            slidesState.slides.map((slide, index) => {
+            <>
+              {renderUnavailable && (
+                <p className="load-failure form-error" role="status">
+                  {t('editor.rendererUnavailable')}
+                </p>
+              )}
+              {slidesState.slides.map((slide, index) => {
               const thumb = renderUrls[slide.slideId];
               return (
                 <button
@@ -1572,7 +1589,8 @@ export function ProjectEditor({
                   </span>
                 </button>
               );
-            })
+              })}
+            </>
           )}
         </aside>
 

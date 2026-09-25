@@ -35,7 +35,7 @@ func TestPhoneAndEmailRegistrationFlows(t *testing.T) {
 	t.Setenv("PPTS_REGISTER_DAILY_PER_IP", "0")
 	const secret, pepper = "test-secret", "pepper"
 	server := httptest.NewServer(NewHandler(nil, nil, nil, nil, nil, nil, pool,
-		Options{JWTSecret: secret, PasswordPepper: pepper}))
+		Options{DevHeaders: true, JWTSecret: secret, PasswordPepper: pepper}))
 	t.Cleanup(server.Close)
 
 	prefix := "b1t" + strconv.FormatInt(time.Now().UnixNano(), 36)

@@ -118,8 +118,10 @@ var _ gateway.StoreResolver = (*fakeGatewayStore)(nil)
 
 func gwHandler(t *testing.T, store *fakeGatewayStore, role membership.Role) http.Handler {
 	t.Helper()
+	// DevHeaders 必须显式开启：这些测例靠 tenantHeader/userHeader 充当已认证身份。
+	// allowDevHeaders 已不再因 Auth==nil 自动放行——生产漏配 secret 不能再等同于开发模式。
 	return NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Members: &fakeRoleReader{role: role}, Gateway: store})
+		Options{Members: &fakeRoleReader{role: role}, Gateway: store, DevHeaders: true})
 }
 
 func gwDo(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {

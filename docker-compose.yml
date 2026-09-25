@@ -34,8 +34,9 @@ services:
       PPTS_OBJECT_BACKEND: "local"
       PPTS_OBJECT_ROOT: "/data/objects"
       PPTS_OBJECT_SECRET: "${PPTS_OBJECT_SECRET}"
-      PPTS_JWT_SECRET: "ppts-dev-jwt-secret-change-in-production-32bytes!"
-      PPTS_PASSWORD_PEPPER: "ppts-dev-pepper-16bytes"
+      # 必须显式注入：留 ^ 占位或沿用下方明文 dev 值都会让租户/用户身份可被伪造。
+      PPTS_JWT_SECRET: "${PPTS_JWT_SECRET:?必须注入随机长串：openssl rand -hex 32}"
+      PPTS_PASSWORD_PEPPER: "${PPTS_PASSWORD_PEPPER:?必须注入随机长串：openssl rand -hex 16}"
       TZ: "Asia/Shanghai"
     volumes:
       - ppts-objects:/data/objects

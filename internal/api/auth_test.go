@@ -117,7 +117,7 @@ func TestLocalModeAuthConfigAndAccess(t *testing.T) {
 	local := Principal{TenantID: "00000000-0000-0000-0000-000000000001", UserID: "local-user"}
 	h := NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
 		&fakeArtifactStore{}, testObjects(t), nil,
-		Options{LocalPrincipal: &local})
+		Options{DevHeaders: true, LocalPrincipal: &local})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -162,7 +162,7 @@ func TestLocalModePublicAreaDisabled(t *testing.T) {
 	local := Principal{TenantID: "00000000-0000-0000-0000-000000000001", UserID: "local-user"}
 	h := NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
 		&fakeArtifactStore{}, testObjects(t), nil,
-		Options{LocalPrincipal: &local})
+		Options{DevHeaders: true, LocalPrincipal: &local})
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 

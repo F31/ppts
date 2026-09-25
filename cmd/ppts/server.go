@@ -180,6 +180,14 @@ func authFromEnv(ctx context.Context, pool *pgxpool.Pool) (api.Authenticator, er
 		}
 	}
 	if oidc == nil && jwtAuth == nil {
+		// fail-closed：没有任何真实认证手段时**不允许**静默放行开发头。
+		// 此前这里直接 return nil,nil，下游 (api/server.go) 又以 auth==nil 为由自动开启
+		// dev headers，于是生产环境漏配 PPTS_JWT_SECRET 时，任意请求带上
+		// X-PPTS-Tenant-ID + X-PPTS-User-ID 即可冒充任意租户的任意用户，且无任何告警。
+		if !envBool("PPTS_AUTH_DEV_HEADERS", false) {
+			return nil, errors.New("no authenticator configured: set PPTS_JWT_SECRET (or PPTS_OIDC_ISSUER); " +
+				"set PPTS_AUTH_DEV_HEADERS=true only for local development (it accepts unsigned tenant/user headers)")
+		}
 		return nil, nil
 	}
 	return api.NewCombinedAuthenticator(oidc, jwtAuth), nil

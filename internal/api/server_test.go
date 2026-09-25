@@ -514,7 +514,7 @@ func authRequest[T any](msg *T) *connect.Request[T] {
 
 func TestHandlerHealthAndAuthentication(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 
 	resp, err := http.Get(server.URL + "/healthz")
@@ -546,7 +546,7 @@ func TestHandlerHealthAndAuthentication(t *testing.T) {
 
 func TestHandlerRejectsInactiveTenant(t *testing.T) {
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{TenantStatus: fakeTenantStatusChecker{active: false}}))
+		Options{DevHeaders: true, TenantStatus: fakeTenantStatusChecker{active: false}}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
 
@@ -560,7 +560,7 @@ func TestProjectServiceCreateListAndArchive(t *testing.T) {
 	projects := &fakeProjectStore{projects: []*project.Project{{
 		ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "旧项目", CreatedAt: time.Unix(90, 0),
 	}}}
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
 
@@ -589,7 +589,7 @@ func TestProjectServiceCreateListAndArchive(t *testing.T) {
 
 func TestScriptGetUsesAuthenticatedTenantAndLanguage(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -613,7 +613,7 @@ func TestScriptGetUsesAuthenticatedTenantAndLanguage(t *testing.T) {
 
 func TestScriptUpdateReturnsLatestOnConflict(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -631,7 +631,7 @@ func TestScriptUpdateReturnsLatestOnConflict(t *testing.T) {
 
 func TestScriptValidationAndUnlock(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -659,7 +659,7 @@ func TestCreateGenerationPersistsRevisionBoundSnapshot(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	store.revision.Status = narration.StatusApproved
 	jobs := &jobCreatorStub{}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -708,7 +708,7 @@ func TestCreateGenerationRejectsSlideOutsideCurrentRevision(t *testing.T) {
 	putAPIObject(t, objects, docKey, []byte(`{"schemaVersion":"1.0","pages":[{"index":0,"slideId":"slide-1"}],"features":{"pageCount":1}}`), "application/json")
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -730,7 +730,7 @@ func TestCreateGenerationRejectsSlideOutsideCurrentRevision(t *testing.T) {
 func TestCreateGenerationRejectsIdempotencyKeyReuseWithDifferentSnapshot(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{job: &pipeline.Job{ID: "existing", InputSnapshot: `{"different":true}`}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -772,7 +772,7 @@ func TestCreateGenerationReservesQuota(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
 	quota := &fakeQuotaManager{}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Quota: quota}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Quota: quota}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -793,7 +793,7 @@ func TestCreateGenerationReservesQuota(t *testing.T) {
 func TestCreateGenerationQuotaExceeded(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	quota := &fakeQuotaManager{reserveErr: usage.ErrInsufficientQuota}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Quota: quota}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Quota: quota}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -812,7 +812,7 @@ func TestCreateGenerationReleasesQuotaOnJobFailure(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	quota := &fakeQuotaManager{}
 	jobs := &jobCreatorStub{err: errors.New("db down")}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Quota: quota}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Quota: quota}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -832,7 +832,7 @@ func TestCreateGenerationRejectsWhenTenantConcurrentLimitReached(t *testing.T) {
 	quota := &fakeQuotaManager{}
 	jobs := &jobCreatorStub{activeCount: 1}
 	policy := &fakeTenantPolicy{policy: &tenant.Policy{MaxConcurrentJobs: 1}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Quota: quota, Policy: policy}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Quota: quota, Policy: policy}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -864,7 +864,7 @@ func TestCreateGenerationAllowsIdempotentReplayWhenTenantConcurrentLimitReached(
 		byIdem:      &pipeline.Job{ID: "existing", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration, InputSnapshot: string(snapshotBytes)},
 	}
 	policy := &fakeTenantPolicy{policy: &tenant.Policy{MaxConcurrentJobs: 1}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Quota: quota, Policy: policy}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Quota: quota, Policy: policy}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -904,7 +904,7 @@ func TestJobServiceCancelWritesAudit(t *testing.T) {
 	}
 	recorder := &fakeAuditRecorder{}
 	jobs := &jobCreatorStub{job: job}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Audit: recorder}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Audit: recorder}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -928,7 +928,7 @@ func TestJobServiceGetListCancelRetry(t *testing.T) {
 		LastError: &pipeline.JobError{Code: "throttled", Retryable: true, RetryAfterSeconds: 5},
 	}
 	jobs := &jobCreatorStub{job: job, listJobs: []*pipeline.Job{job}, listNext: "cursor-2"}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -974,7 +974,7 @@ func TestJobServiceListWithoutProjectReturnsTenantJobs(t *testing.T) {
 		Kind: pipeline.KindParse, State: pipeline.StateQueued,
 	}
 	jobs := &jobCreatorStub{listJobs: []*pipeline.Job{job}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -995,7 +995,7 @@ func TestJobServiceCancelReleasesNarrationReservation(t *testing.T) {
 	}
 	quota := &fakeQuotaManager{}
 	jobs := &jobCreatorStub{job: job}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Quota: quota}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Quota: quota}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -1013,7 +1013,7 @@ func TestJobServiceWatchEventsStreamsUpdates(t *testing.T) {
 		State: pipeline.StateRunning, Progress: 40,
 	}
 	jobs := &jobCreatorStub{watchEvents: []pipeline.JobEvent{{Seq: 7, Job: job}}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -1037,7 +1037,7 @@ func TestJobServiceWatchEventsStreamsUpdates(t *testing.T) {
 
 func TestJobServiceWatchEventsRequiresProject(t *testing.T) {
 	jobs := &jobCreatorStub{}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -1058,7 +1058,7 @@ func TestJobServiceWatchEventsRequiresProject(t *testing.T) {
 
 func TestJobServiceNotFoundAndNotCancelable(t *testing.T) {
 	jobs := &jobCreatorStub{} // job == nil → ErrJobNotFound
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -1067,7 +1067,7 @@ func TestJobServiceNotFoundAndNotCancelable(t *testing.T) {
 	}
 
 	notCancelable := &jobCreatorStub{err: pipeline.ErrJobNotCancelable}
-	server2 := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, notCancelable, &fakeArtifactStore{}, testObjects(t), nil))
+	server2 := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, notCancelable, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server2.Close)
 	client2 := pptsv1connect.NewJobServiceClient(http.DefaultClient, server2.URL)
 	if _, err := client2.Cancel(context.Background(), authRequest(&pptsv1.CancelJobRequest{JobId: "job-1"})); connect.CodeOf(err) != connect.CodeFailedPrecondition {
@@ -1184,7 +1184,7 @@ func TestTenantServiceMembersAndRoles(t *testing.T) {
 		{UserID: "user-2", Role: membership.RoleReviewer},
 	}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: m}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: m}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1209,7 +1209,7 @@ func TestTenantServiceMembersAndRoles(t *testing.T) {
 func TestTenantServiceMemberManagementEnforcesRoles(t *testing.T) {
 	members := &fakeRoleReader{roles: map[string]membership.Role{"user-1": membership.RoleReviewer}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1245,7 +1245,7 @@ func TestTenantServiceProtectsLastOwner(t *testing.T) {
 		list:  []membership.Member{{UserID: "user-1", Role: membership.RoleOwner}},
 	}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1276,7 +1276,7 @@ func TestTenantServiceProtectsLastOwner(t *testing.T) {
 func TestTenantServiceProjectUsage(t *testing.T) {
 	u := &fakeTenantUsage{seconds: 120}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: u, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}}))
+		Options{DevHeaders: true, Usage: u, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1297,7 +1297,7 @@ func TestTenantServiceStorageUsage(t *testing.T) {
 		SourceBytes: 30, ArtifactBytes: 7, OtherBytes: 5, TotalBytes: 42, SourceObjects: 2, ArtifactObjects: 1, OtherObjects: 1,
 	}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Storage: storage}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Storage: storage}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1331,7 +1331,7 @@ func TestTenantServiceListAuditArchivesRequiresAdmin(t *testing.T) {
 		{ObjectKey: "t/audit/archive/audit/x.jsonl", SizeBytes: 10, UpdatedAt: time.Unix(200, 0)},
 	}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Archive: archive}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Archive: archive}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1356,7 +1356,7 @@ func TestTenantServiceListAuditEventsRequiresAdmin(t *testing.T) {
 		Metadata: map[string]any{"reason": "test"}, CreatedAt: time.Unix(100, 0),
 	}}}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Audit: audits}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Audit: audits}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1453,7 +1453,7 @@ func TestTenantServiceExportPurgeRequireOwner(t *testing.T) {
 	members := &fakeRoleReader{roles: map[string]membership.Role{"user-1": membership.RoleEditor}}
 	lifecycle := &fakeTenantLifecycle{deleted: 7}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil,
-		Options{Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Lifecycle: lifecycle}))
+		Options{DevHeaders: true, Usage: &fakeTenantUsage{}, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members, Lifecycle: lifecycle}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1487,7 +1487,7 @@ func TestJobServiceCancelEnforcesRole(t *testing.T) {
 	}
 	members := &fakeRoleReader{role: membership.RoleViewer}
 	jobs := &jobCreatorStub{job: job}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{Members: members}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Members: members}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewJobServiceClient(http.DefaultClient, server.URL)
 
@@ -1504,7 +1504,7 @@ func TestJobServiceCancelEnforcesRole(t *testing.T) {
 func TestCreateGenerationRequiresEditorRole(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	members := &fakeRoleReader{role: membership.RoleViewer}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Members: members}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Members: members}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewNarrationServiceClient(http.DefaultClient, server.URL)
 
@@ -1518,7 +1518,7 @@ func TestCreateGenerationRequiresEditorRole(t *testing.T) {
 func TestProjectWriteOperationsEnforceRoles(t *testing.T) {
 	members := &fakeRoleReader{role: membership.RoleViewer}
 	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "Demo"}}}
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Members: members}))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Members: members}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
 
@@ -1541,7 +1541,7 @@ func TestProjectWriteOperationsEnforceRoles(t *testing.T) {
 func TestScriptWriteOperationsEnforceRoles(t *testing.T) {
 	members := &fakeRoleReader{role: membership.RoleViewer}
 	store := &fakeScriptStore{revision: newTestRevision()}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Members: members}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Members: members}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 	segment := &pptsv1.Segment{SegmentId: "seg-1", DisplayText: "第一页", SpokenText: "第一页"}
@@ -1570,7 +1570,7 @@ func TestUploadAndExportWriteOperationsEnforceRoles(t *testing.T) {
 		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1",
 		Format: artifact.FormatSRT, ObjectKey: "tenant-1/project-1/artifact/artifact/hash.srt",
 	}}
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects, nil, Options{Members: members}))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects, nil, Options{DevHeaders: true, Members: members}))
 	t.Cleanup(server.Close)
 	uploadClient := pptsv1connect.NewUploadServiceClient(http.DefaultClient, server.URL)
 	exportClient := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
@@ -1604,7 +1604,7 @@ func TestTenantServiceQuotaUsagePolicy(t *testing.T) {
 		StorageTransitionDays: 45, StorageExpirationDays: 365,
 		MaxConcurrentJobs: 4, MaxStorageBytes: 1 << 30,
 	}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Usage: u, Policy: p}))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Usage: u, Policy: p}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 
@@ -1659,7 +1659,7 @@ func TestTenantUsageSupplierCostGate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			members := &fakeRoleReader{role: tc.role}
-			server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{Usage: u, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
+			server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Usage: u, Policy: &fakeTenantPolicy{policy: &tenant.Policy{}}, Members: members}))
 			t.Cleanup(server.Close)
 			client := pptsv1connect.NewTenantServiceClient(http.DefaultClient, server.URL)
 			resp, err := client.Usage(context.Background(), authRequest(&pptsv1.GetUsageRequest{Month: "2026-09"}))
@@ -1690,7 +1690,7 @@ func TestEditorRevisionNarration(t *testing.T) {
 	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1", Title: "导出测试"}}}
 	server := httptest.NewServer(NewHandler(
 		projects, newFakeUploadStore(), &fakeScriptStore{}, jobs,
-		&fakeArtifactStore{}, testObjects(t), nil, Options{Members: members},
+		&fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Members: members},
 	))
 	t.Cleanup(server.Close)
 
@@ -1783,7 +1783,7 @@ func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
 	objects := testObjects(t)
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
 
@@ -1821,7 +1821,7 @@ func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T
 // TestCreateExportRejectsCrossProjectTimelineKey 守护：时间轴必须属于本次导出的项目。
 // 跨项目时间轴会产出"内容来自 A、却挂在 B 名下"的成品，成品库预览页图/字幕对不上（历史事故）。
 func TestCreateExportRejectsCrossProjectTimelineKey(t *testing.T) {
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
 
@@ -1840,7 +1840,7 @@ func TestCreateExportSupportsWebProjectFormat(t *testing.T) {
 	store := &fakeScriptStore{revision: newTestRevision()}
 	jobs := &jobCreatorStub{}
 	objects := testObjects(t)
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
 
@@ -1880,7 +1880,7 @@ func TestCreateDownloadSignsArtifactObject(t *testing.T) {
 		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1", Format: artifact.FormatSRT,
 		ObjectKey: key.String(), ContentHash: "hash", SizeBytes: 3, CreatedAt: time.Unix(1, 0),
 	}}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, artifacts, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewExportServiceClient(http.DefaultClient, server.URL)
 
@@ -1913,7 +1913,7 @@ func TestGlobalArtifactsRouteMounted(t *testing.T) {
 	}
 	server := httptest.NewServer(NewHandler(
 		&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
-		artifacts, testObjects(t), nil, Options{Members: members, WebRoot: webRoot},
+		artifacts, testObjects(t), nil, Options{DevHeaders: true, Members: members, WebRoot: webRoot},
 	))
 	t.Cleanup(server.Close)
 
@@ -1970,7 +1970,7 @@ func TestPlaybackManifestSignsAllRequiredResources(t *testing.T) {
 	putAPIObject(t, objects, audioKey, []byte("wav"), "audio/wav")
 	bundle, _ := json.Marshal(app.TimelineAsset{Timeline: timeline, SRTKey: srtKey.String(), VTTKey: vttKey.String()})
 	putAPIObject(t, objects, timelineKey, bundle, "application/json")
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
 
@@ -2037,7 +2037,7 @@ func TestPlaybackGetNarration(t *testing.T) {
 		stepRef:     "tenant-1/project-1/narration-job-narr/timeline/abc.json",
 		jobNotFound: false,
 	}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
 
@@ -2051,7 +2051,7 @@ func TestPlaybackGetNarration(t *testing.T) {
 
 	// 无成功配音 → ready=false。
 	notReady := &narrationJobStub{jobNotFound: true}
-	server2 := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, notReady, &fakeArtifactStore{}, testObjects(t), nil))
+	server2 := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, notReady, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server2.Close)
 	client2 := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server2.URL)
 	resp2, err := client2.GetNarration(context.Background(), authRequest(&pptsv1.GetNarrationRequest{ProjectId: "project-1"}))
@@ -2091,7 +2091,7 @@ func TestPlaybackGetNarrationIncludesPageKeys(t *testing.T) {
 		parseJob: &pipeline.Job{ID: "job-parse", Kind: pipeline.KindParse},
 		pageRef:  manifestKey.String(),
 	}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
 
@@ -2171,7 +2171,7 @@ func TestProjectGetSlidesReadsParsedDocument(t *testing.T) {
 		{"index":1,"slideId":"slide-2","shapes":[{"text":"PCIe 5.0 性能"}]}
 	],"features":{"pageCount":2}}`
 	putAPIObject(t, objects, docKey, []byte(doc), "application/json")
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewProjectServiceClient(http.DefaultClient, server.URL)
 
@@ -2201,7 +2201,7 @@ func TestProjectGetSlidesReadsParsedDocument(t *testing.T) {
 func TestGenerateDraftEnqueuesOriginalModeJob(t *testing.T) {
 	store := &fakeScriptStore{}
 	jobs := &jobCreatorStub{}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), store, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewScriptServiceClient(http.DefaultClient, server.URL)
 
@@ -2263,7 +2263,7 @@ func TestUploadDirectFlow(t *testing.T) {
 	}}}
 	jobs := &jobCreatorStub{}
 	objects := testObjects(t)
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewUploadServiceClient(http.DefaultClient, server.URL)
 
@@ -2337,7 +2337,7 @@ func TestUploadRejectsHashMismatchAndAbort(t *testing.T) {
 	}}}
 	jobs := &jobCreatorStub{}
 	objects := testObjects(t)
-	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(projects, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 	client := pptsv1connect.NewUploadServiceClient(http.DefaultClient, server.URL)
 
@@ -2455,7 +2455,7 @@ func TestSPAFallbackServesEmbeddedFS(t *testing.T) {
 
 	// NewHandler 在 WebRoot 为空时挂载 WebFS。
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
-		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{WebFS: dist}))
+		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, WebFS: dist}))
 	t.Cleanup(server.Close)
 	resp, err := http.Get(server.URL + "/console/settings")
 	if err != nil {
@@ -2475,7 +2475,7 @@ func TestHandlerMountsSPAFallbackWithoutShadowingAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
-		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{WebRoot: webRoot}))
+		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, WebRoot: webRoot}))
 	t.Cleanup(server.Close)
 
 	resp, err := http.Get(server.URL + "/healthz")
@@ -2499,7 +2499,7 @@ func TestHandlerMountsSPAFallbackWithoutShadowingAPI(t *testing.T) {
 
 	// 未配置 WebRoot 时保持旧行为：无 SPA 兜底，客户端路由 404。
 	plain := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
-		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil))
+		&jobCreatorStub{}, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
 	t.Cleanup(plain.Close)
 	plainResp, err := http.Get(plain.URL + "/projects/some-id/timeline")
 	if err != nil {
@@ -2560,7 +2560,7 @@ func TestArtifactManifestRouteMounted(t *testing.T) {
 	}}
 	server := httptest.NewServer(NewHandler(
 		&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
-		artifacts, objects, nil, Options{Members: members},
+		artifacts, objects, nil, Options{DevHeaders: true, Members: members},
 	))
 	t.Cleanup(server.Close)
 
@@ -2628,7 +2628,7 @@ func TestDeleteArtifactRouteOwnerOnly(t *testing.T) {
 	newServer := func(role membership.Role) *httptest.Server {
 		return httptest.NewServer(NewHandler(
 			&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
-			artifacts, objects, nil, Options{Members: &fakeRoleReader{role: role}},
+			artifacts, objects, nil, Options{DevHeaders: true, Members: &fakeRoleReader{role: role}},
 		))
 	}
 	do := func(srv *httptest.Server, id string) (*http.Response, []byte) {
@@ -2693,7 +2693,7 @@ func TestSignedObjectReadSupportsRange(t *testing.T) {
 		t.Fatalf("local signed url not rewritten: %q", signed)
 	}
 
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil))
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{}, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
 	t.Cleanup(server.Close)
 
 	req, err := http.NewRequest(http.MethodGet, server.URL+url, nil)

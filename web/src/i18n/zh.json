@@ -755,6 +755,7 @@
   "editor.projectMetaFailed": "项目信息加载失败，标题暂以项目 ID 显示。",
   "editor.narrationStatusFailed": "配音状态读取失败；可能已生成配音但这里读不到。请重试确认，不要据此重新生成。",
   "editor.thumbnailsFailed": "页面缩略图读取失败，已降级为序号显示（不代表这些页没有内容）。",
+  "editor.rendererUnavailable": "服务端未安装页面渲染组件（LibreOffice / poppler），本次导入没有生成页面图，因此这里只能显示序号占位。配音与导出不受影响，但视频缺少画面；请联系管理员安装渲染依赖后重新导入。",
   "editor.scriptSourceFailed": "讲稿来源设置读取失败，来源选择暂不可用。",
   "editor.voiceModelsFailed": "语音模型列表读取失败，当前列出的并非平台全部音色。",
   "editor.voiceSettingsFailed": "已保存的音色设置读取失败，下面显示的是默认值，不是你保存的值。",

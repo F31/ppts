@@ -195,6 +195,61 @@ func TestParseHandlerPageCountMismatchMarksStepFailed(t *testing.T) {
 	}
 }
 
+// TestParseHandlerRendererMissingLeavesTrace 锁定「依赖缺失不能表现为'什么都没发生'」：
+// 未注入渲染器时，解析仍成功（不阻塞主链路），但必须落一份 renderer="unavailable" 的清单，
+// 使 /slides/render 能把「环境没装渲染器」与「尚未渲染 / 渲染失败」区分开。
+// 此前这里什么都不写，前端只能看到一片占位缩略图，无从判断原因。
+func TestParseHandlerRendererMissingLeavesTrace(t *testing.T) {
+	ctx := context.Background()
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	sourceKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src", AssetType: "source", AssetID: "deck", Ext: "pptx",
+	}
+	if err := objects.Put(ctx, sourceKey, bytes.NewReader([]byte("pptx")), objectstore.ObjectMeta{ContentType: "application/octet-stream"}); err != nil {
+		t.Fatal(err)
+	}
+	steps := &stepRecorder{}
+	// 注意：不调用 WithRenderer —— 这正是 LibreOffice/poppler 未安装时的生产形态。
+	handler := NewParseHandler(objects, stubReader{doc: &project.Document{Pages: []*project.Page{{Index: 0, SlideID: "slide-1"}}}}).
+		WithSteps(steps)
+
+	if err := handler.Handle(ctx, renderParseJob(t, sourceKey.String())); err != nil {
+		t.Fatalf("解析本身应成功（缺少页面图不应阻塞主链路）: %v", err)
+	}
+	step, ok := steps.latest["pages:v1:deck"]
+	if !ok {
+		t.Fatal("缺少 pages 步骤记录：渲染器缺失这件事没有留痕")
+	}
+	// 必须留 ref：/slides/render 只有拿到 ref 才读得到 renderer 字段。
+	if step.ResultRef == "" {
+		t.Fatal("步骤未写 ResultRef：接口拿不到清单，用户侧将完全无信号")
+	}
+	// 但状态必须是失败：没有页面图就是没有页面图，不能把降级说成成功。
+	if step.State != pipeline.StepFailed {
+		t.Fatalf("步骤状态 = %v，渲染器不可用时应为 failed（诚实表达未产出页面图）", step.State)
+	}
+	manifestKey, err := objectstore.Parse(step.ResultRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := objects.Get(ctx, manifestKey)
+	if err != nil {
+		t.Fatalf("manifest 应可读取: %v", err)
+	}
+	defer r.Close()
+	data, _ := io.ReadAll(r)
+	var manifest PageManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Renderer != RendererUnavailable {
+		t.Fatalf("manifest.Renderer = %q，应为 %q", manifest.Renderer, RendererUnavailable)
+	}
+	if len(manifest.Pages) != 0 {
+		t.Fatalf("pages = %+v，渲染器不可用时应为空", manifest.Pages)
+	}
+}
+
 func TestParseHandlerRenderFailureIsNonFatal(t *testing.T) {
 	ctx := context.Background()
 	objects := objectstore.NewLocal(t.TempDir(), nil)

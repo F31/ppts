@@ -36,7 +36,7 @@ func TestRegisterAccountTypes(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	server := httptest.NewServer(NewHandler(nil, nil, nil, nil, nil, nil, pool,
-		Options{JWTSecret: "test-secret", PasswordPepper: "pepper"}))
+		Options{DevHeaders: true, JWTSecret: "test-secret", PasswordPepper: "pepper"}))
 	t.Cleanup(server.Close)
 
 	// 唯一小写前缀：账号会被后端 lower(trim)，前缀必须全小写以保证断言一致。

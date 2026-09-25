@@ -36,11 +36,14 @@ import (
 func runWorker() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 	stdLogger := slog.NewLogLogger(logger.Handler(), slog.LevelInfo)
-	switch provider := os.Getenv("PPTS_TTS_PROVIDER"); provider {
-	case "fake", "siliconflow":
-		// 支持的供应商：fake=开发/测试；siliconflow=正式（需 PPTS_TTS_API_KEY）。
-	default:
-		return fmt.Errorf("unsupported PPTS_TTS_PROVIDER=%q (supported: fake, siliconflow)", provider)
+	// TTS 供应商必须在启动期确定：未设置/拼错/未知值一律启动失败，
+	// 不允许回落假供应商（FakeProvider 产出静音 WAV，配音 job 仍判 succeeded、
+	// 用户拿到无声成品，且 ppts_tts_synthesis_total 计入成功——连指标都是假的）。
+	// fake 是**显式开关**而非兜底：只有明确指定 PPTS_TTS_PROVIDER=fake 才启用，
+	// 并同时输出告警与 ppts_tts_fake_provider_active 指标。
+	ttsProvider, err := ttsProviderFromEnv(logger)
+	if err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -77,8 +80,19 @@ func runWorker() error {
 	objects := stores.objects
 	auditStore := stores.audit
 	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{})).WithSteps(jobs)
-	if renderer, err := render.NewSofficeRenderer(); err != nil {
-		logger.Info("renderer unavailable; page images disabled", "error", err)
+	// 渲染器（LibreOffice + poppler）缺失时，解析仍会"成功"，但没有页面图
+	// → 编辑器无缩略图、播放无帧图、MP4 导出无素材，而用户侧原本零信号。
+	// 治理三件套：① 指标 ppts_render_pages_disabled ② Warn 日志 ③ PPTS_REQUIRE_RENDERER
+	// 可让关键部署启动即失败；产物侧另有 pages.json 写入 renderer="unavailable" 留痕。
+	renderer, err := render.NewSofficeRenderer()
+	if err != nil {
+		observability.SetRenderPagesDisabled(true)
+		if envBool("PPTS_REQUIRE_RENDERER", false) {
+			return fmt.Errorf("renderer required (PPTS_REQUIRE_RENDERER=true) but unavailable: %w", err)
+		}
+		logger.Warn("renderer unavailable: page images disabled - editor thumbnails, playback frames and MP4 export sources will be missing",
+			"error", err,
+			"hint", "install libreoffice + poppler-utils; set PPTS_REQUIRE_RENDERER=true to fail fast instead")
 	} else {
 		parseHandler = parseHandler.WithRenderer(renderer)
 		logger.Info("renderer enabled", "version", renderer.Version())
@@ -107,7 +121,6 @@ func runWorker() error {
 		}
 	}
 	metrics := observability.NewPipelineMetrics()
-	ttsProvider := ttsProviderFromEnv()
 	narrationHandler := app.NewNarrationHandler(stores.scripts, jobs, objects, ttsProvider).
 		WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(stores.pronunciation).
 		WithSourceRevisions(stores.projects)
@@ -363,16 +376,24 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 
 // ttsProviderFromEnv 按 PPTS_TTS_PROVIDER 构建 TTS 供应商。
 // siliconflow 需要 PPTS_TTS_BASE_URL / PPTS_TTS_API_KEY / PPTS_TTS_MODEL / PPTS_TTS_VOICE。
-func ttsProviderFromEnv() tts.TTSProvider {
-	switch os.Getenv("PPTS_TTS_PROVIDER") {
+//
+// 未设置 / 拼错 / 未知值一律返回错误（启动失败），绝不静默回落 fake——
+// 静音 WAV 与"合成成功"在 UI 上不可区分，属于典型的假成功。fake 只能显式请求。
+func ttsProviderFromEnv(logger *slog.Logger) (tts.TTSProvider, error) {
+	switch provider := os.Getenv("PPTS_TTS_PROVIDER"); provider {
 	case "siliconflow":
 		return tts.NewSiliconFlowProvider(tts.SiliconFlowConfig{
 			BaseURL: os.Getenv("PPTS_TTS_BASE_URL"),
 			APIKey:  os.Getenv("PPTS_TTS_API_KEY"),
 			Model:   os.Getenv("PPTS_TTS_MODEL"),
 			Voice:   os.Getenv("PPTS_TTS_VOICE"),
-		})
+		}), nil
+	case "fake":
+		logger.Warn("TTS fake provider active: generated narration is SILENT audio; this is not suitable for any non-development use",
+			"hint", "set PPTS_TTS_PROVIDER=siliconflow with PPTS_TTS_API_KEY for real synthesis")
+		observability.SetTTSFakeProviderActive(true)
+		return tts.NewFakeProvider(), nil
 	default:
-		return tts.NewFakeProvider()
+		return nil, fmt.Errorf("unsupported PPTS_TTS_PROVIDER=%q (supported: fake, siliconflow); refusing to run because failure to configure TTS must not silently produce silent audio", provider)
 	}
 }

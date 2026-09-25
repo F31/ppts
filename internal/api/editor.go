@@ -547,7 +547,13 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 		}
 		out = append(out, editorSlideRenderItem{SlideID: pg.SlideID, URL: url})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"slides": out})
+	// renderer 为空串=正常（有页面图）；"unavailable"=渲染器缺失，此时 slides 必为空。
+	// 不把它隐含在"slides 为空"里：那样前端无法区分"能力缺失"与"暂未渲染"。
+	renderer := ""
+	if manifest.Renderer != "" {
+		renderer = manifest.Renderer
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slides": out, "renderer": renderer})
 }
 
 type revisionVoiceStatus struct {

@@ -36,6 +36,10 @@ type PageEntry struct {
 	Key     string `json:"key"`   // 页面 PNG 对象键
 }
 
+// RendererUnavailable 是 PageManifest.Renderer 的哨兵值：渲染器（LibreOffice/poppler）
+// 未安装导致本次解析没有页面图。与"渲染失败""尚未渲染"区分开，供前端给出确切原因。
+const RendererUnavailable = "unavailable"
+
 // PageManifest 是解析阶段渲染产物的清单（供播放服务按 timeline 页序取页面图）。
 type PageManifest struct {
 	RevisionNo int         `json:"revisionNo"`
@@ -134,12 +138,23 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 // renderPages 把源页面渲染为 PNG 并登记页序清单。页面图是可选增强：
 // 渲染器缺失/不可用或渲染失败都不会让解析任务失败，仅记录失败步骤。
 func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKey objectstore.ObjectKey, data []byte, doc *project.Document, snap ParseSnapshot) {
-	if h.renderer == nil || h.steps == nil {
+	if h.steps == nil {
 		return
 	}
 	step := pipeline.JobStep{
 		JobID: job.ID, TenantID: job.TenantID, StepType: "pages",
 		StepKey: "pages:v1:" + srcKey.AssetID,
+	}
+	if h.renderer == nil {
+		// 渲染器缺失（LibreOffice / poppler 未安装）。此前这里直接 return，
+		// 不落任何清单，导致下游 /slides/render 返回空 slides——和"渲染失败"、
+		// "尚未渲染"在前端完全同貌（都是占位缩略图），用户侧零信号。
+		// 改为写 renderer="unavailable" 的空清单：结果仍是"没有图"（诚实），
+		// 但把原因写进产物，接口据此返回 renderer 字段供前端给出明确提示。
+		h.publishPageManifest(ctx, step, srcKey, snap, PageManifest{
+			RevisionNo: snap.RevisionNo, Renderer: RendererUnavailable, Pages: []PageEntry{},
+		})
+		return
 	}
 	fail := func() {
 		step.State = pipeline.StepFailed
@@ -185,23 +200,37 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 		}
 		entries = append(entries, PageEntry{SlideID: src.SlideID, Index: src.Index, Key: key.String()})
 	}
-	manifest := PageManifest{RevisionNo: snap.RevisionNo, Renderer: res.Report.Renderer, Pages: entries}
+	h.publishPageManifest(ctx, step, srcKey, snap, PageManifest{RevisionNo: snap.RevisionNo, Renderer: res.Report.Renderer, Pages: entries})
+}
+
+// publishPageManifest 写入页序清单并记录步骤结果。
+// 渲染器缺失时同样调用（renderer="unavailable" + StepFailed），确保"没有页面图"
+// 这件事在产物里留痕，而不是彻底消失——留痕才能被接口透出、被用户看见。
+func (h *ParseHandler) publishPageManifest(ctx context.Context, step pipeline.JobStep, srcKey objectstore.ObjectKey, snap ParseSnapshot, manifest PageManifest) {
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
-		fail()
+		step.State = pipeline.StepFailed
+		_ = h.steps.MarkStep(ctx, step)
 		return
 	}
 	manifestKey := objectstore.ObjectKey{
-		TenantID: srcKey.TenantID, ProjectID: snap.ProjectID, Revision: revision,
+		TenantID: srcKey.TenantID, ProjectID: snap.ProjectID, Revision: srcRevString(snap.RevisionNo),
 		AssetType: "render", AssetID: "pages", Ext: "json",
 	}
 	if err := h.objects.Put(ctx, manifestKey, bytes.NewReader(manifestBytes), objectstore.ObjectMeta{
 		ContentType: "application/json", ContentHash: hashBytes(manifestBytes), Size: int64(len(manifestBytes)),
 	}); err != nil {
-		fail()
+		step.State = pipeline.StepFailed
+		_ = h.steps.MarkStep(ctx, step)
 		return
 	}
-	step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
+	// 即使清单为空也写 ResultRef：/slides/render 只有拿到 ref 才读得到 renderer 字段。
+	// 但渲染器不可用意味着确实没产出页面图，故标记为失败——不能把降级说成成功。
+	step.ResultRef = manifestKey.String()
+	step.State = pipeline.StepSuccess
+	if manifest.Renderer == RendererUnavailable {
+		step.State = pipeline.StepFailed
+	}
 	_ = h.steps.MarkStep(ctx, step)
 }
 
