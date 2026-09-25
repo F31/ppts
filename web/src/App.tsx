@@ -119,12 +119,21 @@ function AppContent() {
     // 由 Login 页触发 startOIDCLogin 跳转，授权码回调后 setIdentity。
   }, []);
 
-  const logout = useCallback(() => {
-    void logoutSession();
+  // logoutError：服务端会话清除失败的原因与重试入口（A26：不把失败压平成"已登出"）。
+  const [logoutError, setLogoutError] = useState('');
+  const logout = useCallback(async () => {
+    setLogoutError('');
+    try {
+      await logoutSession();
+    } catch (err) {
+      // A26：服务端会话清除失败不得压平成"已登出"。本设备凭据照常清除（否则用户困在已登出假象里），
+      // 但必须说明服务端会话可能仍然有效，并给重试入口。
+      setLogoutError(describeApiError(err, t('app.logoutFailed'), t));
+    }
     clearAllIdentity();
     setIdentity(null);
     navigate('/login');
-  }, []);
+  }, [t]);
 
   const session: Session = useMemo(
     () => ({ identity, loginDev, loginOIDC, loginEmail, logout }),
@@ -165,6 +174,21 @@ function AppContent() {
   if (!identity) {
     return (
       <SessionContext.Provider value={session}>
+        {/* 服务端会话清除失败：本设备已登出，但服务端 Cookie 可能仍有效——必须说清并允许重试，
+            否则使用者会把"登出失败"读成"已登出"。 */}
+        {logoutError && (
+          <div className="load-failure" role="alert">
+            <p className="form-error">{logoutError}</p>
+            <button
+              type="button"
+              onClick={() => {
+                void logout();
+              }}
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        )}
         <Login />
       </SessionContext.Provider>
     );

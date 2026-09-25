@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "contrast": "node contrast.mjs",
     "i18n:check": "node i18n-check.mjs",
-    "build": "npm run contrast && tsc -b && vite build",
+    "api:check": "node api-contract-check.mjs",
+    "build": "npm run contrast && npm run api:check && tsc -b && vite build",
     "typecheck": "tsc -b",
     "preview": "vite preview --host 0.0.0.0"
   },

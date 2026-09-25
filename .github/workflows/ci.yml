@@ -53,6 +53,9 @@ jobs:
       - name: i18n check
         working-directory: web
         run: npm run i18n:check
+      - name: api contract check
+        working-directory: web
+        run: npm run api:check
       - name: build
         working-directory: web
         run: npm run build

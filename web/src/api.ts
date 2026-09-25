@@ -103,6 +103,33 @@ function languageHeader(): Record<string, string> {
   return headers;
 }
 
+// httpConnectError 是全站唯一的「HTTP 失败 → ConnectError」转换实现。
+//
+// 为什么必须唯一且必须用 ConnectError：apiError.ts 的 isNotFound / isUnimplemented /
+// describeApiError 都以 `error instanceof ConnectError` 为判据（探测容错、功能未启用提示等全靠它）。
+// 任何一处自制错误解析、或抛出原生 Error，都会让这条判据静默失效——
+// 「正常的 404 业务语义」与「未接线的功能」会被当成真故障上报给用户（违反 A26）。
+//
+// code 优先级：后端 {code,message} 信封优先，缺省时回退 http_<status>。
+// 两个入口：connectErrorFrom 构造（流式/SSE 需要把错误交给回调而非 throw），
+// httpConnectError 抛出（绝大多数场景）。两者共用同一份解析逻辑，杜绝第二份实现。
+async function connectErrorFrom(response: Response, label: string): Promise<ConnectError> {
+  let code = `http_${response.status}`;
+  let message = `${label}: HTTP ${response.status}`;
+  try {
+    const envelope = (await response.json()) as { code?: string; message?: string };
+    if (envelope.code) code = envelope.code;
+    if (envelope.message) message = envelope.message;
+  } catch {
+    // 非 JSON 错误体（如网关 HTML 错误页）：保留 http_<status> 与默认 message。
+  }
+  return new ConnectError(code, message);
+}
+
+async function httpConnectError(response: Response, label: string): Promise<never> {
+  throw await connectErrorFrom(response, label);
+}
+
 // RevisionDiff 是两次源版本之间的页级差异。
 export type RevisionDiff = {
   added: Array<{ slideId: string; name: string; pageCount: number }>;
@@ -172,7 +199,7 @@ export type AuthConfig = {
 export async function getAuthConfig(): Promise<AuthConfig> {
   const response = await fetch('/auth/config');
   if (!response.ok) {
-    throw new ConnectError(`http_${response.status}`, `auth config failed: HTTP ${response.status}`);
+    await httpConnectError(response, 'auth config');
   }
   return (await response.json()) as AuthConfig;
 }
@@ -211,9 +238,13 @@ export async function loginEmail(params: { account: string; password: string }):
   return (await postAuth('/auth/email-login', { account: params.account, email: params.account, password: params.password })) as EmailAuthResult;
 }
 
-// logoutSession 清除后端 Cookie 会话。
+// logoutSession 清除后端 Cookie 会话。失败必须上抛（ConnectError）：
+// 放行会让界面显示"已登出"而服务端会话仍有效——把失败读成成功。
 export async function logoutSession(): Promise<void> {
-  await fetch('/auth/logout', { method: 'POST' });
+  const response = await fetch('/auth/logout', { method: 'POST' });
+  if (!response.ok) {
+    await httpConnectError(response, 'logout');
+  }
 }
 
 // verifyEmail 消费邮箱验证令牌。
@@ -244,16 +275,7 @@ async function postAuth(path: string, body: Record<string, unknown>): Promise<un
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      // 非 JSON 错误体，保留默认 message。
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, `POST ${path}`);
   }
   const text = await response.text();
   return text ? JSON.parse(text) : {};
@@ -279,8 +301,11 @@ export async function getPlaybackManifest(params: {
       ttlSeconds: params.ttlSeconds
     })
   });
+  // 必须走 httpConnectError 而非原生 Error：本端点的失败会流到 ProjectEditor 的
+  // reportProbe('narration', …)，而 isNotFound / isUnimplemented 只对 ConnectError 生效；
+  // 抛原生 Error 会让"配音尚未生成(404)"被上报成"读取配音失败"。
   if (!response.ok) {
-    throw new Error(`GetManifest failed: HTTP ${response.status}`);
+    await httpConnectError(response, 'GetManifest');
   }
   return (await response.json()) as PlaybackManifest;
 }
@@ -297,16 +322,7 @@ async function connectJSON<T>(identity: ClientIdentity, procedure: string, body:
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${procedure} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      // 非 Connect 错误体，保留默认 message。
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, procedure);
   }
   return (await response.json()) as T;
 }
@@ -318,16 +334,7 @@ async function getJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
     headers: { ...identityHeaders(identity), ...languageHeader() }
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      // 非 Connect 错误体，保留默认 message。
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, path);
   }
   return (await response.json()) as T;
 }
@@ -340,18 +347,25 @@ async function putJSON<T>(identity: ClientIdentity, path: string, body: Record<s
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      // 非 Connect 错误体，保留默认 message。
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, path);
   }
   return (await response.json()) as T;
+}
+
+// patchJSON 调用后端原生 HTTP PATCH 端点（单字段更新：ppt 展示名、单页备注）。
+async function patchJSON<T>(identity: ClientIdentity, path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(path, {
+    method: 'PATCH',
+    headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    await httpConnectError(response, path);
+  }
+  const text = await response.text();
+  // PATCH 端点普遍返回空体（204 或空 200）——若照搬 response.json()，成功会被 JSON.parse 读成失败。
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 // postJSON 调用后端原生 HTTP POST 端点（标签/分组创建等）。
@@ -362,16 +376,7 @@ async function postJSON<T>(identity: ClientIdentity, path: string, body: Record<
     body: JSON.stringify(body)
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      /* 非 Connect 错误体，保留默认 message */
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, path);
   }
   return (await response.json()) as T;
 }
@@ -383,16 +388,7 @@ async function deleteJSON<T>(identity: ClientIdentity, path: string): Promise<T>
     headers: { ...identityHeaders(identity) }
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      /* 非 Connect 错误体，保留默认 message */
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, path);
   }
   return (await response.json()) as T;
 }
@@ -535,19 +531,9 @@ export async function deleteSourceRevision(identity: ClientIdentity, projectId: 
 }
 
 export async function updatePptDisplayName(identity: ClientIdentity, projectId: string, revisionNo: number, displayName: string): Promise<void> {
-  const response = await fetch(`/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}`, {
-    method: 'PATCH',
-    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ display_name: displayName })
+  await patchJSON<Record<string, never>>(identity, `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo}`, {
+    display_name: displayName
   });
-  if (!response.ok) {
-    let message = `/projects/${encodeURIComponent(projectId)}/revisions/${revisionNo} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) message = `${envelope.code}: ${envelope.message ?? ''}`;
-    } catch { /* ignore */ }
-    throw new ConnectError('http_' + response.status, message);
-  }
 }
 
 export async function downloadSourceRevision(
@@ -560,7 +546,7 @@ export async function downloadSourceRevision(
     headers: identityHeaders(identity)
   });
   if (!response.ok) {
-    throw new Error(`download source revision failed: HTTP ${response.status}`);
+    await httpConnectError(response, `download revision ${revisionNo}`);
   }
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
@@ -581,19 +567,11 @@ export async function getSlideNotes(identity: ClientIdentity, projectId: string,
 
 // setSlideNotes 保存单页备注。
 export async function setSlideNotes(identity: ClientIdentity, projectId: string, slideId: string, revisionNo: number, notes: string): Promise<void> {
-  const response = await fetch(`/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/notes?revision_no=${revisionNo}`, {
-    method: 'PATCH',
-    headers: { ...identityHeaders(identity), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ notes })
-  });
-  if (!response.ok) {
-    let message = `setSlideNotes failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) message = `${envelope.code}: ${envelope.message ?? ''}`;
-    } catch { /* ignore */ }
-    throw new ConnectError('http_' + response.status, message);
-  }
+  await patchJSON<Record<string, never>>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/notes?revision_no=${revisionNo}`,
+    { notes }
+  );
 }
 
 export type SlideRenderURL = { slideId: string; url: string };
@@ -1077,14 +1055,7 @@ function gatewayPath(identity: ClientIdentity, method: string, path: string, bod
   });
   return response.then(async (r) => {
     if (!r.ok) {
-      let message = `${method} ${url} failed: HTTP ${r.status}`;
-      try {
-        const envelope = (await r.json()) as { message?: string };
-        if (envelope.message) message = envelope.message;
-      } catch {
-        // 保留默认 message。
-      }
-      throw new ConnectError(`http_${r.status}`, message);
+      throw await connectErrorFrom(r, `${method} ${url}`);
     }
     if (r.status === 204) return undefined;
     return r.json();
@@ -1332,7 +1303,9 @@ export function watchJobEvents(
   })
     .then(async (response) => {
       if (!response.ok || !response.body) {
-        handlers.onError?.(new ConnectError(`http_${response.status}`, `WatchEvents failed: HTTP ${response.status}`));
+        // 流式端点不 throw（错误经 onError 回调上抛），但错误对象必须同样走 Connect 契约：
+        // 调用方用 isNotFound/isUnimplemented 判定是否值得重连，非 ConnectError 会让判据失效。
+        handlers.onError?.(await connectErrorFrom(response, 'WatchEvents'));
         return;
       }
       const reader = response.body.getReader();
@@ -1349,7 +1322,9 @@ export function watchJobEvents(
         const flag = buffer[0];
         if (flag !== 0x00) {
           // 仅支持未压缩信封（connect-go 对短消息不压缩）；压缩/未知 → 交给调用方回退。
-          throw new Error('unexpected envelope flag');
+          // 流式协议错误同样走 Connect 契约：它经 onError 跨到调用方，
+          // 调用方用 isNotFound/isUnimplemented 决定是否值得重连。
+          throw new ConnectError('unknown', 'unexpected streaming envelope flag');
         }
         const len = ((buffer[1] << 24) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4]) >>> 0;
         if (len < 0 || buffer.length < 5 + len) return null;
@@ -1615,18 +1590,7 @@ export type PublicWorkPage = { items: PublicWork[]; next_cursor: string };
 async function publicGet<T>(path: string): Promise<T> {
   const response = await fetch(path);
   if (!response.ok) {
-    // 解析后端 {code,message} 错误体（如公开区在单租户部署返回 feature_disabled/503），
-    // 使 describeApiError 能映射为可读文案；无 JSON 体时回退 HTTP 码。
-    let code = `http_${response.status}`;
-    let message = `GET ${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      // 非 JSON 错误体，保留默认 message。
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, `GET ${path}`);
   }
   return (await response.json()) as T;
 }
@@ -1683,16 +1647,7 @@ async function authedJSON<T>(identity: ClientIdentity, method: string, path: str
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   if (!response.ok) {
-    let code = `http_${response.status}`;
-    let message = `${method} ${path} failed: HTTP ${response.status}`;
-    try {
-      const envelope = (await response.json()) as { code?: string; message?: string };
-      if (envelope.code) code = envelope.code;
-      if (envelope.message) message = envelope.message;
-    } catch {
-      // 保留默认 message。
-    }
-    throw new ConnectError(code, message);
+    await httpConnectError(response, `${method} ${path}`);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -1786,7 +1741,9 @@ async function sharedGet<T>(path: string, password?: string): Promise<T> {
   if (password) headers['X-Share-Password'] = password;
   const response = await fetch(path, { headers });
   if (!response.ok) {
-    throw new Error(`GET ${path} failed: HTTP ${response.status}`);
+    // 必须走 Connect 契约：SharedWatch 用 isNotFound 决定「链接无效/口令错误」的呈现，
+    // 抛原生 Error 会让该判据恒为 false，把这两种正常业务语义显示成"加载失败"。
+    await httpConnectError(response, `GET ${path}`);
   }
   return (await response.json()) as T;
 }

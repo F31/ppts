@@ -156,6 +156,9 @@ export async function completeOIDCCallback() {
     redirect_uri: redirectURI,
     code_verifier: verifier
   });
+  // fetch-ok: VITE_OIDC_TOKEN_ENDPOINT 是外部身份提供方的令牌端点，
+  // 响应为本项目的 API 契约之外的 OAuth 格式（无 {code,message} 信封），
+  // 因此不走 api.ts 的 httpConnectError；失败必须保留原始文案以便排查登录失败。
   const response = await fetch(import.meta.env.VITE_OIDC_TOKEN_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },

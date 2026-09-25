@@ -912,6 +912,7 @@
   "err.forbidden": "Your role does not have this permission",
   "err.unavailable": "Service temporarily unavailable (503)",
   "app.roleLoadFailed": "Failed to load your role; permission checks are temporarily permissive",
+  "app.logoutFailed": "Failed to clear the server session: signed out on this device, but the server session may still be valid",
   "public.queueLoadFailed": "Failed to load review queue",
   "public.audioFailed": "Failed to load the narration manifest",
   "usage.storageFailed": "Failed to load storage usage",

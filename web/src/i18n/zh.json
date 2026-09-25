@@ -912,6 +912,7 @@
   "err.forbidden": "当前角色没有该权限",
   "err.unavailable": "服务暂时不可用（503）",
   "app.roleLoadFailed": "角色信息读取失败，权限判定已临时放宽",
+  "app.logoutFailed": "服务端会话清除失败：本设备已登出，但服务端会话可能仍然有效",
   "public.queueLoadFailed": "审核队列加载失败",
   "public.audioFailed": "讲解播放清单加载失败",
   "usage.storageFailed": "存储用量加载失败",
