@@ -56,6 +56,9 @@ jobs:
       - name: api contract check
         working-directory: web
         run: npm run api:check
+      - name: route inventory check
+        working-directory: web
+        run: npm run route:check
       - name: build
         working-directory: web
         run: npm run build

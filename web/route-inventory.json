@@ -1,0 +1,160 @@
+{
+ "_comment": "后端原生 HTTP 路由的回收清单（架构审视 Phase 1.5）。逐条清单由 route-inventory-check.mjs 从 internal/api/*.go 现场提取，本文件只登记「机器判不了、必须人工定」的两件事：路由分组的处置、双写的分诊。新增路由若不属于任何已登记分组，门禁会失败并要求登记。更新：node route-inventory-check.mjs --report 查看当前全量清单。",
+
+ "groups": {
+  "health": {
+   "name": "健康检查",
+   "prefixes": ["/healthz"],
+   "disposition": "keep",
+   "reason": "唯一探活端点。已知遗留：不探活 DB/对象存储（架构审视 R4），故『200 ok』不代表后端可用——迁移前先补依赖探活，否则收敛后仍会假活。"
+  },
+  "observability": {
+   "name": "可观测性",
+   "prefixes": ["/metrics", "/debug/vars"],
+   "disposition": "keep",
+   "reason": "非业务面，不存在 Connect 等价物（Prometheus 文本协议）。Phase 0.4 已让 /debug/vars 与 /metrics 共用同一 token 且未配 token 时一律拒绝。"
+  },
+  "spa": {
+   "name": "前端静态回退",
+   "prefixes": ["/"],
+   "exact": true,
+   "disposition": "keep",
+   "reason": "SPA 兜底（WebRoot/WebFS 二选一注册）。永远不能走 RPC。必须 exact：\"/\" 按前缀匹配会命中一切路径，使所有未登记路由被它吸收、门禁失效。"
+  },
+  "auth": {
+   "name": "认证与账号",
+   "prefixes": ["/auth/"],
+   "disposition": "keep",
+   "reason": "登录/注册/重置走表单语义与限流（fixedWindowLimiter），Connect 无对应契约；pool 为 nil 时不挂载。/auth/config 在本地单租户模式下由 server.go 另注册一份，属互斥分支。"
+  },
+  "admin": {
+   "name": "平台管理",
+   "prefixes": ["/admin/"],
+   "disposition": "keep",
+   "reason": "跨租户运营面，仅 owner 可用；Connect 侧无 TenantService 的租户管理能力（TenantService 只覆盖本租户用量/策略）。"
+  },
+  "members": {
+   "name": "成员管理",
+   "prefixes": ["/members"],
+   "disposition": "keep-both",
+   "reason": "与 TenantService.Members 构成双写，但**前端零调用 RPC 侧**（仅用 GET /members）：RPC 侧属已实现未接线，按『未接线能力保留不删』处置，HTTP 侧是当前唯一在用的通道。收敛方向是前端改用 RPC 后下线 HTTP。"
+  },
+  "gateways": {
+   "name": "模型网关配置",
+   "prefixes": ["/api/model-gateways"],
+   "disposition": "keep",
+   "reason": "管理类 CRUD，无 Connect 契约。注意：6 条路径各注册两次是**互斥分支**——未配置 AES 密钥时挂 503 feature_disabled stub，配了才挂真实实现，不是双写。"
+  },
+  "channels": {
+   "name": "消息通道配置",
+   "prefixes": ["/api/message-channels"],
+   "disposition": "keep",
+   "reason": "同 gateways：4 条路径各注册两次是配置缺失时的 503 降级分支，不是双写。无 Connect 契约。"
+  },
+  "pronunciation": {
+   "name": "发音词典",
+   "prefixes": ["/api/pronunciation"],
+   "disposition": "keep",
+   "reason": "TenantService 未覆盖发音词典；opt.Pronunciation 非 nil 时才注册，属可选能力。"
+  },
+  "artifacts": {
+   "name": "成品库",
+   "prefixes": ["/artifacts", "/projects/{pid}/artifacts"],
+   "disposition": "keep-both",
+   "reason": "与 ExportService.GetArtifact 构成双写，但**前端零调用 RPC 侧**（用 GET /artifacts 与 /artifacts/{id}/manifest）。RPC 侧保留不删；DELETE /artifacts/{id} 是 owner 级且前端在用，迁移前不可下线。"
+  },
+  "jobs": {
+   "name": "任务查询",
+   "prefixes": ["/jobs/"],
+   "disposition": "migrate",
+   "reason": "**真双写**：JobService.Get/List（RPC）与 GET /jobs/{jid}/detail、/jobs/summary、/jobs/page（HTTP）前端**两侧都在用**。detail 返回的是控制台聚合视图（phase/steps），与 RPC 的 Job 形状不同，前端需先补齐字段才能合并。"
+  },
+  "scripts": {
+   "name": "讲稿读写",
+   "prefixes": ["/projects/{pid}/scripts", "/projects/{pid}/script-draft"],
+   "disposition": "migrate",
+   "reason": "**真双写**：ScriptService.Get/Update（RPC）与 GET /projects/{pid}/scripts、POST .../rewrite、POST /script-draft（HTTP）前端**两侧都在用**。批量端点（/scripts 一次取全项目）是 M7 为消除 O(N) 串行请求专门加的，RPC 侧无等价物，迁移前必须先补批量 RPC。"
+  },
+  "narration": {
+   "name": "配音与音色",
+   "prefixes": ["/projects/{pid}/narration", "/projects/{pid}/revisions/{rev}/narration", "/projects/{pid}/voice-settings", "/projects/{pid}/voice-models"],
+   "disposition": "keep",
+   "reason": "draft-count / stale 是编辑器加载态探测（N/M 进度与过期检测），与 NarrationService.Estimate（费用估算）**不是同一能力**——架构审视原列为双写属误判，实测确认两者前端各自在用且语义无关。"
+  },
+  "editor": {
+   "name": "编辑器（页面/版本）",
+   "prefixes": ["/projects/{pid}/slides", "/projects/{pid}/revisions", "/projects/archived", "/projects/{pid}/restore"],
+   "disposition": "keep",
+   "reason": "体量最大的一组（16 条），含渲染图直出（/slides/render 返二进制 PNG）、版本 diff/下载/删除——Connect 侧无等价契约且不便承载文件流。"
+  },
+  "collab": {
+   "name": "协作与分享",
+   "prefixes": ["/projects/{pid}/collaborators", "/projects/{pid}/shares", "/shared/"],
+   "disposition": "keep",
+   "reason": "/shared/{token} 是**免登录凭链接访问**，签名令牌即授权，不能套会话认证，故无法走 Connect（Connect 路由统一套 auth）。"
+  },
+  "organize": {
+   "name": "标签与文件夹",
+   "prefixes": ["/tags", "/folders", "/projects/organization", "/projects/{pid}/tags", "/projects/{pid}/folder"],
+   "disposition": "keep",
+   "reason": "组织维度 CRUD，Connect 侧无契约。"
+  },
+  "public": {
+   "name": "公开区与展示",
+   "prefixes": ["/public/", "/public/works", "/public/featured", "/showcase/"],
+   "disposition": "keep",
+   "reason": "/showcase/{publicId} 是**匿名只读**发布页，与需认证的 PlaybackService.GetManifest 语义不同（后者前端也在用）——架构审视原列为双写属误判。SQLite profile 下整体降级为 503，避免落到 SPA 兜底返回 HTML。"
+  },
+  "object": {
+   "name": "对象存储预签名",
+   "prefixes": ["/ppts/object"],
+   "disposition": "keep",
+   "reason": "浏览器直传，令牌即授权（HMAC 绑定 tenant/key/op/expiry），不能套会话认证。DELETE 默认不挂载，需 PPTS_OBJECT_ALLOW_DELETE=true（Phase 0.4）。"
+  }
+ },
+
+ "duplicates": [
+  {
+   "capability": "成员列表",
+   "rpc": "/ppts.v1.TenantService/Members",
+   "http": ["GET /members", "PUT /members/{userId}"],
+   "verdict": "rpc-unwired",
+   "reason": "实测：前端只用 HTTP（4 处引用），RPC 侧零调用。属后端已实现、前端未接线，按『未接线能力保留不删』处置，不计为缺陷。"
+  },
+  {
+   "capability": "成品读取",
+   "rpc": "/ppts.v1.ExportService/GetArtifact",
+   "http": ["GET /artifacts", "GET /artifacts/{id}/manifest", "DELETE /artifacts/{id}"],
+   "verdict": "rpc-unwired",
+   "reason": "实测：前端只用 HTTP（9 处引用），RPC 侧零调用。同上保留不删。"
+  },
+  {
+   "capability": "任务详情",
+   "rpc": "/ppts.v1.JobService/Get",
+   "http": ["GET /jobs/{jid}/detail", "GET /jobs/summary", "GET /jobs/page"],
+   "verdict": "true-duplicate",
+   "reason": "实测：两侧前端都在用。HTTP 的 detail 是控制台聚合视图（含 phase/步骤），RPC 的 Job 无这些字段，合并前须先扩 proto。"
+  },
+  {
+   "capability": "讲稿读写",
+   "rpc": "/ppts.v1.ScriptService/Get",
+   "http": ["GET /projects/{pid}/scripts", "POST /projects/{pid}/scripts/rewrite"],
+   "verdict": "true-duplicate",
+   "reason": "实测：两侧前端都在用。HTTP 的 /scripts 是按项目批量取（M7 为消除 O(N) 串行请求所加），RPC 侧无批量等价物。"
+  },
+  {
+   "capability": "配音估算 vs 草稿计数/过期",
+   "rpc": "/ppts.v1.NarrationService/Estimate",
+   "http": ["GET /projects/{pid}/narration/draft-count", "GET /projects/{pid}/narration/stale"],
+   "verdict": "not-a-duplicate",
+   "reason": "误判更正：Estimate 是费用估算，draft-count/stale 是编辑器加载态探测（已生成页数、讲稿是否过期），能力不同。前端对 narration/estimate 的 HTTP 调用数为 0，两者各自在用。"
+  },
+  {
+   "capability": "播放清单",
+   "rpc": "/ppts.v1.PlaybackService/GetManifest",
+   "http": ["GET /showcase/{publicId}/manifest"],
+   "verdict": "different-semantics",
+   "reason": "误判更正：RPC 侧需会话认证（登录用户播自己的作品），/showcase 侧匿名只读（凭不可反推 public_id 的公开分享）。两种授权语义无法互相替代，必须并存。"
+  }
+ ]
+}
