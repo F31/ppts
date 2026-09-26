@@ -18,6 +18,13 @@ var authEventsTotal = expvar.NewMap("ppts_auth_events_total")
 // AuthEvent 记录一次认证事件（低基数标签）。
 func AuthEvent(event string) { authEventsTotal.Add(clean(event), 1) }
 
+// textNormDictEventsTotal 记录文本规范化词典加载事件（R1）：
+// load_error / empty_unexpected —— 依赖不可用必须可观测，不能退回静默。
+var textNormDictEventsTotal = expvar.NewMap("ppts_textnorm_dict_events_total")
+
+// TextNormDictEvent 记录一次文本规范化词典事件。
+func TextNormDictEvent(event string) { textNormDictEventsTotal.Add(clean(event), 1) }
+
 // PrometheusHandler 把进程内 expvar 指标渲染为 Prometheus 文本格式（0.0.4）。
 //
 // 约定：expvar.Map 的键以 "k=v,k2=v2" 形式表达标签；标量键（无 "="）降级为 key="..." 标签。

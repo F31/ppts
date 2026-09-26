@@ -196,3 +196,65 @@ func TestSQLitePronunciationLoadTenantDefault(t *testing.T) {
 		t.Fatalf("应取最新一条规则，实际 %+v", rules)
 	}
 }
+
+// TestSQLitePronunciationPlatformDefault 覆盖平台种子路径（V2.8 §6 路径一）：
+// 平台默认行（tenant_id=NULL, is_platform_default=true）只对 LoadPlatformDefault 可见，
+// 绝不出现在租户查询里（列表/LoadTenantDefault/GetByID 保持不受影响）。
+func TestSQLitePronunciationPlatformDefault(t *testing.T) {
+	ctx := context.Background()
+	store := newSQLitePronunciationStore(t)
+	const tenant = db.LocalTenantID
+
+	// 迁移已预置一条空平台种子；再写入一条带规则的最新平台行，按 created_at 取新。
+	if err := store.Create(ctx, &Dictionary{
+		ID: "t-1", TenantID: tenant, Name: "租户词",
+		Rules: Rules{{Pattern: "Model3", Replacement: "Model三", Enabled: true}},
+	}); err != nil {
+		t.Fatalf("create tenant dict: %v", err)
+	}
+
+	seedRule := Rules{{Pattern: "CUDA", Replacement: "库达", Enabled: true}}
+	if err := seedPlatformDefault(t, store, seedRule); err != nil {
+		t.Fatalf("seed platform: %v", err)
+	}
+
+	// 平台种子对 LoadPlatformDefault 可见且规则保真。
+	plat, err := store.LoadPlatformDefault(ctx)
+	if err != nil {
+		t.Fatalf("load platform default: %v", err)
+	}
+	if len(plat) != 1 || plat[0].Pattern != "CUDA" || plat[0].Replacement != "库达" {
+		t.Fatalf("平台种子规则不符：%+v", plat)
+	}
+
+	// 租户路径完全看不到平台行（is_platform_default 隔离）。
+	tenantRules, err := store.LoadTenantDefault(ctx, tenant)
+	if err != nil {
+		t.Fatalf("load tenant default: %v", err)
+	}
+	if len(tenantRules) != 1 || tenantRules[0].Pattern != "Model3" {
+		t.Fatalf("LoadTenantDefault 应只含租户行，实际 %+v（平台种子泄漏？）", tenantRules)
+	}
+
+	list, err := store.ListByTenant(ctx, tenant)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "t-1" {
+		t.Fatalf("ListByTenant 应只含租户行，实际 %+v（平台种子泄漏？）", list)
+	}
+}
+
+// seedPlatformDefault 直插平台默认行（绕过应用的租户 Create，模拟迁移/运维写入）。
+func seedPlatformDefault(t *testing.T, store *SQLiteStore, rules Rules) error {
+	t.Helper()
+	rulesJSON, err := rules.Marshal()
+	if err != nil {
+		return err
+	}
+	_, err = store.db.ExecContext(context.Background(),
+		`INSERT INTO pronunciation_dictionaries (id, tenant_id, name, rules, is_platform_default, created_at)
+		 VALUES (lower(hex(randomblob(16))), NULL, '平台默认发音词典', ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+		string(rulesJSON))
+	return err
+}

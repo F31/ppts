@@ -20,13 +20,14 @@ func NewSQLiteStore(sqldb *sql.DB) *SQLiteStore { return &SQLiteStore{db: sqldb}
 
 var _ Store = (*SQLiteStore)(nil)
 
-const sqDictColumns = `id, tenant_id, name, rules, created_at, updated_at`
+const sqDictColumns = `id, tenant_id, name, rules, is_platform_default, created_at, updated_at`
 
 func sqScanDict(row rowScanner) (*Dictionary, error) {
 	var d Dictionary
 	var rulesRaw string
 	var created, updated string
-	if err := row.Scan(&d.ID, &d.TenantID, &d.Name, &rulesRaw, &created, &updated); err != nil {
+	var isPlatform bool
+	if err := row.Scan(&d.ID, &d.TenantID, &d.Name, &rulesRaw, &isPlatform, &created, &updated); err != nil {
 		return nil, err
 	}
 	d.Rules = ParseRules(json.RawMessage(rulesRaw))
@@ -40,7 +41,7 @@ type rowScanner interface{ Scan(dest ...any) error }
 func (s *SQLiteStore) ListByTenant(ctx context.Context, tenantID string) ([]*Dictionary, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+sqDictColumns+` FROM pronunciation_dictionaries
-		 WHERE tenant_id = ? ORDER BY created_at`, tenantID)
+		 WHERE tenant_id = ? AND is_platform_default = false ORDER BY created_at`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("pronunciation list: %w", err)
 	}
@@ -76,8 +77,8 @@ func (s *SQLiteStore) Create(ctx context.Context, dict *Dictionary) error {
 	}
 	now := db.Now()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO pronunciation_dictionaries (id, tenant_id, name, rules, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO pronunciation_dictionaries (id, tenant_id, name, rules, is_platform_default, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, false, ?, ?)`,
 		dict.ID, dict.TenantID, dict.Name, string(rulesJSON), now, now); err != nil {
 		return fmt.Errorf("pronunciation create: %w", err)
 	}
@@ -119,12 +120,27 @@ func (s *SQLiteStore) LoadTenantDefault(ctx context.Context, tenantID string) (R
 	var rulesRaw string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT rules FROM pronunciation_dictionaries
-		 WHERE tenant_id = ? ORDER BY created_at DESC LIMIT 1`, tenantID).Scan(&rulesRaw)
+		 WHERE tenant_id = ? AND is_platform_default = false ORDER BY created_at DESC LIMIT 1`, tenantID).Scan(&rulesRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("pronunciation load default: %w", err)
+	}
+	return ParseRules(json.RawMessage(rulesRaw)), nil
+}
+
+// LoadPlatformDefault 返回平台级默认发音词典规则；无种子时返回空集。
+func (s *SQLiteStore) LoadPlatformDefault(ctx context.Context) (Rules, error) {
+	var rulesRaw string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT rules FROM pronunciation_dictionaries
+		 WHERE is_platform_default = true ORDER BY created_at DESC LIMIT 1`).Scan(&rulesRaw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pronunciation load platform default: %w", err)
 	}
 	return ParseRules(json.RawMessage(rulesRaw)), nil
 }

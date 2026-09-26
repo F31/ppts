@@ -124,6 +124,12 @@ func runWorker() error {
 	narrationHandler := app.NewNarrationHandler(stores.scripts, jobs, objects, ttsProvider).
 		WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(stores.pronunciation).
 		WithSourceRevisions(stores.projects)
+	// 文本规范化引擎（V2.8）：显式开关，默认关闭。启用时按 (租户, 语言) 逐任务构建，
+	// 词典合并（租户优先+平台种子兜底）只在适配层发生，不改动 pronunciation.Store 语义。
+	if textNormEnabled() {
+		logger.Info("textnorm: enabling TTS text normalization engine")
+		narrationHandler = narrationHandler.WithTextNorm(appTextNorm{store: stores.pronunciation, logger: logger})
+	}
 	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {

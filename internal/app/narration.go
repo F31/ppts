@@ -22,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/pronunciation"
+	"github.com/F31/ppts/internal/textnorm"
 	"github.com/F31/ppts/internal/usage"
 )
 
@@ -111,6 +112,7 @@ type NarrationHandler struct {
 	usage       UsageSettler
 	metrics     TTSMetrics
 	dictLoader  DictionaryLoader
+	textNorm    NarrationTextNorm
 	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
 	// sourceRevisions 是记录时间轴来源所需的窄能力（见 WithSourceRevisions）；nil 时跳过来源记录。
 	sourceRevisions SourceRevisionLookup
@@ -170,6 +172,21 @@ func (h *NarrationHandler) WithDictionary(dl DictionaryLoader) *NarrationHandler
 	return h
 }
 
+// NarrationTextNorm 是按任务构建文本规范化引擎的窄能力。
+//
+// 引擎必须按 (租户, 语言) 逐任务构建：租户发音词典/平台种子决定规则集，且构造后冻结不可变。
+// 实现见 textnorm.go 的 NewTextNormEngine；nil（未注入）时配音不走文本规范化（零行为回退）。
+type NarrationTextNorm interface {
+	// Build 返回已 Build() 冻结的引擎；加载失败返回 error（任务失败，不静默降空，R1）。
+	Build(ctx context.Context, tenantID, lang string) (*textnorm.Engine, error)
+}
+
+// WithTextNorm 注入文本规范化引擎构建器；未注入时配音不规范化文本（默认关闭）。
+func (h *NarrationHandler) WithTextNorm(n NarrationTextNorm) *NarrationHandler {
+	h.textNorm = n
+	return h
+}
+
 // WithTenantProvider 注入按租户解析的 TTS 供应商（模型网关）；
 // 设置后优先于 NewNarrationHandler 传入的固定 provider。
 func (h *NarrationHandler) WithTenantProvider(f func(ctx context.Context, tenantID string) (tts.TTSProvider, error)) *NarrationHandler {
@@ -222,6 +239,15 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		if rules, err := h.dictLoader.LoadTenantDefault(ctx, job.TenantID); err == nil {
 			dictRules = rules
 		}
+	}
+	// 文本规范化引擎按 (租户, 语言) 逐任务构建（V2.8）；加载失败 → 任务失败，不静默降空（R1）。
+	var textNormEngine *textnorm.Engine
+	if h.textNorm != nil {
+		engine, err := h.textNorm.Build(ctx, job.TenantID, snapshot.Language)
+		if err != nil {
+			return err
+		}
+		textNormEngine = engine
 	}
 	// G2-5 构建分段过滤集：非空时仅统计指定分段进度（全部分段仍走 synthesizeSegment 以复用缓存）。
 	var segmentFilter map[string]struct{}
@@ -296,7 +322,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 				return err
 			}
 			// synthesizeSegment 内部按 content hash 做缓存，未修改分段直接命中缓存，开销极低。
-			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules)
+			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine)
 			if err != nil {
 				return err
 			}
@@ -307,8 +333,13 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 				stats.Synthesized++
 			}
 			totalMS += asset.DurationMS
+			displayForTimeline := segment.DisplayText
+			if textNormEngine != nil {
+				// 字幕/导出文本派生：剥离读/停标记（V2.8 §7.3，StripMarkers 单实现）。
+				displayForTimeline = textnorm.StripMarkers(segment.DisplayText)
+			}
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
-				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: segment.DisplayText,
+				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: displayForTimeline,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
 			})
 			if segmentFilter == nil {
@@ -344,7 +375,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			}
 			if newRate != currentRate {
 				adjusted.SpeechControl.RatePercent = newRate
-				return h.retryWithAdjustedRate(ctx, job, adjusted, segmentFilter, dictRules, provider, capabilities, planned)
+				return h.retryWithAdjustedRate(ctx, job, adjusted, segmentFilter, dictRules, provider, capabilities, planned, textNormEngine)
 			}
 		}
 	}
@@ -374,10 +405,21 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 //
 // snapshot.BypassCache 为真时（用户显式要求重新生成）两级缓存一律不读，直接真实合成；
 // 写回仍用同一 configHash 键，即新音频覆盖旧音频对象。
-func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules) (*SegmentAsset, bool, error) {
-	// G2-4 应用发音词典替换，effectiveText 送 TTS。
+func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules, textNormEngine *textnorm.Engine) (*SegmentAsset, bool, error) {
+	// 文本规范化：引擎启用时先规范化（剥离读/停标记 + 词典 + 停顿事件），否则沿用今日发音词典替换。
+	// 规范化结果送 TTS 与对齐；DisplayText（字幕）在调用方按 StripMarkers 派生。
 	effectiveText := pronunciation.Apply(segment.SpokenText, dictRules)
-	configHash, err := synthesisHash(snapshot, capabilities, effectiveText)
+	pauses := []tts.Pause{}
+	if textNormEngine != nil {
+		res := textNormEngine.Run(segment.SpokenText, snapshot.Language)
+		effectiveText = res.Text
+		pauses = ToSpeechControlPauses(res.Pauses)
+	}
+	// 停顿事件并入 SpeechControl（V2.8 §7.5 时间域 B）：支持停顿的供应商在音频留真实静音，
+	// VAD 对齐自动重锚；不支持的供应商只回显 Warnings（provider 层判定）。
+	sc := snapshot.SpeechControl
+	sc.Pauses = append(sc.Pauses, pauses...)
+	configHash, err := synthesisHash(snapshot, capabilities, effectiveText, sc)
 	if err != nil {
 		return nil, false, err
 	}
@@ -452,7 +494,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 	request := tts.SynthesisRequest{
 		LogicalOpID: job.ID + ":" + slide.SlideID + ":" + segment.SegmentID + ":" + configHash,
 		VoiceID:     snapshot.VoiceID, Text: effectiveText, Language: snapshot.Language,
-		SpeechControl: snapshot.SpeechControl, SampleRate: snapshot.SampleRate,
+		SpeechControl: sc, SampleRate: snapshot.SampleRate,
 	}
 	started := time.Now()
 	result, err := provider.Synthesize(ctx, request)
@@ -627,7 +669,7 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 }
 
 // retryWithAdjustedRate 用调整后的语速重新执行合成（时长控制）。
-func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide) error {
+func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, textNormEngine *textnorm.Engine) error {
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
 	// 语速调整后重跑：构成独立累计（同上，按 job 局部）。
@@ -638,7 +680,7 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			asset, cached, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules)
+			asset, cached, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine)
 			if err != nil {
 				return err
 			}
@@ -649,8 +691,12 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 				stats.Synthesized++
 			}
 			totalMS += asset.DurationMS
+			displayForTimeline := segment.DisplayText
+			if textNormEngine != nil {
+				displayForTimeline = textnorm.StripMarkers(segment.DisplayText)
+			}
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
-				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: segment.DisplayText,
+				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: displayForTimeline,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
 			})
 		}
@@ -796,7 +842,7 @@ func (h *NarrationHandler) realignSharedSegment(ctx context.Context, seg *Segmen
 	return &upgraded, true
 }
 
-func synthesisHash(snapshot NarrationSnapshot, capabilities tts.VoiceCapabilities, text string) (string, error) {
+func synthesisHash(snapshot NarrationSnapshot, capabilities tts.VoiceCapabilities, text string, sc tts.SpeechControl) (string, error) {
 	input := struct {
 		AdapterVersion string            `json:"adapterVersion"`
 		Text           string            `json:"text"`
@@ -806,7 +852,7 @@ func synthesisHash(snapshot NarrationSnapshot, capabilities tts.VoiceCapabilitie
 		Region         string            `json:"region"`
 		SampleRate     int               `json:"sampleRate"`
 		SpeechControl  tts.SpeechControl `json:"speechControl"`
-	}{ttsAdapterVersion, text, snapshot.Language, snapshot.VoiceID, capabilities.ModelID, capabilities.Region, snapshot.SampleRate, snapshot.SpeechControl}
+	}{ttsAdapterVersion, text, snapshot.Language, snapshot.VoiceID, capabilities.ModelID, capabilities.Region, snapshot.SampleRate, sc}
 	b, err := json.Marshal(input)
 	if err != nil {
 		return "", err

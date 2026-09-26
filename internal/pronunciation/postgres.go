@@ -30,8 +30,12 @@ type Store interface {
 	Update(ctx context.Context, dict *Dictionary) error
 	Delete(ctx context.Context, tenantID, id string) error
 	// LoadTenantDefault 加载租户默认发音词典规则（按 created_at 取最新）。
-	// 未配置词典时返回空集，不报错。
+	// 未配置词典时返回空集，不报错。只返回租户自有行，不含平台种子（textnorm 适配层合并）。
 	LoadTenantDefault(ctx context.Context, tenantID string) (Rules, error)
+	// LoadPlatformDefault 加载平台级默认发音词典规则（is_platform_default=true 的最新行）。
+	// 平台种子行租户为空（tenant_id IS NULL），仅在文本规范化引擎启用时被读取。
+	// 无种子时返回空集，不报错。
+	LoadPlatformDefault(ctx context.Context) (Rules, error)
 }
 
 type PGStore struct {
@@ -45,7 +49,7 @@ func NewPGStore(pool *pgxpool.Pool) *PGStore {
 func (s *PGStore) ListByTenant(ctx context.Context, tenantID string) ([]*Dictionary, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, tenant_id, name, rules, EXTRACT(EPOCH FROM created_at)::bigint, EXTRACT(EPOCH FROM updated_at)::bigint
-		 FROM pronunciation_dictionaries WHERE tenant_id = $1 ORDER BY created_at`, tenantID)
+		 FROM pronunciation_dictionaries WHERE tenant_id = $1 AND is_platform_default = false ORDER BY created_at`, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("pronunciation list: %w", err)
 	}
@@ -128,12 +132,27 @@ func (s *PGStore) LoadTenantDefault(ctx context.Context, tenantID string) (Rules
 	var rulesRaw json.RawMessage
 	err := s.pool.QueryRow(ctx,
 		`SELECT rules FROM pronunciation_dictionaries
-		 WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`, tenantID).Scan(&rulesRaw)
+		 WHERE tenant_id = $1 AND is_platform_default = false ORDER BY created_at DESC LIMIT 1`, tenantID).Scan(&rulesRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("pronunciation load default: %w", err)
+	}
+	return ParseRules(rulesRaw), nil
+}
+
+// LoadPlatformDefault 返回平台级默认发音词典规则；无种子时返回空集。
+func (s *PGStore) LoadPlatformDefault(ctx context.Context) (Rules, error) {
+	var rulesRaw json.RawMessage
+	err := s.pool.QueryRow(ctx,
+		`SELECT rules FROM pronunciation_dictionaries
+		 WHERE is_platform_default = true ORDER BY created_at DESC LIMIT 1`).Scan(&rulesRaw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pronunciation load platform default: %w", err)
 	}
 	return ParseRules(rulesRaw), nil
 }
