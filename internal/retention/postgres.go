@@ -112,7 +112,10 @@ func (s *PGStore) SourcesToDelete(ctx context.Context, tenantID string, now time
 }
 
 // DerivedToDelete 返回超过租户派生产物保留分档的对象清单。
-// 分档字段：artifact_retention_days（导出成品）/audio_retention_days（配音音频）/render_retention_days（页面渲染图）。
+//
+// 分档来自 assets.go 的类型注册表：有专属档位的用专属键，其余一律用
+// derived_retention_days 兜底。此前只有 artifact/audio/render 三种有回收通道，
+// 时间轴/字幕等 12 种永不回收；现在条件由注册表生成，新增类型只需登记一处。
 func (s *PGStore) DerivedToDelete(ctx context.Context, tenantID string, now time.Time) ([]DerivedToDelete, error) {
 	var out []DerivedToDelete
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -121,14 +124,7 @@ func (s *PGStore) DerivedToDelete(ctx context.Context, tenantID string, now time
 			 FROM object_inventory oi
 			 JOIN tenants t ON t.id = oi.tenant_id
 			 WHERE oi.tenant_id = $1
-			   AND (
-			     (oi.asset_type = 'artifact' AND (t.policy->>'artifact_retention_days')::int > 0
-			        AND oi.updated_at < $2::timestamptz - ((t.policy->>'artifact_retention_days')::int || ' days')::interval)
-			     OR (oi.asset_type = 'audio' AND (t.policy->>'audio_retention_days')::int > 0
-			        AND oi.updated_at < $2::timestamptz - ((t.policy->>'audio_retention_days')::int || ' days')::interval)
-			     OR (oi.asset_type = 'render' AND (t.policy->>'render_retention_days')::int > 0
-			        AND oi.updated_at < $2::timestamptz - ((t.policy->>'render_retention_days')::int || ' days')::interval)
-			   )
+			   AND (`+derivedExpiryClause("$2")+`)
 			 ORDER BY oi.updated_at`, tenantID, now)
 		if err != nil {
 			return err
@@ -140,6 +136,35 @@ func (s *PGStore) DerivedToDelete(ctx context.Context, tenantID string, now time
 				return err
 			}
 			out = append(out, d)
+		}
+		return rows.Err()
+	})
+	return out, err
+}
+
+// OrphansToDelete 返回「清单里有记录、但库内已无引用」的对象。
+//
+// 判定只覆盖注册表中登记了归属表的类型；cutoff 之外的新写入不参与（避免误删
+// 尚在「写对象 → 落清单 → 提交业务行」窗口内的在途产物）。
+func (s *PGStore) OrphansToDelete(ctx context.Context, tenantID string, cutoff time.Time) ([]OrphanToDelete, error) {
+	var out []OrphanToDelete
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT oi.object_key, oi.asset_type, oi.asset_id
+			 FROM object_inventory oi
+			 WHERE oi.tenant_id = $1
+			   AND (`+orphanClause("$2")+`)
+			 ORDER BY oi.updated_at`, tenantID, cutoff)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var o OrphanToDelete
+			if err := rows.Scan(&o.ObjectKey, &o.AssetType, &o.AssetID); err != nil {
+				return err
+			}
+			out = append(out, o)
 		}
 		return rows.Err()
 	})

@@ -241,6 +241,14 @@ worker 还运行数据保留清理循环（G3-7）：可配 `PPTS_RETENTION_INTE
 `PPTS_UPLOAD_ABANDON_TTL`（默认 `24h`）。清理项包括超过项目 `source_retention_days` 的源对象
 （项目未设时回退租户策略 `source_retention_days` 默认）、选择"处理后删除"且解析成功的源对象，
 以及超时仍 `pending` 的上传临时对象。派生产物按租户策略分档过期：`artifact_retention_days`（导出成品）、
-`audio_retention_days`（配音音频）、`render_retention_days`（页面渲染图），过期后删除对象与清单记录
+`audio_retention_days`（配音音频）、`render_retention_days`（页面渲染图）；**其余派生物类型**
+（timeline / subtitle / alignment / segments / synth / document / notes / scriptdraft）共用兜底档
+`derived_retention_days`（`policy` 为 jsonb，设键即可，无需迁移）。过期后删除对象与清单记录
 （artifact 同时删除 `artifacts` 行）并写 `derived.delete` 审计。
+
 同一循环还清理超过 `PPTS_QUOTA_RESERVATION_TTL`（默认 `24h`）仍处于 `reserved` 的额度预占。
+
+同一循环还做**孤儿对象扫描**（清单里有记录、但库内已无引用）：`PPTS_ORPHAN_GRACE`（默认 `24h`）是静默期，
+早于它的新写入不参与判定（避免误删"写对象 → 落清单 → 提交业务行"窗口内的在途产物）。
+⚠️ **默认只报告不删除**（写 `orphan.detected` 审计）：删对象不可逆，而"无引用"是启发式判定。
+确认审计里的候选无误后，再设 `PPTS_ORPHAN_DELETE=1` 才会真删（届时写 `orphan.delete` 审计）。

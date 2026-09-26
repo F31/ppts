@@ -26,6 +26,10 @@ type Policy struct {
 	ArtifactRetentionDays    int    `json:"artifact_retention_days"`
 	AudioRetentionDays       int    `json:"audio_retention_days"`
 	RenderRetentionDays      int    `json:"render_retention_days"`
+	// DerivedRetentionDays 是未单独设档的派生物（timeline/subtitle/alignment/segments/
+	// synth/document/notes/scriptdraft）共用的保留天数。jsonb 存储，新增键无需迁移；
+	// 0 表示不自动过期（与其余 *_retention_days 语义一致：0 是「未设档」，不是「立即删」）。
+	DerivedRetentionDays int `json:"derived_retention_days"`
 }
 
 // LifecyclePolicySetting 是租户级存储生命周期策略下发所需的控制面行。

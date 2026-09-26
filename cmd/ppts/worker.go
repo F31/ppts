@@ -211,6 +211,9 @@ func runWorker() error {
 func startBackgroundLoops(ctx context.Context, stores *storeSet, objects objectstore.ObjectStore, auditStore audit.Store, stdLogger *log.Logger) {
 	sweeper := retention.NewSweeper(retention.NewPGStore(stores.pg), objects, durationEnv("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), stdLogger).
 		WithQuotaReservationTTL(durationEnv("PPTS_QUOTA_RESERVATION_TTL", 24*time.Hour)).
+		// 孤儿扫描默认开启但**只报告**：删对象不可逆，而"无引用"的依据是"归属表里查不到引用行"，
+		// 漏认一种引用关系就会删掉在用对象。人工核对审计里的 orphan.detected 后再开 PPTS_ORPHAN_DELETE。
+		WithOrphanScan(durationEnv("PPTS_ORPHAN_GRACE", 24*time.Hour), boolEnv("PPTS_ORPHAN_DELETE", false)).
 		WithAuditor(auditStore)
 	go runSweeper(ctx, sweeper, durationEnv("PPTS_RETENTION_INTERVAL", time.Hour))
 
@@ -287,6 +290,16 @@ func durationEnv(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// boolEnv 读取布尔环境变量；仅 "1"/"true"/"yes" 为真（忽略大小写与首尾空白）。
+// 未设置或无法识别时一律取 fallback —— 危险开关的默认必须是"关"。
+func boolEnv(name string, fallback bool) bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
+	if raw == "" {
+		return fallback
+	}
+	return raw == "1" || raw == "true" || raw == "yes"
 }
 
 // subtitleFontName 返回字幕烧录锁定的字体族名。
