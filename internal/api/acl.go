@@ -100,6 +100,8 @@ func requireProjectAccess(w http.ResponseWriter, r *http.Request, projects proje
 	if err != nil {
 		if errors.Is(err, project.ErrProjectNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
+		} else if errors.Is(err, project.ErrInvalidProjectID) {
+			http.Error(w, "invalid project_id", http.StatusBadRequest)
 		} else {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}

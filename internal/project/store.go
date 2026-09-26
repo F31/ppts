@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/google/uuid"
 
 	"github.com/F31/ppts/internal/tenant"
 )
@@ -156,6 +157,9 @@ var ErrFolderNotEmpty = errors.New("project: folder is not empty")
 // ErrProjectNotFound 表示项目不存在或越权。
 var ErrProjectNotFound = errors.New("project: project not found")
 
+// ErrInvalidProjectID 表示项目 ID 不是合法 UUID（防止落入 PG uuid 解析错误转成 500）。
+var ErrInvalidProjectID = errors.New("project: invalid project id")
+
 // ErrSourceRevisionNotFound 表示源版本不存在。
 var ErrSourceRevisionNotFound = errors.New("project: source revision not found")
 
@@ -277,6 +281,11 @@ func (s *PGProjectStore) CreateProject(ctx context.Context, tenantID, owner, tit
 }
 
 func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		// 非法 UUID 直接落入 WHERE id=$3（uuid 列 vs text 参数）会抛 PG 22P02，
+		// 那不是 ErrProjectNotFound，会一路变成 500；统一转成客户端参数错误。
+		return nil, ErrInvalidProjectID
+	}
 	var p *Project
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		var e error

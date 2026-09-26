@@ -94,3 +94,22 @@ func TestPGDeleteSourceRevisionFallback(t *testing.T) {
 		t.Fatalf("delete last = %v, want ErrDeleteLastRevision", err)
 	}
 }
+
+// TestPGGetProjectInvalidID 非法 UUID 项目 ID 返回 ErrInvalidProjectID（而非 PG 22P02 → 500）。
+func TestPGGetProjectInvalidID(t *testing.T) {
+	dsn := os.Getenv("PPTS_TEST_DATABASE")
+	if dsn == "" {
+		t.Skip("PPTS_TEST_DATABASE not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	store := NewPGProjectStore(pool)
+	if _, err := store.GetProject(ctx, "00000000-0000-0000-0000-0000000000d7", "", "not-a-uuid"); !errors.Is(err, ErrInvalidProjectID) {
+		t.Fatalf("GetProject(invalid id) = %v, want ErrInvalidProjectID", err)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/project"
+	"github.com/google/uuid"
 )
 
 // fakeACLProjectStore 是一个满足 ProjectStore 接口、支持 ACL 过滤的假实现。
@@ -166,8 +167,8 @@ func (s *fakeACLProjectStore) TouchShareLinkAccess(_ context.Context, _, _ strin
 
 func TestRequireProjectAccess_OwnerCanAccess(t *testing.T) {
 	store := newFakeACLProjectStore()
-	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
-	store.addCollaborator("proj-1", "user-collab", "editor")
+	store.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
+	store.addCollaborator("11111111-1111-1111-1111-111111111111", "user-collab", "editor")
 
 	tests := []struct {
 		name       string
@@ -183,7 +184,7 @@ func TestRequireProjectAccess_OwnerCanAccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 直接调 GetProject，绕开 ServeMux 的 pathValue 机制
-			proj, err := store.GetProject(context.Background(), "tenant-1", tt.userID, "proj-1")
+			proj, err := store.GetProject(context.Background(), "tenant-1", tt.userID, "11111111-1111-1111-1111-111111111111")
 			if tt.wantStatus == http.StatusOK {
 				if err != nil {
 					t.Fatalf("expected access, got err=%v", err)
@@ -252,7 +253,7 @@ func TestProjectAccessUser_AdminOverride(t *testing.T) {
 // 方案 A：admin 旁路可访问非协作者项目；editor 非协作者被拒。
 func TestRequireProjectAccess_AdminOverrideHTTP(t *testing.T) {
 	store := newFakeACLProjectStore()
-	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
+	store.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
 
 	cases := []struct {
 		name       string
@@ -267,8 +268,8 @@ func TestRequireProjectAccess_AdminOverrideHTTP(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest("GET", "/projects/proj-1/artifacts", nil)
-			req.SetPathValue("pid", "proj-1")
+			req := httptest.NewRequest("GET", "/projects/11111111-1111-1111-1111-111111111111/artifacts", nil)
+			req.SetPathValue("pid", "11111111-1111-1111-1111-111111111111")
 			req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{
 				TenantID: "tenant-1", UserID: tc.userID,
 			}))
@@ -302,11 +303,11 @@ func (r *recordingAudit) Record(_ context.Context, e audit.Event) error {
 
 func TestRequireProjectAccess_AdminOverrideAudited(t *testing.T) {
 	store := newFakeACLProjectStore()
-	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
+	store.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
 	rec := &recordingAudit{}
 
-	req := httptest.NewRequest("GET", "/projects/proj-1/artifacts", nil)
-	req.SetPathValue("pid", "proj-1")
+	req := httptest.NewRequest("GET", "/projects/11111111-1111-1111-1111-111111111111/artifacts", nil)
+	req.SetPathValue("pid", "11111111-1111-1111-1111-111111111111")
 	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{
 		TenantID: "tenant-1", UserID: "user-admin",
 	}))
@@ -317,7 +318,7 @@ func TestRequireProjectAccess_AdminOverrideAudited(t *testing.T) {
 	if len(rec.events) != 1 {
 		t.Fatalf("expected 1 audit event, got %d", len(rec.events))
 	}
-	if rec.events[0].Action != "project.admin_override_access" || rec.events[0].ResourceID != "proj-1" {
+	if rec.events[0].Action != "project.admin_override_access" || rec.events[0].ResourceID != "11111111-1111-1111-1111-111111111111" {
 		t.Fatalf("unexpected audit event: %+v", rec.events[0])
 	}
 }
@@ -325,12 +326,12 @@ func TestRequireProjectAccess_AdminOverrideAudited(t *testing.T) {
 // 非 admin 的合法协作者访问不应产生 override 审计。
 func TestRequireProjectAccess_CollaboratorNoOverrideAudit(t *testing.T) {
 	store := newFakeACLProjectStore()
-	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
-	store.addCollaborator("proj-1", "user-collab", "editor")
+	store.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
+	store.addCollaborator("11111111-1111-1111-1111-111111111111", "user-collab", "editor")
 	rec := &recordingAudit{}
 
-	req := httptest.NewRequest("GET", "/projects/proj-1/artifacts", nil)
-	req.SetPathValue("pid", "proj-1")
+	req := httptest.NewRequest("GET", "/projects/11111111-1111-1111-1111-111111111111/artifacts", nil)
+	req.SetPathValue("pid", "11111111-1111-1111-1111-111111111111")
 	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{
 		TenantID: "tenant-1", UserID: "user-collab",
 	}))
@@ -346,11 +347,11 @@ func TestRequireProjectAccess_CollaboratorNoOverrideAudit(t *testing.T) {
 // 精度：owner 访问自己的项目不应记为管理越权（避免审计噪声）。
 func TestRequireProjectAccess_OwnerSelfNoOverrideAudit(t *testing.T) {
 	store := newFakeACLProjectStore()
-	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
+	store.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
 	rec := &recordingAudit{}
 
-	req := httptest.NewRequest("GET", "/projects/proj-1/artifacts", nil)
-	req.SetPathValue("pid", "proj-1")
+	req := httptest.NewRequest("GET", "/projects/11111111-1111-1111-1111-111111111111/artifacts", nil)
+	req.SetPathValue("pid", "11111111-1111-1111-1111-111111111111")
 	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{
 		TenantID: "tenant-1", UserID: "user-owner",
 	}))
@@ -364,25 +365,56 @@ func TestRequireProjectAccess_OwnerSelfNoOverrideAudit(t *testing.T) {
 	}
 }
 
+// invalidProjectIDStore 模拟 PG 实现：非法 UUID 返回 ErrInvalidProjectID（PG store 层行为）。
+type invalidProjectIDStore struct {
+	project.ProjectStore
+}
+
+func (s invalidProjectIDStore) GetProject(_ context.Context, _, _, id string) (*project.Project, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, project.ErrInvalidProjectID
+	}
+	return s.ProjectStore.GetProject(context.Background(), "", "", id)
+}
+
+// 非法 UUID pid：显式返回 400，而不是落入 PG uuid 解析错误转成 500。
+func TestRequireProjectAccess_InvalidProjectID(t *testing.T) {
+	base := newFakeACLProjectStore()
+	base.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
+	store := invalidProjectIDStore{ProjectStore: base}
+	req := httptest.NewRequest("GET", "/projects/not-a-uuid/artifacts", nil)
+	req.SetPathValue("pid", "not-a-uuid")
+	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{
+		TenantID: "tenant-1", UserID: "user-admin",
+	}))
+	rec := httptest.NewRecorder()
+	if _, ok := requireProjectAccess(rec, req, store, &aclRoleReader{role: membership.RoleAdmin}, nil); ok {
+		t.Fatal("invalid project_id must be denied")
+	}
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
 // resolveProject：admin 非成员 → override=true；普通成员非协作者 → NotFound。
 func TestResolveProject(t *testing.T) {
 	store := newFakeACLProjectStore()
-	store.addProject("tenant-1", "user-owner", "proj-1", "My Project")
+	store.addProject("tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111", "My Project")
 
 	base := context.WithValue(context.Background(), principalKey{}, Principal{TenantID: "tenant-1", UserID: "user-x"})
 
 	// admin 非成员 → 旁路
-	_, override, err := resolveProject(base, store, &aclRoleReader{role: membership.RoleAdmin}, "tenant-1", "user-x", "proj-1")
+	_, override, err := resolveProject(base, store, &aclRoleReader{role: membership.RoleAdmin}, "tenant-1", "user-x", "11111111-1111-1111-1111-111111111111")
 	if err != nil || !override {
 		t.Fatalf("admin should override: err=%v override=%v", err, override)
 	}
 	// editor 非成员 → NotFound
-	_, _, err = resolveProject(base, store, &aclRoleReader{role: membership.RoleEditor}, "tenant-1", "user-x", "proj-1")
+	_, _, err = resolveProject(base, store, &aclRoleReader{role: membership.RoleEditor}, "tenant-1", "user-x", "11111111-1111-1111-1111-111111111111")
 	if !errors.Is(err, project.ErrProjectNotFound) {
 		t.Fatalf("editor non-member should get NotFound, got %v", err)
 	}
 	// owner 本人 → 严格命中，无 override
-	_, override, err = resolveProject(base, store, &aclRoleReader{role: membership.RoleEditor}, "tenant-1", "user-owner", "proj-1")
+	_, override, err = resolveProject(base, store, &aclRoleReader{role: membership.RoleEditor}, "tenant-1", "user-owner", "11111111-1111-1111-1111-111111111111")
 	if err != nil || override {
 		t.Fatalf("owner should have direct access without override: err=%v override=%v", err, override)
 	}
