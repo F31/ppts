@@ -223,5 +223,8 @@ func projectError(err error) error {
 	if errors.Is(err, project.ErrProjectNotFound) {
 		return connect.NewError(connect.CodeNotFound, err)
 	}
+	if errors.Is(err, project.ErrInvalidProjectID) {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
 	return connect.NewError(connect.CodeInternal, err)
 }
