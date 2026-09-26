@@ -142,28 +142,7 @@ func narrationJobWith(t *testing.T, jobID string, revision int64, bypass bool) *
 // publishedAudioKey 取当前最新 tts_segment 步骤清单里记录的音频键。
 func publishedAudioKey(t *testing.T, objects objectstore.ObjectStore, steps *stepRecorder) string {
 	t.Helper()
-	for _, step := range steps.latest {
-		if step.StepType != "tts_segment" || step.ResultRef == "" {
-			continue
-		}
-		key, err := objectstore.Parse(step.ResultRef)
-		if err != nil {
-			t.Fatalf("parse manifest key: %v", err)
-		}
-		r, _, err := objects.Get(context.Background(), key)
-		if err != nil {
-			t.Fatalf("manifest get: %v", err)
-		}
-		data, _ := io.ReadAll(r)
-		r.Close()
-		var manifest SegmentAsset
-		if err := json.Unmarshal(data, &manifest); err != nil {
-			t.Fatalf("manifest decode: %v", err)
-		}
-		return manifest.AudioKey
-	}
-	t.Fatalf("no tts_segment step recorded")
-	return ""
+	return readPublishedSegmentManifest(t, objects, steps).AudioKey
 }
 
 func readSynthesisStats(t *testing.T, objects objectstore.ObjectStore, tenantID, projectID, jobID string) SynthesisStats {

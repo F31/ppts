@@ -36,6 +36,7 @@ type VoiceCapabilities struct {
 	MaxInputChars    int
 	SSMLSubset       []string // 支持的 SSML 标签
 	Pronunciation    bool     // 支持读音控制
+	SupportsPauses   bool     // 支持结构化停顿（SpeechControl.Pauses 会在音频中留真实静音）
 	TimestampType    TimestampType
 	Streaming        bool
 	Region           string

@@ -252,6 +252,80 @@ func TestTextNormToSpeechControlPauses(t *testing.T) {
 	}
 }
 
+// TestTextNormPauseNotSupportedWarning 停顿事件在供应商不支持时回显 pause_not_supported。
+func TestTextNormPauseNotSupportedWarning(t *testing.T) {
+	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "第一段", SpokenText: "AB‖CD"},
+	)}
+	handler, _, steps, objects := newTextNormHandler(t, store, meta, true, nil)
+	provider := providerForTests()
+	provider.caps.SupportsPauses = false
+	handler.WithTenantProvider(func(context.Context, string) (tts.TTSProvider, error) { return provider, nil })
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	manifest := readPublishedSegmentManifest(t, objects, steps)
+	if !containsString(manifest.Warnings, "pause_not_supported") {
+		t.Fatalf("expected pause_not_supported warning, got %v", manifest.Warnings)
+	}
+}
+
+// TestTextNormPauseSupportedNoWarning 供应商支持停顿时不回显警告。
+func TestTextNormPauseSupportedNoWarning(t *testing.T) {
+	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "第一段", SpokenText: "AB‖CD"},
+	)}
+	handler, _, steps, objects := newTextNormHandler(t, store, meta, true, nil)
+	provider := providerForTests()
+	provider.caps.SupportsPauses = true
+	handler.WithTenantProvider(func(context.Context, string) (tts.TTSProvider, error) { return provider, nil })
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	manifest := readPublishedSegmentManifest(t, objects, steps)
+	if containsString(manifest.Warnings, "pause_not_supported") {
+		t.Fatalf("did not expect pause_not_supported warning, got %v", manifest.Warnings)
+	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
+}
+
+// readPublishedSegmentManifest 读取最新 tts_segment 步骤落盘的 SegmentAsset 清单。
+func readPublishedSegmentManifest(t *testing.T, objects objectstore.ObjectStore, steps *stepRecorder) *SegmentAsset {
+	t.Helper()
+	for _, step := range steps.latest {
+		if step.StepType != "tts_segment" || step.ResultRef == "" {
+			continue
+		}
+		key, err := objectstore.Parse(step.ResultRef)
+		if err != nil {
+			t.Fatalf("parse manifest key: %v", err)
+		}
+		r, _, err := objects.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("manifest get: %v", err)
+		}
+		data, _ := io.ReadAll(r)
+		r.Close()
+		var manifest SegmentAsset
+		if err := json.Unmarshal(data, &manifest); err != nil {
+			t.Fatalf("manifest decode: %v", err)
+		}
+		return &manifest
+	}
+	t.Fatalf("no tts_segment step recorded")
+	return nil
+}
+
 // readTimelineBundle 从 timeline 步骤的 ResultRef 读取 TimelineAsset。
 func readTimelineBundle(t *testing.T, objects objectstore.ObjectStore, steps *stepRecorder) *TimelineAsset {
 	t.Helper()

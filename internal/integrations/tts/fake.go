@@ -26,7 +26,7 @@ func (f *FakeProvider) Capabilities(_ context.Context, voiceID string) (VoiceCap
 	return VoiceCapabilities{
 		VoiceID: voiceID, Languages: []string{"zh-CN"},
 		MaxInputChars: 10000, TimestampType: TimestampPerChar,
-		Region: "dev-fake", ModelID: "fake-wav",
+		Region: "dev-fake", ModelID: "fake-wav", SupportsPauses: true,
 	}, nil
 }
 

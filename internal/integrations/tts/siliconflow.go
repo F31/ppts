@@ -55,6 +55,9 @@ func (p *SiliconFlowProvider) Capabilities(_ context.Context, voiceID string) (V
 		Streaming:     false,
 		Region:        "cn-siliconflow",
 		ModelID:       p.cfg.Model,
+		// siliconflow 的 /v1/audio/speech 负载只接受 model/input/voice/format/speed/sample_rate，
+		// 不消费 SpeechControl.Pauses（停顿需在文本里插入 <break> 或静音片，非结构化接口）。
+		SupportsPauses: false,
 	}, nil
 }
 

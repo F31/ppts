@@ -510,6 +510,12 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		return failStep(err)
 	}
 	audioHash := hashBytes(result.Audio)
+	warnings := result.Warnings
+	if len(pauses) > 0 && !capabilities.SupportsPauses {
+		// V2.8 §7.5 期望管理：结构化停顿未被供应商消费时，显式回显信号（G2 停顿功能层降级）。
+		// 停顿不出现在真实音频中，但用户会在 Warnings 里看到该供应商"不支持停顿"。
+		warnings = append(append([]string{}, warnings...), "pause_not_supported")
+	}
 	// G2-7 音频按内容寻址（configHash）存放在租户级共享路径，跨项目复用同一对象。
 	audioKey := objectstore.ObjectKey{
 		TenantID: job.TenantID, ProjectID: sharedCacheProject, Revision: "cache",
@@ -519,7 +525,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		SegmentID: segment.SegmentID, AudioKey: audioKey.String(), AudioHash: audioHash,
 		Format: result.Format, DurationMS: result.RealDurationMS, Alignment: result.Alignment,
 		ProviderRequestID: result.ProviderRequestID, BillingUnit: result.BillingUnit,
-		BillingQuantity: result.BillingQuantity, Warnings: result.Warnings,
+		BillingQuantity: result.BillingQuantity, Warnings: warnings,
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
