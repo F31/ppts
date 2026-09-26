@@ -34,9 +34,25 @@ var _ app.NarrationTextNorm = appTextNorm{}
 // Build 实现 NarrationTextNorm：加载词典并构建冻结引擎。
 // 平台种子来自迁移固定写入（is_platform_default=true），故 expectedSeedNonEmpty 恒真——
 // 合并结果为空触发的 R1 "empty_unexpected" 信号由此生效。
+// 数值读法（N2 可选）：PPTS_TEXT_NORM_NUMBERS=quantity|year 时注册，默认不注册。
 func (a appTextNorm) Build(ctx context.Context, tenantID, lang string) (*textnorm.Engine, error) {
-	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger)
+	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, numberModeOption())
 }
+
+// numberModeOption 依据环境变量返回数值规则装配选项；未设置或非法时返回零值（不注册）。
+func numberModeOption() app.TextNormOptions {
+	switch os.Getenv("PPTS_TEXT_NORM_NUMBERS") {
+	case "quantity":
+		return app.TextNormOptions{NumberMode: ptr(textnorm.NumberModeQuantity)}
+	case "year":
+		return app.TextNormOptions{NumberMode: ptr(textnorm.NumberModeYear)}
+	default:
+		return app.TextNormOptions{}
+	}
+}
+
+// ptr 是泛型取址助手（Go 1.18+）。
+func ptr[T any](v T) *T { return &v }
 
 // textNormMetricsAdapter 把 app.TextNormMetrics 事件落到 Prometheus 指标。
 type textNormMetricsAdapter struct{}

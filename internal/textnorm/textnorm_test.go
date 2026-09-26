@@ -208,3 +208,149 @@ func TestDefinitionRuleFallback(t *testing.T) {
 		t.Fatalf("fallback: got %q", res.Text)
 	}
 }
+
+// TestNumberRuleQuantity 数量位读：独立数字词 → 中文读法；界面不拦截中文单位词。
+func TestNumberRuleQuantity(t *testing.T) {
+	e := New()
+	e.RegisterRule("number", 20, NumberRule(NumberModeQuantity))
+	e.Build()
+	cases := []struct{ in, want string }{
+		{"涨价到 2024 年", "涨价到 二千零二十四 年"},
+		{"RTX5090 很贵", "RTX5090 很贵"}, // 相邻 ASCII 字母 → 型号，不展开
+		{"5080Ti", "5080Ti"},         // 后缀字母 → 不展开
+		{"项目 3 个", "项目 三 个"},
+		{"12 台机器", "十二 台机器"},
+		{"2024年发布", "二千零二十四年发布"}, // 中文单位词边界 → 展开
+		{"价格 10005 元", "价格 一万零五 元"},
+	}
+	for _, c := range cases {
+		got := e.Run(c.in, "zh-CN").Text
+		if got != c.want {
+			t.Errorf("NumberRule(%q) = %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestNumberRuleYear 年份直读模式。
+func TestNumberRuleYear(t *testing.T) {
+	e := New()
+	e.RegisterRule("number", 20, NumberRule(NumberModeYear))
+	e.Build()
+	cases := []struct{ in, want string }{
+		{"2024 年", "二零二四 年"},
+		{"19 年", "一九 年"},
+		{"RTX5090", "RTX5090"},
+	}
+	for _, c := range cases {
+		got := e.Run(c.in, "zh-CN").Text
+		if got != c.want {
+			t.Errorf("NumberRuleYear(%q) = %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestIndexMapFromNumberExpansion 数值展开触发字对不齐 → 引擎产出 IndexMap。
+func TestIndexMapFromNumberExpansion(t *testing.T) {
+	e := New()
+	e.RegisterRule("number", 20, NumberRule(NumberModeQuantity))
+	e.Build()
+	res := e.Run("2024 年发布", "zh-CN")
+	if res.Text != "二千零二十四 年发布" {
+		t.Fatalf("unexpected text %q", res.Text)
+	}
+	if res.IndexMap == nil || res.IndexMap.Empty() {
+		t.Fatal("expected IndexMap from number expansion")
+	}
+	// 改动段覆盖 2024→二千零二十四（4 → 6 rune），其余为恒等段。
+	var numSeg *IndexSeg
+	for i := range res.IndexMap.Segments {
+		s := &res.IndexMap.Segments[i]
+		if s.SrcStart == 0 && s.SrcEnd == 4 {
+			numSeg = s
+		}
+	}
+	if numSeg == nil {
+		t.Fatalf("no segment for 2024, got %v", res.IndexMap.Segments)
+	}
+	if numSeg.DstStart != 0 || numSeg.DstEnd != 6 {
+		t.Fatalf("2024 segment = %+v, want [0,4)→[0,6)", numSeg)
+	}
+	// 映射：原 rune 2（"2024" 内部）→ 派生。
+	if dst, ok := res.IndexMap.MapSrcToDst(2); !ok || dst != 3 {
+		t.Fatalf("MapSrcToDst(2) = %d,%v want 3,true", dst, ok)
+	}
+	// 数字展开后 派生位置 5（空格）应对应 原位置 4（空格）——恒等段。
+	if dst, ok := res.IndexMap.MapSrcToDst(4); !ok || dst != 6 {
+		t.Fatalf("MapSrcToDst(4) = %d,%v want 6,true", dst, ok)
+	}
+}
+
+// TestIndexMapFromMarkers 读音/停顿标记产生偏移段（标记在原文→派生间被剥离/展开）。
+func TestIndexMapFromMarkers(t *testing.T) {
+	e := engineWithDict(nil)
+	res := e.Run("A〔读：b〕‖C", "zh-CN")
+	if res.Text != "AbC" {
+		t.Fatalf("unexpected text %q", res.Text)
+	}
+	if res.IndexMap == nil || res.IndexMap.Empty() {
+		t.Fatal("expected IndexMap from markers")
+	}
+	// 覆盖全部原文位置：任意原位置都能映射到派生。
+	for src := 0; src < 8; src++ {
+		if _, ok := res.IndexMap.MapSrcToDst(src); !ok {
+			t.Fatalf("MapSrcToDst(%d) not covered", src)
+		}
+	}
+}
+
+// TestIndexMapNilForIdentity 完全无偏移（无标记且规则同长/未命中）→ nil。
+func TestIndexMapNilForIdentity(t *testing.T) {
+	e := engineWithDict(fakeDict{"A": "a"}) // 同长改写
+	res := e.Run("ABCD", "zh-CN")
+	if !res.IndexMap.Empty() {
+		t.Fatalf("identity should not produce IndexMap, got %v", res.IndexMap)
+	}
+}
+
+// TestStripMarkersIndexed 剥离标记的逐位来源下标。
+func TestStripMarkersIndexed(t *testing.T) {
+	out, idx := StripMarkersIndexed("A〔读：b〕‖CD")
+	if out != "AbCD" {
+		t.Fatalf("out = %q want %q", out, "AbCD")
+	}
+	// A(0) b(4) C(7) D(8) —— b 的来源是 〔读：b〕 内的 b。
+	want := []int{0, 4, 7, 8}
+	if len(idx) != len(want) {
+		t.Fatalf("idx = %v want %v", idx, want)
+	}
+	for i := range want {
+		if idx[i] != want[i] {
+			t.Fatalf("idx[%d] = %d want %d (full %v)", i, idx[i], want[i], idx)
+		}
+	}
+}
+
+// TestDisplayToEffective 显示文本→朗读文本的精确映射表。
+func TestDisplayToEffective(t *testing.T) {
+	e := New()
+	e.RegisterRule("number", 20, NumberRule(NumberModeQuantity))
+	e.Build()
+	res := e.Run("2024 年发布", "zh-CN")
+	// 显示 "2024 年发布"(8)→ 朗读 "二千零二十四 年发布"(11)。
+	if res.Text != "二千零二十四 年发布" {
+		t.Fatalf("unexpected eff %q", res.Text)
+	}
+	m := DisplayToEffective("2024 年发布", res)
+	if m == nil || len(m) != 8 {
+		t.Fatalf("m = %v want %d entries", m, 8)
+	}
+	// "2024"→"二千零二十四"(4→6) 段内按比例：src1→2、src2→3、src3→5；空格与尾部恒等：src4→6、src7→9。
+	cases := []struct{ dispIdx, wantEff int }{
+		{0, 0}, {1, 2}, {2, 3}, {3, 5}, {4, 6}, {7, 9},
+	}
+	for _, c := range cases {
+		if m[c.dispIdx] != c.wantEff {
+			t.Fatalf("m[%d] = %d want %d (full %v)", c.dispIdx, m[c.dispIdx], c.wantEff, m)
+		}
+	}
+}

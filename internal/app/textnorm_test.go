@@ -77,10 +77,11 @@ type staticTextNorm struct {
 	seed    bool
 	metrics TextNormMetrics
 	logger  *slog.Logger
+	opts    []TextNormOptions
 }
 
 func (s staticTextNorm) Build(ctx context.Context, _, lang string) (*textnorm.Engine, error) {
-	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger)
+	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger, s.opts...)
 }
 
 func segmentsWithMarkers() []*narration.Segment {
@@ -238,6 +239,50 @@ func TestTextNormPlatformSeedFallback(t *testing.T) {
 	}
 	if got := eg.Run("CUDA 并行", "zh-CN").Text; got != "库达 并行" {
 		t.Fatalf("platform fallback: got %q", got)
+	}
+}
+
+// TestTextNormNumberModeE2E N2 数值展开端到端：数量位读使 effectiveText 变长，
+// 时间轴携带精确 CharToToken（显示字符→朗读 token），字幕零标记。
+func TestTextNormNumberModeE2E(t *testing.T) {
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "2024 年发布", SpokenText: "2024 年发布"},
+	)}
+	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
+	qty := textnorm.NumberModeQuantity
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := &captureTTSProvider{testTTSProvider: *providerForTests()}
+	handler := NewNarrationHandler(store, steps, objects, provider)
+	handler = handler.WithTextNorm(staticTextNorm{
+		meta: meta, seed: true,
+		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
+		opts:   []TextNormOptions{{NumberMode: &qty}},
+	})
+
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	// 送 TTS 的是数量位读展开后的文本。
+	if got := provider.lastReq.Text; got != "二千零二十四 年发布" {
+		t.Fatalf("effectiveText = %q, want %q", got, "二千零二十四 年发布")
+	}
+	// 字幕 = 剥离标记的显示文本（原样 2024 年发布，零污染）。
+	timeline := readTimelineBundle(t, objects, steps).Timeline
+	if len(timeline.Subtitles) != 1 {
+		t.Fatalf("subtitles = %d", len(timeline.Subtitles))
+	}
+	if timeline.Subtitles[0].Text != "2024 年发布" {
+		t.Fatalf("subtitle text = %q", timeline.Subtitles[0].Text)
+	}
+	// 精确高亮：显示 8 字 → 8 个 CharCue（否则比例重映射逻辑吃掉了细节）。
+	chars := timeline.Subtitles[0].Chars
+	if len(chars) != 8 {
+		t.Fatalf("len(chars) = %d want 8 (precise mapping present)", len(chars))
+	}
+	// 显示字符顺序与字幕一致。
+	if string(chars[0].Char) != "2" || string(chars[3].Char) != "4" || string(chars[7].Char) != "布" {
+		t.Fatalf("chars misaligned: %+v", chars)
 	}
 }
 

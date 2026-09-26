@@ -256,3 +256,71 @@ func TestRemapCharsToCount(t *testing.T) {
 		t.Fatalf("identity mismatch: %+v", same)
 	}
 }
+
+// TestPickCharsByToken 精确映射：显示字符按 index 直取 token 时间；多字符映射到同一
+// token 时时间重复且单调不破坏；越界 index 回落 nil（调用方走比例近似）。
+func TestPickCharsByToken(t *testing.T) {
+	tokens := []CharCue{
+		{StartUS: 0, EndUS: 100},
+		{StartUS: 100, EndUS: 200},
+		{StartUS: 200, EndUS: 300},
+		{StartUS: 300, EndUS: 400},
+	}
+	// 显示 6 字符 "二千零二十四" → token 映射（2024→二千零二十四 场景：二/千 共享 token0）。
+	out := pickCharsByToken(tokens, []rune("二千零二十四"), []int{0, 0, 1, 2, 3, 3})
+	if len(out) != 6 {
+		t.Fatalf("len = %d want 6", len(out))
+	}
+	if string(out[0].Char) != "二" || string(out[5].Char) != "四" {
+		t.Fatalf("chars = %q %q", out[0].Char, out[5].Char)
+	}
+	// 整体仍覆盖 [0,400) 且单调不减。
+	if out[0].StartUS != 0 || out[len(out)-1].EndUS != 400 {
+		t.Fatalf("span = [%d,%d] want [0,400]", out[0].StartUS, out[len(out)-1].EndUS)
+	}
+	for i := 1; i < len(out); i++ {
+		if out[i].StartUS < out[i-1].StartUS {
+			t.Fatalf("monotonic violated at %d: %+v", i, out)
+		}
+		if out[i].EndUS < out[i].StartUS {
+			t.Fatalf("degenerate cue at %d: %+v", i, out[i])
+		}
+	}
+	// 越界 index → nil（调用方回落 remap）。
+	if bad := pickCharsByToken(tokens, []rune("AB"), []int{0, 99}); bad != nil {
+		t.Fatalf("out-of-range should return nil, got %v", bad)
+	}
+}
+
+// TestBuildTimelinePreciseCharMap 时间轴装配优先使用精确映射，保证每个显示字符都有单调高亮区间。
+func TestBuildTimelinePreciseCharMap(t *testing.T) {
+	timing := Timing{LeadInMS: 0, GapMS: 0, TailHoldMS: 0}
+	slides := []SlideInput{{
+		SlideID: "s1",
+		Segments: []SegmentInput{{
+			SegmentID: "seg-1", DisplayText: "二千零二十四",
+			AudioKey: "k.wav", DurationMS: 400,
+			// 4 个 token；显示 6 字（2024→二千零二十四 的数量读展开）。
+			Alignment: &tts.Alignment{Method: tts.AlignProvider, Tokens: []tts.TokenOffset{
+				{StartUS: 0, EndUS: 100000, Char: "二"},
+				{StartUS: 100000, EndUS: 200000, Char: "千"},
+				{StartUS: 200000, EndUS: 300000, Char: "零"},
+				{StartUS: 300000, EndUS: 400000, Char: "四"},
+			}},
+			CharToToken: []int{0, 0, 1, 2, 3, 3},
+		}},
+	}}
+	tl, err := BuildTimeline(slides, timing)
+	if err != nil {
+		t.Fatalf("BuildTimeline: %v", err)
+	}
+	chars := tl.Subtitles[0].Chars
+	if len(chars) != 6 {
+		t.Fatalf("len(chars) = %d want 6", len(chars))
+	}
+	for i := range chars {
+		if chars[i].StartUS > chars[i].EndUS || chars[i].EndUS == 0 {
+			t.Fatalf("invalid cue %d: %+v", i, chars[i])
+		}
+	}
+}

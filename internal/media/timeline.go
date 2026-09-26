@@ -25,6 +25,10 @@ type SegmentInput struct {
 	AudioKey    string
 	DurationMS  int64
 	Alignment   *tts.Alignment
+	// CharToToken 是可选的"显示字符 → 朗读字符（Alignment.Tokens 下标）"精确映射
+	// （V2.8 §7.5 时间域 A，N2 数值展开时由 textnorm.IndexMap 组合产生）。
+	// 长度必须等于 DisplayText 的 rune 数；nil 时回落 remapCharsToCount 比例近似。
+	CharToToken []int
 }
 
 // SlideInput preserves the caller-provided page order.
@@ -175,10 +179,13 @@ func BuildTimeline(slides []SlideInput, timing Timing) (*Timeline, error) {
 					chars = append(chars, CharCue{StartUS: tokenStart, EndUS: tokenEnd, Char: token.Char})
 				}
 			}
-			// 显示文本与朗读文本（发音词典替换后）字数可能不同；按比例把字级时间戳重映射到
-			// 显示文本，保证高亮下标与渲染文本一一对应（否则会系统性错位）。
+			// 精确映射（N2 数值展开）优先：每个显示字符直接对应朗读文本中某个字级
+			// token；否则按比例把字级时间戳重映射到显示文本（V2.8 §7.5 时间域 A）。
 			if len(chars) > 0 {
-				if runes := []rune(inputSegment.DisplayText); len(runes) != len(chars) {
+				runes := []rune(inputSegment.DisplayText)
+				if len(inputSegment.CharToToken) == len(runes) {
+					chars = pickCharsByToken(chars, runes, inputSegment.CharToToken)
+				} else if len(runes) != len(chars) {
 					chars = remapCharsToCount(chars, runes)
 				}
 			}
@@ -275,6 +282,34 @@ func remapCharsToCount(chars []CharCue, runes []rune) []CharCue {
 		}
 		out[i] = CharCue{StartUS: start, EndUS: end, Char: string(runes[i])}
 		prev = end
+	}
+	return out
+}
+
+// pickCharsByToken 用精确映射从朗读文本的字级 token 中按显示字符下标挑取高亮区间
+// （V2.8 §7.5 时间域 A：N2 数值展开后 IndexMap 提供的精确逐字定位）。
+//
+// 语义：显示第 i 个字符对应朗读 token 表的下标 map[i]；该显示的起止就是那个 token 的
+// 起止。多个显示字符可能映射到同一 token（数值展开时展开出的多个汉字只对应原数字），
+// 此时时间区间取同一 token（相邻重复做去重防单调性破坏）。
+func pickCharsByToken(chars []CharCue, runes []rune, tokIdx []int) []CharCue {
+	out := make([]CharCue, 0, len(tokIdx))
+	var prevStart int64
+	prevStartSet := false
+	for i, idx := range tokIdx {
+		if idx < 0 || idx >= len(chars) {
+			return nil // 越界：放弃精确映射，调用方回落 remapCharsToCount
+		}
+		s, e := chars[idx].StartUS, chars[idx].EndUS
+		// 相邻 token 时间必须单调不减；破坏时取前一区间的结束作为起点，保证连续。
+		if prevStartSet && s < prevStart {
+			s = prevStart
+			if e <= s {
+				e = s + 1
+			}
+		}
+		prevStart = e
+		out = append(out, CharCue{StartUS: s, EndUS: e, Char: string(runes[i])})
 	}
 	return out
 }

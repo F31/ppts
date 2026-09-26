@@ -338,9 +338,12 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 				// 字幕/导出文本派生：剥离读/停标记（V2.8 §7.3，StripMarkers 单实现）。
 				displayForTimeline = textnorm.StripMarkers(segment.DisplayText)
 			}
+			// 精确逐字高亮（N2 数值展开）：显示字符 → 朗读 token 下标；不可用时回落比例近似。
+			charToToken := buildCharToToken(textNormEngine, segment.SpokenText, snapshot.Language, asset.Alignment)
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
 				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: displayForTimeline,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
+				CharToToken: charToToken,
 			})
 			if segmentFilter == nil {
 				completedSegments++
@@ -597,6 +600,21 @@ func (h *NarrationHandler) publishSynthesisStats(ctx context.Context, job *pipel
 	})
 }
 
+// buildCharToToken 为精确逐字高亮计算"显示字符 → 朗读 token 下标"映射（V2.8 §7.5 时间域 A）。
+// 引擎/对齐信息缺失或长度不匹配时返回 nil（调用方回落 remapCharsToCount 比例近似）。
+func buildCharToToken(engine *textnorm.Engine, spoken, lang string, alignment *tts.Alignment) []int {
+	if engine == nil || alignment == nil || len(alignment.Tokens) == 0 {
+		return nil
+	}
+	res := engine.Run(spoken, lang)
+	if res.IndexMap == nil || res.IndexMap.Empty() {
+		return nil
+	}
+	return textnorm.DisplayToEffective(spoken, res)
+}
+
+// publishTimeline 发布播放时间轴（含精确逐字高亮映射；无映射时 timeline 内回落比例近似）。
+
 func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput, revisionNo int, stats SynthesisStats) error {
 	timeline, err := media.BuildTimeline(slides, timing)
 	if err != nil {
@@ -701,9 +719,11 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 			if textNormEngine != nil {
 				displayForTimeline = textnorm.StripMarkers(segment.DisplayText)
 			}
+			charToToken := buildCharToToken(textNormEngine, segment.SpokenText, adjusted.Language, asset.Alignment)
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
 				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: displayForTimeline,
 				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
+				CharToToken: charToToken,
 			})
 		}
 		timelineSlides = append(timelineSlides, timelineSlide)

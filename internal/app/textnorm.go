@@ -56,6 +56,13 @@ func (a *DictAdapter) Substitute(lang, text string) (bool, string) {
 	return changed, text
 }
 
+// TextNormOptions 是文本规范化引擎的可选行为。
+type TextNormOptions struct {
+	// NumberMode 非 nil 时注册数值读法规则（V2.8 §3.4 优先级 20，N2 可选，默认不注册）。
+	// 数值展开会改 effectiveText（→ 音频缓存键）与显示字数（→ 触发 IndexMap 精确高亮）。
+	NumberMode *textnorm.NumberMode
+}
+
 // NewTextNormEngine 按租户+语言构建冻结的文本规范化引擎。
 //
 // 语义（V2.8 §5.2 + §6，合并归属已拍板：只在 DictAdapter，不改 Store）：
@@ -66,7 +73,7 @@ func (a *DictAdapter) Substitute(lang, text string) (bool, string) {
 //   - 正常空（租户与平台均无规则）→ 返回不含词典规则的引擎（纯标记扫描），不报错。
 //
 // 返回的 Engine 已 Build() 冻结，可安全并发 Run。
-func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger) (*textnorm.Engine, error) {
+func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger, opts ...TextNormOptions) (*textnorm.Engine, error) {
 	if store == nil {
 		return nil, fmt.Errorf("textnorm: nil dictionary store")
 	}
@@ -105,6 +112,13 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 	engine := textnorm.New()
 	if len(merged) > 0 {
 		engine.RegisterRule("definition", 10, textnorm.DefinitionRule(NewDictAdapter(merged, lang)))
+	}
+	var opt TextNormOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	if opt.NumberMode != nil {
+		engine.RegisterRule("number", 20, textnorm.NumberRule(*opt.NumberMode))
 	}
 	engine.Build()
 	return engine, nil
