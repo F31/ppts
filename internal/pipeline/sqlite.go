@@ -300,7 +300,8 @@ func (s *SQLiteStore) sqComplete(ctx context.Context, id, owner string, fencing 
 		return ErrLeaseMismatch
 	}
 	if step != nil {
-		if err := sqUpsertStep(ctx, tx, *step); err != nil {
+		// 与 MarkStep 同一条覆盖规则（steps.go 单一来源）。
+		if _, err := sqUpsertStep(ctx, tx, *step); err != nil {
 			return err
 		}
 	}
@@ -348,8 +349,16 @@ func (s *SQLiteStore) MarkStep(ctx context.Context, step JobStep) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := sqUpsertStep(ctx, tx, step); err != nil {
+	if err := sqAssertLease(ctx, tx, step); err != nil {
 		return err
+	}
+	n, err := sqUpsertStep(ctx, tx, step)
+	if err != nil {
+		return err
+	}
+	// 覆盖被拒（既有结论更强）= 事实未变，phase 也不动（理由同 PG 侧）。
+	if n == 0 {
+		return tx.Commit()
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE jobs SET phase = ? WHERE id = ? AND tenant_id = ? AND phase <> ?`,
@@ -359,15 +368,49 @@ func (s *SQLiteStore) MarkStep(ctx context.Context, step JobStep) error {
 	return tx.Commit()
 }
 
-func sqUpsertStep(ctx context.Context, q sqTxQueryer, step JobStep) error {
-	_, err := q.ExecContext(ctx,
+// sqAssertLease 校验写入者是否仍持有任务租约（LeaseOwner/FencingToken 皆为零值时不校验）。
+// 终态任务的 lease_owner 已被 Complete 置 NULL，因此带凭据的写入一律被挡下。
+func sqAssertLease(ctx context.Context, q sqTxQueryer, step JobStep) error {
+	wantOwner, wantFencing := resolveStepLease(ctx, step)
+	if wantOwner == "" && wantFencing == 0 {
+		return nil
+	}
+	var owner sql.NullString
+	var fencing int64
+	err := q.QueryRowContext(ctx,
+		`SELECT lease_owner, fencing_token FROM jobs WHERE id = ? AND tenant_id = ?`,
+		step.JobID, step.TenantID).Scan(&owner, &fencing)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrJobNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !owner.Valid || owner.String != wantOwner || fencing != wantFencing {
+		return ErrLeaseMismatch
+	}
+	return nil
+}
+
+// sqUpsertStep 写入/更新步骤行，返回受影响行数（0 = 命中冲突但被覆盖条件拒绝）。
+// 覆盖条件取自 steps.go 的单一来源，与 PG 侧同源：pending 不得抹掉已下结论的状态。
+func sqUpsertStep(ctx context.Context, q sqTxQueryer, step JobStep) (int64, error) {
+	res, err := q.ExecContext(ctx,
 		`INSERT INTO job_steps (id, job_id, tenant_id, step_type, step_key, state, result_ref, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(job_id, step_key) DO UPDATE
-		   SET state = excluded.state, result_ref = excluded.result_ref, updated_at = excluded.updated_at`,
+		   SET state = excluded.state, result_ref = excluded.result_ref, updated_at = excluded.updated_at
+		   WHERE `+stepOverwriteCond(dialectSQLite),
 		uuid.New().String(), step.JobID, step.TenantID, step.StepType, step.StepKey,
 		string(step.State), step.ResultRef, sqNow())
-	return err
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func (s *SQLiteStore) UpdateProgress(ctx context.Context, id, owner string, fencing int64, progress int) error {

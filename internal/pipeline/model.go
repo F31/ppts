@@ -149,6 +149,17 @@ type JobStep struct {
 	State     JobStepState
 	ResultRef string
 	UpdatedAt time.Time
+	// LeaseOwner / FencingToken 是写入者的租约凭据（可选）。
+	//
+	// 二者皆为**零值时不做校验**（历史调用方与测试桩不受影响），一旦填写，
+	// 存储侧会校验任务当前租约仍归该写入者：不匹配即返回 ErrLeaseMismatch。
+	//
+	// 存在的理由：MarkStep 是唯一一个没有 fencing 校验的任务写入口。租约过期的旧 worker
+	// 其 Complete 会被 fencing 挡下，但它沿途写下的步骤依然会落库——既能把新 worker 正在
+	// 推进的步骤状态反向覆盖，也能在任务已终态（lease_owner 已置 NULL）后继续改 jobs.phase。
+	// 由 handler 统一经 LeaseScoped 填写，避免"规则写了但没人传凭据"的死守卫。
+	LeaseOwner   string
+	FencingToken int64
 }
 
 // JobFilter 是任务列表的筛选与排序条件（B4-M6b）。

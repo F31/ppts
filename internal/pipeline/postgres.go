@@ -358,13 +358,9 @@ func (s *PGStore) CompleteWithStep(ctx context.Context, id, owner string, fencin
 			return err
 		}
 		if step != nil {
-			_, err := tx.Exec(ctx,
-				`INSERT INTO job_steps (id, job_id, tenant_id, step_type, step_key, state, result_ref)
-				 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6)
-				 ON CONFLICT (job_id, step_key) DO UPDATE
-				   SET state=EXCLUDED.state, result_ref=EXCLUDED.result_ref, updated_at=now()`,
-				step.JobID, step.TenantID, step.StepType, step.StepKey, string(step.State), step.ResultRef)
-			if err != nil {
+			// 与 MarkStep 同一条覆盖规则（steps.go 单一来源）：终态提交携带的最终步骤
+			// 是 success，覆盖 pending/failed 不受影响；反之 pending 抹结论同样被拒。
+			if _, err := pgStepUpsert(ctx, tx, *step); err != nil {
 				return err
 			}
 		}
@@ -392,22 +388,70 @@ func (s *PGStore) ScheduleRetry(ctx context.Context, id, owner string, fencing i
 	})
 }
 
+// pgStepUpsert 写入/更新步骤行。覆盖条件取自 steps.go 的单一来源（pending 不抹结论）。
+//
+// 返回受影响行数：0 表示命中唯一冲突但被覆盖条件拒绝（有更强的既有结论），此时**不是错误**。
+func pgStepUpsert(ctx context.Context, tx pgx.Tx, step JobStep) (int64, error) {
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO job_steps (id, job_id, tenant_id, step_type, step_key, state, result_ref)
+		 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (job_id, step_key) DO UPDATE
+		   SET state=EXCLUDED.state, result_ref=EXCLUDED.result_ref, updated_at=now()
+		   WHERE `+stepOverwriteCond(dialectPG),
+		step.JobID, step.TenantID, step.StepType, step.StepKey, string(step.State), step.ResultRef)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// pgAssertLease 校验写入者是否仍持有任务租约（LeaseOwner/FencingToken 任一为零值时不校验）。
+//
+// 任务终态时 Complete 已把 lease_owner 置 NULL，此时任何带凭据的写入都会被挡下——
+// 这正是"任务已 canceled/failed/succeeded 之后不得再改步骤与 phase"的实现方式。
+func pgAssertLease(ctx context.Context, tx pgx.Tx, step JobStep) error {
+	wantOwner, wantFencing := resolveStepLease(ctx, step)
+	if wantOwner == "" && wantFencing == 0 {
+		return nil
+	}
+	var owner *string
+	var fencing int64
+	err := tx.QueryRow(ctx,
+		`SELECT lease_owner, fencing_token FROM jobs WHERE id=$1 AND tenant_id=$2`,
+		step.JobID, step.TenantID).Scan(&owner, &fencing)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrJobNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if owner == nil || *owner != wantOwner || fencing != wantFencing {
+		return ErrLeaseMismatch
+	}
+	return nil
+}
+
 // MarkStep 幂等记录步骤状态，并在**同一事务**内维护 jobs.phase（B4-M6b）。
 //
 // 阶段 = 最近写入的步骤类型。同事务写入是关键：任何已提交的步骤写入必然连带提交阶段，
 // 因此不存在「步骤已变、阶段未变」的漂移，jobs.phase 才敢用于列表排序/筛选。
 // 刻意**不**更新 jobs.updated_at：本方法原本就不动它（updated_at 供 EventsSince 的增量轮询使用，
 // 在此处推进会让轮询把未变更状态的任务误报为已变更）。
+//
+// 带租约凭据时先校验归属：不匹配（含任务已终态）返回 ErrLeaseMismatch。
 func (s *PGStore) MarkStep(ctx context.Context, step JobStep) error {
 	return tenant.Run(ctx, s.pool, step.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		_, err := tx.Exec(ctx,
-			`INSERT INTO job_steps (id, job_id, tenant_id, step_type, step_key, state, result_ref)
-			 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6)
-			 ON CONFLICT (job_id, step_key) DO UPDATE
-			   SET state=EXCLUDED.state, result_ref=EXCLUDED.result_ref, updated_at=now()`,
-			step.JobID, step.TenantID, step.StepType, step.StepKey, string(step.State), step.ResultRef)
+		if err := pgAssertLease(ctx, tx, step); err != nil {
+			return err
+		}
+		n, err := pgStepUpsert(ctx, tx, step)
 		if err != nil {
 			return err
+		}
+		// 覆盖被拒（既有结论更强）= 这次写入对事实没有任何改变，连 phase 也不动：
+		// 让"最近写入的步骤类型"保持真实，而不是把一次被忽略的写入记成进度。
+		if n == 0 {
+			return nil
 		}
 		// 值未变时不写（避免无谓的行更新与 WAL）；条件里带 tenant_id 以满足 RLS 的写检查。
 		_, err = tx.Exec(ctx,

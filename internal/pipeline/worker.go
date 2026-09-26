@@ -156,6 +156,9 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 	started := time.Now()
 	// 注入任务所属租户，供续租/终态提交与 handler 建立 RLS 上下文。
 	ctx = tenant.WithContext(ctx, job.TenantID)
+	// 注入本轮租约凭据：handler 沿途所有步骤写入都据此校验归属，
+	// 租约过期（已被他人重领）或任务已终态时写入被拒，避免旧 worker 污染新持有者的步骤。
+	ctx = WithStepLease(ctx, job.LeaseOwner, job.FencingToken)
 
 	// 领取到"待取消"任务：不执行 handler，直接提交 canceled。
 	if job.State == StateCancelReq {
@@ -243,6 +246,10 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 		return
 	}
 	if err == nil && commitStep.step != nil {
+		// 补上本轮租约凭据：让 outbox 步骤同样受 fencing/终态守卫约束，
+		// 否则过期 worker 的最终步骤会绕过 MarkStep 的校验直接落库。
+		commitStep.step.LeaseOwner = job.LeaseOwner
+		commitStep.step.FencingToken = job.FencingToken
 		if completer, ok := w.store.(CompleteWithStep); ok {
 			if cerr := completer.CompleteWithStep(ctx, job.ID, job.LeaseOwner, job.FencingToken, StateSucceeded, nil, commitStep.step); cerr != nil {
 				w.logger.Printf("worker: complete succeeded (outbox) job=%s: %v", job.ID, cerr)
