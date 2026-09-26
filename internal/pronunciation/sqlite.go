@@ -135,7 +135,7 @@ func (s *SQLiteStore) LoadPlatformDefault(ctx context.Context) (Rules, error) {
 	var rulesRaw string
 	err := s.db.QueryRowContext(ctx,
 		`SELECT rules FROM pronunciation_dictionaries
-		 WHERE is_platform_default = true ORDER BY created_at DESC LIMIT 1`).Scan(&rulesRaw)
+		 WHERE is_platform_default = true ORDER BY created_at DESC, rowid DESC LIMIT 1`).Scan(&rulesRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

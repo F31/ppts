@@ -147,7 +147,7 @@ func (s *PGStore) LoadPlatformDefault(ctx context.Context) (Rules, error) {
 	var rulesRaw json.RawMessage
 	err := s.pool.QueryRow(ctx,
 		`SELECT rules FROM pronunciation_dictionaries
-		 WHERE is_platform_default = true ORDER BY created_at DESC LIMIT 1`).Scan(&rulesRaw)
+		 WHERE is_platform_default = true ORDER BY created_at DESC, id DESC LIMIT 1`).Scan(&rulesRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
