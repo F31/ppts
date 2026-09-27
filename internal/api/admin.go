@@ -13,7 +13,8 @@ import (
 
 // TenantAdminStore 是运营商后台所需的租户控制面能力。
 type TenantAdminStore interface {
-	ListTenants(ctx context.Context, limit int) ([]tenant.Summary, error)
+	ListTenantsPage(ctx context.Context, cursor string, pageSize int) ([]tenant.Summary, string, error)
+	CountTenants(ctx context.Context) (int, error)
 	Suspend(ctx context.Context, tenantID string) error
 	Resume(ctx context.Context, tenantID string) error
 }
@@ -48,13 +49,13 @@ func registerAdminRoutes(mux *http.ServeMux, d *adminDeps, auth func(http.Handle
 }
 
 func (d *adminDeps) listTenants(w http.ResponseWriter, r *http.Request) {
-	limit := 200
-	if v := strings.TrimSpace(r.URL.Query().Get("limit")); v != "" {
+	pageSize := 200
+	if v := strings.TrimSpace(r.URL.Query().Get("page_size")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
+			pageSize = n
 		}
 	}
-	list, err := d.tenants.ListTenants(r.Context(), limit)
+	list, nextCursor, err := d.tenants.ListTenantsPage(r.Context(), strings.TrimSpace(r.URL.Query().Get("cursor")), pageSize)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -82,7 +83,17 @@ func (d *adminDeps) listTenants(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, row)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"tenants": out})
+	total := 0
+	if d.tenants != nil {
+		if n, err := d.tenants.CountTenants(r.Context()); err == nil {
+			total = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"tenants":     out,
+		"next_cursor": nextCursor,
+		"total":       total,
+	})
 }
 
 func (d *adminDeps) suspendTenant(w http.ResponseWriter, r *http.Request) {

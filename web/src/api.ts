@@ -1782,9 +1782,25 @@ export type AdminTenant = {
   quota?: AdminTenantQuota;
 };
 
-export async function listAdminTenants(identity: ClientIdentity): Promise<AdminTenant[]> {
-  const r = await getJSON<{ tenants: AdminTenant[] }>(identity, '/admin/tenants');
-  return r.tenants ?? [];
+export type AdminTenantsPage = {
+  tenants: AdminTenant[];
+  nextCursor: string;
+  total: number;
+};
+
+export async function listAdminTenants(
+  identity: ClientIdentity,
+  opts?: { cursor?: string; pageSize?: number }
+): Promise<AdminTenantsPage> {
+  const q = new URLSearchParams();
+  if (opts?.cursor) q.set('cursor', opts.cursor);
+  if (opts?.pageSize) q.set('page_size', String(opts.pageSize));
+  const suffix = q.toString() ? `?${q.toString()}` : '';
+  const r = await getJSON<{ tenants: AdminTenant[]; next_cursor: string; total: number }>(
+    identity,
+    `/admin/tenants${suffix}`
+  );
+  return { tenants: r.tenants ?? [], nextCursor: r.next_cursor ?? '', total: r.total ?? 0 };
 }
 
 export async function suspendTenant(identity: ClientIdentity, tenantId: string): Promise<void> {

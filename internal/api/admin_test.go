@@ -15,33 +15,45 @@ type adminTenantStub struct {
 	suspended string
 	resumed   string
 	list      []tenant.Summary
+	next      string
+	total     int
 }
 
-func (s *adminTenantStub) ListTenants(_ context.Context, _ int) ([]tenant.Summary, error) {
-	return s.list, nil
+func (s *adminTenantStub) ListTenantsPage(_ context.Context, _ string, _ int) ([]tenant.Summary, string, error) {
+	return s.list, s.next, nil
 }
+func (s *adminTenantStub) CountTenants(_ context.Context) (int, error) { return s.total, nil }
 func (s *adminTenantStub) Suspend(_ context.Context, id string) error { s.suspended = id; return nil }
 func (s *adminTenantStub) Resume(_ context.Context, id string) error  { s.resumed = id; return nil }
 
 func TestAdminListTenants(t *testing.T) {
-	stub := &adminTenantStub{list: []tenant.Summary{
-		{ID: "t1", Name: "Acme", Type: "organization", Status: tenant.StatusSuspended, CreatedAt: time.Unix(1, 0)},
-	}}
+	stub := &adminTenantStub{
+		list: []tenant.Summary{
+			{ID: "t1", Name: "Acme", Type: "organization", Status: tenant.StatusSuspended, CreatedAt: time.Unix(1, 0)},
+		},
+		next:  "cur-next",
+		total: 3,
+	}
 	d := &adminDeps{operatorIDs: map[string]bool{"op": true}, tenants: stub}
-	req := httptest.NewRequest(http.MethodGet, "/admin/tenants", nil)
+	req := httptest.NewRequest(http.MethodGet, "/admin/tenants?page_size=10&cursor=abc", nil)
 	rr := httptest.NewRecorder()
 	d.listTenants(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	var out struct {
-		Tenants []map[string]any `json:"tenants"`
+		Tenants    []map[string]any `json:"tenants"`
+		NextCursor string           `json:"next_cursor"`
+		Total      int              `json:"total"`
 	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(out.Tenants) != 1 || out.Tenants[0]["id"] != "t1" || out.Tenants[0]["status"] != "suspended" {
 		t.Fatalf("tenants = %+v", out.Tenants)
+	}
+	if out.NextCursor != "cur-next" || out.Total != 3 {
+		t.Fatalf("next_cursor=%q total=%d", out.NextCursor, out.Total)
 	}
 }
 
