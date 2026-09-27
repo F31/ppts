@@ -7,6 +7,7 @@ import {
   testGateway,
   updateGateway,
   type ClientIdentity,
+  type GatewayScope,
   type GatewayTestResult,
   type ModelGateway
 } from './api';
@@ -41,17 +42,28 @@ const emptyForm: FormState = {
   isDefault: true
 };
 
-export function GatewaySettings({
-  identity,
-  onSaved,
-  onClose,
-  inline = true
-}: {
+type GatewaySettingsProps = {
   identity: ClientIdentity;
   onSaved?: () => void | Promise<void>;
   onClose?: () => void;
   inline?: boolean;
-}) {
+};
+
+export function GatewaySettings(props: GatewaySettingsProps) {
+  const [scope, setScope] = useState<GatewayScope>('tenant');
+  const effectiveScope = props.identity.operator ? scope : 'tenant';
+  // 范围切换后重建表单与测试状态，避免同名网关或旧请求污染另一范围。
+  return <ScopedGatewaySettings key={`${props.identity.tenantId}:${effectiveScope}`} {...props} scope={effectiveScope} onScopeChange={setScope} />;
+}
+
+function ScopedGatewaySettings({
+  identity,
+  onSaved,
+  onClose,
+  inline = true,
+  scope,
+  onScopeChange
+}: GatewaySettingsProps & { scope: GatewayScope; onScopeChange: (scope: GatewayScope) => void }) {
   const { t } = useI18n();
   const [gateways, setGateways] = useState<ModelGateway[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,7 +80,7 @@ export function GatewaySettings({
     setLoading(true);
     setError('');
     try {
-      setGateways(await listGateways(identity));
+      setGateways(await listGateways(identity, undefined, scope));
     } catch (err) {
       const msg = err instanceof Error ? err.message : '';
       // 网关功能在后端未启用（缺 AES 密钥）时返回 503 feature_disabled，给出友好提示而非原始报错。
@@ -80,7 +92,7 @@ export function GatewaySettings({
     } finally {
       setLoading(false);
     }
-  }, [identity, t]);
+  }, [identity, scope, t]);
 
   useEffect(() => {
     void load();
@@ -102,7 +114,7 @@ export function GatewaySettings({
           visionModel: form.kind === 'llm' ? form.visionModel || undefined : undefined,
           voice: form.kind === 'tts' ? form.voice || undefined : undefined,
           isDefault: form.isDefault
-        });
+        }, scope);
       } else {
         await createGateway(identity, {
           kind: form.kind,
@@ -114,7 +126,7 @@ export function GatewaySettings({
           visionModel: form.kind === 'llm' ? form.visionModel || undefined : undefined,
           voice: form.kind === 'tts' ? form.voice || undefined : undefined,
           isDefault: form.isDefault
-        });
+        }, scope);
       }
       setForm(null);
       setEditing(null);
@@ -144,7 +156,7 @@ export function GatewaySettings({
     const key = gatewayKey(gw);
     setTesting(key);
     try {
-      const result = await testGateway(identity, gw.name, gw.kind);
+      const result = await testGateway(identity, gw.name, gw.kind, scope);
       setTestResult((current) => ({ ...current, [key]: result }));
     } catch (err) {
       setTestResult((current) => ({
@@ -160,7 +172,7 @@ export function GatewaySettings({
     const ok = await confirmAsk({ kind: 'confirm', titleKey: 'gateway.deleteTitle', messageKey: 'gateway.deleteConfirm', messageValues: { name: gw.name, kind: gw.kind }, confirmKey: 'common.delete', danger: true });
     if (!ok) return;
     try {
-      await deleteGateway(identity, gw.name, gw.kind);
+      await deleteGateway(identity, gw.name, gw.kind, scope);
       await load();
       await onSaved?.();
     } catch (err) {
@@ -309,6 +321,16 @@ export function GatewaySettings({
           </button>
         )}
       </header>
+        <div className="form-row">
+          <label>
+            {t('gateway.scopeLabel')}
+            <select value={scope} disabled={!!form || !!testing} onChange={(e) => onScopeChange(e.target.value as GatewayScope)}>
+              <option value="tenant">{t('gateway.scopeTenant')}</option>
+              {identity.operator && <option value="platform">{t('gateway.scopePlatform')}</option>}
+            </select>
+          </label>
+        </div>
+        <p className="test-hint">{scope === 'platform' ? t('gateway.scopePlatformHint') : t('gateway.scopeTenantHint')}</p>
         {error && <p className="form-error" role="alert">{error}</p>}
         {!loading && !error && (
           <div className={`service-banner ${ttsState}`} role="status">
@@ -358,7 +380,7 @@ export function GatewaySettings({
                         type="button"
                         onClick={async () => {
                           try {
-                            await setDefaultGateway(identity, gw.name, gw.kind);
+                            await setDefaultGateway(identity, gw.name, gw.kind, scope);
                             await load();
                             await onSaved?.();
                           } catch (err) {

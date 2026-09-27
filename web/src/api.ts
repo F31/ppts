@@ -1063,39 +1063,43 @@ function gatewayPath(identity: ClientIdentity, method: string, path: string, bod
   });
 }
 
-export async function listGateways(identity: ClientIdentity, kind?: 'tts' | 'llm'): Promise<ModelGateway[]> {
-  const suffix = kind ? `?kind=${kind}` : '';
+export type GatewayScope = 'tenant' | 'platform';
+
+export async function listGateways(identity: ClientIdentity, kind?: 'tts' | 'llm', scope: GatewayScope = 'tenant'): Promise<ModelGateway[]> {
+  const suffix = `?scope=${scope}${kind ? `&kind=${kind}` : ''}`;
   const data = (await gatewayPath(identity, 'GET', `/api/model-gateways${suffix}`)) as { gateways?: ModelGateway[] };
   return data.gateways ?? [];
 }
 
 export async function createGateway(
   identity: ClientIdentity,
-  input: { kind: 'tts' | 'llm'; name: string; baseUrl: string; apiKey: string; model: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean }
+  input: { kind: 'tts' | 'llm'; name: string; baseUrl: string; apiKey: string; model: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean },
+  scope: GatewayScope = 'tenant'
 ): Promise<ModelGateway> {
-  const data = (await gatewayPath(identity, 'POST', '/api/model-gateways', input)) as { gateway?: ModelGateway };
+  const data = (await gatewayPath(identity, 'POST', `/api/model-gateways?scope=${scope}`, input)) as { gateway?: ModelGateway };
   return data.gateway!;
 }
 
 export async function updateGateway(
   identity: ClientIdentity,
   name: string,
-  input: { kind: 'tts' | 'llm'; originalKind?: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean }
+  input: { kind: 'tts' | 'llm'; originalKind?: 'tts' | 'llm'; version: number; baseUrl?: string; apiKey?: string; model?: string; provider?: string; visionModel?: string; voice?: string; sampleRate?: number; isDefault?: boolean; enabled?: boolean },
+  scope: GatewayScope = 'tenant'
 ): Promise<ModelGateway> {
-  const data = (await gatewayPath(identity, 'PUT', `/api/model-gateways/${encodeURIComponent(name)}`, input)) as { gateway?: ModelGateway };
+  const data = (await gatewayPath(identity, 'PUT', `/api/model-gateways/${encodeURIComponent(name)}?scope=${scope}`, input)) as { gateway?: ModelGateway };
   return data.gateway!;
 }
 
-export async function deleteGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<void> {
-  await gatewayPath(identity, 'DELETE', `/api/model-gateways/${encodeURIComponent(name)}?kind=${kind}`);
+export async function deleteGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm', scope: GatewayScope = 'tenant'): Promise<void> {
+  await gatewayPath(identity, 'DELETE', `/api/model-gateways/${encodeURIComponent(name)}?kind=${kind}&scope=${scope}`);
 }
 
-export async function setDefaultGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<void> {
-  await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/set-default?kind=${kind}`);
+export async function setDefaultGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm', scope: GatewayScope = 'tenant'): Promise<void> {
+  await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/set-default?kind=${kind}&scope=${scope}`);
 }
 
-export async function testGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm'): Promise<GatewayTestResult> {
-  return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}`)) as GatewayTestResult;
+export async function testGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm', scope: GatewayScope = 'tenant'): Promise<GatewayTestResult> {
+  return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}&scope=${scope}`)) as GatewayTestResult;
 }
 
 // ---- 项目语音属性（语音模型 / 音色 / 语速）----

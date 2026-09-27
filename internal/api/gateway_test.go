@@ -131,7 +131,7 @@ func gwDo(t *testing.T, h http.Handler, method, path, body string) *httptest.Res
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(tenantHeader, "00000000-0000-0000-0000-000000000000")
+	req.Header.Set(tenantHeader, "00000000-0000-0000-0000-000000000001")
 	req.Header.Set(userHeader, "user-1")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -151,12 +151,101 @@ func TestGatewayCRUDRequiresAdmin(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create code = %d body=%s", rec.Code, rec.Body.String())
 	}
-	gws, err := store.List(context.Background(), "00000000-0000-0000-0000-000000000000", gateway.KindTTS)
+	gws, err := store.List(context.Background(), "00000000-0000-0000-0000-000000000001", gateway.KindTTS)
 	if err != nil || len(gws) != 1 {
 		t.Fatalf("list after create = %d err=%v", len(gws), err)
 	}
 	if !gws[0].IsDefault {
 		t.Fatalf("expected default gateway")
+	}
+}
+
+func TestGatewayPlatformScopeRequiresOperator(t *testing.T) {
+	t.Setenv("PPTS_OPERATOR_USER_IDS", "another-user")
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	for _, route := range []struct{ method, path string }{
+		{"GET", "/api/model-gateways?scope=platform"},
+		{"POST", "/api/model-gateways?scope=platform"},
+		{"PUT", "/api/model-gateways/sil?scope=platform"},
+		{"DELETE", "/api/model-gateways/sil?scope=platform&kind=tts"},
+		{"POST", "/api/model-gateways/sil/set-default?scope=platform&kind=tts"},
+		{"POST", "/api/model-gateways/sil/test?scope=platform&kind=tts"},
+	} {
+		rec := gwDo(t, h, route.method, route.path, `{}`)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s %s: got %d, want 403", route.method, route.path, rec.Code)
+		}
+	}
+	if rec := gwDo(t, h, "GET", "/api/model-gateways?scope=other", ""); rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid scope: got %d", rec.Code)
+	}
+	// 即使身份落在保留的平台租户，也不能通过省略 scope 绕过 operator 权限。
+	req := httptest.NewRequest("GET", "/api/model-gateways", nil)
+	req.Header.Set(tenantHeader, gateway.PlatformTenantID)
+	req.Header.Set(userHeader, "user-1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("implicit platform scope: got %d", rec.Code)
+	}
+}
+
+func TestGatewayPlatformScopeIsolation(t *testing.T) {
+	t.Setenv("PPTS_OPERATOR_USER_IDS", "user-1")
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	body := `{"kind":"tts","name":"sil","baseUrl":"https://api.siliconflow.cn","apiKey":"test-key","model":"cosy","isDefault":true}`
+	for _, suffix := range []string{"", "?scope=platform"} {
+		rec := gwDo(t, h, "POST", "/api/model-gateways"+suffix, body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", suffix, rec.Code, rec.Body.String())
+		}
+	}
+	for _, scope := range []struct{ query, tenant string }{
+		{"", "00000000-0000-0000-0000-000000000001"},
+		{"?scope=platform", gateway.PlatformTenantID},
+	} {
+		rec := gwDo(t, h, "GET", "/api/model-gateways"+scope.query, "")
+		var resp struct {
+			Gateways []*gateway.Gateway `json:"gateways"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if rec.Code != http.StatusOK || len(resp.Gateways) != 1 || resp.Gateways[0].TenantID != scope.tenant {
+			t.Fatalf("list scope %q leaked other scope: %s", scope.query, rec.Body.String())
+		}
+	}
+	// 平台操作不依赖管理员在自己的租户是否为 admin。
+	h = gwHandler(t, store, membership.RoleViewer)
+	for _, route := range []struct {
+		method, path, body string
+		status             int
+	}{
+		{"GET", "/api/model-gateways?scope=platform", "", http.StatusOK},
+		{"PUT", "/api/model-gateways/sil?scope=platform", `{"kind":"tts","version":1,"model":"updated"}`, http.StatusOK},
+		{"POST", "/api/model-gateways/sil/set-default?scope=platform&kind=tts", "", http.StatusNoContent},
+		{"POST", "/api/model-gateways/sil/test?scope=platform&kind=tts", "", http.StatusOK},
+	} {
+		rec := gwDo(t, h, route.method, route.path, route.body)
+		if rec.Code != route.status {
+			t.Fatalf("%s %s: %d %s", route.method, route.path, rec.Code, rec.Body.String())
+		}
+	}
+	platform, err := store.Get(context.Background(), gateway.PlatformTenantID, "sil", gateway.KindTTS)
+	if err != nil || platform.Model != "updated" || !platform.IsDefault {
+		t.Fatalf("platform update not applied: %+v %v", platform, err)
+	}
+	if rec := gwDo(t, h, "DELETE", "/api/model-gateways/sil?scope=platform&kind=tts", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete platform: %d", rec.Code)
+	}
+	tenant, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "sil", gateway.KindTTS)
+	if err != nil || tenant.Model != "cosy" || !tenant.IsDefault {
+		t.Fatalf("tenant gateway changed by platform operations: %+v %v", tenant, err)
+	}
+	if rec := gwDo(t, h, "GET", "/api/model-gateways", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("tenant viewer should still be forbidden: %d", rec.Code)
 	}
 }
 
@@ -212,14 +301,14 @@ func TestGatewayUpdateMerges(t *testing.T) {
 	store := newFakeGatewayStore()
 	h := gwHandler(t, store, membership.RoleAdmin)
 	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"llm","name":"q","baseUrl":"https://a","apiKey":"k","model":"m1","visionModel":"v1"}`)
-	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "q", gateway.KindLLM)
+	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "q", gateway.KindLLM)
 
 	// 只改 model，保留 baseUrl。
 	rec := gwDo(t, h, "PUT", "/api/model-gateways/q", `{"kind":"llm","version":`+strconv.Itoa(g.Version)+`,"model":"m2"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update code = %d body=%s", rec.Code, rec.Body.String())
 	}
-	updated, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "q", gateway.KindLLM)
+	updated, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "q", gateway.KindLLM)
 	if updated.Model != "m2" || updated.BaseURL != "https://a" {
 		t.Fatalf("merge = %+v", updated)
 	}
@@ -229,16 +318,16 @@ func TestGatewayUpdateSwitchesKind(t *testing.T) {
 	store := newFakeGatewayStore()
 	h := gwHandler(t, store, membership.RoleAdmin)
 	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"tts","name":"svc","baseUrl":"https://a","apiKey":"k","model":"m","voice":"v1"}`)
-	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "svc", gateway.KindTTS)
+	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "svc", gateway.KindTTS)
 
 	rec := gwDo(t, h, "PUT", "/api/model-gateways/svc", `{"kind":"llm","originalKind":"tts","version":`+strconv.Itoa(g.Version)+`,"model":"m2","visionModel":"v2"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("switch kind code = %d body=%s", rec.Code, rec.Body.String())
 	}
-	if _, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "svc", gateway.KindTTS); !errors.Is(err, gateway.ErrNotFound) {
+	if _, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "svc", gateway.KindTTS); !errors.Is(err, gateway.ErrNotFound) {
 		t.Fatalf("old kind row should be gone, err=%v", err)
 	}
-	llm, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "svc", gateway.KindLLM)
+	llm, err := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "svc", gateway.KindLLM)
 	if err != nil || llm.Model != "m2" {
 		t.Fatalf("llm after switch = %+v err=%v", llm, err)
 	}
@@ -249,7 +338,7 @@ func TestGatewayUpdateSwitchKindConflict(t *testing.T) {
 	h := gwHandler(t, store, membership.RoleAdmin)
 	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"tts","name":"dup","baseUrl":"https://a","apiKey":"k","model":"m"}`)
 	gwDo(t, h, "POST", "/api/model-gateways", `{"kind":"llm","name":"dup","baseUrl":"https://b","apiKey":"k","model":"m"}`)
-	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000000", "dup", gateway.KindTTS)
+	g, _ := store.Get(context.Background(), "00000000-0000-0000-0000-000000000001", "dup", gateway.KindTTS)
 
 	rec := gwDo(t, h, "PUT", "/api/model-gateways/dup", `{"kind":"llm","originalKind":"tts","version":`+strconv.Itoa(g.Version)+`,"model":"m2"}`)
 	if rec.Code != http.StatusConflict {

@@ -10,9 +10,9 @@
   },
   "observability": {
    "name": "可观测性",
-   "prefixes": ["/metrics", "/debug/vars"],
+   "prefixes": ["/metrics", "/debug/vars", "/debug/pprof/"],
    "disposition": "keep",
-   "reason": "非业务面，不存在 Connect 等价物（Prometheus 文本协议）。Phase 0.4 已让 /debug/vars 与 /metrics 共用同一 token 且未配 token 时一律拒绝。"
+   "reason": "非业务面，无 Connect 等价物（Prometheus 文本协议、expvar、Go 性能诊断）。/metrics 要求 PPTS_METRICS_TOKEN；/debug/vars 默认使用同一鉴权，仅显式开启 PPTS_DEBUG_VARS_PUBLIC 时允许匿名。pprof 仅在 PPTS_PPROF 开启时注册，且所有诊断路径均要求 metrics token；未配 token 时拒绝。"
   },
   "spa": {
    "name": "前端静态回退",

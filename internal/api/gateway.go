@@ -15,14 +15,15 @@ import (
 
 // GatewayHandler 提供模型网关管理 HTTP CRUD 端点（admin only，G3 可视化配置）。
 type GatewayHandler struct {
-	store   gateway.StoreResolver
-	members membership.Reader
-	audit   audit.Store
+	store       gateway.StoreResolver
+	members     membership.Reader
+	audit       audit.Store
+	operatorIDs map[string]bool
 }
 
 // NewGatewayHandler 创建网关管理 handler。
 func NewGatewayHandler(store gateway.StoreResolver, members membership.Reader, auditStore audit.Store) *GatewayHandler {
-	return &GatewayHandler{store: store, members: members, audit: auditStore}
+	return &GatewayHandler{store: store, members: members, audit: auditStore, operatorIDs: authSettingsFromEnv("").operatorIDs}
 }
 
 func (h *GatewayHandler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
@@ -74,6 +75,24 @@ func (h *GatewayHandler) requireAdmin(w http.ResponseWriter, r *http.Request) (P
 	if !ok {
 		http.Error(w, `{"code":"unauthenticated","message":"missing principal"}`, http.StatusUnauthorized)
 		return p, false
+	}
+	switch r.URL.Query().Get("scope") {
+	case "", "tenant":
+		// 默认保持当前租户语义，不接受客户端指定任意 tenant_id。
+		if p.TenantID == gateway.PlatformTenantID && !h.operatorIDs[p.UserID] {
+			http.Error(w, `{"code":"forbidden","message":"operator privilege required"}`, http.StatusForbidden)
+			return Principal{}, false
+		}
+	case "platform":
+		if !h.operatorIDs[p.UserID] {
+			http.Error(w, `{"code":"forbidden","message":"operator privilege required"}`, http.StatusForbidden)
+			return Principal{}, false
+		}
+		p.TenantID = gateway.PlatformTenantID
+		return p, true
+	default:
+		http.Error(w, `{"code":"invalid","message":"invalid gateway scope"}`, http.StatusBadRequest)
+		return Principal{}, false
 	}
 	if h.members != nil {
 		role, err := h.members.GetRole(r.Context(), p.TenantID, p.UserID)
