@@ -1,0 +1,17 @@
+{
+  "profile": "zh.date-decimal",
+  "cases": [
+    {
+      "id": "date.valid-converts",
+      "text": "日期2024.01.28",
+      "expect": { "text": "日期二零二四年一月二十八日", "edits": ["zh.date"] },
+      "note": "合法日期整体转换，内部不被小数拆。"
+    },
+    {
+      "id": "date.invalid-falls-back-to-decimal",
+      "text": "日期2024.02.31",
+      "expect": { "text": "日期二千零二十四点零二.31", "edits": ["zh.decimal"] },
+      "note": "非法日历日期不做日期候选，回退到小数读法，记录为已知反例。"
+    }
+  ]
+}

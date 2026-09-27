@@ -1,0 +1,29 @@
+{
+  "profile": "zh.conservative",
+  "cases": [
+    {
+      "id": "negative.model.rtx5090ti",
+      "text": "显卡RTX5090Ti发布",
+      "expect": { "text": "显卡RTX5090Ti发布", "no_edits": true },
+      "note": "型号整体保留，数字不被拆读。"
+    },
+    {
+      "id": "negative.model.hyphenated-cpu",
+      "text": "CPU i7-11800H 可用",
+      "expect": { "text": "CPU i7-11800H 可用", "no_edits": true },
+      "note": "连字符型号整体保留。"
+    },
+    {
+      "id": "negative.model.usb-dotted",
+      "text": "接口USB3.0速度快",
+      "expect": { "text": "接口USB3.0速度快", "no_edits": true, "diagnostics": 2 },
+      "note": "版本规则保护 USB3.0 整体；型号规则与小数规则冲突被拒。"
+    },
+    {
+      "id": "negative.version.dotted",
+      "text": "版本v3.1.2已发布",
+      "expect": { "text": "版本v3.1.2已发布", "no_edits": true, "diagnostics": 2 },
+      "note": "版本号整体保留；模型 v3 与小数 3.1 冲突被拒。"
+    }
+  ]
+}

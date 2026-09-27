@@ -1,0 +1,47 @@
+{
+  "profile": "zh.conservative",
+  "cases": [
+    {
+      "id": "combo.model-and-unit",
+      "text": "支持RTX5090Ti和5GHz",
+      "expect": { "text": "支持RTX5090Ti和五吉赫兹", "edits": ["zh.unit"] },
+      "note": "型号 preserve 与单位整体转换在同一文本共存，互不拆解。"
+    },
+    {
+      "id": "combo.date-and-percent",
+      "text": "2024.01.28占比13.5%",
+      "expect": { "text": "二零二四年一月二十八日占比百分之十三点五", "edits": ["zh.date", "zh.percent"], "diagnostics": 2 },
+      "note": "日期与百分比各自整体转换；两个小数候选分别与它们冲突。"
+    },
+    {
+      "id": "combo.unit-wins-over-decimal",
+      "text": "容量3.5GB",
+      "expect": { "text": "容量三点五吉字节", "edits": ["zh.unit"], "diagnostics": 1 },
+      "note": "单位候选优先于小数候选，避免先拆成小数再重读。"
+    },
+    {
+      "id": "combo.decimal-alone",
+      "text": "涨3.5点",
+      "expect": { "text": "涨三点五点", "edits": ["zh.decimal"] },
+      "note": "无单位/百分比/日期候选时，小数正常转换。"
+    },
+    {
+      "id": "unicode.cjk-neighbors",
+      "text": "CPU价格是3.5元，速度5GHz",
+      "expect": { "text": "CPU价格是三点五元，速度五吉赫兹", "edits": ["zh.decimal", "zh.unit"] },
+      "note": "中文多字节邻接数字时 rune 下标候选仍精确。"
+    },
+    {
+      "id": "unicode.emoji-neighbors",
+      "text": "📦3.5GB📦",
+      "expect": { "text": "📦三点五吉字节📦", "edits": ["zh.unit"], "diagnostics": 1 },
+      "note": "emoji 前后单位整体转换，内部小数冲突。"
+    },
+    {
+      "id": "unicode.combining-marks",
+      "text": "e\u0301是3.5",
+      "expect": { "text": "e\u0301是三点五", "edits": ["zh.decimal"] },
+      "note": "组合字符不干扰后续数字的 rune 下标。"
+    }
+  ]
+}

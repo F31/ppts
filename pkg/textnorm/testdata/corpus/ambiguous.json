@@ -1,0 +1,11 @@
+{
+  "profile": "zh.conservative",
+  "cases": [
+    {
+      "id": "ambiguous.bare-dotted-number",
+      "text": "编号3.1.2",
+      "expect": { "text": "编号三点一.2", "edits": ["zh.decimal"] },
+      "note": "无字母前缀的裸点号序列被保守读作小数，记录为已知歧义而非缺陷。"
+    }
+  ]
+}

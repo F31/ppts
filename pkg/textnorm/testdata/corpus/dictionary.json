@@ -1,0 +1,23 @@
+{
+  "profile": "zh.dict-demo",
+  "cases": [
+    {
+      "id": "dict.basic",
+      "text": "联想Model3·CUDA",
+      "expect": { "text": "联想Model三·库达", "edits": ["dict", "dict"] },
+      "note": "字面词典每处出现独立成为候选，整段替换，不改写产物再次进入规则。"
+    },
+    {
+      "id": "dict.whole-rejects-embedded",
+      "text": "XModel3",
+      "expect": { "text": "XModel3", "no_edits": true },
+      "note": "whole 边界策略拒绝嵌在更长 ASCII 标识符内的命中。"
+    },
+    {
+      "id": "dict.blocks-decimal-inside",
+      "text": "联想Model3.5",
+      "expect": { "text": "联想Model三.5", "edits": ["dict"], "diagnostics": 1 },
+      "note": "词典候选占用区间后，小数候选冲突被拒，不被拆开重读。"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "profile": "zh.date-preserve",
+  "cases": [
+    {
+      "id": "date.preserve-blocks-decimal",
+      "text": "日期2024.01.28",
+      "expect": { "text": "日期2024.01.28", "no_edits": true, "diagnostics": 1 },
+      "note": "日期 preserve 识别并保护整个区间，即使不转换也阻止小数进入。"
+    },
+    {
+      "id": "date.preserve-model-stack",
+      "text": "2024.01.28发布RTX5090Ti",
+      "expect": { "text": "2024.01.28发布RTX5090Ti", "no_edits": true, "diagnostics": 1 },
+      "note": "日期 preserve 与型号 preserve 叠加占用；小数 2024.01 冲突。"
+    }
+  ]
+}
