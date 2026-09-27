@@ -7,11 +7,13 @@ package tts
 // 顺序映射到文本标点位置作为"锚点"，把整段时间轴切成若干子区间；每个子区间内部才做匀速
 // 字符分布（复用 buildEstimatedAlignment 的区间内逻辑，只是把作用范围收窄）。
 //
-// 兜底：检测不到有效静音、文本没有标点、或映射后子区间非法时，一律回退到原有整体匀速估算
-// （AlignEstimate），保证对齐流程绝不因 VAD 失败报错或空转。
+// 兜底：没有可用语音，或停顿锚点与整段音节核均不可用时，回退到整体匀速估算
+// （AlignEstimate）。无标点文本也可按净说话时长构造停顿锚点。
 
 import (
 	"math"
+
+	"github.com/F31/ppts/internal/observability"
 )
 
 // vadFrameMS 是能量分析的帧长。
@@ -58,24 +60,31 @@ func buildEstimatedVADAlignment(text string, wav []byte, durationMS int64) Align
 
 // buildEstimatedAudioAlignment 是 buildEstimatedVADAlignment 的核心实现；withNuclei 为 false
 // 时退化为旧的"静音锚点 + 区间内匀速"（用于量化对比的对照组）。
-func buildEstimatedAudioAlignment(text string, wav []byte, durationMS int64, withNuclei bool) Alignment {
-	fallback := func() Alignment { return buildEstimatedAlignment(text, durationMS) }
+func buildEstimatedAudioAlignment(text string, wav []byte, durationMS int64, withNuclei bool) (result Alignment) {
+	reason := "none"
+	if withNuclei {
+		defer func() { observability.TTSVADAlignment(string(result.Method), reason) }()
+	}
+	fallback := func(why string) Alignment {
+		reason = why
+		return buildEstimatedAlignment(text, durationMS)
+	}
 	if durationMS <= 0 {
-		return fallback()
+		return fallback("invalid_duration")
 	}
 	samples, sampleRate, channels, ok := wavPCM16(wav)
 	if !ok || sampleRate <= 0 || channels <= 0 {
-		return fallback()
+		return fallback("unsupported_wav")
 	}
 	// 多声道时把声道数并入"有效采样率"：时长换算与单声道一致。
 	effRate := sampleRate * channels
 	runs, leadUS, speechEndUS, ok := detectSilenceRuns(samples, effRate)
 	if !ok {
-		return fallback() // 纯静音：无可用语音
+		return fallback("no_usable_speech") // 纯静音或音频过短：无可用语音
 	}
 	runes := []rune(text)
 	if len(runes) == 0 {
-		return fallback()
+		return fallback("empty_text")
 	}
 
 	durationUS := durationMS * 1000
@@ -86,7 +95,7 @@ func buildEstimatedAudioAlignment(text string, wav []byte, durationMS int64, wit
 	if speechEndUS <= leadUS || speechEndUS > durationUS {
 		speechEndUS = durationUS
 		if speechEndUS-leadUS < vadMinSilenceMS*1000 {
-			return fallback()
+			return fallback("invalid_speech_span")
 		}
 	}
 
@@ -113,20 +122,33 @@ func buildEstimatedAudioAlignment(text string, wav []byte, durationMS int64, wit
 				kept = append(kept, a)
 			}
 		}
+	} else if len(runs) > 0 {
+		// 方向 1（无标点文本，PPT 讲稿高频形态）：没有标点可锚定时，直接用真实停顿把
+		// 语音切块，按「块起始时刻占比」把字符分配到块边界。块内由 distributeByAnchors
+		// 落到匀速（核证据不足时 allocateWeighted），从而用真实停顿切块替代整段匀速，
+		// 避免生产 100% 回退 estimated 的历史问题。
+		kept = noPunctAnchors(len(runes), runs, leadUS, speechEndUS)
 	}
 	// 无有效锚点（无内部停顿 / 无标点 / 映射失败）时尝试整段音节核，否则整体匀速。
 	if len(kept) == 0 {
 		if a, ok := wholeSpan(); ok {
 			return a
 		}
-		return fallback()
+		// 整段音节核兜底也未成功，按缺失的锚点证据区分原因。
+		if len(runs) == 0 {
+			return fallback("no_pauses_or_nuclei")
+		}
+		if len(punctIdx) == 0 {
+			return fallback("no_unpunctuated_anchors_or_nuclei")
+		}
+		return fallback("no_matched_anchors_or_nuclei")
 	}
 	tokens, ok := distributeByAnchors(runes, kept, leadUS, speechEndUS, onsets)
 	if !ok || len(tokens) != len(runes) {
 		if a, ok := wholeSpan(); ok {
 			return a
 		}
-		return fallback()
+		return fallback("distribution_failed")
 	}
 	return Alignment{Text: text, Tokens: tokens, Method: AlignEstimateVAD}
 }
@@ -284,6 +306,58 @@ func isPausePunct(r rune) bool {
 type anchor struct {
 	runeIdx int
 	s, e    int64
+}
+
+// noPunctAnchors 为无标点文本构造伪锚点：把每个真实停顿按其起始时刻在语音跨度内的
+// 占比映射到字符边界（停顿前字符为前块结束）。这是方向 1 的核心——无标点（PPT 讲稿
+// 高频形态）时用真实停顿切块 + 块内匀速，替代整段匀速。
+//
+// 约束：锚点字符下标与时刻必须严格单调递增、且每块至少 1 字；不满足的锚丢弃
+// （宁可少切块，不切出空块/畸形块，distributeByAnchors 对空块会整体失败）。
+func noPunctAnchors(totalRunes int, sil []silenceRange, leadUS, speechEndUS int64) []anchor {
+	if totalRunes <= 0 || len(sil) == 0 {
+		return nil
+	}
+	span := speechEndUS - leadUS
+	if span <= 0 {
+		return nil
+	}
+	// 净说话时长 = 语音跨度 - 全部停顿时长。字符按「累计说话时长占比」分配到块边界，
+	// 停顿本身不占字符（否则停顿时长稀释占比，切块位置偏前）。
+	speechTotal := span
+	for _, s := range sil {
+		speechTotal -= s.endUS - s.startUS
+	}
+	if speechTotal <= 0 {
+		return nil
+	}
+	var out []anchor
+	prevRune := -1
+	prevEnd := leadUS
+	var priorSilUS int64 // 本停顿前已消耗的停顿时长
+	for _, s := range sil {
+		if s.startUS <= leadUS || s.startUS >= speechEndUS || s.startUS <= prevEnd || s.startUS >= s.endUS {
+			continue // 越界/破坏单调/非法区间
+		}
+		spokenUS := (s.startUS - leadUS) - priorSilUS // 本停顿前累计说话时长
+		frac := float64(spokenUS) / float64(speechTotal)
+		// 字符下标下取整：前块字符 = [prevRune+1, ci-1]，后块 = [ci, ...]；各至少 1 字。
+		ci := int(frac * float64(totalRunes))
+		if ci < 1 {
+			ci = 1
+		}
+		if ci > totalRunes-1 {
+			ci = totalRunes - 1
+		}
+		if ci <= prevRune+1 {
+			continue // 前块不足 1 字，丢弃此锚
+		}
+		out = append(out, anchor{runeIdx: ci - 1, s: s.startUS, e: s.endUS})
+		prevRune = ci - 1
+		prevEnd = s.endUS
+		priorSilUS += s.endUS - s.startUS
+	}
+	return out
 }
 
 // mapPunctToSilence 把"文本标点"单调地匹配到"静音区间"，只锚置信的对应，其余宁可整块

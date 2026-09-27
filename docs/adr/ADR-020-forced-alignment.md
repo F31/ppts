@@ -21,8 +21,62 @@
 锚定到文本标点，将整段切成若干小区间，仅在各小区间内做匀速分配；VAD 无效时回退整体匀速。
 
 - 新 `AlignMethod=estimated_vad` 与既有 `estimated` 区分，便于阶段二对比与排查。
-- 兜底严格：无有效静音 / 无标点 / 锚点区间非法 → 回退 `estimated`，不报错、不空转。
+- 兜底严格：无可用语音，或锚点与整段音节核兜底均不可用 → 回退 `estimated`。
 - 量化：合成受控语料上 MAE 184→84ms（−54%）、MaxAE 372→183ms（−51%）。
+
+**2026-09-27 无标点停顿切块与生产观测**：
+
+此前生产抽样报告为 100 段 alignment 均为 `estimated`。本地受控方波样本验证了一个
+可能的回退路径：13 字无标点文本对应 3 个语音块，仅检出 3 个音节核，未满足
+`nucleiEvidence` 的核数 ≥80% 字数门槛，因而回退。这不是生产 CosyVoice 音频实测；
+生产文本的标点分布、实际回退原因及对齐精度仍待真实样本与指标验证。
+
+修复：无标点但有内部停顿的文本，新增 `noPunctAnchors` —— 按**净说话时长占比**
+把字符分配到停顿切出的块边界，块内落匀速（`distributeByAnchors` + `allocateWeighted`），
+从而用真实停顿切块替代整段匀速。对照验证：同段音频加标点 → `estimated_vad`；无标点
+修复前 → `estimated`，修复后 → `estimated_vad`，且停顿处形成切块边界。
+
+实际实现新增了无标点停顿锚点路径，未修改音节核门槛。方法命中率提高不等同于字级
+精度提高，上述 MAE 数值也不代表这个新增路径的生产收益。
+
+#### 对齐计算指标
+
+`/metrics` 与 `/debug/vars` 暴露 `ppts_tts_vad_alignment_total`，标签为 `method`、
+`reason`。每次生产 VAD 算法计算仅累计一次，包含缓存重算，不包含缓存直接命中、
+其他对齐算法及测试用的 `withNuclei=false` 对照组。指标为进程内累计值，重启清零；
+应抓取实际执行 TTS/重算的各进程。标签不包含文本、租户或 segment ID。
+
+| reason | 含义 |
+| --- | --- |
+| `none` | 成功生成 `estimated_vad` |
+| `invalid_duration` | 时长非正 |
+| `unsupported_wav` | 无法解析为可用 PCM16 WAV |
+| `no_usable_speech` | VAD 未检出可用语音，包括静音或样本过短 |
+| `empty_text` | 文本为空 |
+| `invalid_speech_span` | 校正后的语音区间不可用 |
+| `no_pauses_or_nuclei` | 无内部停顿，整段音节核兜底也未成功 |
+| `no_unpunctuated_anchors_or_nuclei` | 无标点停顿锚点与整段音节核兜底均不可用 |
+| `no_matched_anchors_or_nuclei` | 标点未匹配到有效停顿锚点，整段音节核兜底也未成功 |
+| `distribution_failed` | 锚点切块分配失败，整段音节核兜底也未成功 |
+
+原因按实际执行分支记录；同一输入存在多个问题时仅记录最先返回的原因。
+
+PromQL：最近 15 分钟 VAD 计算命中率（0–1）：
+
+```promql
+(sum(increase(ppts_tts_vad_alignment_total{method="estimated_vad"}[15m])) or vector(0))
+/
+sum(increase(ppts_tts_vad_alignment_total[15m]))
+```
+
+没有计算量时该比值无意义，不应解释为零命中。回退原因分布：
+
+```promql
+sum by (reason) (increase(ppts_tts_vad_alignment_total{method="estimated"}[15m]))
+```
+
+部署后触发新合成或显式重算，先观察计算量与回退原因，再抽取真实音频核验字级误差。
+已有缓存直接返回不会产生新计数，因此这些指标不代表历史存量 alignment 的方法分布。
 
 ### 阶段二（待确认）
 

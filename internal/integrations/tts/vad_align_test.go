@@ -198,11 +198,15 @@ func proportionalTextWAV(t *testing.T, sampleRate int, text string, punctPause m
 
 func TestBuildEstimatedVADAlignmentFallsBackWithoutPunctOrPause(t *testing.T) {
 	const rate = 16000
-	// 无标点：即使有停顿也不能锚定 → 回退 estimated。
+	// 无标点但【有内部停顿】（方向 1）：用真实停顿切块 + 块内匀速 → estimated_vad。
 	noPunct := "今天天气很好我们出去走走吧"
 	wav := burstWAV(t, rate, speechSegments(), 12000)
-	if a := buildEstimatedVADAlignment(noPunct, wav, durationMSOfWAV(wav, rate)); a.Method != AlignEstimate {
-		t.Fatalf("no-punct method = %s, want %s", a.Method, AlignEstimate)
+	a := buildEstimatedVADAlignment(noPunct, wav, durationMSOfWAV(wav, rate))
+	if a.Method != AlignEstimateVAD {
+		t.Fatalf("no-punct-with-pause method = %s, want %s (方向 1 用停顿切块)", a.Method, AlignEstimateVAD)
+	}
+	if len(a.Tokens) != len([]rune(noPunct)) {
+		t.Fatalf("tokens = %d, want %d", len(a.Tokens), len([]rune(noPunct)))
 	}
 	// 纯静音：VAD 无效 → 回退 estimated。
 	silent := wav16FromSamples(t, rate, make([]int16, rate*2))
@@ -216,6 +220,49 @@ func TestBuildEstimatedVADAlignmentFallsBackWithoutPunctOrPause(t *testing.T) {
 	}{{300, false}, {2000, true}, {300, false}}, 12000)
 	if a := buildEstimatedVADAlignment("今天天气很好，我们出去走走吧。", continuous, durationMSOfWAV(continuous, rate)); a.Method != AlignEstimate {
 		t.Fatalf("pause-free method = %s, want %s", a.Method, AlignEstimate)
+	}
+}
+
+// TestNoPunctAnchors 无标点伪锚点（方向 1）：按净说话时长占比分配字符块边界。
+func TestNoPunctAnchors(t *testing.T) {
+	// 语音段：300静/600语/200停/500语/150停/700语/300尾。
+	// lead=300ms, speechEnd=2460ms；停顿1=[900,1100)，停顿2=[1600,1750)。
+	// 净说话时长 = (2460-300) - (1100-900) - (1750-1600) = 2160-200-150 = 1810ms。
+	sil := []silenceRange{
+		{startUS: 900_000, endUS: 1_100_000},
+		{startUS: 1_600_000, endUS: 1_750_000},
+	}
+	const n = 13
+	anchors := noPunctAnchors(n, sil, 300_000, 2_460_000)
+	if len(anchors) != 2 {
+		t.Fatalf("anchors = %d, want 2 (%+v)", len(anchors), anchors)
+	}
+	// 停顿1 前累计说话 = 600ms（600/1810 ≈ 33.1% × 13 ≈ 4.3 → ci=4 → runeIdx=3）。
+	if anchors[0].runeIdx != 3 {
+		t.Fatalf("anchors[0].runeIdx = %d, want 3", anchors[0].runeIdx)
+	}
+	// 停顿2 前累计说话 = 600+500=1100ms（1100/1810 ≈ 60.8% × 13 ≈ 7.9 → ci=7 → runeIdx=6）。
+	if anchors[1].runeIdx != 6 {
+		t.Fatalf("anchors[1].runeIdx = %d, want 6", anchors[1].runeIdx)
+	}
+	// 锚点单调且时刻合法。
+	if !(anchors[0].s < anchors[0].e && anchors[1].s < anchors[1].e && anchors[0].e <= anchors[1].s) {
+		t.Fatalf("anchor monotonicity violated: %+v", anchors)
+	}
+	// 每块至少 1 字：首块 [0,3]=4字，中块 [4,6]=3字，尾块 [7,12]=6字。
+	blockLens := []int{anchors[0].runeIdx - (-1) + 1, anchors[1].runeIdx - anchors[0].runeIdx, (n - 1) - anchors[1].runeIdx}
+	for _, l := range blockLens {
+		if l < 1 {
+			t.Fatalf("block length < 1: %v", blockLens)
+		}
+	}
+
+	// 无停顿 → nil；纯静音区间非法 → nil。
+	if got := noPunctAnchors(13, nil, 300_000, 2_460_000); got != nil {
+		t.Fatalf("no silence: want nil, got %+v", got)
+	}
+	if got := noPunctAnchors(0, sil, 300_000, 2_460_000); got != nil {
+		t.Fatalf("no runes: want nil, got %+v", got)
 	}
 }
 
