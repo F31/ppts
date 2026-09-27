@@ -99,6 +99,15 @@ func (s *ProjectService) Archive(ctx context.Context, req *connect.Request[pptsv
 	if err != nil {
 		return nil, projectError(err)
 	}
+	// P2-B2：此前 archive 只有"管理旁路"被审计，正常归档动作无痕 —— 归档是本系统里
+	// 最接近"删除"的操作（项目从默认列表消失），谁在什么时候归档了哪个项目查不到。
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{
+			TenantID: p.TenantID, ActorUser: p.UserID, Action: "project.archive",
+			ResourceType: "project", ResourceID: req.Msg.GetId(),
+			Metadata: map[string]any{"surface": "rpc.Archive"},
+		})
+	}
 	return connect.NewResponse(toProtoProject(archived)), nil
 }
 

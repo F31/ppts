@@ -884,6 +884,59 @@ func (s *PGStore) PhaseCounts(ctx context.Context, tenantID, projectID string) (
 	return out, nil
 }
 
+// QueueDepthByKind 返回各 kind 的积压/在跑统计（P2-B3）。
+//
+// 为什么要按 kind 而不是一个总数：所有 kind 共用同一条队列，一个慢种类
+// （例如一次合成 30 分钟音频）会把其它种类饿死，而"队列长度 = 7"看不出是谁在堵 ——
+// 这正是本轮要补的那点可观测性。配额留到有真实分布之后再谈，不凭直觉给数字。
+//
+// 用普通聚合查询而不是新增 SQL 函数：`ppts_claim_next_job` 这类调度函数的重建有
+// 已知的连带风险，而这里只是读侧查询 —— 不值得为此引入新的跨租户 SECURITY DEFINER 入口。
+func (s *PGStore) QueueDepthByKind(ctx context.Context, tenantID string) ([]QueueDepthStat, error) {
+	const q = `
+SELECT kind,
+       SUM(CASE WHEN state IN ('queued','retry_wait') AND (run_at IS NULL OR run_at <= now()) THEN 1 ELSE 0 END),
+       SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN state IN ('queued','retry_wait') AND (run_at IS NULL OR run_at > now()) THEN 1 ELSE 0 END),
+       MIN(CASE WHEN state IN ('queued','retry_wait') AND (run_at IS NULL OR run_at <= now()) THEN COALESCE(run_at, created_at) END)
+FROM jobs WHERE tenant_id = $1 GROUP BY kind`
+	var out []QueueDepthStat
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, q, tenantID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var kind string
+			var waiting, running, notReady *int64
+			var oldestRunAt *time.Time
+			if err := rows.Scan(&kind, &waiting, &running, &notReady, &oldestRunAt); err != nil {
+				return err
+			}
+			stat := QueueDepthStat{Kind: kind}
+			if waiting != nil {
+				stat.Waiting = int(*waiting)
+			}
+			if running != nil {
+				stat.Running = int(*running)
+			}
+			if notReady != nil {
+				stat.NotReady = int(*notReady)
+			}
+			if oldestRunAt != nil {
+				stat.OldestRunAt = oldestRunAt.UTC()
+			}
+			out = append(out, stat)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func nullableTime(t *time.Time) any {
 	if t == nil {
 		return nil

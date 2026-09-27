@@ -465,6 +465,28 @@ func (s *TenantService) ExportTenant(ctx context.Context, _ *connect.Request[ppt
 	for _, f := range manifest.Files {
 		files = append(files, &pptsv1.ExportFile{Table: f.Table, ObjectKey: f.ObjectKey, Rows: f.Rows})
 	}
+	// 租户全量导出（P2-B2）：这是本系统里一次性带走数据最多的操作 —— 一次调用即把整个
+	// 租户的业务数据打包落对象存。此前无任何审计记录，"谁在什么时候导走了整个租户"无法追溯。
+	//
+	// 只记导出的**规模**（文件数/总行数/清单键），不记业务内容：审计日志不是数据副本，
+	// 记内容等于把导出物在日志里再存一份，且保留期不可控。
+	if s.audit != nil {
+		rows := int64(0)
+		for _, f := range manifest.Files {
+			rows += f.Rows
+		}
+		_ = s.audit.Record(ctx, audit.Event{
+			TenantID: p.TenantID, ActorUser: p.UserID,
+			Action:       "tenant.export",
+			ResourceType: "tenant",
+			ResourceID:   p.TenantID,
+			Metadata: map[string]any{
+				"files":        len(manifest.Files),
+				"rows":         rows,
+				"manifest_key": manifest.ManifestKey,
+			},
+		})
+	}
 	return connect.NewResponse(&pptsv1.ExportTenantResponse{
 		ManifestObjectKey: manifest.ManifestKey,
 		Files:             files,
@@ -486,6 +508,18 @@ func (s *TenantService) PurgeTenant(ctx context.Context, _ *connect.Request[ppts
 	deleted, err := s.lifecycle.PurgeTenant(ctx, p.TenantID, s.objects)
 	if err != nil {
 		return nil, tenantError(err)
+	}
+	// 擦除审计必须写在擦除**之后**（P2-B2）：audit_events 本身就在被清理的业务表清单里
+	// （internal/tenant/export.go businessTables、internal/tenant/sqlite.go tables），
+	// 先写会被自己这条命令随后抹掉 —— 顺序写反了等于一条审计痕迹都留不下（自擦除）。
+	// 写在删除之后则会成为租户的"墓碑"记录，但同样会被后续按保留期回收，
+	// 因此这里额外把删除规模写进 Metadata，便于归档到对象存后离线核对。
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{
+			TenantID: p.TenantID, ActorUser: p.UserID, Action: "tenant.purge",
+			ResourceType: "tenant", ResourceID: p.TenantID,
+			Metadata: map[string]any{"deleted_rows": deleted},
+		})
 	}
 	return connect.NewResponse(&pptsv1.PurgeTenantResponse{DeletedRows: deleted}), nil
 }

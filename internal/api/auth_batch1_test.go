@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,18 +62,26 @@ func TestValidatePassword(t *testing.T) {
 	}
 }
 
-func TestFixedWindowLimiter(t *testing.T) {
-	l := newFixedWindowLimiter(time.Minute, 3)
+// TestSharedLimiterWindow 校验固定窗口计数（限额 3 / 分钟）与 key 隔离。
+// 进程内后端替换了原来的 fixedWindowLimiter，语义必须保持一致。
+func TestSharedLimiterWindow(t *testing.T) {
+	l := newSharedLimiter(newMemoryBackend(), "auth.login", time.Minute, 3)
+	ctx := context.Background()
 	for i := 0; i < 3; i++ {
-		if !l.allow("ip1") {
+		if !l.allow(ctx, "ip1") {
 			t.Fatalf("allow #%d should pass", i+1)
 		}
 	}
-	if l.allow("ip1") {
+	if l.allow(ctx, "ip1") {
 		t.Fatal("4th allow should be rejected")
 	}
-	if !l.allow("ip2") {
+	if !l.allow(ctx, "ip2") {
 		t.Fatal("different key should not be limited")
+	}
+	// scope 隔离：同名 key 在不同端点下各计数。
+	other := newSharedLimiter(newMemoryBackend(), "auth.register", time.Minute, 3)
+	if !other.allow(ctx, "ip1") {
+		t.Fatal("different scope should not share counters")
 	}
 }
 

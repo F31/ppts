@@ -254,6 +254,30 @@ func TryMarshalJobError(err error) []byte {
 	return b
 }
 
+// QueueDepthStat 是一个 job kind 的队列积压快照（P2-B3）。
+//
+// 为什么要按 kind 而不是一个总数：所有 kind 共用一条队列，一个慢种类（如合成 30 分钟音频）
+// 会把其它种类饿死，而"队列长度 = 7"看不出是谁在堵 ——这正是本轮要补的可观测性。
+//
+// OldestRunAt 保留"最早可运行时刻"而不是秒数：等待时长取决于采样时刻，交给消费方按
+// 自己的 time.Now 计算，避免把时钟差异悄悄写进两处。
+type QueueDepthStat struct {
+	Kind        string
+	Waiting     int       // queued / retry_wait 且已到 run_at（真正可被领取）的任务数
+	Running     int       // running（持租约）的任务数
+	NotReady    int       // queued / retry_wait 但 run_at 还在未来（退避等待，不算积压）
+	OldestRunAt time.Time // 最早的可运行时刻；无等待任务时为零值
+}
+
+// QueueDepthReader 提供按 kind 的队列积压查询。
+//
+// 刻意做成**窄接口**而不是塞进 Store：Store 的实现者（含测试替身）很多，
+// 每加一个方法就要改一片替身；而只有"想观测队列的人"才需要这个能力，
+// 接线处用类型断言即可（与 signedURLParser 同一手法）。
+type QueueDepthReader interface {
+	QueueDepthByKind(ctx context.Context, tenantID string) ([]QueueDepthStat, error)
+}
+
 // Store 任务存储端口。任何方法都要求显式 tenant_id（源自登录身份，非客户端传入）。
 type Store interface {
 	// Create 创建任务；同 (tenant, idempotency_key, kind) 幂等：命中唯一约束时

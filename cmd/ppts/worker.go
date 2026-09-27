@@ -190,6 +190,13 @@ func runWorker() error {
 	}
 	runCtx, cancelRun := context.WithCancel(ctx)
 	defer cancelRun()
+	// 队列观测（P2-B3）：ppts_worker_queue_oldest_wait_seconds 这个 gauge 与它的
+	// QueueBacklogReporter 此前**从未被接线** —— 仪表盘上恒为 0，会被读成"从来没有积压"。
+	// 0 表示"确实为零"而不是"没人采集"，这里的启动就是把这个假象修掉。
+	go observability.NewQueueBacklogReporter(metrics, stores.jobs.OldestQueuedAge,
+		durationEnv("PPTS_QUEUE_BACKLOG_INTERVAL", 30*time.Second), stdLogger).Run(runCtx)
+	go observability.NewQueueDepthReporter(stores.jobs, tenantID,
+		durationEnv("PPTS_QUEUE_DEPTH_INTERVAL", 30*time.Second), stdLogger).Run(runCtx)
 	errCh := make(chan error, workerConcurrency)
 	for i := 0; i < workerConcurrency; i++ {
 		go func() { errCh <- worker.Run(runCtx) }()

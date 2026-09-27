@@ -182,3 +182,88 @@ func TestSQLiteJobScheduleRetry(t *testing.T) {
 		t.Fatalf("future run_at should not be claimable, got %v", err)
 	}
 }
+
+// TestSQLiteQueueDepthByKind 是双存储包新增读方法的必测项（项目约定：有 PG/SQLite 双实现的
+// 包，任何新增读方法都要有 SQLite 侧往返测试）。
+//
+// 这里刻意同时铺三种情形：**立即可运行**（run_at 为空/run_at 已过）、**退避等待**（run_at 在未来）、
+// **在跑**。三者如果被合并成一个"队列长度"，就会重复同一个失效模式：
+// 退避中的任务本来就没到点，把它算进积压会让看板凭空报警。
+func TestSQLiteQueueDepthByKind(t *testing.T) {
+	ctx := context.Background()
+	s := newPipelineStore(t)
+	const tenant = db.LocalTenantID
+	const project = "proj-1"
+
+	// narration：2 个立即排队 + 1 个已被领取（running）
+	for i := 0; i < 2; i++ {
+		if _, err := s.Create(ctx, tenant, project, "narration", "idem-n-"+string(rune('a'+i)), `{}`, time.Time{}); err != nil {
+			t.Fatalf("create narration: %v", err)
+		}
+	}
+	running, err := s.ClaimNext(ctx, tenant, "worker-1", time.Minute)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if running.State != StateRunning {
+		t.Fatalf("want running, got %s", running.State)
+	}
+	// export：1 个在未来 —— 属退避等待，不该算进积压
+	_, err = s.Create(ctx, tenant, project, "export", "idem-e-1", `{}`, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("create export: %v", err)
+	}
+
+	stats, err := s.QueueDepthByKind(ctx, tenant)
+	if err != nil {
+		t.Fatalf("queue depth: %v", err)
+	}
+	byKind := map[string]QueueDepthStat{}
+	for _, st := range stats {
+		byKind[st.Kind] = st
+	}
+	narration, ok := byKind["narration"]
+	if !ok {
+		t.Fatalf("narration missing from %+v", stats)
+	}
+	if narration.Waiting != 1 {
+		t.Errorf("narration waiting = %d, want 1（一个已被领取，另一个在排队）", narration.Waiting)
+	}
+	if narration.Running != 1 {
+		t.Errorf("narration running = %d, want 1", narration.Running)
+	}
+	if narration.OldestRunAt.IsZero() {
+		t.Error("narration oldest_run_at should be set: 有排队任务却拿不到最早时刻，等待时长就算不出来")
+	}
+	export, ok := byKind["export"]
+	if !ok {
+		t.Fatalf("export missing from %+v", stats)
+	}
+	if export.Waiting != 0 {
+		t.Errorf("export waiting = %d, want 0（run_at 在未来，属退避不计积压）", export.Waiting)
+	}
+	if export.NotReady != 1 {
+		t.Errorf("export not_ready = %d, want 1", export.NotReady)
+	}
+	if !export.OldestRunAt.IsZero() {
+		t.Errorf("export oldest_run_at = %v, want zero: 没有任何可运行任务，给个非零值等于用假起点算等待时长", export.OldestRunAt)
+	}
+}
+
+// TestSQLiteQueueDepthByKindIsolatesTenants 确认统计不会串租户：
+// 队列积压是全链路共用的治理视图，一旦跨租户，A 的积压会被记到 B 头上，
+// 而这种错误只在 Shared 存储下才会暴露，本地 profile 必须能先拦住。
+func TestSQLiteQueueDepthByKindIsolatesTenants(t *testing.T) {
+	ctx := context.Background()
+	s := newPipelineStore(t)
+	if _, err := s.Create(ctx, db.LocalTenantID, "p", "narration", "idem-t-1", `{}`, time.Time{}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	stats, err := s.QueueDepthByKind(ctx, "other-tenant")
+	if err != nil {
+		t.Fatalf("queue depth: %v", err)
+	}
+	if len(stats) != 0 {
+		t.Fatalf("other tenant results = %+v, want empty", stats)
+	}
+}

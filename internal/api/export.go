@@ -12,6 +12,7 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
@@ -24,11 +25,37 @@ type ExportService struct {
 	objects   objectstore.ObjectStore
 	parser    signedURLParser
 	members   membership.Reader
+	recorder  audit.Recorder
 }
 
-func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore, members membership.Reader) *ExportService {
+func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder) *ExportService {
 	parser, _ := objects.(signedURLParser)
-	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser, members: members}
+	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser, members: members, recorder: recorder}
+}
+
+// 导出/下载审计（P2-B2）。
+//
+// 导出与下载是"数据离开系统"的动作，此前完全无审计：谁在什么时候把哪个项目的成品
+// 导出成什么格式、谁下载了哪个成品，事后一概查不到。对含未公开内容的项目来说，
+// 这是最该留痕的一类操作。
+//
+// 脱敏约束：**绝不记录签名 URL**。签名 URL 是短期读凭据，写进审计等于把凭据复制进日志，
+// 且审计保留期通常远长于 TTL —— 日志会变成一条永久有效的下载通道。
+// 只记 TTL 这类非敏感参数，足以回答"下载窗口开得多大"。
+
+// recordExport 记录导出/下载审计（recorder 为 nil 时跳过；失败不阻断业务，与既有审计调用一致）。
+func recordExport(ctx context.Context, recorder audit.Recorder, tenantID, actor, action, resourceID string, meta map[string]any) {
+	if recorder == nil || tenantID == "" {
+		return
+	}
+	_ = recorder.Record(ctx, audit.Event{
+		TenantID:     tenantID,
+		ActorUser:    actor,
+		Action:       action,
+		ResourceType: "export",
+		ResourceID:   resourceID,
+		Metadata:     meta,
+	})
 }
 
 func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[pptsv1.CreateExportRequest]) (*connect.Response[pptsv1.CreateExportResponse], error) {
@@ -84,6 +111,8 @@ func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[p
 	if job.InputSnapshot != string(snapshotBytes) {
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
 	}
+	recordExport(ctx, s.recorder, p.TenantID, p.UserID, "export.create", job.ID,
+		map[string]any{"project_id": projectID, "format": string(format)})
 	return connect.NewResponse(&pptsv1.CreateExportResponse{JobId: job.ID}), nil
 }
 
@@ -123,6 +152,9 @@ func (s *ExportService) CreateDownload(ctx context.Context, req *connect.Request
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	// 只记 TTL 与成品归属，签名 URL 绝不落审计（见文件头脱敏约束）。
+	recordExport(ctx, s.recorder, p.TenantID, p.UserID, "export.download", a.ID,
+		map[string]any{"project_id": a.ProjectID, "format": string(a.Format), "ttl_seconds": int(ttl / time.Second)})
 	return connect.NewResponse(&pptsv1.CreateDownloadResponse{SignedUrl: rewriteLocalSignedURL(s.parser, url), ExpiresAtUnix: time.Now().Add(ttl).Unix()}), nil
 }
 

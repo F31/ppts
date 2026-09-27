@@ -57,6 +57,9 @@ type jobStore interface {
 	api.JobStore
 	OldestQueuedAge(ctx context.Context) (time.Duration, error)
 	CountActive(ctx context.Context, tenantID string) (int, error)
+	// QueueDepthByKind 按 kind 的队列积压（P2-B3）：所有 kind 共用一条队列，
+	// 总数观测不出"哪个慢种类在饿死别人"。
+	QueueDepthByKind(ctx context.Context, tenantID string) ([]pipeline.QueueDepthStat, error)
 }
 
 // storeSet 是驱动无关的 store 组合，供 server 与 worker 复用（方案 B 组合根）。
@@ -77,7 +80,7 @@ type storeSet struct {
 	tenant        tenantBundle
 	usage         usageBundle
 	pronunciation pronunciation.Store
-	contextRule    contextrule.Store
+	contextRule   contextrule.Store
 
 	objects objectstore.ObjectStore
 }

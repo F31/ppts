@@ -19,10 +19,10 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/mail"
-	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/messaging"
 	"github.com/F31/ppts/internal/narration"
@@ -183,7 +183,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members), handlerOpts...)
+	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewPlaybackServiceHandler(NewPlaybackService(jobs, objects), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -207,7 +207,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 公开区路由（匿名只读 + 受保护写/审核）；B3 播放清单依赖 jobs。
 	// 注：此前提交漏挂此调用，导致公开区/B3 端点从未生效，本轮补回。
 	if pool != nil {
-		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth)
+		registerPublicRoutes(mux, public.NewPGStore(pool), objects, opt.Members, jobs, auth, opt.Audit)
 	} else {
 		// SQLite 单租户 profile 不提供公开区（无发布/审核/多租户）。显式返回 JSON 503，
 		// 否则 GET /public|/showcase 会落到 SPA 兜底返回 HTML，前端 JSON 解析报
@@ -218,9 +218,13 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 邮箱/手机自助注册（B5-M4）：注册/登录/验证/重置/登出端点。pool 为 nil 时不挂载（测试桩）。
 	if pool != nil {
 		settings := authSettingsFromEnv(opt.PriceVersion)
-		var registerDaily *fixedWindowLimiter
+		// P2-B1：限流计数走共享后端，共享存储不可用时退回进程内并置降级指标。
+		// 所有认证端点（含每日注册上限）共用同一个后端实例 —— 分开构造就會各计数一遍。
+		rateBackend := rateLimitBackend(pool, opt.Logger)
+		startRateLimitPurge(rateBackend, opt.Logger)
+		var registerDaily *sharedLimiter
 		if settings.registerDailyPerIP > 0 {
-			registerDaily = newFixedWindowLimiter(24*time.Hour, settings.registerDailyPerIP)
+			registerDaily = newSharedLimiter(rateBackend, "auth.register_daily", 24*time.Hour, settings.registerDailyPerIP)
 		}
 		registerAuthRoutes(mux, &authDeps{
 			pool:                 pool,
@@ -229,7 +233,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			pepper:               opt.PasswordPepper,
 			mailer:               opt.Mailer,
 			baseURL:              os.Getenv("PPTS_PUBLIC_BASE_URL"),
-			limits:               newAuthLimits(defaultAuthRateConfig()),
+			limits:               newAuthLimits(defaultAuthRateConfig(), rateBackend),
 			trustProxy:           opt.TrustProxy,
 			requireEmailVerified: opt.RequireEmailVerified,
 			logger:               opt.Logger,

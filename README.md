@@ -192,7 +192,14 @@ API 暴露 `/debug/vars` 用于读取 expvar 指标。它与 `/metrics` 一样�
 `ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed）、
 `ppts_worker_queue_oldest_wait_seconds`（队列积压最老任务等待时长，由 `migrations/0017_queue_backlog.sql`
 受限函数 + worker 周期报告器更新，`PPTS_QUEUE_BACKLOG_INTERVAL` 默认 30s），
+**按 job kind 拆分**的队列视图（P2-B3，多副本读同一份表，不是每副本各记一份）：
+`ppts_worker_queue_depth_by_kind`（可运行却还在排队）、`ppts_worker_queue_running_by_kind`（持租约在跑）、
+`ppts_worker_queue_backoff_by_kind`（`run_at` 未到，**不算积压**，单列以免凭空告警）、
+`ppts_worker_queue_oldest_wait_seconds_by_kind`（最老等待秒数；无排队任务时**不写**，未定义 ≠ 0），
 以及 TTS 指标 `ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`。
+键形如 `kind=narration`；没出现过的 kind 不会有键（"没见过"与"当前为 0"必须可区分）。
+某 kind 消失后最后一次取值会留在 Map 里删不掉，因此判断"还在不在用某个 kind"要看 `ppts_worker_jobs_total`
+的计数，别看 depth gauge。采集周期 `PPTS_QUEUE_DEPTH_INTERVAL`（默认 30s）。
 
 **降级态指示器**（见 `docs/runbooks/SLO与告警.md`，出现即需处理，不是可选优化）：
 `ppts_tts_fake_provider_active`（假 TTS 在用 → 产出的是伪造音频）、
@@ -217,6 +224,18 @@ worker 日志统一为结构化 JSON（slog），后台循环（保留清理/审
 
 租户策略 `tenants.policy.max_concurrent_jobs`（>0 时生效）限制配音生成的非终态任务数，超限返回 `ResourceExhausted`；
 同 `Idempotency-Key` 重放不受上限影响，仍返回既有任务。
+
+限流计数（`internal/api/ratelimit_shared.go`）跨副本共享：认证端点（注册/登录/找回/重发）的计数落在
+`migrations/0047_rate_limit.sql` 的 `ppts_rate_limit` 表，窗口起点按 epoch 对齐（各副本算出同一个窗口），
+pgxpool 非空时生效。查询失败自动降级为进程内计数并可自行恢复，**降级必须可观测**：
+`ppts_ratelimit_degraded=1`（各副本独立计数，实际放行量 = 限额 × 副本数）、`ppts_ratelimit_backend=shared|memory`、
+`ppts_ratelimit_degrade_total`（按 scope 累计）。
+
+审计覆盖（P2-B2）由 `internal/auditcoverage` 从源码 AST 提取，矩阵经
+`go run ./scripts/audit_coverage -out docs/审计覆盖矩阵.md` 生成（勿手工编辑），
+并由 `internal/api/audit_coverage_test.go` 门禁四类高危操作的必测动作（删除/导出/公开发布/匿名访问）；
+匿名访问的审计受 `PPTS_AUDIT_ANONYMOUS_ACCESS=true` 控制，且门禁会拦截把 token / publicId / IP / UA
+写进审计的写法 —— 那是把短期凭据复制进更长寿的留存里。
 
 审计日志（G3-4，`migrations/0009_audit.sql`）：`audit_events` 按租户隔离（FORCE RLS），记录任务取消/重试与
 保留清理删除等操作；`TenantService.ListAuditEvents` 提供 admin+ 审计读取 API，可按 action/resource_type/since 过滤。

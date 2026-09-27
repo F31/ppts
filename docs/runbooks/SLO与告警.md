@@ -33,6 +33,16 @@
 | `ppts_auth_dev_headers_active` | **开发身份头是否放行** | metrics.go |
 | `ppts_auth_events_total` | 认证事件分布 | prom.go |
 | `ppts_textnorm_dict_events_total` | 文本规范化词典事件 | prom.go |
+| `ppts_ratelimit_degraded` | **限流是否退回进程内计数**（各副本独立计，实际放行量 = 限额 × 副本数） | metrics.go |
+| `ppts_ratelimit_backend` | 当前生效的限流后端（`shared` / `memory`） | metrics.go |
+| `ppts_ratelimit_degrade_total` | 按 scope 累计的降级次数 | metrics.go |
+| `ppts_worker_queue_depth_by_kind` | 按 job kind 的排队深度（可运行却未被领取） | metrics.go |
+| `ppts_worker_queue_running_by_kind` | 按 job kind 的在跑数（持租约） | metrics.go |
+| `ppts_worker_queue_backoff_by_kind` | 按 job kind 的退避数（`run_at` 未到，**不是积压**） | metrics.go |
+| `ppts_worker_queue_oldest_wait_seconds_by_kind` | 按 job kind 的最老等待秒数（无排队任务时不写，未定义 ≠ 0） | metrics.go |
+
+> 按 kind 的三个 Map 里，**没出现过的 kind 不会有键**。判断"某个 kind 还在不在跑"要看
+> `ppts_worker_jobs_total` 的计数 —— gauge 里的键一旦写过就删不掉，某 kind 下线后最后一次取值会残留。
 
 另有 `/healthz`（GET，返回 JSON）在 Phase 2-A1 后**真正探测**数据库与对象存，
 不可用时返回 503 —— 在此之前它恒返回 200，据此做的可用性 SLO 全是假的。
@@ -65,6 +75,18 @@
 | `JobFailureRateHigh` | 5 分钟内 `failed` / 总数 > 0.2 | 成功率突降通常意味着外部依赖或数据形态变化；比例而非绝对数，避免低峰误报 | [worker-crash-and-unknown-result](./worker-crash-and-unknown-result.md) |
 | `TTSThrottledSustained` | 10 分钟内 `ppts_tts_throttled_total` 增长 > 50 | 供应商持续限流，表现为"任务能跑但很慢"，不告警的话只会被当成系统慢 | [降级态识别与恢复](#4降级态识别与恢复) |
 | `MigrationLockContended` | 迁移日志出现 `another instance is migrating` | 多副本同时迁移；一般有副本等一下就过，持续出现说明有实例卡在迁移中 | [多实例与对象存储](./多实例与对象存储.md) |
+
+---
+
+## 3.1 扩容/饥饿与限流降级（P2-B）
+
+| 告警名 | 条件 | 为什么看这个 | 处置 Runbook |
+|---|---|---|---|
+| `RateLimitDegraded` | `ppts_ratelimit_degraded > 0` | 认证端点防护强度已经不是配置里那个数字：实际放行量 = 限额 × 副本数 | 先查 `ppts_ratelimit_backend` 是否从 `shared` 变 `memory`；恢复共享计数后端后 `degraded` 会自行归 0 |
+| `SingleKindStarvingQueue` | 某 kind 的 `ppts_worker_queue_depth_by_kind` > 0，且 `ppts_worker_queue_oldest_wait_seconds_by_kind` > 300 | 所有 kind 共用一条队列，慢种类会饿死其它种类 —— 只有按 kind 拆开才看得出**是谁**在堵 | 先确认该 kind 的 `running` 是否打满并发上限；配额调整要等真实分布数据，勿凭直觉加 worker |
+
+> `backoff_by_kind` 高是**正常现象**（调用方自己排的未来任务），不要据此告警；
+> 真正要看的是 `depth_by_kind`（已到点却还没被领取）。
 
 ---
 

@@ -774,6 +774,55 @@ func (s *SQLiteStore) PhaseCounts(ctx context.Context, tenantID, projectID strin
 	return out, rows.Err()
 }
 
+// QueueDepthByKind 返回各 kind 的积压/在跑统计（P2-B3，与 PGStore 同语义）。
+//
+// SQLite profile 下时间列是 RFC3339 TEXT，因此 run_at 的"是否可运行"只能在 Go 侧比较：
+// 先把 NOW 格式化成同样的 TEXT（同格式的字典序等价时间序），再交给 SQL 比较。
+// run_at 可能为 NULL（无退避任务），故用 IFNULL 兜到 created_at —— 两侧都必须兜，
+// 少兜一侧会让"立即执行"的任务从积压统计里消失（NL=遗漏 vs 零值，外观完全相同）。
+func (s *SQLiteStore) QueueDepthByKind(ctx context.Context, tenantID string) ([]QueueDepthStat, error) {
+	now := db.FormatTime(time.Now())
+	rows, err := s.db.QueryContext(ctx, `
+SELECT kind,
+       SUM(CASE WHEN state IN ('queued','retry_wait') AND IFNULL(run_at, created_at) <= ? THEN 1 ELSE 0 END),
+       SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN state IN ('queued','retry_wait') AND IFNULL(run_at, created_at) > ? THEN 1 ELSE 0 END),
+       MIN(CASE WHEN state IN ('queued','retry_wait') AND IFNULL(run_at, created_at) <= ? THEN IFNULL(run_at, created_at) END)
+FROM jobs WHERE tenant_id = ? GROUP BY kind`, now, now, now, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QueueDepthStat
+	for rows.Next() {
+		var (
+			kind        string
+			waiting     sql.NullInt64
+			running     sql.NullInt64
+			notReady    sql.NullInt64
+			oldestRunAt sql.NullString
+		)
+		if err := rows.Scan(&kind, &waiting, &running, &notReady, &oldestRunAt); err != nil {
+			return nil, err
+		}
+		stat := QueueDepthStat{Kind: kind}
+		if waiting.Valid {
+			stat.Waiting = int(waiting.Int64)
+		}
+		if running.Valid {
+			stat.Running = int(running.Int64)
+		}
+		if notReady.Valid {
+			stat.NotReady = int(notReady.Int64)
+		}
+		if oldestRunAt.Valid && oldestRunAt.String != "" {
+			stat.OldestRunAt = db.ParseTime(oldestRunAt.String)
+		}
+		out = append(out, stat)
+	}
+	return out, rows.Err()
+}
+
 func sqIsUnique(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }

@@ -74,10 +74,10 @@ func registerCollabRoutes(
 	})))
 
 	mux.HandleFunc("GET /shared/{token}", func(w http.ResponseWriter, r *http.Request) {
-		sharedMeta(w, r, projects)
+		sharedMeta(w, r, projects, recorder)
 	})
 	mux.HandleFunc("GET /shared/{token}/manifest", func(w http.ResponseWriter, r *http.Request) {
-		sharedManifest(w, r, projects, jobs, objects, pepper)
+		sharedManifest(w, r, projects, jobs, objects, pepper, recorder)
 	})
 }
 
@@ -393,12 +393,34 @@ func authorizeSharePassword(ctx context.Context, link *project.ShareLink, projec
 	return verifyPassword(hash, provided, pepper)
 }
 
-func sharedMeta(w http.ResponseWriter, r *http.Request, projects project.ProjectStore) {
+const shareActionAnonAccess = "share_link.anonymous_access"
+
+// recordShareAnonAccess 记录一次匿名分享访问（P2-B2）。
+//
+// 刻意**不**记录 token：token 本身就是那把钥匙，写进审计日志等于把分享地址永久留在
+// 比分享有效期更长的留存里。同理不记 IP / UA。只留内部 link ID 与项目 ID ——
+// 够回答"这个分享被访问过几次、最后一次在什么时候"，又不至于让审计库变成二次泄露面。
+//
+// 只记成功访问：口令错误/过期链接不计。理由是匿名端点上失败没有成本，
+// 若把失败也写进审计，扫口令的一方就能把审计写入放大成存储 DoS。
+func recordShareAnonAccess(ctx context.Context, recorder audit.Recorder, link *project.ShareLink, surface string) {
+	if recorder == nil || link == nil || !anonymousAccessAudited() {
+		return
+	}
+	_ = recorder.Record(ctx, audit.Event{
+		TenantID: link.TenantID, ActorUser: "anonymous", Action: shareActionAnonAccess,
+		ResourceType: "share_link", ResourceID: link.ID,
+		Metadata: map[string]any{"surface": surface, "project_id": link.ProjectID},
+	})
+}
+
+func sharedMeta(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, recorder audit.Recorder) {
 	link, err := loadSharedLink(r.Context(), r.PathValue("token"), projects)
 	if err != nil {
 		http.Error(w, "share link not found", http.StatusNotFound)
 		return
 	}
+	recordShareAnonAccess(r.Context(), recorder, link, "shared.meta")
 	title := ""
 	if p, perr := projects.GetProject(r.Context(), link.TenantID, "", link.ProjectID); perr == nil {
 		title = p.Title
@@ -415,7 +437,7 @@ func sharedMeta(w http.ResponseWriter, r *http.Request, projects project.Project
 	})
 }
 
-func sharedManifest(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, jobs JobStore, objects objectstore.ObjectStore, pepper string) {
+func sharedManifest(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, jobs JobStore, objects objectstore.ObjectStore, pepper string, recorder audit.Recorder) {
 	link, err := loadSharedLink(r.Context(), r.PathValue("token"), projects)
 	if err != nil {
 		http.Error(w, "share link not found", http.StatusNotFound)
@@ -436,6 +458,9 @@ func sharedManifest(w http.ResponseWriter, r *http.Request, projects project.Pro
 	}
 	// 访问时间只在真正取到清单后更新，避免无效口令刷写。
 	_ = projects.TouchShareLinkAccess(r.Context(), link.TenantID, link.ID)
+	// 与访问时间同处：真正把讲解内容（音频/字幕/页面图）交出去之后才记审计，
+	// 保证审计条目与"确实泄漏了数据"一一对应，而不是与试探性请求一一对应。
+	recordShareAnonAccess(r.Context(), recorder, link, "shared.manifest")
 	writeJSON(w, http.StatusOK, manifest)
 }
 

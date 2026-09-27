@@ -36,7 +36,8 @@ type authDeps struct {
 	// settings 为第二批注册治理/运营商配置。
 	settings authSettings
 	// registerDaily 单 IP 每日注册上限（settings.registerDailyPerIP>0 时非 nil）。
-	registerDaily *fixedWindowLimiter
+	// 与 d.limits 里的限流器共用同一计数后端（P2-B1），否则每日上限会在多副本下被稀释。
+	registerDaily *sharedLimiter
 	// quota 用于注册时发放默认免费额度；nil 时跳过。
 	quota usage.Store
 	// senderForTenant 按租户解析发件箱（DB 配置→平台默认→ErrNotFound），供认证邮件使用；
@@ -182,11 +183,11 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"code": "registration_disabled", "message": "registration is currently disabled"})
 		return
 	}
-	if !d.limits.register.allow(d.ip(r)) {
+	if !d.limits.register.allow(r.Context(), d.ip(r)) {
 		d.tooMany(w)
 		return
 	}
-	if d.registerDaily != nil && !d.registerDaily.allow(d.ip(r)) {
+	if d.registerDaily != nil && !d.registerDaily.allow(r.Context(), d.ip(r)) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{"code": "rate_limited", "message": "daily registration limit reached for this network"})
 		return
 	}
@@ -363,7 +364,7 @@ func accountKindName(k accountKind) string {
 // ---------------------------------------------------------------------------
 
 func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if !d.limits.login.allow(d.ip(r)) {
+	if !d.limits.login.allow(r.Context(), d.ip(r)) {
 		d.tooMany(w)
 		return
 	}
@@ -482,7 +483,7 @@ func (d *authDeps) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *authDeps) handleResendVerification(w http.ResponseWriter, r *http.Request) {
-	if !d.limits.resend.allow(d.ip(r)) {
+	if !d.limits.resend.allow(r.Context(), d.ip(r)) {
 		d.tooMany(w)
 		return
 	}
@@ -519,7 +520,7 @@ func (d *authDeps) handleResendVerification(w http.ResponseWriter, r *http.Reque
 // ---------------------------------------------------------------------------
 
 func (d *authDeps) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
-	if !d.limits.forgot.allow(d.ip(r)) {
+	if !d.limits.forgot.allow(r.Context(), d.ip(r)) {
 		d.tooMany(w)
 		return
 	}
@@ -552,7 +553,7 @@ func (d *authDeps) handleForgotPassword(w http.ResponseWriter, r *http.Request) 
 }
 
 func (d *authDeps) handleResetPassword(w http.ResponseWriter, r *http.Request) {
-	if !d.limits.forgot.allow(d.ip(r)) {
+	if !d.limits.forgot.allow(r.Context(), d.ip(r)) {
 		d.tooMany(w)
 		return
 	}
