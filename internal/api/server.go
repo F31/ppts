@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"path"
 	"strings"
@@ -101,10 +102,16 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		opt = opts[0]
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok\n"))
-	})
+	// 探活必须真的探：此处原先恒返回 200 "ok"，DB 挂掉时负载均衡仍会把流量打进来。
+	// 错误详情只进日志、不进响应体 —— /healthz 免鉴权，返回体对全网可见。
+	//
+	// pool 必须判 nil 后再赋给接口字段：直接赋值会把 (*pgxpool.Pool)(nil) 变成一个
+	// 非 nil 的接口值，随后的 Ping 调用直接 panic（SQLite profile 下 pool 恒为 nil）。
+	checker := HealthChecker{Objects: objects, Logger: opt.Logger}
+	if pool != nil {
+		checker.Pool = pool
+	}
+	mux.HandleFunc("GET /healthz", healthHandler(checker))
 	// fail-closed：expvar 默认导出 memstats、**完整命令行**（可能含启动参数中的密钥）以及全部
 	// 业务计数（含认证事件分布）。缺失保护不是"少一层防护"，而是可直达的秘密泄漏面，
 	// 因此与"忘了配 token"必须区分开：默认要求 PPTS_METRICS_TOKEN 的 Bearer 校验，
@@ -127,6 +134,31 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		}
 		observability.PrometheusHandler().ServeHTTP(w, r)
 	})
+	// 按需 pprof：默认**完全不挂载**。
+	//
+	// 不采用 `_ "net/http/pprof"` 的惯用写法：那会把诊断端点注册到 http.DefaultServeMux，
+	// 一旦进程里有别的组件用到默认 mux（或未来有人 http.ListenAndServe 了它），端点就被间接
+	// 暴露出去，且没有任何开关能关掉。这里显式注册到本 handler 自己的 mux，并受双重条件约束：
+	//  1. PPTS_PPROF 必须显式开启（默认关闭）；
+	//  2. 请求必须过 metricsTokenOK —— 与 /debug/vars、/metrics 同一道门。
+	// heap/goroutine profile 会导出堆内容与调用栈（可能含请求数据片段），裸挂等同长期开放
+	// 一个敏感读取面，因此"忘记配令牌"必须落在不放行这一侧。
+	if pprofEnabled() {
+		guard := func(next http.HandlerFunc) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				if !metricsTokenOK(r) {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				next(w, r)
+			}
+		}
+		mux.HandleFunc("GET /debug/pprof/", guard(pprof.Index))
+		mux.HandleFunc("GET /debug/pprof/cmdline", guard(pprof.Cmdline))
+		mux.HandleFunc("GET /debug/pprof/profile", guard(pprof.Profile))
+		mux.HandleFunc("GET /debug/pprof/symbol", guard(pprof.Symbol))
+		mux.HandleFunc("GET /debug/pprof/trace", guard(pprof.Trace))
+	}
 	// fail-closed：开发头只能由 DevHeaders 显式开启，不再因 opt.Auth == nil自动放行。
 	// "忘记配 secret" 与 "有意开本地调试" 绝不能是同一种后果——前者是生产事故。
 	allowDevHeaders := opt.DevHeaders
@@ -300,6 +332,16 @@ func metricsTokenOK(r *http.Request) bool {
 	}
 	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	return subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+}
+
+// pprofEnabled 指示是否挂载 Go 运行时诊断端点。
+//
+// 默认关闭：profile/heap/goroutine 会导出堆内容与调用栈，其中可能夹带真实请求数据，
+// 默认挂载等于长期开放一个敏感读取面。开启后仍须通过 metricsTokenOK 的 Bearer 校验
+// （见 NewHandler 内的挂载处）。
+func pprofEnabled() bool {
+	v := strings.TrimSpace(os.Getenv("PPTS_PPROF"))
+	return v == "1" || strings.EqualFold(v, "true")
 }
 
 // objectDeleteEnabled 指示是否挂载 DELETE /ppts/object。默认关闭：当前无签发方产出 OpDelete

@@ -28,6 +28,39 @@ func NewLocal(root string, secret []byte) *LocalFS {
 	return &LocalFS{root: root, signer: NewSigner(secret)}
 }
 
+// Ping 探测本地对象根目录是否可用，供健康检查调用（见 api.DependencyPinger）。
+//
+// 只 Stat 是不够的：根目录存在但只读/ACL 变更时 Put 会全部失败，而 Stat 仍然成功，
+// 探活会报"健康"。因此额外做一次"建临时文件再删除"的写入往返——本地文件系统上
+// 这个开销可以忽略，换来的是探活结论与真实写入能力一致。
+//
+// 临时文件名带 pid 与纳秒时间戳：多进程同时探活时互不干扰，也不会误删他人文件。
+func (l *LocalFS) Ping(_ context.Context) error {
+	info, err := os.Stat(l.root)
+	if err != nil {
+		return fmt.Errorf("objectstore: local root %q: %w", l.root, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("objectstore: local root %q is not a directory", l.root)
+	}
+	probe := filepath.Join(l.root, fmt.Sprintf(".healthz-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	f, err := os.Create(probe)
+	if err != nil {
+		return fmt.Errorf("objectstore: local root %q not writable: %w", l.root, err)
+	}
+	// 关闭失败同样要当作探测失败（可能是磁盘满导致的 flush 错误），但它不能掩盖已有的 err。
+	if cerr := f.Close(); cerr != nil && err == nil {
+		err = cerr
+	}
+	if rerr := os.Remove(probe); rerr != nil && err == nil {
+		err = rerr
+	}
+	if err != nil {
+		return fmt.Errorf("objectstore: local root %q write probe failed: %w", l.root, err)
+	}
+	return nil
+}
+
 // pathFor 将 ObjectKey 映射为 root 内文件路径；解析后强制落在 root 之内。
 func (l *LocalFS) pathFor(key ObjectKey) (string, error) {
 	if err := key.Validate(); err != nil {

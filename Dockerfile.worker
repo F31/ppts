@@ -54,9 +54,25 @@ RUN set -eux; \
 
 COPY --from=builder /out/ppts /usr/local/bin/ppts
 
+# 以非 root 运行。两个必须同时满足的条件，缺一不可用：
+#  1. HOME 必须存在且可写 —— LibreOffice 首次启动要写用户配置；代码里没指定
+#     -env:UserInstallation（internal/integrations/render/render.go），所以它认 $HOME。
+#     若用 useradd -M 省掉家目录，渲染会在容器里失败、而在 root 下从未失败过。
+#  2. /data/objects 可写 —— worker 要 Put 页面渲染图。
+RUN set -eux; \
+    groupadd -g 10001 ppts; \
+    useradd -u 10001 -g ppts -m -d /home/ppts -s /usr/sbin/nologin ppts; \
+    mkdir -p /data/objects; \
+    chown -R 10001:10001 /data/objects /home/ppts
+
+# 刻意**不**加 HEALTHCHECK：worker 不监听任何端口，没有可探活的服务端点；
+# 且上面的 apt-get purge 已把 curl 移除，写了也只会因命令不存在而恒失败。
+
 ENV PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
+    HOME=/home/ppts \
     PPTS_SUBTITLE_FONT_NAME="WenQuanYi Zen Hei" \
     TZ=Asia/Shanghai
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/ppts"]
 CMD ["worker"]

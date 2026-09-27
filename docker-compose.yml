@@ -15,6 +15,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
+      context: .
+      dockerfile: Dockerfile.api
       args:
         http_proxy: ""
         https_proxy: ""
@@ -24,6 +26,11 @@ services:
         APT_MIRROR: "mirrors.aliyun.com"
     restart: unless-stopped
     network_mode: host
+    # 镜像已改为非 root 运行（Dockerfile.api 的 USER 10001），而本机部署要占宿主机 80 端口
+    # （见下方 PPTS_HTTP_ADDR）—— 80 属特权端口，非 root 必须显式授予该能力，
+    # 否则进程一 bind 就 EACCES 退出。**删掉这行容器会起不来。**
+    cap_add:
+      - NET_BIND_SERVICE
     environment:
       PPTS_DATABASE_URL: "postgres://ppts_app:ppts_dev_pw@localhost:5433/ppts_dev?sslmode=disable"
       PPTS_TEST_DATABASE: "postgres://ppts_app:ppts_dev_pw@localhost:5433/ppts_test?sslmode=disable"
@@ -47,11 +54,14 @@ services:
     volumes:
       - ppts-objects:/data/objects
     healthcheck:
+      # -f 让 HTTP 5xx 直接判失败：依赖不可用时容器必须被标 unhealthy，这正是探活的意义。
+      # 端口与 PPTS_HTTP_ADDR 保持一致（上面赋值为 :80）。
       test: ["CMD", "curl", "-sf", "http://localhost:80/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      # 10s 不够：启动要先跑数据库迁移，探活过早会连续失败拖成 unhealthy。
+      start_period: 30s
 
   worker:
     image: ppts-worker:latest

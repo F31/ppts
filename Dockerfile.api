@@ -34,10 +34,34 @@ RUN set -eux; \
 COPY --from=builder /out/ppts /usr/local/bin/ppts
 COPY web/dist /app/web-dist
 
+# 以非 root 运行。
+#
+# ⚠️ 端口代价：单机部署要占宿主机 80（docker-compose.yml 里 PPTS_HTTP_ADDR=:80，替掉旧拓扑
+# 的 nginx），80 属特权端口，非 root 进程默认绑不了。因此必须由运行方显式授予
+# NET_BIND_SERVICE 能力（compose 已加 cap_add）—— 少了它容器会启动即失败。
+# 这不是可选加固项，两者必须一起改；只加 USER 不改编排 = 直接把服务改挂。
+RUN set -eux; \
+    groupadd -g 10001 ppts; \
+    useradd -u 10001 -g ppts -m -d /home/ppts -s /usr/sbin/nologin ppts; \
+    mkdir -p /data/objects; \
+    chown -R 10001:10001 /data/objects /home/ppts
+
 ENV PPTS_WEB_ROOT=/app/web-dist \
     PPTS_OBJECT_BACKEND=local \
     PPTS_OBJECT_ROOT=/data/objects \
+    HOME=/home/ppts \
     TZ=Asia/Shanghai
-EXPOSE 80
+
+# 默认监听 8080（cmd/ppts/server.go）；compose 单机部署会覆盖为 :80，故 EXPOSE 只是声明，
+# 真实端口以 PPTS_HTTP_ADDR 为准。
+EXPOSE 8080
+
+# HEALTHCHECK 必须与进程实际监听端口同源，否则会对着错误端口探活、结果永远不健康。
+# 用 shell form 才能在运行时读到 ENV：把 ":80" 的前导冒号去掉拼进 URL。
+# curl 的 -f 让 5xx 直接失败 —— 依赖不可用时容器必须被标 unhealthy，这正是探活的意义。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD addr="${PPTS_HTTP_ADDR:-:8080}"; curl -fsS "http://127.0.0.1:${addr#:}/healthz" || exit 1
+
+USER 10001:10001
 ENTRYPOINT ["/usr/local/bin/ppts"]
 CMD ["server"]

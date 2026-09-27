@@ -54,7 +54,7 @@ docker compose build        # 构建 ppts-api / ppts-worker 镜像
 docker compose up -d        # 启动（api 监听 :80，含 /healthz 健康检查）
 ```
 
-- `Dockerfile.api`：多阶段构建，Debian slim 运行时仅含 CA 证书/时区数据/curl；Go 单进程同时服务 API 与前端静态资源（`PPTS_WEB_ROOT=/app/web-dist`，SPA history 兜底 + `/assets/` immutable 缓存头），无需 nginx。
+- `Dockerfile.api`：多阶段构建，Debian slim 运行时仅含 CA 证书/时区数据/curl；Go 单进程同时服务 API 与前端静态资源（`PPTS_WEB_ROOT=/app/web-dist`，SPA history 兜底 + `/assets/` immutable 缓存头），无需 nginx。两个镜像均以 uid 10001 非 root 运行（`HOME=/home/ppts`，worker 的家目录要给 LibreOffice 写配置）。由于 api 要占 80 特权端口，`docker-compose.yml` 的 api 服务带了 `cap_add: [NET_BIND_SERVICE]` —— **自建编排时不要漏这一项**，否则进程一 bind 就 `EACCES` 退出。
 - `Dockerfile.worker`：Debian slim 运行时含 poppler-utils、`fonts-wqy-zenhei`（中文字幕烧录字体）、`libreoffice-impress-nogui`（页面渲染）与静态 ffmpeg/ffprobe（johnvansickle 构建，带 libass 字幕滤镜）；按最小依赖裁剪后镜像约 820MB，api 镜像约 168MB。
 - 前端产物需先 `cd web && npm ci && npm run build` 生成 `web/dist`，api 镜像构建时随上下文打包。
 
@@ -193,6 +193,20 @@ API 暴露 `/debug/vars` 用于读取 expvar 指标。它与 `/metrics` 一样�
 `ppts_worker_queue_oldest_wait_seconds`（队列积压最老任务等待时长，由 `migrations/0017_queue_backlog.sql`
 受限函数 + worker 周期报告器更新，`PPTS_QUEUE_BACKLOG_INTERVAL` 默认 30s），
 以及 TTS 指标 `ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`。
+
+**降级态指示器**（见 `docs/runbooks/SLO与告警.md`，出现即需处理，不是可选优化）：
+`ppts_tts_fake_provider_active`（假 TTS 在用 → 产出的是伪造音频）、
+`ppts_render_pages_disabled`（渲染禁用 → 产物可能缺内容）、
+`ppts_auth_dev_headers_active`（开发身份头放行 → 身份可被伪造，生产环境不得出现）。
+
+`GET /debug/pprof/*` 默认**完全不挂载**，需显式 `PPTS_PPROF=true`，且同样要通过
+$PPTS_METRICS_TOKEN 的 Bearer 校验（heap/goroutine 会导出堆与调用栈内容）。
+
+`GET /healthz` 真正探测数据库与对象存：任一项不可用即 `503`，响应体形如
+`{"status":"unhealthy","checks":{"database":{"state":"down"},"object":{"state":"up"}}}`。
+响应**只含分项状态、不含错误原因**（该端点免鉴权，错误原文只进服务端日志）。
+对象存后端若无法廉价探活会报 `unsupported` —— 这表示"没查"，既不等于健康也不等于故障。
+完整的 SLO 与告警规则见 `docs/runbooks/SLO与告警.md`。
 指标键默认只按 kind×event 聚合，避免以租户 UUID 作为高基数标签；排障时设置 `PPTS_METRICS_TENANT_LABELS=true`
 可启用租户维度。
 worker 日志统一为结构化 JSON（slog），后台循环（保留清理/审计归档/生命周期/队列积压）经

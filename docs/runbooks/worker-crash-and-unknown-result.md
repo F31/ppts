@@ -2,6 +2,9 @@
 
 G3-5 目标：worker 崩溃、对象写失败、供应商结果未知时，不能重复扣费、不能产生伪成功，任务必须可观测并可恢复。
 
+> **关联告警**：`QueueStalled`、`JobFailureRateHigh`（阈值与指标口径见 [SLO与告警](./SLO与告警.md)）。
+> 这两条告警响起来时的处置入口就是本手册。
+
 ## Worker Crash
 
 - 任务领取后写入 `lease_owner`、`lease_until`、`fencing_token`。
@@ -14,6 +17,8 @@ G3-5 目标：worker 崩溃、对象写失败、供应商结果未知时，不�
 - handler 必须先写对象，再创建 artifact/账本等业务记录。
 - 对象写失败（磁盘满、S3 5xx、权限错误）返回错误并标记 step failed，不创建 artifact，不提交成功终态。
 - 普通错误最终进入 `failed`；可重试错误返回 `RetryError` 进入 `retry_wait`。
+- `/healthz` 的 `object` 分项会探到"对象存不可写"这一类故障并转 `down`（见 [SLO与告警](./SLO与告警.md) §5），
+  但**它是后端整体可用性探测，不等于单个 Put 成功**：写入权限按租户/项目粒度失败时 healthz 仍可能报 up。
 
 ## Unknown Provider Result
 
