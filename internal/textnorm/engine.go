@@ -180,22 +180,19 @@ func (e *Engine) Run(text, lang string) Result {
 		switch sp.Kind {
 		case SpanKindText:
 			srcEnd := srcOff + runeLen(sp.Raw)
-			// 规则的子段在 span 局部坐标，由 Record 闭包平移成全局坐标。
-			softSegs := []IndexSeg{}
-			ctx := &Context{
-				Text: sp.Raw, Lang: lang,
-				Record: func(seg IndexSeg) {
-					softSegs = append(softSegs, IndexSeg{
+			// 规则的子段由 processSpan 返回（span 局部坐标），在此平移成全局坐标。
+			// Record 传非 nil 哨兵：processSpan 依其判"允许上报精配子段"，内部替换为收集器。
+			ctx := &Context{Text: sp.Raw, Lang: lang, Record: func(IndexSeg) {}}
+			out, spanSegs := e.processSpan(ctx)
+			sb.WriteString(out)
+			if len(spanSegs) > 0 {
+				// 规则已上报精确子段：全部采纳（标记剥离等偏移仍是原子的 span 级段）。
+				for _, seg := range spanSegs {
+					segs = append(segs, IndexSeg{
 						SrcStart: srcOff + seg.SrcStart, SrcEnd: srcOff + seg.SrcEnd,
 						DstStart: dstOff + seg.DstStart, DstEnd: dstOff + seg.DstEnd,
 					})
-				},
-			}
-			out := e.processSpan(ctx)
-			sb.WriteString(out)
-			if len(softSegs) > 0 {
-				// 规则已上报精确子段：全部采纳（标记剥离等偏移仍是原子的 span 级段）。
-				segs = append(segs, softSegs...)
+				}
 			} else if out != sp.Raw && runeLen(out) != runeLen(sp.Raw) {
 				// 无子段但整体字长变化：span 级段（比例近似）。
 				segs = append(segs, IndexSeg{
@@ -271,17 +268,53 @@ func resolveIndexMap(segs []IndexSeg, totalSrc int) *IndexMap {
 	return &IndexMap{Segments: merged}
 }
 
-// processSpan 对单个普通 span 遍历规则表，命中即短路。
-func (e *Engine) processSpan(ctx *Context) string {
+// processSpan 对单个普通 span 按优先级顺序叠加快带各层规则。
+//
+// 语义（V2.8 §3.4 分层）：不同层规则作用同一 span 的**不同子串**（10-19 词典替换
+// 专有名词、20-29 数值展开数字），必须叠加而非首个命中短路——否则词典命中后数值
+// 规则永不执行（CUDA 正确但要 2024 展开就会失败）。规则输出作为后续规则输入
+// 继续处理，直到全部层遍历完。
+//
+// IndexMap 坐标约定：返回的软段是 span 局部坐标（调用方平移成全局）；仅当本规则
+// 之前没有任何规则改变长度时才上报——否则源坐标已不对齐 span 原文，弃用精配，
+// 由调用方按 span 级比例段处理（V2.8 §7.5"无 IndexMap 时回落比例近似"）。
+func (e *Engine) processSpan(ctx *Context) (string, []IndexSeg) {
 	if len(e.rules) == 0 {
-		return ctx.Text
+		return ctx.Text, nil
 	}
+	out := ctx.Text
+	lengthChanged := false
+	var softSegs []IndexSeg
 	for _, r := range e.rules {
-		if out, hit := r.apply(ctx); hit {
-			return out
+		ruleCtx := *ctx
+		ruleCtx.Text = out
+		// 前序规则未改长度时，允许本规则上报精确子段（坐标对齐 span 原文）。
+		if !lengthChanged && ctx.Record != nil {
+			var cur []IndexSeg
+			ruleCtx.Record = func(seg IndexSeg) { cur = append(cur, seg) }
+			next, hit := r.apply(&ruleCtx)
+			ruleCtx.Record = nil
+			if hit && next != out {
+				softSegs = append(softSegs, cur...)
+				if runeLen(next) != runeLen(out) {
+					lengthChanged = true
+				}
+				out = next
+			}
+			continue
 		}
+		// 前序已改长度：禁止上报，纯顺序处理（后续规则输出不参与精配）。
+		ruleCtx.Record = nil
+		next, hit := r.apply(&ruleCtx)
+		if !hit || next == out {
+			continue
+		}
+		if runeLen(next) != runeLen(out) {
+			lengthChanged = true
+		}
+		out = next
 	}
-	return ctx.Text
+	return out, softSegs
 }
 
 // StripMarkers 剥离读音/停顿标记、保留可读内容的纯函数，供 DisplayText 派生使用。

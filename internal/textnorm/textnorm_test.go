@@ -181,21 +181,21 @@ func TestPauseDurationOption(t *testing.T) {
 	}
 }
 
-// TestPriorityOrder 优先级稳定排序：低优先级先注册、高优先级后注册，命中短路仍按序执行
-// 高优先级在前。
+// TestPriorityOrder 优先级稳定排序 + 分层叠加：低优先级先注册、高优先级后注册，按序执行；
+// 各层规则**叠加**（前规则输出作为后规则输入），而不是首个命中即短路。
 func TestPriorityOrder(t *testing.T) {
 	e := New()
 	e.RegisterRule("low", 100, func(c *Context) (string, bool) {
-		return "L", true
+		return c.Text + "L", true
 	})
 	e.RegisterRule("high", 0, func(c *Context) (string, bool) {
 		return "H", true
 	})
 	e.Build()
 	res := e.Run("x", "zh-CN")
-	// "trigger" 触发 high；普通 "x" 也应命中 high（它在表头，优先短路）。
-	if res.Text != "H" {
-		t.Fatalf("priority: got %q want %q (高优先级先命中即短路)", res.Text, "H")
+	// high（priority 0）先执行 → "H"；low（priority 100）在 "H" 上追加 → "HL"。
+	if res.Text != "HL" {
+		t.Fatalf("priority compose: got %q want %q", res.Text, "HL")
 	}
 }
 
@@ -206,6 +206,27 @@ func TestDefinitionRuleFallback(t *testing.T) {
 	res := e.Run("普通文本没有命中词", "zh-CN")
 	if res.Text != "普通文本没有命中词" {
 		t.Fatalf("fallback: got %q", res.Text)
+	}
+}
+
+// TestDefinitionNumberCompose 词典与数值规则**叠加**：同一 span 的专有名词与数字
+// 各自被正确改写（修复"词典命中即短路导致数值规则永不执行"）。
+func TestDefinitionNumberCompose(t *testing.T) {
+	e := New()
+	e.RegisterRule("definition", 10, DefinitionRule(fakeDict{"CUDA": "库达", "GHz": "吉赫兹"}))
+	e.RegisterRule("number", 20, NumberRule(NumberModeQuantity))
+	e.Build()
+	cases := []struct{ in, want string }{
+		// 词典先替换 GHz→吉赫兹，5 与中文相邻 → 数值展开为"五吉赫兹"（合理读法）。
+		{"CUDA 5GHz 与 2024 年新品", "库达 五吉赫兹 与 二千零二十四 年新品"},
+		{"CUDA 加速 2024 倍", "库达 加速 二千零二十四 倍"},
+		{"普通文本", "普通文本"},
+	}
+	for _, c := range cases {
+		res := e.Run(c.in, "zh-CN")
+		if res.Text != c.want {
+			t.Errorf("Run(%q) = %q want %q", c.in, res.Text, c.want)
+		}
 	}
 }
 
