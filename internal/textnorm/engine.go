@@ -100,6 +100,7 @@ type Rule func(*Context) (string, bool)
 // Context 携带一次规则调用的全部共享状态；值类型，按指针传递。
 type Context struct {
 	Text     string // 输入 span 的完整文本（普通文本）
+	OrigText string // 该 span 的原始文本（未被任何规则改写）；供规则做「原始边界」判定
 	Lang     string // 语言（ppts 传 snapshot.Language，如 "zh-CN"）
 	SpanKind SpanKind
 	Raw      string // 读音 span 内容，仅 Reading 有效
@@ -112,6 +113,24 @@ type namedRule struct {
 	name     string
 	priority int
 	apply    Rule
+	mask     ruleMask // Build 时登记：0=无条件
+}
+
+// ruleMask 表示规则适用的文本特征位掩码；0 表示无条件（总是适用）。
+type ruleMask uint8
+
+const (
+	// maskHasDigit 文本含 ASCII 数字（数值读法类规则的输入特征）。
+	maskHasDigit ruleMask = 1 << iota
+)
+
+// textMask 计算一段文本的特征掩码，供 processSpan 快筛使用。
+func textMask(s string) ruleMask {
+	var m ruleMask
+	if asciiDigitP(s) {
+		m |= maskHasDigit
+	}
+	return m
 }
 
 // Engine 是唯一的规范化引擎：有序规则表 + 内置 Scanner。
@@ -146,13 +165,24 @@ func New(opts ...Option) *Engine {
 // RegisterRule 是唯一扩展点。内置规则与用户规则同走此路。
 // 冻结（Build/首次 Run）之后调用会 panic。
 func (e *Engine) RegisterRule(name string, priority int, r Rule) {
+	e.register(name, priority, r, 0)
+}
+
+// RegisterDigitRule 注册需要"文本含 ASCII 数字"才可能命中的规则
+// （数值读法类，见 NumberRule）。除额外登记 maskHasDigit 快筛掩码外，语义同 RegisterRule。
+// 冻结之后调用会 panic。
+func (e *Engine) RegisterDigitRule(name string, priority int, r Rule) {
+	e.register(name, priority, r, maskHasDigit)
+}
+
+func (e *Engine) register(name string, priority int, r Rule, mask ruleMask) {
 	if e.frozen {
 		panic("textnorm: RegisterRule after Build/Run (engine is frozen)")
 	}
 	if name == "" || r == nil {
 		panic("textnorm: RegisterRule requires non-empty name and non-nil rule")
 	}
-	e.rules = append(e.rules, namedRule{name: name, priority: priority, apply: r})
+	e.rules = append(e.rules, namedRule{name: name, priority: priority, apply: r, mask: mask})
 	sort.SliceStable(e.rules, func(i, j int) bool {
 		return e.rules[i].priority < e.rules[j].priority
 	})
@@ -182,7 +212,7 @@ func (e *Engine) Run(text, lang string) Result {
 			srcEnd := srcOff + runeLen(sp.Raw)
 			// 规则的子段由 processSpan 返回（span 局部坐标），在此平移成全局坐标。
 			// Record 传非 nil 哨兵：processSpan 依其判"允许上报精配子段"，内部替换为收集器。
-			ctx := &Context{Text: sp.Raw, Lang: lang, Record: func(IndexSeg) {}}
+			ctx := &Context{Text: sp.Raw, OrigText: sp.Raw, Lang: lang, Record: func(IndexSeg) {}}
 			out, spanSegs := e.processSpan(ctx)
 			sb.WriteString(out)
 			if len(spanSegs) > 0 {
@@ -285,7 +315,12 @@ func (e *Engine) processSpan(ctx *Context) (string, []IndexSeg) {
 	out := ctx.Text
 	lengthChanged := false
 	var softSegs []IndexSeg
+	spanMask := textMask(ctx.Text)
 	for _, r := range e.rules {
+		if r.mask != 0 && r.mask&spanMask == 0 {
+			// 快筛：本 span 不具该规则要求的文本特征（如无 ASCII 数字），跳过。
+			continue
+		}
 		ruleCtx := *ctx
 		ruleCtx.Text = out
 		// 前序规则未改长度时，允许本规则上报精确子段（坐标对齐 span 原文）。

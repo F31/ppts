@@ -89,7 +89,7 @@ func runServer() error {
 						Auth:           authenticator,
 						DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
 						LocalPrincipal: localPrincipal,
-						Pronunciation:  stores.pronunciation, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
+						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
 						JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
 						Mailer:               mailer,
 						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",

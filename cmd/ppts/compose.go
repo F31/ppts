@@ -12,6 +12,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/db"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
@@ -76,6 +77,7 @@ type storeSet struct {
 	tenant        tenantBundle
 	usage         usageBundle
 	pronunciation pronunciation.Store
+	contextRule    contextrule.Store
 
 	objects objectstore.ObjectStore
 }
@@ -127,6 +129,7 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		set.tenant = tenant.NewPGStore(pool)
 		set.usage = usage.NewPGStore(pool)
 		set.pronunciation = pronunciation.NewPGStore(pool)
+		set.contextRule = contextrule.NewPGStore(pool)
 
 	case db.DriverSQLite:
 		sqldb, err := db.OpenSQLite(ctx, cfg.DSN)
@@ -159,6 +162,7 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		set.tenant = tenant.NewSQLiteStore(sqldb)
 		set.usage = usage.NewSQLiteStore(sqldb)
 		set.pronunciation = pronunciation.NewSQLiteStore(sqldb)
+		set.contextRule = contextrule.NewSQLiteStore(sqldb)
 
 	default:
 		return nil, fmt.Errorf("db: unsupported driver %q", cfg.Driver)

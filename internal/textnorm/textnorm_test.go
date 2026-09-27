@@ -211,14 +211,18 @@ func TestDefinitionRuleFallback(t *testing.T) {
 
 // TestDefinitionNumberCompose 词典与数值规则**叠加**：同一 span 的专有名词与数字
 // 各自被正确改写（修复"词典命中即短路导致数值规则永不执行"）。
+//
+// V3.0 缺陷 B 修复（token 隔离）：数字展开的"独立成词"判定基于【原始 span】而非
+// 词典改写后的文本——5GHz 在原文中 5 紧邻字母 G（型号），即使词典把 GHz→吉赫兹
+// 也不展开为"五吉赫兹"；而 2024（独立年份）正常展开。
 func TestDefinitionNumberCompose(t *testing.T) {
 	e := New()
 	e.RegisterRule("definition", 10, DefinitionRule(fakeDict{"CUDA": "库达", "GHz": "吉赫兹"}))
-	e.RegisterRule("number", 20, NumberRule(NumberModeQuantity))
+	e.RegisterDigitRule("number", 20, NumberRule(NumberModeQuantity))
 	e.Build()
 	cases := []struct{ in, want string }{
-		// 词典先替换 GHz→吉赫兹，5 与中文相邻 → 数值展开为"五吉赫兹"（合理读法）。
-		{"CUDA 5GHz 与 2024 年新品", "库达 五吉赫兹 与 二千零二十四 年新品"},
+		// token 隔离：5 在原 span 紧邻 G → 不展开（缺陷 B 修复）。
+		{"CUDA 5GHz 与 2024 年新品", "库达 5吉赫兹 与 二千零二十四 年新品"},
 		{"CUDA 加速 2024 倍", "库达 加速 二千零二十四 倍"},
 		{"普通文本", "普通文本"},
 	}

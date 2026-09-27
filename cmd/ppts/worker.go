@@ -128,7 +128,7 @@ func runWorker() error {
 	// 词典合并（租户优先+平台种子兜底）只在适配层发生，不改动 pronunciation.Store 语义。
 	if textNormEnabled() {
 		logger.Info("textnorm: enabling TTS text normalization engine")
-		narrationHandler = narrationHandler.WithTextNorm(appTextNorm{store: stores.pronunciation, logger: logger})
+		narrationHandler = narrationHandler.WithTextNorm(appTextNorm{store: stores.pronunciation, contextRules: stores.contextRule, logger: logger})
 	}
 	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
 	mp4Encoder, err := media.NewMP4Encoder()

@@ -38,6 +38,7 @@ export const settingsMenus: SettingsNavItem[] = [
   { key: 'messages', to: '/settings/messages', labelKey: 'nav.settingsMessages', need: 'message.manage' },
   { key: 'members', to: '/settings/members', labelKey: 'nav.settingsMembers', need: 'member.manage', hideForPersonal: true },
   { key: 'dictionary', to: '/settings/dictionary', labelKey: 'nav.settingsDictionary', need: 'project.read' },
+  { key: 'context-rules', to: '/settings/context-rules', labelKey: 'nav.settingsContextRules', need: 'project.read' },
   { key: 'usage', to: '/settings/usage', labelKey: 'nav.settingsUsage', need: 'project.read' },
   { key: 'tags', to: '/settings/tags', labelKey: 'nav.settingsTags', need: 'project.organize' },
   { key: 'audit', to: '/settings/audit', labelKey: 'nav.settingsAudit', need: 'audit.read' },

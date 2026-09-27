@@ -22,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/mail"
+	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/messaging"
 	"github.com/F31/ppts/internal/narration"
@@ -66,6 +67,7 @@ type Options struct {
 	// LocalPrincipal 非空时启用单租户本地模式（SQLite profile）：所有请求以此固定身份运行，无登录。
 	LocalPrincipal *Principal
 	Pronunciation  pronunciation.Store
+	ContextRule    contextrule.Store
 	Gateway        gateway.StoreResolver
 	ScriptSources  app.ScriptSourceStore
 	VoiceSettings  app.VoiceSettingsStore
@@ -193,6 +195,9 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	if opt.Pronunciation != nil {
 		NewPronunciationHandler(opt.Pronunciation).Register(mux, auth)
+	}
+	if opt.ContextRule != nil {
+		NewContextRuleHandler(opt.ContextRule).Register(mux, auth)
 	}
 	// 网关路由始终注册：未配置 AES 密钥时 store 为 nil，handler 返回明确 503 feature_disabled，
 	// 避免此前漏挂导致的静默 404。

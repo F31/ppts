@@ -57,6 +57,12 @@
    "disposition": "keep",
    "reason": "TenantService 未覆盖发音词典；opt.Pronunciation 非 nil 时才注册，属可选能力。"
   },
+  "context-rules": {
+   "name": "上下文替换规则（M5 数据驱动）",
+   "prefixes": ["/api/context-rules"],
+   "disposition": "keep",
+   "reason": "文本规范化引擎的上下文替换规则 CRUD；opt.ContextRule 非 nil 时才注册，属可选能力。与发音词典互补（正则+捕获组 vs 整段字面替换）。"
+  },
   "artifacts": {
    "name": "成品库",
    "prefixes": ["/artifacts", "/projects/{pid}/artifacts"],

@@ -339,6 +339,19 @@ export type PronunciationDictionary = {
   updatedAtUnix?: number;
 };
 
+// ---- 上下文替换规则（M5 数据驱动） ----
+
+export type ContextRule = {
+  id: string;
+  tenantId?: string;
+  pattern: string;
+  replacement: string;
+  priority: number;
+  enabled: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
 // ---- 私密分享与协作者（#95） ----
 
 // 项目级协作者角色：复用租户角色名，不含 owner（owner 属租户级）。

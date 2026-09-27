@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/narration"
@@ -283,6 +284,69 @@ func TestTextNormNumberModeE2E(t *testing.T) {
 	// 显示字符顺序与字幕一致。
 	if string(chars[0].Char) != "2" || string(chars[3].Char) != "4" || string(chars[7].Char) != "布" {
 		t.Fatalf("chars misaligned: %+v", chars)
+	}
+}
+
+// TestTextNormClassesWithNumberCompose 类别规则与数值规则组合：日期/百分比先于数字规则
+// 处理（优先级 11-15 < 20），不被 number 先吞掉数字而破坏类别（V3.0 §2.2 优先级编排）。
+func TestTextNormClassesWithNumberCompose(t *testing.T) {
+	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
+	qty := textnorm.NumberModeQuantity
+	eg, err := NewTextNormEngine(context.Background(), meta, "tenant-1", "zh-CN", true, nil, nil,
+		TextNormOptions{NumberMode: &qty, Classes: []string{"percent", "date", "money", "unit"}},
+	)
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	cases := []struct{ in, want string }{
+		{"2024/03/15 上线", "二零二四年三月十五日 上线"},
+		{"同比增长 6.3%", "同比增长 百分之六点三"},
+		{"营收 ¥250", "营收 人民币二百五十"},
+		{"重达 25kg", "重达 二十五kg"},
+		{"涨价到 2024 年", "涨价到 二千零二十四 年"}, // 裸整数仍由 number 兜底
+	}
+	for _, c := range cases {
+		got := eg.Run(c.in, "zh-CN").Text
+		if got != c.want {
+			t.Errorf("compose Run(%q) = %q want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// textNormContextRuleStub 实现 TextNormContextRuleStore（M5 数据驱动）。
+type textNormContextRuleStub struct {
+	recs []*contextrule.Record
+	err  error
+}
+
+func (s *textNormContextRuleStub) LoadAllEffective(context.Context, string) ([]*contextrule.Record, error) {
+	return s.recs, s.err
+}
+
+// TestTextNormContextRules 上下文替换规则装配：正则→模板替换生效，非法正则报错（R1）。
+func TestTextNormContextRules(t *testing.T) {
+	ctx := context.Background()
+	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
+	cr := &textNormContextRuleStub{recs: []*contextrule.Record{
+		{ID: "r-1", Pattern: `([0-9]+)(%)`, Replacement: "百分之$1", Priority: 15, Enabled: true},
+	}}
+	eg, err := NewTextNormEngine(ctx, meta, "tenant-1", "zh-CN", true, nil, nil,
+		TextNormOptions{ContextRules: cr},
+	)
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	if got := eg.Run("增长 12%", "zh-CN").Text; got != "增长 百分之12" {
+		t.Fatalf("context rule = %q, want %q", got, "增长 百分之12")
+	}
+
+	// 非法正则：加载报错，不静默（R1）。
+	cr.err = nil
+	cr.recs = []*contextrule.Record{{ID: "r-bad", Pattern: `([0-9]+`, Replacement: "x", Priority: 15, Enabled: true}}
+	if _, err := NewTextNormEngine(ctx, meta, "tenant-1", "zh-CN", true, nil, nil,
+		TextNormOptions{ContextRules: cr},
+	); err == nil {
+		t.Fatal("invalid contextual rule regexp should fail engine build")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/textnorm"
@@ -23,6 +24,12 @@ type TextNormDictStore interface {
 type TextNormMetrics interface {
 	// OnDictEvent 上报词典加载事件；name 取 "load_error" / "empty_unexpected"。
 	OnDictEvent(context context.Context, name string)
+}
+
+// TextNormContextRuleStore 是上下文替换规则所需的存储窄能力（M5，V3.0 §3.3 数据驱动）。
+// 由 contextrule.Store（PGStore/SQLiteStore）实现。
+type TextNormContextRuleStore interface {
+	LoadAllEffective(ctx context.Context, tenantID string) ([]*contextrule.Record, error)
 }
 
 // DictAdapter 实现 textnorm.Dictionary：按 pronunciation.Rules 语义在普通 span 内替换。
@@ -61,6 +68,25 @@ type TextNormOptions struct {
 	// NumberMode 非 nil 时注册数值读法规则（V2.8 §3.4 优先级 20，N2 可选，默认不注册）。
 	// 数值展开会改 effectiveText（→ 音频缓存键）与显示字数（→ 触发 IndexMap 精确高亮）。
 	NumberMode *textnorm.NumberMode
+	// Classes 开启 PPT 高频声明式类别规则（V3.0 §2.2，默认空=仅标记+词典，零回退）。
+	// 取值："percent","decimal","date","money","unit"。
+	// 类别规则优先级 11-15，全部先于 NumberRule(20)，避免数字规则破坏日期/百分比/金额识别。
+	Classes []string
+	// ContextRules 非 nil 时加载上下文替换规则（M5 数据驱动）：租户+平台生效行按
+	// priority 注册为 ReplacementPattern。默认 nil=不加载（零回退）。
+	// 规则优先级与代码规则共享表（词典 10、类别 11-15、number 20），DB 行 priority 冲突时
+	// 与代码规则按注册顺序稳定排序（同 priority 下先注册先执行）。
+	ContextRules TextNormContextRuleStore
+}
+
+// classPatterns 映射类别名 → 声明式 Pattern 构造器（V3.0 §2.2）。
+// 独立开关：装配方按 Classes 列表选择性注册，默认不注册（零回退）。
+var classPatterns = map[string]func() textnorm.Pattern{
+	"percent": textnorm.PercentPattern,
+	"decimal": textnorm.DecimalPattern,
+	"date":    textnorm.DatePattern,
+	"money":   textnorm.MoneyPattern,
+	"unit":    textnorm.UnitPattern,
 }
 
 // NewTextNormEngine 按租户+语言构建冻结的文本规范化引擎。
@@ -117,8 +143,31 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+	// 类别规则（V3.0 §2.2）：按开关注册，全部先于 NumberRule 执行（优先级 11-15 < 20），
+	// 避免数字规则先吞日期/百分比/金额中的数字而破坏类别识别。
+	for _, c := range opt.Classes {
+		if fn, ok := classPatterns[c]; ok {
+			engine.RegisterPattern(fn())
+		}
+	}
 	if opt.NumberMode != nil {
-		engine.RegisterRule("number", 20, textnorm.NumberRule(*opt.NumberMode))
+		engine.RegisterDigitRule("number", 20, textnorm.NumberRule(*opt.NumberMode))
+	}
+	// 上下文替换规则（M5 数据驱动）：租户+平台生效行按 priority 注册为 ReplacementPattern。
+	// 加载失败 → 返回错误（R1：依赖不可用不退回成功）；非法 regexp 已由 API 层拦截，
+	// 但迁移/种子数据不可控，此处同样报错（不静默丢弃）。
+	if opt.ContextRules != nil {
+		recs, err := opt.ContextRules.LoadAllEffective(ctx, tenantID)
+		if err != nil {
+			return nil, fmt.Errorf("textnorm: load contextual rules: %w", err)
+		}
+		for _, rec := range recs {
+			p, perr := textnorm.ReplacementPattern(rec.Pattern, rec.Replacement, rec.Priority)
+			if perr != nil {
+				return nil, fmt.Errorf("textnorm: invalid contextual rule %q: %w", rec.ID, perr)
+			}
+			engine.RegisterPattern(p)
+		}
 	}
 	engine.Build()
 	return engine, nil

@@ -13,6 +13,7 @@ import { ProjectEditor } from './pages/ProjectEditor';
 import { Projects } from './pages/Projects';
 import { SettingsAudit } from './pages/SettingsAudit';
 import { SettingsDictionary } from './pages/SettingsDictionary';
+import { SettingsContextRules } from './pages/SettingsContextRules';
 import { SettingsMembers } from './pages/SettingsMembers';
 import { SettingsTags } from './pages/SettingsTags';
 import { SettingsModels } from './pages/SettingsModels';
@@ -282,6 +283,9 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
           // 词典：仅要求已认证（pronunciation.go:23-26），不做角色门控。
           case 'dictionary':
             return <SettingsDictionary identity={identity} />;
+          // 上下文替换规则（M5 数据驱动）：仅要求已认证（contextrule.go），不做角色门控。
+          case 'context-rules':
+            return <SettingsContextRules identity={identity} />;
           // 用量：仅要求已认证（tenant.go:231），不做角色门控；供应商成本卡片按角色隐藏。
           case 'usage':
             return <SettingsUsage identity={identity} role={role} />;
