@@ -18,9 +18,17 @@ CREATE INDEX IF NOT EXISTS idx_pronunciation_platform_default
 
 -- 平台种子：平台级默认发音词典（GPU/CPU 型号、单位、专有名词读音）。
 -- 行由迁移写入；租户自定义规则在其自定义词典中，LoadTenantDefault 不受影响。
+-- 首批规则刻意保守：只收录跨行业无争议的"单位/读名"替换（GHz/MHz/CUDA），
+-- 模型或品牌专用词（如 Model3→Model三）不列入平台兜底，避免改变语义判定。
 INSERT INTO pronunciation_dictionaries (id, tenant_id, name, rules, is_platform_default)
 SELECT gen_random_uuid(), NULL, '平台默认发音词典',
-       jsonb_build_array()::jsonb, true
+       jsonb_build_array(
+           jsonb_build_object('pattern', 'GHz', 'replacement', '吉赫兹', 'enabled', true),
+           jsonb_build_object('pattern', 'MHz', 'replacement', '兆赫兹', 'enabled', true),
+           jsonb_build_object('pattern', 'kHz', 'replacement', '千赫兹', 'enabled', true),
+           jsonb_build_object('pattern', 'CUDA', 'replacement', '库达', 'enabled', true),
+           jsonb_build_object('pattern', 'FPGA', 'replacement', '费普加', 'enabled', true)
+       )::jsonb, true
 WHERE NOT EXISTS (
   SELECT 1 FROM pronunciation_dictionaries WHERE is_platform_default = true
 );

@@ -29,5 +29,7 @@ CREATE INDEX idx_pronunciation_platform_default
     ON pronunciation_dictionaries (is_platform_default);
 
 INSERT INTO pronunciation_dictionaries (id, tenant_id, name, rules, is_platform_default)
-SELECT lower(hex(randomblob(16))), NULL, '平台默认发音词典', '[]', 1
+SELECT lower(hex(randomblob(16))), NULL, '平台默认发音词典',
+       '[{"pattern":"GHz","replacement":"吉赫兹","enabled":true},{"pattern":"MHz","replacement":"兆赫兹","enabled":true},{"pattern":"kHz","replacement":"千赫兹","enabled":true},{"pattern":"CUDA","replacement":"库达","enabled":true},{"pattern":"FPGA","replacement":"费普加","enabled":true}]',
+       1
 WHERE NOT EXISTS (SELECT 1 FROM pronunciation_dictionaries WHERE is_platform_default = 1);
