@@ -1,6 +1,9 @@
 package textnorm
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Built-in profile names (V3.1 §7.3 configuration combinations).
 const (
@@ -9,6 +12,42 @@ const (
 	ProfileDatePreserve = "zh.date-preserve"
 	ProfileDictDemo     = "zh.dict-demo"
 )
+
+// profileVersions 标记内置配置组合的组合版本（V3.1 §13.1 第二标识：规则/配置组合版本）。
+// 当"同名 profile 的行为"变化时递增；模块主版本不变。模块版本变化不自动升级组合版本。
+var profileVersions = map[string]int{
+	ProfileConservative: 1,
+	ProfileDateDecimal:  1,
+	ProfileDatePreserve: 1,
+	ProfileDictDemo:     1,
+}
+
+// ProfileInfo 描述一个内置配置组合。
+type ProfileInfo struct {
+	Name    string
+	Version int
+}
+
+// Profiles 返回支持的配置组合清单（按名称排序），供发布产物/行为差异报告使用（§13.4）。
+func Profiles() []ProfileInfo {
+	names := []string{
+		ProfileConservative, ProfileDateDecimal, ProfileDatePreserve, ProfileDictDemo,
+	}
+	sort.Strings(names)
+	out := make([]ProfileInfo, 0, len(names))
+	for _, n := range names {
+		out = append(out, ProfileInfo{Name: n, Version: profileVersions[n]})
+	}
+	return out
+}
+
+// ProfileVersion 返回配置组合的版本号；未知名称返回 error。
+func ProfileVersion(name string) (int, error) {
+	if v, ok := profileVersions[name]; ok {
+		return v, nil
+	}
+	return 0, fmt.Errorf("textnorm: unknown profile %q", name)
+}
 
 // ProfileRules returns the candidate rules for a built-in profile name.
 // Consumers may still build their own Config; these combinations are the

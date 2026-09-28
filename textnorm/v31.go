@@ -197,7 +197,7 @@ func Compile(cfg Config) (*Engine, error) {
 	}
 	return &Engine{
 		rules:    rules,
-		manifest: Manifest{Version: "textnorm-v3.1-draft", Rules: ids},
+		manifest: Manifest{Version: Version, Rules: ids},
 		pauseMS:  pauseMS,
 	}, nil
 }

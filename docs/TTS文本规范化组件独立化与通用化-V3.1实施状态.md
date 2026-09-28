@@ -15,7 +15,7 @@
 | S3 执行与映射核心 | 候选识别、保护、冲突裁决、一次输出、来源关系 | 完成 | 非级联、保护区间、冲突诊断、identity/replacement/deletion 映射、取消语义 |
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 部分完成 | 已迁日期/百分比/单位/小数/版本/型号/词典/数字/金额；缺电话、比分、比率 |
 | S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 部分完成（narrator 影子已接入） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；`app.NewTextNormShadowEngine` 与旧引擎共用同一持久化配置；narration 合成路径接入影子比较（`synthesizeSegment` 每段 diff，仅观测不改输出/缓存键），以 `PPTS_TEXTNORM_SHADOW=1` 显式启用（默认关闭），影子构建/运行失败不阻塞任务，分歧计数进 `ppts_textnorm_shadow_diff_total{diverged,error,build_error}`；**主引擎仍为旧 `internal/textnorm`，未切换** |
-| S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 未开始 | CLI `run`/`diff` 已具备行为差异报告雏形 |
+| S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 进行中 | 语义化版本契约已加（`Version`、`ModulePath`、`Profiles()`/`ProfileVersion`，Manifest 携带版本）；组件已发布于 `github.com/F31/textnorm`；待打 `v0.1.0` tag 并被 go 代理索引；monorepo 保留本地 replace（CI 稳定性） |
 | S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 未开始 | |
 
 ## 最终验收定义（设计 §16）

@@ -106,3 +106,12 @@ fmt.Println(res.Text) // 增长百分之十二
 ```
 
 This package is currently a draft API. It is not yet the PPTS production normalization path.
+
+## Versioning
+
+Module version is exposed as `Version` (currently `v0.1.0`) and carried on every `Result.Manifest`. Compatibility policy (V3.1 §13):
+
+- Within a major module version, the public API stays backward compatible.
+- Behavioral changes to a named profile must bump that profile's combination version (`Profiles()` / `ProfileVersion`), independently of the module version.
+- Same input + same profile version + same module version produces deterministic output.
+- `ModulePath` is `github.com/F31/textnorm`; the monorepo keeps a local `replace` for CI stability until a pinned release is adopted.
