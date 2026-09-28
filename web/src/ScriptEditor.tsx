@@ -181,7 +181,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const displayedSlideIdRef = useRef(script.slideId);
   displayedSlideIdRef.current = script.slideId;
   // appliedSlideIdRef：本地 state 当前对应的页（在 reset effect 内更新），用于识别"切页"。
-  const appliedSlideIdRef = useRef(script.slideId);
+  const appliedSlideIdRef = useRef<string | null>(null);
   const caretRef = useRef<number>(0);
   const saveStateRef = useRef<ScriptEditorStatus>(saveState);
   saveStateRef.current = saveState;
@@ -202,7 +202,11 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (!switchedSlide && draftsRef.current.has(script.slideId)) return;
     setTexts(initialTexts(script));
     setSpokenTexts(initialSpokenTexts(script));
-    setLocalPronunciationRules(collectLocalPronunciationRules(script.segments));
+    // 本地读音规则只在切页/首次加载时重建：停留同页期间，应用/删除读音用的是内存里的精确 (word→reading)，
+    // 若在 revision 落库时重建，反而会用 `precedingPronunciationPattern` 反向猜测的词体把高亮范围扩大。
+    if (switchedSlide) {
+      setLocalPronunciationRules(collectLocalPronunciationRules(script.segments));
+    }
     setSaveState('saved');
     setRewriteNote(null);
     if (switchedSlide) {
@@ -1137,12 +1141,14 @@ function precedingPronunciationPattern(prefix: string): string {
   const trimmed = prefix.replace(/\s+$/u, '');
   const boundary = Math.max(
     trimmed.lastIndexOf('〔读：'),
+    trimmed.lastIndexOf('\n'),
+    trimmed.lastIndexOf('\t'),
     trimmed.lastIndexOf('，'),
     trimmed.lastIndexOf('。'),
     trimmed.lastIndexOf('；'),
     trimmed.lastIndexOf('：'),
     trimmed.lastIndexOf('、'),
-    trimmed.lastIndexOf('\n')
+    trimmed.lastIndexOf(' ')
   );
   const raw = trimmed.slice(boundary + 1).trim();
   return raw.length > 64 ? '' : raw;
