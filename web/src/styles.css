@@ -175,8 +175,10 @@ button, textarea, input { font: inherit; }
 
 /* M4 ⑤ 读音调整 popover */
 .pronounce-popover { display: grid; gap: 8px; margin: 8px 0; padding: 12px; border: 1px solid rgba(103, 232, 249, .3); border-radius: 12px; background: rgba(5, 10, 20, .6); }
+.pronounce-popover textarea { min-height: 54px; resize: vertical; white-space: pre-wrap; word-break: break-word; }
 .pronounce-popover .popover-actions { display: flex; gap: 8px; }
 .pronounce-popover .popover-hint { margin: 0; color: #8aa1c4; font-size: 12px; }
+.pronounce-notice { display: flex; align-items: center; gap: 8px; margin: 8px 0; padding: 8px 10px; border: 1px solid rgba(245, 158, 11, .28); border-radius: 10px; background: rgba(245, 158, 11, .08); color: var(--text-body); font-size: 13px; }
 
 .compare-panel { padding: 16px; }
 .compare-panel h3 { margin: 6px 0 12px; }

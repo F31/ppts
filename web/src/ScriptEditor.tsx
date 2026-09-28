@@ -96,6 +96,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const [popoverTarget, setPopoverTarget] = useState<{ segmentId: string; start: number; end: number } | null>(null);
+  const [pronounceNotice, setPronounceNotice] = useState<string | null>(null);
   // 重新生成讲稿：模式下拉菜单 + 记住上次选择的模式（主按钮直接按该模式生成）。
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [lastRegenMode, setLastRegenMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
@@ -349,6 +351,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     return [];
   };
 
+  const countAffectedSegments = (word: string) =>
+    word ? script.segments.filter((s) => (texts[s.segmentId] ?? '').includes(word)).length : 0;
+
   // 段落改写（缩短/润色/衔接）：逐段串行调用 LLM（避免突发顶爆限流），成功即经本地草稿
   // 自动保存落库并点亮"语音待更新"；进行中整条工具栏禁用防止重复频繁点击。
   const handleRewrite = async (action: RewriteAction) => {
@@ -397,15 +402,53 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     }
   };
 
-  // M4 ⑤：打开读音调整 popover（预填当前目标段文本为原词，影响范围实时估算）。
+  // M4 ⑤：读音调整只作用于用户在讲稿框里选中的词/短语，避免把整段讲稿塞进浮层。
   const openPronounce = () => {
-    const ids = targetIds();
-    if (ids.length === 0) return;
-    const base = texts[ids[0]] ?? '';
-    setPopoverWord(base);
+    const id = focusedId;
+    const el = id ? textareaRefs.current[id] : null;
+    if (!id || !el) {
+      setPopoverOpen(false);
+      setPronounceNotice(t('editor.pronounceSelectText'));
+      return;
+    }
+    const start = Math.min(el.selectionStart, el.selectionEnd);
+    const end = Math.max(el.selectionStart, el.selectionEnd);
+    const raw = el.value.slice(start, end);
+    const word = raw.trim();
+    if (!word) {
+      setPopoverOpen(false);
+      setPronounceNotice(t('editor.pronounceSelectText'));
+      requestAnimationFrame(() => el.focus());
+      return;
+    }
+    const leading = raw.length - raw.trimStart().length;
+    const trailing = raw.length - raw.trimEnd().length;
+    const target = { segmentId: id, start: start + leading, end: end - trailing };
+    setPopoverTarget(target);
+    setPopoverWord(word);
     setPopoverReading('');
-    setAffectedCount(0);
+    setAffectedCount(countAffectedSegments(word));
+    setPronounceNotice(null);
     setPopoverOpen(true);
+  };
+
+  const insertPronounceMarker = () => {
+    if (!popoverTarget || !popoverReading) return;
+    const { segmentId, end } = popoverTarget;
+    const marker = `〔读：${popoverReading}〕`;
+    const base = texts[segmentId] ?? '';
+    const pos = Math.min(end, base.length);
+    const next = base.slice(0, pos) + marker + base.slice(pos);
+    editSegment(segmentId, next);
+    setPopoverOpen(false);
+    requestAnimationFrame(() => {
+      const fresh = textareaRefs.current[segmentId];
+      if (fresh) {
+        const caret = pos + marker.length;
+        fresh.focus();
+        fresh.setSelectionRange(caret, caret);
+      }
+    });
   };
 
   // 在目标段光标处插入朗读标记（发音/停顿）。
@@ -512,6 +555,14 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           </button>
         )}
       </div>
+      {pronounceNotice && !popoverOpen && (
+        <p className="pronounce-notice">
+          {pronounceNotice}
+          <button type="button" className="note-dismiss" onClick={() => setPronounceNotice(null)} aria-label={t('common.close')}>
+            ×
+          </button>
+        </p>
+      )}
       {rewritingRef.current && <p className="rewriting-hint">{t('editor.rewritingHint', { count: rewritingSegs.size })}</p>}
       {rewriteNote && !rewritingRef.current && (
         <p className={`rewrite-note ${rewriteNote === t('editor.rewriteNoChange') ? 'stale' : ''}`}>
@@ -527,12 +578,13 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         <div className="pronounce-popover" role="dialog" aria-label={t('editor.pronouncePopover')} ref={popoverRef}>
           <label className="field-label">
             {t('editor.pronounceWord')}
-            <input
+            <textarea
+              rows={2}
               value={popoverWord}
               onChange={(e) => {
                 const word = e.currentTarget.value;
                 setPopoverWord(word);
-                setAffectedCount(word ? script.segments.filter((s) => (texts[s.segmentId] ?? '').includes(word)).length : 0);
+                setAffectedCount(countAffectedSegments(word.trim()));
               }}
             />
           </label>
@@ -541,10 +593,10 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
             <input value={popoverReading} onChange={(e) => setPopoverReading(e.currentTarget.value)} placeholder={t('editor.pronounceReadingPlaceholder')} />
           </label>
           <div className="popover-actions">
-            <button type="button" disabled={!popoverReading} onClick={() => { insertMarker(`〔读：${popoverReading}〕`); setPopoverOpen(false); }}>
+            <button type="button" disabled={!popoverTarget || !popoverReading} onClick={insertPronounceMarker}>
               {t('editor.insertHere')}
             </button>
-            <button type="button" disabled={!popoverWord || !popoverReading} onClick={() => { onAddToDictionary?.(popoverWord, popoverReading); setPopoverOpen(false); }}>
+            <button type="button" disabled={!popoverWord.trim() || !popoverReading} onClick={() => { onAddToDictionary?.(popoverWord.trim(), popoverReading); setPopoverOpen(false); }}>
               {t('editor.addToDictionary')}
             </button>
           </div>
