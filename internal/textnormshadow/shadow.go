@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	oldtn "github.com/F31/ppts/internal/textnorm"
-	newtn "github.com/F31/ppts/textnorm"
+	newtn "github.com/F31/textnorm"
 )
 
 // DictEntry is a literal dictionary rule, mirroring the pronunciation.Dictionary

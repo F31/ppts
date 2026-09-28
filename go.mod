@@ -2,11 +2,11 @@ module github.com/F31/ppts
 
 go 1.25.0
 
-// textnorm 是 monorepo 内独立模块（own go.mod），尚未发布；本地 replace 使其
-// 在 GOWORK=off（CI）下也可被根模块解析。组件正式发布后移除。
-require github.com/F31/ppts/textnorm v0.0.0
+// textnorm 是独立组件模块，已发布到 github.com/F31/textnorm；monorepo 内保留
+// 本地 replace 使 GOWORK=off（CI）可解析。组件发布稳定版后可移除并改用 pin。
+require github.com/F31/textnorm v0.0.0
 
-replace github.com/F31/ppts/textnorm => ./textnorm
+replace github.com/F31/textnorm => ./textnorm
 
 require (
 	connectrpc.com/connect v1.21.0

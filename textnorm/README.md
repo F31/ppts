@@ -1,6 +1,6 @@
 # textnorm
 
-`textnorm` is an independent Go module (module path `github.com/F31/ppts/textnorm`) hosting the draft V3.1 Chinese TTS text normalization contract.
+`textnorm` is an independent Go module (module path `github.com/F31/textnorm`) hosting the draft V3.1 Chinese TTS text normalization contract.
 
 The module is intentionally independent from PPTS application concerns. It does not depend on tenants, databases, HTTP handlers, environment variables, or TTS providers, and it carries its own `go.mod`, corpus, and CI job. It can be built and tested on its own:
 
