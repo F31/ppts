@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useI18n } from './i18n';
 import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
@@ -65,6 +65,13 @@ type Props = {
   onAddToDictionary?: (word: string, reading: string) => void;
   pronunciationRules?: PronunciationRule[];
   onNeedPronunciationRules?: () => void;
+};
+
+type SegmentEditorHandle = {
+  focus: () => void;
+  getSelection: () => { start: number; end: number };
+  setSelectionRange: (start: number, end: number) => void;
+  value: () => string;
 };
 
 // 停顿标记：插入到 spokenText 的朗读提示；发音由 M4 ⑤ 读音 popover 经 〔读：x〕 标记处理。
@@ -140,9 +147,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [popoverWord, setPopoverWord] = useState('');
   const [popoverReading, setPopoverReading] = useState('');
   const [affectedCount, setAffectedCount] = useState(0);
-  const [textareaScroll, setTextareaScroll] = useState<Record<string, number>>({});
+  const [readingTooltip, setReadingTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   const composingRef = useRef(false);
-  const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const textareaRefs = useRef<Record<string, SegmentEditorHandle | null>>({});
   // —— 未落库草案（drafts）按页记名 ——
   // 为什么必须按 slideId 记名（R-13 完整化）：待保存文本只放在本组件 state 时，切页会用新页文本
   // 覆盖 texts，同时 clearTimeout 掉为原页排的退避重排 —— 于是"提交在途期间对原页的编辑"在用户
@@ -433,9 +440,10 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       setPronounceNotice(t('editor.pronounceSelectText'));
       return;
     }
-    const start = Math.min(el.selectionStart, el.selectionEnd);
-    const end = Math.max(el.selectionStart, el.selectionEnd);
-    const raw = el.value.slice(start, end);
+    const selection = el.getSelection();
+    const start = Math.min(selection.start, selection.end);
+    const end = Math.max(selection.start, selection.end);
+    const raw = el.value().slice(start, end);
     const word = raw.trim();
     if (!word) {
       setPopoverOpen(false);
@@ -484,7 +492,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     const id = ids[0];
     const el = textareaRefs.current[id];
     const base = texts[id] ?? '';
-    const pos = el ? el.selectionStart : base.length;
+    const selection = el?.getSelection();
+    const pos = selection ? selection.start : base.length;
     const next = base.slice(0, pos) + marker + base.slice(pos);
     editSegment(id, next);
     requestAnimationFrame(() => {
@@ -648,45 +657,32 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 <span className="segment-index">{index + 1}</span>
                 {segRewrite && <span className="seg-badge regen">{t('editor.rewriting')}</span>}
               </label>
-              <div className="script-textarea-wrap">
-                <pre className="script-highlight-layer" aria-hidden="true" style={{ transform: `translateY(-${textareaScroll[segment.segmentId] ?? 0}px)` }}>
-                  {renderHighlightedText(texts[segment.segmentId] ?? '', effectivePronunciationRules, t('editor.pronunciationTooltip'))}
-                </pre>
-                <textarea
-                  ref={(el) => {
-                    textareaRefs.current[segment.segmentId] = el;
-                  }}
-                  value={texts[segment.segmentId] ?? ''}
-                  readOnly={!canEdit || segRewrite}
-                  onFocus={() => {
-                    setFocusedId(segment.segmentId);
-                    onNeedPronunciationRules?.();
-                  }}
-                  onScroll={(e) => {
-                    const top = e.currentTarget.scrollTop;
-                    setTextareaScroll((current) => current[segment.segmentId] === top ? current : { ...current, [segment.segmentId]: top });
-                  }}
-                  onClick={(e) => {
-                    setFocusedId(segment.segmentId);
-                    caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
-                  }}
-                  onKeyUp={(e) => {
-                    caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
-                  }}
-                  onSelect={(e) => {
-                    caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
-                  }}
-                  onChange={(event) => editSegment(segment.segmentId, event.currentTarget.value)}
-                  onCompositionStart={() => {
-                    composingRef.current = true;
-                  }}
-                  onCompositionEnd={() => {
-                    composingRef.current = false;
-                    // 组合确认后文本才算最终：补齐组合期被跳过的调度（沿用统一防抖窗口，连续输入只提交一次）。
-                    if (saveStateRef.current === 'dirty') scheduleSaveRef.current(script.slideId);
-                  }}
-                />
-              </div>
+              <SegmentRichTextEditor
+                ref={(el) => {
+                  textareaRefs.current[segment.segmentId] = el;
+                }}
+                value={texts[segment.segmentId] ?? ''}
+                readOnly={!canEdit || segRewrite}
+                rules={effectivePronunciationRules}
+                tooltipPrefix={t('editor.pronunciationTooltip')}
+                onTooltip={setReadingTooltip}
+                onFocus={() => {
+                  setFocusedId(segment.segmentId);
+                  onNeedPronunciationRules?.();
+                }}
+                onCaretChange={(pos) => {
+                  caretRef.current = pos;
+                }}
+                onChange={(value) => editSegment(segment.segmentId, value)}
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  composingRef.current = false;
+                  // 组合确认后文本才算最终：补齐组合期被跳过的调度（沿用统一防抖窗口，连续输入只提交一次）。
+                  if (saveStateRef.current === 'dirty') scheduleSaveRef.current(script.slideId);
+                }}
+              />
             </article>
           );
         })}
@@ -779,11 +775,85 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           ))}
         </div>
       )}
+      {readingTooltip && (
+        <div className="pronunciation-tooltip-float" style={{ left: readingTooltip.x, top: readingTooltip.y }}>
+          {readingTooltip.text}
+        </div>
+      )}
     </section>
   );
 });
 
 type EffectivePronunciationRule = { pattern: string; replacement: string; source: 'local' | 'dictionary' };
+
+const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
+  value: string;
+  readOnly: boolean;
+  rules: EffectivePronunciationRule[];
+  tooltipPrefix: string;
+  onTooltip: (tooltip: { text: string; x: number; y: number } | null) => void;
+  onFocus: () => void;
+  onCaretChange: (pos: number) => void;
+  onChange: (value: string) => void;
+  onCompositionStart: () => void;
+  onCompositionEnd: () => void;
+}>(function SegmentRichTextEditor({ value, readOnly, rules, tooltipPrefix, onTooltip, onFocus, onCaretChange, onChange, onCompositionStart, onCompositionEnd }, ref) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => rootRef.current?.focus(),
+    getSelection: () => getEditableSelection(rootRef.current),
+    setSelectionRange: (start, end) => setEditableSelection(rootRef.current, start, end),
+    value: () => rootRef.current?.textContent ?? value,
+  }), [value]);
+
+  useLayoutEffect(() => {
+    if (pendingCaretRef.current === null) return;
+    const pos = pendingCaretRef.current;
+    pendingCaretRef.current = null;
+    setEditableSelection(rootRef.current, pos, pos);
+  }, [value, rules]);
+
+  const rememberCaret = () => {
+    const selection = getEditableSelection(rootRef.current);
+    onCaretChange(selection.start);
+    return selection;
+  };
+
+  return (
+    <div
+      ref={rootRef}
+      className="script-rich-editor"
+      contentEditable={!readOnly}
+      suppressContentEditableWarning
+      role="textbox"
+      aria-multiline="true"
+      tabIndex={readOnly ? -1 : 0}
+      onFocus={() => {
+        onFocus();
+        rememberCaret();
+      }}
+      onClick={rememberCaret}
+      onKeyUp={rememberCaret}
+      onMouseUp={rememberCaret}
+      onInput={(event) => {
+        const selection = getEditableSelection(rootRef.current);
+        pendingCaretRef.current = selection.start;
+        onCaretChange(selection.start);
+        onChange(event.currentTarget.textContent ?? '');
+      }}
+      onCompositionStart={onCompositionStart}
+      onCompositionEnd={(event) => {
+        pendingCaretRef.current = getEditableSelection(rootRef.current).start;
+        onCompositionEnd();
+        onChange(event.currentTarget.textContent ?? '');
+      }}
+    >
+      {renderHighlightedText(value, rules, tooltipPrefix, onTooltip)}
+    </div>
+  );
+});
 
 function buildEffectivePronunciationRules(rules: PronunciationRule[], spokenTexts: Record<string, string>): EffectivePronunciationRule[] {
   const out: EffectivePronunciationRule[] = [];
@@ -806,8 +876,14 @@ function buildEffectivePronunciationRules(rules: PronunciationRule[], spokenText
   return out.sort((a, b) => b.pattern.length - a.pattern.length);
 }
 
-function renderHighlightedText(text: string, rules: EffectivePronunciationRule[], tooltipPrefix: string) {
-  if (!text || rules.length === 0) return text || ' ';
+function renderHighlightedText(
+  text: string,
+  rules: EffectivePronunciationRule[],
+  tooltipPrefix: string,
+  setTooltip: (tooltip: { text: string; x: number; y: number } | null) => void,
+) {
+  if (!text) return <br />;
+  if (rules.length === 0) return text;
   const nodes: ReactNode[] = [];
   let i = 0;
   let key = 0;
@@ -819,13 +895,62 @@ function renderHighlightedText(text: string, rules: EffectivePronunciationRule[]
       continue;
     }
     nodes.push(
-      <mark key={`p-${key++}`} className={`pronunciation-hit ${hit.source}`} title={`${tooltipPrefix}${hit.replacement}`}>
+      <mark
+        key={`p-${key++}`}
+        className={`pronunciation-hit ${hit.source}`}
+        data-reading={`${tooltipPrefix}${hit.replacement}`}
+        onMouseEnter={(event) => setTooltip({ text: `${tooltipPrefix}${hit.replacement}`, x: event.clientX + 12, y: event.clientY + 12 })}
+        onMouseMove={(event) => setTooltip({ text: `${tooltipPrefix}${hit.replacement}`, x: event.clientX + 12, y: event.clientY + 12 })}
+        onMouseLeave={() => setTooltip(null)}
+        onMouseDown={(event) => event.preventDefault()}
+      >
         {hit.pattern}
       </mark>
     );
     i += hit.pattern.length;
   }
   return nodes;
+}
+
+function getEditableSelection(root: HTMLElement | null): { start: number; end: number } {
+  const selection = window.getSelection();
+  if (!root || !selection || selection.rangeCount === 0) return { start: 0, end: 0 };
+  const range = selection.getRangeAt(0);
+  if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return { start: 0, end: 0 };
+  const startRange = range.cloneRange();
+  startRange.selectNodeContents(root);
+  startRange.setEnd(range.startContainer, range.startOffset);
+  const endRange = range.cloneRange();
+  endRange.selectNodeContents(root);
+  endRange.setEnd(range.endContainer, range.endOffset);
+  return { start: startRange.toString().length, end: endRange.toString().length };
+}
+
+function setEditableSelection(root: HTMLElement | null, start: number, end: number) {
+  if (!root) return;
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  const startPos = findTextPosition(root, start);
+  const endPos = findTextPosition(root, end);
+  range.setStart(startPos.node, startPos.offset);
+  range.setEnd(endPos.node, endPos.offset);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function findTextPosition(root: HTMLElement, offset: number): { node: Node; offset: number } {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let remaining = Math.max(0, offset);
+  let last: Text | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    last = node;
+    if (remaining <= node.data.length) return { node, offset: remaining };
+    remaining -= node.data.length;
+  }
+  if (last) return { node: last, offset: last.data.length };
+  return { node: root, offset: 0 };
 }
 
 function extractSpokenPronunciations(text: string): Array<{ pattern: string; replacement: string }> {
