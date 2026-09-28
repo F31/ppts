@@ -58,10 +58,10 @@
 - S7 扩展真实音频验收：正式 gateway 租户 job `ba05498e-e440-4e05-94bb-ec87d6f833ac` 成功，5 段生成真实 WAV、timeline、SRT/VTT 与 alignment；`ppts_tts_synthesis_total{kind="narration",event="succeeded"}` 从 4 增至 9，`ppts_textnorm_shadow_diff_total{diverged}` 从 5 增至 7。覆盖金额/日期/百分比/电话/型号版本/停顿读音标记/比分无提示样本；quota reservation 已 settled，`reserved_units` 回到 0。
 - 旧引擎处置：暂不删除 `internal/textnorm`；冻结为 shadow-only 对照实现。移除门槛：至少完成扩展 API 验证、人工听感/字幕抽检，并观察切换后 shadow 指标无新增未评审分歧。
 - API/预览补强：`github.com/F31/textnorm` 增加 `CompileProfile`、`Engine.Manifest()` 与 `Manifest.ConfigHash`；CLI `diff -format json` 输出 base/next manifest，外部 consumer 验证通过（Go 1.24.2）。
-- 运维噪音：生产已补授 `ppts_queue_backlog_seconds()` 给 `ppts_app`/`ppts_scheduler`；代码层跳过跨租户 worker 的空 tenant queue-depth 采样，避免空 UUID 日志。待新版 worker 部署后验证日志消失。
+- 运维噪音：生产已补授 `ppts_queue_backlog_seconds()` 给 `ppts_app`/`ppts_scheduler`；代码层跳过跨租户 worker 的空 tenant queue-depth 采样，避免空 UUID 日志。已部署 `08a83b7`（SHA `1ca555cd2d52a8bf3beca37b30374923e0952be66915b3b1743306f10fcc38bc`），18:00 新 worker 启动后未再出现 queue backlog/depth 错误，metrics 端点 200。
 - 人工验收：机器检查已确认 5 个 WAV 可解码（3.52s/3.60s/3.96s/5.76s/6.96s），VTT/SRT/timeline 均生成且覆盖 5 段；仍需人耳确认读音、停顿体感与字幕对齐主观质量。
 
 ## 下一步候选
 
-1. 部署队列指标噪音修复后二次观察 worker 日志。
-2. 人工听感与字幕抽检通过后，再移除或归档旧 `internal/textnorm`。
+1. 人工听感与字幕抽检通过后，再移除或归档旧 `internal/textnorm`。
+2. 生产热更新/快照回滚如进入产品化，再补管理面能力。
