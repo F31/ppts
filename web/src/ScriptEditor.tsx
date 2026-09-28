@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useI18n } from './i18n';
-import type { ScriptMode, ScriptRevision, ScriptSegment } from './types';
+import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import type { RewriteAction } from './api';
 
 export type ScriptEditorStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
@@ -62,6 +63,8 @@ type Props = {
   onRewriteError?: (message: string) => void;
   // onAddToDictionary：M4 ⑤ 读音调整弹窗"添加到租户词典"（pattern=原词, replacement=读音）。
   onAddToDictionary?: (word: string, reading: string) => void;
+  pronunciationRules?: PronunciationRule[];
+  onNeedPronunciationRules?: () => void;
 };
 
 // 停顿标记：插入到 spokenText 的朗读提示；发音由 M4 ⑤ 读音 popover 经 〔读：x〕 标记处理。
@@ -79,12 +82,13 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onAddToDictionary },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules },
   ref
 ) {
   const { t } = useI18n();
-  // 各分段展示文本（display==spoken，编辑同步）。
+  // 各分段展示文本与隐藏朗读文本分开维护：displayText 给编辑器看，spokenText 给 TTS 用。
   const [texts, setTexts] = useState<Record<string, string>>(() => initialTexts(script));
+  const [spokenTexts, setSpokenTexts] = useState<Record<string, string>>(() => initialSpokenTexts(script));
   const [saveState, setSaveState] = useState<ScriptEditorStatus>('saved');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusedId, setFocusedId] = useState<string | null>(script.segments[0]?.segmentId ?? null);
@@ -136,6 +140,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [popoverWord, setPopoverWord] = useState('');
   const [popoverReading, setPopoverReading] = useState('');
   const [affectedCount, setAffectedCount] = useState(0);
+  const [textareaScroll, setTextareaScroll] = useState<Record<string, number>>({});
   const composingRef = useRef(false);
   const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   // —— 未落库草案（drafts）按页记名 ——
@@ -179,6 +184,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     // （冲突时草案已被放弃，故仍走下面的对齐分支 —— 对照面板的「采用服务端版本」正依赖这次对齐。）
     if (!switchedSlide && draftsRef.current.has(script.slideId)) return;
     setTexts(initialTexts(script));
+    setSpokenTexts(initialSpokenTexts(script));
     setSaveState('saved');
     setRewriteNote(null);
     if (switchedSlide) {
@@ -195,12 +201,12 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     onStatusChange?.(saveState);
   }, [saveState, onStatusChange]);
 
-  // segmentsWithTexts：把本地文本投影回段落（草案快照与提交内容共用同一投影）。
-  const segmentsWithTexts = (source: Record<string, string>): ScriptSegment[] =>
+  // segmentsWithTexts：把本地展示文本 + 隐藏朗读文本投影回段落（草案快照与提交内容共用同一投影）。
+  const segmentsWithTexts = (displaySource: Record<string, string>, spokenSource = spokenTexts): ScriptSegment[] =>
     script.segments.map((segment) => ({
       ...segment,
-      displayText: source[segment.segmentId] ?? segment.displayText,
-      spokenText: source[segment.segmentId] ?? segment.spokenText
+      displayText: displaySource[segment.segmentId] ?? segment.displayText,
+      spokenText: spokenSource[segment.segmentId] ?? segment.spokenText
     }));
 
   // commitDraft：把**指定页**的未落库草案提交到服务端（可提交非当前显示页 —— R-13 的关键）。
@@ -321,11 +327,13 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     editSeqRef.current += 1;
     const seq = editSeqRef.current;
     const slideId = script.slideId;
+    const nextSpoken = { ...spokenTexts, [segmentId]: value };
+    setSpokenTexts(nextSpoken);
     setTexts((current) => {
       const next = { ...current, [segmentId]: value };
       // 草案快照必须在这里落表：切页后 texts 会被新页内容覆盖，原页未落库的文本只能靠这份
       // 快照续传到服务端（否则"提交在途期间对原页的编辑"会随切页永久丢失）。
-      draftsRef.current.set(slideId, { segments: segmentsWithTexts(next), seq });
+      draftsRef.current.set(slideId, { segments: segmentsWithTexts(next, nextSpoken), seq });
       return next;
     });
     setSaveState('dirty');
@@ -353,6 +361,19 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
 
   const countAffectedSegments = (word: string) =>
     word ? script.segments.filter((s) => (texts[s.segmentId] ?? '').includes(word)).length : 0;
+
+  const effectivePronunciationRules = buildEffectivePronunciationRules(pronunciationRules, spokenTexts);
+
+  const updateSpokenOnly = (nextSpoken: Record<string, string>) => {
+    editSeqRef.current += 1;
+    const seq = editSeqRef.current;
+    const slideId = script.slideId;
+    setSpokenTexts(nextSpoken);
+    draftsRef.current.set(slideId, { segments: segmentsWithTexts(texts, nextSpoken), seq });
+    setSaveState('dirty');
+    onEdited?.();
+    if (!composingRef.current) scheduleSaveRef.current(slideId);
+  };
 
   // 段落改写（缩短/润色/衔接）：逐段串行调用 LLM（避免突发顶爆限流），成功即经本地草稿
   // 自动保存落库并点亮"语音待更新"；进行中整条工具栏禁用防止重复频繁点击。
@@ -404,6 +425,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
 
   // M4 ⑤：读音调整只作用于用户在讲稿框里选中的词/短语，避免把整段讲稿塞进浮层。
   const openPronounce = () => {
+    onNeedPronunciationRules?.();
     const id = focusedId;
     const el = id ? textareaRefs.current[id] : null;
     if (!id || !el) {
@@ -434,19 +456,23 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
 
   const insertPronounceMarker = () => {
     if (!popoverTarget || !popoverReading) return;
-    const { segmentId, end } = popoverTarget;
-    const marker = `〔读：${popoverReading}〕`;
-    const base = texts[segmentId] ?? '';
-    const pos = Math.min(end, base.length);
-    const next = base.slice(0, pos) + marker + base.slice(pos);
-    editSegment(segmentId, next);
+    const word = popoverWord.trim();
+    if (!word) return;
+    const reading = popoverReading.trim();
+    const nextSpoken: Record<string, string> = { ...spokenTexts };
+    for (const segment of script.segments) {
+      const id = segment.segmentId;
+      const display = texts[id] ?? segment.displayText;
+      if (!display.includes(word)) continue;
+      nextSpoken[id] = annotatePronunciation(spokenTexts[id] ?? display, word, reading);
+    }
+    updateSpokenOnly(nextSpoken);
     setPopoverOpen(false);
     requestAnimationFrame(() => {
-      const fresh = textareaRefs.current[segmentId];
+      const fresh = textareaRefs.current[popoverTarget.segmentId];
       if (fresh) {
-        const caret = pos + marker.length;
         fresh.focus();
-        fresh.setSelectionRange(caret, caret);
+        fresh.setSelectionRange(popoverTarget.start, popoverTarget.end);
       }
     });
   };
@@ -593,8 +619,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
             <input value={popoverReading} onChange={(e) => setPopoverReading(e.currentTarget.value)} placeholder={t('editor.pronounceReadingPlaceholder')} />
           </label>
           <div className="popover-actions">
-            <button type="button" disabled={!popoverTarget || !popoverReading} onClick={insertPronounceMarker}>
-              {t('editor.insertHere')}
+            <button type="button" disabled={!popoverTarget || !popoverReading.trim()} onClick={insertPronounceMarker}>
+              {t('editor.applyPronunciationAll')}
             </button>
             <button type="button" disabled={!popoverWord.trim() || !popoverReading} onClick={() => { onAddToDictionary?.(popoverWord.trim(), popoverReading); setPopoverOpen(false); }}>
               {t('editor.addToDictionary')}
@@ -622,33 +648,45 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 <span className="segment-index">{index + 1}</span>
                 {segRewrite && <span className="seg-badge regen">{t('editor.rewriting')}</span>}
               </label>
-              <textarea
-                ref={(el) => {
-                  textareaRefs.current[segment.segmentId] = el;
-                }}
-                value={texts[segment.segmentId] ?? ''}
-                readOnly={!canEdit || segRewrite}
-                onFocus={() => setFocusedId(segment.segmentId)}
-                onClick={(e) => {
-                  setFocusedId(segment.segmentId);
-                  caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
-                }}
-                onKeyUp={(e) => {
-                  caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
-                }}
-                onSelect={(e) => {
-                  caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
-                }}
-                onChange={(event) => editSegment(segment.segmentId, event.currentTarget.value)}
-                onCompositionStart={() => {
-                  composingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  composingRef.current = false;
-                  // 组合确认后文本才算最终：补齐组合期被跳过的调度（沿用统一防抖窗口，连续输入只提交一次）。
-                  if (saveStateRef.current === 'dirty') scheduleSaveRef.current(script.slideId);
-                }}
-              />
+              <div className="script-textarea-wrap">
+                <pre className="script-highlight-layer" aria-hidden="true" style={{ transform: `translateY(-${textareaScroll[segment.segmentId] ?? 0}px)` }}>
+                  {renderHighlightedText(texts[segment.segmentId] ?? '', effectivePronunciationRules, t('editor.pronunciationTooltip'))}
+                </pre>
+                <textarea
+                  ref={(el) => {
+                    textareaRefs.current[segment.segmentId] = el;
+                  }}
+                  value={texts[segment.segmentId] ?? ''}
+                  readOnly={!canEdit || segRewrite}
+                  onFocus={() => {
+                    setFocusedId(segment.segmentId);
+                    onNeedPronunciationRules?.();
+                  }}
+                  onScroll={(e) => {
+                    const top = e.currentTarget.scrollTop;
+                    setTextareaScroll((current) => current[segment.segmentId] === top ? current : { ...current, [segment.segmentId]: top });
+                  }}
+                  onClick={(e) => {
+                    setFocusedId(segment.segmentId);
+                    caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
+                  }}
+                  onKeyUp={(e) => {
+                    caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
+                  }}
+                  onSelect={(e) => {
+                    caretRef.current = (e.currentTarget as HTMLTextAreaElement).selectionStart;
+                  }}
+                  onChange={(event) => editSegment(segment.segmentId, event.currentTarget.value)}
+                  onCompositionStart={() => {
+                    composingRef.current = true;
+                  }}
+                  onCompositionEnd={() => {
+                    composingRef.current = false;
+                    // 组合确认后文本才算最终：补齐组合期被跳过的调度（沿用统一防抖窗口，连续输入只提交一次）。
+                    if (saveStateRef.current === 'dirty') scheduleSaveRef.current(script.slideId);
+                  }}
+                />
+              </div>
             </article>
           );
         })}
@@ -745,8 +783,122 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   );
 });
 
+type EffectivePronunciationRule = { pattern: string; replacement: string; source: 'local' | 'dictionary' };
+
+function buildEffectivePronunciationRules(rules: PronunciationRule[], spokenTexts: Record<string, string>): EffectivePronunciationRule[] {
+  const out: EffectivePronunciationRule[] = [];
+  const seen = new Set<string>();
+  for (const text of Object.values(spokenTexts)) {
+    for (const rule of extractSpokenPronunciations(text)) {
+      const key = rule.pattern;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ ...rule, source: 'local' });
+    }
+  }
+  for (const rule of rules) {
+    const pattern = rule.pattern.trim();
+    const replacement = rule.replacement.trim();
+    if (!rule.enabled || !pattern || !replacement || seen.has(pattern)) continue;
+    seen.add(pattern);
+    out.push({ pattern, replacement, source: 'dictionary' });
+  }
+  return out.sort((a, b) => b.pattern.length - a.pattern.length);
+}
+
+function renderHighlightedText(text: string, rules: EffectivePronunciationRule[], tooltipPrefix: string) {
+  if (!text || rules.length === 0) return text || ' ';
+  const nodes: ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < text.length) {
+    const hit = rules.find((rule) => text.startsWith(rule.pattern, i));
+    if (!hit) {
+      nodes.push(text[i]);
+      i += 1;
+      continue;
+    }
+    nodes.push(
+      <mark key={`p-${key++}`} className={`pronunciation-hit ${hit.source}`} title={`${tooltipPrefix}${hit.replacement}`}>
+        {hit.pattern}
+      </mark>
+    );
+    i += hit.pattern.length;
+  }
+  return nodes;
+}
+
+function extractSpokenPronunciations(text: string): Array<{ pattern: string; replacement: string }> {
+  const out: Array<{ pattern: string; replacement: string }> = [];
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const markerStart = text.indexOf('〔读：', searchFrom);
+    if (markerStart === -1) break;
+    const markerEnd = text.indexOf('〕', markerStart + 3);
+    if (markerEnd === -1) break;
+    const replacement = text.slice(markerStart + 3, markerEnd).trim();
+    const pattern = precedingPronunciationPattern(text.slice(0, markerStart));
+    if (pattern && replacement) out.push({ pattern, replacement });
+    searchFrom = markerEnd + 1;
+  }
+  return out;
+}
+
+function precedingPronunciationPattern(prefix: string): string {
+  const trimmed = prefix.replace(/\s+$/u, '');
+  const boundary = Math.max(
+    trimmed.lastIndexOf('〔读：'),
+    trimmed.lastIndexOf('，'),
+    trimmed.lastIndexOf('。'),
+    trimmed.lastIndexOf('；'),
+    trimmed.lastIndexOf('：'),
+    trimmed.lastIndexOf('、'),
+    trimmed.lastIndexOf('\n')
+  );
+  const raw = trimmed.slice(boundary + 1).trim();
+  return raw.length > 64 ? '' : raw;
+}
+
 function initialTexts(script: ScriptRevision): Record<string, string> {
   const out: Record<string, string> = {};
   for (const segment of script.segments) out[segment.segmentId] = segment.displayText;
+  return out;
+}
+
+function initialSpokenTexts(script: ScriptRevision): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const segment of script.segments) out[segment.segmentId] = segment.spokenText || segment.displayText;
+  return out;
+}
+
+function annotatePronunciation(text: string, word: string, reading: string): string {
+  if (!word || !reading) return text;
+  const marker = `〔读：${reading}〕`;
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith('〔读：', i)) {
+      const close = text.indexOf('〕', i + 3);
+      if (close === -1) {
+        out += text.slice(i);
+        break;
+      }
+      out += text.slice(i, close + 1);
+      i = close + 1;
+      continue;
+    }
+    if (text.startsWith(word, i)) {
+      out += word;
+      i += word.length;
+      if (text.startsWith('〔读：', i)) {
+        const close = text.indexOf('〕', i + 3);
+        if (close !== -1) i = close + 1;
+      }
+      out += marker;
+      continue;
+    }
+    out += text[i];
+    i += 1;
+  }
   return out;
 }

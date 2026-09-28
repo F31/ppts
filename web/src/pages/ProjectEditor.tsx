@@ -20,6 +20,7 @@ import {
   setSlideNotes,
   type SourceRevisionSummary,
   getScript,
+  listDictionaries,
   getSlideRenderURLs,
   getSlideScriptSources,
   listJobsPage,
@@ -46,7 +47,7 @@ import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type Script
 import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
-import type { ArtifactFormat, Job, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import { useDialogA11y } from '../a11y';
 
@@ -320,6 +321,7 @@ export function ProjectEditor({
   // M3 ⑥：无备注页讲稿来源选择（持久化）。
   const [slideSources, setSlideSources] = useState<Record<string, SlideScriptSource>>({});
   const [dictNotice, setDictNotice] = useState<string>('');
+  const [pronunciationRules, setPronunciationRules] = useState<PronunciationRule[] | null>(null);
 
   // 页面列表
   useEffect(() => {
@@ -913,6 +915,16 @@ export function ProjectEditor({
   );
 
   // M4 ⑤：读音调整弹窗「添加到租户词典」——构造单条规则（原词→读音）并写入当前租户发音词典。
+  const ensurePronunciationRules = useCallback(async () => {
+    if (pronunciationRules !== null) return;
+    try {
+      const dictionaries = await listDictionaries(identity);
+      setPronunciationRules(dictionaries.flatMap((dict) => dict.rules ?? []).filter((rule) => rule.enabled && rule.pattern && rule.replacement));
+    } catch {
+      setPronunciationRules([]);
+    }
+  }, [identity, pronunciationRules]);
+
   const addToDictionary = useCallback(
     async (word: string, reading: string) => {
       try {
@@ -920,6 +932,7 @@ export function ProjectEditor({
           name: t('editor.dictName', { word }),
           rules: [{ pattern: word, replacement: reading, enabled: true }]
         });
+        setPronunciationRules((current) => [...(current ?? []), { pattern: word, replacement: reading, enabled: true }]);
         setDictNotice(t('editor.dictAdded', { word }));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1675,6 +1688,8 @@ export function ProjectEditor({
               onRewriteText={canEditScript ? rewriteActive : undefined}
               onRewriteError={rewriteError}
               onAddToDictionary={addToDictionary}
+              pronunciationRules={pronunciationRules ?? []}
+              onNeedPronunciationRules={ensurePronunciationRules}
             />
           ) : (
             <section className="editor-card">
