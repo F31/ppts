@@ -100,6 +100,18 @@ func BuildNewEngine(o Options) (*newtn.Engine, []string, error) {
 	if o.NumberMode != nil {
 		rules = append(rules, newtn.ZHNumberRule(newtn.NumberMode(*o.NumberMode)))
 	}
+	// S4 新增规则（V3.1 §S4）：电话/比分/版本保留/技术型号。候选引擎始终装配：
+	// - technical model / version preserve 保护型号与版本串不被数字/日期规则拆分；
+	// - telephone 逐位读 CN 手机号（优先级低于数量读，见 textnorm/telephone.go）；
+	// - score 仅在语义提示 SemanticScore 覆盖时才产出（见 textnorm/score.go 门控）。
+	// 影子比较的目的是度量"候选引擎若上线"与旧引擎的差异，故此处按候选引擎实际装配
+	// 全量规则构建，而不是只装配与旧引擎同名的类别。
+	rules = append(rules,
+		newtn.TechnicalModelRule(),
+		newtn.ZHVersionPreserveRule(),
+		newtn.ZHTelephoneRule(),
+		newtn.ZHScoreRule(),
+	)
 	for i, re := range o.Context {
 		re2, err := regexp.Compile(re.Pattern)
 		if err != nil {

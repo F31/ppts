@@ -7,7 +7,7 @@ import (
 )
 
 func TestCompareDictEquivalence(t *testing.T) {
-	opts := Options{Dict: []DictEntry{{Match: "CUDA", Replacement: "库达"}, {Match: "Model3", Replacement: "Model三"}}}
+	opts := Options{Dict: []DictEntry{{Match: "CUDA", Replacement: "库达"}, {Match: "SDK", Replacement: "软件开发包"}}}
 	old, err := BuildOldEngine(opts)
 	if err != nil {
 		t.Fatal(err)
@@ -19,12 +19,37 @@ func TestCompareDictEquivalence(t *testing.T) {
 	if len(notice) != 0 {
 		t.Fatalf("unexpected notice: %v", notice)
 	}
-	r := Compare(old, ne, "zh-CN", "CUDA与Model3")
+	r := Compare(old, ne, "zh-CN", "CUDA与SDK")
 	if !r.Same {
 		t.Fatalf("report = %+v, want same", r)
 	}
-	if r.OldText != "库达与Model三" || r.NewText != "库达与Model三" {
+	if r.OldText != "库达与软件开发包" || r.NewText != "库达与软件开发包" {
 		t.Fatalf("texts = %q / %q", r.OldText, r.NewText)
+	}
+}
+
+// TestCompareDetectsTechnicalModelPreserve 验证 shadow 对 S4 模型的检测能力：
+// 候选引擎会保留 "Model3"（技术型号，见 textnorm/model.go），旧引擎则按词典改写
+// 为 "Model三"——这是真实分歧，应被报告为 Same=false，而不是被压掉。
+func TestCompareDetectsTechnicalModelPreserve(t *testing.T) {
+	opts := Options{Dict: []DictEntry{{Match: "Model3", Replacement: "Model三"}}}
+	old, err := BuildOldEngine(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ne, notice, err := BuildNewEngine(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notice) != 0 {
+		t.Fatalf("unexpected notice: %v", notice)
+	}
+	r := Compare(old, ne, "zh-CN", "Model3与CUDA")
+	if r.Same {
+		t.Fatalf("report = %+v, want diverged (technical model preserve)", r)
+	}
+	if r.OldText == r.NewText {
+		t.Fatalf("unexpected equal texts: %q", r.OldText)
 	}
 }
 
