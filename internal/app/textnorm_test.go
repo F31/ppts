@@ -82,8 +82,9 @@ type staticTextNorm struct {
 	opts    []TextNormOptions
 }
 
-func (s staticTextNorm) Build(ctx context.Context, _, lang string) (*textnorm.Engine, error) {
-	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger, s.opts...)
+func (s staticTextNorm) Build(ctx context.Context, _, lang string) (*newtn.Engine, error) {
+	engine, _, err := NewTextNormShadowEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger, s.opts...)
+	return engine, err
 }
 
 type staticShadowTextNorm struct {
@@ -92,9 +93,8 @@ type staticShadowTextNorm struct {
 	opts   []TextNormOptions
 }
 
-func (s staticShadowTextNorm) Build(ctx context.Context, _, lang string) (*newtn.Engine, error) {
-	engine, _, err := NewTextNormShadowEngine(ctx, s.meta, "tenant-1", lang, true, nil, s.logger, s.opts...)
-	return engine, err
+func (s staticShadowTextNorm) Build(ctx context.Context, _, lang string) (*textnorm.Engine, error) {
+	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, true, nil, s.logger, s.opts...)
 }
 
 func segmentsWithMarkers() []*narration.Segment {
@@ -502,9 +502,10 @@ func TestNewTextNormShadowEngine(t *testing.T) {
 // TestTextNormShadowNoOutputChange 注入一个必分歧的影子引擎后，TTS 输出仍以旧引擎
 // 为准（V3.1 §14.3 安全性质：影子只观测，不改 effectiveText / 缓存键）。
 // 制造分歧：数量位读(number, prio20) 与上下文规则(context, prio20) 同时命中"2024年"。
-// 旧引擎级联：number 先展开为"二千零二十四年"，context 的"2024年"随之不再命中；
-// 候选引擎非级联：同 start 同 priority 下较长 context 候选胜出 → "二零二四年"。
-// 送 TTS 的文本必须仍是旧引擎结果。
+// 主引擎切换后（V3.1）：候选引擎（模块 textnorm）负责输出 → "二零二四年发布"；
+// 旧引擎（internal/textnorm）退为影子观测，不参与输出与缓存键。
+// 级联差异备注：旧引擎级联时 number 先展开为"二千零二十四年"，context 的"2024年"
+// 随之不再命中；候选引擎非级联：同 start 同 priority 下较长 context 候选胜出。
 func TestTextNormShadowNoOutputChange(t *testing.T) {
 	store := &narrationStoreStub{revision: approvedRevision(
 		&narration.Segment{SegmentID: "seg-1", DisplayText: "2024年发布", SpokenText: "2024年发布"},
@@ -532,7 +533,7 @@ func TestTextNormShadowNoOutputChange(t *testing.T) {
 	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	if got := provider.lastReq.Text; got != "二千零二十四年发布" {
-		t.Fatalf("effectiveText = %q, want %q (shadow must not change output)", got, "二千零二十四年发布")
+	if got := provider.lastReq.Text; got != "二零二四年发布" {
+		t.Fatalf("effectiveText = %q, want %q (main engine is candidate after switch)", got, "二零二四年发布")
 	}
 }

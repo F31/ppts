@@ -25,8 +25,9 @@ func textNormEnabled() bool {
 	}
 }
 
-// appTextNorm 实现 app.NarrationTextNorm：按 (租户, 语言) 构建冻结引擎。
-// 词典合并（租户优先 + 平台种子兜底）与异常空信号在 app.NewTextNormEngine 内完成。
+// appTextNorm 实现 app.NarrationTextNorm：按 (租户, 语言) 构建引擎。
+// 词典合并（租户优先 + 平台种子兜底）与异常空信号在 app.NewTextNormShadowEngine 内完成。
+// 主引擎切换后（V3.1），候选引擎（模块 textnorm）负责输出与缓存键；
 // 上下文替换规则（M5 数据驱动）随引擎总开关启用，加载租户+平台生效行。
 type appTextNorm struct {
 	store        app.TextNormDictStore
@@ -36,17 +37,18 @@ type appTextNorm struct {
 
 var _ app.NarrationTextNorm = appTextNorm{}
 
-// Build 实现 NarrationTextNorm：加载词典并构建冻结引擎。
+// Build 实现 NarrationTextNorm：加载词典并构建候选引擎。
 // 平台种子来自迁移固定写入（is_platform_default=true），故 expectedSeedNonEmpty 恒真——
 // 合并结果为空触发的 R1 "empty_unexpected" 信号由此生效。
 // 数值读法（N2 可选）：PPTS_TEXT_NORM_NUMBERS=quantity|year 时注册，默认不注册。
 // PPT 高频类别（V3.0 §2.2）：PPTS_TEXT_NORM_CLASSES=percent,decimal,date,money,unit 时注册，默认不注册。
-func (a appTextNorm) Build(ctx context.Context, tenantID, lang string) (*textnorm.Engine, error) {
+func (a appTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error) {
 	opts := []app.TextNormOptions{numberModeOption(), classesOption()}
 	if a.contextRules != nil {
 		opts = append(opts, app.TextNormOptions{ContextRules: a.contextRules})
 	}
-	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
+	engine, _, err := app.NewTextNormShadowEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
+	return engine, err
 }
 
 // numberModeOption 依据环境变量返回数值规则装配选项；未设置或非法时返回零值（不注册）。
@@ -105,8 +107,8 @@ func textNormShadowEnabled() bool {
 	}
 }
 
-// appShadowTextNorm 实现 app.NarrationShadowTextNorm：用与旧引擎相同的持久化配置
-// 构建候选影子引擎，仅用于输出差异观测。
+// appShadowTextNorm 实现 app.NarrationShadowTextNorm：用与主引擎相同的持久化配置
+// 构建旧引擎（internal/textnorm）作为影子，仅用于输出差异观测（V3.1 §14.3）。
 type appShadowTextNorm struct {
 	store        app.TextNormDictStore
 	contextRules app.TextNormContextRuleStore
@@ -115,13 +117,11 @@ type appShadowTextNorm struct {
 
 var _ app.NarrationShadowTextNorm = appShadowTextNorm{}
 
-// Build 实现 NarrationShadowTextNorm：加载词典并按同一元数据装配影子引擎。
-// notice（未覆盖能力）由 NewTextNormShadowEngine 返回，这里仅保留引擎供比较。
-func (a appShadowTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error) {
+// Build 实现 NarrationShadowTextNorm：加载词典并按同一元数据装配旧引擎。
+func (a appShadowTextNorm) Build(ctx context.Context, tenantID, lang string) (*textnorm.Engine, error) {
 	opts := []app.TextNormOptions{numberModeOption(), classesOption()}
 	if a.contextRules != nil {
 		opts = append(opts, app.TextNormOptions{ContextRules: a.contextRules})
 	}
-	engine, _, err := app.NewTextNormShadowEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
-	return engine, err
+	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
 }

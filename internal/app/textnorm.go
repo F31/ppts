@@ -228,3 +228,13 @@ func ToSpeechControlPauses(pauses []textnorm.Pause) []tts.Pause {
 	}
 	return out
 }
+
+// ToControlsPauses 把候选引擎（模块 textnorm）的 Control 事件映射为供应商结构化停顿。
+// 与 ToSpeechControlPauses 语义一致；主引擎切换后 narration 消费 Controls 而非旧 Pauses。
+func ToControlsPauses(controls []newtn.Control) []tts.Pause {
+	out := make([]tts.Pause, 0, len(controls))
+	for _, c := range controls {
+		out = append(out, tts.Pause{AfterChars: c.AfterRunes, DurationMS: c.DurationMS})
+	}
+	return out
+}
