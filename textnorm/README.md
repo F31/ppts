@@ -47,6 +47,8 @@ Plain text does not auto-interpret these characters unless `LegacyMarkup` is tru
 - `ZHMoneyRule()` converts money expressions such as `¥250`, `USD 1.5`, and `5万`.
 - `ZHUnitRule()` converts common digit-led unit forms such as `5GHz` and `3.5GB`.
 - `ZHDecimalRule()` converts simple decimal forms such as `13.5`.
+- `ZHTelephoneRule()` reads CN mobile numbers (`1[3-9]` + 9 digits) digit by digit.
+- `ZHScoreRule()` reads `X:Y` as `X比Y`, gated on a `SemanticScore` hint (ambiguous forms are conservative without the hint).
 
 Date rules have higher priority than decimal rules, so `2024.01.28` is handled as one date candidate instead of being split into decimal fragments. In preserve mode, the date remains unchanged but still blocks lower-priority decimal edits inside the same range.
 

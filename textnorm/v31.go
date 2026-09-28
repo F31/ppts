@@ -285,6 +285,10 @@ func (e *Engine) Normalize(ctx context.Context, req Request) (Result, error) {
 				})
 				continue
 			}
+			if g, ok := r.(semanticGated); ok && !gatedRuleCovered(c.Src, g.SemanticGate(), hints) {
+				// 歧义类别（比分/比率等）仅由匹配的语义提示启用；无提示时保守保留（不产出改写）。
+				continue
+			}
 			candidates = append(candidates, c)
 		}
 	}
@@ -372,6 +376,21 @@ func semanticHintFor(c Candidate, hints []Hint) (SemanticKind, bool) {
 		}
 	}
 	return "", false
+}
+
+// semanticGated 是可选的规则能力：实现它的规则只在存在匹配类别的语义提示覆盖候选区间时
+// 才产出候选（V3.1 §6.4/§10.1，歧义类别如比分/比率由提示消歧，无提示则保守保留）。
+type semanticGated interface {
+	SemanticGate() SemanticKind
+}
+
+func gatedRuleCovered(src Range, gate SemanticKind, hints []Hint) bool {
+	for _, h := range hints {
+		if h.Kind == HintSemantic && h.Semantic == gate && overlapsAny(src, []Range{h.Range}) {
+			return true
+		}
+	}
+	return false
 }
 
 func selectedRanges(selected []Candidate) []Range {
