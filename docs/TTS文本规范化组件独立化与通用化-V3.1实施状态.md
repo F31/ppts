@@ -14,7 +14,7 @@
 | S2 独立模块骨架 | 独立 module、标准库核心、最小示例、CI | 完成 | `textnorm/` 独立 go.mod（仅标准库），可脱离 PPTS 构建测试；已加入 go.work 与独立 CI job |
 | S3 执行与映射核心 | 候选识别、保护、冲突裁决、一次输出、来源关系 | 完成 | 非级联、保护区间、冲突诊断、identity/replacement/deletion 映射、取消语义 |
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 完成 | 已迁日期/百分比/单位/小数/版本/型号/词典/数字/金额/**电话**/**比分（语义提示门控）**；通用中文类别主力已齐 |
-| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 完成（生产影子已启用） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；narration 合成路径接入影子比较（仅观测不改输出/缓存键）。**已部署 ec5115a 并开启 `PPTS_TEXTNORM_SHADOW=1`**，分歧计数进 `ppts_textnorm_shadow_diff_total{diverged,error,build_error}`（/metrics 已注册，worker 日志确认启用）；主引擎仍为旧 `internal/textnorm`（切换门=影子分歧归零/评审） |
+| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 完成（生产影子已启用并采集） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；narration 合成路径接入影子比较（仅观测不改输出/缓存键）。**已部署 c8cd02f 并开启 `PPTS_TEXTNORM_SHADOW=1`**。过程中补齐两处基建：① worker 进程新增受 `PPTS_METRICS_TOKEN` 保护的 `/metrics`（影子计数在 worker 进程内自增，api 的 `/metrics` 看不到），地址 `127.0.0.1:8090`=PPTS_WORKER_METRICS_ADDR；② `BuildNewEngine` 补齐 S4 规则装配（TechnicalModel/VersionPreserve/Telephone/Score 门控），修正"0 分歧其实是未比较"的盲区。受控注入 7 段真脚本（测试租户＋本地 mock TTS，零外部成本），生产影子捕获 **3 处分歧**（见 §采集结论），与离线复算一致；均为候选引擎改进方向，进入评审。主引擎仍为旧 `internal/textnorm`（切换门=分歧评审接受后切换） |
 | S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 完成 | 语义化版本契约已加（`Version`、`ModulePath`、`Profiles()`/`ProfileVersion`，Manifest 携带版本）；组件发布于 `github.com/F31/textnorm`，tag `v0.1.0` 已被 go 代理索引；**外部最小消费者经 `go get github.com/F31/textnorm@v0.1.0` 独立构建运行成功**；monorepo 保留本地 replace（CI 稳定性） |
 | S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 未开始 | |
 
@@ -43,7 +43,19 @@
 - `docs/TTS文本规范化组件独立化与通用化设计-V3.1.md`
 - `.github/workflows/ci.yml`（新增 textnorm job）
 
+## 生产影子采集结论（2026-09-28）
+
+- 受控注入：测试租户（`textnorm-shadow-inject`）+ 1 项目 + 1 slide + 7 分段真脚本（含数量/日期/金额/电话/比分/PM2.5/型号/版本串），本地 mock TTS（HTTP 127.0.0.1:18090，零外部调用），worker 真实执行 narration 合成路径。
+- 观测：`ppts_textnorm_shadow_diff_total{diverged}` 在生产 worker 进程（`127.0.0.1:8090`）捕获 **3 处分歧**，与 `cmd/textnorm-shadow` 离线复算（3/7）完全一致。
+- 分歧明细（全部为候选引擎对旧引擎的改进，评审接受）：
+  1. `13800138000` → 旧：一百三十八亿零一十三万八千（数量误读）；新：一三八零零一三八零零零（优先逐位读，`ZHTelephoneRule`）。
+  2. `PM2.5` → 旧：PM2.五；新：PM2.5（`2.5` 作为技术型号串被保留，`TechnicalModelRule`）。
+  3. `v3.1.2` → 旧：v3.一.二；新：v3.1.2（版本串保留，`ZHVersionPreserveRule`）。
+- `3:2` 未分歧：比分规则为语义提示门控（无 `SemanticScore` 提示时保守不触发），符合设计。
+- 基建补全：worker 独立 `/metrics`（`PPTS_WORKER_METRICS_ADDR`，Bearer 鉴权 fail-closed）；`BuildNewEngine` 补齐 S4 规则装配。
+- 残留关注：旧引擎 `13800138000` 的数量误读与型号切碎正是候选引擎要修的 S4 目标行为；切换后需在 S7 真实音频验收中复核。
+
 ## 下一步候选
 
-1. 生产影子采集：部署含影子接线的二进制后，开启 `PPTS_TEXTNORM_SHADOW=1`，采集分歧归零/评审后切换主引擎并废弃 `internal/textnorm`。
+1. **主引擎切换（分歧评审已齐备）**：把候选引擎设为主引擎（PPTS_TEXT_NORM_ENGINE 之类开关），`internal/textnorm` 保留为回退或废弃，跑一轮全量回归后切换。
 2. S7 稳定化：真实音频验收与扩展 API 验证。
