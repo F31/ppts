@@ -78,3 +78,24 @@ func ProfileRules(name string) ([]CandidateRule, error) {
 	}
 	return nil, fmt.Errorf("textnorm: unknown profile %q", name)
 }
+
+// CompileProfile compiles a built-in profile and stamps its name/version into
+// Result.Manifest. It is the preferred entry point for consumers that want a
+// stable behavior contract instead of assembling rules manually.
+func CompileProfile(name string, opts ...func(*Config)) (*Engine, error) {
+	rules, err := ProfileRules(name)
+	if err != nil {
+		return nil, err
+	}
+	version, err := ProfileVersion(name)
+	if err != nil {
+		return nil, err
+	}
+	cfg := Config{Rules: rules, Profile: name, ProfileVersion: version}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return Compile(cfg)
+}

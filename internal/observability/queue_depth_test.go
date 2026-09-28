@@ -76,6 +76,15 @@ func TestQueueDepthReporterSurvivesReadFailure(t *testing.T) {
 	}
 }
 
+func TestQueueDepthReporterSkipsCrossTenantMode(t *testing.T) {
+	fake := &queueDepthFake{stats: []pipeline.QueueDepthStat{{Kind: "parse", Waiting: 1}}}
+	r := NewQueueDepthReporter(fake, "", time.Minute, nil)
+	r.report(context.Background())
+	if fake.calls != 0 {
+		t.Fatalf("calls = %d, want 0 for cross-tenant worker without a concrete tenant", fake.calls)
+	}
+}
+
 // mapValue 取 map 里的一个键。**键不存在必须是错误而不是零值** ——
 // "没见过这个 kind"与"这个 kind 当前积压为 0"是两种状态，在测试里混起来会漏掉漏埋指标的情况。
 func mapValue(m *expvar.Map, key string) (expvar.Var, error) {

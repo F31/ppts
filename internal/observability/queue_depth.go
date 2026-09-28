@@ -28,8 +28,9 @@ type QueueDepthReporter struct {
 	interval time.Duration
 }
 
-// NewQueueDepthReporter 创建按 kind 的队列快照采集器。tenantID 为空表示单租户本地 profile
-// （此时队列视图即该租户的视图）；多副本部署时每个实例都会读到同一份真值。
+// NewQueueDepthReporter 创建按 kind 的队列快照采集器。tenantID 为空表示跨租户 worker；
+// 当前 PG 实现只有按租户读侧聚合（RLS 需要具体 tenant），因此跨租户模式跳过该 reporter，
+// 避免把空字符串写入 app.tenant_id 造成周期性日志噪音。
 func NewQueueDepthReporter(reader QueueDepthReader, tenantID string, interval time.Duration, logger *log.Logger) *QueueDepthReporter {
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -53,7 +54,7 @@ func (r *QueueDepthReporter) Run(ctx context.Context) {
 }
 
 func (r *QueueDepthReporter) report(ctx context.Context) {
-	if r.reader == nil {
+	if r.reader == nil || r.tenantID == "" {
 		return
 	}
 	stats, err := r.reader.QueueDepthByKind(ctx, r.tenantID)

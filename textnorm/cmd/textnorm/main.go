@@ -64,9 +64,10 @@ func runCmd(args []string) {
 		Error       string   `json:"error,omitempty"`
 	}
 	type fileRow struct {
-		File    string    `json:"file"`
-		Profile string    `json:"profile"`
-		Cases   []caseRow `json:"cases"`
+		File     string            `json:"file"`
+		Profile  string            `json:"profile"`
+		Manifest textnorm.Manifest `json:"manifest"`
+		Cases    []caseRow         `json:"cases"`
 	}
 	var report []fileRow
 	totalPass, totalFail := 0, 0
@@ -100,7 +101,7 @@ func runCmd(args []string) {
 			}
 			rows = append(rows, row)
 		}
-		report = append(report, fileRow{File: f, Profile: name, Cases: rows})
+		report = append(report, fileRow{File: f, Profile: name, Manifest: engine.Manifest(), Cases: rows})
 	}
 
 	switch *format {
@@ -150,6 +151,8 @@ func diffCmd(args []string) {
 
 	baseEngine := compileProfile(*base)
 	nextEngine := compileProfile(*next)
+	baseManifest := baseEngine.Manifest()
+	nextManifest := nextEngine.Manifest()
 	ctx := context.Background()
 
 	type diffRow struct {
@@ -191,7 +194,13 @@ func diffCmd(args []string) {
 
 	switch *format {
 	case "json":
-		out := map[string]interface{}{"base": *base, "next": *next, "differences": diffs}
+		out := map[string]interface{}{
+			"base":          *base,
+			"next":          *next,
+			"base_manifest": baseManifest,
+			"next_manifest": nextManifest,
+			"differences":   diffs,
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(out); err != nil {
@@ -199,6 +208,8 @@ func diffCmd(args []string) {
 		}
 	default:
 		fmt.Printf("DIFF %s -> %s\n", *base, *next)
+		fmt.Printf("  base manifest: version=%s profile=%s/%d hash=%s\n", baseManifest.Version, baseManifest.Profile, baseManifest.ProfileVersion, baseManifest.ConfigHash)
+		fmt.Printf("  next manifest: version=%s profile=%s/%d hash=%s\n", nextManifest.Version, nextManifest.Profile, nextManifest.ProfileVersion, nextManifest.ConfigHash)
 		for _, d := range diffs {
 			fmt.Printf("  %-42s %q\n", d.ID, d.Input)
 			fmt.Printf("    %-8s %q  edits=%v\n", *base, d.Base, d.BaseEdits)
@@ -209,11 +220,7 @@ func diffCmd(args []string) {
 }
 
 func compileProfile(name string) *textnorm.Engine {
-	rules, err := textnorm.ProfileRules(name)
-	if err != nil {
-		fatalErr(err)
-	}
-	engine, err := textnorm.Compile(textnorm.Config{Rules: rules})
+	engine, err := textnorm.CompileProfile(name)
 	if err != nil {
 		fatalErr(err)
 	}

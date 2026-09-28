@@ -8,6 +8,9 @@ package textnorm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -132,8 +135,11 @@ type Diagnostic struct {
 
 // Manifest identifies the engine and rule set that produced a result.
 type Manifest struct {
-	Version string
-	Rules   []string
+	Version        string
+	Profile        string
+	ProfileVersion int
+	ConfigHash     string
+	Rules          []string
 }
 
 // Candidate is a rule proposal over the original input text.
@@ -158,6 +164,10 @@ type Config struct {
 	Rules []CandidateRule
 	// PauseMS is the default pause duration for legacy ‖ markers (default 300).
 	PauseMS int
+	// Profile and ProfileVersion identify a named rule combination. Custom
+	// configurations may leave both fields at their zero values.
+	Profile        string
+	ProfileVersion int
 }
 
 // Engine is the V3.1 non-cascading normalization engine.
@@ -195,11 +205,41 @@ func Compile(cfg Config) (*Engine, error) {
 	if pauseMS <= 0 {
 		pauseMS = 300
 	}
-	return &Engine{
-		rules:    rules,
-		manifest: Manifest{Version: Version, Rules: ids},
-		pauseMS:  pauseMS,
-	}, nil
+	manifest := Manifest{Version: Version, Profile: cfg.Profile, ProfileVersion: cfg.ProfileVersion, Rules: ids}
+	manifest.ConfigHash = configHash(manifest, rules, pauseMS)
+	return &Engine{rules: rules, manifest: manifest, pauseMS: pauseMS}, nil
+}
+
+func configHash(m Manifest, rules []CandidateRule, pauseMS int) string {
+	type ruleInfo struct {
+		ID       string `json:"id"`
+		Priority int    `json:"priority"`
+	}
+	payload := struct {
+		Version        string     `json:"version"`
+		Profile        string     `json:"profile,omitempty"`
+		ProfileVersion int        `json:"profileVersion,omitempty"`
+		PauseMS        int        `json:"pauseMs"`
+		Rules          []ruleInfo `json:"rules"`
+	}{Version: m.Version, Profile: m.Profile, ProfileVersion: m.ProfileVersion, PauseMS: pauseMS}
+	for _, r := range rules {
+		payload.Rules = append(payload.Rules, ruleInfo{ID: r.RuleID(), Priority: r.RulePriority()})
+	}
+	b, _ := json.Marshal(payload)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// Manifest returns a copy of the engine identity and configuration fingerprint.
+// It lets callers record or compare behavior contracts without normalizing a
+// sample string first.
+func (e *Engine) Manifest() Manifest {
+	if e == nil {
+		return Manifest{}
+	}
+	m := e.manifest
+	m.Rules = append([]string(nil), e.manifest.Rules...)
+	return m
 }
 
 // Normalize applies V3.1 semantics: rules read original text, selected candidates are

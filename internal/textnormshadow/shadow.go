@@ -17,6 +17,11 @@ import (
 	newtn "github.com/F31/textnorm"
 )
 
+const (
+	productionProfileName    = "ppts.v3.1"
+	productionProfileVersion = 1
+)
+
 // DictEntry is a literal dictionary rule, mirroring the pronunciation.Dictionary
 // semantics (逐条 ReplaceAll over the span, no word boundary).
 type DictEntry struct {
@@ -125,7 +130,11 @@ func BuildNewEngine(o Options) (*newtn.Engine, []string, error) {
 			Replacement: re.Replacement,
 		})
 	}
-	ne, err := newtn.Compile(newtn.Config{Rules: rules})
+	ne, err := newtn.Compile(newtn.Config{
+		Rules:          rules,
+		Profile:        productionProfileName,
+		ProfileVersion: productionProfileVersion,
+	})
 	if err != nil {
 		return nil, nil, err
 	}

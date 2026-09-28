@@ -1,10 +1,33 @@
 package textnormshadow
 
 import (
+	"context"
+	"regexp"
 	"testing"
 
 	oldtn "github.com/F31/ppts/internal/textnorm"
+	newtn "github.com/F31/textnorm"
 )
+
+func TestBuildNewEngineStampsProductionProfile(t *testing.T) {
+	ne, notice, err := BuildNewEngine(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notice) != 0 {
+		t.Fatalf("unexpected notice: %v", notice)
+	}
+	res, err := ne.Normalize(context.Background(), newtn.Request{Text: "测试", Lang: "zh-CN"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Manifest.Profile != productionProfileName || res.Manifest.ProfileVersion != productionProfileVersion {
+		t.Fatalf("manifest profile = %q/%d, want %q/%d", res.Manifest.Profile, res.Manifest.ProfileVersion, productionProfileName, productionProfileVersion)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(res.Manifest.ConfigHash) {
+		t.Fatalf("manifest config hash = %q, want sha256 hex", res.Manifest.ConfigHash)
+	}
+}
 
 func TestCompareDictEquivalence(t *testing.T) {
 	opts := Options{Dict: []DictEntry{{Match: "CUDA", Replacement: "库达"}, {Match: "SDK", Replacement: "软件开发包"}}}

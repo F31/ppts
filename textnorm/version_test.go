@@ -58,3 +58,35 @@ func TestProfilesContract(t *testing.T) {
 		t.Fatal("ProfileVersion should reject unknown name")
 	}
 }
+
+func TestCompileProfileStampsManifest(t *testing.T) {
+	engine, err := CompileProfile(ProfileConservative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := engine.Normalize(context.Background(), Request{Text: "PM2.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Manifest.Profile != ProfileConservative {
+		t.Fatalf("manifest profile = %q, want %q", res.Manifest.Profile, ProfileConservative)
+	}
+	if res.Manifest.ProfileVersion != profileVersions[ProfileConservative] {
+		t.Fatalf("manifest profile version = %d, want %d", res.Manifest.ProfileVersion, profileVersions[ProfileConservative])
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(res.Manifest.ConfigHash) {
+		t.Fatalf("manifest config hash = %q, want sha256 hex", res.Manifest.ConfigHash)
+	}
+
+	again, err := CompileProfile(ProfileConservative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	againRes, err := again.Normalize(context.Background(), Request{Text: "PM2.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if againRes.Manifest.ConfigHash != res.Manifest.ConfigHash {
+		t.Fatalf("config hash changed across identical profile compiles: %q != %q", againRes.Manifest.ConfigHash, res.Manifest.ConfigHash)
+	}
+}

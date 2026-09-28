@@ -68,7 +68,7 @@ Behavioral corpus lives in JSON under `testdata/corpus/`. Positive, negative, am
 
 ## Profiles
 
-Built-in versioned rule combinations are registered in `profiles.go` and resolved with `ProfileRules(name)`: `zh.conservative`, `zh.date-decimal`, `zh.date-preserve`, and `zh.dict-demo`.
+Built-in versioned rule combinations are registered in `profiles.go` and resolved with `ProfileRules(name)` or `CompileProfile(name)`: `zh.conservative`, `zh.date-decimal`, `zh.date-preserve`, and `zh.dict-demo`. `CompileProfile` stamps `Result.Manifest.Profile`, `ProfileVersion`, and `ConfigHash`, which is the recommended release/audit path for external consumers.
 
 ## CLI
 
@@ -111,7 +111,7 @@ This package is currently a draft API. It is not yet the PPTS production normali
 
 ## Versioning
 
-Module version is exposed as `Version` (currently `v0.1.0`) and carried on every `Result.Manifest`. Compatibility policy (V3.1 §13):
+Module version is exposed as `Version` (currently `v0.1.0`) and carried on every `Result.Manifest`. `Manifest.ConfigHash` is a deterministic SHA-256 over module version, profile metadata, pause settings, and rule IDs/priorities. Compatibility policy (V3.1 §13):
 
 - Within a major module version, the public API stays backward compatible.
 - Behavioral changes to a named profile must bump that profile's combination version (`Profiles()` / `ProfileVersion`), independently of the module version.
