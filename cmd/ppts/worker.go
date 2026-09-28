@@ -129,6 +129,10 @@ func runWorker() error {
 	if textNormEnabled() {
 		logger.Info("textnorm: enabling TTS text normalization engine")
 		narrationHandler = narrationHandler.WithTextNorm(appTextNorm{store: stores.pronunciation, contextRules: stores.contextRule, logger: logger})
+		if textNormShadowEnabled() {
+			logger.Info("textnorm: enabling shadow comparator (observation only, no output change)")
+			narrationHandler = narrationHandler.WithTextNormShadow(appShadowTextNorm{store: stores.pronunciation, contextRules: stores.contextRule, logger: logger})
+		}
 	}
 	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
 	mp4Encoder, err := media.NewMP4Encoder()

@@ -25,6 +25,13 @@ var textNormDictEventsTotal = expvar.NewMap("ppts_textnorm_dict_events_total")
 // TextNormDictEvent 记录一次文本规范化词典事件。
 func TextNormDictEvent(event string) { textNormDictEventsTotal.Add(clean(event), 1) }
 
+// textNormShadowDiffTotal 记录影子引擎与旧引擎输出不一致的段计数（V3.1 §14.3
+// 影子观测）。键：diverged=文本/停顿不一致；error=影子运行失败。仅观测，不影响输出。
+var textNormShadowDiffTotal = expvar.NewMap("ppts_textnorm_shadow_diff_total")
+
+// TextNormShadowDiff 记录一次影子不一致事件。
+func TextNormShadowDiff(result string) { textNormShadowDiffTotal.Add(clean(result), 1) }
+
 // PrometheusHandler 把进程内 expvar 指标渲染为 Prometheus 文本格式（0.0.4）。
 //
 // 约定：expvar.Map 的键以 "k=v,k2=v2" 形式表达标签；标量键（无 "="）降级为 key="..." 标签。

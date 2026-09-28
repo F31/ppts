@@ -15,14 +15,18 @@ import (
 	"time"
 	"unicode/utf8"
 
+	newtn "github.com/F31/textnorm"
+
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/textnorm"
+	"github.com/F31/ppts/internal/textnormshadow"
 	"github.com/F31/ppts/internal/usage"
 )
 
@@ -107,13 +111,14 @@ type NarrationHandler struct {
 	steps   interface {
 		MarkStep(context.Context, pipeline.JobStep) error
 	}
-	objects     objectstore.ObjectStore
-	provider    tts.TTSProvider
-	usage       UsageSettler
-	metrics     TTSMetrics
-	dictLoader  DictionaryLoader
-	textNorm    NarrationTextNorm
-	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
+	objects        objectstore.ObjectStore
+	provider       tts.TTSProvider
+	usage          UsageSettler
+	metrics        TTSMetrics
+	dictLoader     DictionaryLoader
+	textNorm       NarrationTextNorm
+	shadowTextNorm NarrationShadowTextNorm
+	providerFor    func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
 	// sourceRevisions 是记录时间轴来源所需的窄能力（见 WithSourceRevisions）；nil 时跳过来源记录。
 	sourceRevisions SourceRevisionLookup
 }
@@ -187,6 +192,18 @@ func (h *NarrationHandler) WithTextNorm(n NarrationTextNorm) *NarrationHandler {
 	return h
 }
 
+// NarrationShadowTextNorm 是按 (租户, 语言) 构建影子引擎的窄能力（V3.1 §14.3 双轨观测）。
+// 影子只比较输出、不参与合成；未注入时不做影子比较（默认关闭，零行为影响）。
+type NarrationShadowTextNorm interface {
+	Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error)
+}
+
+// WithTextNormShadow 注入影子引擎构建器；仅用于观测，不影响输出与缓存键。
+func (h *NarrationHandler) WithTextNormShadow(n NarrationShadowTextNorm) *NarrationHandler {
+	h.shadowTextNorm = n
+	return h
+}
+
 // WithTenantProvider 注入按租户解析的 TTS 供应商（模型网关）；
 // 设置后优先于 NewNarrationHandler 传入的固定 provider。
 func (h *NarrationHandler) WithTenantProvider(f func(ctx context.Context, tenantID string) (tts.TTSProvider, error)) *NarrationHandler {
@@ -248,6 +265,16 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			return err
 		}
 		textNormEngine = engine
+	}
+	// 影子引擎（V3.1 §14.3）：仅观测文本/停顿差异，不参与输出与缓存。构建失败不阻塞任务。
+	var shadowEngine *newtn.Engine
+	if h.shadowTextNorm != nil {
+		se, err := h.shadowTextNorm.Build(ctx, job.TenantID, snapshot.Language)
+		if err != nil {
+			observability.TextNormShadowDiff("build_error")
+		} else {
+			shadowEngine = se
+		}
 	}
 	// G2-5 构建分段过滤集：非空时仅统计指定分段进度（全部分段仍走 synthesizeSegment 以复用缓存）。
 	var segmentFilter map[string]struct{}
@@ -322,7 +349,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 				return err
 			}
 			// synthesizeSegment 内部按 content hash 做缓存，未修改分段直接命中缓存，开销极低。
-			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine)
+			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine, shadowEngine)
 			if err != nil {
 				return err
 			}
@@ -378,7 +405,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			}
 			if newRate != currentRate {
 				adjusted.SpeechControl.RatePercent = newRate
-				return h.retryWithAdjustedRate(ctx, job, adjusted, segmentFilter, dictRules, provider, capabilities, planned, textNormEngine)
+				return h.retryWithAdjustedRate(ctx, job, adjusted, segmentFilter, dictRules, provider, capabilities, planned, textNormEngine, shadowEngine)
 			}
 		}
 	}
@@ -408,7 +435,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 //
 // snapshot.BypassCache 为真时（用户显式要求重新生成）两级缓存一律不读，直接真实合成；
 // 写回仍用同一 configHash 键，即新音频覆盖旧音频对象。
-func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules, textNormEngine *textnorm.Engine) (*SegmentAsset, bool, error) {
+func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules, textNormEngine *textnorm.Engine, shadowEngine *newtn.Engine) (*SegmentAsset, bool, error) {
 	// 文本规范化：引擎启用时先规范化（剥离读/停标记 + 词典 + 停顿事件），否则沿用今日发音词典替换。
 	// 规范化结果送 TTS 与对齐；DisplayText（字幕）在调用方按 StripMarkers 派生。
 	effectiveText := pronunciation.Apply(segment.SpokenText, dictRules)
@@ -417,6 +444,12 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		res := textNormEngine.Run(segment.SpokenText, snapshot.Language)
 		effectiveText = res.Text
 		pauses = ToSpeechControlPauses(res.Pauses)
+		// 影子比较（V3.1 §14.3）：仅观测，不改输出/缓存键；diverged 由指标暴露。
+		if shadowEngine != nil {
+			if rep := textnormshadow.Compare(textNormEngine, shadowEngine, snapshot.Language, segment.SpokenText); !rep.Same {
+				observability.TextNormShadowDiff("diverged")
+			}
+		}
 	}
 	// 停顿事件并入 SpeechControl（V2.8 §7.5 时间域 B）：支持停顿的供应商在音频留真实静音，
 	// VAD 对齐自动重锚；不支持的供应商只回显 Warnings（provider 层判定）。
@@ -693,7 +726,7 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 }
 
 // retryWithAdjustedRate 用调整后的语速重新执行合成（时长控制）。
-func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, textNormEngine *textnorm.Engine) error {
+func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, textNormEngine *textnorm.Engine, shadowEngine *newtn.Engine) error {
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
 	// 语速调整后重跑：构成独立累计（同上，按 job 局部）。
@@ -704,7 +737,7 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			asset, cached, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine)
+			asset, cached, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine, shadowEngine)
 			if err != nil {
 				return err
 			}

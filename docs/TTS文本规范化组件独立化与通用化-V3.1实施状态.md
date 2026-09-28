@@ -14,7 +14,7 @@
 | S2 独立模块骨架 | 独立 module、标准库核心、最小示例、CI | 完成 | `textnorm/` 独立 go.mod（仅标准库），可脱离 PPTS 构建测试；已加入 go.work 与独立 CI job |
 | S3 执行与映射核心 | 候选识别、保护、冲突裁决、一次输出、来源关系 | 完成 | 非级联、保护区间、冲突诊断、identity/replacement/deletion 映射、取消语义 |
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 部分完成 | 已迁日期/百分比/单位/小数/版本/型号/词典；缺金额、分数、电话、比分、比率 |
-| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 部分完成（未接入生产） | `internal/textnormshadow` 双轨比较机制已建（DB-free：`BuildOldEngine`/`BuildNewEngine`/`Compare`）；真实存储类型映射已建（`FromPronunciationRules`/`FromContextRules`/`FromPersistence`）；批量回放 CLI `cmd/textnorm-shadow`（JSON spec → 逐段文本/停顿 diff 报告）；依赖 `replace` 已加；**仍未接入 narration 生产路径**（影子观测接入为下一步） |
+| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 部分完成（narrator 影子已接入） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；`app.NewTextNormShadowEngine` 与旧引擎共用同一持久化配置；narration 合成路径接入影子比较（`synthesizeSegment` 每段 diff，仅观测不改输出/缓存键），以 `PPTS_TEXTNORM_SHADOW=1` 显式启用（默认关闭），影子构建/运行失败不阻塞任务，分歧计数进 `ppts_textnorm_shadow_diff_total{diverged,error,build_error}`；**主引擎仍为旧 `internal/textnorm`，未切换** |
 | S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 未开始 | CLI `run`/`diff` 已具备行为差异报告雏形 |
 | S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 未开始 | |
 
@@ -45,6 +45,7 @@
 
 ## 下一步候选
 
-1. S5 PPTS 适配：旧 `internal/textnorm` 词典/上下文规则 → `LiteralDictRule`/模式模板候选，双轨比较。
-2. 语义化版本与配置组合契约正式化（S6 前置）。
-3. S7 稳定化：真实音频验收与扩展 API 验证。
+1. 用影子分歧归零/评审做切换门：当生产影子（`PPTS_TEXTNORM_SHADOW=1`）采集的分歧→0（或逐条评审接受）后，把主引擎切换到 `pkg` 新引擎并废弃 `internal/textnorm`。
+2. 补候选引擎数字展开（数量/年份读法），消除已知最大能力 gap。
+3. 语义化版本与配置组合契约正式化（S6 前置），随后 `v0.1.0` tag + 移除 monorepo 本地 replace。
+4. S7 稳定化：真实音频验收与扩展 API 验证。

@@ -15,6 +15,7 @@ import (
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/textnorm"
+	newtn "github.com/F31/textnorm"
 )
 
 // textNormStoreStub 实现 TextNormDictStore，模拟租户词典 + 平台种子。
@@ -83,6 +84,17 @@ type staticTextNorm struct {
 
 func (s staticTextNorm) Build(ctx context.Context, _, lang string) (*textnorm.Engine, error) {
 	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger, s.opts...)
+}
+
+type staticShadowTextNorm struct {
+	meta   TextNormDictStore
+	logger *slog.Logger
+	opts   []TextNormOptions
+}
+
+func (s staticShadowTextNorm) Build(ctx context.Context, _, lang string) (*newtn.Engine, error) {
+	engine, _, err := NewTextNormShadowEngine(ctx, s.meta, "tenant-1", lang, true, nil, s.logger, s.opts...)
+	return engine, err
 }
 
 func segmentsWithMarkers() []*narration.Segment {
@@ -466,4 +478,56 @@ func readTimelineBundle(t *testing.T, objects objectstore.ObjectStore, steps *st
 		t.Fatalf("timeline bundle nil")
 	}
 	return &bundle
+}
+
+// TestNewTextNormShadowEngine 影子引擎与旧引擎共用同一持久化配置：词典规则生效。
+func TestNewTextNormShadowEngine(t *testing.T) {
+	meta := &textNormStoreStub{platform: pronunciation.Rules{{Pattern: "CUDA", Replacement: "库达", Enabled: true}}}
+	eg, notice, err := NewTextNormShadowEngine(context.Background(), meta, "tenant-1", "zh-CN", true, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notice) != 0 {
+		t.Fatalf("notice = %v, want empty", notice)
+	}
+	res, err := eg.Normalize(context.Background(), newtn.Request{Text: "CUDA 并行", LegacyMarkup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Text != "库达 并行" {
+		t.Fatalf("shadow dict text = %q", res.Text)
+	}
+}
+
+// TestTextNormShadowNoOutputChange 注入分歧的影子引擎后，TTS 输出仍以旧引擎为准
+// （V3.1 §14.3 安全性质：影子只观测，不改 effectiveText / 缓存键）。
+// 旧引擎启用数量位读（2024→二千零二十四）；候选影子引擎缺数字展开（已知 gap），
+// 两者必然分歧，但送 TTS 的文本必须仍是旧引擎结果。
+func TestTextNormShadowNoOutputChange(t *testing.T) {
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "2024 年发布", SpokenText: "2024 年发布"},
+	)}
+	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
+	qty := textnorm.NumberModeQuantity
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := &captureTTSProvider{testTTSProvider: *providerForTests()}
+	handler := NewNarrationHandler(store, steps, objects, provider)
+	handler = handler.WithTextNorm(staticTextNorm{
+		meta: meta, seed: true,
+		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
+		opts:   []TextNormOptions{{NumberMode: &qty}},
+	})
+	handler = handler.WithTextNormShadow(staticShadowTextNorm{
+		meta:   meta,
+		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
+		opts:   []TextNormOptions{{NumberMode: &qty}},
+	})
+
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if got := provider.lastReq.Text; got != "二千零二十四 年发布" {
+		t.Fatalf("effectiveText = %q, want %q (shadow must not change output)", got, "二千零二十四 年发布")
+	}
 }

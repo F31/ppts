@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 
+	newtn "github.com/F31/textnorm"
+
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pronunciation"
@@ -27,9 +29,9 @@ func textNormEnabled() bool {
 // 词典合并（租户优先 + 平台种子兜底）与异常空信号在 app.NewTextNormEngine 内完成。
 // 上下文替换规则（M5 数据驱动）随引擎总开关启用，加载租户+平台生效行。
 type appTextNorm struct {
-	store         app.TextNormDictStore
-	contextRules  app.TextNormContextRuleStore
-	logger        *slog.Logger
+	store        app.TextNormDictStore
+	contextRules app.TextNormContextRuleStore
+	logger       *slog.Logger
 }
 
 var _ app.NarrationTextNorm = appTextNorm{}
@@ -91,3 +93,35 @@ func (textNormMetricsAdapter) OnDictEvent(_ context.Context, name string) {
 
 // compile-time assertion：store 满足窄接口（由 compose.go 装配的 pronunciation.Store 提供）。
 var _ app.TextNormDictStore = (pronunciation.Store)(nil)
+
+// textNormShadowEnabled 是影子比较观测开关（V3.1 §14.3）。默认关闭；
+// 仅当文本规范化总开关启用且本开关也启用时才接入（影子不改变输出）。
+func textNormShadowEnabled() bool {
+	switch os.Getenv("PPTS_TEXTNORM_SHADOW") {
+	case "true", "1":
+		return true
+	default:
+		return false
+	}
+}
+
+// appShadowTextNorm 实现 app.NarrationShadowTextNorm：用与旧引擎相同的持久化配置
+// 构建候选影子引擎，仅用于输出差异观测。
+type appShadowTextNorm struct {
+	store        app.TextNormDictStore
+	contextRules app.TextNormContextRuleStore
+	logger       *slog.Logger
+}
+
+var _ app.NarrationShadowTextNorm = appShadowTextNorm{}
+
+// Build 实现 NarrationShadowTextNorm：加载词典并按同一元数据装配影子引擎。
+// notice（未覆盖能力）由 NewTextNormShadowEngine 返回，这里仅保留引擎供比较。
+func (a appShadowTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error) {
+	opts := []app.TextNormOptions{numberModeOption(), classesOption()}
+	if a.contextRules != nil {
+		opts = append(opts, app.TextNormOptions{ContextRules: a.contextRules})
+	}
+	engine, _, err := app.NewTextNormShadowEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
+	return engine, err
+}

@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"strings"
 
+	newtn "github.com/F31/textnorm"
+
 	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/textnorm"
+	"github.com/F31/ppts/internal/textnormshadow"
 )
 
 // TextNormDictStore 是文本规范化词典所需的存储窄能力：租户规则 + 平台种子。
@@ -89,6 +92,43 @@ var classPatterns = map[string]func() textnorm.Pattern{
 	"unit":    textnorm.UnitPattern,
 }
 
+// loadMergedDictRules 加载并合并租户/平台词典，应用 R1 语义（错误可观测，不静默降空）。
+// 供旧引擎与影子引擎共用同一持久化配置（V3.1 §14.3）。
+func loadMergedDictRules(ctx context.Context, store TextNormDictStore, tenantID string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger) (pronunciation.Rules, error) {
+	if store == nil {
+		return nil, fmt.Errorf("textnorm: nil dictionary store")
+	}
+	if strings.TrimSpace(tenantID) == "" {
+		return nil, fmt.Errorf("textnorm: empty tenantID (must come from a trusted job principal)")
+	}
+	tenantRules, err := store.LoadTenantDefault(ctx, tenantID)
+	if err != nil {
+		if metrics != nil {
+			metrics.OnDictEvent(ctx, "load_error")
+		}
+		return nil, fmt.Errorf("textnorm: load tenant dictionary: %w", err)
+	}
+	platformRules, err := store.LoadPlatformDefault(ctx)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("textnorm: load platform default dictionary failed; continuing with tenant rules only",
+				"tenantId", tenantID, "error", err)
+		}
+		platformRules = nil
+	}
+	merged := mergeDictRules(tenantRules, platformRules)
+	if expectedSeedNonEmpty && len(merged) == 0 {
+		if metrics != nil {
+			metrics.OnDictEvent(ctx, "empty_unexpected")
+		}
+		if logger != nil {
+			logger.Warn("textnorm: platform seed expected non-empty but merged dictionary is empty",
+				"tenantId", tenantID)
+		}
+	}
+	return merged, nil
+}
+
 // NewTextNormEngine 按租户+语言构建冻结的文本规范化引擎。
 //
 // 语义（V2.8 §5.2 + §6，合并归属已拍板：只在 DictAdapter，不改 Store）：
@@ -100,39 +140,9 @@ var classPatterns = map[string]func() textnorm.Pattern{
 //
 // 返回的 Engine 已 Build() 冻结，可安全并发 Run。
 func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger, opts ...TextNormOptions) (*textnorm.Engine, error) {
-	if store == nil {
-		return nil, fmt.Errorf("textnorm: nil dictionary store")
-	}
-	if strings.TrimSpace(tenantID) == "" {
-		return nil, fmt.Errorf("textnorm: empty tenantID (must come from a trusted job principal)")
-	}
-
-	tenantRules, err := store.LoadTenantDefault(ctx, tenantID)
+	merged, err := loadMergedDictRules(ctx, store, tenantID, expectedSeedNonEmpty, metrics, logger)
 	if err != nil {
-		if metrics != nil {
-			metrics.OnDictEvent(ctx, "load_error")
-		}
-		return nil, fmt.Errorf("textnorm: load tenant dictionary: %w", err)
-	}
-
-	platformRules, err := store.LoadPlatformDefault(ctx)
-	if err != nil {
-		if logger != nil {
-			logger.Warn("textnorm: load platform default dictionary failed; continuing with tenant rules only",
-				"tenantId", tenantID, "error", err)
-		}
-		platformRules = nil
-	}
-
-	merged := mergeDictRules(tenantRules, platformRules)
-	if expectedSeedNonEmpty && len(merged) == 0 {
-		if metrics != nil {
-			metrics.OnDictEvent(ctx, "empty_unexpected")
-		}
-		if logger != nil {
-			logger.Warn("textnorm: platform seed expected non-empty but merged dictionary is empty",
-				"tenantId", tenantID)
-		}
+		return nil, err
 	}
 
 	engine := textnorm.New()
@@ -171,6 +181,34 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 	}
 	engine.Build()
 	return engine, nil
+}
+
+// NewTextNormShadowEngine 用与 NewTextNormEngine 相同的持久化配置构建影子引擎
+// （V3.1 §14.3 双轨观测）。影子只用于比较，不参与 TTS 输出；返回候选引擎与
+// 未覆盖能力 notice（如数字展开、money 类别）。
+func NewTextNormShadowEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger, opts ...TextNormOptions) (*newtn.Engine, []string, error) {
+	merged, err := loadMergedDictRules(ctx, store, tenantID, expectedSeedNonEmpty, metrics, logger)
+	if err != nil {
+		return nil, nil, err
+	}
+	shadowOpts := textnormshadow.Options{
+		Lang: lang,
+		Dict: textnormshadow.FromPronunciationRules(merged),
+	}
+	var opt TextNormOptions
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+	shadowOpts.Classes = opt.Classes
+	shadowOpts.NumberMode = opt.NumberMode
+	if opt.ContextRules != nil {
+		recs, err := opt.ContextRules.LoadAllEffective(ctx, tenantID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("textnorm: load contextual rules: %w", err)
+		}
+		shadowOpts.Context = textnormshadow.FromContextRules(recs)
+	}
+	return textnormshadow.BuildNewEngine(shadowOpts)
 }
 
 // mergeDictRules 合并租户与平台规则：租户规则存在则整体采用租户（缺租户自定义时回退平台种子）。
