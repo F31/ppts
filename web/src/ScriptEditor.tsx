@@ -811,6 +811,7 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
 
   useLayoutEffect(() => {
     renderHighlightedDOM(rootRef.current, value, rules, tooltipPrefix);
+    if (!isEditableFocused(rootRef.current)) return;
     const pos = pendingCaretRef.current ?? lastCaretRef.current;
     pendingCaretRef.current = null;
     const clamped = Math.max(0, Math.min(pos, value.length));
@@ -989,6 +990,11 @@ function setEditableSelection(root: HTMLElement | null, start: number, end: numb
   range.setEnd(endPos.node, endPos.offset);
   selection.removeAllRanges();
   selection.addRange(range);
+}
+
+function isEditableFocused(root: HTMLElement | null): boolean {
+  const active = document.activeElement;
+  return !!root && active === root;
 }
 
 function findTextPosition(root: HTMLElement, offset: number): { node: Node; offset: number } {
