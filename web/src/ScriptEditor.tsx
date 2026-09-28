@@ -519,19 +519,25 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     });
   };
 
-  // 删除读音：本地读音清本地规则+marker；词典来源同步删除词典词条。
+  // 删除读音：以读音为锚点整族清理——清掉本页所有段中该读音的 〔读：x〕 标记，并移除对应的本地规则。
   const removePronunciation = () => {
     const word = popoverWord.trim();
-    if (!word) return;
+    const reading = popoverReading.trim();
+    if (!word && !reading) return;
     const nextSpoken: Record<string, string> = { ...spokenTexts };
     for (const segment of script.segments) {
       const id = segment.segmentId;
       const display = texts[id] ?? segment.displayText;
-      if (!display.includes(word)) continue;
-      nextSpoken[id] = stripPronunciationMarker(spokenTexts[id] ?? display, word);
+      if (reading) {
+        nextSpoken[id] = stripPronunciationMarkersByReading(spokenTexts[id] ?? display, reading);
+      } else if (display.includes(word)) {
+        nextSpoken[id] = stripPronunciationMarker(spokenTexts[id] ?? display, word);
+      }
     }
     updateSpokenOnly(nextSpoken);
-    setLocalPronunciationRules((current) => current.filter((rule) => rule.pattern !== word));
+    setLocalPronunciationRules((current) =>
+      current.filter((rule) => rule.pattern !== word && (reading ? rule.replacement !== reading : true))
+    );
     if (popoverSource === 'dictionary') onRemoveDictionary?.(word);
     setPopoverOpen(false);
   };
@@ -1209,6 +1215,33 @@ function stripPronunciationMarker(text: string, word: string): string {
         const close = text.indexOf('〕', i + 3);
         if (close !== -1) i = close + 1;
       }
+      continue;
+    }
+    out += text[i];
+    i += 1;
+  }
+  return out;
+}
+
+// stripPronunciationMarkersByReading：移除文本中所有读音等于 reading 的 〔读：reading〕 标记（保留原词）。
+function stripPronunciationMarkersByReading(text: string, reading: string): string {
+  if (!reading) return text;
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith('〔读：', i)) {
+      const close = text.indexOf('〕', i + 3);
+      if (close === -1) {
+        out += text.slice(i);
+        break;
+      }
+      const content = text.slice(i + 3, close);
+      if (content === reading) {
+        i = close + 1;
+        continue;
+      }
+      out += text.slice(i, close + 1);
+      i = close + 1;
       continue;
     }
     out += text[i];
