@@ -51,7 +51,7 @@ func TestCompareContextEquivalence(t *testing.T) {
 	}
 }
 
-func TestCompareCascadeNumberGapSurfaces(t *testing.T) {
+func TestCompareNumberEquivalence(t *testing.T) {
 	mode := oldtn.NumberModeQuantity
 	opts := Options{Dict: []DictEntry{{Match: "元", Replacement: "人民币"}}, NumberMode: &mode}
 	old, err := BuildOldEngine(opts)
@@ -62,24 +62,46 @@ func TestCompareCascadeNumberGapSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(notice) != 0 {
+		t.Fatalf("notice = %v, want empty (number now covered)", notice)
+	}
+	r := Compare(old, ne, "zh-CN", "价格5元")
+	if !r.Same {
+		t.Fatalf("report = %+v, want same", r)
+	}
+	if r.OldText != "价格五人民币" || r.NewText != "价格五人民币" {
+		t.Fatalf("texts = %q / %q", r.OldText, r.NewText)
+	}
+}
+
+func TestCompareMoneyGapDivergence(t *testing.T) {
+	opts := Options{Classes: []string{"money"}}
+	old, err := BuildOldEngine(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ne, notice, err := BuildNewEngine(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
 	found := false
 	for _, n := range notice {
-		if strings.Contains(n, "number") {
+		if strings.Contains(n, "money") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("notice = %v, want number gap notice", notice)
+		t.Fatalf("notice = %v, want money gap notice", notice)
 	}
-	r := Compare(old, ne, "zh-CN", "价格5元")
+	r := Compare(old, ne, "zh-CN", "营收 ¥250")
 	if r.Same {
-		t.Fatalf("report = %+v, want known diff", r)
+		t.Fatalf("report = %+v, want known diff (money unsupported by candidate)", r)
 	}
-	if r.OldText != "价格五人民币" {
-		t.Fatalf("old text = %q, want 价格五人民币", r.OldText)
+	if r.OldText != "营收 人民币二百五十" {
+		t.Fatalf("old text = %q", r.OldText)
 	}
-	if r.NewText != "价格5人民币" {
-		t.Fatalf("new text = %q, want 价格5人民币 (number gap)", r.NewText)
+	if r.NewText != "营收 ¥250" {
+		t.Fatalf("new text = %q", r.NewText)
 	}
 }
 

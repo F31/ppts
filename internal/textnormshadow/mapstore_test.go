@@ -54,8 +54,8 @@ func TestFromPersistenceShadowCompare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(notice) == 0 {
-		t.Fatalf("notice = %v, want number gap notice", notice)
+	if len(notice) != 0 {
+		t.Fatalf("notice = %v, want empty (number now covered)", notice)
 	}
 
 	r := Compare(old, ne, "zh-CN", "CUDA发布2024年，单价5元")
@@ -63,14 +63,15 @@ func TestFromPersistenceShadowCompare(t *testing.T) {
 		t.Fatalf("report = %+v, want known diff", r)
 	}
 	// Legacy engine: number rule (priority 20) runs before the contextual rule
-	// (same priority, registered later), expanding 2024/5 so the context pattern
-	// "2024年" no longer matches. Candidate engine lacks number expansion, so it
-	// resolves the context rule instead. This is exactly the gap the shadow
-	// comparator is meant to surface.
+	// (same priority, registered later), expanding 2024/5 before the context
+	// pattern "2024年" can match.
+	// Candidate engine now has number expansion too, but its non-cascading length
+	// tie-break gives the longer context candidate "2024年" priority over the
+	// contained number "2024". This ordering divergence is real and surfaced.
 	if r.OldText != "库达发布二千零二十四年，单价五元" {
 		t.Fatalf("old text = %q", r.OldText)
 	}
-	if r.NewText != "库达发布二零二四年，单价5元" {
+	if r.NewText != "库达发布二零二四年，单价五元" {
 		t.Fatalf("new text = %q", r.NewText)
 	}
 }

@@ -26,7 +26,7 @@ func TestRunSpecEquivalence(t *testing.T) {
 	}
 }
 
-func TestRunSpecNumberGapSurfaces(t *testing.T) {
+func TestRunSpecNumberEquivalence(t *testing.T) {
 	sp := specJSON{
 		Lang:       "zh-CN",
 		Dict:       []dictSpec{{Match: "元", Replacement: "人民币"}},
@@ -37,20 +37,14 @@ func TestRunSpecNumberGapSurfaces(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, n := range notice {
-		if n == "number expansion not yet supported by candidate engine" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("notice = %v", notice)
+	if len(notice) != 0 {
+		t.Fatalf("notice = %v, want empty (number now covered)", notice)
 	}
 	r := reports[0]
-	if r.Same {
-		t.Fatalf("report = %+v, want diff", r)
+	if !r.Same {
+		t.Fatalf("report = %+v, want same", r)
 	}
-	if r.OldText != "价格五人民币" || r.NewText != "价格5人民币" {
+	if r.OldText != "价格五人民币" || r.NewText != "价格五人民币" {
 		t.Fatalf("texts = %q / %q", r.OldText, r.NewText)
 	}
 }

@@ -55,6 +55,8 @@ Percent and unit rules convert the whole numeric+unit span as one candidate, so 
 
 `ZHVersionPreserveRule()` preserves letter-led dotted versions such as `v3.1.2` and `M3.2.1`. It requires a letter prefix so bare year-like sequences such as `2024.01.28` stay available to date rules.
 
+`ZHNumberRule(mode)` expands independent integer tokens to Chinese readings (`NumberModeQuantity` reads by decimal place, `NumberModeYear` digit-by-digit, up to 12 digits). Digit runs bounded by ASCII letters/digits are left intact so model/unit forms such as `RTX5090Ti` and `5GHz` are not bisected.
+
 `LiteralDictRule(id, priority, entries)` migrates the PPTS pronunciation-dictionary concept into the candidate model: each occurrence of a literal is an independent candidate range with a whole/embedded boundary policy. Replacements never cascade into later rule input, so a dictionary hit like `Model3` blocks decimal rules from splitting the `3`.
 
 ## Corpus

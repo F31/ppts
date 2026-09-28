@@ -501,14 +501,13 @@ func TestNewTextNormShadowEngine(t *testing.T) {
 
 // TestTextNormShadowNoOutputChange 注入分歧的影子引擎后，TTS 输出仍以旧引擎为准
 // （V3.1 §14.3 安全性质：影子只观测，不改 effectiveText / 缓存键）。
-// 旧引擎启用数量位读（2024→二千零二十四）；候选影子引擎缺数字展开（已知 gap），
+// 旧引擎注册 money 类别（¥250→人民币二百五十）；候选影子引擎缺 money（已知 gap），
 // 两者必然分歧，但送 TTS 的文本必须仍是旧引擎结果。
 func TestTextNormShadowNoOutputChange(t *testing.T) {
 	store := &narrationStoreStub{revision: approvedRevision(
-		&narration.Segment{SegmentID: "seg-1", DisplayText: "2024 年发布", SpokenText: "2024 年发布"},
+		&narration.Segment{SegmentID: "seg-1", DisplayText: "营收 ¥250", SpokenText: "营收 ¥250"},
 	)}
 	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
-	qty := textnorm.NumberModeQuantity
 	steps := &stepRecorder{}
 	objects := objectstore.NewLocal(t.TempDir(), nil)
 	provider := &captureTTSProvider{testTTSProvider: *providerForTests()}
@@ -516,18 +515,18 @@ func TestTextNormShadowNoOutputChange(t *testing.T) {
 	handler = handler.WithTextNorm(staticTextNorm{
 		meta: meta, seed: true,
 		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
-		opts:   []TextNormOptions{{NumberMode: &qty}},
+		opts:   []TextNormOptions{{Classes: []string{"money"}}},
 	})
 	handler = handler.WithTextNormShadow(staticShadowTextNorm{
 		meta:   meta,
 		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
-		opts:   []TextNormOptions{{NumberMode: &qty}},
+		opts:   []TextNormOptions{{Classes: []string{"money"}}},
 	})
 
 	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
-	if got := provider.lastReq.Text; got != "二千零二十四 年发布" {
-		t.Fatalf("effectiveText = %q, want %q (shadow must not change output)", got, "二千零二十四 年发布")
+	if got := provider.lastReq.Text; got != "营收 人民币二百五十" {
+		t.Fatalf("effectiveText = %q, want %q (shadow must not change output)", got, "营收 人民币二百五十")
 	}
 }

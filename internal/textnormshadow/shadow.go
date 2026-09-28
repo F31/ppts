@@ -96,7 +96,7 @@ func BuildNewEngine(o Options) (*newtn.Engine, []string, error) {
 		}
 	}
 	if o.NumberMode != nil {
-		notice = append(notice, "number expansion not yet supported by candidate engine")
+		rules = append(rules, newtn.ZHNumberRule(newtn.NumberMode(*o.NumberMode)))
 	}
 	for i, re := range o.Context {
 		re2, err := regexp.Compile(re.Pattern)
