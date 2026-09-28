@@ -16,7 +16,7 @@
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 完成 | 已迁日期/百分比/单位/小数/版本/型号/词典/数字/金额/**电话**/**比分（语义提示门控）**；通用中文类别主力已齐 |
 | S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 完成（生产主路径已切换） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；narration 合成路径已从旧 `internal/textnorm` 切换为模块引擎 `github.com/F31/textnorm`，旧引擎保留为影子观测。**已部署 c2261cf 并开启 `PPTS_TEXTNORM_SHADOW=1`**。过程中补齐两处基建：① worker 进程新增受 `PPTS_METRICS_TOKEN` 保护的 `/metrics`（影子计数在 worker 进程内自增，api 的 `/metrics` 看不到），地址 `127.0.0.1:8090`=PPTS_WORKER_METRICS_ADDR；② `BuildNewEngine` 补齐 S4 规则装配（TechnicalModel/VersionPreserve/Telephone/Score 门控），修正"0 分歧其实是未比较"的盲区。受控注入 7 段真脚本（测试租户＋本地 mock TTS，零外部成本），切换前旧主/新影子与切换后新主/旧影子均捕获 **3 处分歧**（见 §采集结论），与离线复算一致；均为候选引擎改进方向并已评审接受。 |
 | S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 完成 | 语义化版本契约已加（`Version`、`ModulePath`、`Profiles()`/`ProfileVersion`，Manifest 携带版本）；组件发布于 `github.com/F31/textnorm`，tag `v0.1.0` 已被 go 代理索引；**外部最小消费者经 `go get github.com/F31/textnorm@v0.1.0` 独立构建运行成功**；monorepo 保留本地 replace（CI 稳定性） |
-| S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 未开始 | |
+| S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 部分完成 | 最小真实音频验收已通过：在正式 TTS gateway 租户下插入 1 个短分段 narration job（含 `PM2.5`/`v3.1.2`/`13800138000`），job succeeded，生成真实 WAV、timeline、SRT/VTT、alignment；worker 指标 `ppts_tts_synthesis_total{kind="narration",event="succeeded"}` +1。扩展 API 与更大真实音频集仍待补充。 |
 
 ## 最终验收定义（设计 §16）
 
@@ -34,7 +34,7 @@
 | 公共 API 与输出行为都有版本策略 | 部分 | `Manifest` 记录规则集；语义化版本与配置组合契约未正式化 |
 | 规则更新可预览、追踪、切换与回滚 | 部分 | 内置 profile 可切换；CLI `diff` 报告行为差异；热更新/快照回滚未做 |
 | 基础语料、反例、交互和并发测试通过 | 通过 | JSON 语料 21 用例＋引擎不变量 Go 测试＋race 通过 |
-| PPTS 完成真实音频集成验收，且与核心文本正确性分开报告 | 部分 | 生产文本规范化主路径已切换并用 mock TTS 验证；真实音频验收仍待 S7 |
+| PPTS 完成真实音频集成验收，且与核心文本正确性分开报告 | 部分 | 生产文本规范化主路径已切换；mock TTS 7 段验证通过；正式 TTS 最小 1 段验收通过，真实音频集覆盖仍待扩展 |
 
 ## 当前提交范围
 
@@ -54,9 +54,10 @@
 - `3:2` 未分歧：比分规则为语义提示门控（无 `SemanticScore` 提示时保守不触发），符合设计。
 - 基建补全：worker 独立 `/metrics`（`PPTS_WORKER_METRICS_ADDR`，Bearer 鉴权 fail-closed）；`BuildNewEngine` 补齐 S4 规则装配。
 - 主引擎切换：`c2261cf` 已部署为生产二进制（SHA `a5ec3590670019ae665030970c88e8c5611f7a4493529c5d5e92e4e7dc265b2c`），模块引擎负责输出/缓存键，旧引擎作为影子观测；切换后重新注入 7 段，job 成功，worker 新进程指标再次捕获 `ppts_textnorm_shadow_diff_total{diverged}=3`。
-- 残留关注：上述改进需在 S7 真实音频验收中复核。
+- S7 最小真实音频验收：正式 gateway 租户 job `35014d84-b3d8-4afc-bc38-9a4c9bcf10b1` 成功，生成 `audio/wav`（约 284KB）、timeline、SRT/VTT 与 alignment；`ppts_tts_synthesis_total{kind="narration",event="succeeded"}` 从 3 增至 4，`ppts_textnorm_shadow_diff_total{diverged}` 从 4 增至 5（该短段预期电话规则 1 处分歧）。
+- 残留关注：真实音频集仍只有最小 1 段，需扩展到更完整语料后再移除旧 `internal/textnorm`。
 
 ## 下一步候选
 
-1. S7 稳定化：真实音频验收与扩展 API 验证。
+1. 扩展 S7：用更多真实音频样本覆盖金额、日期、比分提示、停顿/读音标记与字幕对齐。
 2. 观察切换后影子指标，确认无新增未评审分歧后移除或冻结旧 `internal/textnorm`。
