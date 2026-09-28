@@ -7,6 +7,8 @@ import {
   createExport,
   createGeneration,
   estimateNarration,
+  updateDictionary,
+  deleteDictionary,
   getNarrationStale,
   getRevisionNarration,
   getJob,
@@ -942,6 +944,59 @@ export function ProjectEditor({
     [identity, t]
   );
 
+  // 编辑词典来源读音：定位包含该 pattern 的辞书并更新其规则。
+  const editDictionaryEntry = useCallback(
+    async (word: string, reading: string) => {
+      try {
+        const dictionaries = await listDictionaries(identity);
+        const dict = dictionaries.find((d) => d.rules?.some((r) => r.pattern === word));
+        if (dict) {
+          const rules = dict.rules?.map((r) => (r.pattern === word ? { ...r, replacement: reading } : r)) ?? [];
+          if (!rules.some((r) => r.pattern === word)) rules.push({ pattern: word, replacement: reading, enabled: true });
+          await updateDictionary(identity, dict.id, { name: dict.name, rules });
+        } else {
+          await createDictionary(identity, {
+            name: t('editor.dictName', { word }),
+            rules: [{ pattern: word, replacement: reading, enabled: true }]
+          });
+        }
+        setPronunciationRules((current) => {
+          const rest = (current ?? []).filter((r) => r.pattern !== word);
+          return [...rest, { pattern: word, replacement: reading, enabled: true }];
+        });
+        setDictNotice(t('editor.dictUpdated', { word }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setDictNotice(`${t('editor.dictUpdateFailed')}：${message}`);
+      }
+    },
+    [identity, t]
+  );
+
+  // 删除词典来源读音：从辞书中移除该 pattern；辞书变为空则整体删除。
+  const removeDictionaryEntry = useCallback(
+    async (word: string) => {
+      try {
+        const dictionaries = await listDictionaries(identity);
+        for (const dict of dictionaries) {
+          if (!dict.rules?.some((r) => r.pattern === word)) continue;
+          const rules = dict.rules.filter((r) => r.pattern !== word);
+          if (rules.length === 0) {
+            await deleteDictionary(identity, dict.id);
+          } else {
+            await updateDictionary(identity, dict.id, { name: dict.name, rules });
+          }
+        }
+        setPronunciationRules((current) => (current ?? []).filter((r) => r.pattern !== word));
+        setDictNotice(t('editor.dictRemoved', { word }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setDictNotice(`${t('editor.dictRemoveFailed')}：${message}`);
+      }
+    },
+    [identity, t]
+  );
+
   const handleScriptStatus = useCallback((status: ScriptEditorStatus) => {
     setUnsaved(status !== 'saved');
   }, []);
@@ -1690,6 +1745,8 @@ export function ProjectEditor({
               onAddToDictionary={addToDictionary}
               pronunciationRules={pronunciationRules ?? []}
               onNeedPronunciationRules={ensurePronunciationRules}
+              onEditDictionary={editDictionaryEntry}
+              onRemoveDictionary={removeDictionaryEntry}
             />
           ) : (
             <section className="editor-card">

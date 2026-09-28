@@ -65,6 +65,12 @@ type Props = {
   onAddToDictionary?: (word: string, reading: string) => void;
   pronunciationRules?: PronunciationRule[];
   onNeedPronunciationRules?: () => void;
+  // onPronunciationHit：点击讲稿中已高亮的发音词（供重新编辑/删除读音）。
+  onPronunciationHit?: (pattern: string, replacement: string, source: 'local' | 'dictionary') => void;
+  // onEditDictionary：更新词典中某词条的读音。
+  onEditDictionary?: (pattern: string, reading: string) => void;
+  // onRemoveDictionary：从词典删除某词条。
+  onRemoveDictionary?: (pattern: string) => void;
 };
 
 type SegmentEditorHandle = {
@@ -89,7 +95,7 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onPronunciationHit, onEditDictionary, onRemoveDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -109,6 +115,10 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [popoverTarget, setPopoverTarget] = useState<{ segmentId: string; start: number; end: number } | null>(null);
   const [pronounceNotice, setPronounceNotice] = useState<string | null>(null);
+  // popoverSource: 'selection'（选中文本新增/编辑整体词）| 'local'（本地文本读音）| 'dictionary'（发音词典）。
+  const [popoverSource, setPopoverSource] = useState<'selection' | 'local' | 'dictionary'>('selection');
+  // 本地已配置读音规则：直接记录配置时选中的准确 (word→reading)，供高亮精确匹配。
+  const [localPronunciationRules, setLocalPronunciationRules] = useState<Array<{ pattern: string; replacement: string }>>(() => []);
   // 重新生成讲稿：模式下拉菜单 + 记住上次选择的模式（主按钮直接按该模式生成）。
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [lastRegenMode, setLastRegenMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
@@ -192,6 +202,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (!switchedSlide && draftsRef.current.has(script.slideId)) return;
     setTexts(initialTexts(script));
     setSpokenTexts(initialSpokenTexts(script));
+    setLocalPronunciationRules(collectLocalPronunciationRules(script.segments));
     setSaveState('saved');
     setRewriteNote(null);
     if (switchedSlide) {
@@ -370,8 +381,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     word ? script.segments.filter((s) => (texts[s.segmentId] ?? '').includes(word)).length : 0;
 
   const effectivePronunciationRules = useMemo(
-    () => buildEffectivePronunciationRules(pronunciationRules, spokenTexts),
-    [pronunciationRules, spokenTexts]
+    () => buildEffectivePronunciationRules(pronunciationRules, localPronunciationRules),
+    [pronunciationRules, localPronunciationRules]
   );
 
   const updateSpokenOnly = (nextSpoken: Record<string, string>) => {
@@ -457,6 +468,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     const leading = raw.length - raw.trimStart().length;
     const trailing = raw.length - raw.trimEnd().length;
     const target = { segmentId: id, start: start + leading, end: end - trailing };
+    setPopoverSource('selection');
     setPopoverTarget(target);
     setPopoverWord(word);
     setPopoverReading('');
@@ -465,8 +477,22 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     setPopoverOpen(true);
   };
 
+  // M5 ⑤：点击已配置读音的高亮词 → 直接进入该词的编辑弹窗（原词+当前读音预填，标记来源）。
+  const openPronounceForHit = (word: string, reading: string, source: 'local' | 'dictionary') => {
+    onNeedPronunciationRules?.();
+    const clean = word.trim();
+    if (!clean) return;
+    setPopoverSource(source);
+    setPopoverTarget(null);
+    setPopoverWord(clean);
+    setPopoverReading(reading.trim());
+    setAffectedCount(countAffectedSegments(clean));
+    setPronounceNotice(null);
+    setPopoverOpen(true);
+  };
+
   const insertPronounceMarker = () => {
-    if (!popoverTarget || !popoverReading) return;
+    if (!popoverReading) return;
     const word = popoverWord.trim();
     if (!word) return;
     const reading = popoverReading.trim();
@@ -478,14 +504,36 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       nextSpoken[id] = annotatePronunciation(spokenTexts[id] ?? display, word, reading);
     }
     updateSpokenOnly(nextSpoken);
+    setLocalPronunciationRules((current) => upsertLocalRule(current, word, reading));
+    // 词典来源：编辑即同步更新词典，保持显示与词典一致。
+    if (popoverSource === 'dictionary') onEditDictionary?.(word, reading);
     setPopoverOpen(false);
+    const target = popoverTarget;
     requestAnimationFrame(() => {
-      const fresh = textareaRefs.current[popoverTarget.segmentId];
+      if (!target) return;
+      const fresh = textareaRefs.current[target.segmentId];
       if (fresh) {
         fresh.focus();
-        fresh.setSelectionRange(popoverTarget.start, popoverTarget.end);
+        fresh.setSelectionRange(target.start, target.end);
       }
     });
+  };
+
+  // 删除读音：本地读音清本地规则+marker；词典来源同步删除词典词条。
+  const removePronunciation = () => {
+    const word = popoverWord.trim();
+    if (!word) return;
+    const nextSpoken: Record<string, string> = { ...spokenTexts };
+    for (const segment of script.segments) {
+      const id = segment.segmentId;
+      const display = texts[id] ?? segment.displayText;
+      if (!display.includes(word)) continue;
+      nextSpoken[id] = stripPronunciationMarker(spokenTexts[id] ?? display, word);
+    }
+    updateSpokenOnly(nextSpoken);
+    setLocalPronunciationRules((current) => current.filter((rule) => rule.pattern !== word));
+    if (popoverSource === 'dictionary') onRemoveDictionary?.(word);
+    setPopoverOpen(false);
   };
 
   // 在目标段光标处插入朗读标记（发音/停顿）。
@@ -631,12 +679,23 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
             <input value={popoverReading} onChange={(e) => setPopoverReading(e.currentTarget.value)} placeholder={t('editor.pronounceReadingPlaceholder')} />
           </label>
           <div className="popover-actions">
-            <button type="button" disabled={!popoverTarget || !popoverReading.trim()} onClick={insertPronounceMarker}>
+            <button type="button" disabled={!popoverWord.trim() || !popoverReading.trim()} onClick={insertPronounceMarker}>
               {t('editor.applyPronunciationAll')}
             </button>
-            <button type="button" disabled={!popoverWord.trim() || !popoverReading} onClick={() => { onAddToDictionary?.(popoverWord.trim(), popoverReading); setPopoverOpen(false); }}>
-              {t('editor.addToDictionary')}
-            </button>
+            {popoverSource === 'dictionary' ? (
+              <button type="button" disabled={!popoverWord.trim() || !popoverReading.trim()} onClick={() => { onEditDictionary?.(popoverWord.trim(), popoverReading.trim()); setPopoverOpen(false); }}>
+                {t('editor.updateDictionaryEntry')}
+              </button>
+            ) : (
+              <button type="button" disabled={!popoverWord.trim() || !popoverReading} onClick={() => { onAddToDictionary?.(popoverWord.trim(), popoverReading); setPopoverOpen(false); }}>
+                {t('editor.addToDictionary')}
+              </button>
+            )}
+            {(popoverSource === 'local' || popoverSource === 'dictionary') && (
+              <button type="button" className="toolbar-clear" onClick={removePronunciation}>
+                {t('editor.removePronunciation')}
+              </button>
+            )}
           </div>
           {popoverWord && (
             <p className="popover-hint">{t('editor.affectedSegments', { count: affectedCount })}</p>
@@ -669,6 +728,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 rules={effectivePronunciationRules}
                 tooltipPrefix={t('editor.pronunciationTooltip')}
                 onTooltip={setReadingTooltip}
+                onPronunciationHit={openPronounceForHit}
                 onFocus={() => {
                   setFocusedId(segment.segmentId);
                   onNeedPronunciationRules?.();
@@ -795,12 +855,13 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
   rules: EffectivePronunciationRule[];
   tooltipPrefix: string;
   onTooltip: (tooltip: { text: string; x: number; y: number } | null) => void;
+  onPronunciationHit?: (pattern: string, replacement: string, source: 'local' | 'dictionary') => void;
   onFocus: () => void;
   onCaretChange: (pos: number) => void;
   onChange: (value: string) => void;
   onCompositionStart: () => void;
   onCompositionEnd: () => void;
-}>(function SegmentRichTextEditor({ value, readOnly, rules, tooltipPrefix, onTooltip, onFocus, onCaretChange, onChange, onCompositionStart, onCompositionEnd }, ref) {
+}>(function SegmentRichTextEditor({ value, readOnly, rules, tooltipPrefix, onTooltip, onPronunciationHit, onFocus, onCaretChange, onChange, onCompositionStart, onCompositionEnd }, ref) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const pendingCaretRef = useRef<number | null>(null);
   const lastCaretRef = useRef(0);
@@ -889,7 +950,19 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
         onFocus();
         rememberCaret();
       }}
-      onClick={rememberCaret}
+      onClick={(event) => {
+        const hit = (event.target as HTMLElement).closest<HTMLElement>('.pronunciation-hit');
+        if (hit) {
+          const pattern = hit.dataset.pattern;
+          const replacement = hit.dataset.replacement;
+          const source = hit.dataset.source === 'dictionary' ? 'dictionary' as const : 'local' as const;
+          if (pattern && replacement && onPronunciationHit) {
+            onPronunciationHit(pattern, replacement, source);
+            return;
+          }
+        }
+        rememberCaret();
+      }}
       onKeyUp={rememberCaret}
       onMouseUp={rememberCaret}
       onMouseMove={handleTooltipMove}
@@ -914,16 +987,18 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
   );
 });
 
-function buildEffectivePronunciationRules(rules: PronunciationRule[], spokenTexts: Record<string, string>): EffectivePronunciationRule[] {
+function buildEffectivePronunciationRules(
+  rules: PronunciationRule[],
+  localRules: Array<{ pattern: string; replacement: string }>,
+): EffectivePronunciationRule[] {
   const out: EffectivePronunciationRule[] = [];
   const seen = new Set<string>();
-  for (const text of Object.values(spokenTexts)) {
-    for (const rule of extractSpokenPronunciations(text)) {
-      const key = rule.pattern;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ ...rule, source: 'local' });
-    }
+  for (const rule of localRules) {
+    const pattern = rule.pattern.trim();
+    const replacement = rule.replacement.trim();
+    if (!pattern || !replacement || seen.has(pattern)) continue;
+    seen.add(pattern);
+    out.push({ pattern, replacement, source: 'local' });
   }
   for (const rule of rules) {
     const pattern = rule.pattern.trim();
@@ -957,6 +1032,9 @@ function renderHighlightedDOM(root: HTMLElement | null, text: string, rules: Eff
     const mark = document.createElement('mark');
     mark.className = `pronunciation-hit ${hit.source}`;
     mark.dataset.reading = `${tooltipPrefix}${hit.replacement}`;
+    mark.dataset.pattern = hit.pattern;
+    mark.dataset.replacement = hit.replacement;
+    mark.dataset.source = hit.source;
     mark.textContent = hit.pattern;
     fragment.append(mark);
     i += hit.pattern.length;
@@ -1008,6 +1086,29 @@ function findTextPosition(root: HTMLElement, offset: number): { node: Node; offs
   }
   if (last) return { node: last, offset: last.data.length };
   return { node: root, offset: 0 };
+}
+
+function collectLocalPronunciationRules(segments: ScriptSegment[]): Array<{ pattern: string; replacement: string }> {
+  const out: Array<{ pattern: string; replacement: string }> = [];
+  const seen = new Set<string>();
+  for (const segment of segments) {
+    const text = segment.spokenText || segment.displayText;
+    for (const rule of extractSpokenPronunciations(text)) {
+      const pattern = rule.pattern.trim();
+      if (!pattern || !rule.replacement.trim() || seen.has(pattern)) continue;
+      seen.add(pattern);
+      out.push({ pattern, replacement: rule.replacement.trim() });
+    }
+  }
+  return out;
+}
+
+function upsertLocalRule(current: Array<{ pattern: string; replacement: string }>, pattern: string, replacement: string): Array<{ pattern: string; replacement: string }> {
+  const p = pattern.trim();
+  if (!p || !replacement.trim()) return current;
+  const next = current.filter((rule) => rule.pattern !== p);
+  next.push({ pattern: p, replacement: replacement.trim() });
+  return next;
 }
 
 function extractSpokenPronunciations(text: string): Array<{ pattern: string; replacement: string }> {
@@ -1077,6 +1178,37 @@ function annotatePronunciation(text: string, word: string, reading: string): str
         if (close !== -1) i = close + 1;
       }
       out += marker;
+      continue;
+    }
+    out += text[i];
+    i += 1;
+  }
+  return out;
+}
+
+// stripPronunciationMarker：移除文本中所有"word 后紧跟的 〔读：x〕"标记，保留 word 本身。
+function stripPronunciationMarker(text: string, word: string): string {
+  if (!word) return text;
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text.startsWith('〔读：', i)) {
+      const close = text.indexOf('〕', i + 3);
+      if (close === -1) {
+        out += text.slice(i);
+        break;
+      }
+      out += text.slice(i, close + 1);
+      i = close + 1;
+      continue;
+    }
+    if (text.startsWith(word, i)) {
+      out += word;
+      i += word.length;
+      if (text.startsWith('〔读：', i)) {
+        const close = text.indexOf('〕', i + 3);
+        if (close !== -1) i = close + 1;
+      }
       continue;
     }
     out += text[i];
