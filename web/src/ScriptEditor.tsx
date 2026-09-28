@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useI18n } from './i18n';
 import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
@@ -369,7 +369,10 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const countAffectedSegments = (word: string) =>
     word ? script.segments.filter((s) => (texts[s.segmentId] ?? '').includes(word)).length : 0;
 
-  const effectivePronunciationRules = buildEffectivePronunciationRules(pronunciationRules, spokenTexts);
+  const effectivePronunciationRules = useMemo(
+    () => buildEffectivePronunciationRules(pronunciationRules, spokenTexts),
+    [pronunciationRules, spokenTexts]
+  );
 
   const updateSpokenOnly = (nextSpoken: Record<string, string>) => {
     editSeqRef.current += 1;
