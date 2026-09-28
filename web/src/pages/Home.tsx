@@ -18,6 +18,7 @@ import { describeApiError, isUnimplemented, settle, type Translator } from '../a
 import { useI18n } from '../i18n';
 import { can } from '../permissions';
 import { Link } from '../router';
+import { LoadFailure } from '../components/LoadFailure';
 import { jobKindKey, jobStateKey, type Job, type JobState, type Project, type Role } from '../types';
 
 // ENRICH_WINDOW：待办信号 / 可播放状态 / 最近成品只探测最近 N 个项目。
@@ -351,15 +352,10 @@ export function Home({ identity, role, roleReady }: { identity: ClientIdentity; 
       </section>
 
       {error && (
-        <div className="load-failure" role="alert">
-          <p className="form-error">{error}</p>
-          <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
-        </div>
+        <LoadFailure error={error} onRetry={() => void load()} retryLabel={t('common.retry')} />
       )}
       {actionError && (
-        <div className="load-failure" role="alert">
-          <p className="form-error">{actionError}</p>
-        </div>
+        <LoadFailure error={actionError} />
       )}
 
       <section className="panel home-section">

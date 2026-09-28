@@ -9,7 +9,9 @@
     "i18n:check": "node i18n-check.mjs",
     "api:check": "node api-contract-check.mjs",
     "route:check": "node route-inventory-check.mjs",
-    "build": "npm run contrast && npm run api:check && npm run route:check && tsc -b && vite build",
+    "core:test": "node --experimental-strip-types --test core-check.mjs",
+    "polling:test": "node --experimental-strip-types --test polling-check.mjs",
+    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && tsc -b && vite build",
     "typecheck": "tsc -b",
     "preview": "vite preview --host 0.0.0.0"
   },
