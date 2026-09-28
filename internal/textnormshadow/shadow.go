@@ -154,6 +154,49 @@ func Compare(old *oldtn.Engine, ne *newtn.Engine, lang, text string) Report {
 	return r
 }
 
+// Spec is a self-contained comparison job: one Options plus a list of segments.
+type Spec struct {
+	Lang       string
+	Dict       []DictEntry
+	Context    []ContextEntry
+	Classes    []string
+	NumberMode *oldtn.NumberMode
+	Segments   []string
+}
+
+// CompareSpec builds both engines once and compares every segment, returning
+// per-segment reports plus the candidate-engine notice list (unsupported
+// features such as number expansion).
+func CompareSpec(s Spec) ([]Report, []string, error) {
+	if len(s.Segments) == 0 {
+		return nil, nil, nil
+	}
+	opts := Options{
+		Lang:       s.Lang,
+		Dict:       s.Dict,
+		Context:    s.Context,
+		Classes:    s.Classes,
+		NumberMode: s.NumberMode,
+	}
+	old, err := BuildOldEngine(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	ne, notice, err := BuildNewEngine(opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	lang := s.Lang
+	if lang == "" {
+		lang = "zh-CN"
+	}
+	reports := make([]Report, 0, len(s.Segments))
+	for _, seg := range s.Segments {
+		reports = append(reports, Compare(old, ne, lang, seg))
+	}
+	return reports, notice, nil
+}
+
 // replaceAllDict implements the legacy textnorm.Dictionary contract with the
 // same 逐条 ReplaceAll semantics as internal/app.DictAdapter.
 type replaceAllDict []DictEntry
