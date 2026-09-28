@@ -14,7 +14,7 @@
 | S2 独立模块骨架 | 独立 module、标准库核心、最小示例、CI | 完成 | `textnorm/` 独立 go.mod（仅标准库），可脱离 PPTS 构建测试；已加入 go.work 与独立 CI job |
 | S3 执行与映射核心 | 候选识别、保护、冲突裁决、一次输出、来源关系 | 完成 | 非级联、保护区间、冲突诊断、identity/replacement/deletion 映射、取消语义 |
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 完成 | 已迁日期/百分比/单位/小数/版本/型号/词典/数字/金额/**电话**/**比分（语义提示门控）**；通用中文类别主力已齐 |
-| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 部分完成（narrator 影子已接入） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；`app.NewTextNormShadowEngine` 与旧引擎共用同一持久化配置；narration 合成路径接入影子比较（`synthesizeSegment` 每段 diff，仅观测不改输出/缓存键），以 `PPTS_TEXTNORM_SHADOW=1` 显式启用（默认关闭），影子构建/运行失败不阻塞任务，分歧计数进 `ppts_textnorm_shadow_diff_total{diverged,error,build_error}`；**主引擎仍为旧 `internal/textnorm`，未切换** |
+| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 完成（生产影子已启用） | `internal/textnormshadow`（Builder/Compare/存储映射）＋批量 CLI `cmd/textnorm-shadow`；narration 合成路径接入影子比较（仅观测不改输出/缓存键）。**已部署 ec5115a 并开启 `PPTS_TEXTNORM_SHADOW=1`**，分歧计数进 `ppts_textnorm_shadow_diff_total{diverged,error,build_error}`（/metrics 已注册，worker 日志确认启用）；主引擎仍为旧 `internal/textnorm`（切换门=影子分歧归零/评审） |
 | S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 完成 | 语义化版本契约已加（`Version`、`ModulePath`、`Profiles()`/`ProfileVersion`，Manifest 携带版本）；组件发布于 `github.com/F31/textnorm`，tag `v0.1.0` 已被 go 代理索引；**外部最小消费者经 `go get github.com/F31/textnorm@v0.1.0` 独立构建运行成功**；monorepo 保留本地 replace（CI 稳定性） |
 | S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 未开始 | |
 
