@@ -14,7 +14,7 @@
 | S2 独立模块骨架 | 独立 module、标准库核心、最小示例、CI | 完成 | `textnorm/` 独立 go.mod（仅标准库），可脱离 PPTS 构建测试；已加入 go.work 与独立 CI job |
 | S3 执行与映射核心 | 候选识别、保护、冲突裁决、一次输出、来源关系 | 完成 | 非级联、保护区间、冲突诊断、identity/replacement/deletion 映射、取消语义 |
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 部分完成 | 已迁日期/百分比/单位/小数/版本/型号/词典；缺金额、分数、电话、比分、比率 |
-| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 部分完成（未接入生产） | `internal/textnormshadow` 双轨比较机制已建（DB-free，`BuildOldEngine`/`BuildNewEngine`/`Compare`），旧引擎按生产相同顺序装配；替换依赖根 go.mod `replace` 已加；**未接入 narration 生产路径**，真实 DB 规则映射待接 |
+| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 部分完成（未接入生产） | `internal/textnormshadow` 双轨比较机制已建（DB-free：`BuildOldEngine`/`BuildNewEngine`/`Compare`）；真实存储类型映射已建（`FromPronunciationRules`/`FromContextRules`/`FromPersistence`），两种流水线（mode/classes/dict/context）均可等价装配；依赖 `replace` 已加；**仍未接入 narration 生产路径**（影子观测接入为下一步） |
 | S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 未开始 | CLI `run`/`diff` 已具备行为差异报告雏形 |
 | S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 未开始 | |
 
