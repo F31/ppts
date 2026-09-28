@@ -14,7 +14,7 @@
 | S2 独立模块骨架 | 独立 module、标准库核心、最小示例、CI | 完成 | `textnorm/` 独立 go.mod（仅标准库），可脱离 PPTS 构建测试；已加入 go.work 与独立 CI job |
 | S3 执行与映射核心 | 候选识别、保护、冲突裁决、一次输出、来源关系 | 完成 | 非级联、保护区间、冲突诊断、identity/replacement/deletion 映射、取消语义 |
 | S4 规则与配置迁移 | 基础中文类别、模板规则、版本化配置组合 | 完成 | 已迁日期/百分比/单位/小数/版本/型号/词典/数字/金额/**电话**/**比分（语义提示门控）**；通用中文类别主力已齐 |
-| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 完成（旧引擎已删除） | narration 合成路径已从旧 `internal/textnorm` 切换为模块引擎 `github.com/F31/textnorm`；经 shadow 观察、mock/真实 TTS 验收后，旧 `internal/textnorm`、`internal/textnormshadow` 与 `cmd/textnorm-shadow` 退役删除。worker 进程仍保留受 `PPTS_METRICS_TOKEN` 保护的 `/metrics`，地址 `127.0.0.1:8090`=PPTS_WORKER_METRICS_ADDR；影子分歧指标随旧 shadow 删除而停止新增。 |
+| S5 PPTS 适配 | 数据库加载、标记兼容、双轨比较、缓存版本化 | 完成（旧引擎已删除） | narration 合成路径已从旧 `internal/textnorm` 切换为模块引擎 `github.com/F31/textnorm`；经 shadow 观察、mock/真实 TTS 验收后，旧 `internal/textnorm`、`internal/textnormshadow` 与 `cmd/textnorm-shadow` 退役删除。已部署 `da67016`（SHA `56a7eece31bf8cdea3438ed3a0e22d75ff48795ce98bf2d53c686a9cf741f228`），生产配置中的废弃 `PPTS_TEXTNORM_SHADOW` 已移除。worker 进程仍保留受 `PPTS_METRICS_TOKEN` 保护的 `/metrics`，地址 `127.0.0.1:8090`=PPTS_WORKER_METRICS_ADDR；影子分歧指标随旧 shadow 删除而停止新增。 |
 | S6 独立发布 | `v0.x` 发布、文档、示例、行为差异报告 | 完成 | 语义化版本契约已加（`Version`、`ModulePath`、`Profiles()`/`ProfileVersion`，Manifest 携带版本）；组件发布于 `github.com/F31/textnorm`，tag `v0.1.0` 已被 go 代理索引；**外部最小消费者经 `go get github.com/F31/textnorm@v0.1.0` 独立构建运行成功**；monorepo 保留本地 replace（CI 稳定性） |
 | S7 稳定化 | 真实音频验收、扩展 API 验证、兼容承诺 | 部分完成 | 最小真实音频验收已通过；扩展真实音频验收已覆盖金额/日期/百分比/电话/型号版本/停顿读音标记/比分无提示样本（5 段正式 TTS，job succeeded）。仍待扩展 API 验证与更长观察期。 |
 
@@ -56,7 +56,7 @@
 - 主引擎切换：`c2261cf` 已部署为生产二进制（SHA `a5ec3590670019ae665030970c88e8c5611f7a4493529c5d5e92e4e7dc265b2c`），模块引擎负责输出/缓存键；切换后重新注入 7 段，job 成功，worker 新进程指标再次捕获 `ppts_textnorm_shadow_diff_total{diverged}=3`。
 - S7 最小真实音频验收：正式 gateway 租户 job `35014d84-b3d8-4afc-bc38-9a4c9bcf10b1` 成功，生成 `audio/wav`（约 284KB）、timeline、SRT/VTT 与 alignment；`ppts_tts_synthesis_total{kind="narration",event="succeeded"}` 从 3 增至 4，`ppts_textnorm_shadow_diff_total{diverged}` 从 4 增至 5（该短段预期电话规则 1 处分歧）。
 - S7 扩展真实音频验收：正式 gateway 租户 job `ba05498e-e440-4e05-94bb-ec87d6f833ac` 成功，5 段生成真实 WAV、timeline、SRT/VTT 与 alignment；`ppts_tts_synthesis_total{kind="narration",event="succeeded"}` 从 4 增至 9，`ppts_textnorm_shadow_diff_total{diverged}` 从 5 增至 7。覆盖金额/日期/百分比/电话/型号版本/停顿读音标记/比分无提示样本；quota reservation 已 settled，`reserved_units` 回到 0。
-- 旧引擎处置：用户复核配音后确认可删除；`internal/textnorm`、`internal/textnormshadow`、`cmd/textnorm-shadow` 退役，`PPTS_TEXTNORM_SHADOW` 不再装配旧引擎。
+- 旧引擎处置：用户复核配音后确认可删除；`internal/textnorm`、`internal/textnormshadow`、`cmd/textnorm-shadow` 退役，已部署 `da67016`，生产配置中的废弃 `PPTS_TEXTNORM_SHADOW` 已移除。
 - API/预览补强：`github.com/F31/textnorm` 增加 `CompileProfile`、`Engine.Manifest()` 与 `Manifest.ConfigHash`；CLI `diff -format json` 输出 base/next manifest，外部 consumer 验证通过（Go 1.24.2）。
 - 运维噪音：生产已补授 `ppts_queue_backlog_seconds()` 给 `ppts_app`/`ppts_scheduler`；代码层跳过跨租户 worker 的空 tenant queue-depth 采样，避免空 UUID 日志。已部署 `08a83b7`（SHA `1ca555cd2d52a8bf3beca37b30374923e0952be66915b3b1743306f10fcc38bc`），18:00 新 worker 启动后未再出现 queue backlog/depth 错误，metrics 端点 200。
 - 人工验收：机器检查已确认 5 个 WAV 可解码（3.52s/3.60s/3.96s/5.76s/6.96s），VTT/SRT/timeline 均生成且覆盖 5 段；仍需人耳确认读音、停顿体感与字幕对齐主观质量。
