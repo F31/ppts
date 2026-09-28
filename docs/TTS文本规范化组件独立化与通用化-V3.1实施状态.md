@@ -60,6 +60,7 @@
 - API/预览补强：`github.com/F31/textnorm` 增加 `CompileProfile`、`Engine.Manifest()` 与 `Manifest.ConfigHash`；CLI `diff -format json` 输出 base/next manifest，外部 consumer 验证通过（Go 1.24.2）。
 - 运维噪音：生产已补授 `ppts_queue_backlog_seconds()` 给 `ppts_app`/`ppts_scheduler`；代码层跳过跨租户 worker 的空 tenant queue-depth 采样，避免空 UUID 日志。已部署 `08a83b7`（SHA `1ca555cd2d52a8bf3beca37b30374923e0952be66915b3b1743306f10fcc38bc`），18:00 新 worker 启动后未再出现 queue backlog/depth 错误，metrics 端点 200。
 - 人工验收：机器检查已确认 5 个 WAV 可解码（3.52s/3.60s/3.96s/5.76s/6.96s），VTT/SRT/timeline 均生成且覆盖 5 段；仍需人耳确认读音、停顿体感与字幕对齐主观质量。
+- 技术命名词条：发现"定义权词典优先级(10)低于技术型号保护(5)"，导致 CX8/Pro5000/R9000P 等无法被词典覆盖；将 `LiteralDictRule("definition")` 调整为优先级 3，并新增平台种子词条（PG 0050 / SQLite 0017）：`Spectrum-4/Spectrum4→Spectrum 四`、`Scale-out/Scale-Out/scale out→Scale out`、`CX8→C X 八`、`ConnectX-8/ConnectX8→Connect X 八`、`Pro5000/Pro 5000→Pro 五千`、`RTX PRO 5000→RTX PRO 五千`、`R9000P→R 九千 P`。已部署 `91694ac`（SHA `7ea85c4f565d632c9544e2e3787249b62d8dcb47c8017f36c7d6a0c87aa23484`），生产真实 job 验证朗读文本为 `Spectrum 四、Scale out、C X 八、Connect X 八、Pro 五千、R 九千 P 上线。`，未定义型号（如 RTX5090Ti）仍由技术型号保护不被误拆。
 
 ## 下一步候选
 
