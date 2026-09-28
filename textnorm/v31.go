@@ -29,6 +29,9 @@ type Request struct {
 	Lang      string
 	Protected []Range
 	Hints     []Hint
+	// LegacyMarkup opts into the legacy 〔读：x〕 and ‖ compatibility parser
+	// (V3.1 §10.2). Plain text input does not auto-interpret those characters.
+	LegacyMarkup bool
 }
 
 // HintKind is the kind of an explicit caller constraint (V3.1 §5.1 / §10.1).
@@ -76,7 +79,15 @@ type Result struct {
 	SourceMap   SourceMap
 	Edits       []Edit
 	Diagnostics []Diagnostic
+	Controls    []Control
 	Manifest    Manifest
+}
+
+// Control is a structured speech control event attached to the output text
+// (V3.1 §10.3), such as a pause after a rune boundary.
+type Control struct {
+	AfterRunes int // stop after output rune index N
+	DurationMS int // desired pause milliseconds
 }
 
 // SourceMap records source relationships between original text and normalized text.
@@ -145,12 +156,15 @@ type CandidateRule interface {
 // Config is compiled into an immutable Engine.
 type Config struct {
 	Rules []CandidateRule
+	// PauseMS is the default pause duration for legacy ‖ markers (default 300).
+	PauseMS int
 }
 
 // Engine is the V3.1 non-cascading normalization engine.
 type Engine struct {
 	rules    []CandidateRule
 	manifest Manifest
+	pauseMS  int
 }
 
 // Compile validates and freezes a V3.1 normalization configuration.
@@ -177,9 +191,14 @@ func Compile(cfg Config) (*Engine, error) {
 		return rules[i].RulePriority() < rules[j].RulePriority()
 	})
 	sort.Strings(ids)
+	pauseMS := cfg.PauseMS
+	if pauseMS <= 0 {
+		pauseMS = 300
+	}
 	return &Engine{
 		rules:    rules,
 		manifest: Manifest{Version: "textnorm-v3.1-draft", Rules: ids},
+		pauseMS:  pauseMS,
 	}, nil
 }
 
@@ -217,6 +236,26 @@ func (e *Engine) Normalize(ctx context.Context, req Request) (Result, error) {
 			candidates = append(candidates, Candidate{
 				Src: h.Range, RuleID: "hint.verbatim",
 				Category: "hint.verbatim", Priority: -1, Preserve: true,
+			})
+		}
+	}
+
+	// Legacy markup compatibility parser: readings become replacement candidates
+	// over the full marker span, pauses become deletion candidates.
+	var markup *Markup
+	if req.LegacyMarkup {
+		parsed := ParseLegacyMarkers(req.Text)
+		markup = &parsed
+		for _, rd := range parsed.Readings {
+			candidates = append(candidates, Candidate{
+				Src: rd.Outer, Replacement: rd.Text,
+				RuleID: "markup.reading", Category: "markup.reading", Priority: 0,
+			})
+		}
+		for _, p := range parsed.Pauses {
+			candidates = append(candidates, Candidate{
+				Src: Range{p, p + 1}, Replacement: "",
+				RuleID: "markup.pause", Category: "markup.pause", Priority: -4,
 			})
 		}
 	}
@@ -265,13 +304,38 @@ func (e *Engine) Normalize(ctx context.Context, req Request) (Result, error) {
 	sort.SliceStable(selected, func(i, j int) bool { return selected[i].Src.Start < selected[j].Src.Start })
 
 	text, spans, edits := buildOutput(runes, selected)
+	controls := buildControls(markup, spans, e.pauseMS)
 	return Result{
 		Text:        text,
 		SourceMap:   SourceMap{Spans: spans},
 		Edits:       edits,
 		Diagnostics: append(blocked, selDiags...),
+		Controls:    controls,
 		Manifest:    e.manifest,
 	}, nil
+}
+
+// buildControls derives structured pause events from selected legacy pause
+// deletions. The pause position is the effective output boundary recorded by the
+// deletion span (V3.1 §10.3); pauses that were blocked (e.g. protected) emit none.
+func buildControls(markup *Markup, spans []SourceSpan, pauseMS int) []Control {
+	if markup == nil {
+		return nil
+	}
+	var controls []Control
+	for _, p := range markup.Pauses {
+		pr := Range{p, p + 1}
+		for _, sp := range spans {
+			if sp.Src == pr && sp.Kind == SourceDeletion {
+				controls = append(controls, Control{AfterRunes: sp.Dst.Start, DurationMS: pauseMS})
+				break
+			}
+		}
+	}
+	sort.SliceStable(controls, func(i, j int) bool {
+		return controls[i].AfterRunes < controls[j].AfterRunes
+	})
+	return controls
 }
 
 func validateHints(hints []Hint, max int, protected []Range) ([]Hint, error) {

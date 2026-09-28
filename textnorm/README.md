@@ -29,6 +29,15 @@ go test ./...
 
 Hints must not overlap each other or protected ranges; contradictory hints are rejected instead of silently guessed. Explicit hints take precedence over automatic candidates.
 
+## Legacy Markup
+
+`Request.LegacyMarkup` opts into the legacy compatibility parser (V3.1 §10.2):
+
+- `〔读：x〕` expands to reading text `x`; the full marker span is one replacement candidate, so rules cannot re-read the content.
+- `‖` emits a `Control{AfterRunes, DurationMS}` pause event and is removed from the output.
+
+Plain text does not auto-interpret these characters unless `LegacyMarkup` is true. Unclosed reading markers are kept as literal text. `StripLegacyMarkers(text)` returns display text plus per-rune source indices, and `DisplayToEffective(original, result)` bridges display runes to effective rune positions for subtitle/timeline alignment (approximate inside unequal-length replacement spans).
+
 ## Draft Chinese Rules
 
 - `TechnicalModelRule()` preserves common letter-led technical model identifiers such as `RTX5090Ti`, `i7-11800H`, and `USB3`.

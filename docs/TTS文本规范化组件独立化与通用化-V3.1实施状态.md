@@ -30,7 +30,7 @@
 | 歧义处理规则公开、确定且可测试 | 通过 | 冲突/保护/提示诊断与保留语义可测；显式提示（Verbatim/Reading/Semantic）已实现 |
 | 模板规则与语义转换规则能力边界清楚 | 通过 | `RegexRule`（模板）与日期/小数等语义规则职责分离 |
 | 来源映射不把比例估计标成精确关系 | 通过 | identity/replacement/deletion 区分；无比例投影冒充精确 |
-| 读音及停顿提示具备结构化接口 | 部分 | 结构化 Hints（verbatim/reading/semantic）已实现；停顿控制事件与旧标记移植未做 |
+| 读音及停顿提示具备结构化接口 | 通过 | 结构化 Hints（verbatim/reading/semantic）＋旧标记兼容（`〔读：x〕`/`‖`）＋停顿 Control 事件＋`StripLegacyMarkers`/`DisplayToEffective` |
 | 公共 API 与输出行为都有版本策略 | 部分 | `Manifest` 记录规则集；语义化版本与配置组合契约未正式化 |
 | 规则更新可预览、追踪、切换与回滚 | 部分 | 内置 profile 可切换；CLI `diff` 报告行为差异；热更新/快照回滚未做 |
 | 基础语料、反例、交互和并发测试通过 | 通过 | JSON 语料 21 用例＋引擎不变量 Go 测试＋race 通过 |
@@ -46,5 +46,5 @@
 ## 下一步候选
 
 1. S5 PPTS 适配：旧 `internal/textnorm` 词典/上下文规则 → `LiteralDictRule`/模式模板候选，双轨比较。
-2. 停顿控制事件与旧标记移植（S1 剩余）。
-3. 语义化版本与配置组合契约正式化（S6 前置）。
+2. 语义化版本与配置组合契约正式化（S6 前置）。
+3. S7 稳定化：真实音频验收与扩展 API 验证。
