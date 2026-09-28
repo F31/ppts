@@ -91,6 +91,8 @@ func BuildNewEngine(o Options) (*newtn.Engine, []string, error) {
 			rules = append(rules, newtn.ZHUnitRule())
 		case "decimal":
 			rules = append(rules, newtn.ZHDecimalRule())
+		case "money":
+			rules = append(rules, newtn.ZHMoneyRule())
 		default:
 			notice = append(notice, "class not yet supported by candidate engine: "+c)
 		}

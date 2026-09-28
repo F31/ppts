@@ -44,6 +44,7 @@ Plain text does not auto-interpret these characters unless `LegacyMarkup` is tru
 - `ZHDateRule(ModeConvert)` converts valid `yyyy-mm-dd`, `yyyy/mm/dd`, and `yyyy.mm.dd` dates.
 - `ZHDateRule(ModePreserve)` recognizes and protects valid date ranges without changing output.
 - `ZHPercentRule()` converts percent forms such as `13.5%` to `百分之十三点五`.
+- `ZHMoneyRule()` converts money expressions such as `¥250`, `USD 1.5`, and `5万`.
 - `ZHUnitRule()` converts common digit-led unit forms such as `5GHz` and `3.5GB`.
 - `ZHDecimalRule()` converts simple decimal forms such as `13.5`.
 

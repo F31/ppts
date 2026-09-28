@@ -1,7 +1,6 @@
 package textnormshadow
 
 import (
-	"strings"
 	"testing"
 
 	oldtn "github.com/F31/ppts/internal/textnorm"
@@ -74,7 +73,7 @@ func TestCompareNumberEquivalence(t *testing.T) {
 	}
 }
 
-func TestCompareMoneyGapDivergence(t *testing.T) {
+func TestCompareMoneyEquivalence(t *testing.T) {
 	opts := Options{Classes: []string{"money"}}
 	old, err := BuildOldEngine(opts)
 	if err != nil {
@@ -84,24 +83,15 @@ func TestCompareMoneyGapDivergence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, n := range notice {
-		if strings.Contains(n, "money") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("notice = %v, want money gap notice", notice)
+	if len(notice) != 0 {
+		t.Fatalf("notice = %v, want empty (money now covered)", notice)
 	}
 	r := Compare(old, ne, "zh-CN", "营收 ¥250")
-	if r.Same {
-		t.Fatalf("report = %+v, want known diff (money unsupported by candidate)", r)
+	if !r.Same {
+		t.Fatalf("report = %+v, want same", r)
 	}
-	if r.OldText != "营收 人民币二百五十" {
-		t.Fatalf("old text = %q", r.OldText)
-	}
-	if r.NewText != "营收 ¥250" {
-		t.Fatalf("new text = %q", r.NewText)
+	if r.OldText != "营收 人民币二百五十" || r.NewText != "营收 人民币二百五十" {
+		t.Fatalf("texts = %q / %q", r.OldText, r.NewText)
 	}
 }
 
