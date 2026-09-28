@@ -2,7 +2,6 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { useI18n } from './i18n';
 import type { ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import type { RewriteAction } from './api';
-import { useDialogA11y } from './a11y';
 
 export type ScriptEditorStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
 
@@ -96,7 +95,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [rewriteNote, setRewriteNote] = useState<string | null>(null);
   // M4 ⑤ 读音调整 popover 状态。
   const [popoverOpen, setPopoverOpen] = useState(false);
-  const popoverRef = useDialogA11y<HTMLDivElement>(() => setPopoverOpen(false));
+  const popoverRef = useRef<HTMLDivElement | null>(null);
   // 重新生成讲稿：模式下拉菜单 + 记住上次选择的模式（主按钮直接按该模式生成）。
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [lastRegenMode, setLastRegenMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
@@ -116,6 +115,22 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       document.removeEventListener('keydown', onKey);
     };
   }, [modeMenuOpen]);
+  useEffect(() => {
+    if (!popoverOpen) return;
+    popoverRef.current?.querySelector<HTMLInputElement>('input')?.focus();
+    const onDocDown = (event: MouseEvent) => {
+      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) setPopoverOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPopoverOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [popoverOpen]);
   const [popoverWord, setPopoverWord] = useState('');
   const [popoverReading, setPopoverReading] = useState('');
   const [affectedCount, setAffectedCount] = useState(0);
@@ -475,24 +490,24 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
           发音/停顿 → 插入朗读标记。改写进行中整条禁用，防止重复频繁点击产生重复 LLM 调用。
           B4-M1：无编辑权限（EDITOR 以下）时整体禁用，避免出现必然 403 的假能力（A22）。 */}
       <div className="paragraph-toolbar" role="toolbar" aria-label={t('editor.toolbar')}>
-        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => handleRewrite('shorten')} title={t('editor.shortenHint')}>
+        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => { setPopoverOpen(false); handleRewrite('shorten'); }} title={t('editor.shortenHint')}>
           {t('editor.shorten')}
         </button>
-        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => handleRewrite('polish')} title={t('editor.polishHint')}>
+        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => { setPopoverOpen(false); handleRewrite('polish'); }} title={t('editor.polishHint')}>
           {t('editor.polish')}
         </button>
-        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => handleRewrite('transition')} title={t('editor.transitionHint')}>
+        <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => { setPopoverOpen(false); handleRewrite('transition'); }} title={t('editor.transitionHint')}>
           {t('editor.transition')}
         </button>
         <span className="toolbar-sep" />
         <button type="button" disabled={!canEdit || rewritingRef.current || targetIds().length === 0} onClick={openPronounce} title={t('editor.pronounceHint')}>
           {t('editor.pronounce')}
         </button>
-        <button type="button" disabled={!canEdit || rewritingRef.current || targetIds().length === 0} onClick={() => insertMarker(PAUSE_MARKER)} title={t('editor.pauseHint')}>
+        <button type="button" disabled={!canEdit || rewritingRef.current || targetIds().length === 0} onClick={() => { setPopoverOpen(false); insertMarker(PAUSE_MARKER); }} title={t('editor.pauseHint')}>
           {t('editor.pause')}
         </button>
         {selected.size > 0 && (
-          <button type="button" className="toolbar-clear" onClick={() => setSelected(new Set())}>
+          <button type="button" className="toolbar-clear" onClick={() => { setPopoverOpen(false); setSelected(new Set()); }}>
             {t('editor.clearSelection', { count: selected.size })}
           </button>
         )}
@@ -509,7 +524,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
 
       {/* M4 ⑤ 读音调整 popover：原词 + 读音 + 本处插入 / 添加到租户词典 + 影响范围回执。 */}
       {popoverOpen && (
-        <div className="pronounce-popover" role="dialog" aria-modal="true" aria-label={t('editor.pronouncePopover')} ref={popoverRef}>
+        <div className="pronounce-popover" role="dialog" aria-label={t('editor.pronouncePopover')} ref={popoverRef}>
           <label className="field-label">
             {t('editor.pronounceWord')}
             <input
