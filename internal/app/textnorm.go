@@ -126,7 +126,9 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 			}
 		}
 		if len(entries) > 0 {
-			rules = append(rules, newtn.LiteralDictRule("definition", 10, entries))
+			// Explicit tenant/platform pronunciations are definition-authoritative and
+			// must beat automatic technical-model preservation (priority 5).
+			rules = append(rules, newtn.LiteralDictRule("definition", 3, entries))
 		}
 	}
 	var opt TextNormOptions

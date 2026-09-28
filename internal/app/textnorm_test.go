@@ -329,6 +329,42 @@ func TestTextNormClassesWithNumberCompose(t *testing.T) {
 	}
 }
 
+func TestTextNormDictionaryOverridesTechnicalModelTerms(t *testing.T) {
+	meta := &textNormStoreStub{platform: pronunciation.Rules{
+		{Pattern: "Spectrum-4", Replacement: "Spectrum 四", Enabled: true},
+		{Pattern: "Scale-out", Replacement: "Scale out", Enabled: true},
+		{Pattern: "CX8", Replacement: "C X 八", Enabled: true},
+		{Pattern: "ConnectX-8", Replacement: "Connect X 八", Enabled: true},
+		{Pattern: "Pro5000", Replacement: "Pro 五千", Enabled: true},
+		{Pattern: "R9000P", Replacement: "R 九千 P", Enabled: true},
+	}}
+	mode := newtn.NumberModeQuantity
+	eg, err := NewTextNormEngine(context.Background(), meta, "tenant-1", "zh-CN", true, nil, nil,
+		TextNormOptions{NumberMode: &mode, Classes: []string{"decimal", "unit"}},
+	)
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	cases := []struct{ in, want string }{
+		{"Spectrum-4", "Spectrum 四"},
+		{"Scale-out", "Scale out"},
+		{"CX8", "C X 八"},
+		{"ConnectX-8", "Connect X 八"},
+		{"Pro5000", "Pro 五千"},
+		{"R9000P", "R 九千 P"},
+		{"RTX5090Ti", "RTX5090Ti"}, // 未定义词条仍由技术型号保护，不被数量规则误拆。
+	}
+	for _, c := range cases {
+		res, err := eg.Normalize(context.Background(), newtn.Request{Text: c.in, Lang: "zh-CN", LegacyMarkup: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Text != c.want {
+			t.Errorf("Normalize(%q) = %q want %q", c.in, res.Text, c.want)
+		}
+	}
+}
+
 // textNormContextRuleStub 实现 TextNormContextRuleStore（M5 数据驱动）。
 type textNormContextRuleStub struct {
 	recs []*contextrule.Record
