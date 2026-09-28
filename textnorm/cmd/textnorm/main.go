@@ -12,7 +12,7 @@ import (
 	"os"
 	"sort"
 
-	textnorm "github.com/F31/ppts/pkg/textnorm"
+	textnorm "github.com/F31/ppts/textnorm"
 )
 
 func main() {

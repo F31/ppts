@@ -1,8 +1,13 @@
 # textnorm
 
-`pkg/textnorm` is the draft V3.1 Chinese TTS text normalization contract.
+`textnorm` is an independent Go module (module path `github.com/F31/ppts/textnorm`) hosting the draft V3.1 Chinese TTS text normalization contract.
 
-The package is intentionally independent from PPTS application concerns. It does not depend on tenants, databases, HTTP handlers, environment variables, or TTS providers.
+The module is intentionally independent from PPTS application concerns. It does not depend on tenants, databases, HTTP handlers, environment variables, or TTS providers, and it carries its own `go.mod`, corpus, and CI job. It can be built and tested on its own:
+
+```sh
+cd textnorm
+go test ./...
+```
 
 ## Semantics
 
@@ -13,6 +18,16 @@ The package is intentionally independent from PPTS application concerns. It does
 - Selected candidates do not overlap.
 - Replacements are applied once; rule output is not fed into later rules.
 - Source spans distinguish identity, replacement, deletion, and insertion relationships.
+
+## Hints
+
+`Request.Hints` carries explicit caller constraints (`Hint{Kind, Range, Text, Semantic}`):
+
+- `HintVerbatim` keeps a range exactly as written.
+- `HintReading` replaces a range with caller-provided reading text.
+- `HintSemantic` marks a range with a category (`SemanticNumber`, `SemanticDate`, `SemanticTelephone`, `SemanticRatio`, `SemanticScore`); only rules whose `Category` matches may convert it, otherwise the range is preserved.
+
+Hints must not overlap each other or protected ranges; contradictory hints are rejected instead of silently guessed. Explicit hints take precedence over automatic candidates.
 
 ## Draft Chinese Rules
 
@@ -46,8 +61,8 @@ Built-in versioned rule combinations are registered in `profiles.go` and resolve
 `cmd/textnorm` is an independent CLI (no PPTS imports) used to run corpus assertions and produce behavior difference reports:
 
 ```sh
-go run ./cmd/textnorm run pkg/textnorm/testdata/corpus/positive.json
-go run ./cmd/textnorm diff -base zh.date-decimal -next zh.date-preserve pkg/textnorm/testdata/corpus/date-decimal.json
+go run ./cmd/textnorm run testdata/corpus/positive.json
+go run ./cmd/textnorm diff -base zh.date-decimal -next zh.date-preserve testdata/corpus/date-decimal.json
 ```
 
 Both commands accept `-format json` for machine-readable release artifacts.

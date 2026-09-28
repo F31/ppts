@@ -38,6 +38,30 @@ jobs:
       - name: go test
         run: go test ./...
 
+  # 独立模块 textnorm/：可在没有 PPTS 其余源码时独立构建/测试（纯标准库）。
+  # 语料 JSON 随模块入库，作为行为契约在 CI 回放。
+  textnorm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: gofmt
+        working-directory: textnorm
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+      - name: go vet
+        working-directory: textnorm
+        run: go vet ./...
+      - name: go build
+        working-directory: textnorm
+        run: go build ./...
+      - name: go test -race
+        working-directory: textnorm
+        run: go test -race ./...
+
   frontend:
     runs-on: ubuntu-latest
     steps:

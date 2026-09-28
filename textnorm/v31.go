@@ -28,6 +28,46 @@ type Request struct {
 	Text      string
 	Lang      string
 	Protected []Range
+	Hints     []Hint
+}
+
+// HintKind is the kind of an explicit caller constraint (V3.1 §5.1 / §10.1).
+type HintKind int
+
+const (
+	// HintVerbatim preserves a range exactly as written.
+	HintVerbatim HintKind = iota
+	// HintReading replaces a range with caller-provided reading text.
+	HintReading
+	// HintSemantic marks a range with a semantic category; only rules whose
+	// Category matches may convert it, otherwise the range is preserved.
+	HintSemantic
+)
+
+// SemanticKind is a category label for a semantic hint. It must match the
+// Category of a rule that knows how to read the range.
+type SemanticKind string
+
+const (
+	SemanticNumber    SemanticKind = "number"
+	SemanticDate      SemanticKind = "date"
+	SemanticTelephone SemanticKind = "telephone"
+	SemanticRatio     SemanticKind = "ratio"
+	SemanticScore     SemanticKind = "score"
+)
+
+var knownSemanticKinds = map[SemanticKind]bool{
+	SemanticNumber: true, SemanticDate: true, SemanticTelephone: true,
+	SemanticRatio: true, SemanticScore: true,
+}
+
+// Hint is an explicit caller constraint on a rune range. Hints must not overlap
+// each other or any protected range; contradictory explicit hints are rejected.
+type Hint struct {
+	Range    Range
+	Kind     HintKind
+	Text     string       // replacement text for reading/verbatim hints
+	Semantic SemanticKind // for semantic hints
 }
 
 // Result contains the normalized text and explainable transformation records.
@@ -159,8 +199,30 @@ func (e *Engine) Normalize(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	hints, err := validateHints(req.Hints, len(runes), protected)
+	if err != nil {
+		return Result{}, err
+	}
 
-	candidates := make([]Candidate, 0)
+	// Explicit hint candidates take precedence over automatic candidates.
+	var candidates []Candidate
+	for _, h := range hints {
+		switch h.Kind {
+		case HintReading:
+			candidates = append(candidates, Candidate{
+				Src: h.Range, Replacement: h.Text, RuleID: "hint.reading",
+				Category: "hint.reading", Priority: -2,
+			})
+		case HintVerbatim:
+			candidates = append(candidates, Candidate{
+				Src: h.Range, RuleID: "hint.verbatim",
+				Category: "hint.verbatim", Priority: -1, Preserve: true,
+			})
+		}
+	}
+
+	// Automatic candidates: semantic hints gate which category may touch a range.
+	var blocked []Diagnostic
 	for _, r := range e.rules {
 		select {
 		case <-ctx.Done():
@@ -177,19 +239,83 @@ func (e *Engine) Normalize(ctx context.Context, req Request) (Result, error) {
 			if !validRange(c.Src, len(runes)) || c.Src.Start == c.Src.End {
 				return Result{}, fmt.Errorf("textnorm: invalid candidate range from %q", r.RuleID())
 			}
+			if sem, ok := semanticHintFor(c, hints); ok && c.Category != string(sem) {
+				blocked = append(blocked, Diagnostic{
+					Range: c.Src, Code: "hint",
+					Message: "candidate category does not match semantic hint", RuleID: c.RuleID,
+				})
+				continue
+			}
 			candidates = append(candidates, c)
 		}
 	}
 
-	selected, diagnostics := selectCandidates(candidates, protected)
+	selected, selDiags := selectCandidates(candidates, protected)
+	// A semantic hint with no covering selected candidate is preserved so the
+	// intended range stays untouched by any later rule.
+	for _, h := range hints {
+		if h.Kind != HintSemantic || overlapsAny(h.Range, selectedRanges(selected)) {
+			continue
+		}
+		selected = append(selected, Candidate{
+			Src: h.Range, RuleID: "hint.semantic",
+			Category: "hint.semantic", Priority: -1, Preserve: true,
+		})
+	}
+	sort.SliceStable(selected, func(i, j int) bool { return selected[i].Src.Start < selected[j].Src.Start })
+
 	text, spans, edits := buildOutput(runes, selected)
 	return Result{
 		Text:        text,
 		SourceMap:   SourceMap{Spans: spans},
 		Edits:       edits,
-		Diagnostics: diagnostics,
+		Diagnostics: append(blocked, selDiags...),
 		Manifest:    e.manifest,
 	}, nil
+}
+
+func validateHints(hints []Hint, max int, protected []Range) ([]Hint, error) {
+	for i, h := range hints {
+		if !validRange(h.Range, max) {
+			return nil, fmt.Errorf("textnorm: invalid hint range [%d,%d)", h.Range.Start, h.Range.End)
+		}
+		switch h.Kind {
+		case HintReading:
+			if h.Text == "" {
+				return nil, fmt.Errorf("textnorm: reading hint %d has empty text", i)
+			}
+		case HintSemantic:
+			if !knownSemanticKinds[h.Semantic] {
+				return nil, fmt.Errorf("textnorm: unknown semantic hint %q", h.Semantic)
+			}
+		}
+		if overlapsAny(h.Range, protected) {
+			return nil, fmt.Errorf("textnorm: hint [%d,%d) overlaps protected range", h.Range.Start, h.Range.End)
+		}
+		for j := 0; j < i; j++ {
+			if overlapsAny(h.Range, []Range{hints[j].Range}) {
+				return nil, fmt.Errorf("textnorm: hints %d and %d overlap", j, i)
+			}
+		}
+	}
+	return hints, nil
+}
+
+func semanticHintFor(c Candidate, hints []Hint) (SemanticKind, bool) {
+	for _, h := range hints {
+		if h.Kind == HintSemantic && overlapsAny(c.Src, []Range{h.Range}) {
+			return h.Semantic, true
+		}
+	}
+	return "", false
+}
+
+func selectedRanges(selected []Candidate) []Range {
+	ranges := make([]Range, len(selected))
+	for i, s := range selected {
+		ranges[i] = s.Src
+	}
+	return ranges
 }
 
 func selectCandidates(candidates []Candidate, protected []Range) ([]Candidate, []Diagnostic) {
