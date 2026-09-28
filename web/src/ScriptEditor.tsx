@@ -891,10 +891,6 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
       onMouseUp={rememberCaret}
       onMouseMove={handleTooltipMove}
       onMouseLeave={() => onTooltip(null)}
-      onMouseDown={(event) => {
-        const hit = (event.target as HTMLElement).closest('.pronunciation-hit');
-        if (hit) event.preventDefault();
-      }}
       onBeforeInput={handleBeforeInput}
       onInput={(event) => {
         const selection = getEditableSelection(rootRef.current);
