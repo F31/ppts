@@ -1,5 +1,6 @@
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePolling } from '../hooks/usePolling';
 import {
   ConnectError,
   createDictionary,
@@ -46,6 +47,7 @@ import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import { useDialogA11y } from '../a11y';
 
 type SlidesState =
@@ -84,37 +86,8 @@ const genActiveStates = [
   'JOB_STATE_UNKNOWN_PROVIDER_RESULT'
 ];
 
-function manifestMatchesSlides(manifest: PlaybackManifest, slides: SlideSummary[]): boolean {
-  const allowed = new Set(slides.map((slide) => slide.slideId));
-  try {
-    const timeline = JSON.parse(manifest.timelineJson) as { slides?: Array<{ slideId?: string }> };
-    return (timeline.slides ?? []).every((slide) => Boolean(slide.slideId && allowed.has(slide.slideId)));
-  } catch {
-    return false;
-  }
-}
-
-// jobRevisionNo 从任务快照里取源版本号（配音任务快照含 revisionNo）。取不到返回 0。
-// 用于把"正在生成语音"的状态限定到当前展示的版本，避免别的版本在生成时影响本版本的讲稿栏。
-function jobRevisionNo(job: Job): number {
-  try {
-    const snap = JSON.parse(job.inputSnapshot) as { revisionNo?: number | string };
-    return Number(snap.revisionNo) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-const scriptModeOptions: Array<{ value: ScriptMode; labelKey: string; descKey: string }> = [
-  { value: 'SCRIPT_MODE_ORIGINAL', labelKey: 'editor.modes.original', descKey: 'editor.modes.originalDesc' },
-  { value: 'SCRIPT_MODE_POLISH', labelKey: 'editor.modes.polish', descKey: 'editor.modes.polishDesc' },
-  { value: 'SCRIPT_MODE_AI_GENERATED', labelKey: 'editor.modes.ai', descKey: 'editor.modes.aiDesc' }
-];
-
-const modeLabel = (mode: ScriptMode | undefined, t: (key: string) => string) =>
-  t(scriptModeOptions.find((item) => item.value === mode)?.labelKey ?? 'editor.modes.original');
-
-const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+// 纯函数助手（manifestMatchesSlides / jobRevisionNo / modeLabel / scriptModeOptions / sleep）
+// 抽到 ./projectEditor/helpers，避免编辑器主文件膨胀、便于单测。
 
 const devNarrationVoiceID = 'fake-voice-1';
 
@@ -540,11 +513,8 @@ export function ProjectEditor({
     }
   }, [identity, projectId, refreshNarrationManifest]);
 
-  useEffect(() => {
-    void refreshActiveGenJobs();
-    const timer = window.setInterval(() => void refreshActiveGenJobs(), 5000);
-    return () => window.clearInterval(timer);
-  }, [refreshActiveGenJobs]);
+  // 统一轮询 hook：页面隐藏暂停 + 失败指数退避。挂载即补一次，之后每 5s。
+  usePolling(() => void refreshActiveGenJobs(), { intervalMs: 5000 });
 
   // 先于数据请求同步"当前查看的源版本"：讲稿/来源/配音按 (源版本, slide_id) 隔离，
   // 版本切换后所有请求都必须携带新版本，否则会读写到别的版本（slide_id 跨版本会重复）。
@@ -751,22 +721,14 @@ export function ProjectEditor({
     if (saved) setOneDraftJobId(saved);
   }, [oneDraftStorageKey]);
 
+  // oneDraft 进度轮询由统一轮询 hook 驱动（页面隐藏暂停 + 失败指数退避）；
+  // 任务达终态时通过 oneDraftPolling.stop() 主动停止。refresh 存进 ref 供 hook 调用。
+  const oneDraftRefreshRef = useRef<() => Promise<void>>(() => Promise.resolve());
   useEffect(() => {
     if (!oneDraftJobId) return;
     let cancelled = false;
-    // 任务到达终态后必须停止轮询：此前定时器会一直跑（每 2s 一次 getJob + 全量 getScript），
-    // 页面停留越久请求越多；新增的逐页结果读取也会被后续 tick 反复覆写。
-    let stopped = false;
-    let timer: number | undefined;
     // 进度前进时增量刷新讲稿：让已完成的页**边跑边显示**，而不是整任务结束后才出现。
     let lastPct = -1;
-    const stopPolling = () => {
-      stopped = true;
-      if (timer !== undefined) {
-        window.clearInterval(timer);
-        timer = undefined;
-      }
-    };
     const total = slidesState.mode === 'real' ? slidesState.slides.length : 0;
     const refresh = async () => {
       try {
@@ -775,7 +737,7 @@ export function ProjectEditor({
         const pct = Math.max(0, Math.min(100, job.progressPercent || 0));
         const done = total > 0 ? Math.round((pct / 100) * total) : pct;
         if (job.state === 'JOB_STATE_SUCCEEDED') {
-          stopPolling();
+          oneDraftPolling.stop();
           setOneDraftRunning(false);
           setOneDraftProgress({ done: total || 100, total: total || 100, message: t('editor.oneDraftProgressComplete', { total: total || 100 }) });
           // 逐页结果：进度百分比只说明"跑完了"，跳过与降级的页都不会体现在百分比里。
@@ -818,7 +780,7 @@ export function ProjectEditor({
           return;
         }
         if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
-          stopPolling();
+          oneDraftPolling.stop();
           setOneDraftRunning(false);
           setOneDraftProgress({ done, total: total || 100, message: friendlyOneDraftError(job.lastError?.message || '') });
           return;
@@ -850,13 +812,17 @@ export function ProjectEditor({
         if (!cancelled) setOneDraftProgress((current) => ({ ...current, message: friendlyOneDraftError(error instanceof Error ? error.message : '') }));
       }
     };
-    void refresh();
-    if (!stopped) timer = window.setInterval(() => { if (!stopped) void refresh(); }, 2000);
+    oneDraftRefreshRef.current = refresh;
     return () => {
       cancelled = true;
-      stopPolling();
     };
   }, [identity, oneDraftJobId, projectId, slidesState, t]);
+
+  // 统一轮询 hook 驱动 oneDraft 进度刷新：enabled 随任务是否存在启停，隐藏暂停 + 失败退避。
+  const oneDraftPolling = usePolling(() => void oneDraftRefreshRef.current(), {
+    intervalMs: 2000,
+    enabled: oneDraftJobId != null,
+  });
 
   // 提交通道：**按传入的 slideId** 提交（不再闭包 activeSlideID）——
   // 提交在途时用户可能已切页，原页在途期间的编辑仍须能落库（R-13，见 ScriptEditor 草案表）。

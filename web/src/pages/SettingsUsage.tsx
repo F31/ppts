@@ -3,6 +3,8 @@ import { getPolicy, getQuota, getStorageUsage, getUsage, type ClientIdentity } f
 import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import { can } from '../permissions';
+import { LoadFailure } from '../components/LoadFailure';
+import { EmptyState } from '../components/EmptyState';
 import type { Role, StorageUsage, TenantPolicy, TenantQuota, TenantUsage } from '../types';
 
 // 后端走 Protobuf-JSON：int64 字段编码为字符串，且零值字段会被省略（undefined）。
@@ -104,10 +106,7 @@ export function SettingsUsage({ identity, role }: { identity: ClientIdentity; ro
       {/* A26：核心区失败必须给原因 + 重试。此前 coreError 只被赋值、从未渲染，
           配额/用量拉不到时指标卡只剩一排「—」，用户只能理解为"平台没这个数"。 */}
       {coreError && (
-        <div className="load-failure" role="alert">
-          <p className="form-error">{coreError}</p>
-          <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
-        </div>
+        <LoadFailure error={coreError} onRetry={() => void load()} retryLabel={t('common.retry')} />
       )}
 
       <section className="stat-grid" aria-label={t('usage.title')}>
@@ -133,12 +132,9 @@ export function SettingsUsage({ identity, role }: { identity: ClientIdentity; ro
           <h2>{t('usage.storageTitle')}</h2>
         </header>
         {storageError ? (
-          <div className="load-failure" role="alert">
-            <p className="form-error">{storageError}</p>
-            <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
-          </div>
+          <LoadFailure error={storageError} onRetry={() => void load()} retryLabel={t('common.retry')} />
         ) : !storage ? (
-          <p className="empty-state">{t('usage.storageUnavailable')}</p>
+          <EmptyState message={t('usage.storageUnavailable')} />
         ) : (
           <table className="data-table">
             <thead>
@@ -167,12 +163,9 @@ export function SettingsUsage({ identity, role }: { identity: ClientIdentity; ro
           <h2>{t('usage.policyTitle')}</h2>
         </header>
         {policyError ? (
-          <div className="load-failure" role="alert">
-            <p className="form-error">{policyError}</p>
-            <button type="button" onClick={() => void load()}>{t('common.retry')}</button>
-          </div>
+          <LoadFailure error={policyError} onRetry={() => void load()} retryLabel={t('common.retry')} />
         ) : !policy ? (
-          <p className="empty-state">{t('usage.policyUnavailable')}</p>
+          <EmptyState message={t('usage.policyUnavailable')} />
         ) : (
           <dl className="detail-grid">
             <div>

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { usePolling } from '../hooks/usePolling';
 import {
   cancelJob,
   getJobDetail,
@@ -19,6 +20,7 @@ import {
 import { describeApiError, settle } from '../apiError';
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
+import { LoadFailure } from '../components/LoadFailure';
 import { jobKindKey, jobScopeKindKey, jobStateKey, jobStepStateKey, jobStepTypeKey, type Job, type JobState, type Project } from '../types';
 
 const activeStates: JobState[] = [
@@ -223,11 +225,9 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
   }, []);
 
   // 每 5 秒轮询活跃任务（后台压低频率由文档说明，这里统一 5s）。WatchEvents 流优先，此为断线兜底。
-  useEffect(() => {
-    if (!allJobs.some((job) => activeStates.includes(job.state))) return;
-    const timer = window.setInterval(() => void refreshLoaded(), 5000);
-    return () => window.clearInterval(timer);
-  }, [allJobs, refreshLoaded]);
+  // 统一轮询 hook：页面隐藏时暂停、失败指数退避；无活跃任务（enabled=false）时不持有定时器。
+  const hasActiveJobs = allJobs.some((job) => activeStates.includes(job.state));
+  usePolling(() => void refreshLoaded(), { intervalMs: 5000, enabled: hasActiveJobs });
 
   // 接入 WatchEvents 服务端流：按项目维度开流，逐条合并更新；任一项目流失败则按 seq 续接重连（最多 3 次），
   // 仍失败则彻底回退到上面的 5s 轮询（断线回退轮询）。无活跃任务时不持有流。
@@ -499,12 +499,7 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
 
         {/* 范围读取失败：显式报错 + 重试，不把失败渲染成空白单元格（A26）。 */}
         {extrasError && (
-          <div className="load-failure" role="alert">
-            <p className="form-error">{extrasError}</p>
-            <button type="button" onClick={() => void loadExtras()}>
-              {t('common.retry')}
-            </button>
-          </div>
+          <LoadFailure error={extrasError} onRetry={() => void loadExtras()} retryLabel={t('common.retry')} />
         )}
 
         {loading && currentJobs.length === 0 ? (
@@ -668,12 +663,7 @@ function JobDetailPanel({
       </header>
 
       {loadError && (
-        <div className="load-failure" role="alert">
-          <p className="form-error">{loadError}</p>
-          <button type="button" onClick={onRetryLoad}>
-            {t('common.retry')}
-          </button>
-        </div>
+        <LoadFailure error={loadError} onRetry={onRetryLoad} retryLabel={t('common.retry')} />
       )}
 
       <dl className="detail-grid">
