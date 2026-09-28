@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"expvar"
 	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -181,6 +183,14 @@ func runWorker() error {
 		startBackgroundLoops(ctx, stores, objects, auditStore, stdLogger)
 	}
 
+	// worker 进程单独暴露指标（影子分歧等计数在 worker 进程内自增；
+	// api 的 /metrics 只反映 api 进程自身 expvar，看不到 worker 侧取值）。
+	// 默认关闭；显式设置 PPTS_WORKER_METRICS_ADDR（如 127.0.0.1:8081）才监听，
+	// 与 /metrics 的唯一准入一致：PPTS_METRICS_TOKEN 的 Bearer（fail-closed）。
+	if addr := strings.TrimSpace(os.Getenv("PPTS_WORKER_METRICS_ADDR")); addr != "" {
+		go serveWorkerMetrics(addr, stdLogger)
+	}
+
 	// 任务级并发：单进程内跑 N 个执行循环（领取已加进程内互斥，处理仍并发）。
 	// 默认 2：让「一键成稿」与「配音」等任务可并行，而不是排队；SQLite 单写者可调小到 1。
 	workerConcurrency := envInt("PPTS_WORKER_CONCURRENCY", 2)
@@ -216,6 +226,33 @@ func runWorker() error {
 		return runErr
 	}
 	return nil
+}
+
+// serveWorkerMetrics 在 worker 进程内暴露受 PPTS_METRICS_TOKEN 保护的指标端点。
+// 进程隔离：worker 侧 expvar（含 ppts_textnorm_shadow_diff_total 等）只有本进程能读，
+// 单独监听是让「生产影子分歧」这类 worker 内部计数可被采集的唯一途径。
+// 失败静默记录一行日志（不阻塞主流程），与守护进程重启策略配合自动恢复。
+func serveWorkerMetrics(addr string, stdLogger *log.Logger) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		if !observability.MetricsTokenOK(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		observability.PrometheusHandler().ServeHTTP(w, r)
+	})
+	mux.HandleFunc("GET /debug/vars", func(w http.ResponseWriter, r *http.Request) {
+		if !observability.MetricsTokenOK(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		expvar.Handler().ServeHTTP(w, r)
+	})
+	srv := &http.Server{Addr: addr, Handler: mux}
+	stdLogger.Printf("worker metrics listening on %s", addr)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		stdLogger.Printf("worker metrics server: %v", err)
+	}
 }
 
 // startBackgroundLoops 启动 PostgreSQL 控制面后台循环（保留清理/审计归档/存储生命周期）。

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/subtle"
 	"expvar"
 	"io/fs"
 	"log"
@@ -329,18 +328,14 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	return mux
 }
 
-// metricsTokenOK 校验请求携带的 Bearer token 与 PPTS_METRICS_TOKEN 一致。
+// metricsTokenOK 复用 observability.MetricsTokenOK（fail-closed；未配置 token 一律拒绝）。
 //
-// **未配置 token 时返回 false**（与旧实现相反）：旧行为把"忘记配置"当成"内网放行"，
-// 于是最常见的部署形态恰恰是裸露的那一档。需要内网匿名抓取时应由反向代理承担鉴权，
-// 而不是让默认值替运维做决定——这与 Phase 0 的 fail-closed 原则一致。
+// 与旧行为相反：旧实现把"忘记配置"当成"内网放行"，于是最常见的部署形态恰恰是裸露的
+// 那一档。需要内网匿名抓取时应由反向代理承担鉴权，而不是让默认值替运维做决定——
+// 这与 Phase 0 的 fail-closed 原则一致。server / worker 两进程共用同一判定，
+// 避免各自进程内的 expvar 指标口径漂移。
 func metricsTokenOK(r *http.Request) bool {
-	tok := strings.TrimSpace(os.Getenv("PPTS_METRICS_TOKEN"))
-	if tok == "" {
-		return false
-	}
-	got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	return subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1
+	return observability.MetricsTokenOK(r)
 }
 
 // pprofEnabled 指示是否挂载 Go 运行时诊断端点。
