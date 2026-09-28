@@ -800,6 +800,7 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
 }>(function SegmentRichTextEditor({ value, readOnly, rules, tooltipPrefix, onTooltip, onFocus, onCaretChange, onChange, onCompositionStart, onCompositionEnd }, ref) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const pendingCaretRef = useRef<number | null>(null);
+  const lastCaretRef = useRef(0);
 
   useImperativeHandle(ref, () => ({
     focus: () => rootRef.current?.focus(),
@@ -810,14 +811,16 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
 
   useLayoutEffect(() => {
     renderHighlightedDOM(rootRef.current, value, rules, tooltipPrefix);
-    if (pendingCaretRef.current === null) return;
-    const pos = pendingCaretRef.current;
+    const pos = pendingCaretRef.current ?? lastCaretRef.current;
     pendingCaretRef.current = null;
-    setEditableSelection(rootRef.current, pos, pos);
+    const clamped = Math.max(0, Math.min(pos, value.length));
+    lastCaretRef.current = clamped;
+    setEditableSelection(rootRef.current, clamped, clamped);
   }, [value, rules, tooltipPrefix]);
 
   const rememberCaret = () => {
     const selection = getEditableSelection(rootRef.current);
+    lastCaretRef.current = selection.start;
     onCaretChange(selection.start);
     return selection;
   };
@@ -828,6 +831,7 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
     const next = value.slice(0, start) + replacement + value.slice(end);
     const caret = start + replacement.length;
     pendingCaretRef.current = caret;
+    lastCaretRef.current = caret;
     onCaretChange(caret);
     onChange(next);
   };
@@ -894,12 +898,15 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
       onInput={(event) => {
         const selection = getEditableSelection(rootRef.current);
         pendingCaretRef.current = selection.start;
+        lastCaretRef.current = selection.start;
         onCaretChange(selection.start);
         onChange(event.currentTarget.textContent ?? '');
       }}
       onCompositionStart={onCompositionStart}
       onCompositionEnd={(event) => {
-        pendingCaretRef.current = getEditableSelection(rootRef.current).start;
+        const selection = getEditableSelection(rootRef.current);
+        pendingCaretRef.current = selection.start;
+        lastCaretRef.current = selection.start;
         onCompositionEnd();
         onChange(event.currentTarget.textContent ?? '');
       }}
