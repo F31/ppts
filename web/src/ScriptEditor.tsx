@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 import { useI18n } from './i18n';
 import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import type { RewriteAction } from './api';
@@ -821,6 +821,42 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
     return selection;
   };
 
+  const applyPlainEdit = (selection: { start: number; end: number }, replacement: string) => {
+    const start = Math.max(0, Math.min(selection.start, selection.end, value.length));
+    const end = Math.max(0, Math.min(Math.max(selection.start, selection.end), value.length));
+    const next = value.slice(0, start) + replacement + value.slice(end);
+    const caret = start + replacement.length;
+    pendingCaretRef.current = caret;
+    onCaretChange(caret);
+    onChange(next);
+  };
+
+  const handleBeforeInput = (event: FormEvent<HTMLDivElement>) => {
+    const native = event.nativeEvent as InputEvent;
+    const selection = getEditableSelection(rootRef.current);
+    if (native.inputType === 'deleteContentBackward') {
+      event.preventDefault();
+      if (selection.start !== selection.end) applyPlainEdit(selection, '');
+      else if (selection.start > 0) applyPlainEdit({ start: selection.start - 1, end: selection.end }, '');
+      return;
+    }
+    if (native.inputType === 'deleteContentForward') {
+      event.preventDefault();
+      if (selection.start !== selection.end) applyPlainEdit(selection, '');
+      else if (selection.end < value.length) applyPlainEdit({ start: selection.start, end: selection.end + 1 }, '');
+      return;
+    }
+    if (native.inputType === 'insertParagraph' || native.inputType === 'insertLineBreak') {
+      event.preventDefault();
+      applyPlainEdit(selection, '\n');
+      return;
+    }
+    if (native.inputType === 'insertText' && native.data !== null) {
+      event.preventDefault();
+      applyPlainEdit(selection, native.data);
+    }
+  };
+
   return (
     <div
       ref={rootRef}
@@ -837,6 +873,7 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
       onClick={rememberCaret}
       onKeyUp={rememberCaret}
       onMouseUp={rememberCaret}
+      onBeforeInput={handleBeforeInput}
       onInput={(event) => {
         const selection = getEditableSelection(rootRef.current);
         pendingCaretRef.current = selection.start;
