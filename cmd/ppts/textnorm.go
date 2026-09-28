@@ -11,7 +11,6 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pronunciation"
-	"github.com/F31/ppts/internal/textnorm"
 )
 
 // textNormEnabled 是 TTS 文本规范化引擎的显式开关（V2.8 §5/§7.4）。
@@ -26,8 +25,8 @@ func textNormEnabled() bool {
 }
 
 // appTextNorm 实现 app.NarrationTextNorm：按 (租户, 语言) 构建引擎。
-// 词典合并（租户优先 + 平台种子兜底）与异常空信号在 app.NewTextNormShadowEngine 内完成。
-// 主引擎切换后（V3.1），候选引擎（模块 textnorm）负责输出与缓存键；
+// 词典合并（租户优先 + 平台种子兜底）与异常空信号在 app.NewTextNormEngine 内完成。
+// V3.1 后模块 textnorm 负责输出与缓存键；
 // 上下文替换规则（M5 数据驱动）随引擎总开关启用，加载租户+平台生效行。
 type appTextNorm struct {
 	store        app.TextNormDictStore
@@ -47,17 +46,16 @@ func (a appTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.E
 	if a.contextRules != nil {
 		opts = append(opts, app.TextNormOptions{ContextRules: a.contextRules})
 	}
-	engine, _, err := app.NewTextNormShadowEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
-	return engine, err
+	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
 }
 
 // numberModeOption 依据环境变量返回数值规则装配选项；未设置或非法时返回零值（不注册）。
 func numberModeOption() app.TextNormOptions {
 	switch os.Getenv("PPTS_TEXT_NORM_NUMBERS") {
 	case "quantity":
-		return app.TextNormOptions{NumberMode: ptr(textnorm.NumberModeQuantity)}
+		return app.TextNormOptions{NumberMode: ptr(newtn.NumberModeQuantity)}
 	case "year":
-		return app.TextNormOptions{NumberMode: ptr(textnorm.NumberModeYear)}
+		return app.TextNormOptions{NumberMode: ptr(newtn.NumberModeYear)}
 	default:
 		return app.TextNormOptions{}
 	}
@@ -95,33 +93,3 @@ func (textNormMetricsAdapter) OnDictEvent(_ context.Context, name string) {
 
 // compile-time assertion：store 满足窄接口（由 compose.go 装配的 pronunciation.Store 提供）。
 var _ app.TextNormDictStore = (pronunciation.Store)(nil)
-
-// textNormShadowEnabled 是影子比较观测开关（V3.1 §14.3）。默认关闭；
-// 仅当文本规范化总开关启用且本开关也启用时才接入（影子不改变输出）。
-func textNormShadowEnabled() bool {
-	switch os.Getenv("PPTS_TEXTNORM_SHADOW") {
-	case "true", "1":
-		return true
-	default:
-		return false
-	}
-}
-
-// appShadowTextNorm 实现 app.NarrationShadowTextNorm：用与主引擎相同的持久化配置
-// 构建旧引擎（internal/textnorm）作为影子，仅用于输出差异观测（V3.1 §14.3）。
-type appShadowTextNorm struct {
-	store        app.TextNormDictStore
-	contextRules app.TextNormContextRuleStore
-	logger       *slog.Logger
-}
-
-var _ app.NarrationShadowTextNorm = appShadowTextNorm{}
-
-// Build 实现 NarrationShadowTextNorm：加载词典并按同一元数据装配旧引擎。
-func (a appShadowTextNorm) Build(ctx context.Context, tenantID, lang string) (*textnorm.Engine, error) {
-	opts := []app.TextNormOptions{numberModeOption(), classesOption()}
-	if a.contextRules != nil {
-		opts = append(opts, app.TextNormOptions{ContextRules: a.contextRules})
-	}
-	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
-}

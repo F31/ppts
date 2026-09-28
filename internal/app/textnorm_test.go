@@ -14,7 +14,6 @@ import (
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pronunciation"
-	"github.com/F31/ppts/internal/textnorm"
 	newtn "github.com/F31/textnorm"
 )
 
@@ -83,18 +82,7 @@ type staticTextNorm struct {
 }
 
 func (s staticTextNorm) Build(ctx context.Context, _, lang string) (*newtn.Engine, error) {
-	engine, _, err := NewTextNormShadowEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger, s.opts...)
-	return engine, err
-}
-
-type staticShadowTextNorm struct {
-	meta   TextNormDictStore
-	logger *slog.Logger
-	opts   []TextNormOptions
-}
-
-func (s staticShadowTextNorm) Build(ctx context.Context, _, lang string) (*textnorm.Engine, error) {
-	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, true, nil, s.logger, s.opts...)
+	return NewTextNormEngine(ctx, s.meta, "tenant-1", lang, s.seed, s.metrics, s.logger, s.opts...)
 }
 
 func segmentsWithMarkers() []*narration.Segment {
@@ -199,10 +187,18 @@ func TestTextNormTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("engine B: %v", err)
 	}
-	if gotA := egA.Run("SECRET", "zh-CN").Text; gotA != "A词" {
+	resA, err := egA.Normalize(context.Background(), newtn.Request{Text: "SECRET", Lang: "zh-CN", LegacyMarkup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotA := resA.Text; gotA != "A词" {
 		t.Fatalf("tenant A should substitute: %q", gotA)
 	}
-	if gotB := egB.Run("SECRET", "zh-CN").Text; gotB != "SECRET" {
+	resB, err := egB.Normalize(context.Background(), newtn.Request{Text: "SECRET", Lang: "zh-CN", LegacyMarkup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotB := resB.Text; gotB != "SECRET" {
 		t.Fatalf("tenant B must NOT see tenant A rule: %q", gotB)
 	}
 }
@@ -250,7 +246,11 @@ func TestTextNormPlatformSeedFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
-	if got := eg.Run("CUDA 并行", "zh-CN").Text; got != "库达 并行" {
+	res, err := eg.Normalize(context.Background(), newtn.Request{Text: "CUDA 并行", Lang: "zh-CN", LegacyMarkup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Text; got != "库达 并行" {
 		t.Fatalf("platform fallback: got %q", got)
 	}
 }
@@ -262,7 +262,7 @@ func TestTextNormNumberModeE2E(t *testing.T) {
 		&narration.Segment{SegmentID: "seg-1", DisplayText: "2024 年发布", SpokenText: "2024 年发布"},
 	)}
 	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
-	qty := textnorm.NumberModeQuantity
+	qty := newtn.NumberModeQuantity
 	steps := &stepRecorder{}
 	objects := objectstore.NewLocal(t.TempDir(), nil)
 	provider := &captureTTSProvider{testTTSProvider: *providerForTests()}
@@ -303,7 +303,7 @@ func TestTextNormNumberModeE2E(t *testing.T) {
 // 处理（优先级 11-15 < 20），不被 number 先吞掉数字而破坏类别（V3.0 §2.2 优先级编排）。
 func TestTextNormClassesWithNumberCompose(t *testing.T) {
 	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
-	qty := textnorm.NumberModeQuantity
+	qty := newtn.NumberModeQuantity
 	eg, err := NewTextNormEngine(context.Background(), meta, "tenant-1", "zh-CN", true, nil, nil,
 		TextNormOptions{NumberMode: &qty, Classes: []string{"percent", "date", "money", "unit"}},
 	)
@@ -314,11 +314,15 @@ func TestTextNormClassesWithNumberCompose(t *testing.T) {
 		{"2024/03/15 上线", "二零二四年三月十五日 上线"},
 		{"同比增长 6.3%", "同比增长 百分之六点三"},
 		{"营收 ¥250", "营收 人民币二百五十"},
-		{"重达 25kg", "重达 二十五kg"},
+		{"重达 25kg", "重达 二十五千克"},
 		{"涨价到 2024 年", "涨价到 二千零二十四 年"}, // 裸整数仍由 number 兜底
 	}
 	for _, c := range cases {
-		got := eg.Run(c.in, "zh-CN").Text
+		res, err := eg.Normalize(context.Background(), newtn.Request{Text: c.in, Lang: "zh-CN", LegacyMarkup: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := res.Text
 		if got != c.want {
 			t.Errorf("compose Run(%q) = %q want %q", c.in, got, c.want)
 		}
@@ -348,7 +352,11 @@ func TestTextNormContextRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("engine: %v", err)
 	}
-	if got := eg.Run("增长 12%", "zh-CN").Text; got != "增长 百分之12" {
+	res, err := eg.Normalize(ctx, newtn.Request{Text: "增长 12%", Lang: "zh-CN", LegacyMarkup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.Text; got != "增长 百分之12" {
 		t.Fatalf("context rule = %q, want %q", got, "增长 百分之12")
 	}
 
@@ -364,10 +372,15 @@ func TestTextNormContextRules(t *testing.T) {
 
 // TestTextNormToSpeechControlPauses 停顿事件 → SpeechControl.Pauses 映射。
 func TestTextNormToSpeechControlPauses(t *testing.T) {
-	eg := textnorm.New()
-	eg.Build()
-	res := eg.Run("AB‖CD", "zh-CN")
-	pauses := ToSpeechControlPauses(res.Pauses)
+	eg, err := newtn.Compile(newtn.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := eg.Normalize(context.Background(), newtn.Request{Text: "AB‖CD", Lang: "zh-CN", LegacyMarkup: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pauses := ToControlsPauses(res.Controls)
 	if len(pauses) != 1 || pauses[0].AfterChars != 2 || pauses[0].DurationMS != 300 {
 		t.Fatalf("pauses = %+v", pauses)
 	}
@@ -480,38 +493,30 @@ func readTimelineBundle(t *testing.T, objects objectstore.ObjectStore, steps *st
 	return &bundle
 }
 
-// TestNewTextNormShadowEngine 影子引擎与旧引擎共用同一持久化配置：词典规则生效。
-func TestNewTextNormShadowEngine(t *testing.T) {
+// TestNewTextNormEngineDictRule 模块引擎使用同一持久化配置：词典规则生效。
+func TestNewTextNormEngineDictRule(t *testing.T) {
 	meta := &textNormStoreStub{platform: pronunciation.Rules{{Pattern: "CUDA", Replacement: "库达", Enabled: true}}}
-	eg, notice, err := NewTextNormShadowEngine(context.Background(), meta, "tenant-1", "zh-CN", true, nil, nil)
+	eg, err := NewTextNormEngine(context.Background(), meta, "tenant-1", "zh-CN", true, nil, nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(notice) != 0 {
-		t.Fatalf("notice = %v, want empty", notice)
 	}
 	res, err := eg.Normalize(context.Background(), newtn.Request{Text: "CUDA 并行", LegacyMarkup: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Text != "库达 并行" {
-		t.Fatalf("shadow dict text = %q", res.Text)
+		t.Fatalf("dict text = %q", res.Text)
 	}
 }
 
-// TestTextNormShadowNoOutputChange 注入一个必分歧的影子引擎后，TTS 输出仍以旧引擎
-// 为准（V3.1 §14.3 安全性质：影子只观测，不改 effectiveText / 缓存键）。
-// 制造分歧：数量位读(number, prio20) 与上下文规则(context, prio20) 同时命中"2024年"。
-// 主引擎切换后（V3.1）：候选引擎（模块 textnorm）负责输出 → "二零二四年发布"；
-// 旧引擎（internal/textnorm）退为影子观测，不参与输出与缓存键。
-// 级联差异备注：旧引擎级联时 number 先展开为"二千零二十四年"，context 的"2024年"
-// 随之不再命中；候选引擎非级联：同 start 同 priority 下较长 context 候选胜出。
-func TestTextNormShadowNoOutputChange(t *testing.T) {
+// TestTextNormContextWinsSamePriority 确认模块引擎非级联：同 start/priority 下较长 context
+// 候选胜出，输出进入 TTS 与缓存键。
+func TestTextNormContextWinsSamePriority(t *testing.T) {
 	store := &narrationStoreStub{revision: approvedRevision(
 		&narration.Segment{SegmentID: "seg-1", DisplayText: "2024年发布", SpokenText: "2024年发布"},
 	)}
 	meta := &textNormStoreStub{platform: pronunciation.Rules{}}
-	qty := textnorm.NumberModeQuantity
+	qty := newtn.NumberModeQuantity
 	ctxRules := &textNormContextRuleStub{recs: []*contextrule.Record{
 		{ID: "c1", Pattern: "2024年", Replacement: "二零二四年", Priority: 20, Enabled: true},
 	}}
@@ -521,11 +526,6 @@ func TestTextNormShadowNoOutputChange(t *testing.T) {
 	handler := NewNarrationHandler(store, steps, objects, provider)
 	handler = handler.WithTextNorm(staticTextNorm{
 		meta: meta, seed: true,
-		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
-		opts:   []TextNormOptions{{NumberMode: &qty, ContextRules: ctxRules}},
-	})
-	handler = handler.WithTextNormShadow(staticShadowTextNorm{
-		meta:   meta,
 		logger: slog.New(slog.NewTextHandler(&discardWriter{}, nil)),
 		opts:   []TextNormOptions{{NumberMode: &qty, ContextRules: ctxRules}},
 	})

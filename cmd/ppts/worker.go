@@ -131,10 +131,6 @@ func runWorker() error {
 	if textNormEnabled() {
 		logger.Info("textnorm: enabling TTS text normalization engine")
 		narrationHandler = narrationHandler.WithTextNorm(appTextNorm{store: stores.pronunciation, contextRules: stores.contextRule, logger: logger})
-		if textNormShadowEnabled() {
-			logger.Info("textnorm: enabling shadow comparator (observation only, no output change)")
-			narrationHandler = narrationHandler.WithTextNormShadow(appShadowTextNorm{store: stores.pronunciation, contextRules: stores.contextRule, logger: logger})
-		}
 	}
 	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
 	mp4Encoder, err := media.NewMP4Encoder()
@@ -229,8 +225,8 @@ func runWorker() error {
 }
 
 // serveWorkerMetrics 在 worker 进程内暴露受 PPTS_METRICS_TOKEN 保护的指标端点。
-// 进程隔离：worker 侧 expvar（含 ppts_textnorm_shadow_diff_total 等）只有本进程能读，
-// 单独监听是让「生产影子分歧」这类 worker 内部计数可被采集的唯一途径。
+// 进程隔离：worker 侧 expvar（队列、TTS、文本规范化词典等）只有本进程能读，
+// 单独监听是让 worker 内部计数可被采集的唯一途径。
 // 失败静默记录一行日志（不阻塞主流程），与守护进程重启策略配合自动恢复。
 func serveWorkerMetrics(addr string, stdLogger *log.Logger) {
 	mux := http.NewServeMux()

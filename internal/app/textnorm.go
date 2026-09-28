@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	newtn "github.com/F31/textnorm"
@@ -11,8 +12,11 @@ import (
 	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/pronunciation"
-	"github.com/F31/ppts/internal/textnorm"
-	"github.com/F31/ppts/internal/textnormshadow"
+)
+
+const (
+	textNormProductionProfileName    = "ppts.v3.1"
+	textNormProductionProfileVersion = 1
 )
 
 // TextNormDictStore 是文本规范化词典所需的存储窄能力：租户规则 + 平台种子。
@@ -35,42 +39,11 @@ type TextNormContextRuleStore interface {
 	LoadAllEffective(ctx context.Context, tenantID string) ([]*contextrule.Record, error)
 }
 
-// DictAdapter 实现 textnorm.Dictionary：按 pronunciation.Rules 语义在普通 span 内替换。
-// 规则快照在构造时冻结；替换语义与既有 pronunciation.Apply 一致
-// （逐条 ReplaceAll、enabled=true 且 pattern 非空），保证黄金对比测试②逐字节可过。
-type DictAdapter struct {
-	rules pronunciation.Rules
-	lang  string
-}
-
-// NewDictAdapter 由合并后的规则集构造适配器。
-func NewDictAdapter(rules pronunciation.Rules, lang string) *DictAdapter {
-	return &DictAdapter{rules: rules, lang: lang}
-}
-
-// Substitute 实现 textnorm.Dictionary。
-func (a *DictAdapter) Substitute(lang, text string) (bool, string) {
-	if a == nil || len(a.rules) == 0 {
-		return false, text
-	}
-	changed := false
-	for _, rule := range a.rules {
-		if !rule.Enabled || rule.Pattern == "" {
-			continue
-		}
-		if strings.Contains(text, rule.Pattern) {
-			text = strings.ReplaceAll(text, rule.Pattern, rule.Replacement)
-			changed = true
-		}
-	}
-	return changed, text
-}
-
 // TextNormOptions 是文本规范化引擎的可选行为。
 type TextNormOptions struct {
 	// NumberMode 非 nil 时注册数值读法规则（V2.8 §3.4 优先级 20，N2 可选，默认不注册）。
 	// 数值展开会改 effectiveText（→ 音频缓存键）与显示字数（→ 触发 IndexMap 精确高亮）。
-	NumberMode *textnorm.NumberMode
+	NumberMode *newtn.NumberMode
 	// Classes 开启 PPT 高频声明式类别规则（V3.0 §2.2，默认空=仅标记+词典，零回退）。
 	// 取值："percent","decimal","date","money","unit"。
 	// 类别规则优先级 11-15，全部先于 NumberRule(20)，避免数字规则破坏日期/百分比/金额识别。
@@ -84,16 +57,16 @@ type TextNormOptions struct {
 
 // classPatterns 映射类别名 → 声明式 Pattern 构造器（V3.0 §2.2）。
 // 独立开关：装配方按 Classes 列表选择性注册，默认不注册（零回退）。
-var classPatterns = map[string]func() textnorm.Pattern{
-	"percent": textnorm.PercentPattern,
-	"decimal": textnorm.DecimalPattern,
-	"date":    textnorm.DatePattern,
-	"money":   textnorm.MoneyPattern,
-	"unit":    textnorm.UnitPattern,
+var classRules = map[string]func() newtn.CandidateRule{
+	"percent": newtn.ZHPercentRule,
+	"decimal": newtn.ZHDecimalRule,
+	"date":    func() newtn.CandidateRule { return newtn.ZHDateRule(newtn.ModeConvert) },
+	"money":   newtn.ZHMoneyRule,
+	"unit":    newtn.ZHUnitRule,
 }
 
 // loadMergedDictRules 加载并合并租户/平台词典，应用 R1 语义（错误可观测，不静默降空）。
-// 供旧引擎与影子引擎共用同一持久化配置（V3.1 §14.3）。
+// 供模块引擎构建使用。
 func loadMergedDictRules(ctx context.Context, store TextNormDictStore, tenantID string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger) (pronunciation.Rules, error) {
 	if store == nil {
 		return nil, fmt.Errorf("textnorm: nil dictionary store")
@@ -129,7 +102,7 @@ func loadMergedDictRules(ctx context.Context, store TextNormDictStore, tenantID 
 	return merged, nil
 }
 
-// NewTextNormEngine 按租户+语言构建冻结的文本规范化引擎。
+// NewTextNormEngine 按租户+语言构建冻结的模块文本规范化引擎。
 //
 // 语义（V2.8 §5.2 + §6，合并归属已拍板：只在 DictAdapter，不改 Store）：
 //   - 合并租户自定义规则（LoadTenantDefault，优先）与平台种子（LoadPlatformDefault，兜底）；
@@ -138,16 +111,23 @@ func loadMergedDictRules(ctx context.Context, store TextNormDictStore, tenantID 
 //   - expectedSeedNonEmpty=true 表示平台种子本应非空：若合并结果却为空 → R1 异常空信号；
 //   - 正常空（租户与平台均无规则）→ 返回不含词典规则的引擎（纯标记扫描），不报错。
 //
-// 返回的 Engine 已 Build() 冻结，可安全并发 Run。
-func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger, opts ...TextNormOptions) (*textnorm.Engine, error) {
+// 返回的 Engine 已由 Compile 冻结，可安全并发 Normalize。
+func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger, opts ...TextNormOptions) (*newtn.Engine, error) {
 	merged, err := loadMergedDictRules(ctx, store, tenantID, expectedSeedNonEmpty, metrics, logger)
 	if err != nil {
 		return nil, err
 	}
-
-	engine := textnorm.New()
+	var rules []newtn.CandidateRule
 	if len(merged) > 0 {
-		engine.RegisterRule("definition", 10, textnorm.DefinitionRule(NewDictAdapter(merged, lang)))
+		entries := make([]newtn.LiteralEntry, 0, len(merged))
+		for _, rule := range merged {
+			if rule.Enabled && rule.Pattern != "" {
+				entries = append(entries, newtn.LiteralEntry{Match: rule.Pattern, Replace: rule.Replacement, Whole: false})
+			}
+		}
+		if len(entries) > 0 {
+			rules = append(rules, newtn.LiteralDictRule("definition", 10, entries))
+		}
 	}
 	var opt TextNormOptions
 	if len(opts) > 0 {
@@ -156,13 +136,20 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 	// 类别规则（V3.0 §2.2）：按开关注册，全部先于 NumberRule 执行（优先级 11-15 < 20），
 	// 避免数字规则先吞日期/百分比/金额中的数字而破坏类别识别。
 	for _, c := range opt.Classes {
-		if fn, ok := classPatterns[c]; ok {
-			engine.RegisterPattern(fn())
+		if fn, ok := classRules[c]; ok {
+			rules = append(rules, fn())
 		}
 	}
 	if opt.NumberMode != nil {
-		engine.RegisterDigitRule("number", 20, textnorm.NumberRule(*opt.NumberMode))
+		rules = append(rules, newtn.ZHNumberRule(*opt.NumberMode))
 	}
+	// S4 规则默认装配：保护技术型号/版本串，电话逐位读，比分仅在 SemanticScore 提示下触发。
+	rules = append(rules,
+		newtn.TechnicalModelRule(),
+		newtn.ZHVersionPreserveRule(),
+		newtn.ZHTelephoneRule(),
+		newtn.ZHScoreRule(),
+	)
 	// 上下文替换规则（M5 数据驱动）：租户+平台生效行按 priority 注册为 ReplacementPattern。
 	// 加载失败 → 返回错误（R1：依赖不可用不退回成功）；非法 regexp 已由 API 层拦截，
 	// 但迁移/种子数据不可控，此处同样报错（不静默丢弃）。
@@ -171,44 +158,15 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 		if err != nil {
 			return nil, fmt.Errorf("textnorm: load contextual rules: %w", err)
 		}
-		for _, rec := range recs {
-			p, perr := textnorm.ReplacementPattern(rec.Pattern, rec.Replacement, rec.Priority)
+		for i, rec := range recs {
+			re, perr := regexp.Compile(rec.Pattern)
 			if perr != nil {
 				return nil, fmt.Errorf("textnorm: invalid contextual rule %q: %w", rec.ID, perr)
 			}
-			engine.RegisterPattern(p)
+			rules = append(rules, newtn.RegexRule{ID: fmt.Sprintf("context:%d", i), Category: "context", Priority: rec.Priority, Match: re, Replacement: rec.Replacement})
 		}
 	}
-	engine.Build()
-	return engine, nil
-}
-
-// NewTextNormShadowEngine 用与 NewTextNormEngine 相同的持久化配置构建影子引擎
-// （V3.1 §14.3 双轨观测）。影子只用于比较，不参与 TTS 输出；返回候选引擎与
-// 未覆盖能力 notice（如数字展开、money 类别）。
-func NewTextNormShadowEngine(ctx context.Context, store TextNormDictStore, tenantID, lang string, expectedSeedNonEmpty bool, metrics TextNormMetrics, logger *slog.Logger, opts ...TextNormOptions) (*newtn.Engine, []string, error) {
-	merged, err := loadMergedDictRules(ctx, store, tenantID, expectedSeedNonEmpty, metrics, logger)
-	if err != nil {
-		return nil, nil, err
-	}
-	shadowOpts := textnormshadow.Options{
-		Lang: lang,
-		Dict: textnormshadow.FromPronunciationRules(merged),
-	}
-	var opt TextNormOptions
-	if len(opts) > 0 {
-		opt = opts[0]
-	}
-	shadowOpts.Classes = opt.Classes
-	shadowOpts.NumberMode = opt.NumberMode
-	if opt.ContextRules != nil {
-		recs, err := opt.ContextRules.LoadAllEffective(ctx, tenantID)
-		if err != nil {
-			return nil, nil, fmt.Errorf("textnorm: load contextual rules: %w", err)
-		}
-		shadowOpts.Context = textnormshadow.FromContextRules(recs)
-	}
-	return textnormshadow.BuildNewEngine(shadowOpts)
+	return newtn.Compile(newtn.Config{Rules: rules, Profile: textNormProductionProfileName, ProfileVersion: textNormProductionProfileVersion})
 }
 
 // mergeDictRules 合并租户与平台规则：租户规则存在则整体采用租户（缺租户自定义时回退平台种子）。
@@ -217,16 +175,6 @@ func mergeDictRules(tenant, platform pronunciation.Rules) pronunciation.Rules {
 		return tenant
 	}
 	return platform
-}
-
-// ToSpeechControlPauses 把 textnorm 停顿事件映射为供应商结构化停顿。
-// AfterRunes 以 effectiveText（派生后朗读文本）为基准，与 tts.Pause.AfterChars 语义一致。
-func ToSpeechControlPauses(pauses []textnorm.Pause) []tts.Pause {
-	out := make([]tts.Pause, 0, len(pauses))
-	for _, p := range pauses {
-		out = append(out, tts.Pause{AfterChars: p.AfterRunes, DurationMS: p.DurationMS})
-	}
-	return out
 }
 
 // ToControlsPauses 把候选引擎（模块 textnorm）的 Control 事件映射为供应商结构化停顿。
