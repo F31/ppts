@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react';
-import type { FormEvent, ReactNode } from 'react';
+import type { FormEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useI18n } from './i18n';
 import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import type { RewriteAction } from './api';
@@ -809,11 +809,12 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
   }), [value]);
 
   useLayoutEffect(() => {
+    renderHighlightedDOM(rootRef.current, value, rules, tooltipPrefix);
     if (pendingCaretRef.current === null) return;
     const pos = pendingCaretRef.current;
     pendingCaretRef.current = null;
     setEditableSelection(rootRef.current, pos, pos);
-  }, [value, rules]);
+  }, [value, rules, tooltipPrefix]);
 
   const rememberCaret = () => {
     const selection = getEditableSelection(rootRef.current);
@@ -857,6 +858,16 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
     }
   };
 
+  const handleTooltipMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const hit = (event.target as HTMLElement).closest<HTMLElement>('.pronunciation-hit');
+    if (!hit || !rootRef.current?.contains(hit)) {
+      onTooltip(null);
+      return;
+    }
+    const text = hit.dataset.reading;
+    if (text) onTooltip({ text, x: event.clientX + 12, y: event.clientY + 12 });
+  };
+
   return (
     <div
       ref={rootRef}
@@ -873,6 +884,12 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
       onClick={rememberCaret}
       onKeyUp={rememberCaret}
       onMouseUp={rememberCaret}
+      onMouseMove={handleTooltipMove}
+      onMouseLeave={() => onTooltip(null)}
+      onMouseDown={(event) => {
+        const hit = (event.target as HTMLElement).closest('.pronunciation-hit');
+        if (hit) event.preventDefault();
+      }}
       onBeforeInput={handleBeforeInput}
       onInput={(event) => {
         const selection = getEditableSelection(rootRef.current);
@@ -886,9 +903,7 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
         onCompositionEnd();
         onChange(event.currentTarget.textContent ?? '');
       }}
-    >
-      {renderHighlightedText(value, rules, tooltipPrefix, onTooltip)}
-    </div>
+    />
   );
 });
 
@@ -913,40 +928,33 @@ function buildEffectivePronunciationRules(rules: PronunciationRule[], spokenText
   return out.sort((a, b) => b.pattern.length - a.pattern.length);
 }
 
-function renderHighlightedText(
-  text: string,
-  rules: EffectivePronunciationRule[],
-  tooltipPrefix: string,
-  setTooltip: (tooltip: { text: string; x: number; y: number } | null) => void,
-) {
-  if (!text) return <br />;
-  if (rules.length === 0) return text;
-  const nodes: ReactNode[] = [];
+function renderHighlightedDOM(root: HTMLElement | null, text: string, rules: EffectivePronunciationRule[], tooltipPrefix: string) {
+  if (!root) return;
+  if (!text) {
+    root.replaceChildren(document.createElement('br'));
+    return;
+  }
+  if (rules.length === 0) {
+    root.replaceChildren(document.createTextNode(text));
+    return;
+  }
+  const fragment = document.createDocumentFragment();
   let i = 0;
-  let key = 0;
   while (i < text.length) {
     const hit = rules.find((rule) => text.startsWith(rule.pattern, i));
     if (!hit) {
-      nodes.push(text[i]);
+      fragment.append(document.createTextNode(text[i]));
       i += 1;
       continue;
     }
-    nodes.push(
-      <mark
-        key={`p-${key++}`}
-        className={`pronunciation-hit ${hit.source}`}
-        data-reading={`${tooltipPrefix}${hit.replacement}`}
-        onMouseEnter={(event) => setTooltip({ text: `${tooltipPrefix}${hit.replacement}`, x: event.clientX + 12, y: event.clientY + 12 })}
-        onMouseMove={(event) => setTooltip({ text: `${tooltipPrefix}${hit.replacement}`, x: event.clientX + 12, y: event.clientY + 12 })}
-        onMouseLeave={() => setTooltip(null)}
-        onMouseDown={(event) => event.preventDefault()}
-      >
-        {hit.pattern}
-      </mark>
-    );
+    const mark = document.createElement('mark');
+    mark.className = `pronunciation-hit ${hit.source}`;
+    mark.dataset.reading = `${tooltipPrefix}${hit.replacement}`;
+    mark.textContent = hit.pattern;
+    fragment.append(mark);
     i += hit.pattern.length;
   }
-  return nodes;
+  root.replaceChildren(fragment);
 }
 
 function getEditableSelection(root: HTMLElement | null): { start: number; end: number } {
