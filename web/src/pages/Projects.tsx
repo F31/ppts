@@ -148,6 +148,10 @@ export function Projects({
   const pushNotice = (text: string) => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setNotices((current) => [...current, { id, text }].slice(-5));
+    // 通知是信息性提示，3 秒后自动消失，避免常驻遮挡列表。
+    window.setTimeout(() => {
+      setNotices((current) => current.filter((n) => n.id !== id));
+    }, 3000);
   };
 
   // 筛选/搜索/排序/分组/标签状态写回 URL（replaceState，不新增历史记录，刷新或分享链接可还原）。
