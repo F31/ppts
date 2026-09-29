@@ -151,8 +151,9 @@ func TestTableStatFacts(t *testing.T) {
 		TableCols: 3,
 	}
 	facts := factsFromStructuredShapes(parsedPage{SlideID: "slide-1", Shapes: []parsedShape{sh}}, "")
-	if len(facts) != 2 {
-		t.Fatalf("facts = %+v，want 2（容量/价格两列含数字；型号列 A100 非纯数字被跳过）", facts)
+	// 2 个范围事实 + 2 个排名事实（容量/价格各 1）。
+	if len(facts) != 4 {
+		t.Fatalf("facts = %+v，want 4（2 范围 + 2 排名）", facts)
 	}
 	byKind := map[string][]draftFact{}
 	for _, f := range facts {
@@ -177,8 +178,21 @@ func TestTableStatFacts(t *testing.T) {
 	if !strings.Contains(capFact.Value, "最小 80") || !strings.Contains(capFact.Value, "最大 256") {
 		t.Fatalf("容量列范围 = %q", capFact.Value)
 	}
-	// 型号列（首行是表头）也应为字符串列被跳过 → 实际只有 3 列里 3 列含数字？
-	// 型号/价格两列含数字（A100 不是数字、10000/15000/12000 是数字），见下方断言。
+	// 排名事实：容量列数值最大 H900（256）、最小 A100（80）。
+	if len(byKind["table_rank"]) != 2 {
+		t.Fatalf("table_rank facts = %+v", byKind["table_rank"])
+	}
+	rankText := strings.Join(func() []string {
+		out := make([]string, len(byKind["table_rank"]))
+		for i, f := range byKind["table_rank"] {
+			out[i] = f.Value
+		}
+		return out
+	}(), "\n")
+	if !strings.Contains(rankText, "数值最大的维度是「H900」（256）") ||
+		!strings.Contains(rankText, "数值最小的维度是「A100」（80）") {
+		t.Fatalf("排名事实缺容量列极值对应维度：%q", rankText)
+	}
 }
 
 // TestChartStatFacts 锁定图表确定性统计：每条系列产出「最小/最大」范围事实，
@@ -195,19 +209,27 @@ func TestChartStatFacts(t *testing.T) {
 		},
 	}
 	facts := factsFromStructuredShapes(parsedPage{SlideID: "slide-1", Shapes: []parsedShape{sh}}, "")
-	if len(facts) != 2 {
-		t.Fatalf("facts = %+v，want 2（每条系列一个范围事实）", facts)
+	// 每条系列产出 range + trend 两个事实（2 系列 × 2 = 4）。
+	if len(facts) != 4 {
+		t.Fatalf("facts = %+v，want 4（每系列 range+trend）", facts)
 	}
-	var east, north *draftFact
+	var east, north, eastTrend *draftFact
 	for i := range facts {
-		if facts[i].Kind != "chart_stat" || facts[i].ElementKind != "chart" || facts[i].Confidence != 1.0 {
+		if facts[i].ElementKind != "chart" || facts[i].Confidence != 1.0 {
 			t.Errorf("fact 元数据异常：%+v", facts[i])
 		}
-		if strings.Contains(facts[i].Value, "华东") {
-			east = &facts[i]
-		}
-		if strings.Contains(facts[i].Value, "华北") {
-			north = &facts[i]
+		switch facts[i].Kind {
+		case "chart_stat":
+			if strings.Contains(facts[i].Value, "华东") {
+				east = &facts[i]
+			}
+			if strings.Contains(facts[i].Value, "华北") {
+				north = &facts[i]
+			}
+		case "chart_trend":
+			if strings.Contains(facts[i].Value, "华东") {
+				eastTrend = &facts[i]
+			}
 		}
 	}
 	if east == nil || !strings.Contains(east.Value, "最小 12.5") || !strings.Contains(east.Value, "最大 1676") ||
@@ -216,6 +238,41 @@ func TestChartStatFacts(t *testing.T) {
 	}
 	if north == nil || !strings.Contains(north.Value, "最小 8") || !strings.Contains(north.Value, "最大 30") {
 		t.Fatalf("华北系列事实 = %+v", north)
+	}
+	// 华东 12.5→20→1676：单调上升。
+	if eastTrend == nil || !strings.Contains(eastTrend.Value, "上升") ||
+		!strings.Contains(eastTrend.Value, "起始 12.5") || !strings.Contains(eastTrend.Value, "结束 1676") {
+		t.Fatalf("华东趋势事实 = %+v", eastTrend)
+	}
+}
+
+// TestSeriesTrend 锁定趋势判定：单调上升/下降、持平、波动、数据不足。
+func TestSeriesTrend(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []float64
+		want   string
+	}{
+		{"单调上升", []float64{1, 2, 3, 4}, "上升"},
+		{"单调下降", []float64{10, 8, 6}, "下降"},
+		{"持平", []float64{5, 5, 5}, "持平"},
+		{"波动", []float64{10, 20, 5, 30}, "波动"},
+		{"数据不足", []float64{42}, "数据不足"},
+		{"空", nil, "数据不足"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			trend, first, last, ok := seriesTrend(c.values)
+			if trend != c.want {
+				t.Fatalf("trend = %q, want %q (first=%v last=%v ok=%v)", trend, c.want, first, last, ok)
+			}
+			if c.want == "数据不足" && ok {
+				t.Fatalf("数据不足应 ok=false")
+			}
+			if c.want != "数据不足" && !ok {
+				t.Fatalf("%s 应 ok=true", c.want)
+			}
+		})
 	}
 }
 
@@ -368,5 +425,52 @@ func TestAugmentDraftSourceCohesionInstruction(t *testing.T) {
 	plainP, plainV := augmentDraftSource("容量 80GB", nil)
 	if plainP != "容量 80GB" || plainV != "容量 80GB" {
 		t.Fatalf("nil facts 应透传：prompt=%q validate=%q", plainP, plainV)
+	}
+}
+
+// TestElementTemplatePrompt 锁定按类型模板：按页面含有的元素类型给出讲解结构，
+// 模板只讲结构不含数字；无任何已识别类型时返回空串。
+func TestElementTemplatePrompt(t *testing.T) {
+	// 图表 + 表格 + 图片。
+	chartTableImage := elementTemplatePrompt(map[string]bool{"chart": true, "table": true, "image": true})
+	for _, want := range []string{"【讲解结构】", "图表：优先讲趋势/对比/极值", "表格：优先讲结构含义", "图片：讲这张图展示的对象"} {
+		if !strings.Contains(chartTableImage, want) {
+			t.Fatalf("多类型模板缺 %q：%q", want, chartTableImage)
+		}
+	}
+	if strings.Contains(chartTableImage, "备注：") {
+		t.Fatalf("未包含备注类型不应出现备注模板：%q", chartTableImage)
+	}
+	// 仅图表。
+	chartOnly := elementTemplatePrompt(map[string]bool{"chart": true})
+	if !strings.Contains(chartOnly, "图表：") || strings.Contains(chartOnly, "表格：") {
+		t.Fatalf("仅图表模板 = %q", chartOnly)
+	}
+	// 未知类型（如文本）→ 空串。
+	if got := elementTemplatePrompt(map[string]bool{"text": true}); got != "" {
+		t.Fatalf("未知类型应返回空串：%q", got)
+	}
+	if got := elementTemplatePrompt(nil); got != "" {
+		t.Fatalf("空 kinds 应返回空串：%q", got)
+	}
+}
+
+// TestAugmentDraftSourceTemplateNoPollution 锁定模板/编排说明不进校验基准：
+// 多类型页 prompt 含模板与编排，但 validationSource 仍只有素材与事实值。
+func TestAugmentDraftSourceTemplateNoPollution(t *testing.T) {
+	facts := []draftFact{
+		{ID: "fact-a", ElementKind: "chart", Value: "图表系列「华东」数值范围：最小 12.5，最大 1676"},
+		{ID: "fact-b", ElementKind: "table", Value: "表格列「容量」数值范围：最小 80，最大 256"},
+	}
+	prompt, validate := augmentDraftSource("销量 1676", facts)
+	if !strings.Contains(prompt, "【讲解结构】") || !strings.Contains(prompt, "【编排】") {
+		t.Fatalf("多类型页 prompt 应含模板与编排：%q", prompt)
+	}
+	if strings.Contains(validate, "【讲解结构】") || strings.Contains(validate, "【编排】") ||
+		strings.Contains(validate, "优先讲") {
+		t.Fatalf("校验基准不应含模板/编排说明：%q", validate)
+	}
+	if validate != "销量 1676\n图表系列「华东」数值范围：最小 12.5，最大 1676\n表格列「容量」数值范围：最小 80，最大 256" {
+		t.Fatalf("校验基准应为素材+事实值：%q", validate)
 	}
 }

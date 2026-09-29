@@ -1250,7 +1250,75 @@ func tableStatFacts(slideID string, sh parsedShape) []draftFact {
 			Source:      "structural",
 		})
 	}
+	// 排名事实：数值列（非首列）中数值最大/最小对应的行维度（通常为表格首列）。
+	// 维度单元格是纯文本（无数字），不进校验基准；数值取自行内真实值。
+	if rows >= 2 && cols >= 2 {
+		if dim := strings.TrimSpace(cellAt(cells, 0, 0)); dim != "" {
+			for c := 1; c < cols; c++ {
+				minV, maxV, ok := numericColumnRange(cells, rows, c)
+				if !ok {
+					continue
+				}
+				minRow, maxRow, ok := rowExtremaRow(cells, rows, c)
+				if !ok {
+					continue
+				}
+				minDim := strings.TrimSpace(cellAt(cells, minRow, 0))
+				maxDim := strings.TrimSpace(cellAt(cells, maxRow, 0))
+				if minDim == "" && maxDim == "" {
+					continue
+				}
+				label := headers[c]
+				if label == "" {
+					label = fmt.Sprintf("第 %d 列", c+1)
+				}
+				parts := []string{}
+				if maxDim != "" {
+					parts = append(parts, fmt.Sprintf("数值最大的维度是「%s」（%s）", maxDim, fmtFactNumber(maxV)))
+				}
+				if minDim != "" {
+					parts = append(parts, fmt.Sprintf("数值最小的维度是「%s」（%s）", minDim, fmtFactNumber(minV)))
+				}
+				out = append(out, draftFact{
+					SlideID:     slideID,
+					ShapeID:     strings.TrimSpace(sh.ID),
+					ElementKind: "table",
+					Kind:        "table_rank",
+					Value:       "表格列「" + label + "」： " + strings.Join(parts, "；"),
+					Confidence:  1.0,
+					Source:      "structural",
+				})
+			}
+		}
+	}
 	return out
+}
+
+// rowExtremaRow 返回数值列第 col 列中数值最大/最小对应的数据行下标
+// （首行表头之后）。返回 ok=false 表示该列无有效数字。
+func rowExtremaRow(cells [][]string, rows, col int) (minRow, maxRow int, ok bool) {
+	minV, maxV := 0.0, 0.0
+	for r := 1; r < rows; r++ {
+		raw := strings.TrimSpace(cellAt(cells, r, col))
+		if raw == "" {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.ReplaceAll(raw, ",", ""), 64)
+		if err != nil {
+			continue
+		}
+		if !ok {
+			minV, maxV, minRow, maxRow, ok = v, v, r, r, true
+			continue
+		}
+		if v < minV {
+			minV, minRow = v, r
+		}
+		if v > maxV {
+			maxV, maxRow = v, r
+		}
+	}
+	return
 }
 
 // numericColumnRange 计算第 col 列数据区（首行表头之后）的数值最小/最大。
@@ -1280,7 +1348,8 @@ func numericColumnRange(cells [][]string, rows, col int) (minV, maxV float64, ok
 }
 
 // chartStatFacts 从图表底层数据系列提取确定性极值。每条系列输出
-// 「最大值 / 最小值」（含对应类别名），数值即工作簿里的真实值。
+// 「最大值 / 最小值」（含对应类别名），数值即工作簿里的真实值；
+// 额外输出趋势事实（上升/下降/波动/持平 + 首末值）。
 func chartStatFacts(slideID string, sh parsedShape) []draftFact {
 	cats := sh.ChartCategories
 	var out []draftFact
@@ -1307,6 +1376,17 @@ func chartStatFacts(slideID string, sh parsedShape) []draftFact {
 			Confidence:  1.0,
 			Source:      "structural",
 		})
+		if trend, firstV, lastV, trendOK := seriesTrend(s.Values); trendOK && trend != "数据不足" {
+			out = append(out, draftFact{
+				SlideID:     slideID,
+				ShapeID:     strings.TrimSpace(sh.ID),
+				ElementKind: "chart",
+				Kind:        "chart_trend",
+				Value:       fmt.Sprintf("图表系列「%s」整体趋势：%s，起始 %s，结束 %s", name, trend, fmtFactNumber(firstV), fmtFactNumber(lastV)),
+				Confidence:  1.0,
+				Source:      "structural",
+			})
+		}
 	}
 	return out
 }
@@ -1329,6 +1409,66 @@ func seriesRange(values []float64) (minV, maxV float64, minIdx, maxIdx int, ok b
 		}
 	}
 	return
+}
+
+// seriesTrend 判定一条系列的趋势。只依赖真实数值，返回：
+//   - trend：上升 / 下降 / 波动 / 持平 / 数据不足（长度 < 2 或全 NaN）；
+//   - first/last：首/末有效值（供讲解引用，进校验基准）。
+func seriesTrend(values []float64) (trend string, first, last float64, ok bool) {
+	valid := make([]float64, 0, len(values))
+	for _, v := range values {
+		if v >= -1e308 && v <= 1e308 {
+			valid = append(valid, v)
+		}
+	}
+	if len(valid) < 2 {
+		return "数据不足", 0, 0, false
+	}
+	first, last = valid[0], valid[len(valid)-1]
+	// 相对首值的整体变化幅度（避免绝对差受数量级干扰）。
+	const relEps = 1e-9
+	direction := 0 // +1 上升 / -1 下降 / 0 持平
+	switch {
+	case last-first > relEps*absF(first):
+		direction = 1
+	case first-last > relEps*absF(first):
+		direction = -1
+	}
+	// 波动：相邻方向变化次数。单调（0 次翻转）才算明确的上升/下降。
+	flips := 0
+	lastSign := 0 // 上一次非零变化的方向（+1/-1）；首次非零只初始化不计翻转
+	for i := 1; i < len(valid); i++ {
+		d := valid[i] - valid[i-1]
+		sign := 0
+		if d > relEps*absF(valid[i-1]) {
+			sign = 1
+		} else if d < -relEps*absF(valid[i-1]) {
+			sign = -1
+		}
+		if sign != 0 {
+			if lastSign != 0 && sign != lastSign {
+				flips++
+			}
+			lastSign = sign
+		}
+	}
+	switch {
+	case direction == 1 && flips == 0:
+		return "上升", first, last, true
+	case direction == -1 && flips == 0:
+		return "下降", first, last, true
+	case direction == 0:
+		return "持平", first, last, true
+	default:
+		return "波动", first, last, true
+	}
+}
+
+func absF(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // fmtFactNumber 用定点（非科学计数）格式化事实数值：校验器的数量正则只认十进制，
@@ -1461,7 +1601,36 @@ func augmentDraftSource(source string, facts []draftFact) (promptSource string, 
 		prompt.WriteString("。请把它们组织成一段连贯讲解：先讲本页最想传达的核心结论，再按逻辑需要穿插各元素佐证；" +
 			"同一页面上的次要元素一句话带过即可，不要把每个元素各讲一遍“然后我们看看……”式地机械罗列。")
 	}
+	// 按类型模板（NarrationTemplate 的轻量版）：给出该类型通用的讲解结构骨架，
+	// 让模型按骨架组织而非自由发挥。结构说明不含可校验数字，故只进 prompt。
+	tpl := elementTemplatePrompt(elementKinds)
+	if tpl != "" {
+		prompt.WriteString("\n")
+		prompt.WriteString(tpl)
+	}
 	return strings.TrimSpace(prompt.String()), strings.TrimSpace(strings.Join(values, "\n"))
+}
+
+// elementTemplatePrompt 按页面含有的元素类型返回讲解结构骨架（模板层）。
+// 每种类型只给"该讲什么、按什么顺序"，不给具体数字——数字由 facts 提供并被校验。
+func elementTemplatePrompt(kinds map[string]bool) string {
+	var parts []string
+	if kinds["chart"] {
+		parts = append(parts, "图表：优先讲趋势/对比/极值，而不是画面构图；结合数值事实讲“变化”与“谁最大/最小”。")
+	}
+	if kinds["table"] {
+		parts = append(parts, "表格：优先讲结构含义（行列关系、表头语义）、关键列的比较与排名，而非逐格复述。")
+	}
+	if kinds["image"] {
+		parts = append(parts, "图片：讲这张图展示的对象/场景及其与当前主题的关联；如有识别出的文字或对象，挑关键细节，不逐个描述。")
+	}
+	if kinds["notes"] {
+		parts = append(parts, "备注：作为讲解主线素材使用，内容优先于版面元素。")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "【讲解结构】" + strings.Join(parts, "")
 }
 
 // pgInput 按页面级来源取文本，**并标出最终胜出的来源**。
