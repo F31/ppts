@@ -152,6 +152,7 @@ func mapShape(sh pptx.Shape) *Shape {
 		out.TableRows = rows
 		out.TableCols = cols
 		out.Text = tableText(s, rows, cols)
+		out.TableCells = tableCells(s, rows, cols)
 	case *pptx.ChartShape:
 		if data, err := s.Data(); err == nil {
 			out.ChartType = data.Type.String()
@@ -167,9 +168,46 @@ func mapShape(sh pptx.Shape) *Shape {
 				sb.WriteString(c)
 			}
 			out.Text = sb.String()
+			out.ChartCategories = data.Categories
+			out.ChartSeries = chartSeries(data.Series)
 		}
 	case *pptx.AutoShape:
 		out.Text = shapeText(s)
+	}
+	return out
+}
+
+// tableCells 把表格逐行逐列抽取为结构化二维切片，供确定性事实提取使用。
+func tableCells(ts *pptx.TableShape, rows, cols int) [][]string {
+	if rows <= 0 || cols <= 0 {
+		return nil
+	}
+	out := make([][]string, rows)
+	for r := 0; r < rows; r++ {
+		row := make([]string, cols)
+		for c := 0; c < cols; c++ {
+			cell, err := ts.Cell(r, c)
+			if err != nil {
+				continue
+			}
+			if tf, err := cell.TextFrame(); err == nil {
+				row[c] = strings.TrimRight(textFrameText(tf), "\n")
+			}
+		}
+		out[r] = row
+	}
+	return out
+}
+
+// chartSeries 把图表的底层数据系列投影为可确定性计算的视图。
+// 每条系列只保留名称与数值（等价于工作簿行）；无内嵌数据时返回 nil。
+func chartSeries(series []pptx.ChartSeries) []ChartSeriesData {
+	if len(series) == 0 {
+		return nil
+	}
+	out := make([]ChartSeriesData, 0, len(series))
+	for _, s := range series {
+		out = append(out, ChartSeriesData{Name: s.Name, Values: s.Values})
 	}
 	return out
 }

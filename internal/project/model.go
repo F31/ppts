@@ -32,18 +32,33 @@ type Page struct {
 // Shape 是页面形状的只读视图。Text 为形状内全部文本（按阅读顺序拼接的原始提取，
 // 不做语义排序；阅读顺序增强属 FEAT-002）。
 type Shape struct {
-	ID        string   `json:"id"`
-	Name      string   `json:"name,omitempty"`
-	Kind      string   `json:"kind"`   // go-pptx ShapeKind 字符串
-	Opaque    bool     `json:"opaque"` // 未知/未解析形状（SmartArt/OLE/公式/嵌入扩展）
-	NodePath  string   `json:"nodePath,omitempty"`
-	AltText   string   `json:"altText,omitempty"`
-	Text      string   `json:"text,omitempty"`
-	ChartType string   `json:"chartType,omitempty"`
-	TableRows int      `json:"tableRows,omitempty"`
-	TableCols int      `json:"tableCols,omitempty"`
-	Bounds    *Box     `json:"bounds,omitempty"`
-	Children  []*Shape `json:"children,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name,omitempty"`
+	Kind      string `json:"kind"`   // go-pptx ShapeKind 字符串
+	Opaque    bool   `json:"opaque"` // 未知/未解析形状（SmartArt/OLE/公式/嵌入扩展）
+	NodePath  string `json:"nodePath,omitempty"`
+	AltText   string `json:"altText,omitempty"`
+	Text      string `json:"text,omitempty"`
+	ChartType string `json:"chartType,omitempty"`
+	// TableCells 是表格的结构化内容（rows × cols，按行优先）。与 Text 并存：
+	// Text 保留旧的 tab/换行序列化（兼容已有消费方），TableCells 供确定性提取
+	// 做统计/排名等事实。nil = 非表格形状。
+	TableCells [][]string `json:"tableCells,omitempty"`
+	TableRows  int        `json:"tableRows,omitempty"`
+	TableCols  int        `json:"tableCols,omitempty"`
+	// ChartSeries 是图表的底层数据系列（名称 + 与类别等长的数值）。
+	// nil = 非图表形状或图表无内嵌数据（此时只能退化为图片/视觉处理）。
+	ChartSeries []ChartSeriesData `json:"chartSeries,omitempty"`
+	// ChartCategories 是图表类别轴（与每条系列 Values 等长）。
+	ChartCategories []string `json:"chartCategories,omitempty"`
+	Bounds          *Box     `json:"bounds,omitempty"`
+	Children        []*Shape `json:"children,omitempty"`
+}
+
+// ChartSeriesData 是一条可确定性计算的图表数据系列。
+type ChartSeriesData struct {
+	Name   string    `json:"name"`
+	Values []float64 `json:"values"`
 }
 
 // Box 是轴对齐矩形（EMU），用于阅读顺序与命中判断。

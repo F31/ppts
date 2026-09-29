@@ -22,15 +22,7 @@ type testShape struct{ kind, text string }
 func testPage(notes string, shapes ...testShape) parsedPage {
 	pg := parsedPage{SlideID: "slide-1", NotesText: notes}
 	for _, sh := range shapes {
-		var item struct {
-			ID   string `json:"id"`
-			Kind string `json:"kind"`
-			Text string `json:"text"`
-		}
-		item.ID = "shape-" + sh.kind
-		item.Kind = sh.kind
-		item.Text = sh.text
-		pg.Shapes = append(pg.Shapes, item)
+		pg.Shapes = append(pg.Shapes, parsedShape{ID: "shape-" + sh.kind, Kind: sh.kind, Text: sh.text})
 	}
 	return pg
 }

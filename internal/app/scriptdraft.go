@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -384,17 +385,55 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 	return nil
 }
 
+// parsedShape 是 parsedPage 内形状的最小读取视图。
+type parsedShape struct {
+	ID              string             `json:"id"`
+	Kind            string             `json:"kind"`
+	Text            string             `json:"text"`
+	ChartType       string             `json:"chartType,omitempty"`
+	TableCells      [][]string         `json:"tableCells,omitempty"`
+	TableRows       int                `json:"tableRows,omitempty"`
+	TableCols       int                `json:"tableCols,omitempty"`
+	ChartSeries     []parsedChartSerie `json:"chartSeries,omitempty"`
+	ChartCategories []string           `json:"chartCategories,omitempty"`
+}
+
+type parsedChartSerie struct {
+	Name   string    `json:"name"`
+	Values []float64 `json:"values"`
+}
+
 // parsedPage 是 document.json 页面的最小读取视图。
 type parsedPage struct {
-	Index     int    `json:"index"`
-	SlideID   string `json:"slideId"`
-	NotesText string `json:"notesText"`
-	Shapes    []struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-		Text string `json:"text"`
-	} `json:"shapes"`
+	Index     int           `json:"index"`
+	SlideID   string        `json:"slideId"`
+	NotesText string        `json:"notesText"`
+	Shapes    []parsedShape `json:"shapes"`
 }
+
+// draftFact is the first-step common contract between heterogeneous slide elements
+// and script generation. It deliberately mirrors SourceAnchor instead of replacing
+// it: anchors preserve provenance, facts provide prompt-ready atomic statements.
+type draftFact struct {
+	ID          string  `json:"id"`
+	SlideID     string  `json:"slideId"`
+	ShapeID     string  `json:"shapeId,omitempty"`
+	ElementKind string  `json:"elementKind"`
+	Kind        string  `json:"kind"`
+	Value       string  `json:"value"`
+	Confidence  float64 `json:"confidence,omitempty"`
+	Source      string  `json:"source"`
+}
+
+type slideInsightSnapshot struct {
+	Version string                   `json:"version"`
+	SlideID string                   `json:"slideId"`
+	Source  string                   `json:"source"`
+	Facts   []draftFact              `json:"facts"`
+	Anchors []narration.SourceAnchor `json:"anchors"`
+}
+
+const slideInsightVersion = "slide-insight-v1"
 
 func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID string, revisionNo int) ([]parsedPage, error) {
 	if projectID == "" {
@@ -449,13 +488,16 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if in.Text == "" {
 		return draftSkippedNoText, nil // 无正文/备注，不生成空讲稿。
 	}
-	anchors := pgAnchors(pg, source)
-	anchors = append(anchors, h.visualAnchors(ctx, vision, tenantID, projectID, language, pg, renderKeys)...)
+	anchorSource := sourceForAnchors(in.Kind, source)
+	anchors, facts := h.slideInsight(ctx, vision, tenantID, projectID, revisionNo, language, pg, anchorSource, renderKeys)
 	refs := sourceRefsFromAnchors(slideID, anchors)
 	if len(refs) == 0 {
 		refs = []string{slideID}
 	}
-	displayText, spokenText, degraded, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, snap, polisher)
+	if in.Kind == inputExisting || in.Kind == inputCustom {
+		facts = nil
+	}
+	displayText, spokenText, degraded, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, facts, snap, polisher)
 	if err != nil {
 		return "", err
 	}
@@ -549,6 +591,91 @@ func (h *ScriptDraftHandler) renderKeysBySlide(ctx context.Context, tenantID, pr
 	return out
 }
 
+func sourceForAnchors(kind draftInputKind, source string) string {
+	switch kind {
+	case inputNotes:
+		return "notes"
+	case inputCustom:
+		return "custom"
+	case inputExisting:
+		return "existing"
+	default:
+		return source
+	}
+}
+
+// slideInsight 是「结构化 + 视觉」事实的统一入口（第一步）：把 anchors 投影成 facts，
+// 并按 (页, 来源) 缓存到对象存储（insight 快照）。命中快照时既不重算结构事实，
+// 也不重调视觉模型——视觉提取是非确定性的，每次重调都可能得到不同描述，
+// 会让后续的引用溯源校验不稳定（同一份讲稿今天校验通过、明天校验失败）。
+func (h *ScriptDraftHandler) slideInsight(ctx context.Context, vision llm.VisionExtractor, tenantID, projectID string, revisionNo int, language string, pg parsedPage, source string, renderKeys map[string]string) ([]narration.SourceAnchor, []draftFact) {
+	if snap, ok := h.loadSlideInsight(ctx, tenantID, projectID, revisionNo, pg.SlideID, source); ok {
+		return snap.Anchors, snap.Facts
+	}
+	anchors := pgAnchors(pg, source)
+	anchors = append(anchors, h.visualAnchors(ctx, vision, tenantID, projectID, language, pg, renderKeys)...)
+	facts := buildPageFacts(pg, source, anchors)
+	if len(anchors) > 0 || len(facts) > 0 {
+		h.saveSlideInsight(ctx, tenantID, projectID, revisionNo, pg.SlideID, source, anchors, facts)
+	}
+	return anchors, facts
+}
+
+func (h *ScriptDraftHandler) loadSlideInsight(ctx context.Context, tenantID, projectID string, revisionNo int, slideID, source string) (*slideInsightSnapshot, bool) {
+	if h.objects == nil || slideID == "" {
+		return nil, false
+	}
+	rc, _, err := h.objects.Get(ctx, slideInsightKey(tenantID, projectID, revisionNo, slideID, source))
+	if err != nil {
+		return nil, false
+	}
+	defer rc.Close()
+	var snap slideInsightSnapshot
+	if err := json.NewDecoder(rc).Decode(&snap); err != nil {
+		return nil, false
+	}
+	if snap.Version != slideInsightVersion || snap.SlideID != slideID || snap.Source != normalizedInsightSource(source) {
+		return nil, false
+	}
+	return &snap, true
+}
+
+func (h *ScriptDraftHandler) saveSlideInsight(ctx context.Context, tenantID, projectID string, revisionNo int, slideID, source string, anchors []narration.SourceAnchor, facts []draftFact) {
+	if h.objects == nil || slideID == "" {
+		return
+	}
+	snap := slideInsightSnapshot{
+		Version: slideInsightVersion,
+		SlideID: slideID,
+		Source:  normalizedInsightSource(source),
+		Facts:   facts,
+		Anchors: anchors,
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		return
+	}
+	_ = h.objects.Put(ctx, slideInsightKey(tenantID, projectID, revisionNo, slideID, source), bytes.NewReader(data), objectstore.ObjectMeta{
+		ContentType: "application/json", ContentHash: hashBytes(data), Size: int64(len(data)),
+	})
+}
+
+func slideInsightKey(tenantID, projectID string, revisionNo int, slideID, source string) objectstore.ObjectKey {
+	if revisionNo == 0 {
+		revisionNo = 1
+	}
+	assetID := "slide." + hashBytes([]byte(slideID + "\x00" + normalizedInsightSource(source)))[:16]
+	return objectstore.ObjectKey{TenantID: tenantID, ProjectID: projectID, Revision: srcRevString(revisionNo), AssetType: "insight", AssetID: assetID, Ext: "json"}
+}
+
+func normalizedInsightSource(source string) string {
+	s := strings.TrimSpace(source)
+	if s == "" {
+		return "layout"
+	}
+	return s
+}
+
 func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.VisionExtractor, tenantID, projectID, language string, pg parsedPage, renderKeys map[string]string) []narration.SourceAnchor {
 	if vision == nil || pg.SlideID == "" {
 		return nil
@@ -626,7 +753,7 @@ func guardInstructions(report validation.Report) string {
 // degraded=true 表示数字/单位/型号校验两轮仍不过，已**保守回退为原始素材原文**（未经 AI 加工）：
 // 落库的是页面要点片段而非讲解稿。该标志必须向上传递——当作成功会让界面把要点片段报告成
 // "成稿完成"（A26：不得假成功）。
-func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, snap ScriptDraftSnapshot, polisher llm.TextRewriter) (string, string, bool, error) {
+func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, facts []draftFact, snap ScriptDraftSnapshot, polisher llm.TextRewriter) (string, string, bool, error) {
 	source := in.Text
 	if mode == narration.ModeOriginal {
 		return source, source, false, nil
@@ -635,24 +762,25 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		return "", "", false, errors.New("script_draft: LLM draft mode requires configured text rewriter")
 	}
 	instructions := draftInstructions(mode, in.Kind, snap)
+	promptSource, validationSource := augmentDraftSource(source, facts)
 	// 内容寻址缓存：相同（模式+语言+指令+素材）直接复用上次产出，避免重复调用模型。
 	// 同一份稿子/同一批参数反复生成（补页、重试、改投影前后）时命中率很高。
 	var cacheKey objectstore.ObjectKey
 	if !h.disableCache {
-		cacheKey = h.scriptCacheKey(tenantID, mode, language, instructions, source)
+		cacheKey = h.scriptCacheKey(tenantID, mode, language, instructions, promptSource)
 		if cached, ok := h.loadScriptCache(ctx, cacheKey); ok {
 			return cached, cached, false, nil
 		}
 	}
 	opID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode)
-	if err := h.reserveLLMTokens(ctx, tenantID, opID, source); err != nil {
+	if err := h.reserveLLMTokens(ctx, tenantID, opID, promptSource); err != nil {
 		return "", "", false, err
 	}
 	result, err := polisher.Rewrite(ctx, llm.RewriteRequest{
 		LogicalOpID:  opID,
 		Mode:         string(mode),
 		Language:     language,
-		SourceText:   source,
+		SourceText:   promptSource,
 		Instructions: instructions,
 	})
 	if err != nil {
@@ -660,7 +788,7 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 	}
 	h.settleLLMTokens(ctx, tenantID, opID, result)
 	text := strings.TrimSpace(result.Text)
-	report := validation.CheckPreserved(source, text)
+	report := validation.CheckPreserved(validationSource, text)
 	if report.OK() {
 		if !h.disableCache {
 			h.saveScriptCache(ctx, cacheKey, text)
@@ -684,7 +812,7 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 	if err == nil {
 		h.settleLLMTokens(ctx, tenantID, guardOpID, fix)
 		fixed := strings.TrimSpace(fix.Text)
-		if validation.CheckPreserved(source, fixed).OK() {
+		if validation.CheckPreserved(validationSource, fixed).OK() {
 			if !h.disableCache {
 				h.saveScriptCache(ctx, cacheKey, fixed)
 			}
@@ -916,6 +1044,315 @@ func sourceRefsFromAnchors(slideID string, anchors []narration.SourceAnchor) []s
 		}
 	}
 	return refs
+}
+
+func factsFromAnchors(slideID string, anchors []narration.SourceAnchor) []draftFact {
+	out := make([]draftFact, 0, len(anchors))
+	for _, anchor := range anchors {
+		raw := strings.TrimSpace(anchor.Raw)
+		if raw == "" {
+			continue
+		}
+		kind := strings.TrimSpace(anchor.Kind)
+		if kind == "" {
+			kind = "shape_text"
+		}
+		out = append(out, draftFact{
+			ID:          factID(len(out)),
+			SlideID:     slideID,
+			ShapeID:     strings.TrimSpace(anchor.ShapeID),
+			ElementKind: factElementKind(kind),
+			Kind:        kind,
+			Value:       factValue(kind, raw),
+			Confidence:  anchor.Confidence,
+			Source:      factSource(kind),
+		})
+	}
+	return out
+}
+
+// buildPageFacts 把一页的结构化 facts（表格/图表统计）与锚点 facts 合并，
+// 统一分配 [fact-xx] 编号。结构化 facts 优先（编号靠前），锚点 facts 随后。
+func buildPageFacts(pg parsedPage, source string, anchors []narration.SourceAnchor) []draftFact {
+	var facts []draftFact
+	facts = append(facts, factsFromStructuredShapes(pg, source)...)
+	facts = append(facts, factsFromAnchors(pg.SlideID, anchors)...)
+	for i := range facts {
+		facts[i].ID = factID(i)
+	}
+	return facts
+}
+
+// factsFromStructuredShapes 针对携带结构化数据的形状（表格 TableCells / 图表
+// ChartSeries）产出**确定性的统计事实**，补充锚点文本里缺失的分析信号。
+//
+// 约束（M11）：不引入原素材没有的必需数字——表格/图表的极值取自单元格与
+// 系列数值（这些数字本来就应被讲稿复现），而**行列计数这类元数据不进事实**
+// （模型用中文数字「两列」「三行」表述时，数字逐字守门会误杀成 degraded）。
+func factsFromStructuredShapes(pg parsedPage, source string) []draftFact {
+	var out []draftFact
+	for _, sh := range pg.Shapes {
+		if containsSourceFilter(source, sh) {
+			continue
+		}
+		lower := strings.ToLower(strings.TrimSpace(sh.Kind))
+		switch {
+		case (strings.Contains(lower, "table") || lower == "shape_table") && len(sh.TableCells) > 0:
+			out = append(out, tableStatFacts(pg.SlideID, sh)...)
+		case (strings.Contains(lower, "chart") || lower == "shape_chart") && len(sh.ChartSeries) > 0:
+			out = append(out, chartStatFacts(pg.SlideID, sh)...)
+		}
+	}
+	return out
+}
+
+// containsSourceFilter 复用 pgAnchors 的来源过滤规则：title 只取标题、body 排除标题。
+func containsSourceFilter(source string, sh parsedShape) bool {
+	if source == "title" && !strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+		return true
+	}
+	if source == "body" && strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+		return true
+	}
+	return false
+}
+
+// tableStatFacts 从表格单元格提取确定性极值统计。表头行（首行）作为列名；
+// 其余行中可解析为数字的列，逐列输出「列名：最大/最小」。
+func tableStatFacts(slideID string, sh parsedShape) []draftFact {
+	cells := sh.TableCells
+	rows := len(cells)
+	if rows == 0 {
+		return nil
+	}
+	cols := 0
+	for _, r := range cells {
+		if len(r) > cols {
+			cols = len(r)
+		}
+	}
+	if cols == 0 {
+		return nil
+	}
+	headers := make([]string, cols)
+	for c := 0; c < cols; c++ {
+		headers[c] = strings.TrimSpace(cellAt(cells, 0, c))
+	}
+	var out []draftFact
+	for c := 0; c < cols; c++ {
+		minV, maxV, ok := numericColumnRange(cells, rows, c)
+		if !ok {
+			continue // 该列无数字，不产出统计
+		}
+		label := headers[c]
+		if label == "" {
+			label = fmt.Sprintf("第 %d 列", c+1) // 无表头时以列号兜底
+			// 列号只是说明性文本，不进入必需数字集合（见函数注释约束）。
+		}
+		out = append(out, draftFact{
+			SlideID:     slideID,
+			ShapeID:     strings.TrimSpace(sh.ID),
+			ElementKind: "table",
+			Kind:        "table_stat",
+			Value:       fmt.Sprintf("表格列「%s」数值范围：最小 %s，最大 %s", label, fmtFactNumber(minV), fmtFactNumber(maxV)),
+			Confidence:  1.0,
+			Source:      "structural",
+		})
+	}
+	return out
+}
+
+// numericColumnRange 计算第 col 列数据区（首行表头之后）的数值最小/最大。
+// 返回 ok=false 表示该列没有任何可解析数字。
+func numericColumnRange(cells [][]string, rows, col int) (minV, maxV float64, ok bool) {
+	for r := 1; r < rows; r++ {
+		raw := strings.TrimSpace(cellAt(cells, r, col))
+		if raw == "" {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.ReplaceAll(raw, ",", ""), 64)
+		if err != nil {
+			continue
+		}
+		if !ok {
+			minV, maxV, ok = v, v, true
+			continue
+		}
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+	return
+}
+
+// chartStatFacts 从图表底层数据系列提取确定性极值。每条系列输出
+// 「最大值 / 最小值」（含对应类别名），数值即工作簿里的真实值。
+func chartStatFacts(slideID string, sh parsedShape) []draftFact {
+	cats := sh.ChartCategories
+	var out []draftFact
+	for _, s := range sh.ChartSeries {
+		minV, maxV, minIdx, maxIdx, ok := seriesRange(s.Values)
+		if !ok {
+			continue
+		}
+		detail := ""
+		if len(cats) > 0 {
+			minCat, maxCat := categoryAt(cats, minIdx), categoryAt(cats, maxIdx)
+			detail = fmt.Sprintf("；最小对应「%s」，最大对应「%s」", minCat, maxCat)
+		}
+		name := strings.TrimSpace(s.Name)
+		if name == "" {
+			name = "未命名系列"
+		}
+		out = append(out, draftFact{
+			SlideID:     slideID,
+			ShapeID:     strings.TrimSpace(sh.ID),
+			ElementKind: "chart",
+			Kind:        "chart_stat",
+			Value:       fmt.Sprintf("图表系列「%s」数值范围：最小 %s，最大 %s%s", name, fmtFactNumber(minV), fmtFactNumber(maxV), detail),
+			Confidence:  1.0,
+			Source:      "structural",
+		})
+	}
+	return out
+}
+
+// seriesRange 计算系列数值的最小/最大及其对应索引（接近真实「最小/最大在哪一类」）。
+func seriesRange(values []float64) (minV, maxV float64, minIdx, maxIdx int, ok bool) {
+	for i, v := range values {
+		if !(v >= -1e308 && v <= 1e308) {
+			continue // NaN/Inf 不作为统计对象（go-pptx 写入侧本来就拒绝，读侧防御）
+		}
+		if !ok {
+			minV, maxV, minIdx, maxIdx, ok = v, v, i, i, true
+			continue
+		}
+		if v < minV {
+			minV, minIdx = v, i
+		}
+		if v > maxV {
+			maxV, maxIdx = v, i
+		}
+	}
+	return
+}
+
+// fmtFactNumber 用定点（非科学计数）格式化事实数值：校验器的数量正则只认十进制，
+// 科学计数（1.676e+03）会把它拆成噪声实体导致误判。
+func fmtFactNumber(v float64) string {
+	s := strconv.FormatFloat(v, 'f', -1, 64)
+	if strings.Contains(s, ".") {
+		s = strings.TrimRight(s, "0")
+		s = strings.TrimRight(s, ".")
+	}
+	if s == "-0" {
+		return "0"
+	}
+	return s
+}
+
+func cellAt(cells [][]string, r, c int) string {
+	if r < len(cells) && c < len(cells[r]) {
+		return cells[r][c]
+	}
+	return ""
+}
+
+func categoryAt(cats []string, i int) string {
+	if i >= 0 && i < len(cats) {
+		return strings.TrimSpace(cats[i])
+	}
+	return ""
+}
+
+func factID(i int) string {
+	const letters = "abcdefghijklmnopqrstuvwxyz"
+	if i < len(letters) {
+		return "fact-" + string(letters[i])
+	}
+	return "fact-" + string(letters[i%len(letters)]) + string(letters[(i/len(letters))%len(letters)])
+}
+
+func factElementKind(kind string) string {
+	lower := strings.ToLower(kind)
+	switch {
+	case strings.Contains(lower, "table"):
+		return "table"
+	case strings.Contains(lower, "chart"):
+		return "chart"
+	case strings.HasPrefix(lower, "visual_"):
+		return "image"
+	case strings.Contains(lower, "notes"):
+		return "notes"
+	default:
+		return "text"
+	}
+}
+
+func factSource(kind string) string {
+	if strings.HasPrefix(strings.ToLower(kind), "visual_") {
+		return "visual"
+	}
+	return "structural"
+}
+
+func factValue(kind, raw string) string {
+	switch factElementKind(kind) {
+	case "table":
+		return "表格内容：" + raw
+	case "chart":
+		return "图表内容：" + raw
+	case "image":
+		return "图片/页面视觉观察：" + raw
+	case "notes":
+		return "备注内容：" + raw
+	default:
+		return raw
+	}
+}
+
+// augmentDraftSource 把已抽取的原子事实（draftFact）汇入讲稿生成输入，返回两份基准：
+//   - promptSource：发给模型的输入。在原素材后追加【结构化事实】块——表格/图表/图片/
+//     备注等异构元素的事实带 [fact-xx] 编号供模型组织讲解，编号在讲稿正文中不得输出。
+//   - validationSource：供数字/单位/型号守门校验（CheckPreserved）的基准。必须**与 prompt 对称**，
+//     否则模型按事实引用了某个数字（如表格里的 128GB）而校验基准只有原素材 → 被判「新增实体」
+//     违规。正是这段对称，也是 M11 的教训：提示词与校验器各说一套就会漂移。
+//
+// 注意：facts 是**结构化/视觉观察的快照**（slideInsight 缓存），不随每次生成重新提取——
+// 校验永远对着同一份事实，避免「今天校验通过、明天重新调视觉模型又失败」的非稳定行为。
+//
+// 无事实时（纯文本页 / inputExisting / inputCustom）双基准都等于原素材，行为与以往完全一致。
+func augmentDraftSource(source string, facts []draftFact) (promptSource string, validationSource string) {
+	source = strings.TrimSpace(source)
+	if len(facts) == 0 {
+		return source, source
+	}
+	var prompt strings.Builder
+	if source != "" {
+		prompt.WriteString(source)
+		prompt.WriteString("\n\n")
+	}
+	prompt.WriteString("【结构化事实】以下事实来自本页 PPT 的结构解析或视觉观察，仅用于组织讲解；方括号编号只用于内部溯源，不要在讲稿正文中输出。\n")
+	values := make([]string, 0, len(facts)+1)
+	if source != "" {
+		values = append(values, source)
+	}
+	for _, fact := range facts {
+		value := strings.TrimSpace(fact.Value)
+		if value == "" {
+			continue
+		}
+		prompt.WriteString("- [")
+		prompt.WriteString(fact.ID)
+		prompt.WriteString("] ")
+		prompt.WriteString(value)
+		prompt.WriteByte('\n')
+		values = append(values, value)
+	}
+	return strings.TrimSpace(prompt.String()), strings.TrimSpace(strings.Join(values, "\n"))
 }
 
 // pgInput 按页面级来源取文本，**并标出最终胜出的来源**。

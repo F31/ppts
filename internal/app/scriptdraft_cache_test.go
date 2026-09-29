@@ -18,7 +18,7 @@ func TestScriptDraftCacheSkipsSecondLLMCall(t *testing.T) {
 	const source = "100 型号A"
 	draft := func(projectID, slideID string) string {
 		text, _, degraded, err := h.draftText(context.Background(), "tenant-1", projectID, slideID, "zh-CN",
-			narration.ModePolish, draftInput{Kind: inputPage, Text: source}, ScriptDraftSnapshot{}, f)
+			narration.ModePolish, draftInput{Kind: inputPage, Text: source}, nil, ScriptDraftSnapshot{}, f)
 		if err != nil {
 			t.Fatalf("draftText: %v", err)
 		}
@@ -50,7 +50,7 @@ func TestScriptDraftCacheMissOnDifferentInstructions(t *testing.T) {
 	const source = "100 型号A"
 	call := func(style string) {
 		if _, _, _, err := h.draftText(context.Background(), "tenant-1", "project-1", "slide-1", "zh-CN",
-			narration.ModePolish, draftInput{Kind: inputPage, Text: source}, ScriptDraftSnapshot{Style: style}, f); err != nil {
+			narration.ModePolish, draftInput{Kind: inputPage, Text: source}, nil, ScriptDraftSnapshot{Style: style}, f); err != nil {
 			t.Fatalf("draftText: %v", err)
 		}
 	}

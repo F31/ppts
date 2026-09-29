@@ -33,7 +33,7 @@ require (
 )
 
 require (
-	github.com/F31/go-pptx/v2 v2.0.0
+	github.com/F31/go-pptx/v2 v2.0.3
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
