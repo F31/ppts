@@ -296,9 +296,12 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       slideId,
       window.setTimeout(() => {
         timersRef.current.delete(slideId);
-        // 组合期绝不提交半成品（A10），且这只对"仍在编辑的那一页"成立 —— 已切走的页不再有组合态；
-        // 此处不重排，由 onCompositionEnd 统一补一次。
-        if (slideId === displayedSlideIdRef.current && composingRef.current) return;
+        // 组合期绝不提交半成品（A10），但 contentEditable 重绘/失焦可能让 compositionend 丢失；
+        // 不永久吞掉保存任务，短暂退避重排，直到 composition 正常结束或兜底复位。
+        if (slideId === displayedSlideIdRef.current && composingRef.current) {
+          scheduleSaveRef.current(slideId, SAVE_RETRY_MS);
+          return;
+        }
         // 该页已有提交在途：本次编辑不能丢，退避后重排（等 revision 跟上再提交，避免并发撞 conflict）。
         if (inFlightRef.current.has(slideId)) {
           scheduleSaveRef.current(slideId, SAVE_RETRY_MS);
@@ -311,6 +314,12 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     );
   };
   scheduleSaveRef.current = scheduleSave;
+
+  const finishCompositionIfStuck = (slideId = script.slideId) => {
+    if (!composingRef.current) return;
+    composingRef.current = false;
+    if (saveStateRef.current === 'dirty') scheduleSaveRef.current(slideId);
+  };
 
   useImperativeHandle(
     ref,
@@ -747,6 +756,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   caretRef.current = pos;
                 }}
                 onChange={(value) => editSegment(segment.segmentId, value)}
+                onPlainEdit={() => finishCompositionIfStuck(script.slideId)}
                 onCompositionStart={() => {
                   composingRef.current = true;
                 }}
@@ -755,6 +765,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                   // 组合确认后文本才算最终：补齐组合期被跳过的调度（沿用统一防抖窗口，连续输入只提交一次）。
                   if (saveStateRef.current === 'dirty') scheduleSaveRef.current(script.slideId);
                 }}
+                onCompositionCancel={() => finishCompositionIfStuck(script.slideId)}
               />
             </article>
           );
@@ -869,9 +880,11 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
   onFocus: () => void;
   onCaretChange: (pos: number) => void;
   onChange: (value: string) => void;
+  onPlainEdit: () => void;
   onCompositionStart: () => void;
   onCompositionEnd: () => void;
-}>(function SegmentRichTextEditor({ value, readOnly, rules, tooltipPrefix, onTooltip, onPronunciationHit, onFocus, onCaretChange, onChange, onCompositionStart, onCompositionEnd }, ref) {
+  onCompositionCancel: () => void;
+}>(function SegmentRichTextEditor({ value, readOnly, rules, tooltipPrefix, onTooltip, onPronunciationHit, onFocus, onCaretChange, onChange, onPlainEdit, onCompositionStart, onCompositionEnd, onCompositionCancel }, ref) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const pendingCaretRef = useRef<number | null>(null);
   const lastCaretRef = useRef(0);
@@ -916,23 +929,27 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
     const selection = getEditableSelection(rootRef.current);
     if (native.inputType === 'deleteContentBackward') {
       event.preventDefault();
+      onPlainEdit();
       if (selection.start !== selection.end) applyPlainEdit(selection, '');
       else if (selection.start > 0) applyPlainEdit({ start: selection.start - 1, end: selection.end }, '');
       return;
     }
     if (native.inputType === 'deleteContentForward') {
       event.preventDefault();
+      onPlainEdit();
       if (selection.start !== selection.end) applyPlainEdit(selection, '');
       else if (selection.end < value.length) applyPlainEdit({ start: selection.start, end: selection.end + 1 }, '');
       return;
     }
     if (native.inputType === 'insertParagraph' || native.inputType === 'insertLineBreak') {
       event.preventDefault();
+      onPlainEdit();
       applyPlainEdit(selection, '\n');
       return;
     }
     if (native.inputType === 'insertText' && native.data !== null) {
       event.preventDefault();
+      onPlainEdit();
       applyPlainEdit(selection, native.data);
     }
   };
@@ -977,6 +994,7 @@ const SegmentRichTextEditor = forwardRef<SegmentEditorHandle, {
       onMouseUp={rememberCaret}
       onMouseMove={handleTooltipMove}
       onMouseLeave={() => onTooltip(null)}
+      onBlur={onCompositionCancel}
       onBeforeInput={handleBeforeInput}
       onInput={(event) => {
         const selection = getEditableSelection(rootRef.current);
