@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -748,6 +749,87 @@ func guardInstructions(report validation.Report) string {
 	return strings.Join(parts, "")
 }
 
+// factCitationPat 匹配讲稿正文中的事实引用标记：〔fact-xx〕。ID 允许
+// 小写字母与数字（factsFromAnchors/factID 的产生范围）。
+var factCitationPat = regexp.MustCompile(`〔fact-[a-z0-9-]+〕`)
+
+// extractFactCitations 从模型产出中提取并剥离事实引用标记，返回纯正文
+// 与引用的 ID 集合（保序、去重）。未匹配任何标记 = 纯正文原样返回。
+func extractFactCitations(text string) (clean string, cited []string) {
+	seen := map[string]bool{}
+	cited = []string{}
+	for _, m := range factCitationPat.FindAllString(text, -1) {
+		id := strings.TrimSuffix(strings.TrimPrefix(m, "〔"), "〕")
+		if string(id) == "" {
+			continue
+		}
+		inner := strings.TrimPrefix(id, "fact-")
+		if !factCitationIDOK(inner) {
+			continue
+		}
+		if !seen[id] {
+			seen[id] = true
+			cited = append(cited, id)
+		}
+	}
+	clean = factCitationPat.ReplaceAllString(text, "")
+	return strings.TrimSpace(clean), cited
+}
+
+// factCitationIDOK 校验 fact- 后缀只含小写字母/数字/连字符（与 factID/
+// structured fact 的合法字符集一致）。
+func factCitationIDOK(suffix string) bool {
+	for _, r := range suffix {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return suffix != ""
+}
+
+// unknownFactCitations 返回 cited 中不属于 available 的 ID（幻觉引用）。
+// 空 available 时任何引用都视为无依据（但有提示词约束，正常不会发生）。
+func unknownFactCitations(cited []string, available []draftFact) []string {
+	if len(cited) == 0 {
+		return nil
+	}
+	known := make(map[string]bool, len(available))
+	for _, f := range available {
+		known[f.ID] = true
+	}
+	unknown := make([]string, 0, len(cited))
+	for _, id := range cited {
+		if !known[id] {
+			unknown = append(unknown, id)
+		}
+	}
+	return unknown
+}
+
+// factCitationInstruction 生成引用约束指令（仅在存在可引用 facts 时追加）：
+// 引用必须真实、可选、且只允许出现在【结构化事实】给出的候选 ID 内。
+func factCitationInstruction(available []draftFact) string {
+	if len(available) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(available))
+	for _, f := range available {
+		ids = append(ids, f.ID)
+	}
+	return "若某句讲解确实依据某条【结构化事实】，可在句尾标注其编号（形如 〔fact-a〕）。" +
+		"只能标注本页事实清单中真实存在的编号（" + strings.Join(ids, "/") + "），不得虚构。标注可选，宁缺毋滥；标注会用于溯源校验。"
+}
+
+// citationGuardInstructions 生成针对幻觉引用的第二轮修补指令。
+func citationGuardInstructions(unknown []string) string {
+	if len(unknown) == 0 {
+		return ""
+	}
+	return "你标注的引用编号不存在于本页事实清单中（" + strings.Join(unknown, "、") +
+		"），必须改成真实存在的编号或直接删除标注；只做最小必要修改，只输出修正后的正文。"
+}
+
 // draftText 产出单页讲稿正文，返回 (displayText, spokenText, degraded, error)。
 //
 // degraded=true 表示数字/单位/型号校验两轮仍不过，已**保守回退为原始素材原文**（未经 AI 加工）：
@@ -763,6 +845,7 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 	}
 	instructions := draftInstructions(mode, in.Kind, snap)
 	promptSource, validationSource := augmentDraftSource(source, facts)
+	instructions += factCitationInstruction(facts)
 	// 内容寻址缓存：相同（模式+语言+指令+素材）直接复用上次产出，避免重复调用模型。
 	// 同一份稿子/同一批参数反复生成（补页、重试、改投影前后）时命中率很高。
 	var cacheKey objectstore.ObjectKey
@@ -787,36 +870,43 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		return "", "", false, classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
 	}
 	h.settleLLMTokens(ctx, tenantID, opID, result)
-	text := strings.TrimSpace(result.Text)
-	report := validation.CheckPreserved(validationSource, text)
-	if report.OK() {
+	clean, cited := extractFactCitations(result.Text)
+	unknown := unknownFactCitations(cited, facts)
+	report := validation.CheckPreserved(validationSource, clean)
+	if report.OK() && len(unknown) == 0 {
 		if !h.disableCache {
-			h.saveScriptCache(ctx, cacheKey, text)
+			h.saveScriptCache(ctx, cacheKey, clean)
 		}
-		return text, text, false, nil
+		return clean, clean, false, nil
 	}
 	// 第二轮是**定点修补**：把上一版文案本身当作待修的稿子，只列出违规项。
 	// 原先这里重发原文（SourceText: source），等于让模型从头再写一遍——第一版已经写好的
 	// 部分被丢弃，很可能换一种方式再错，两轮下来只剩下回退原文一条路。
 	guardOpID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode) + ":guard"
-	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, text); err != nil {
+	guardText := clean
+	guardInstructionsText := guardInstructions(report)
+	if c := citationGuardInstructions(unknown); c != "" {
+		guardInstructionsText += c
+	}
+	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, guardText); err != nil {
 		return "", "", false, err
 	}
 	fix, err := polisher.Rewrite(ctx, llm.RewriteRequest{
 		LogicalOpID:  guardOpID,
 		Mode:         string(mode),
 		Language:     language,
-		SourceText:   text, // ← 待修补的是**上一版产出**，不是原始素材
-		Instructions: guardInstructions(report),
+		SourceText:   guardText, // ← 待修补的是**上一版产出**（已剥离引用标记），不是原始素材
+		Instructions: guardInstructionsText,
 	})
 	if err == nil {
 		h.settleLLMTokens(ctx, tenantID, guardOpID, fix)
-		fixed := strings.TrimSpace(fix.Text)
-		if validation.CheckPreserved(validationSource, fixed).OK() {
+		fixedClean, fixedCited := extractFactCitations(fix.Text)
+		fixedUnknown := unknownFactCitations(fixedCited, facts)
+		if validation.CheckPreserved(validationSource, fixedClean).OK() && len(fixedUnknown) == 0 {
 			if !h.disableCache {
-				h.saveScriptCache(ctx, cacheKey, fixed)
+				h.saveScriptCache(ctx, cacheKey, fixedClean)
 			}
-			return fixed, fixed, false, nil
+			return fixedClean, fixedClean, false, nil
 		}
 	}
 	// 两轮校验都不过：保守回退为原始素材原文，并以 degraded=true 告知调用方——落库的是

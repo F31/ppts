@@ -237,3 +237,96 @@ func TestFmtFactNumber(t *testing.T) {
 		}
 	}
 }
+
+// TestExtractFactCitations 锁定引用标记的提取与剥离：只摘出 [A-Za-z0-9-]
+// 范围内的 fact ID、保序去重，正文标记被剥干净。
+func TestExtractFactCitations(t *testing.T) {
+	text := "模型容量是 128GB〔fact-a〕，支持 80GB〔fact-b〕 与 12.5 倍速〔fact-a〕。"
+	clean, cited := extractFactCitations(text)
+	if clean != "模型容量是 128GB，支持 80GB 与 12.5 倍速。" {
+		t.Fatalf("clean = %q", clean)
+	}
+	if len(cited) != 2 || cited[0] != "fact-a" || cited[1] != "fact-b" {
+		t.Fatalf("cited = %v, want [fact-a fact-b]（保序去重）", cited)
+	}
+	// 无标记原样返回。
+	plain, none := extractFactCitations("纯正文没有引用")
+	if plain != "纯正文没有引用" || len(none) != 0 {
+		t.Fatalf("plain = %q cited=%v", plain, none)
+	}
+	// 非法/畸形标记不匹配白名单 → 原样保留、不产生引用（宁可漏判也不误剥）。
+	weird, wCited := extractFactCitations("异常〔fact-©〕〔fact-〕〔fact-a b〕")
+	if len(wCited) != 0 {
+		t.Fatalf("weird cited = %v, want none", wCited)
+	}
+	if weird != "异常〔fact-©〕〔fact-〕〔fact-a b〕" {
+		t.Fatalf("weird clean = %q，畸形标记应原样保留", weird)
+	}
+}
+
+// TestUnknownFactCitations 锁定幻觉引用识别：available 外的 ID 被判为未知。
+func TestUnknownFactCitations(t *testing.T) {
+	facts := []draftFact{{ID: "fact-a"}, {ID: "fact-b"}}
+	if got := unknownFactCitations([]string{"fact-a"}, facts); len(got) != 0 {
+		t.Fatalf("known citation flagged: %v", got)
+	}
+	got := unknownFactCitations([]string{"fact-a", "fact-z"}, facts)
+	if len(got) != 1 || got[0] != "fact-z" {
+		t.Fatalf("unknown = %v, want [fact-z]", got)
+	}
+	if got := unknownFactCitations(nil, facts); len(got) != 0 {
+		t.Fatalf("empty citations = %v", got)
+	}
+	// 无可用 facts 时出现的任何引用都无依据 → 判未知（触发二轮删标，防幻觉）。
+	if got := unknownFactCitations([]string{"fact-a"}, nil); len(got) != 1 || got[0] != "fact-a" {
+		t.Fatalf("no available facts: %v", got)
+	}
+}
+
+// TestDraftTextRejectsUnknownFactCitation 锁定幻觉引用进第二轮修补：
+// 首轮标注了不存在的 fact-z → 二轮指令必须点名该编号；二轮修正后落库纯文本。
+func TestDraftTextRejectsUnknownFactCitation(t *testing.T) {
+	const source = "容量 80GB"
+	facts := []draftFact{{ID: "fact-a", Value: "容量 80GB"}}
+	f := &fakeRewriter{replies: []string{
+		"容量为 80GB，依据事实〔fact-z〕。",
+		"容量为 80GB。", // 二轮删除幻觉引用
+	}}
+	h := newDraftHandlerForTest(f)
+	text, _, degraded, err := h.draftText(context.Background(), "tenant-1", "project-1", "slide-1", "zh-CN",
+		narration.ModePolish, draftInput{Kind: inputPage, Text: source}, facts, ScriptDraftSnapshot{}, f)
+	if err != nil {
+		t.Fatalf("draftText: %v", err)
+	}
+	if degraded {
+		t.Fatalf("二轮修正后不应 degraded")
+	}
+	if text != "容量为 80GB。" {
+		t.Fatalf("text = %q，应为二轮纯文本（剥离标记）", text)
+	}
+	if len(f.calls) != 2 {
+		t.Fatalf("应调用两次（首轮 + 修补），实际 %d", len(f.calls))
+	}
+	if !strings.Contains(f.calls[1].Instructions, "fact-z") {
+		t.Fatalf("二轮指令未点名幻觉引用：%q", f.calls[1].Instructions)
+	}
+}
+
+// TestDraftTextCitationOKNoGuard 锁定合法引用不触发二轮且标记被剥离。
+func TestDraftTextCitationOKNoGuard(t *testing.T) {
+	const source = "容量 80GB"
+	facts := []draftFact{{ID: "fact-a", Value: "容量 80GB"}}
+	f := &fakeRewriter{replies: []string{"容量为 80GB〔fact-a〕，满足设计要求。"}}
+	h := newDraftHandlerForTest(f)
+	text, _, degraded, err := h.draftText(context.Background(), "tenant-1", "project-1", "slide-1", "zh-CN",
+		narration.ModePolish, draftInput{Kind: inputPage, Text: source}, facts, ScriptDraftSnapshot{}, f)
+	if err != nil {
+		t.Fatalf("draftText: %v", err)
+	}
+	if degraded || len(f.calls) != 1 {
+		t.Fatalf("合法引用应一次通过（calls=%d, degraded=%v）", len(f.calls), degraded)
+	}
+	if text != "容量为 80GB，满足设计要求。" {
+		t.Fatalf("text = %q，应剥离标记", text)
+	}
+}
