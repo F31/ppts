@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1430,6 +1431,7 @@ func augmentDraftSource(source string, facts []draftFact) (promptSource string, 
 	if source != "" {
 		values = append(values, source)
 	}
+	elementKinds := map[string]bool{}
 	for _, fact := range facts {
 		value := strings.TrimSpace(fact.Value)
 		if value == "" {
@@ -1441,6 +1443,23 @@ func augmentDraftSource(source string, facts []draftFact) (promptSource string, 
 		prompt.WriteString(value)
 		prompt.WriteByte('\n')
 		values = append(values, value)
+		if fact.ElementKind != "" {
+			elementKinds[fact.ElementKind] = true
+		}
+	}
+	// 页面级编排（第五阶段）：同一页含多个异构元素（表格/图表/图片/文本）时，
+	// 引导模型按讲解价值组织成连贯段落，而不是逐个元素机械罗列。该指令只进
+	// prompt、不进校验基准——它没有可校验的事实数字，混入会污染 CheckPreserved。
+	if len(elementKinds) > 1 {
+		prompt.WriteString("\n【编排】本页同时包含：")
+		keys := make([]string, 0, len(elementKinds))
+		for k := range elementKinds {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		prompt.WriteString(strings.Join(keys, "、"))
+		prompt.WriteString("。请把它们组织成一段连贯讲解：先讲本页最想传达的核心结论，再按逻辑需要穿插各元素佐证；" +
+			"同一页面上的次要元素一句话带过即可，不要把每个元素各讲一遍“然后我们看看……”式地机械罗列。")
 	}
 	return strings.TrimSpace(prompt.String()), strings.TrimSpace(strings.Join(values, "\n"))
 }

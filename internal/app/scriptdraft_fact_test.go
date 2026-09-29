@@ -330,3 +330,43 @@ func TestDraftTextCitationOKNoGuard(t *testing.T) {
 		t.Fatalf("text = %q，应剥离标记", text)
 	}
 }
+
+// TestAugmentDraftSourceCohesionInstruction 锁定页面级编排指令：
+// 多异构元素页的 prompt 含【编排】引导、单元素页与无 facts 页不含；且该指令
+// 不进校验基准（它没有可校验的事实数字，混入会污染 CheckPreserved）。
+func TestAugmentDraftSourceCohesionInstruction(t *testing.T) {
+	// 多元素页：表格 + 图表 → 编排指令出现。
+	multi := []draftFact{
+		{ID: "fact-a", ElementKind: "table", Value: "表格列「容量」数值范围：最小 80，最大 256"},
+		{ID: "fact-b", ElementKind: "chart", Value: "图表系列「华东」数值范围：最小 12.5，最大 1676"},
+	}
+	promptMulti, validateMulti := augmentDraftSource("容量 80GB", multi)
+	if !strings.Contains(promptMulti, "【编排】") || !strings.Contains(promptMulti, "chart、table") {
+		t.Fatalf("多元素 prompt 应含编排指令（枚举 ElementKind 排序后）：%q", promptMulti)
+	}
+	if strings.Contains(promptMulti, "【编排】") {
+		// 注释：编排指令已确认存在于 prompt；校验基准断言在下文。
+	}
+	if validateMulti != "容量 80GB\n表格列「容量」数值范围：最小 80，最大 256\n图表系列「华东」数值范围：最小 12.5，最大 1676" {
+		t.Fatalf("多元素校验基准应只含事实值，不含编排说明：%q", validateMulti)
+	}
+
+	// 单元素页：事实虽多但同类型 → 无编排指令。
+	single := []draftFact{
+		{ID: "fact-a", ElementKind: "chart", Value: "图表系列「华东」数值范围：最小 12.5，最大 1676"},
+		{ID: "fact-b", ElementKind: "chart", Value: "图表系列「华北」数值范围：最小 8，最大 30"},
+	}
+	promptSingle, validateSingle := augmentDraftSource("销量", single)
+	if strings.Contains(promptSingle, "【编排】") {
+		t.Fatalf("单元素页不应有编排指令：%q", promptSingle)
+	}
+	if !strings.Contains(validateSingle, "销量") {
+		t.Fatalf("单元素页校验基准丢失素材：%q", validateSingle)
+	}
+
+	// 无 facts：双基准都回到原素材。
+	plainP, plainV := augmentDraftSource("容量 80GB", nil)
+	if plainP != "容量 80GB" || plainV != "容量 80GB" {
+		t.Fatalf("nil facts 应透传：prompt=%q validate=%q", plainP, plainV)
+	}
+}
