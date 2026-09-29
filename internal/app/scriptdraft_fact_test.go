@@ -474,3 +474,60 @@ func TestAugmentDraftSourceTemplateNoPollution(t *testing.T) {
 		t.Fatalf("校验基准应为素材+事实值：%q", validate)
 	}
 }
+
+// TestVisualScenePromptOnly 锁定视觉场景描述（visual_scene）的 PromptOnly 语义：
+// 进 prompt、不进校验基准（M11：低置信度自由文本不得作数字守门源）。
+func TestVisualScenePromptOnly(t *testing.T) {
+	anchors := []narration.SourceAnchor{
+		{SlideID: "slide-1", Kind: "visual_scene", Raw: "页面左侧是产品实拍图，右侧为参数表", Confidence: 0.5},
+		{SlideID: "slide-1", Kind: "visual_text", Raw: "128GB", Confidence: 0.8},
+	}
+	facts := factsFromAnchors("slide-1", anchors)
+	if len(facts) != 2 {
+		t.Fatalf("facts = %+v", facts)
+	}
+	if !facts[0].PromptOnly || !isSceneKind(facts[0].Kind) {
+		t.Fatalf("visual_scene 应为 PromptOnly：%+v", facts[0])
+	}
+	if facts[1].PromptOnly || isSceneKind(facts[1].Kind) {
+		t.Fatalf("visual_text 不应 PromptOnly：%+v", facts[1])
+	}
+
+	prompt, validate := augmentDraftSource("容量 128GB", facts)
+	if !strings.Contains(prompt, "整页视觉场景：页面左侧是产品实拍图") {
+		t.Fatalf("prompt 应含场景描述：%q", prompt)
+	}
+	// 校验基准必须含 visual_text 的 128GB，但不得含场景描述。
+	if !strings.Contains(validate, "128GB") {
+		t.Fatalf("校验基准应含 visual_text：%q", validate)
+	}
+	if strings.Contains(validate, "页面左侧是产品实拍图") {
+		t.Fatalf("校验基准不应含视觉场景描述：%q", validate)
+	}
+}
+
+// TestDraftTextSceneCitationValid 锁定视觉场景也可被引用且校验通过——
+// 引用校验只看 ID 存在性，与事实是否 PromptOnly 无关。
+func TestDraftTextSceneCitationValid(t *testing.T) {
+	const source = "容量 128GB"
+	facts := []draftFact{
+		{ID: "fact-a", ElementKind: "image", Kind: "visual_scene", Value: "整页视觉场景：产品实拍与参数表", PromptOnly: true},
+		{ID: "fact-b", ElementKind: "image", Kind: "visual_text", Value: "图片/页面视觉观察：128GB"},
+	}
+	f := &fakeRewriter{replies: []string{"容量为 128GB〔fact-a〕，配图展示了产品实拍。〔fact-b〕"}}
+	h := newDraftHandlerForTest(f)
+	text, _, degraded, err := h.draftText(context.Background(), "tenant-1", "project-1", "slide-1", "zh-CN",
+		narration.ModePolish, draftInput{Kind: inputPage, Text: source}, facts, ScriptDraftSnapshot{}, f)
+	if err != nil {
+		t.Fatalf("draftText: %v", err)
+	}
+	if degraded || len(f.calls) != 1 {
+		t.Fatalf("合法场景引用应一次通过（calls=%d, degraded=%v）", len(f.calls), degraded)
+	}
+	if strings.Contains(text, "〔") {
+		t.Fatalf("落库文本应剥离引用标记：%q", text)
+	}
+	if !strings.Contains(text, "配图展示了产品实拍") {
+		t.Fatalf("场景描述应进入讲解：%q", text)
+	}
+}

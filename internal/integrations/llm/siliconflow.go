@@ -159,7 +159,10 @@ func (p *SiliconFlowProvider) ExtractVisual(ctx context.Context, req VisualExtra
 	if len(req.ImagePNG) == 0 {
 		return nil, errors.New("llm: image png is required")
 	}
-	prompt := "请从这页 PPT 截图中提取可见关键事实（标题、数字、单位、型号、日期、图表标签）。只输出 JSON 数组，每项形如 {\"kind\":\"visual_text\",\"raw\":\"原文\",\"confidence\":0.7}；不要输出解释。"
+	prompt := "请从这页 PPT 截图中提取两件事：① 可见的关键文字事实（标题、数字、单位、型号、日期、图表标签），" +
+		"每项形如 {\"kind\":\"visual_text\",\"raw\":\"原文\",\"confidence\":0.7}；" +
+		"② 一条整页场景描述（{\"kind\":\"visual_scene\",\"raw\":\"这张图整体展示了什么、主体对象与布局\"}）。" +
+		"只输出 JSON 数组，不要输出解释。"
 	payload := chatRequest{
 		Model: p.visionModel,
 		Messages: []chatMessage{

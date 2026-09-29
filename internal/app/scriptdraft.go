@@ -425,6 +425,9 @@ type draftFact struct {
 	Value       string  `json:"value"`
 	Confidence  float64 `json:"confidence,omitempty"`
 	Source      string  `json:"source"`
+	// PromptOnly 为 true 时该事实仅供 prompt 组织讲解，不进入校验基准
+	// （视觉场景描述等自由文本，低置信度、非确定——M11 教训）。
+	PromptOnly bool `json:"promptOnly,omitempty"`
 }
 
 type slideInsightSnapshot struct {
@@ -1157,6 +1160,7 @@ func factsFromAnchors(slideID string, anchors []narration.SourceAnchor) []draftF
 			Value:       factValue(kind, raw),
 			Confidence:  anchor.Confidence,
 			Source:      factSource(kind),
+			PromptOnly:  isSceneKind(kind),
 		})
 	}
 	return out
@@ -1530,6 +1534,12 @@ func factSource(kind string) string {
 	return "structural"
 }
 
+// isSceneKind 判断该 kind 是否视觉场景描述（自由文本、低置信度）——
+// 这类事实只进 prompt、不进校验基准（M11）。
+func isSceneKind(kind string) bool {
+	return strings.EqualFold(strings.TrimSpace(kind), "visual_scene")
+}
+
 func factValue(kind, raw string) string {
 	switch factElementKind(kind) {
 	case "table":
@@ -1537,6 +1547,9 @@ func factValue(kind, raw string) string {
 	case "chart":
 		return "图表内容：" + raw
 	case "image":
+		if isSceneKind(kind) {
+			return "整页视觉场景：" + raw
+		}
 		return "图片/页面视觉观察：" + raw
 	case "notes":
 		return "备注内容：" + raw
@@ -1554,6 +1567,8 @@ func factValue(kind, raw string) string {
 //
 // 注意：facts 是**结构化/视觉观察的快照**（slideInsight 缓存），不随每次生成重新提取——
 // 校验永远对着同一份事实，避免「今天校验通过、明天重新调视觉模型又失败」的非稳定行为。
+// PromptOnly 的事实（视觉场景描述等自由文本）只进 prompt、不进校验基准：它们是低置信度、
+// 非确定性的辅助上下文，硬性要求模型复述其中的数字会误杀（M11）。
 //
 // 无事实时（纯文本页 / inputExisting / inputCustom）双基准都等于原素材，行为与以往完全一致。
 func augmentDraftSource(source string, facts []draftFact) (promptSource string, validationSource string) {
@@ -1582,7 +1597,9 @@ func augmentDraftSource(source string, facts []draftFact) (promptSource string, 
 		prompt.WriteString("] ")
 		prompt.WriteString(value)
 		prompt.WriteByte('\n')
-		values = append(values, value)
+		if !fact.PromptOnly {
+			values = append(values, value)
+		}
 		if fact.ElementKind != "" {
 			elementKinds[fact.ElementKind] = true
 		}

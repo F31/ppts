@@ -41,10 +41,20 @@ type VisualExtractRequest struct {
 
 // VisualAnchor is a model-observed source fact. It is deliberately low-trust:
 // callers should mark it below structural confidence and use it as evidence to review.
+//
+// Two roles are distinguished:
+//   - text facts (Kind "visual_text"): visible literal text (numbers/units/models/
+//     dates/labels) that may enter the validation baseline like structural text;
+//   - scene descriptions (Kind "visual_scene"): what the image shows (objects,
+//     layout, relation to the topic). Scene text is low-confidence, non-deterministic
+//     free-form prose, so callers must NOT put it into a strict numeric-preservation
+//     baseline (M11 lesson) — it is prompt-only context.
 type VisualAnchor struct {
 	Kind       string
 	Raw        string
 	Confidence float64
+	// Scene 是「这张图展示什么」的自由描述（可选；非文本类事实）。不进校验基准。
+	Scene string
 }
 
 // VisionExtractor is the narrow visual-channel port used by ScriptDraftHandler.
