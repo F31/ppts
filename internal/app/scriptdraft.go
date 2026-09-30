@@ -1179,7 +1179,7 @@ func buildPageFacts(pg parsedPage, source string, anchors []narration.SourceAnch
 }
 
 // factsFromStructuredShapes 针对携带结构化数据的形状（表格 TableCells / 图表
-// ChartSeries）产出**确定性的统计事实**，补充锚点文本里缺失的分析信号。
+// ChartSeries / 代码块文本）产出**确定性的统计事实**，补充锚点文本里缺失的分析信号。
 //
 // 约束（M11）：不引入原素材没有的必需数字——表格/图表的极值取自单元格与
 // 系列数值（这些数字本来就应被讲稿复现），而**行列计数这类元数据不进事实**
@@ -1196,9 +1196,86 @@ func factsFromStructuredShapes(pg parsedPage, source string) []draftFact {
 			out = append(out, tableStatFacts(pg.SlideID, sh)...)
 		case (strings.Contains(lower, "chart") || lower == "shape_chart") && len(sh.ChartSeries) > 0:
 			out = append(out, chartStatFacts(pg.SlideID, sh)...)
+		case isCodeShape(sh):
+			out = append(out, codeBlockFacts(pg.SlideID, sh)...)
 		}
 	}
 	return out
+}
+
+// isCodeShape 判定文本形状内容像代码：非空、含代码特征（关键字/符号/等宽多行）。
+// 代码块在 PPT 里没有专用 ShapeKind（就是 autoshape/textbox），只能靠内容启发式。
+func isCodeShape(sh parsedShape) bool {
+	lowerKind := strings.ToLower(strings.TrimSpace(sh.Kind))
+	if !(lowerKind == "autoshape" || lowerKind == "textbox" || lowerKind == "shape_autoshape" || lowerKind == "shape_textbox") {
+		return false
+	}
+	text := strings.TrimSpace(sh.Text)
+	if text == "" || len(text) > 4000 {
+		return false
+	}
+	return looksLikeCode(text)
+}
+
+// looksLikeCode 用轻量启发式判断多行文本是否更像代码而非自然语言：
+// 多个代码关键字、常见符号（{}=;()）出现、多行里含缩进或行尾分号。
+func looksLikeCode(text string) bool {
+	lines := 0
+	symbolCount := 0
+	for _, ch := range text {
+		switch ch {
+		case '=', '{', '}', ';', '(', ')', '<', '>':
+			symbolCount++
+		}
+	}
+	keywords := []string{"func ", "function ", "class ", "import ", "package ", "def ", "return ", "if ", "for ", "while ", "var ", "let ", "const ", "nil", "null", "true", "false", "TODO", "FIXME"}
+	keywordHit := 0
+	for _, kw := range keywords {
+		if strings.Contains(text, kw) {
+			keywordHit++
+		}
+	}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			lines++
+		}
+	}
+	// 代码特征：2 行以上 + 足够符号，或 1 行以上 + 关键字命中。
+	if lines >= 2 && symbolCount >= 3 {
+		return true
+	}
+	return lines >= 1 && keywordHit >= 2
+}
+
+// codeBlockFacts 为代码块产出确定性事实：行数、含注释/关键字提示，
+// 引导模型讲"这段代码做什么/关键实现"，而非逐行解释语法。
+func codeBlockFacts(slideID string, sh parsedShape) []draftFact {
+	text := strings.TrimSpace(sh.Text)
+	if text == "" {
+		return nil
+	}
+	lines := 0
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) != "" {
+			lines++
+		}
+	}
+	hasComment := strings.Contains(text, "//") || strings.Contains(text, "#") || strings.Contains(text, "/*")
+	// 只讲结构元数据；行数不进校验（模型用中文"十几行"表述会误杀）。
+	detail := "代码块"
+	if hasComment {
+		detail += "，含注释（可参考意图）"
+	}
+	return []draftFact{{
+		SlideID:     slideID,
+		ShapeID:     strings.TrimSpace(sh.ID),
+		ElementKind: "code",
+		Kind:        "code_block",
+		Value:       detail + "；请概括这段代码的意图与关键实现，而非逐行解释语法。",
+		Confidence:  1.0,
+		Source:      "structural",
+	}}
 }
 
 // containsSourceFilter 复用 pgAnchors 的来源过滤规则：title 只取标题、body 排除标题。
@@ -1518,10 +1595,15 @@ func factElementKind(kind string) string {
 		return "table"
 	case strings.Contains(lower, "chart"):
 		return "chart"
+	case strings.Contains(lower, "code"):
+		return "code"
 	case strings.HasPrefix(lower, "visual_"):
 		return "image"
 	case strings.Contains(lower, "notes"):
 		return "notes"
+	case strings.Contains(lower, "opaque") || strings.Contains(lower, "graphicframe") || strings.Contains(lower, "ole"):
+		// SmartArt/OLE/未解析对象框：无法确定性解析，归为 image 走视觉退化讲解。
+		return "image"
 	default:
 		return "text"
 	}
@@ -1640,6 +1722,9 @@ func elementTemplatePrompt(kinds map[string]bool) string {
 	}
 	if kinds["image"] {
 		parts = append(parts, "图片：讲这张图展示的对象/场景及其与当前主题的关联；如有识别出的文字或对象，挑关键细节，不逐个描述。")
+	}
+	if kinds["code"] {
+		parts = append(parts, "代码：讲这段代码做什么（意图）、关键实现方式及其与主题的关系，不要逐行解释语法。")
 	}
 	if kinds["notes"] {
 		parts = append(parts, "备注：作为讲解主线素材使用，内容优先于版面元素。")

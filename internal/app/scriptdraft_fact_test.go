@@ -531,3 +531,73 @@ func TestDraftTextSceneCitationValid(t *testing.T) {
 		t.Fatalf("场景描述应进入讲解：%q", text)
 	}
 }
+
+// TestLooksLikeCode 锁定代码启发式：含关键字的文本形状判为代码，自然语言不判。
+func TestLooksLikeCode(t *testing.T) {
+	code := "func main() {\n\tlog.Println(\"start\")\n\treturn\n}"
+	if !looksLikeCode(code) {
+		t.Fatalf("代码应判为 true")
+	}
+	if !looksLikeCode("import os\nprint(os.getcwd())") {
+		t.Fatalf("Python 代码应判为 true")
+	}
+	if looksLikeCode("这是我们最新一代高性能计算平台，支持PCIe 5.0") {
+		t.Fatalf("自然语言不应判为代码")
+	}
+	if looksLikeCode("") {
+		t.Fatalf("空文本不应判为代码")
+	}
+}
+
+// TestCodeBlockFacts 锁定代码块事实：产出 code_block 事实、含注释提示、不进校验数字。
+func TestCodeBlockFacts(t *testing.T) {
+	sh := parsedShape{
+		ID:   "shape-code1",
+		Kind: "autoshape",
+		Text: "// 初始化连接\nfunc init() {\n\tconn := NewConn()\n\treturn conn\n}",
+	}
+	facts := factsFromStructuredShapes(parsedPage{SlideID: "slide-1", Shapes: []parsedShape{sh}}, "")
+	if len(facts) != 1 {
+		t.Fatalf("facts = %+v，want 1 个 code_block 事实", facts)
+	}
+	f := facts[0]
+	if f.ElementKind != "code" || f.Kind != "code_block" || f.Source != "structural" || f.Confidence != 1.0 {
+		t.Fatalf("code fact 元数据异常：%+v", f)
+	}
+	if !strings.Contains(f.Value, "含注释") || !strings.Contains(f.Value, "概括这段代码的意图") {
+		t.Fatalf("code fact 内容异常：%q", f.Value)
+	}
+	// 无注释的代码块 → 不含"含注释"提示。
+	noComment := parsedShape{ID: "shape-code2", Kind: "textbox", Text: "x := 1\ny := 2\nz := x + y"}
+	nf := factsFromStructuredShapes(parsedPage{SlideID: "slide-1", Shapes: []parsedShape{noComment}}, "")
+	if len(nf) == 0 || strings.Contains(nf[0].Value, "含注释") {
+		t.Fatalf("无注释代码 facts = %+v", nf)
+	}
+}
+
+// TestOpaqueToImageMapping 锁定 SmartArt/OLE/未解析框的 element 归类为 image
+// （无法确定性解析 → 退化视觉讲解）。
+func TestOpaqueToImageMapping(t *testing.T) {
+	for _, kind := range []string{"graphicframe", "opaque", "ole"} {
+		if got := factElementKind(kind); got != "image" {
+			t.Fatalf("factElementKind(%q) = %q, want image", kind, got)
+		}
+	}
+	if got := factElementKind("code_block"); got != "code" {
+		t.Fatalf("factElementKind(code_block) = %q, want code", got)
+	}
+	if got := factElementKind("textbox"); got != "text" {
+		t.Fatalf("factElementKind(textbox) = %q, want text", got)
+	}
+}
+
+// TestCodeTemplatePrompt 锁定代码块讲解结构模板。
+func TestCodeTemplatePrompt(t *testing.T) {
+	got := elementTemplatePrompt(map[string]bool{"code": true})
+	if !strings.Contains(got, "代码：讲这段代码做什么（意图）") || !strings.Contains(got, "不要逐行解释语法") {
+		t.Fatalf("code 模板 = %q", got)
+	}
+	if strings.Contains(got, "表格：") || strings.Contains(got, "图表：") {
+		t.Fatalf("code 模板不应混入其它类型：%q", got)
+	}
+}
