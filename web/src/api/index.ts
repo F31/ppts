@@ -7,7 +7,7 @@
 
 export { setScriptLanguagePreference, setSourceRevisionPreference } from './identity';
 export type { ClientIdentity } from './identity';
-export { getAuthConfig, registerEmail, loginEmail, logoutSession, verifyEmail, resendVerification, forgotPassword, resetPassword } from './auth';
+export { getAuthConfig, registerEmail, loginEmail, logoutSession, verifyEmail, resendVerification, forgotPassword, resetPassword, changePassword } from './auth';
 export type { EmailAuthResult, AuthConfig } from './auth';
 export { getPlaybackManifest } from './playback';
 export { listProjects, listArchivedProjects, listAllProjects, restoreProject, listProjectsPage, getProject, createProject, archiveProject, getProjectSlides, getSourceRevisions, deleteSourceRevision, updatePptDisplayName, downloadSourceRevision, getSlideNotes, setSlideNotes, getSlideRenderURLs } from './projects';

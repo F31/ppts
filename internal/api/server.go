@@ -225,7 +225,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		if settings.registerDailyPerIP > 0 {
 			registerDaily = newSharedLimiter(rateBackend, "auth.register_daily", 24*time.Hour, settings.registerDailyPerIP)
 		}
-		registerAuthRoutes(mux, &authDeps{
+		authDeps := &authDeps{
 			pool:                 pool,
 			store:                newAuthStore(pool),
 			jwtSecret:            opt.JWTSecret,
@@ -246,8 +246,12 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 				}
 				return opt.Messages.ResolveSender(ctx, tenantID)
 			},
-		})
+		}
+		registerAuthRoutes(mux, authDeps)
+		// 修改密码需已认证，独立于公开注册/登录端点用 auth 中间件挂载。
+		mux.Handle("POST /auth/change-password", auth(http.HandlerFunc(authDeps.handleChangePassword)))
 	}
+	// 运营商后台（第二批）：仅 PPTS_OPERATOR_USER_IDS 中的用户可访问；tenant store
 	// 运营商后台（第二批）：仅 PPTS_OPERATOR_USER_IDS 中的用户可访问；tenant store
 	// （opt.TenantStatus 的底层 *tenant.PGStore）实现 ListTenants/Suspend/Resume 时挂载。
 	if ta, ok := opt.TenantStatus.(TenantAdminStore); ok {

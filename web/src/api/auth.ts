@@ -105,6 +105,12 @@ export async function resetPassword(token: string, password: string): Promise<vo
   await postAuth('/auth/reset-password', { token, password });
 }
 
+// changePassword 修改当前登录账号的密码：携带 current_password 校验原密码，
+// new_password 通过后后端更新哈希并让其他会话失效（当前会话保持登录）。
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  await postAuth('/auth/change-password', { current_password: currentPassword, new_password: newPassword });
+}
+
 // postAuth 通用无认证 POST（注册/登录/验证/重置），解析后端 {code,message} 错误体。
 async function postAuth(path: string, body: Record<string, unknown>): Promise<unknown> {
   const data = await requestJSON<unknown>({

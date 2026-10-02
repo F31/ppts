@@ -7,6 +7,8 @@ import { roleKey, type Role } from './types';
 import { can, type Capability } from './permissions';
 import { useDialogA11y } from './a11y';
 import { CommandPalette } from './components/CommandPalette';
+import { changePassword } from './api';
+import { describeApiError } from './apiError';
 
 export type NavItem = { key: string; to: string; labelKey: string; icon: string; need?: Capability; operatorOnly?: boolean };
 
@@ -64,6 +66,38 @@ export function AppShell({ children, role, roleReady = true }: { children: React
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialogRef = useDialogA11y<HTMLDivElement>(() => setProfileOpen(false));
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const changePasswordDialogRef = useDialogA11y<HTMLDivElement>(() => setChangePasswordOpen(false));
+  const [pwCurrent, setPwCurrent] = useState('');
+  const [pwNew, setPwNew] = useState('');
+  const [pwConfirm, setPwConfirm] = useState('');
+  const [pwWorking, setPwWorking] = useState(false);
+  const [pwError, setPwError] = useState('');
+  const [pwDone, setPwDone] = useState(false);
+  const resetPwForm = () => {
+    setPwCurrent('');
+    setPwNew('');
+    setPwConfirm('');
+    setPwError('');
+    setPwDone(false);
+    setPwWorking(false);
+  };
+  const submitChangePassword = async () => {
+    setPwError('');
+    if (pwNew !== pwConfirm) {
+      setPwError(t('user.passwordMismatch'));
+      return;
+    }
+    setPwWorking(true);
+    try {
+      await changePassword(pwCurrent, pwNew);
+      setPwDone(true);
+    } catch (err) {
+      setPwError(describeApiError(err, t('user.changePasswordFailed'), t));
+    } finally {
+      setPwWorking(false);
+    }
+  };
   // B5-M1：命令面板开关 + 全局 Cmd/Ctrl+K 唤起。
   const [paletteOpen, setPaletteOpen] = useState(false);
   useEffect(() => {
@@ -163,6 +197,11 @@ export function AppShell({ children, role, roleReady = true }: { children: React
                   <button type="button" onClick={() => { setUserMenuOpen(false); setProfileOpen(true); }}>
                     {t('user.profile')}
                   </button>
+                  {identity?.account && (
+                    <button type="button" onClick={() => { setUserMenuOpen(false); setChangePasswordOpen(true); }}>
+                      {t('user.changePassword')}
+                    </button>
+                  )}
                   {/* 用户菜单「设置」落到当前角色可见的第一个设置页（原硬编码 /settings/members 对非管理员是假入口）。 */}
                   <Link to={settingsHome} className="user-menu-link" onClick={() => setUserMenuOpen(false)}>
                     {t('user.settings')}
@@ -218,6 +257,46 @@ export function AppShell({ children, role, roleReady = true }: { children: React
           </div>
         );
       })()}
+      {changePasswordOpen && (
+        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-label={t('user.changePasswordTitle')} ref={changePasswordDialogRef}>
+          <section className="modal-card change-password-modal">
+            <header>
+              <div>
+                <span className="eyebrow">{t('user.changePasswordTitle')}</span>
+                <h2>{t('user.changePasswordTitle')}</h2>
+              </div>
+              <button type="button" onClick={() => { setChangePasswordOpen(false); resetPwForm(); }}>{t('common.close')}</button>
+            </header>
+            {pwDone ?
+              <p className="form-success" role="status">{t('user.passwordChanged')}</p>
+              :
+              <>
+                <label>
+                  {t('user.currentPassword')}
+                  <input type="password" autoComplete="current-password" value={pwCurrent} onChange={(e) => setPwCurrent(e.currentTarget.value)} />
+                </label>
+                <label>
+                  {t('user.newPassword')}
+                  <input type="password" autoComplete="new-password" value={pwNew} onChange={(e) => setPwNew(e.currentTarget.value)} />
+                </label>
+                <label>
+                  {t('user.confirmNewPassword')}
+                  <input type="password" autoComplete="new-password" value={pwConfirm} onChange={(e) => setPwConfirm(e.currentTarget.value)} />
+                </label>
+                {pwError && <p className="form-error" role="alert">{pwError}</p>}
+                <div className="draft-actions">
+                  <button type="button" disabled={pwWorking} onClick={() => void submitChangePassword()}>
+                    {t('user.changePassword')}
+                  </button>
+                  <button type="button" onClick={() => { setChangePasswordOpen(false); resetPwForm(); }}>
+                    {t('common.cancel')}
+                  </button>
+                </div>
+              </>
+            }
+          </section>
+        </div>
+      )}
       {paletteOpen && (
         <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} role={role} roleReady={roleReady} />
       )}

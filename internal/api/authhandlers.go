@@ -457,6 +457,88 @@ func (d *authDeps) handleLogout(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleChangePassword 修改当前登录账号的密码（需已认证）。
+// 校验当前密码 → 校验新密码强度 → 更新哈希 → 提升会话代次（其他设备/会话立即失效）
+// → 为当前会话签发新令牌保持登录。
+func (d *authDeps) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	prin, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, `{"code":"unauthenticated","message":"missing principal"}`, http.StatusUnauthorized)
+		return
+	}
+	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		http.Error(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if d.jwtSecret == "" {
+		http.Error(w, "email authentication is not enabled", http.StatusServiceUnavailable)
+		return
+	}
+	ctx := r.Context()
+	u, err := d.store.userByID(ctx, prin.UserID)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	account := u.Email
+	if account == "" {
+		account = u.Phone
+	}
+	if account == "" {
+		// OIDC/开发等无本地凭据账号：没有可修改的本地密码。
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "no_local_credential", "message": "this account has no local password"})
+		return
+	}
+	row, err := d.store.lookupLogin(ctx, account)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "no_local_credential", "message": "this account has no local password"})
+			return
+		}
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !verifyPassword(row.Hash, body.CurrentPassword, d.pepper) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_current_password", "message": "current password is incorrect"})
+		return
+	}
+	local := account
+	if at := strings.IndexByte(local, '@'); at > 0 {
+		local = local[:at]
+	}
+	if err := validatePassword(body.NewPassword, local); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "weak_password", "message": err.Error()})
+		return
+	}
+	hash, err := hashPassword(body.NewPassword, d.pepper)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if err := d.store.updatePassword(ctx, prin.UserID, hash); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	// 提升会话代次使此前所有 JWT（其他浏览器/设备）立即失效，再为当前会话签发新令牌。
+	if err := d.store.bumpTokenVersion(ctx, prin.UserID); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	newVersion := row.userAccount.TokenVersion + 1
+	token, err := issueToken(prin.TenantID, prin.UserID, newVersion, d.jwtSecret)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	d.setSessionCookie(w, r, token)
+	observability.AuthEvent("password_changed")
+	writeJSON(w, http.StatusOK, map[string]any{"changed": true})
+}
+
 // ---------------------------------------------------------------------------
 // 邮箱验证
 // ---------------------------------------------------------------------------
