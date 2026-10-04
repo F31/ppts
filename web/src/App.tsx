@@ -3,6 +3,7 @@ import { getAuthConfig, listMembers, logoutSession, type ClientIdentity } from '
 import { AppShell } from './AppShell';
 import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, storedLocalIdentity, saveLocalIdentity, saveDevIdentity, storedIdentity, saveIdentity } from './auth';
 import { navigate, useRoute } from './router';
+import { setSessionExpiredHandler } from './core';
 import { Home } from './pages/Home';
 import { Jobs } from './pages/Jobs';
 import { Login } from './pages/Login';
@@ -104,6 +105,18 @@ function AppContent() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // 会话过期（AuthMiddleware 401）时清除本地身份并跳转登录页，而不是把"登录已失效"
+  // 当作普通错误留在原页面。统一由 core.ts 的 connectErrorFrom 在 http_401 /
+  // unauthenticated 时通知（登录失败 invalid_credentials / 口令错误 404 不触发）。
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      clearAllIdentity();
+      setIdentity(null);
+      navigate('/login?reason=session_expired');
+    });
+    return () => setSessionExpiredHandler(null);
   }, []);
 
   const loginDev = useCallback((next: ClientIdentity) => {

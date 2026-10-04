@@ -33,6 +33,28 @@ export class ConnectError extends Error {
   }
 }
 
+// ─── 会话过期通知（全局唯一出口）──────────────────────────────────────────────
+// 401 是「会话过期」的信号，但并非所有 401 都代表会话过期：
+//   - 登录失败返回 code=invalid_credentials（应留在登录页显示，不触发跳转）；
+//   - 私密分享口令错误返回 404（匿名播放，不属于登录会话）。
+// 因此只在 code=http_401 / unauthenticated（来自 AuthMiddleware 的拒绝）时通知
+// App 清理本地身份并跳转登录页。App.tsx 负责注册/注销回调；core.ts 保持对
+// identity/router 的无知，只提供一个可通知的钩子（保持依赖方向不变）。
+type SessionExpiredHandler = () => void;
+let sessionExpiredHandler: SessionExpiredHandler | null = null;
+
+export function setSessionExpiredHandler(handler: SessionExpiredHandler | null): void {
+  sessionExpiredHandler = handler;
+}
+
+function notifySessionExpired(): void {
+  sessionExpiredHandler?.();
+}
+
+function isSessionExpiredCode(code: string): boolean {
+  return code === 'http_401' || code === 'unauthenticated';
+}
+
 // httpConnectError 是全站唯一的「HTTP 失败 → ConnectError」转换实现。
 //
 // 为什么必须唯一且必须用 ConnectError：apiError.ts 的 isNotFound / isUnimplemented /
@@ -52,6 +74,11 @@ export async function connectErrorFrom(response: Response, label: string): Promi
     if (envelope.message) message = envelope.message;
   } catch {
     // 非 JSON 错误体（如网关 HTML 错误页）：保留 http_<status> 与默认 message。
+  }
+  // 仅当确属会话过期（AuthMiddleware 的 401）才通知 App 清理身份并跳转登录页；
+  // 登录失败（invalid_credentials）、口令错误（404）等其他 4xx 不触发。
+  if (response.status === 401 && isSessionExpiredCode(code)) {
+    notifySessionExpired();
   }
   return new ConnectError(code, message);
 }

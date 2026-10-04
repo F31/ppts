@@ -4,6 +4,7 @@ import { oidcConfigured, isDevIdentityEnabled, startOIDCLogin } from '../auth';
 import { getAuthConfig, loginEmail, registerEmail, forgotPassword } from '../api';
 import { useI18n } from '../i18n';
 import { useSession } from '../session';
+import { useRoute } from '../router';
 import { describeApiError } from '../apiError';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
@@ -28,6 +29,9 @@ function orgNameError(name: string): string | null {
 export function Login() {
   const { loginDev, loginOIDC, loginEmail: loginEmailSession } = useSession();
   const { t, lang, toggle } = useI18n();
+  const route = useRoute();
+  // 会话过期跳转回来时在顶部给出提示（/login?reason=session_expired）。
+  const sessionExpired = route.query.get('reason') === 'session_expired';
   const [tenantId, setTenantId] = useState(defaultTenantId);
   const [userId, setUserId] = useState('dev-user');
   const [submitting, setSubmitting] = useState(false);
@@ -362,6 +366,7 @@ export function Login() {
           <p className="login-unconfigured">{t('login.unconfigured')}</p>
         ) : null}
         {error && <p className="form-error" role="alert">{error}</p>}
+        {sessionExpired && <p className="form-error" role="alert">{t('err.unauthenticated')}</p>}
       </section>
     </main>
   );
