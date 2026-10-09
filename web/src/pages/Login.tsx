@@ -48,12 +48,6 @@ export function Login() {
   // 注册的账号类型：个人（默认，单成员租户）或组织（需填组织名称）。
   const [accountType, setAccountType] = useState<AccountType>('personal');
   const [orgName, setOrgName] = useState('');
-  // 注册时采集的可选档案字段（成员列表富字段展示）。
-  const [regUsername, setRegUsername] = useState('');
-  const [regFullName, setRegFullName] = useState('');
-  const [regGender, setRegGender] = useState('');
-  const [regBirthDate, setRegBirthDate] = useState('');
-  const [regPhone, setRegPhone] = useState('');
   // forgotSent：忘记密码提交后的统一提示（不泄露账号是否存在）。
   const [forgotSent, setForgotSent] = useState(false);
 
@@ -146,11 +140,6 @@ export function Login() {
               accountType,
               orgName: accountType === 'organization' ? trimmedOrg : undefined,
               inviteCode,
-              username: regUsername,
-              fullName: regFullName,
-              gender: regGender,
-              birthDate: regBirthDate,
-              phone: regPhone,
             })
           : await loginEmail({ account: trimmedEmail, password });
       loginEmailSession({
@@ -208,7 +197,7 @@ export function Login() {
           </>
         )}
         {emailEnabled === true && (
-          <div className="email-auth">
+          <form className="email-auth" onSubmit={(e) => { e.preventDefault(); if (!submitting && !registerBlocked && !forgotSent) void submitEmail(); }}>
             <label>
               {t('login.email')}
               <input
@@ -280,40 +269,10 @@ export function Login() {
                 )}
               </fieldset>
             )}
-            {emailMode === 'register' && (
-              <div className="register-profile">
-                <label>
-                  {t('login.username')}
-                  <input value={regUsername} onChange={(e) => setRegUsername(e.currentTarget.value)} placeholder={t('login.usernamePlaceholder')} />
-                </label>
-                <label>
-                  {t('login.fullName')}
-                  <input value={regFullName} onChange={(e) => setRegFullName(e.currentTarget.value)} placeholder={t('login.fullNamePlaceholder')} />
-                </label>
-                <label>
-                  {t('login.gender')}
-                  <select value={regGender} onChange={(e) => setRegGender(e.currentTarget.value)}>
-                    <option value="">—</option>
-                    <option value="male">{t('members.gender.male')}</option>
-                    <option value="female">{t('members.gender.female')}</option>
-                    <option value="other">{t('members.gender.other')}</option>
-                    <option value="unknown">{t('members.gender.unknown')}</option>
-                  </select>
-                </label>
-                <label>
-                  {t('login.birthDate')}
-                  <input type="month" value={regBirthDate} onChange={(e) => setRegBirthDate(e.currentTarget.value)} />
-                </label>
-                <label>
-                  {t('login.phone')}
-                  <input value={regPhone} onChange={(e) => setRegPhone(e.currentTarget.value)} placeholder={t('login.phonePlaceholder')} />
-                </label>
-              </div>
-            )}
             {forgotSent ? (
               <p className="form-success" role="status">{t('login.forgotSent')}</p>
             ) : (
-              <button type="button" className="primary-login" disabled={submitting || registerBlocked} onClick={() => void submitEmail()}>
+              <button type="submit" className="primary-login" disabled={submitting || registerBlocked}>
                 {submitting
                   ? t('login.submitting')
                   : emailMode === 'register'
@@ -345,7 +304,7 @@ export function Login() {
                 </>
               )}
             </p>
-          </div>
+          </form>
         )}
         {showDev ? (
           <>

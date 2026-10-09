@@ -138,6 +138,9 @@ export type SlideSummary = {
 export type AuditEvent = {
   id: string;
   actorUser: string;
+  actorAccount?: string;
+  actorName?: string;
+  clientIp?: string;
   action: string;
   resourceType: string;
   resourceId: string;

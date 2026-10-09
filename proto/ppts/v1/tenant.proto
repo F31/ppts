@@ -142,6 +142,9 @@ message AuditEvent {
   string resource_id = 5;
   string metadata_json = 6;
   int64 created_at_unix = 7;
+  string actor_account = 8;
+  string actor_name = 9;
+  string client_ip = 10;
 }
 
 message ListAuditEventsRequest {

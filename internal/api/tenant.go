@@ -399,19 +399,38 @@ func (s *TenantService) ListAuditEvents(ctx context.Context, req *connect.Reques
 	if err != nil {
 		return nil, tenantError(err)
 	}
+	members, err := s.members.List(ctx, p.TenantID)
+	if err != nil {
+		return nil, tenantError(err)
+	}
+	memberByID := make(map[string]membership.Member, len(members))
+	for _, m := range members {
+		memberByID[m.UserID] = m
+	}
 	out := make([]*pptsv1.AuditEvent, 0, len(events))
 	for _, e := range events {
 		metadata := "{}"
+		clientIP := ""
 		if e.Metadata != nil {
+			if v, ok := e.Metadata["client_ip"].(string); ok {
+				clientIP = strings.TrimSpace(v)
+			}
 			data, err := json.Marshal(e.Metadata)
 			if err != nil {
 				return nil, connect.NewError(connect.CodeInternal, err)
 			}
 			metadata = string(data)
 		}
+		actorAccount := ""
+		actorName := ""
+		if m, ok := memberByID[e.ActorUser]; ok {
+			actorAccount = strings.TrimSpace(m.Email)
+			actorName = strings.TrimSpace(m.FullName)
+		}
 		out = append(out, &pptsv1.AuditEvent{
 			Id: e.ID, ActorUser: e.ActorUser, Action: e.Action, ResourceType: e.ResourceType,
 			ResourceId: e.ResourceID, MetadataJson: metadata, CreatedAtUnix: e.CreatedAt.Unix(),
+			ActorAccount: actorAccount, ActorName: actorName, ClientIp: clientIP,
 		})
 	}
 	return connect.NewResponse(&pptsv1.ListAuditEventsResponse{Events: out}), nil

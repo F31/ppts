@@ -35,9 +35,9 @@
   },
   "members": {
    "name": "成员管理",
-   "prefixes": ["/members"],
+   "prefixes": ["/members", "/me/profile"],
    "disposition": "keep-both",
-   "reason": "与 TenantService.Members 构成双写，但**前端零调用 RPC 侧**（仅用 GET /members）：RPC 侧属已实现未接线，按『未接线能力保留不删』处置，HTTP 侧是当前唯一在用的通道。收敛方向是前端改用 RPC 后下线 HTTP。"
+   "reason": "与 TenantService.Members 构成双写，但**前端零调用 RPC 侧**（仅用 GET /members）：RPC 侧属已实现未接线，按『未接线能力保留不删』处置，HTTP 侧是当前唯一在用的通道。/me/profile 是当前用户自助维护 user_profiles 的最小 HTTP 端点，Connect 侧无等价自助接口。收敛方向是前端改用 RPC 后下线 HTTP。"
   },
   "gateways": {
    "name": "模型网关配置",

@@ -14,6 +14,7 @@ import (
 // registerMemberRoutes 挂载成员档案原生 HTTP 端点（buf/protoc 不可用，不新增 Connect RPC）：
 //   - GET /members：返回租户成员富字段列表（任意成员可见，租户隔离），供成员与权限页展示；
 //   - PUT /members/{userId}：写入成员档案（admin 级，对应 member.manage 能力）。
+//   - GET/PUT /me/profile：当前用户维护自己的档案（不需要管理员权限）。
 //
 // 注意：新增任何 REST handler 必须同步在此挂载（见项目风险 R-10）。
 func registerMemberRoutes(mux *http.ServeMux, members membership.Store, auth func(http.Handler) http.Handler) {
@@ -22,6 +23,12 @@ func registerMemberRoutes(mux *http.ServeMux, members membership.Store, auth fun
 	})))
 	mux.Handle("PUT /members/{userId}", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		updateMemberProfile(w, r, members)
+	})))
+	mux.Handle("GET /me/profile", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		getMyProfile(w, r, members)
+	})))
+	mux.Handle("PUT /me/profile", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		updateMyProfile(w, r, members)
 	})))
 }
 
@@ -103,4 +110,65 @@ func updateMemberProfile(w http.ResponseWriter, r *http.Request, members members
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func getMyProfile(w http.ResponseWriter, r *http.Request, members membership.Store) {
+	principal, err := requirePrincipal(r.Context())
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	list, err := members.List(r.Context(), principal.TenantID)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	for _, m := range list {
+		if m.UserID == principal.UserID {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"username":   m.Username,
+				"full_name":  m.FullName,
+				"gender":     m.Gender,
+				"birth_date": m.BirthDate,
+				"phone":      m.Phone,
+			})
+			return
+		}
+	}
+	writeConnectError(w, connect.NewError(connect.CodeNotFound, errors.New("current user is not a member of the current tenant")))
+}
+
+func updateMyProfile(w http.ResponseWriter, r *http.Request, members membership.Store) {
+	principal, err := requirePrincipal(r.Context())
+	if err != nil {
+		writeConnectError(w, err)
+		return
+	}
+	var body struct {
+		Username  string `json:"username"`
+		FullName  string `json:"full_name"`
+		Gender    string `json:"gender"`
+		BirthDate string `json:"birth_date"`
+		Phone     string `json:"phone"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
+		return
+	}
+	profile := membership.Profile{Username: body.Username, FullName: body.FullName, Gender: body.Gender, BirthDate: body.BirthDate, Phone: body.Phone}
+	if err := members.SaveProfile(r.Context(), principal.TenantID, principal.UserID, profile); err != nil {
+		if errors.Is(err, membership.ErrNotFound) {
+			writeConnectError(w, connect.NewError(connect.CodeNotFound, errors.New("current user is not a member of the current tenant")))
+			return
+		}
+		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"username":   profile.Username,
+		"full_name":  profile.FullName,
+		"gender":     profile.Gender,
+		"birth_date": profile.BirthDate,
+		"phone":      profile.Phone,
+	})
 }

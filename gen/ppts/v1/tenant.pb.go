@@ -1321,6 +1321,9 @@ type AuditEvent struct {
 	ResourceId    string                 `protobuf:"bytes,5,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
 	MetadataJson  string                 `protobuf:"bytes,6,opt,name=metadata_json,json=metadataJson,proto3" json:"metadata_json,omitempty"`
 	CreatedAtUnix int64                  `protobuf:"varint,7,opt,name=created_at_unix,json=createdAtUnix,proto3" json:"created_at_unix,omitempty"`
+	ActorAccount  string                 `protobuf:"bytes,8,opt,name=actor_account,json=actorAccount,proto3" json:"actor_account,omitempty"`
+	ActorName     string                 `protobuf:"bytes,9,opt,name=actor_name,json=actorName,proto3" json:"actor_name,omitempty"`
+	ClientIp      string                 `protobuf:"bytes,10,opt,name=client_ip,json=clientIp,proto3" json:"client_ip,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1402,6 +1405,27 @@ func (x *AuditEvent) GetCreatedAtUnix() int64 {
 		return x.CreatedAtUnix
 	}
 	return 0
+}
+
+func (x *AuditEvent) GetActorAccount() string {
+	if x != nil {
+		return x.ActorAccount
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetActorName() string {
+	if x != nil {
+		return x.ActorName
+	}
+	return ""
+}
+
+func (x *AuditEvent) GetClientIp() string {
+	if x != nil {
+		return x.ClientIp
+	}
+	return ""
 }
 
 type ListAuditEventsRequest struct {
@@ -1751,7 +1775,7 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"\x1bdelete_source_after_default\x18\x05 \x01(\bR\x18deleteSourceAfterDefault\x126\n" +
 	"\x17storage_transition_days\x18\x06 \x01(\x05R\x15storageTransitionDays\x126\n" +
 	"\x17storage_expiration_days\x18\a \x01(\x05R\x15storageExpirationDays\"\x12\n" +
-	"\x10GetPolicyRequest\"\xe6\x01\n" +
+	"\x10GetPolicyRequest\"\xc7\x02\n" +
 	"\n" +
 	"AuditEvent\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
@@ -1762,7 +1786,12 @@ const file_ppts_v1_tenant_proto_rawDesc = "" +
 	"\vresource_id\x18\x05 \x01(\tR\n" +
 	"resourceId\x12#\n" +
 	"\rmetadata_json\x18\x06 \x01(\tR\fmetadataJson\x12&\n" +
-	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\"\x91\x01\n" +
+	"\x0fcreated_at_unix\x18\a \x01(\x03R\rcreatedAtUnix\x12#\n" +
+	"\ractor_account\x18\b \x01(\tR\factorAccount\x12\x1d\n" +
+	"\n" +
+	"actor_name\x18\t \x01(\tR\tactorName\x12\x1b\n" +
+	"\tclient_ip\x18\n" +
+	" \x01(\tR\bclientIp\"\x91\x01\n" +
 	"\x16ListAuditEventsRequest\x12\x16\n" +
 	"\x06action\x18\x01 \x01(\tR\x06action\x12#\n" +
 	"\rresource_type\x18\x02 \x01(\tR\fresourceType\x12\x1d\n" +

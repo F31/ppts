@@ -167,11 +167,11 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		observability.SetAuthDevHeadersActive(true)
 	}
 	auth := func(handler http.Handler) http.Handler {
-		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal})
+		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal, TrustProxy: opt.TrustProxy})
 	}
 	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members, opt.Audit, project.NewPgSlideNotesStore(objects)), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members), handlerOpts...)
+	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	// M3 ⑥：无备注页讲稿来源存储（pool 可用时启用；nil 时端点返回 feature_disabled）。
 	scriptSources := opt.ScriptSources
@@ -180,7 +180,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members, scriptSources), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members), handlerOpts...)
+	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -240,6 +240,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			settings:             settings,
 			registerDaily:        registerDaily,
 			quota:                opt.UsageStore,
+			audit:                opt.Audit,
 			senderForTenant: func(ctx context.Context, tenantID string) (mail.Sender, error) {
 				if opt.Messages == nil {
 					return nil, messaging.ErrNotFound

@@ -47,11 +47,12 @@ type NarrationGenerationService struct {
 	quota    QuotaManager
 	policy   TenantPolicyReader
 	members  membership.Reader
+	audit    audit.Recorder
 }
 
 // NewNarrationGenerationService creates a narration task service.
-func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, projects project.ProjectStore, objects objectstore.ObjectStore, quota QuotaManager, policy TenantPolicyReader, members membership.Reader) *NarrationGenerationService {
-	return &NarrationGenerationService{scripts: scripts, jobs: jobs, projects: projects, objects: objects, quota: quota, policy: policy, members: members}
+func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, projects project.ProjectStore, objects objectstore.ObjectStore, quota QuotaManager, policy TenantPolicyReader, members membership.Reader, recorder audit.Recorder) *NarrationGenerationService {
+	return &NarrationGenerationService{scripts: scripts, jobs: jobs, projects: projects, objects: objects, quota: quota, policy: policy, members: members, audit: recorder}
 }
 
 // validateSlidesInRevision 校验待配音的 slide 都属于指定源版本（revisionNo<=0 时回退当前版本）。
@@ -210,6 +211,9 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 	if job.InputSnapshot != string(snapshotBytes) {
 		releaseReservation()
 		return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("Idempotency-Key was already used for a different request"))
+	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{TenantID: principal.TenantID, ActorUser: principal.UserID, Action: "narration.create", ResourceType: "job", ResourceID: job.ID, Metadata: map[string]any{"project_id": projectID, "voice_id": voiceID, "slide_count": len(snapshot.Slides), "revision_no": sourceRevision, "rate_percent": rate}})
 	}
 	return connect.NewResponse(&pptsv1.CreateGenerationResponse{JobId: job.ID, WithinBudget: true}), nil
 }

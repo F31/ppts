@@ -33,6 +33,7 @@ export function describeApiError(error: unknown, fallback: string, t?: Translato
       if (error.code === 'http_401' || error.code === 'unauthenticated') return t('err.unauthenticated');
       if (error.code === 'http_403' || error.code === 'permission_denied') return t('err.forbidden');
       if (error.code === 'http_503' || error.code === 'unavailable') return t('err.unavailable');
+      if (error.code === 'registration_failed') return t('err.registrationFailed');
     }
     return `${fallback}（${error.code}）`;
   }

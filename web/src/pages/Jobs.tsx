@@ -510,12 +510,12 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
           <table className="data-table">
             <thead>
               <tr>
+                <th>{t('jobs.colProject')}</th>
                 <th>{t('jobs.colType')}</th>
                 <th>{t('jobs.colScope')}</th>
                 <th title={t('jobs.colPhaseHint')}>{t('jobs.colPhase')}</th>
                 <th>{t('jobs.colState')}</th>
                 <th>{t('jobs.colProgress')}</th>
-                <th>{t('jobs.colProject')}</th>
                 <th>{t('jobs.colSubmitted')}</th>
                 <th className="col-actions">{t('jobs.colActions')}</th>
               </tr>
@@ -525,6 +525,25 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
                 const extra = extras[job.jobId];
                 return (
                   <tr key={job.jobId} className={job.state === 'JOB_STATE_SUCCEEDED' ? 'row-muted' : ''}>
+                    <td>
+                      {(() => {
+                        const meta = projectMeta[job.projectId];
+                        const revNo = jobRevisionNo(job.inputSnapshot);
+                        const isCurrent = !!meta && revNo === meta.currentRevision;
+                        const to = `/projects/${job.projectId}/editor${revNo > 0 && !isCurrent ? `?rev=${revNo}` : ''}`;
+                        return (
+                          <>
+                            <Link to={to} className="cell-project" title={job.projectId}>
+                              {meta?.title ?? job.projectId.slice(0, 12)}
+                            </Link>
+                            <small className="cell-sub block-sub">
+                              {revNo > 0 ? `v${revNo}` : t('common.none')}
+                              {isCurrent ? ` · ${t('jobs.currentVersion')}` : ''}
+                            </small>
+                          </>
+                        );
+                      })()}
+                    </td>
                     <td>
                       <strong className="nowrap-ellipsis">{jobKindKey[job.kind] ? t(jobKindKey[job.kind]) : job.kind}</strong>
                       <small className="cell-sub block-sub">{job.jobId.slice(0, 12)}</small>
@@ -547,25 +566,6 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
                       {job.lastError && <small className="cell-sub block-sub">{t('jobs.failureReason', { msg: job.lastError.message })}</small>}
                     </td>
                     <td>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '—'}</td>
-                    <td>
-                      {(() => {
-                        const meta = projectMeta[job.projectId];
-                        const revNo = jobRevisionNo(job.inputSnapshot);
-                        const isCurrent = !!meta && revNo === meta.currentRevision;
-                        const to = `/projects/${job.projectId}/editor${revNo > 0 && !isCurrent ? `?rev=${revNo}` : ''}`;
-                        return (
-                          <>
-                            <Link to={to} className="cell-project" title={job.projectId}>
-                              {meta?.title ?? job.projectId.slice(0, 12)}
-                            </Link>
-                            <small className="cell-sub block-sub">
-                              {revNo > 0 ? `v${revNo}` : t('common.none')}
-                              {isCurrent ? ` · ${t('jobs.currentVersion')}` : ''}
-                            </small>
-                          </>
-                        );
-                      })()}
-                    </td>
                     <td>{new Date(job.createdAtUnix * 1000).toLocaleString()}</td>
                     <td className="col-actions">
                       <div className="row-actions">

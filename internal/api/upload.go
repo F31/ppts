@@ -14,6 +14,7 @@ import (
 	pptsv1 "github.com/F31/ppts/gen/ppts/v1"
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/upload"
@@ -30,12 +31,13 @@ type UploadService struct {
 	svc     *app.UploadService
 	parser  signedURLParser
 	members membership.Reader
+	audit   audit.Recorder
 }
 
 // NewUploadService 创建 transport。objects 为本地后端时用于把 local:// 链接重写为 HTTP 相对路径。
-func NewUploadService(svc *app.UploadService, objects objectstore.ObjectStore, members membership.Reader) *UploadService {
+func NewUploadService(svc *app.UploadService, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder) *UploadService {
 	parser, _ := objects.(signedURLParser)
-	return &UploadService{svc: svc, parser: parser, members: members}
+	return &UploadService{svc: svc, parser: parser, members: members, audit: recorder}
 }
 
 func (s *UploadService) CreateUpload(ctx context.Context, req *connect.Request[pptsv1.CreateUploadRequest]) (*connect.Response[pptsv1.CreateUploadResponse], error) {
@@ -53,6 +55,9 @@ func (s *UploadService) CreateUpload(ctx context.Context, req *connect.Request[p
 	})
 	if err != nil {
 		return nil, uploadError(err)
+	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{TenantID: p.TenantID, ActorUser: p.UserID, Action: "upload.create", ResourceType: "upload", ResourceID: res.Session.ID, Metadata: map[string]any{"project_id": req.Msg.GetProjectId(), "filename": req.Msg.GetFilename(), "size_bytes": req.Msg.GetSizeBytes(), "content_type": req.Msg.GetContentType()}})
 	}
 	urls := make([]string, 0, len(res.SignedURLs))
 	for _, u := range res.SignedURLs {
@@ -76,6 +81,9 @@ func (s *UploadService) CompleteUpload(ctx context.Context, req *connect.Request
 	srcRevID, jobID, err := s.svc.CompleteUpload(ctx, p.TenantID, req.Msg.GetUploadId(), req.Msg.GetExpectedHash(), req.Msg.GetSizeBytes())
 	if err != nil {
 		return nil, uploadError(err)
+	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{TenantID: p.TenantID, ActorUser: p.UserID, Action: "upload.complete", ResourceType: "upload", ResourceID: req.Msg.GetUploadId(), Metadata: map[string]any{"source_revision_id": srcRevID, "job_id": jobID, "size_bytes": req.Msg.GetSizeBytes()}})
 	}
 	return connect.NewResponse(&pptsv1.CompleteUploadResponse{
 		SourceRevisionId: srcRevID, JobId: jobID, Warnings: []string{},

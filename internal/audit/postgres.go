@@ -35,6 +35,11 @@ func (s *PGStore) Record(ctx context.Context, e Event) error {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
+	if ip, ok := ClientIPFromContext(ctx); ok {
+		if _, exists := metadata["client_ip"]; !exists {
+			metadata["client_ip"] = ip
+		}
+	}
 	raw, err := json.Marshal(metadata)
 	if err != nil {
 		return err

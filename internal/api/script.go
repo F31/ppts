@@ -148,12 +148,12 @@ func registerScriptRoutes(mux *http.ServeMux, scripts narration.Store, members m
 			writeConnectError(w, connect.NewError(connect.CodeUnavailable, err))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"text": strings.TrimSpace(result.Text)})
+		writeJSON(w, http.StatusOK, map[string]any{"text": cleanRewriteText(result.Text)})
 	})))
 }
 
 func rewriteInstructions(action string) string {
-	suffix := "必须逐字保留所有数字、单位、日期、型号、专有名词和事实，不新增原文没有的信息。必须以不同措辞/句式实际改写，不得与原文逐字相同；确无改动空间时仍输出原文。只输出改写后的正文。"
+	suffix := "必须逐字保留所有数字、单位、日期、型号、专有名词和事实，不新增原文没有的信息。必须以不同措辞/句式实际改写，不得与原文逐字相同；确无改动空间时仍输出原文。只输出最终可直接放入讲稿编辑框的正文，不要输出分析过程、思考、提示词、标题、前后说明、Markdown 或引号。"
 	switch action {
 	case "shorten":
 		return "请将原文压缩为更短、更适合口播的讲稿，显著减少字数，保留关键结论与必要数据，删除重复与冗长解释。" + suffix
@@ -166,6 +166,133 @@ func rewriteInstructions(action string) string {
 	default:
 		return ""
 	}
+}
+
+func cleanRewriteText(text string) string {
+	s := strings.TrimSpace(text)
+	s = strings.Trim(s, "` \t\r\n")
+	if strings.HasPrefix(strings.ToLower(s), "plaintext") {
+		s = strings.TrimSpace(s[len("plaintext"):])
+	}
+	if strings.HasPrefix(strings.ToLower(s), "text") {
+		s = strings.TrimSpace(s[len("text"):])
+	}
+	markers := []string{
+		"最终稿：", "最终稿:", "最终版本：", "最终版本:", "润色后：", "润色后:", "缩短后：", "缩短后:",
+		"改写后：", "改写后:", "正文：", "正文:", "结果：", "结果:", "输出：", "输出:",
+		"以下是润色后的版本：", "以下是润色后的版本:", "以下是缩短后的版本：", "以下是缩短后的版本:",
+		"以下是改写后的讲稿：", "以下是改写后的讲稿:", "下面是润色后的文案：", "下面是润色后的文案:",
+		"要求：", "要求:", "改写要求：", "改写要求:", "润色要求：", "润色要求:",
+	}
+	if candidate := extractRewriteCandidate(s); candidate != "" {
+		s = candidate
+	}
+	s = trimRewriteMarkers(s, markers)
+	lines := strings.Split(s, "\n")
+	dropUntil := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(strings.Trim(line, "#>*- `\t"))
+		for _, marker := range markers {
+			if strings.HasPrefix(trimmed, marker) {
+				dropUntil = i
+				break
+			}
+		}
+	}
+	if dropUntil >= 0 && dropUntil+1 < len(lines) {
+		s = strings.TrimSpace(strings.Join(lines[dropUntil+1:], "\n"))
+	}
+	paragraphs := strings.Split(s, "\n\n")
+	if len(paragraphs) > 1 && looksLikeRewriteMeta(paragraphs[0]) {
+		s = strings.TrimSpace(strings.Join(paragraphs[1:], "\n\n"))
+	}
+	s = dropRewriteMetaLines(s)
+	s = trimRewriteMarkers(s, markers)
+	return strings.TrimSpace(strings.Trim(s, "\"'“”‘’"))
+}
+
+func extractRewriteCandidate(s string) string {
+	lines := strings.Split(s, "\n")
+	start := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimLeft(line, ";；:： 	"))
+		if isRewriteCue(trimmed) {
+			start = i + 1
+		}
+	}
+	if start < 0 || start >= len(lines) {
+		return ""
+	}
+	var out []string
+	for _, line := range lines[start:] {
+		trimmed := strings.TrimSpace(line)
+		if len(out) == 0 && trimmed == "" {
+			continue
+		}
+		if len(out) > 0 && (looksLikeRewriteMeta(trimmed) || isRewriteMetaHeading(trimmed) || isRewriteCue(trimmed)) {
+			break
+		}
+		out = append(out, line)
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+func isRewriteCue(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "尝试改写：") || strings.HasPrefix(s, "尝试改写:") || strings.HasPrefix(s, "再调整一下") || strings.HasPrefix(s, "最终改写：") || strings.HasPrefix(s, "最终改写:")
+}
+
+func isRewriteMetaHeading(s string) bool {
+	s = strings.TrimSpace(strings.TrimRight(s, "：:"))
+	switch s {
+	case "分析原文结构", "改写思路", "检查是否保留了所有数字和单位、专有名词", "检查", "再考虑":
+		return true
+	default:
+		return strings.HasPrefix(s, "检查") || strings.HasPrefix(s, "原文") || strings.HasPrefix(s, "需要压缩")
+	}
+}
+
+func dropRewriteMetaLines(s string) string {
+	lines := strings.Split(s, "\n")
+	start := 0
+	for start < len(lines) {
+		line := strings.TrimSpace(strings.TrimLeft(lines[start], ";；:： 	"))
+		if line == "" || looksLikeRewriteMeta(line) || isRewriteMetaHeading(line) || strings.HasPrefix(line, "要求：") || strings.HasPrefix(line, "要求:") || strings.HasPrefix(line, "改写要求：") || strings.HasPrefix(line, "润色要求：") {
+			start++
+			continue
+		}
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "•") || strings.HasPrefix(line, "1.") || strings.HasPrefix(line, "1、") {
+			start++
+			continue
+		}
+		break
+	}
+	if start > 0 && start < len(lines) {
+		return strings.TrimSpace(strings.Join(lines[start:], "\n"))
+	}
+	return strings.TrimSpace(s)
+}
+
+func trimRewriteMarkers(s string, markers []string) string {
+	for {
+		trimmed := strings.TrimSpace(s)
+		changed := false
+		for _, marker := range markers {
+			if strings.HasPrefix(trimmed, marker) {
+				s = strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			return strings.TrimSpace(s)
+		}
+	}
+}
+
+func looksLikeRewriteMeta(s string) bool {
+	s = strings.TrimSpace(strings.TrimLeft(s, ";；:： 	"))
+	return strings.Contains(s, "用户要求") || strings.Contains(s, "用户希望") || strings.Contains(s, "用户想要") || strings.Contains(s, "让我分析") || strings.Contains(s, "我需要") || strings.Contains(s, "下面我") || strings.Contains(strings.ToLower(s), "the user asks")
 }
 
 func (s *ScriptService) Get(ctx context.Context, req *connect.Request[pptsv1.GetScriptRequest]) (*connect.Response[pptsv1.ScriptRevision], error) {

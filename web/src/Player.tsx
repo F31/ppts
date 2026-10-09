@@ -437,8 +437,16 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
           >
             ›
           </button>
-          <button type="button" disabled={!selectedSlideHasAudio} onClick={() => setPlaying((value) => !value)}>
-            {playing ? t('player.pause') : t('player.play')}
+          <button
+            type="button"
+            className="player-step player-play-toggle"
+            disabled={!selectedSlideHasAudio}
+            title={playing ? t('player.pause') : t('player.play')}
+            aria-label={playing ? t('player.pause') : t('player.play')}
+            aria-pressed={playing}
+            onClick={() => setPlaying((value) => !value)}
+          >
+            {playing ? '⏸' : '▶'}
           </button>
           <button type="button" disabled={!selectedSlideHasAudio} onClick={() => seek(0)}>
             {t('player.restart')}

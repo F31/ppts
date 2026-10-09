@@ -9,8 +9,10 @@ import type { Project, SlideSummary } from '../types';
 import type { ClientIdentity } from './identity';
 import { DOWNLOAD_TIMEOUT_MS, connectJSON, deleteJSON, getJSON, patchJSON, postJSON } from './http';
 import { identityHeaders } from './identity';
+const RESOURCE_LIST_TIMEOUT_MS = 60_000;
+
 export async function listProjects(identity: ClientIdentity): Promise<Project[]> {
-  const data = await connectJSON<{ projects?: Project[] }>(identity, '/ppts.v1.ProjectService/List', { pageSize: 20 });
+  const data = await connectJSON<{ projects?: Project[] }>(identity, '/ppts.v1.ProjectService/List', { pageSize: 20 }, undefined, RESOURCE_LIST_TIMEOUT_MS);
   return data.projects ?? [];
 }
 
@@ -59,7 +61,9 @@ export async function listProjectsPage(
     {
       pageSize: params.pageSize,
       ...(params.cursor ? { cursor: { value: params.cursor } } : {})
-    }
+    },
+    undefined,
+    RESOURCE_LIST_TIMEOUT_MS
   );
   return { projects: data.projects ?? [], nextCursor: data.nextCursor?.value ?? '' };
 }
@@ -127,7 +131,7 @@ export async function getSourceRevisions(
       display_name?: string;
       is_current: boolean;
     }>;
-  }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions`);
+  }>(identity, `/projects/${encodeURIComponent(projectId)}/revisions`, RESOURCE_LIST_TIMEOUT_MS);
   return {
     currentRevision: r.current_revision,
     revisions: (r.revisions ?? []).map((x) => ({

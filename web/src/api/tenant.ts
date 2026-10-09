@@ -7,6 +7,7 @@
 import type { Folder, Member, ProjectOrg, ProjectUsage, Role, StorageUsage, Tag, TenantPolicy, TenantQuota, TenantUsage } from '../types';
 import type { ClientIdentity } from './identity';
 import { connectJSON, deleteJSON, getJSON, postJSON, putJSON } from './http';
+const RESOURCE_LIST_TIMEOUT_MS = 60_000;
 // ---- 租户（TenantService） ----
 
 export async function listMembers(identity: ClientIdentity): Promise<Member[]> {
@@ -43,10 +44,38 @@ export async function updateMemberProfile(
   await putJSON(identity, `/members/${encodeURIComponent(userId)}`, profile as Record<string, unknown>);
 }
 
+export type MyProfile = Pick<Member, 'username' | 'fullName' | 'gender' | 'birthDate' | 'phone'>;
+
+function mapProfile(data: { username?: string; full_name?: string; gender?: string; birth_date?: string; phone?: string }): MyProfile {
+  return {
+    username: data.username ?? '',
+    fullName: data.full_name ?? '',
+    gender: data.gender ?? '',
+    birthDate: data.birth_date ?? '',
+    phone: data.phone ?? ''
+  };
+}
+
+export async function getMyProfile(identity: ClientIdentity): Promise<MyProfile> {
+  const data = await getJSON<{ username?: string; full_name?: string; gender?: string; birth_date?: string; phone?: string }>(identity, '/me/profile');
+  return mapProfile(data);
+}
+
+export async function saveMyProfile(identity: ClientIdentity, profile: MyProfile): Promise<MyProfile> {
+  const data = await putJSON<{ username?: string; full_name?: string; gender?: string; birth_date?: string; phone?: string }>(identity, '/me/profile', {
+    username: profile.username ?? '',
+    full_name: profile.fullName ?? '',
+    gender: profile.gender ?? '',
+    birth_date: profile.birthDate ?? '',
+    phone: profile.phone ?? ''
+  });
+  return mapProfile(data);
+}
+
 // ---- #94 标签 + 分组体系（原生 HTTP 端点） ----
 
 export async function listTags(identity: ClientIdentity): Promise<Tag[]> {
-  const data = await getJSON<{ tags?: Tag[] }>(identity, '/tags');
+  const data = await getJSON<{ tags?: Tag[] }>(identity, '/tags', RESOURCE_LIST_TIMEOUT_MS);
   return data.tags ?? [];
 }
 
@@ -69,7 +98,7 @@ export async function listFolders(identity: ClientIdentity): Promise<Folder[]> {
     created_by?: string;
     sort_order?: number;
     created_at?: string;
-  }[] }>(identity, '/folders');
+  }[] }>(identity, '/folders', RESOURCE_LIST_TIMEOUT_MS);
   return (data.folders ?? []).map((folder) => ({
     id: folder.id,
     name: folder.name,
@@ -102,7 +131,7 @@ export async function deleteFolder(identity: ClientIdentity, folderId: string): 
 }
 
 export async function listProjectOrganization(identity: ClientIdentity): Promise<ProjectOrg[]> {
-  const data = await getJSON<{ organization?: ProjectOrg[] }>(identity, '/projects/organization');
+  const data = await getJSON<{ organization?: ProjectOrg[] }>(identity, '/projects/organization', RESOURCE_LIST_TIMEOUT_MS);
   return data.organization ?? [];
 }
 

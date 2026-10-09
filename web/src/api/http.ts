@@ -8,23 +8,25 @@ import { requestJSON } from '../core';
 import { ClientIdentity, identityHeaders, languageHeader } from './identity';
 export const DOWNLOAD_TIMEOUT_MS = 120_000;
 
-export async function connectJSON<T>(identity: ClientIdentity, procedure: string, body: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+export async function connectJSON<T>(identity: ClientIdentity, procedure: string, body: unknown, extraHeaders?: Record<string, string>, timeoutMs?: number): Promise<T> {
   return requestJSON<T>({
     method: 'POST',
     url: procedure,
     headers: { 'Content-Type': 'application/json', ...identityHeaders(identity), ...languageHeader(), ...extraHeaders },
     body,
-    label: procedure
+    label: procedure,
+    timeoutMs
   });
 }
 
 // getJSON 调用后端原生 HTTP GET 端点（不走 Connect RPC），用于公开区/创作辅助等无法经 proto 生成的接口。
-export async function getJSON<T>(identity: ClientIdentity, path: string): Promise<T> {
+export async function getJSON<T>(identity: ClientIdentity, path: string, timeoutMs?: number): Promise<T> {
   return requestJSON<T>({
     method: 'GET',
     url: path,
     headers: { ...identityHeaders(identity), ...languageHeader() },
-    label: `GET ${path}`
+    label: `GET ${path}`,
+    timeoutMs
   });
 }
 

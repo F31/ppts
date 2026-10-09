@@ -47,6 +47,9 @@ func (s *ProjectService) Create(ctx context.Context, req *connect.Request[pptsv1
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
+	if s.audit != nil {
+		_ = s.audit.Record(ctx, audit.Event{TenantID: p.TenantID, ActorUser: p.UserID, Action: "project.create", ResourceType: "project", ResourceID: created.ID, Metadata: map[string]any{"title": title}})
+	}
 	return connect.NewResponse(&pptsv1.CreateProjectResponse{Project: toProtoProject(created)}), nil
 }
 

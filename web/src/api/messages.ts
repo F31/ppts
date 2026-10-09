@@ -80,7 +80,7 @@ export async function testEmailChannel(
   return (await gatewayPath(identity, 'POST', '/api/message-channels/email/test', {
     to,
     platform_default: platformDefault
-  })) as { ok: boolean; error?: string };
+  }, 30_000)) as { ok: boolean; error?: string };
 }
 
 export async function saveSmsChannel(identity: ClientIdentity, input: SMSChannelInput): Promise<MessageSMSConfig> {

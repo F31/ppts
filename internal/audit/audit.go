@@ -6,14 +6,32 @@ package audit
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
+
+type clientIPKey struct{}
 
 // ErrTenantRequired 表示记录审计事件时缺少租户。
 var ErrTenantRequired = errors.New("audit: tenant_id is required")
 
 // ErrActionRequired 表示记录审计事件时缺少动作。
 var ErrActionRequired = errors.New("audit: action is required")
+
+// WithClientIP 把本次请求的客户端 IP 放入 context，Record 会自动写入 metadata.client_ip。
+func WithClientIP(ctx context.Context, ip string) context.Context {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, clientIPKey{}, ip)
+}
+
+// ClientIPFromContext 读取请求客户端 IP。
+func ClientIPFromContext(ctx context.Context) (string, bool) {
+	ip, ok := ctx.Value(clientIPKey{}).(string)
+	return ip, ok && strings.TrimSpace(ip) != ""
+}
 
 // Event 是一条审计事件。
 type Event struct {

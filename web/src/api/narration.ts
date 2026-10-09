@@ -149,7 +149,8 @@ export async function getRevisionVoiceStatus(
 ): Promise<{ revisions: RevisionVoiceStatus[] }> {
   return getJSON<{ revisions: RevisionVoiceStatus[] }>(
     identity,
-    `/projects/${encodeURIComponent(projectId)}/revisions/voice-status`
+    `/projects/${encodeURIComponent(projectId)}/revisions/voice-status`,
+    60_000
   );
 }
 

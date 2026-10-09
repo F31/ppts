@@ -92,8 +92,6 @@ const genActiveStates = [
 // 纯函数助手（manifestMatchesSlides / jobRevisionNo / modeLabel / scriptModeOptions / sleep）
 // 抽到 ./projectEditor/helpers，避免编辑器主文件膨胀、便于单测。
 
-const devNarrationVoiceID = 'fake-voice-1';
-
 export function ProjectEditor({
   identity,
   projectId,
@@ -580,7 +578,7 @@ export function ProjectEditor({
   }, [slidesState, identity, projectId, scriptLanguage, scriptsRefreshNonce, t]);
 
   // 语音属性：加载项目已保存的（模型/音色/语速）+ 可选模型与音色（来自 TTS 网关配置）。
-  // 音色优先取接口返回；接口不可用或未配置音色时，退到开发音色并显式标注为"模拟音色"。
+  // 没有真实音色时不再退到开发占位值；占位音色会被正式 TTS 上游拒绝，生成必失败。
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -610,7 +608,7 @@ export function ProjectEditor({
 
       const available = chosen?.voices ?? [];
       const chosenVoice = saved?.voice && available.includes(saved.voice) ? saved.voice : available[0];
-      setVoiceId(chosenVoice || saved?.voice || devNarrationVoiceID);
+      setVoiceId(chosenVoice || '');
       setRatePercent(saved?.ratePercent && saved.ratePercent > 0 ? saved.ratePercent : 100);
     })();
     return () => {
@@ -1053,6 +1051,10 @@ export function ProjectEditor({
 
   // 「配音」：先保存语音配置，再按所选生成方式发起配音任务。
   const voiceDialogGenerate = async () => {
+    if (!voiceDraftVoice) {
+      setVoiceSaveError(t('editor.voiceModelEmpty'));
+      return;
+    }
     setVoiceSaving(true);
     setVoiceSaveError('');
     try {
@@ -1317,7 +1319,11 @@ export function ProjectEditor({
       setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
       return;
     }
-    const selectedVoice = override.voiceId || voiceId || devNarrationVoiceID;
+    const selectedVoice = override.voiceId || voiceId;
+    if (!selectedVoice) {
+      setNarrationStatus({ phase: 'error', message: t('editor.voiceModelEmpty') });
+      return;
+    }
     const selectedRate = override.ratePercent ?? ratePercent;
     setNarrationStatus({ phase: 'generating', message: t('editor.narrationQueued') });
     try {
@@ -1894,10 +1900,7 @@ export function ProjectEditor({
                   onChange={(e) => setVoiceDraftVoice(e.currentTarget.value)}
                   disabled={voicesForModel(voiceDraftModel).length === 0}
                 >
-                  {(voicesForModel(voiceDraftModel).length > 0
-                    ? voicesForModel(voiceDraftModel)
-                    : [voiceDraftVoice || devNarrationVoiceID]
-                  ).map((voice) => (
+                  {voicesForModel(voiceDraftModel).map((voice) => (
                     <option key={voice} value={voice}>
                       {voiceDisplayName(voice)}
                     </option>

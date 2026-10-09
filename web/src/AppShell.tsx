@@ -7,7 +7,7 @@ import { roleKey, type Role } from './types';
 import { can, type Capability } from './permissions';
 import { useDialogA11y } from './a11y';
 import { CommandPalette } from './components/CommandPalette';
-import { changePassword } from './api';
+import { changePassword, getMyProfile, saveMyProfile, type MyProfile } from './api';
 import { describeApiError } from './apiError';
 
 export type NavItem = { key: string; to: string; labelKey: string; icon: string; need?: Capability; operatorOnly?: boolean };
@@ -66,6 +66,11 @@ export function AppShell({ children, role, roleReady = true }: { children: React
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const profileDialogRef = useDialogA11y<HTMLDivElement>(() => setProfileOpen(false));
+  const [profileDraft, setProfileDraft] = useState<MyProfile>({ username: '', fullName: '', gender: '', birthDate: '', phone: '' });
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileError, setProfileError] = useState('');
+  const [profileDone, setProfileDone] = useState(false);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
   const changePasswordDialogRef = useDialogA11y<HTMLDivElement>(() => setChangePasswordOpen(false));
   const [pwCurrent, setPwCurrent] = useState('');
@@ -96,6 +101,41 @@ export function AppShell({ children, role, roleReady = true }: { children: React
       setPwError(describeApiError(err, t('user.changePasswordFailed'), t));
     } finally {
       setPwWorking(false);
+    }
+  };
+  useEffect(() => {
+    if (!profileOpen || !identity) return;
+    let cancelled = false;
+    setProfileLoading(true);
+    setProfileError('');
+    setProfileDone(false);
+    getMyProfile(identity)
+      .then((profile) => {
+        if (!cancelled) setProfileDraft(profile);
+      })
+      .catch((err) => {
+        if (!cancelled) setProfileError(describeApiError(err, t('user.profileLoadFailed'), t));
+      })
+      .finally(() => {
+        if (!cancelled) setProfileLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profileOpen, identity, t]);
+  const submitProfile = async () => {
+    if (!identity) return;
+    setProfileSaving(true);
+    setProfileError('');
+    setProfileDone(false);
+    try {
+      const saved = await saveMyProfile(identity, profileDraft);
+      setProfileDraft(saved);
+      setProfileDone(true);
+    } catch (err) {
+      setProfileError(describeApiError(err, t('user.profileSaveFailed'), t));
+    } finally {
+      setProfileSaving(false);
     }
   };
   // B5-M1：命令面板开关 + 全局 Cmd/Ctrl+K 唤起。
@@ -217,7 +257,7 @@ export function AppShell({ children, role, roleReady = true }: { children: React
         <main className="console-content">{children}</main>
       </div>
       {profileOpen && identity && (() => {
-        const displayName = identity.account ?? identity.userId;
+        const displayName = identity.account || identity.userId;
         const showUserSubId = !!identity.account && identity.account !== identity.userId;
         const tenantName = identity.tenantName;
         const showTenantSubId = !!tenantName && tenantName !== identity.tenantId;
@@ -236,6 +276,10 @@ export function AppShell({ children, role, roleReady = true }: { children: React
               </header>
               <dl className="profile-dl">
                 <div>
+                  <dt>{t('user.account')}</dt>
+                  <dd>{identity.account || identity.userId}</dd>
+                </div>
+                <div>
                   <dt>{t('user.tenant')}</dt>
                   <dd>
                     <strong className="profile-name">{tenantName ?? identity.tenantId}</strong>
@@ -248,11 +292,38 @@ export function AppShell({ children, role, roleReady = true }: { children: React
                   <dt>{t('user.role')}</dt>
                   <dd>{role ? t(roleKey[role]) : t('user.roleFallback')}</dd>
                 </div>
-                <div>
-                  <dt>{t('user.loginMethod')}</dt>
-                  <dd>{identity.accessToken ? t('user.oidc') : t('user.dev')}</dd>
-                </div>
               </dl>
+              <div className="profile-edit">
+                <label>
+                  {t('user.fullName')}
+                  <input value={profileDraft.fullName ?? ''} disabled={profileLoading} onChange={(e) => setProfileDraft((p) => ({ ...p, fullName: e.currentTarget.value }))} />
+                </label>
+                <label>
+                  {t('user.gender')}
+                  <select value={profileDraft.gender ?? ''} disabled={profileLoading} onChange={(e) => setProfileDraft((p) => ({ ...p, gender: e.currentTarget.value }))}>
+                    <option value="">—</option>
+                    <option value="male">{t('members.gender.male')}</option>
+                    <option value="female">{t('members.gender.female')}</option>
+                    <option value="other">{t('members.gender.other')}</option>
+                    <option value="unknown">{t('members.gender.unknown')}</option>
+                  </select>
+                </label>
+                <label>
+                  {t('user.birthDate')}
+                  <input type="month" value={profileDraft.birthDate ?? ''} disabled={profileLoading} onChange={(e) => setProfileDraft((p) => ({ ...p, birthDate: e.currentTarget.value }))} />
+                </label>
+                <label>
+                  {t('user.phone')}
+                  <input value={profileDraft.phone ?? ''} disabled={profileLoading} onChange={(e) => setProfileDraft((p) => ({ ...p, phone: e.currentTarget.value }))} />
+                </label>
+              </div>
+              {profileError && <p className="form-error" role="alert">{profileError}</p>}
+              {profileDone && <p className="form-success" role="status">{t('user.profileSaved')}</p>}
+              <div className="draft-actions">
+                <button type="button" disabled={profileLoading || profileSaving} onClick={() => void submitProfile()}>
+                  {profileSaving ? t('common.saving') : t('common.save')}
+                </button>
+              </div>
             </section>
           </div>
         );

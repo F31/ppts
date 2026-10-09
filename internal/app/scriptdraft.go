@@ -1042,10 +1042,11 @@ func draftInstructions(mode narration.ScriptMode, kind draftInputKind, snap Scri
 	case inputCustom:
 		material = "以下是用户为本页提供的内容（讲稿要点，不是成稿句子）"
 	}
+	flow := "讲解要先形成清晰主线：开场点明本页要解决的问题或核心结论，中段说明关键关系、因果、对比或取舍，收束到听众应带走的判断；不要按版面顺序逐条复述，也不要输出标题、项目符号或显式结构标签。"
 	if mode == narration.ModeAIGenerated {
-		return material + "。请据此撰写一段完整、自然、适合客户演示的口播讲解稿：把要点组织成连贯的语句，可以补足衔接与必要解释，但不得引入这些内容没有支持的事实。" + suffix
+		return material + "。请据此撰写一段完整、自然、适合客户演示的口播讲解稿：" + flow + "把要点组织成连贯的语句，可以补足衔接与必要解释，但不得引入这些内容没有支持的事实。" + suffix
 	}
-	return material + "。请把其中的要点整理成一段适合 PPT 演示讲解的自然口播稿：保持原意、要点齐全，不添加这些内容以外的信息。" + suffix
+	return material + "。请把其中的要点整理成一段适合 PPT 演示讲解的自然口播稿：" + flow + "保持原意、要点齐全，不添加这些内容以外的信息。" + suffix
 }
 
 func revisionText(rev *narration.Revision) string {

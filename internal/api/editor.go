@@ -162,12 +162,19 @@ func editorVoiceModels(w http.ResponseWriter, r *http.Request, gatewayStore gate
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if len(gws) == 0 {
+		gws, err = gatewayStore.List(r.Context(), gateway.PlatformTenantID, gateway.KindTTS)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
 	items := make([]voiceModelItem, 0, len(gws))
 	for _, gw := range gws {
 		if gw == nil || !gw.Enabled {
 			continue
 		}
-		voices := remoteTTSVoices(r.Context(), gatewayStore, principal.TenantID, gw)
+		voices := remoteTTSVoices(r.Context(), gatewayStore, gw.TenantID, gw)
 		if len(voices) == 0 {
 			voices = configuredTTSVoices(gw)
 		}
@@ -360,6 +367,9 @@ func editorRegenerateScriptDraft(w http.ResponseWriter, r *http.Request, jobs Jo
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
+	}
+	if recorder != nil {
+		_ = recorder.Record(r.Context(), audit.Event{TenantID: principal.TenantID, ActorUser: principal.UserID, Action: "script_draft.create", ResourceType: "job", ResourceID: job.ID, Metadata: map[string]any{"project_id": projectID, "mode": string(params.Mode), "source_mode": params.SourceMode, "slide_count": len(params.SlideIDs), "revision_no": snap.RevisionNo}})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"jobId": job.ID})
 }

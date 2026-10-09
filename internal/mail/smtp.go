@@ -122,6 +122,9 @@ func (s *smtpSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("mail: dial %s: %w", addr, err)
 	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
 
 	c, err := smtp.NewClient(conn, s.cfg.Host)
 	if err != nil {

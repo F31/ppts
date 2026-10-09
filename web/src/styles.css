@@ -265,6 +265,7 @@ button, textarea, input { font: inherit; }
 .player-speed select { border: 1px solid rgba(255,255,255,.14); border-radius: 8px; padding: 6px 8px; background: rgba(5,10,20,.7); color: #edf1f7; font-size: 13px; }
 .player-fullscreen { border: 0; border-radius: 8px; padding: 10px 15px; cursor: pointer; color: #edf1f7; background: var(--overlay-btn); }
 .player-controls .player-step { min-width: 38px; padding: 6px 10px; font-size: 18px; line-height: 1; }
+.player-controls .player-play-toggle { min-width: 42px; }
 .player-controls .player-step:disabled { opacity: .45; cursor: not-allowed; }
 .player-note { margin: 10px 0 0; font-size: 13px; color: var(--warn); }
 /* B4-M4（A25）：控制条 + 进度条的容器；移动端吸附到视口底部（见文件末响应式段）。 */
@@ -381,6 +382,17 @@ button, textarea, input { font: inherit; }
 .panel.nested { background: var(--bg-surface-2); border-radius: 12px; padding: 14px; box-shadow: none; }
 .table-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .table-head h2 { margin: 6px 0 18px; }
+.ctx-help-panel p { margin: 8px 0 0; color: var(--text-soft); }
+.ctx-template-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.ctx-template-card { display: grid; gap: 8px; text-align: left; border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: var(--bg-surface-2); color: var(--text-body); cursor: pointer; }
+.ctx-template-card:hover { border-color: var(--accent-border); background: var(--accent-soft); }
+.ctx-template-card span { color: var(--text-muted); font-size: 13px; }
+.ctx-template-card code { width: fit-content; max-width: 100%; overflow-wrap: anywhere; }
+.segmented-actions { display: inline-flex; gap: 4px; padding: 3px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-inset); }
+.segmented-actions button { border: 0; border-radius: 999px; padding: 6px 12px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.segmented-actions button.active { color: #07111f; background: #67e8f9; font-weight: 800; }
+.ctx-preview-box { display: grid; gap: 10px; padding: 12px; border: 1px dashed var(--border); border-radius: 12px; background: var(--bg-inset); }
+.ctx-preview-box p { margin: 6px 0 0; color: var(--text-strong); }
 .pagination { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
 .pagination .page-size { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #9fb0c8; }
 .pagination .page-size select { width: auto; }
@@ -673,6 +685,11 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .profile-modal header h2.profile-name { margin: 2px 0 0; font-size: 22px; line-height: 1.25; }
 .profile-modal header .profile-subid { margin-top: 4px; }
 .profile-subid { display: block; font-size: 12px; font-weight: 400; color: var(--text-faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+.profile-edit { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-top: 16px; padding-top: 14px; border-top: 1px solid rgba(255,255,255,.08); }
+.profile-edit label { display: grid; gap: 6px; font-size: 12px; color: var(--text-muted); }
+.profile-edit input, .profile-edit select { width: 100%; }
+.change-password-modal > label { display: grid; gap: 6px; margin-bottom: 12px; font-size: 12px; color: var(--text-muted); }
+.change-password-modal input { width: 100%; }
 /* 成员与权限列表：用户名列「用户名（文字下方显示 id）」 */
 .member-name { font-weight: 600; color: var(--text-strong); overflow-wrap: anywhere; }
 .member-subid { display: block; margin-top: 2px; font-size: 12px; font-weight: 400; color: var(--text-faint); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }

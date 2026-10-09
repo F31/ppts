@@ -217,6 +217,7 @@ export async function requestRaw(opts: RequestOptions): Promise<Response> {
         method,
         headers,
         body: serialiseBody(body),
+        credentials: 'same-origin',
         signal: combo.signal
       });
       // 拿到 Response 就意味着这一跳完成，超时定时器不再需要：流式消费可能持续很久，

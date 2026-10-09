@@ -18,7 +18,19 @@ const emptyState: AuditState = { loading: false, error: '', events: [], archives
 
 function formatTime(unix: number, locale: string) {
   if (!unix) return '-';
-  return new Date(unix * 1000).toLocaleString(locale, { hour12: false });
+  return new Date(unix * 1000).toLocaleString(locale, {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+  });
+}
+
+function actorLabel(event: AuditEvent) {
+  const account = event.actorAccount || event.actorUser || 'system';
+  return event.actorName ? `${account} - ${event.actorName}` : account;
+}
+
+function actionLabel(event: AuditEvent) {
+  const target = event.resourceType ? `${event.resourceType}${event.resourceId ? `/${event.resourceId}` : ''}` : (event.resourceId || '-');
+  return `${event.action} · ${target}`;
 }
 
 function formatSize(bytes: number) {
@@ -103,11 +115,11 @@ export function AuditPanel({ identity }: Props) {
           state.events.map((event) => (
             <article key={event.id}>
               <div>
-                <strong>{event.action}</strong>
+                <strong>{actorLabel(event)}</strong>
                 <span>{formatTime(event.createdAtUnix, locale)}</span>
               </div>
-              <p>{event.resourceType} · {event.resourceId || '-'}</p>
-              <small>{event.actorUser || 'system'}</small>
+              <p>{actionLabel(event)}</p>
+              <small>{t('audit.clientIp')}: {event.clientIp || '—'}</small>
             </article>
           ))
         )}

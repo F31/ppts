@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/F31/ppts/internal/audit"
 )
 
 const (
@@ -41,6 +43,7 @@ type AuthOptions struct {
 	// LocalPrincipal 非空时启用**单租户本地模式**（SQLite profile）：所有请求以该固定身份运行，
 	// 不做登录（无 OIDC/JWT/邮箱，也不读 dev 头）。仅应在 PPTS_DB_DRIVER=sqlite 时设置。
 	LocalPrincipal *Principal
+	TrustProxy     bool
 }
 
 // PrincipalFromContext returns the authenticated tenant and user.
@@ -78,6 +81,7 @@ func AuthMiddlewareWithOptions(next http.Handler, opts AuthOptions) http.Handler
 			}
 		}
 		ctx := context.WithValue(r.Context(), principalKey{}, principal)
+		ctx = audit.WithClientIP(ctx, clientIP(r, opts.TrustProxy))
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

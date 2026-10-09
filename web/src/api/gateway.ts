@@ -30,13 +30,14 @@ export type ModelGateway = {
 
 export type GatewayTestResult = { ok: boolean; latencyMs: number; error?: string };
 
-export function gatewayPath(identity: ClientIdentity, method: string, path: string, body?: unknown): Promise<unknown> {
+export function gatewayPath(identity: ClientIdentity, method: string, path: string, body?: unknown, timeoutMs?: number): Promise<unknown> {
   return requestJSON<unknown>({
     method,
     url: path,
     headers: { 'Content-Type': 'application/json', ...identityHeaders(identity) },
     body,
-    label: `${method} ${path}`
+    label: `${method} ${path}`,
+    timeoutMs
   });
 }
 

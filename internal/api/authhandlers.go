@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/usage"
@@ -40,9 +41,18 @@ type authDeps struct {
 	registerDaily *sharedLimiter
 	// quota 用于注册时发放默认免费额度；nil 时跳过。
 	quota usage.Store
+	audit audit.Recorder
 	// senderForTenant 按租户解析发件箱（DB 配置→平台默认→ErrNotFound），供认证邮件使用；
 	// 未命中时回退 d.mailer（env/log）。
 	senderForTenant func(ctx context.Context, tenantID string) (mail.Sender, error)
+}
+
+func (d *authDeps) recordAuth(r *http.Request, tenantID, userID, action string, meta map[string]any) {
+	if d.audit == nil || tenantID == "" {
+		return
+	}
+	ctx := audit.WithClientIP(r.Context(), d.ip(r))
+	_ = d.audit.Record(ctx, audit.Event{TenantID: tenantID, ActorUser: userID, Action: action, ResourceType: "auth", ResourceID: userID, Metadata: meta})
 }
 
 // registerAuthRoutes 挂载邮箱/手机自助注册、登录、验证、重置、登出端点。
@@ -333,6 +343,7 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	observability.AuthEvent("register_success")
+	d.recordAuth(r, tenantID, userID, "auth.register", map[string]any{"account": acct.String(), "account_kind": accountKindName(acct.Kind), "tenant_type": accountType})
 	token, err := issueToken(tenantID, userID, 0, d.jwtSecret)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -431,6 +442,7 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	d.limits.loginFail.reset(key)
 	observability.AuthEvent("login_success")
+	d.recordAuth(r, row.TenantID, row.UserID, "auth.login", map[string]any{"account": key, "account_kind": accountKindName(acct.Kind)})
 
 	token, err := issueToken(row.TenantID, row.UserID, row.userAccount.TokenVersion, d.jwtSecret)
 	if err != nil {
@@ -451,7 +463,10 @@ func (d *authDeps) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (d *authDeps) handleLogout(w http.ResponseWriter, _ *http.Request) {
+func (d *authDeps) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if prin, ok := PrincipalFromContext(r.Context()); ok {
+		d.recordAuth(r, prin.TenantID, prin.UserID, "auth.logout", nil)
+	}
 	// 无状态 JWT：清除 Cookie 即登出当前会话。全端登出/改密通过提升 token_version 实现。
 	d.clearSessionCookie(w)
 	w.WriteHeader(http.StatusNoContent)
@@ -536,6 +551,7 @@ func (d *authDeps) handleChangePassword(w http.ResponseWriter, r *http.Request) 
 	}
 	d.setSessionCookie(w, r, token)
 	observability.AuthEvent("password_changed")
+	d.recordAuth(r, prin.TenantID, prin.UserID, "auth.password_change", nil)
 	writeJSON(w, http.StatusOK, map[string]any{"changed": true})
 }
 

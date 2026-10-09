@@ -212,6 +212,15 @@ func TestDraftInstructionsKeepAudienceStyleLength(t *testing.T) {
 	}
 }
 
+func TestDraftInstructionsPageContentRequiresNarrativeFlow(t *testing.T) {
+	got := draftInstructions(narration.ModePolish, inputPage, ScriptDraftSnapshot{})
+	for _, want := range []string{"清晰主线", "核心结论", "关键关系", "不要按版面顺序逐条复述"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("页面内容讲稿指令缺少 %q：%q", want, got)
+		}
+	}
+}
+
 // TestPageStepStateIncludesDegraded 守住"降级不得记为成功"（M9）：
 // 数字/单位/型号校验两轮不过时 draftText 会把**原始素材**当稿落库（draftDegraded）。
 // 若它被映射成 StepSuccess，界面就会把"页面要点片段"报告成"成稿完成"（A26：不得假成功）。
