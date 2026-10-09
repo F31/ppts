@@ -68,6 +68,7 @@ var assetRegistry = []assetSpec{
 	{Name: "notes", Expires: true, Note: "幻灯片备注 JSON"},
 	{Name: "scriptdraft", Expires: true, Note: "一键成稿缓存"},
 	{Name: "insight", Expires: true, Note: "逐页洞察 JSON（LLM 生成，按 revision+slide 寻址）"},
+	{Name: "alignment_vad", Expires: true, Note: "共享音频的 VAD 对齐重算缓存（按 configHash+版本寻址，可随时重建）"},
 
 	// —— 有自己的生命周期，禁止按龄过期 ——
 	{Name: "source", Expires: false,

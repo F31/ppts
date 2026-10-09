@@ -21,6 +21,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/pronunciation"
@@ -32,6 +33,20 @@ const ttsAdapterVersion = "v1"
 // sharedCacheProject 是租户级共享缓存的伪项目段（G2-7 内容哈希去重），
 // 音频与分段清单按内容寻址存放，跨项目复用同一对象；仍受租户前缀隔离。
 const sharedCacheProject = "shared"
+
+// vADAlignmentCacheVersion 标识「共享音频重算对齐」缓存对象的版本。
+// 与 alignmentCacheVersion 解耦：即使对齐算法保持不变，若要强制重扫（例如怀疑缓存损坏）
+// 也可以单独提升此版本使旧对齐缓存失效，而无需触发全部清单重建。
+const vADAlignmentCacheVersion = 1
+
+// cachedAlignment 是共享音频对齐重算的对象缓存载荷。
+// 键 = 共享音频 configHash + 对齐缓存版本；内容寻址幂等：同 (configHash, version) 的
+// 音频与文本必然产生同一对齐结果，因此无需 TTL 失效。AudioHash 用于防异常覆盖。
+type cachedAlignment struct {
+	AudioHash string         `json:"audioHash"`
+	Version   int            `json:"version"`
+	Alignment *tts.Alignment `json:"alignment"`
+}
 
 // NarrationSnapshot fixes all inputs used by a narration job. A later script
 // edit must enqueue a new job rather than changing an in-flight job's inputs.
@@ -958,6 +973,10 @@ func (h *NarrationHandler) loadSharedSegment(ctx context.Context, key objectstor
 // realignSharedSegment 复用已缓存音频，用当前对齐算法重算字级时间戳（不重新合成、不额外计费）。
 // 仅当原对齐为估算类（estimated/estimated_vad，即非供应商原生时间戳/强制对齐）且新算法确有
 // 改进（VAD 生效）时才替换，避免把更可信的时间戳降级。
+//
+// 计算缓存：对齐结果只依赖 (音频字节, 文本, 时长)，而共享音频按 configHash 内容寻址、
+// 文本与合成配置都进入 configHash，故对同一 (configHash, 对齐版本) 结果幂等。重算前先查
+// 共享对齐缓存对象，命中则免去整段 WAV 读取与 RMS/静音扫描；未命中重算后写回。
 func (h *NarrationHandler) realignSharedSegment(ctx context.Context, seg *SegmentAsset, text string) (*SegmentAsset, bool) {
 	if seg == nil || seg.Alignment == nil || seg.DurationMS <= 0 {
 		return nil, false
@@ -972,6 +991,18 @@ func (h *NarrationHandler) realignSharedSegment(ctx context.Context, seg *Segmen
 	if err != nil {
 		return nil, false
 	}
+	// 对齐缓存键派生自共享音频 configHash + 版本：configHash 已涵盖文本与合成配置。
+	cacheKey := objectstore.ObjectKey{
+		TenantID: audioKey.TenantID, ProjectID: sharedCacheProject, Revision: "cache",
+		AssetType: "alignment_vad", AssetID: audioKey.AssetID + fmt.Sprintf("-a%d", vADAlignmentCacheVersion), Ext: "json",
+	}
+	if cached, ok, err := h.loadCachedAlignment(ctx, cacheKey, seg); err == nil && ok {
+		observability.TTSVADAlignmentCache("hit")
+		upgraded := *seg
+		upgraded.Alignment = cached
+		return &upgraded, true
+	}
+	observability.TTSVADAlignmentCache("miss")
 	r, _, err := h.objects.Get(ctx, audioKey)
 	if err != nil {
 		return nil, false
@@ -985,9 +1016,57 @@ func (h *NarrationHandler) realignSharedSegment(ctx context.Context, seg *Segmen
 	if align.Method != tts.AlignEstimateVAD {
 		return nil, false // VAD 未生效，保留原结果
 	}
+	// 写回对齐缓存：后续同 configHash 的复用直接命中，避免重复全量扫描。
+	if err := h.storeCachedAlignment(ctx, cacheKey, seg, align); err != nil {
+		// 缓存写失败不阻塞：重算结果仍可立即使用，只是下回再算一次。
+		_ = err
+	}
 	upgraded := *seg
 	upgraded.Alignment = &align
 	return &upgraded, true
+}
+
+// loadCachedAlignment 读取共享音频的对齐重算缓存；音频哈希或缓存版本不匹配时视为未命中。
+func (h *NarrationHandler) loadCachedAlignment(ctx context.Context, key objectstore.ObjectKey, seg *SegmentAsset) (*tts.Alignment, bool, error) {
+	r, _, err := h.objects.Get(ctx, key)
+	if errors.Is(err, objectstore.ErrObjectNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	data, readErr := io.ReadAll(r)
+	closeErr := r.Close()
+	if readErr != nil {
+		return nil, false, readErr
+	}
+	if closeErr != nil {
+		return nil, false, closeErr
+	}
+	var cached cachedAlignment
+	if err := json.Unmarshal(data, &cached); err != nil || cached.Alignment == nil {
+		return nil, false, nil
+	}
+	if cached.Version != vADAlignmentCacheVersion || cached.AudioHash != seg.AudioHash {
+		return nil, false, nil
+	}
+	if cached.Alignment.Text != seg.Alignment.Text {
+		return nil, false, nil
+	}
+	return cached.Alignment, true, nil
+}
+
+// storeCachedAlignment 写回共享音频的对齐重算缓存。
+func (h *NarrationHandler) storeCachedAlignment(ctx context.Context, key objectstore.ObjectKey, seg *SegmentAsset, align tts.Alignment) error {
+	payload, err := json.Marshal(cachedAlignment{
+		AudioHash: seg.AudioHash, Version: vADAlignmentCacheVersion, Alignment: &align,
+	})
+	if err != nil {
+		return err
+	}
+	return h.objects.Put(ctx, key, bytes.NewReader(payload), objectstore.ObjectMeta{
+		ContentType: "application/json", ContentHash: hashBytes(payload), Size: int64(len(payload)),
+	})
 }
 
 func synthesisHash(snapshot NarrationSnapshot, capabilities tts.VoiceCapabilities, text string, sc tts.SpeechControl) (string, error) {
