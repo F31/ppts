@@ -1,287 +1,458 @@
-# PPT 自动讲解工具
+# ppts — AI-Narrated Presentation Platform
 
-将 PPTX 一键转化为"专业讲解"：AI 讲稿 + 正式 TTS 配音 + 页面同步字幕，产出可试听、可修改、可导出的讲解工程。
+> Turn a static PPTX into a **self-narrating** asset: AI script + production TTS voice + slide-synced
+> subtitles — a complete narrated deck you can audition, edit slide by slide, and export to video.
 
-- 技术基线：《PPT自动讲解工具-技术方案-V4.0.md》（`docs/`）
-- 开发计划：`docs/PPT自动讲解工具-开发计划-V1.0.md`
-- 组件依赖：go-pptx v2.0.0（`github.com/F31/go-pptx/v2`，公共面为 `pptx` 子包；开发期经 `go.work` 指向本地产库）
-- go-pptx 增强/缺陷走统一跟踪计划：`docs/go-pptx特性与bug跟踪计划.md`
+🌐 **English** | [简体中文](README.zh-CN.md)
 
-## 目录结构
+![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
+[![CI](https://github.com/F31/ppts/actions/workflows/ci.yml/badge.svg)](https://github.com/F31/ppts/actions/workflows/ci.yml)
+
+![Narration page: slide navigator + three script modes](assets/demo/ppts1.png)
+
+![Script editing and voice playback: segment-level editing, player with timeline and subtitles](assets/demo/ppts2.png)
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Advantages](#key-advantages)
+- [Features](#features)
+- [Quick Start](#quick-start)
+- [Deployment](#deployment)
+- [Architecture](#architecture)
+- [Configuration](#configuration)
+- [Observability](#observability)
+- [Security](#security)
+- [Development](#development)
+- [Documentation](#documentation)
+- [Contributing and License](#contributing-and-license)
+
+---
+
+## Overview
+
+ppts solves a plain but universal problem: **the deck is done — but nobody is there to present it.**
+
+> The proposal you emailed never gets read properly. The onboarding material has to be presented by you
+> for the twentieth time. You want to publish it as a video, a podcast episode, or an accessible asset —
+> and then you discover it still needs screen recording, voice-over recording and manual subtitling.
+> Expensive enough that you just give up.
+
+ppts pulls that entire chain into one closed pipeline:
 
 ```text
-cmd/ppts          单一入口：server（API+前端）/ worker / migrate / version 子命令
-cmd/local-engine  桌面 Go sidecar（G4）
-internal/project  源文件版本/页面/元素/导入报告 + go-pptx 读适配器
-internal/narration 讲稿/分段/来源锚点/术语/审核
-internal/pipeline 任务状态/重试/租约/取消
-internal/media    音轨/字幕/时间轴/导出
-internal/tenant   身份/角色/策略/RLS
-internal/usage    额度/结算/账本/成本
-internal/integrations  LLM/TTS/渲染/存储适配（含 objectstore）
-proto/ppts/v1     Connect 契约（8 个服务）
-migrations        SQL 迁移（expand→migrate→contract）
-web/              前端 TypeScript 工作区（Vite + React）
-testdata          兼容性语料/评测集
-docs/             技术方案/开发计划/ADR/跟踪计划
+Upload PPTX ──▶ Parse slides/elements ──▶ Generate AI script ──▶ Production TTS ──▶ Align subtitles & timeline
+                    │                                                                   │
+                    └────── Optional slide rendering (LibreOffice → PDF → PNG)           ▼
+                                                                 Export: Web deck / MP4 / SRT / VTT
 ```
 
-## 开发命令
+**Who it is for**
+
+- Content, training and product teams: turn existing decks into listenable, watchable assets in bulk.
+- Teams repurposing decks into video or localized formats: export SRT / VTT straight into an editor.
+- Go developers: every capability is exposed as Connect RPC and REST endpoints, embeddable in your own platform.
+
+**Technology base**: PPTX parsing comes from the companion pure-Go SDK
+[go-pptx](https://github.com/F31/go-pptx) (v2.0.3); TTS text normalization is handled by the standalone
+[textnorm](https://github.com/F31/textnorm) component. Together they form the three layers
+**SDK → component → platform**.
+
+---
+
+## Key Advantages
+
+| # | Advantage | Notes |
+|---|---|---|
+| 1 | **One pipeline, not a tool grab bag** | Upload, parse, script, voice, subtitles and export are integrated; a single tenant model and job state machine spans the whole chain |
+| 2 | **AI scripts you can trust** | After generation, a deterministic entity validator checks numbers / units / dates / model names. If something drifts, at most one targeted correction is attempted; if it still drifts, the system **falls back to the original text** — better no AI than an unapproved rewrite of your numbers |
+| 3 | **Traceable provenance** | Every script segment carries a structured source anchor (which shape / note / slide image it came from). Anchors live server-side; client-supplied anchors are rejected |
+| 4 | **Cost-aware** | Segment audio is content-addressed and cached, so identical synthesis settings are reused across slides and projects — zero TTS calls, zero duplicate storage |
+| 5 | **Deploys at your scale** | Same binary: SQLite mode works out of the box with no config; PostgreSQL mode is a full multi-tenant SaaS backend |
+| 6 | **Operable** | Multi-tenancy with five roles, quota and billing split (user price vs. provider cost), audit trails, full data export and hard erasure |
+| 7 | **Engineering receipts** | HTTP end-to-end tests against real PostgreSQL (real workers, real storage), a 100-page evaluation corpus with an AI entity-validation gate, and five automated frontend gates |
+
+---
+
+## Features
+
+### Content and scripts
+
+- **Three script modes**: verbatim reading / polished narration (written → spoken register) / AI-generated narration (adds background and explanation)
+- **Segment-level editing**: shorten, polish, bridge, **pronounce** (tenant-level pronunciation dictionary fixing misreads of CUDA / MySQL / Kubernetes and friends), and pause
+- **Optimistic concurrency**: saves carry `expected_revision`; on conflict the backend returns the latest version and the frontend loads it with a notice
+- **Source anchors**: a structural channel (`shape_*`, confidence 1.0) plus a visual channel (`visual_*`, low confidence, flagged for review)
+
+### Narration and export
+
+- **Production TTS provider**: SiliconFlow (CosyVoice2) by default over an OpenAI-compatible interface — swap providers with one env var
+- **Segment-level regeneration**: only changed segments are re-synthesized; untouched ones hit the cache at zero TTS cost
+- **Target-duration loop**: after the first pass the rate deviation is measured; beyond ±10% the speaking rate is adjusted proportionally and the segment re-synthesized
+- **Export formats**: web narrated deck (zip: timeline + subtitles + audio segments) / MP4 / SRT / VTT
+- **Slide image rendering**: LibreOffice → PDF → PNG, optional enhancement. Render failure only marks that step failed; parsing still succeeds
+
+### Platform capabilities
+
+- **Multi-tenancy**: PostgreSQL row-level security (`FORCE RLS`) with five roles (Owner / Admin / Editor / Reviewer / Viewer)
+- **Model gateway**: TTS / LLM endpoints, models and voices configured from the web UI at both tenant and platform level
+- **Quota and billing**: metered by tokens / generated seconds with an idempotent ledger; **provider cost and user billing are tracked separately**
+- **Audit and compliance**: operation auditing (coverage matrix extracted from source AST and gated in CI), object storage with expiry archiving, full tenant data export and erasure
+- **Three storage backends**: local / S3-compatible / tenant-supplied credentials (BYOS), with optional server-side envelope encryption
+
+### Connect RPC services
+
+| Service | Responsibility |
+|---|---|
+| `ProjectService` | Create / read / list / archive projects, list slides |
+| `UploadService` | Authorized direct upload: create / complete / abort |
+| `ScriptService` | Read / update / approve / lock scripts, draft generation |
+| `NarrationService` | Create narration generation jobs |
+| `PlaybackService` | Narration timeline and playback manifest (audio + subtitles + slide images) |
+| `ExportService` | Create export, read artifact, create download link |
+| `JobService` | Job query, cancel, retry and event stream |
+| `TenantService` | Member roles, usage, audit, export and erasure |
+
+---
+
+## Quick Start
+
+### Option 1: Docker Compose (recommended first try)
 
 ```bash
-GOWORK=off go build ./...        # 使用发布版 go-pptx v2.0.0
-GOWORK=off go vet ./...
-GOWORK=off go test ./...
-
-# 含 PostgreSQL 的测试（共享测试库，必须串行 -p 1）
-PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 ./... -count=1
-
-cd web && npm ci && npm run build
+git clone https://github.com/F31/ppts.git && cd ppts
+cd web && npm ci && npm run build && cd ..   # the frontend build is baked into the api image
+docker compose build
+docker compose up -d
+# API + console: http://localhost  (health check http://localhost/healthz)
 ```
 
-> **读测试输出的两条口径**：① 默认 `go test ./...` 不含 PG 用例——它们由 `-tags=pg` 打开，
-> CI 的 `postgres` job 用真实的 postgres:17 service 跑这一支，"ok 包数"因此**不是**全部用例都执行过的意思；
-> ② 依赖外部工具/凭据（ffmpeg、poppler、S3、真实音频）的用例一律 `t.Skip` 而非失败，
-> 所以 SKIP 计数必须与 ok/FAIL 一起看——SKIP 变多往往意味着环境缺了什么，而不是运气变好了。
->
-> `cd web` 侧另有两条不进 `npm run build` 的门禁：`node contrast.mjs`（对比度）已并入 build，
-> 但 `npm run i18n:check`（i18n 孤儿/中英不对等）需单独执行，CI 的 web job 已单独挂一步。
+> If you write your own orchestration: the api binds to privileged port 80, and the api service in
+> `docker-compose.yml` carries `cap_add: [NET_BIND_SERVICE]`. **Omit that and the process exits with
+> `EACCES` at bind time.**
 
-## 容器构建与部署
+Images: api ≈ **168MB** (a single Go process serving both API and static frontend assets — no nginx needed),
+worker ≈ **820MB** (includes LibreOffice, poppler, CJK subtitle fonts and static ffmpeg). Both run as
+uid 10001, non-root.
+
+### Option 2: Single binary (SQLite, zero config)
 
 ```bash
-docker compose build        # 构建 ppts-api / ppts-worker 镜像
-docker compose up -d        # 启动（api 监听 :80，含 /healthz 健康检查）
+scripts/package.sh [version]       # defaults to git describe
+tar xzf dist/ppts-<version>-linux-amd64.tar.gz && cd ppts-<version>-linux-amd64
+sudo ./install.sh                  # deps → account → config → migrate → systemd start
 ```
 
-- `Dockerfile.api`：多阶段构建，Debian slim 运行时仅含 CA 证书/时区数据/curl；Go 单进程同时服务 API 与前端静态资源（`PPTS_WEB_ROOT=/app/web-dist`，SPA history 兜底 + `/assets/` immutable 缓存头），无需 nginx。两个镜像均以 uid 10001 非 root 运行（`HOME=/home/ppts`，worker 的家目录要给 LibreOffice 写配置）。由于 api 要占 80 特权端口，`docker-compose.yml` 的 api 服务带了 `cap_add: [NET_BIND_SERVICE]` —— **自建编排时不要漏这一项**，否则进程一 bind 就 `EACCES` 退出。
-- `Dockerfile.worker`：Debian slim 运行时含 poppler-utils、`fonts-wqy-zenhei`（中文字幕烧录字体）、`libreoffice-impress-nogui`（页面渲染）与静态 ffmpeg/ffprobe（johnvansickle 构建，带 libass 字幕滤镜）；按最小依赖裁剪后镜像约 820MB，api 镜像约 168MB。
-- 前端产物需先 `cd web && npm ci && npm run build` 生成 `web/dist`，api 镜像构建时随上下文打包。
+The release tarball ships the single entrypoint binary `ppts` (fully static, `CGO_ENABLED=0`), static
+ffmpeg/ffprobe, `install.sh`, systemd units and config templates. **The frontend build and SQL migrations
+are embedded in the binary** — one file is enough to deploy.
 
-## 二进制发行（单机部署）
+Four subcommands:
 
-```bash
-scripts/package.sh [版本号]   # 缺省取 git describe；产出 dist/ppts-<版本>-linux-amd64.tar.gz
-```
+| Command | Purpose |
+|---|---|
+| `ppts server` | API + web console (listens on `:8080` by default, override with `PPTS_HTTP_ADDR`) |
+| `ppts worker` | Job executor (parse / script / narrate / export) |
+| `ppts migrate` | Idempotently apply embedded migrations |
+| `ppts version` | Print version |
 
-发行包含单一入口 `ppts`（CGO_ENABLED=0 纯静态，版本号经 ldflags 注入，子命令见下）、静态
-ffmpeg/ffprobe、`install.sh`、systemd unit 与配置模板。前端产物（`web/dist`）与 SQL 迁移均内嵌进二进制：
-
-- `ppts server`：API + 前端控制台（`PPTS_WEB_ROOT` 未设置时服务内嵌前端，`web/embed.go`，
-  SPA 兜底与外部目录同一套语义）；
-- `ppts worker`：任务执行器（解析/讲稿/配音/导出）；
-- `ppts migrate`：幂等应用内嵌迁移（`internal/migrate`），需 superuser DSN（`PPTS_MIGRATE_DATABASE_URL`，
-  回退 `PPTS_DATABASE_URL`）；`ppts version` 打印版本。
-
-目标机安装（Debian/Ubuntu 为主，RHEL 系 best-effort）：
+Minimal local start (SQLite default, data in `~/.ppts/ppts.db`, no login):
 
 ```bash
-tar xzf ppts-<版本>-linux-amd64.tar.gz && cd ppts-<版本>-linux-amd64
-sudo ./install.sh     # 装系统依赖 → 建 ppts 账号 → 生成 /etc/ppts/config.env → 建库迁移 → systemd 启动
-```
-
-`install.sh` 幂等可重复执行，不覆盖既有配置；`SKIP_DEPS=1` 跳过依赖安装、`SKIP_START=1` 只装不启。
-布局：`/opt/ppts/bin`、`/etc/ppts/config.env`、`/var/lib/ppts`（本地对象存储与 LibreOffice profile）。
-注意：随包 ffmpeg 静态构建含 GPL 组件（x264/libass），商业分发需确认许可证合规。
-
-当前 Connect API 已提供 Project/Script/Narration/Playback/Export/Upload 主链路：
-- `ProjectService`：`Create/Get/List/Archive/GetSlides`；
-- `UploadService`：`CreateUpload/CompleteUpload/AbortUpload`（授权直传：分配受限对象键与预签名写链接，完成时校验大小/哈希/租户所有权后才创建源版本并入队解析任务）；
-- `ScriptService`：`Get/Update/Approve/Lock/GenerateDraft`（原文讲稿生成）；`NarrationService.CreateGeneration`；`ExportService`（`CreateExport/GetArtifact/CreateDownload`，格式 `Web 讲解工程`(zip：timeline+字幕+音频片段)/`MP4`(需 page_png_keys)/`SRT`/`VTT`）；`PlaybackService.GetNarration/GetManifest`（GetNarration 发现最近成功配音时间轴，并在解析阶段已渲染页面时返回按 timeline 页序对齐的 `page_png_keys`；渲染器不可用/失败时降级为音频+字幕，GetManifest 允许无页面图）。
-
-页面图渲染（G0-2/G1-6）：worker 解析任务在读完源 PPTX 后调用 `internal/integrations/render`（LibreOffice→PDF→poppler→PNG）渲染全页，写入 `{tenant}/{project}/src-NN/render/page-NNNN.png`，并以 `render/pages.json` 记录页序/slideId 清单（登记在解析任务 `pages` 步骤的 `result_ref`）；渲染是可选增强，失败只记步骤失败、不影响解析成功。
-
-Web 真实链路：登录（正式 OIDC，未配置时开发身份入口）→ 控制台（首页/讲解项目/任务中心/系统设置）→ 直传 → 解析（可选渲染页面图）→ 展示真实页面 rail → 选择讲稿模式（原文/润色/AI 生成）→ 逐页编辑并保存到真实 `UpdateScript`（`expected_revision` 乐观并发，冲突时后端返回 latest、前端加载最新版并提示）→ 生成配音 → 拉取真实播放 manifest（音频+字幕+页面图）→ 导出下载（Web 讲解工程/MP4/SRT/VTT）；`local://` 预签名链接（上传、播放、导出）统一由 API 的 `/ppts/object/{key}` 端点重写服务，S3 后端返回原生预签名 URL。真实链路的 HTTP 端到端验收测试见 `internal/api/e2e_test.go`（`-tags=pg`，真实 PG + 本地存储 + 真实 worker，TTS 用 fake）。
-
-## 本地服务
-
-数据库支持两种模式（同一二进制，经 `PPTS_DB_DRIVER` 切换）：
-
-- **SQLite（默认，单租户轻量）**：无需外部数据库，数据落 `~/.ppts/ppts.db`，无登录（固定本地
-  租户/用户），开箱即用。能力边界与配置见 [`docs/SQLite单租户部署.md`](docs/SQLite单租户部署.md)。
-- **PostgreSQL（多租户全功能）**：RLS + 成员/角色 + 协作 + 调度双连接 + 邮箱/OIDC 登录（下节）。
-
-```bash
-# SQLite 轻量模式（默认）
 PPTS_OBJECT_BACKEND=local PPTS_OBJECT_ROOT=./var/ppts-objects \
 PPTS_OBJECT_SECRET="$(head -c32 /dev/urandom | base64)" \
 GOWORK=off go run ./cmd/ppts server
 ```
 
-API 依赖已应用迁移的 PostgreSQL。生产身份可配置 OIDC bearer token 校验：设置
-`PPTS_OIDC_ISSUER`、`PPTS_OIDC_CLIENT_ID` 后，API 通过 issuer discovery/JWKS 验签，默认从
-`tenant_id` 与 `sub` claims 推导租户和用户；可用 `PPTS_OIDC_TENANT_CLAIM`、`PPTS_OIDC_USER_CLAIM`
-覆盖 claim 名。配置 OIDC 后默认拒绝 G1 开发身份头；仅本地开发可显式设置 `PPTS_AUTH_DEV_HEADERS=true`
-继续允许 `X-PPTS-Tenant-ID` / `X-PPTS-User-ID` fallback。
+Then open <http://localhost:8080>.
 
-Web OIDC PKCE 登录使用 Vite 环境变量：`VITE_OIDC_AUTHORIZATION_ENDPOINT`、`VITE_OIDC_TOKEN_ENDPOINT`、
-`VITE_OIDC_CLIENT_ID`，可选 `VITE_OIDC_REDIRECT_URI`、`VITE_OIDC_SCOPE`。登录后前端把 token 作为
-`Authorization: Bearer` 调用 API；未配置 OIDC 时仍走本地开发身份头。
-
-**角色与 RLS（G3-1，`migrations/0006_rls.sql`/`0012_migrator_role.sql`）**：迁移账号 `ppts_migrator`
-持有表 owner 权限，运行时账号 `ppts_app` 必须 `NOSUPERUSER NOBYPASSRLS` 且非表 owner。租户业务表启用 `FORCE ROW LEVEL SECURITY`，
-策略依据事务局部 `app.tenant_id`；业务代码通过 `internal/tenant.Run` 设置上下文，缺失上下文时访问被拒绝。
-因此 `PPTS_DATABASE_URL` 应使用非 owner 的运行账号（测试库同理）。
-
-跨租户调度（ADR-018，`migrations/0013_scheduler_role.sql`）：`ppts_scheduler` 仅可执行受限函数
-`ppts_claim_next_job`，无业务表通用读取权；worker 未设 `PPTS_TENANT_ID` 时按跨租户模式全局领取（按租户在途数初版公平排序），
-并可用 `PPTS_SCHEDULER_DATABASE_URL` 提供独立调度连接，handler 执行与终态提交仍走业务连接。
-调度并发上限（`migrations/0016_scheduler_concurrency_cap.sql`）：`ppts_claim_next_job` 对 narration 任务
-执行 `tenants.policy.max_concurrent_jobs` 并发上限，避免单租户占满队列。
+### Option 3: PostgreSQL production mode
 
 ```bash
 PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
-PPTS_OBJECT_ROOT='./var/ppts-objects' \
+PPTS_OBJECT_ROOT=./var/ppts-objects \
 PPTS_OBJECT_SECRET='dev-download-secret' \
 GOWORK=off go run ./cmd/ppts server
 
 PPTS_DATABASE_URL='postgres://ppts_app:...@host:5432/ppts' \
 PPTS_TENANT_ID='00000000-0000-0000-0000-000000000000' \
-PPTS_OBJECT_ROOT='./var/ppts-objects' \
 PPTS_TTS_PROVIDER='fake' \
 GOWORK=off go run ./cmd/ppts worker
 ```
 
-`fake` TTS 只生成开发测试用静音 WAV，不构成正式供应商验收。
+> **The database account must be a restricted role that does not own the tables.** Migrations run as
+> `ppts_migrator`, which holds owner rights; the runtime account `ppts_app` must be
+> `NOSUPERUSER NOBYPASSRLS`, otherwise row-level security is bypassed. See [Security](#security).
 
-TTS 供应商（G1-5）由 `PPTS_TTS_PROVIDER` 选择：
-- `fake`（默认，开发/测试）：静音 WAV + 估算时长。
-- `siliconflow`（正式）：`PPTS_TTS_BASE_URL`（缺省 `https://api.siliconflow.cn`）、`PPTS_TTS_API_KEY`（必填，走环境变量/密钥管理，不写入仓库）、`PPTS_TTS_MODEL`（缺省 `FunAudioLLM/CosyVoice2-0.5B`）、`PPTS_TTS_VOICE`（voice 约定 `<model>:<voice>`，如 `FunAudioLLM/CosyVoice2-0.5B:alex`）。适配器调用 OpenAI 兼容 `/v1/audio/speech`，解码真实时长、规范化供应商占位大 data 长度的 PCM16 WAV（保证 media 链路可解码），无时间戳时构造估算对齐（AlignEstimate）；429/5xx 映射为可重试。
+---
 
-LLM 供应商（G2-2/G2-3）由 `PPTS_LLM_PROVIDER` 选择。`siliconflow` 使用 OpenAI 兼容 `/v1/chat/completions`：`PPTS_LLM_BASE_URL`（缺省 `https://api.siliconflow.cn`）、`PPTS_LLM_API_KEY`（必填，走环境变量/密钥管理，不写入仓库）、`PPTS_LLM_MODEL`（缺省 `Qwen/Qwen2.5-7B-Instruct`）、`PPTS_LLM_VISION_MODEL`（缺省 `Qwen/Qwen3-VL-8B-Instruct`）。当前用于 `ScriptService.GenerateDraft` 的 `SCRIPT_MODE_POLISH` 与 `SCRIPT_MODE_AI_GENERATED`：LLM 生成后由确定性实体校验器检查数字/单位/日期/型号是否保持；若漂移，最多定向修正一次，仍失败则回退原文，保证不产生未经批准的数字改写。
+## Deployment
 
-模型网关控制面（G3-11，`migrations/0023_model_gateways.sql`）：TTS/LLM endpoint、API key、模型、视觉模型、音色可通过 Web 顶栏"模型网关"配置，API 端点为 `/api/model-gateways`（admin only，变更写审计）。API key 以 AES-GCM 加密保存到 `model_gateways.encrypted_creds`，密钥来自 `PPTS_GATEWAY_AES_KEY_BASE64`，未设置时回退 `PPTS_BYOS_AES_KEY_BASE64`；读接口只返回 `hasKey/keyMasked`。Worker 运行时按"租户默认 → 平台默认 → env fallback"解析配置并缓存 30s；API 写入后同进程立即失效，跨进程最多 30s 收敛。首次启动且平台行为空时会把 `PPTS_TTS_*` / `PPTS_LLM_*` 幂等种子为平台默认 `env` 网关，保持零配置开发体验。Web 配音生成优先使用默认 TTS 网关的 `voice`，未配置时才回退开发音色。
+### Install script
 
-发音词典（G2-4）：租户级 JSONB 规则表 `pronunciation_dictionaries`，每条规则 `{pattern, replacement, enabled}` 按字面量全局替换 spoken_text，解决 CUDA/MySQL/Kubernetes 等专有名词误读。Worker 合成前加载租户最新词典并应用替换；规则变更自动使合成缓存失效。HTTP CRUD 端点：`GET/POST /api/pronunciation`、`PUT/DELETE /api/pronunciation/{id}`（需认证，tenant 隔离）。
+`install.sh` **is idempotent and safe to re-run**; it never overwrites existing configuration.
 
-分段级重生成 + 时长控制（G2-5）：`NarrationSnapshot.SegmentIDs` 非空时仅统计目标分段进度，全部分段仍走 `synthesizeSegment`（未改分段命中缓存，零 TTS 开销）；`TargetDurationMS` 非零时首轮合成后计算速率偏差，超出 ±10% 自动按比例调整 `SpeechControl.RatePercent`（50–200% 范围）重合成。
+```bash
+SKIP_DEPS=1  sudo ./install.sh     # skip system dependency installation
+SKIP_START=1 sudo ./install.sh     # install only, do not start
+```
 
-LLM token 预算（G2-5）：`usage.KindLLMTokens` 计量文案生成 token。每次 LLM 调用前按 `EstimateLLMTokens`（中文 1.5 字符/token 粗估）预占，完成后按供应商真实 prompt+completion 结算；超出额度任务失败。
+Layout: `/opt/ppts/bin`, `/etc/ppts/config.env`, `/var/lib/ppts` (local object storage and LibreOffice profile).
+Systemd units: `packaging/ppts-api.service` and `packaging/ppts-worker.service`.
 
-内容哈希去重（G2-7）：分段音频按内容寻址（synthesis configHash）存放在租户级共享路径 `{tenant}/shared/cache/audio/{configHash}.{ext}`，分段清单存 `shared/cache/segments/{configHash}.json`。相同合成配置（文本+音色+语率+模型）跨页面/跨项目直接复用，零 TTS 调用、零重复存储；命中率经 `ppts_tts_cache_hit_total`（scope=project/shared）观测。
+> ⚠️ The bundled ffmpeg is a static build containing GPL components (x264 / libass).
+> **Verify license compliance before commercial distribution.**
 
-评测集与审核门禁（G2-6）：`scripts/gen_corpus` 生成 13 套共 100 页语料（含数字/单位/型号实体，总页数 <100 时显式失败）；`scripts/ai_eval` 运行评测门禁——逐页 LLM polish 后用确定性实体校验器检查关键数字是否忠于来源，报告写 `testdata/ai-eval/report.json`（passRate/P95），任一页实体漂移即失败；无 LLM 供应商时优雅跳过。人工审核门禁：配音须 `Approve`/`Lock`（`RequireConfirmed`，API 与 worker 双侧校验），AI 草稿不覆盖既有稿件。
+### External command dependencies
 
-来源锚点（G2-1）：`ScriptRevision.segments[].source_anchors` 返回结构化 provenance（`slide_id`/`shape_id`/`kind`/`raw`/`confidence`）。解析文档中的 shape 文本生成草稿时写入 `shape_*` anchors（结构通道 confidence=1.0），备注 fallback 写入 `notes` anchor；若解析阶段已产生页面 PNG 且配置视觉模型，则再从 `render/page-NNNN.png` 提取 `visual_*` anchors（低置信、待审核证据）。视觉通道是可选增强，页面图或模型不可用时不影响草稿生成。用户编辑讲稿时服务端按 `segment_id` 保留既有 anchors，不接受客户端伪造来源。旧版 `source_refs` 继续保留。
+| Capability | Dependency | Behavior when missing |
+|---|---|---|
+| Slide image rendering | `soffice` (LibreOffice), `pdftoppm` / `pdfinfo` (poppler) | Rendering is an optional enhancement and fails; parsing still succeeds and artifacts may lack slide images |
+| A/V muxing / MP4 export | `ffmpeg` / `ffprobe` | The corresponding export format is unavailable |
 
-渲染（G0-2）：`internal/integrations/render` 使用 LibreOffice→PDF→poppler→PNG。二进制路径可经 `PPTS_SOFFICE_BIN`/`PPTS_PDFTOPPPM_BIN`/`PPTS_PDFINFO_BIN` 覆盖，渲染临时目录根用 `PPTS_RENDER_WORK_ROOT`（当 soffice 为 Windows `.exe` 且经 WSL interop 运行时必须指向 `/mnt/<drive>` 下，如 `D:\LibreOffice\program\soffice.exe`）。
+Binary paths can be overridden with `PPTS_SOFFICE_BIN` / `PPTS_PDFTOPPPM_BIN` / `PPTS_PDFINFO_BIN`.
+When invoking soffice through WSL interop on Windows, `PPTS_RENDER_WORK_ROOT` must point to a path
+under `/mnt/<drive>`.
 
-对象存储后端（G3-6）：`PPTS_OBJECT_BACKEND` 指定默认后端（缺省 `local`）。
-`local` 使用 `PPTS_OBJECT_ROOT`（`PPTS_OBJECT_SECRET` 用于本地签名链接）；
-`s3` 使用 `PPTS_S3_ENDPOINT`/`PPTS_S3_BUCKET`/`PPTS_S3_ACCESS_KEY`/`PPTS_S3_SECRET_KEY`/`PPTS_S3_REGION`/`PPTS_S3_USE_SSL`。
-租户 `tenants.policy.storage_backend` 可覆盖默认后端，未注册后端会显式失败。
-租户 `tenants.policy.storage_region` 用于 S3 兼容后端按区域选择桶：对象路由到 `{PPTS_S3_BUCKET}-{region}`（懒创建并缓存），
-区域为空时回退基础桶；生命周期规则同样落到对应区域桶。
-存储生命周期下发：租户策略 `storage_transition_days`/`storage_expiration_days` 显式配置时，worker 通过
-`PPTS_STORAGE_LIFECYCLE_INTERVAL`（默认 6h）周期调用对象存储生命周期接口；`source_retention_days` 仍由
-数据库保留清理精确处理，不映射为桶级过期规则。
-存储占用可见性：API/worker 对象存储写入会同步维护 `object_inventory`；`TenantService.StorageUsage` 按源上传、
-artifact 与清单中未被前两者覆盖的 work/audio/export/archive 等对象汇总字节数/对象数，不依赖对象存储 List。
-BYOS 凭据（G3-6，`migrations/0015_byos_credentials.sql`）：`byos_credentials` 按租户 RLS 隔离，配置以 AES-GCM
-密文保存（AAD 绑定 tenant/credential/backend），`kms_key_id` 记录外部包裹密钥标识；租户策略
-`storage_backend=byos:<credential_id>` 且设置 `PPTS_BYOS_AES_KEY_BASE64` 时，Registry 会按需解密凭据并动态构建
-S3 兼容后端。
-对象信封加密：设置 `PPTS_OBJECT_ENCRYPTION_KEY_BASE64` 后，租户策略 `envelope_encryption=true` 的对象 Put/Get
-会在服务端 AES-GCM 加/解密；为避免绕过服务端加密，启用加密租户的直接预签名读写会返回不支持。
+---
 
-API 暴露 `/debug/vars` 用于读取 expvar 指标。它与 `/metrics` 一样要求
-`Authorization: Bearer $PPTS_METRICS_TOKEN`；**未配置该环境变量时一律拒绝**（fail-closed，
-忘配 = 拒绝而非裸奔）——该端点会导出完整启动命令行，命令行参数可能含密钥。
-本机/CI 需要匿名拉取时显式设置 `PPTS_DEBUG_VARS_PUBLIC=true`。worker 已接入基础任务指标：
-`ppts_worker_jobs_total`（按事件/终态）、`ppts_worker_job_duration_ms_total`（执行时长）、
-`ppts_worker_queue_wait_ms_total`（领取时按 `CreatedAt` 记录的队列等待时长，均值=sum/claimed）、
-`ppts_worker_queue_oldest_wait_seconds`（队列积压最老任务等待时长，由 `migrations/0017_queue_backlog.sql`
-受限函数 + worker 周期报告器更新，`PPTS_QUEUE_BACKLOG_INTERVAL` 默认 30s），
-**按 job kind 拆分**的队列视图（P2-B3，多副本读同一份表，不是每副本各记一份）：
-`ppts_worker_queue_depth_by_kind`（可运行却还在排队）、`ppts_worker_queue_running_by_kind`（持租约在跑）、
-`ppts_worker_queue_backoff_by_kind`（`run_at` 未到，**不算积压**，单列以免凭空告警）、
-`ppts_worker_queue_oldest_wait_seconds_by_kind`（最老等待秒数；无排队任务时**不写**，未定义 ≠ 0），
-以及 TTS 指标 `ppts_tts_synthesis_total`、`ppts_tts_synthesis_duration_ms_total`、`ppts_tts_throttled_total`。
-键形如 `kind=narration`；没出现过的 kind 不会有键（"没见过"与"当前为 0"必须可区分）。
-某 kind 消失后最后一次取值会留在 Map 里删不掉，因此判断"还在不在用某个 kind"要看 `ppts_worker_jobs_total`
-的计数，别看 depth gauge。采集周期 `PPTS_QUEUE_DEPTH_INTERVAL`（默认 30s）。
+## Architecture
 
-**降级态指示器**（见 `docs/runbooks/SLO与告警.md`，出现即需处理，不是可选优化）：
-`ppts_tts_fake_provider_active`（假 TTS 在用 → 产出的是伪造音频）、
-`ppts_render_pages_disabled`（渲染禁用 → 产物可能缺内容）、
-`ppts_auth_dev_headers_active`（开发身份头放行 → 身份可被伪造，生产环境不得出现）。
+```text
+┌──────────────────────────────────────────────────────────────┐
+│  Console (React + Vite + TypeScript)                          │
+│  OIDC PKCE login / projects / narration / jobs / settings     │
+└───────────────────────────────┬──────────────────────────────┘
+                                │ Connect RPC + REST
+┌───────────────────────────────▼──────────────────────────────┐
+│  API (cmd/ppts server)                                        │
+│  8 Connect services · model gateway · object signing · audit  │
+└───────────────┬───────────────────────────┬───────────────────┘
+                │ enqueue                    │ read/write
+┌───────────────▼───────────────┐   ┌───────▼───────────────────┐
+│  Worker (cmd/ppts worker)      │   │  Storage                   │
+│  parse / script / voice /export│   │  SQLite or PostgreSQL (RLS)│
+│  lease · retry · cancel ·      │   │  Objects: local / S3 / BYOS│
+│  progress · retention · orphan │   │                            │
+└───────────────┬───────────────┘   └────────────────────────────┘
+                │
+        ┌───────┴────────┬──────────────┬──────────────┐
+        ▼                ▼              ▼              ▼
+    go-pptx          textnorm       LLM provider    TTS provider
+  (PPTX read/write) (text normalize) (OpenAI-compat) (OpenAI-compat)
+```
 
-`GET /debug/pprof/*` 默认**完全不挂载**，需显式 `PPTS_PPROF=true`，且同样要通过
-$PPTS_METRICS_TOKEN 的 Bearer 校验（heap/goroutine 会导出堆与调用栈内容）。
+### Reliability semantics of the job pipeline
 
-`GET /healthz` 真正探测数据库与对象存：任一项不可用即 `503`，响应体形如
-`{"status":"unhealthy","checks":{"database":{"state":"down"},"object":{"state":"up"}}}`。
-响应**只含分项状态、不含错误原因**（该端点免鉴权，错误原文只进服务端日志）。
-对象存后端若无法廉价探活会报 `unsupported` —— 这表示"没查"，既不等于健康也不等于故障。
-完整的 SLO 与告警规则见 `docs/runbooks/SLO与告警.md`。
-指标键默认只按 kind×event 聚合，避免以租户 UUID 作为高基数标签；排障时设置 `PPTS_METRICS_TENANT_LABELS=true`
-可启用租户维度。
-worker 日志统一为结构化 JSON（slog），后台循环（保留清理/审计归档/生命周期/队列积压）经
-`slog.NewLogLogger` 适配器输出，与 worker 自身日志一致。
-链路追踪（G3-8）：API RPC 通过 Connect interceptor 生成 span；创建任务时把 W3C `traceparent` 持久化到
-`jobs.traceparent`（`migrations/0018_job_traceparent.sql`），worker 执行时以 `SpanLink` 关联 API span，实现
-跨进程异步任务链路。未设置 `PPTS_OTEL_EXPORTER_OTLP_ENDPOINT` 时保持 no-op，零依赖运行；设置后经 OTLP 导出。
+- **State / retry / lease / cancel**: managed centrally by `internal/pipeline`; `ppts_claim_next_job` is a
+  restricted function, so the scheduler account has no generic read access to business tables
+- **Progress reporting**: the worker injects `pipeline.ReportProgress`; the handler call performs a
+  fenced conditional update. Narration reports 0–100% by synthesized segments
+- **Outbox**: `SetCommitStep` declares "final artifact steps that only exist once complete"; the worker
+  upserts them atomically **in the same transaction** as the job terminal state via `CompleteWithStep` —
+  there is no crash window where the step succeeded but the job never reached a terminal state
+- **Event stream**: `WatchEvents` uses a monotonic `seq` on a dedicated event table; clients resume with
+  `after_seq` (timestamps are deliberately not reused, which avoids dropping concurrent events in the same millisecond)
 
-租户策略 `tenants.policy.max_concurrent_jobs`（>0 时生效）限制配音生成的非终态任务数，超限返回 `ResourceExhausted`；
-同 `Idempotency-Key` 重放不受上限影响，仍返回既有任务。
+### Directory layout
 
-限流计数（`internal/api/ratelimit_shared.go`）跨副本共享：认证端点（注册/登录/找回/重发）的计数落在
-`migrations/0047_rate_limit.sql` 的 `ppts_rate_limit` 表，窗口起点按 epoch 对齐（各副本算出同一个窗口），
-pgxpool 非空时生效。查询失败自动降级为进程内计数并可自行恢复，**降级必须可观测**：
-`ppts_ratelimit_degraded=1`（各副本独立计数，实际放行量 = 限额 × 副本数）、`ppts_ratelimit_backend=shared|memory`、
-`ppts_ratelimit_degrade_total`（按 scope 累计）。
+```text
+cmd/ppts            Single entrypoint: server / worker / migrate / version
+cmd/local-engine    Desktop Go sidecar
+internal/project    Source file revisions / slides / elements / import report + go-pptx read adapter
+internal/narration  Scripts / segments / source anchors / terminology / approval
+internal/pipeline   Job state / retry / lease / cancel / events / outbox
+internal/media      Audio tracks / subtitles / timeline / export
+internal/tenant     Identity / roles / policy / RLS
+internal/usage      Quota / settlement / ledger / cost
+internal/integrations  LLM / TTS / rendering / storage adapters
+proto/ppts/v1       Connect contracts (8 services)
+migrations          SQL migrations (expand → migrate → contract)
+web/                Frontend workspace (Vite + React + TypeScript)
+docs/               Technical design / ADRs / runbooks / tracking plans
+```
 
-审计覆盖（P2-B2）由 `internal/auditcoverage` 从源码 AST 提取，矩阵经
-`go run ./scripts/audit_coverage -out docs/审计覆盖矩阵.md` 生成（勿手工编辑），
-并由 `internal/api/audit_coverage_test.go` 门禁四类高危操作的必测动作（删除/导出/公开发布/匿名访问）；
-匿名访问的审计受 `PPTS_AUDIT_ANONYMOUS_ACCESS=true` 控制，且门禁会拦截把 token / publicId / IP / UA
-写进审计的写法 —— 那是把短期凭据复制进更长寿的留存里。
+---
 
-审计日志（G3-4，`migrations/0009_audit.sql`）：`audit_events` 按租户隔离（FORCE RLS），记录任务取消/重试与
-保留清理删除等操作；`TenantService.ListAuditEvents` 提供 admin+ 审计读取 API，可按 action/resource_type/since 过滤。
-到期审计事件由 worker 归档到对象存储（JSONL）后清除：`PPTS_AUDIT_RETENTION_DAYS`（默认 365）控制保留期，
-`PPTS_AUDIT_ARCHIVE_INTERVAL`（默认 1h）控制执行周期；`TenantService.ListAuditArchives` 按 `object_inventory`
-返回归档对象清单（admin+）。
+## Configuration
 
-租户生命周期（G3-4，`migrations/0011_tenant_status.sql`）：`tenants.status` 为 `active/suspended/deleted`；
-API 默认检查租户 active 状态，停用/删除租户请求在进入 RPC 前返回 403/PermissionDenied。
+Everything is configured via environment variables (or `/etc/ppts/config.env` generated by the installer).
+Most used:
 
-用量与成本：`TenantService.Usage` 汇总当月生成秒数及成本分账金额，`TenantService.ProjectUsage` 按项目返回
-累计生成秒数、配音任务数与用户/供应商两类金额（账本经幂等键归属 narration 任务，G3-8）。
-定价表在 `internal/pricing`（每计量种类用户价/供应商成本/币种/版本），`PPTS_PRICE_BOOK` JSON 覆盖，
-缺省为占位价目；`migrations/0020_price_costs.sql` 在结算时同事务写入 `user_amount`/`supplier_cost`/`currency`，
-实现"供应商成本 vs 用户计费"分账（G3-2）。
-数据导出/擦除：`TenantService.ExportTenant/PurgeTenant`（owner+）把租户全部业务数据按表 JSONL 导出到对象存储，
-或执行对象 GC + 逐表清除并置 `tenants.status='deleted'`（`internal/tenant.ExportTenant/PurgeTenant`，PG 门禁覆盖）。
+| Variable | Purpose |
+|---|---|
+| `PPTS_DB_DRIVER` | `sqlite` (default, lightweight single tenant) or `postgres` (full multi-tenant) |
+| `PPTS_DATABASE_URL` | PostgreSQL runtime connection string (**must be a restricted, non-owner account**) |
+| `PPTS_MIGRATE_DATABASE_URL` | Migration DSN (needs higher privileges; falls back to `PPTS_DATABASE_URL`) |
+| `PPTS_HTTP_ADDR` | API listen address, default `:8080` |
+| `PPTS_OBJECT_BACKEND` | `local` (default) / `s3` / `byos:<credential_id>` |
+| `PPTS_OBJECT_ROOT` | Root directory for local object storage |
+| `PPTS_OBJECT_SECRET` | Signing key for local links |
+| `PPTS_TTS_PROVIDER` | `fake` (development) / `siliconflow` (production) |
+| `PPTS_LLM_PROVIDER` | `siliconflow` (currently supports OpenAI-compatible endpoints) |
+| `PPTS_GATEWAY_AES_KEY_BASE64` | Encryption key for model gateway credentials |
+| `PPTS_METRICS_TOKEN` | Bearer token for `/metrics` and `/debug/vars` (**unconfigured means denied**) |
+| `PPTS_OTEL_EXPORTER_OTLP_ENDPOINT` | When set, traces are exported via OTLP; otherwise a no-op |
 
-租户成员/角色（G3-3 内核，`migrations/0010_members.sql`）：`tenant_members` 持久化
-Owner/Admin/Editor/Reviewer/Viewer，`TenantService.Members/Roles` 可读，`SetMemberRole/RemoveMember` 可管理成员
-（admin+，owner 变更仅 owner）；配音生成、任务取消/重试、Project/Script/Upload/Export 核心写入口均有角色门禁
-（未配置成员读取时开发放行）；后续分享/声音/费用权限矩阵待对应 RPC 落地时逐项标注与测试。
+### Identity and login
 
-API 结构化请求日志（G3-8）：每个请求带 `X-Request-ID`，JSON slog 输出
-`request_id/method/path/status/duration_ms/bytes/tenant/user`。
+- SQLite mode has no login (fixed local tenant / user) and works out of the box
+- PostgreSQL mode supports production OIDC: set `PPTS_OIDC_ISSUER` / `PPTS_OIDC_CLIENT_ID` and the API validates
+  signatures via issuer discovery + JWKS. Tenant and user default to the `tenant_id` and `sub` claims
+  (override with `PPTS_OIDC_TENANT_CLAIM` / `PPTS_OIDC_USER_CLAIM`)
+- Once OIDC is configured, development identity headers are **denied by default**; only local development may
+  explicitly set `PPTS_AUTH_DEV_HEADERS=true` to accept `X-PPTS-Tenant-ID` / `X-PPTS-User-ID`
+- Web-side OIDC PKCE uses Vite env vars: `VITE_OIDC_AUTHORIZATION_ENDPOINT` / `VITE_OIDC_TOKEN_ENDPOINT` / `VITE_OIDC_CLIENT_ID`
 
-任务事件（G3-9）：`WatchEvents` 基于 `migrations/0019_job_events.sql` 的 `job_events` 专用事件表，
-任务状态/进度变更在事务内写入单调 seq 的事件快照，客户端可用 `after_seq` 断点续传，避免复用 `updated_at`
-同毫秒并发更新漏发。进度上报：worker 注入 `pipeline.ReportProgress(ctx, pct)`，handler 调用即可更新
-任务进度（fencing 条件），NarrationHandler 按已合成 segment 数上报 0-100%。
-outbox（G3-5）：handler 可调用 `pipeline.SetCommitStep(ctx, step)` 声明"完成后才存在的最终产物步骤"，
-worker 在 `CompleteWithStep` 中与任务终态同一事务原子 upsert（fencing 条件，失败整体回滚），
-避免"步骤成功但任务未终态"的崩溃窗口；`ExportHandler` 已接入。
+### TTS / LLM providers
 
-worker 还运行数据保留清理循环（G3-7）：可配 `PPTS_RETENTION_INTERVAL`（默认 `1h`）与
-`PPTS_UPLOAD_ABANDON_TTL`（默认 `24h`）。清理项包括超过项目 `source_retention_days` 的源对象
-（项目未设时回退租户策略 `source_retention_days` 默认）、选择"处理后删除"且解析成功的源对象，
-以及超时仍 `pending` 的上传临时对象。派生产物按租户策略分档过期：`artifact_retention_days`（导出成品）、
-`audio_retention_days`（配音音频）、`render_retention_days`（页面渲染图）；**其余派生物类型**
-（timeline / subtitle / alignment / segments / synth / document / notes / scriptdraft）共用兜底档
-`derived_retention_days`（`policy` 为 jsonb，设键即可，无需迁移）。过期后删除对象与清单记录
-（artifact 同时删除 `artifacts` 行）并写 `derived.delete` 审计。
+Both speak OpenAI-compatible HTTP and can be configured from the top-bar **Model Gateway**. Resolution order is
+**tenant default → platform default → environment variable**, cached for 30s. Gateway API keys are stored
+AES-GCM encrypted; read APIs only return `hasKey` / `keyMasked`.
 
-同一循环还清理超过 `PPTS_QUOTA_RESERVATION_TTL`（默认 `24h`）仍处于 `reserved` 的额度预占。
+| Provider | Default model | Notes |
+|---|---|---|
+| TTS `siliconflow` | `FunAudioLLM/CosyVoice2-0.5B` | voice is `<model>:<voice>`; 429 / 5xx are mapped to retryable |
+| LLM `siliconflow` | `Qwen/Qwen2.5-7B-Instruct` | vision model defaults to `Qwen/Qwen3-VL-8B-Instruct` for slide understanding |
+| TTS `fake` | — | Produces silent WAV only; **not a valid production provider acceptance test** |
 
-同一循环还做**孤儿对象扫描**（清单里有记录、但库内已无引用）：`PPTS_ORPHAN_GRACE`（默认 `24h`）是静默期，
-早于它的新写入不参与判定（避免误删"写对象 → 落清单 → 提交业务行"窗口内的在途产物）。
-⚠️ **默认只报告不删除**（写 `orphan.detected` 审计）：删对象不可逆，而"无引用"是启发式判定。
-确认审计里的候选无误后，再设 `PPTS_ORPHAN_DELETE=1` 才会真删（届时写 `orphan.delete` 审计）。
+### Storage
+
+- `local`: local directory with server-signed links
+- `s3`: S3-compatible; the tenant's `policy.storage_region` can route to `{bucket}-{region}` (lazily created and cached)
+- `byos:<credential_id>`: tenant-supplied credentials, AES-GCM encrypted at rest with AAD bound to tenant / credential / backend
+- **Envelope encryption**: set `PPTS_OBJECT_ENCRYPTION_KEY_BASE64` to encrypt/decrypt objects server-side for tenants
+  that enable the policy (direct pre-signed reads/writes are unsupported once enabled)
+- Lifecycle is driven by tenant policy (`storage_transition_days` / `storage_expiration_days`); source object retention,
+  derived-file expiry, abandoned-upload cleanup and quota reservation reclamation run periodically in the worker
+- **Orphan object scanning only reports, it does not delete** (writes an `orphan.detected` audit event). Review the
+  candidates, then set `PPTS_ORPHAN_DELETE=1` for actual deletion — object deletion is irreversible, and "no references found"
+  is a heuristic judgment
+
+---
+
+## Observability
+
+- **Structured logs**: slog JSON with `X-Request-ID` per request, emitting `request_id / method / path / status / duration_ms / tenant / user`
+- **Tracing**: the API emits spans via a Connect interceptor and persists the W3C `traceparent` into `jobs.traceparent`
+  when a job is created; the worker links it as a SpanLink — **cross-process asynchronous tracing**. Without OTLP it is a
+  zero-dependency no-op
+- **Metrics**: `/metrics` requires `Bearer $PPTS_METRICS_TOKEN`; aggregation defaults to kind × event to avoid high
+  cardinality. Enable `PPTS_METRICS_TENANT_LABELS=true` when troubleshooting
+- **Queue view**: depth / running / backoff / oldest-wait metrics split by job type (replicas read the same table rather
+  than each keeping their own view). **"Never appeared" must be distinguishable from "currently zero"** — a kind that has
+  not been seen has no key at all. To judge whether a kind is still in use, look at the `ppts_worker_jobs_total` counter,
+  not the depth gauge
+- **Degradation indicators** (if present they need action; these are not optional optimizations):
+
+  | Metric | Meaning |
+  |---|---|
+  | `ppts_tts_fake_provider_active` | Fake TTS in use → the audio produced is synthetic silence |
+  | `ppts_render_pages_disabled` | Rendering disabled → artifacts may lack slide images |
+  | `ppts_auth_dev_headers_active` | Dev identity headers accepted → identity can be forged; must never appear in production |
+  | `ppts_ratelimit_degraded=1` | Rate limiting degraded to single-replica counting → effective allowance = limit × replica count |
+
+- **Health check**: `GET /healthz` actually probes the database and object storage and returns 503 if either is
+  unavailable. The response **contains only per-component status, never error reasons** (the endpoint is unauthenticated;
+  raw errors go to server logs only). When the backend cannot be probed cheaply it reports `unsupported`, meaning
+  "not checked" rather than healthy
+- SLOs and alerting rules live in `docs/runbooks/SLO与告警.md`
+
+---
+
+## Security
+
+- **Row-level security**: migrations run as the owner role while the runtime account must be
+  `NOSUPERUSER NOBYPASSRLS`; tenant business tables use `FORCE ROW LEVEL SECURITY` with policies keyed on the
+  transaction-local `app.tenant_id`. Missing context means access denied
+- **Fail closed**: `/metrics` and `/debug/vars` are denied unless a token is configured (forgetting it means denied,
+  not exposed). `/debug/pprof/*` is not mounted at all unless `PPTS_PPROF=true`, and then still requires auth
+- **Secret handling**: gateway credentials, BYOS credentials and the object envelope key are all AES-GCM.
+  Audit records deliberately omit token / publicId / IP / user-agent so short-lived credentials are not copied into
+  longer-lived retention
+- **Audit**: `audit_events` is tenant-isolated and retained; matured events are archived to object storage as JSONL
+- **Data compliance**: `ExportTenant` / `PurgeTenant` (owner permission) provide full tenant data export and erasure
+- Role definitions live in `internal/api/roles.go`; the high-risk operation coverage matrix is in
+  `docs/审计覆盖矩阵.md`
+
+---
+
+## Development
+
+> The repo contains a `go.work` (wiring `../go-pptx` and the local `./textnorm` component).
+> CI and releases build with `GOWORK=off`.
+
+### Backend
+
+```bash
+GOWORK=off go build ./...
+GOWORK=off go vet ./...
+GOWORK=off go test ./...
+
+# Tests requiring PostgreSQL (shared test database, must be serial)
+PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 ./... -count=1
+```
+
+> **Two rules for reading test output**:
+> ① A plain `go test ./...` does **not** include PostgreSQL tests — they are gated behind `-tags=pg` and only run in
+> CI's `postgres` job, so the "ok package count" is not proof that every test executed.
+> ② Cases depending on external tools or credentials (ffmpeg, poppler, S3, real audio) always `t.Skip` rather than fail.
+> **Read the SKIP count together with ok / FAIL** — a rising SKIP count usually means the environment is missing
+> something, not that you got lucky.
+
+### Frontend
+
+```bash
+cd web
+npm ci
+npm run build       # = contrast → api:check → route:check → core:test → polling:test → tsc -b → vite build
+npm run i18n:check  # not part of build; run separately (CI's web job has a dedicated step)
+```
+
+Gate meanings: `contrast` = contrast contract, `api:check` = single request egress contract, `route:check` = route manifest,
+`core:test` / `polling:test` = unit behavior tests, `i18n:check` = ZH/EN key parity and orphan keys.
+
+### Evaluation and ops scripts
+
+| Script | Purpose |
+|---|---|
+| `scripts/gen_corpus` | Generate 13 suites totaling 100 pages (with number / unit / model entities) |
+| `scripts/ai_eval` | AI evaluation gate: after per-slide LLM polishing, the entity validator checks whether key numbers stayed faithful to the source — **any drift fails the gate** |
+| `scripts/replay_eval` | Validation-rule replay gate (non-rewriting; zero flips against the baseline) |
+| `scripts/audit_coverage` | Generates `docs/审计覆盖矩阵.md` from the source AST (do not edit by hand) |
+| `scripts/backup_restore_drill.sh` | Backup / restore drill |
+
+---
+
+## Documentation
+
+> Note: the documents below live in the local `docs/` directory and are **not** distributed on GitHub.
+> Clone the repository to read them; the paths are relative to the repo root.
+
+| Document | Contents |
+|---|---|
+| `docs/PPTS功能与API说明书.md` | Features and API reference |
+| `docs/PPT自动讲解工具-技术方案-V4.0.md` | Current technical baseline design |
+| `docs/SQLite单租户部署.md` | SQLite mode capability boundaries and configuration |
+| `docs/runbooks/SLO与告警.md` | Alert rules and degradation handling |
+| `docs/审计覆盖矩阵.md` | Script-generated coverage matrix of high-risk operations |
+| `docs/adr/` | Architecture decision records |
+| `docs/PPT智能语音讲解平台-控制台产品优化实施计划-V1.0.md` | Console evolution plan |
+
+---
+
+## Contributing and License
+
+Issues and PRs are welcome. Please run the backend and frontend verification loops above before submitting;
+changes touching request egress, routes or i18n must keep the corresponding gates green.
+
+Related projects:
+
+- [go-pptx](https://github.com/F31/go-pptx) — the pure-Go PPTX SDK used by this project (Apache-2.0)
+- [textnorm](https://github.com/F31/textnorm) — TTS text normalization engine (standalone component)
+
+**License: Apache License 2.0** (see [LICENSE](LICENSE)).
+
+Contact: jinfeng105@126.com / jinfeng105@gmail.com
