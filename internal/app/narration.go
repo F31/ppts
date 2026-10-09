@@ -15,8 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	newtn "github.com/F31/textnorm"
-
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
@@ -113,7 +111,7 @@ type NarrationHandler struct {
 	usage       UsageSettler
 	metrics     TTSMetrics
 	dictLoader  DictionaryLoader
-	textNorm    NarrationTextNorm
+	textNorm    TextPreparationFactory
 	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
 	// sourceRevisions 是记录时间轴来源所需的窄能力（见 WithSourceRevisions）；nil 时跳过来源记录。
 	sourceRevisions SourceRevisionLookup
@@ -173,21 +171,6 @@ func (h *NarrationHandler) WithDictionary(dl DictionaryLoader) *NarrationHandler
 	return h
 }
 
-// NarrationTextNorm 是按任务构建文本规范化引擎的窄能力。
-//
-// 引擎必须按 (租户, 语言) 逐任务构建：租户发音词典/平台种子决定规则集，且构造后冻结不可变。
-// V3.1 主引擎切换后，Build 返回模块 textnorm 引擎。nil（未注入）时配音不走文本规范化（零行为回退）。
-type NarrationTextNorm interface {
-	// Build 返回已冻结的候选引擎；加载失败返回 error（任务失败，不静默降空，R1）。
-	Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error)
-}
-
-// WithTextNorm 注入文本规范化引擎构建器；未注入时配音不规范化文本（默认关闭）。
-func (h *NarrationHandler) WithTextNorm(n NarrationTextNorm) *NarrationHandler {
-	h.textNorm = n
-	return h
-}
-
 // WithTenantProvider 注入按租户解析的 TTS 供应商（模型网关）；
 // 设置后优先于 NewNarrationHandler 传入的固定 provider。
 func (h *NarrationHandler) WithTenantProvider(f func(ctx context.Context, tenantID string) (tts.TTSProvider, error)) *NarrationHandler {
@@ -241,11 +224,11 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			dictRules = rules
 		}
 	}
-	// 文本规范化引擎按 (租户, 语言) 逐任务构建（V2.8）；加载失败 → 任务失败，不静默降空（R1）。
+	// 获取按租户/语言隔离的冻结引擎（构建器可有界缓存）；加载失败 → 任务失败（R1）。
 	// V3.1 主引擎切换：候选引擎（模块 textnorm）负责输出与缓存键。
-	var textNormEngine *newtn.Engine
+	var textNormEngine TextPreparer
 	if h.textNorm != nil {
-		engine, err := h.textNorm.Build(ctx, job.TenantID, snapshot.Language)
+		engine, err := h.textNorm.Resolve(ctx, job.TenantID, snapshot.Language)
 		if err != nil {
 			return err
 		}
@@ -338,7 +321,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			displayForTimeline := segment.DisplayText
 			if textNormEngine != nil {
 				// 字幕/导出文本派生：剥离读/停标记（候选引擎 StripLegacyMarkers，V3.1 §10.2）。
-				displayForTimeline, _ = newtn.StripLegacyMarkers(segment.DisplayText)
+				displayForTimeline = textNormEngine.Display(segment.DisplayText)
 			}
 			// 精确逐字高亮（N2 数值展开）：显示字符 → 朗读 token 下标；不可用时回落比例近似。
 			charToToken := buildCharToToken(ctx, textNormEngine, segment.SpokenText, snapshot.Language, asset.Alignment)
@@ -410,18 +393,18 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 //
 // snapshot.BypassCache 为真时（用户显式要求重新生成）两级缓存一律不读，直接真实合成；
 // 写回仍用同一 configHash 键，即新音频覆盖旧音频对象。
-func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules, textNormEngine *newtn.Engine) (*SegmentAsset, bool, error) {
+func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, slide NarrationSlideSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, segment *narration.Segment, dictRules pronunciation.Rules, textNormEngine TextPreparer) (*SegmentAsset, bool, error) {
 	// 文本规范化：引擎启用时先规范化（剥离读/停标记 + 词典 + 停顿事件），否则沿用今日发音词典替换。
 	// 规范化结果送 TTS 与对齐；DisplayText（字幕）在调用方按 StripMarkers 派生。
 	effectiveText := pronunciation.Apply(segment.SpokenText, dictRules)
 	pauses := []tts.Pause{}
 	if textNormEngine != nil {
-		res, err := textNormEngine.Normalize(ctx, newtn.Request{Text: segment.SpokenText, Lang: snapshot.Language, LegacyMarkup: true})
+		res, err := textNormEngine.Prepare(ctx, segment.SpokenText, snapshot.Language)
 		if err != nil {
 			return nil, false, fmt.Errorf("narration job: text normalization: %w", err)
 		}
 		effectiveText = res.Text
-		pauses = ToControlsPauses(res.Controls)
+		pauses = res.Pauses
 	}
 	// 停顿事件并入 SpeechControl（V2.8 §7.5 时间域 B）：支持停顿的供应商在音频留真实静音，
 	// VAD 对齐自动重锚；不支持的供应商只回显 Warnings（provider 层判定）。
@@ -608,18 +591,15 @@ func (h *NarrationHandler) publishSynthesisStats(ctx context.Context, job *pipel
 // buildCharToToken 为精确逐字高亮计算"显示字符 → 朗读 token 下标"映射（V2.8 §7.5 时间域 A）。
 // 主引擎切换后以候选引擎（模块 textnorm）的 SourceMap 派生映射；引擎/对齐信息缺失或
 // 长度不匹配时返回 nil（调用方回落 remapCharsToCount 比例近似）。
-func buildCharToToken(ctx context.Context, engine *newtn.Engine, spoken, lang string, alignment *tts.Alignment) []int {
+func buildCharToToken(ctx context.Context, engine TextPreparer, spoken, lang string, alignment *tts.Alignment) []int {
 	if engine == nil || alignment == nil || len(alignment.Tokens) == 0 {
 		return nil
 	}
-	res, err := engine.Normalize(ctx, newtn.Request{Text: spoken, Lang: lang, LegacyMarkup: true})
+	res, err := engine.Prepare(ctx, spoken, lang)
 	if err != nil {
 		return nil
 	}
-	if len(res.SourceMap.Spans) == 0 {
-		return nil
-	}
-	return newtn.DisplayToEffective(spoken, res)
+	return res.DisplayToSpoken
 }
 
 // publishTimeline 发布播放时间轴（含精确逐字高亮映射；无映射时 timeline 内回落比例近似）。
@@ -702,7 +682,7 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 }
 
 // retryWithAdjustedRate 用调整后的语速重新执行合成（时长控制）。
-func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, textNormEngine *newtn.Engine) error {
+func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, textNormEngine TextPreparer) error {
 	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
 	// 语速调整后重跑：构成独立累计（同上，按 job 局部）。
@@ -726,7 +706,7 @@ func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipel
 			totalMS += asset.DurationMS
 			displayForTimeline := segment.DisplayText
 			if textNormEngine != nil {
-				displayForTimeline, _ = newtn.StripLegacyMarkers(segment.DisplayText)
+				displayForTimeline = textNormEngine.Display(segment.DisplayText)
 			}
 			charToToken := buildCharToToken(ctx, textNormEngine, segment.SpokenText, adjusted.Language, asset.Alignment)
 			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{

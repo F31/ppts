@@ -58,7 +58,7 @@ func TestZHScoreRequiresSemanticHint(t *testing.T) {
 	// SemanticScore 提示：比分读法启用。
 	res, err = engine.Normalize(context.Background(), Request{
 		Text:  "比分3:2",
-		Hints: []Hint{{Range: Range{2, 5}, Kind: HintSemantic, Semantic: SemanticScore}},
+		Hints: []Hint{{Range: Range{Start: 2, End: 5}, Kind: HintSemantic, Semantic: SemanticScore}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestZHScoreMismatchedHintKeepsPreserving(t *testing.T) {
 	// 非门控的 number 规则按"分支独立数字"照常展开 → "比分三:二"（不是"三比二"）。
 	res, err := engine.Normalize(context.Background(), Request{
 		Text:  "比分3:2",
-		Hints: []Hint{{Range: Range{2, 5}, Kind: HintSemantic, Semantic: SemanticNumber}},
+		Hints: []Hint{{Range: Range{Start: 2, End: 5}, Kind: HintSemantic, Semantic: SemanticNumber}},
 	})
 	if err != nil {
 		t.Fatal(err)

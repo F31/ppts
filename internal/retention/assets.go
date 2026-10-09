@@ -67,6 +67,7 @@ var assetRegistry = []assetSpec{
 	{Name: "document", Expires: true, Note: "解析出的文档 JSON（extracted）"},
 	{Name: "notes", Expires: true, Note: "幻灯片备注 JSON"},
 	{Name: "scriptdraft", Expires: true, Note: "一键成稿缓存"},
+	{Name: "insight", Expires: true, Note: "逐页洞察 JSON（LLM 生成，按 revision+slide 寻址）"},
 
 	// —— 有自己的生命周期，禁止按龄过期 ——
 	{Name: "source", Expires: false,

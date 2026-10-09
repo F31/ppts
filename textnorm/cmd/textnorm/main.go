@@ -13,6 +13,7 @@ import (
 	"sort"
 
 	textnorm "github.com/F31/textnorm"
+	tncorpus "github.com/F31/textnorm/corpus"
 )
 
 func main() {
@@ -84,7 +85,7 @@ func runCmd(args []string) {
 		engine := compileProfile(name)
 		rows := make([]caseRow, 0, len(corpus.Cases))
 		for _, cs := range corpus.Cases {
-			res, errs := textnorm.CheckCorpusCase(ctx, engine, cs)
+			res, errs := tncorpus.CheckCorpusCase(ctx, engine, cs)
 			row := caseRow{
 				ID:          cs.ID,
 				Input:       cs.Text,
@@ -227,13 +228,13 @@ func compileProfile(name string) *textnorm.Engine {
 	return engine
 }
 
-func loadCorpusFile(path string) (textnorm.Corpus, error) {
+func loadCorpusFile(path string) (tncorpus.Corpus, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return textnorm.Corpus{}, err
+		return tncorpus.Corpus{}, err
 	}
 	defer f.Close()
-	return textnorm.LoadCorpus(f)
+	return tncorpus.LoadCorpus(f)
 }
 
 func edits(es []textnorm.Edit) []string {

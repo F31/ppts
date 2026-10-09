@@ -1,18 +1,21 @@
-package textnorm
+// Package corpus holds the JSON behavioral corpus loader and assertion runner.
+// Keeping the corpus in JSON lets human annotators, reviewers, and other
+// implementations share the same behavioral contract without editing Go code,
+// and lets release tooling produce text-level behavior difference reports.
+package corpus
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/F31/textnorm"
 )
 
-// Corpus is a set of normalization cases stored as data. Keeping the corpus in
-// JSON lets human annotators, reviewers, and other implementations share the
-// same behavioral contract without editing Go code, and lets release tooling
-// produce text-level behavior difference reports.
+// Corpus is a set of normalization cases stored as data.
 type Corpus struct {
-	Profile string       `json:"profile"`
+	Profile string      `json:"profile"`
 	Cases   []CorpusCase `json:"cases"`
 }
 
@@ -20,7 +23,7 @@ type Corpus struct {
 type CorpusCase struct {
 	ID        string      `json:"id"`
 	Text      string      `json:"text"`
-	Protected []Range     `json:"protected,omitempty"`
+	Protected []textnorm.Range `json:"protected,omitempty"`
 	Expect    Expectation `json:"expect"`
 	Note      string      `json:"note,omitempty"`
 }
@@ -49,8 +52,8 @@ func LoadCorpus(r io.Reader) (Corpus, error) {
 }
 
 // CheckCorpusCase runs one case against an engine and reports assertion failures.
-func CheckCorpusCase(ctx context.Context, engine *Engine, cs CorpusCase) (Result, []error) {
-	res, err := engine.Normalize(ctx, Request{Text: cs.Text, Protected: cs.Protected})
+func CheckCorpusCase(ctx context.Context, engine *textnorm.Engine, cs CorpusCase) (textnorm.Result, []error) {
+	res, err := engine.Normalize(ctx, textnorm.Request{Text: cs.Text, Protected: cs.Protected})
 	if err != nil {
 		return res, []error{fmt.Errorf("%s: normalize: %w", cs.ID, err)}
 	}
@@ -78,7 +81,7 @@ func CheckCorpusCase(ctx context.Context, engine *Engine, cs CorpusCase) (Result
 	return res, errs
 }
 
-func editIDs(edits []Edit) []string {
+func editIDs(edits []textnorm.Edit) []string {
 	ids := make([]string, len(edits))
 	for i, e := range edits {
 		ids[i] = e.RuleID

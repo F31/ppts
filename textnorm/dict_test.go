@@ -72,7 +72,7 @@ func TestLiteralDictRuleDeleteMarksDeletion(t *testing.T) {
 	}
 	found := false
 	for _, span := range res.SourceMap.Spans {
-		if span.Kind == SourceDeletion && span.Src == (Range{1, 2}) {
+		if span.Kind == SourceDeletion && span.Src == (Range{Start: 1, End: 2}) {
 			found = true
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	newtn "github.com/F31/textnorm"
 
@@ -28,6 +29,8 @@ func textNormEnabled() bool {
 // 词典合并（租户优先 + 平台种子兜底）与异常空信号在 app.NewTextNormEngine 内完成。
 // V3.1 后模块 textnorm 负责输出与缓存键；
 // 上下文替换规则（M5 数据驱动）随引擎总开关启用，加载租户+平台生效行。
+// 生产装配经 app.NewCachedTextNorm 包装：同 (租户, 语言, 配置指纹) 复用冻结引擎，
+// 避免逐任务重复查库与 regexp 全量编译（见 worker.go 装配点）。
 type appTextNorm struct {
 	store        app.TextNormDictStore
 	contextRules app.TextNormContextRuleStore
@@ -42,11 +45,29 @@ var _ app.NarrationTextNorm = appTextNorm{}
 // 数值读法（N2 可选）：PPTS_TEXT_NORM_NUMBERS=quantity|year 时注册，默认不注册。
 // PPT 高频类别（V3.0 §2.2）：PPTS_TEXT_NORM_CLASSES=percent,decimal,date,money,unit 时注册，默认不注册。
 func (a appTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error) {
-	opts := []app.TextNormOptions{numberModeOption(), classesOption()}
-	if a.contextRules != nil {
-		opts = append(opts, app.TextNormOptions{ContextRules: a.contextRules})
+	opts := numberModeOption()
+	opts.Classes = classesOption().Classes
+	opts.ContextRules = a.contextRules
+	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts)
+}
+
+// TTL 限制跨进程规则编辑后的陈旧窗口；设为 0 可保持逐任务读取。
+func cachedAppTextNorm(a appTextNorm) app.NarrationTextNorm {
+	ttl := 5 * time.Minute
+	if raw := os.Getenv("PPTS_TEXT_NORM_ENGINE_TTL"); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed < 0 {
+			if a.logger != nil {
+				a.logger.Warn("textnorm: invalid engine cache TTL; disabling cache", "value", raw)
+			}
+			ttl = 0
+		} else {
+			ttl = parsed
+		}
 	}
-	return app.NewTextNormEngine(ctx, a.store, tenantID, lang, true, textNormMetricsAdapter{}, a.logger, opts...)
+	return app.NewCachedTextNorm(a, ttl, envInt("PPTS_TEXT_NORM_ENGINE_MAX", 256), func() string {
+		return os.Getenv("PPTS_TEXT_NORM_NUMBERS") + "\x00" + os.Getenv("PPTS_TEXT_NORM_CLASSES")
+	}, observability.TextNormCacheEvent)
 }
 
 // numberModeOption 依据环境变量返回数值规则装配选项；未设置或非法时返回零值（不注册）。

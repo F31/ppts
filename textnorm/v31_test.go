@@ -63,9 +63,9 @@ func TestSourceMapSeparatesIdentityAndReplacement(t *testing.T) {
 		t.Fatalf("text = %q", res.Text)
 	}
 	want := []SourceSpan{
-		{Src: Range{0, 1}, Dst: Range{0, 1}, Kind: SourceIdentity},
-		{Src: Range{1, 3}, Dst: Range{1, 3}, Kind: SourceReplacement, RuleID: "digits"},
-		{Src: Range{3, 4}, Dst: Range{3, 4}, Kind: SourceIdentity},
+		{Src: Range{Start: 0, End: 1}, Dst: Range{Start: 0, End: 1}, Kind: SourceIdentity},
+		{Src: Range{Start: 1, End: 3}, Dst: Range{Start: 1, End: 3}, Kind: SourceReplacement, RuleID: "digits"},
+		{Src: Range{Start: 3, End: 4}, Dst: Range{Start: 3, End: 4}, Kind: SourceIdentity},
 	}
 	if len(res.SourceMap.Spans) != len(want) {
 		t.Fatalf("source spans = %+v", res.SourceMap.Spans)
@@ -147,7 +147,7 @@ func TestSourceMapMarksDeletion(t *testing.T) {
 	}
 	found := false
 	for _, span := range res.SourceMap.Spans {
-		if span.Kind == SourceDeletion && span.Src == (Range{1, 2}) && span.Dst == (Range{1, 1}) {
+		if span.Kind == SourceDeletion && span.Src == (Range{Start: 1, End: 2}) && span.Dst == (Range{Start: 1, End: 1}) {
 			found = true
 		}
 	}

@@ -11,7 +11,7 @@ func TestParseLegacyMarkers(t *testing.T) {
 		t.Fatalf("readings = %+v", m.Readings)
 	}
 	rd := m.Readings[0]
-	if rd.Outer != (Range{1, 6}) || rd.Inner != (Range{4, 5}) || rd.Text != "x" {
+	if rd.Outer != (Range{Start: 1, End: 6}) || rd.Inner != (Range{Start: 4, End: 5}) || rd.Text != "x" {
 		t.Fatalf("reading = %+v", rd)
 	}
 	if len(m.Pauses) != 1 || m.Pauses[0] != 7 {

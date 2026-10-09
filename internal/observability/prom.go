@@ -25,6 +25,13 @@ var textNormDictEventsTotal = expvar.NewMap("ppts_textnorm_dict_events_total")
 // TextNormDictEvent 记录一次文本规范化词典事件。
 func TextNormDictEvent(event string) { textNormDictEventsTotal.Add(clean(event), 1) }
 
+// textNormCacheEventsTotal 记录文本规范化引擎缓存命中/未命中事件（cache_hit/cache_miss）。
+// 引擎按 (租户, 语言) 复用是高频路径；命中率过低提示缓存键/TTL 配置不当。
+var textNormCacheEventsTotal = expvar.NewMap("ppts_textnorm_engine_cache_total")
+
+// TextNormCacheEvent 记录一次引擎缓存事件。
+func TextNormCacheEvent(event string) { textNormCacheEventsTotal.Add(clean(event), 1) }
+
 // PrometheusHandler 把进程内 expvar 指标渲染为 Prometheus 文本格式（0.0.4）。
 //
 // 约定：expvar.Map 的键以 "k=v,k2=v2" 形式表达标签；标量键（无 "="）降级为 key="..." 标签。

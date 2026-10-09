@@ -54,8 +54,8 @@ func ParseLegacyMarkers(text string) Markup {
 			if end >= 0 {
 				j := i + len(readingOpenRunes)
 				m.Readings = append(m.Readings, MarkupReading{
-					Outer: Range{i, end + 1},
-					Inner: Range{j, end},
+					Outer: Range{Start: i, End: end + 1},
+					Inner: Range{Start: j, End: end},
 					Text:  string(runes[j:end]),
 				})
 				for t := j; t < end; t++ {

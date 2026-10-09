@@ -12,7 +12,7 @@ func TestReadingHintReplacesRange(t *testing.T) {
 	}
 	res, err := engine.Normalize(context.Background(), Request{
 		Text:  "价格为3.14",
-		Hints: []Hint{{Range: Range{3, 7}, Kind: HintReading, Text: "三点一四"}},
+		Hints: []Hint{{Range: Range{Start: 3, End: 7}, Kind: HintReading, Text: "三点一四"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +35,7 @@ func TestVerbatimHintPreservesRange(t *testing.T) {
 	}
 	res, err := engine.Normalize(context.Background(), Request{
 		Text:  "占比13.5%",
-		Hints: []Hint{{Range: Range{2, 7}, Kind: HintVerbatim}},
+		Hints: []Hint{{Range: Range{Start: 2, End: 7}, Kind: HintVerbatim}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +58,7 @@ func TestSemanticHintAllowsMatchingRule(t *testing.T) {
 	}
 	res, err := engine.Normalize(context.Background(), Request{
 		Text:  "2024.01.28",
-		Hints: []Hint{{Range: Range{0, 10}, Kind: HintSemantic, Semantic: SemanticDate}},
+		Hints: []Hint{{Range: Range{Start: 0, End: 10}, Kind: HintSemantic, Semantic: SemanticDate}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestSemanticHintBlocksNonMatchingAndPreserves(t *testing.T) {
 	}
 	res, err := engine.Normalize(context.Background(), Request{
 		Text:  "占比13.5%",
-		Hints: []Hint{{Range: Range{2, 7}, Kind: HintSemantic, Semantic: SemanticNumber}},
+		Hints: []Hint{{Range: Range{Start: 2, End: 7}, Kind: HintSemantic, Semantic: SemanticNumber}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +107,8 @@ func TestContradictoryHintsRejected(t *testing.T) {
 	_, err = engine.Normalize(context.Background(), Request{
 		Text: "abc",
 		Hints: []Hint{
-			{Range: Range{1, 2}, Kind: HintReading, Text: "x"},
-			{Range: Range{1, 2}, Kind: HintVerbatim},
+			{Range: Range{Start: 1, End: 2}, Kind: HintReading, Text: "x"},
+			{Range: Range{Start: 1, End: 2}, Kind: HintVerbatim},
 		},
 	})
 	if err == nil {
@@ -123,7 +123,7 @@ func TestUnknownSemanticHintRejected(t *testing.T) {
 	}
 	_, err = engine.Normalize(context.Background(), Request{
 		Text:  "abc",
-		Hints: []Hint{{Range: Range{0, 3}, Kind: HintSemantic, Semantic: "unknown"}},
+		Hints: []Hint{{Range: Range{Start: 0, End: 3}, Kind: HintSemantic, Semantic: "unknown"}},
 	})
 	if err == nil {
 		t.Fatal("Normalize should reject unknown semantic hint")
@@ -137,7 +137,7 @@ func TestHintOutOfBoundsRejected(t *testing.T) {
 	}
 	_, err = engine.Normalize(context.Background(), Request{
 		Text:  "abc",
-		Hints: []Hint{{Range: Range{1, 4}, Kind: HintVerbatim}},
+		Hints: []Hint{{Range: Range{Start: 1, End: 4}, Kind: HintVerbatim}},
 	})
 	if err == nil {
 		t.Fatal("Normalize should reject out-of-range hint")

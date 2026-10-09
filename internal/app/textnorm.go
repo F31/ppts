@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
+	"time"
 
 	newtn "github.com/F31/textnorm"
 
@@ -16,8 +18,57 @@ import (
 
 const (
 	textNormProductionProfileName    = "ppts.v3.1"
-	textNormProductionProfileVersion = 1
+	textNormProductionProfileVersion = 2
 )
+
+// NarrationTextNorm is the component-specific builder used by the adapter/cache.
+type NarrationTextNorm interface {
+	Build(context.Context, string, string) (*newtn.Engine, error)
+}
+
+type textNormPreparationFactory struct{ builder NarrationTextNorm }
+type textNormPreparer struct{ engine *newtn.Engine }
+
+// AdaptTextNorm confines textnorm's API to the integration boundary.
+func AdaptTextNorm(builder NarrationTextNorm) TextPreparationFactory {
+	if builder == nil {
+		return nil
+	}
+	return textNormPreparationFactory{builder: builder}
+}
+
+func (f textNormPreparationFactory) Resolve(ctx context.Context, tenant, lang string) (TextPreparer, error) {
+	e, err := f.builder.Build(ctx, tenant, lang)
+	if err != nil {
+		return nil, err
+	}
+	if e == nil {
+		return nil, fmt.Errorf("textnorm: builder returned nil engine")
+	}
+	return textNormPreparer{engine: e}, nil
+}
+
+func (p textNormPreparer) Prepare(ctx context.Context, text, lang string) (PreparedText, error) {
+	r, err := p.engine.Normalize(ctx, newtn.Request{Text: text, Lang: lang, LegacyMarkup: true})
+	if err != nil {
+		return PreparedText{}, err
+	}
+	var mapping []int
+	if len(r.SourceMap.Spans) > 0 {
+		mapping = newtn.DisplayToEffective(text, r)
+	}
+	return PreparedText{Text: r.Text, Pauses: ToControlsPauses(r.Controls), DisplayToSpoken: mapping}, nil
+}
+
+func (p textNormPreparer) Display(text string) string {
+	display, _ := newtn.StripLegacyMarkers(text)
+	return display
+}
+
+// WithTextNorm preserves existing wiring while adapting it to the application contract.
+func (h *NarrationHandler) WithTextNorm(builder NarrationTextNorm) *NarrationHandler {
+	return h.WithTextPreparation(AdaptTextNorm(builder))
+}
 
 // TextNormDictStore 是文本规范化词典所需的存储窄能力：租户规则 + 平台种子。
 // 由 pronunciation.Store（PGStore/SQLiteStore）实现。
@@ -45,8 +96,8 @@ type TextNormOptions struct {
 	// 数值展开会改 effectiveText（→ 音频缓存键）与显示字数（→ 触发 IndexMap 精确高亮）。
 	NumberMode *newtn.NumberMode
 	// Classes 开启 PPT 高频声明式类别规则（V3.0 §2.2，默认空=仅标记+词典，零回退）。
-	// 取值："percent","decimal","date","money","unit"。
-	// 类别规则优先级 11-15，全部先于 NumberRule(20)，避免数字规则破坏日期/百分比/金额识别。
+	// 取值：percent,decimal,date,money,unit,fraction,time,ordinal,english_money。
+	// fraction/time 需要显式语义提示；日期、金额等整体候选先于数字子候选。
 	Classes []string
 	// ContextRules 非 nil 时加载上下文替换规则（M5 数据驱动）：租户+平台生效行按
 	// priority 注册为 ReplacementPattern。默认 nil=不加载（零回退）。
@@ -58,11 +109,15 @@ type TextNormOptions struct {
 // classPatterns 映射类别名 → 声明式 Pattern 构造器（V3.0 §2.2）。
 // 独立开关：装配方按 Classes 列表选择性注册，默认不注册（零回退）。
 var classRules = map[string]func() newtn.CandidateRule{
-	"percent": newtn.ZHPercentRule,
-	"decimal": newtn.ZHDecimalRule,
-	"date":    func() newtn.CandidateRule { return newtn.ZHDateRule(newtn.ModeConvert) },
-	"money":   newtn.ZHMoneyRule,
-	"unit":    newtn.ZHUnitRule,
+	"percent":       newtn.ZHPercentRule,
+	"decimal":       newtn.ZHDecimalRule,
+	"date":          func() newtn.CandidateRule { return newtn.ZHDateRule(newtn.ModeConvert) },
+	"money":         newtn.ZHMoneyRule,
+	"unit":          newtn.ZHUnitRule,
+	"fraction":      newtn.ZHFractionRule,
+	"time":          newtn.ZHTimeRule,
+	"ordinal":       newtn.ZHOrdinalRule,
+	"english_money": newtn.ZHEnglishMoneyRule,
 }
 
 // loadMergedDictRules 加载并合并租户/平台词典，应用 R1 语义（错误可观测，不静默降空）。
@@ -135,23 +190,34 @@ func NewTextNormEngine(ctx context.Context, store TextNormDictStore, tenantID, l
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
-	// 类别规则（V3.0 §2.2）：按开关注册，全部先于 NumberRule 执行（优先级 11-15 < 20），
-	// 避免数字规则先吞日期/百分比/金额中的数字而破坏类别识别。
-	for _, c := range opt.Classes {
-		if fn, ok := classRules[c]; ok {
-			rules = append(rules, fn())
+	// 语言按需装配：en* → 英文规则集（en.conservative 基础 + 词典 + 上下文规则）；
+	// 其余 → 中文规则集（类别 + 数值 + S4 + 词典 + 上下文规则）。中英文规则互不混装，
+	// 由调用方接口（Resolve/Builder 的 lang 参数）在运行时按需选择。
+	if isEnglishLang(lang) {
+		enBase, err := newtn.ProfileRules(newtn.ProfileEnglishConservative)
+		if err != nil {
+			return nil, fmt.Errorf("textnorm: load english base rules: %w", err)
 		}
+		rules = append(rules, enBase...)
+	} else {
+		// 类别规则（V3.0 §2.2）：按开关注册，全部先于 NumberRule 执行（优先级 11-15 < 20），
+		// 避免数字规则先吞日期/百分比/金额中的数字而破坏类别识别。
+		for _, c := range opt.Classes {
+			if fn, ok := classRules[c]; ok {
+				rules = append(rules, fn())
+			}
+		}
+		if opt.NumberMode != nil {
+			rules = append(rules, newtn.ZHNumberRule(*opt.NumberMode))
+		}
+		// S4 规则默认装配：保护技术型号/版本串，电话逐位读，比分仅在 SemanticScore 提示下触发。
+		rules = append(rules,
+			newtn.TechnicalModelRule(),
+			newtn.ZHVersionPreserveRule(),
+			newtn.ZHTelephoneRule(),
+			newtn.ZHScoreRule(),
+		)
 	}
-	if opt.NumberMode != nil {
-		rules = append(rules, newtn.ZHNumberRule(*opt.NumberMode))
-	}
-	// S4 规则默认装配：保护技术型号/版本串，电话逐位读，比分仅在 SemanticScore 提示下触发。
-	rules = append(rules,
-		newtn.TechnicalModelRule(),
-		newtn.ZHVersionPreserveRule(),
-		newtn.ZHTelephoneRule(),
-		newtn.ZHScoreRule(),
-	)
 	// 上下文替换规则（M5 数据驱动）：租户+平台生效行按 priority 注册为 ReplacementPattern。
 	// 加载失败 → 返回错误（R1：依赖不可用不退回成功）；非法 regexp 已由 API 层拦截，
 	// 但迁移/种子数据不可控，此处同样报错（不静默丢弃）。
@@ -187,4 +253,170 @@ func ToControlsPauses(controls []newtn.Control) []tts.Pause {
 		out = append(out, tts.Pause{AfterChars: c.AfterRunes, DurationMS: c.DurationMS})
 	}
 	return out
+}
+
+// TextNormCacheEvent 上报引擎缓存事件的可选钩子（与 TextNormMetrics 同风格）。
+// name 取 "cache_hit" / "cache_miss"。
+type TextNormCacheEvent func(name string)
+
+// cachedTextNorm 包装 NarrationTextNorm：按 (租户, 语言, 配置指纹) 缓存冻结引擎。
+//
+// 背景（架构优化）：NarrationTextNorm.Build 每次任务都重新查库加载词典/上下文规则、
+// 全量 regexp.Compile 并 Compile 引擎。引擎构造后不可变、可并发 Normalize（模块契约），
+// 同一租户连续多任务时纯属重复劳动。
+//
+// 语义：
+//   - 键 = tenantID + lang + 配置指纹（env 派生选项变化 → 指纹变化 → 自动失效）；
+//   - TTL 覆盖词典/上下文规则的数据变更（库存版无推送机制，采用时间兜底）；
+//   - 每键独立构建等待：并发同键任务不重复构建，且等待支持 context 取消；
+//   - 超 maxEntries 时逐出最旧条目，防内存无界增长。
+type cachedTextNorm struct {
+	inner NarrationTextNorm
+	// fingerprint 返回当前配置指纹；nil 时视为空串（配置假设静态）。
+	fingerprint func() string
+	// onEvent 上报 cache_hit/cache_miss（可为 nil）。
+	onEvent TextNormCacheEvent
+	ttl     time.Duration
+	max     int
+
+	mu      sync.Mutex
+	entries map[string]engineCacheEntry
+	// order 维护插入序（FIFO 逐出最旧）。
+	order []string
+	// flights 只保存正在构建的键，完成后删除；等待可被 context 取消。
+	flights map[string]chan struct{}
+}
+
+type engineCacheEntry struct {
+	engine  *newtn.Engine
+	builtAt time.Time
+}
+
+// NewCachedTextNorm 返回包装后的 NarrationTextNorm。
+// ttl<=0 或 max<=0 时禁用缓存，保持逐任务加载语义。
+func NewCachedTextNorm(inner NarrationTextNorm, ttl time.Duration, max int, fingerprint func() string, onEvent TextNormCacheEvent) NarrationTextNorm {
+	if inner == nil {
+		panic("textnorm: cachedTextNorm requires non-nil inner builder")
+	}
+	if ttl <= 0 || max <= 0 {
+		return inner
+	}
+	return &cachedTextNorm{
+		inner:       inner,
+		fingerprint: fingerprint,
+		onEvent:     onEvent,
+		ttl:         ttl,
+		max:         max,
+		entries:     make(map[string]engineCacheEntry),
+		flights:     make(map[string]chan struct{}),
+	}
+}
+
+func (c *cachedTextNorm) cacheKey(tenantID, lang string) string {
+	var fp string
+	if c.fingerprint != nil {
+		fp = c.fingerprint()
+	}
+	return tenantID + "\x00" + lang + "\x00" + fp
+}
+
+// Build 实现 NarrationTextNorm：缓存命中返回冻结引擎；未命中或过期才调底层构建。
+func (c *cachedTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.Engine, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	key := c.cacheKey(tenantID, lang)
+
+	if e, ok := c.lookup(key); ok {
+		if c.onEvent != nil {
+			c.onEvent("cache_hit")
+		}
+		return e, nil
+	}
+	if c.onEvent != nil {
+		c.onEvent("cache_miss")
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		c.mu.Lock()
+		if e, ok := c.entries[key]; ok && time.Since(e.builtAt) < c.ttl {
+			c.mu.Unlock()
+			return e.engine, nil
+		}
+		if done, ok := c.flights[key]; ok {
+			c.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		c.flights[key] = make(chan struct{})
+		c.mu.Unlock()
+		break
+	}
+	engine, err := c.inner.Build(ctx, tenantID, lang)
+	if err == nil && engine == nil {
+		err = fmt.Errorf("textnorm: builder returned nil engine")
+	}
+	if err == nil {
+		c.store(key, engine)
+	}
+	c.mu.Lock()
+	close(c.flights[key])
+	delete(c.flights, key)
+	c.mu.Unlock()
+	return engine, err
+}
+
+func (c *cachedTextNorm) lookup(key string) (*newtn.Engine, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok {
+		return nil, false
+	}
+	if c.ttl > 0 && time.Since(e.builtAt) > c.ttl {
+		c.deleteLocked(key)
+		return nil, false
+	}
+	return e.engine, true
+}
+
+func (c *cachedTextNorm) store(key string, engine *newtn.Engine) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.entries[key]; exists {
+		// 已存在（极端重入）则刷新时间与引擎即可。
+		c.entries[key] = engineCacheEntry{engine: engine, builtAt: time.Now()}
+		return
+	}
+	c.entries[key] = engineCacheEntry{engine: engine, builtAt: time.Now()}
+	c.order = append(c.order, key)
+	for c.max > 0 && len(c.entries) > c.max {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
+}
+
+func (c *cachedTextNorm) deleteLocked(key string) {
+	delete(c.entries, key)
+	for i, k := range c.order {
+		if k == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+}
+
+// isEnglishLang 判断语言标识是否为英文（en / en-US / en-GB 等）。
+// 用于 NewTextNormEngine 的语言按需装配分支：en* → 英文规则集，其余 → 中文规则集。
+func isEnglishLang(lang string) bool {
+	l := strings.ToLower(strings.TrimSpace(lang))
+	return l == "en" || strings.HasPrefix(l, "en-")
 }

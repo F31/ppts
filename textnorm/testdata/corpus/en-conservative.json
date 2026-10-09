@@ -1,0 +1,15 @@
+{
+  "profile": "en.conservative",
+  "cases": [
+    {"id":"quantity","text":"storage 2048 GB","expect":{"text":"storage two thousand forty-eight GB","edits":["en.number.quantity"]}},
+    {"id":"hundred","text":"100 and 101","expect":{"text":"one hundred and one hundred one","edits":["en.number.quantity","en.number.quantity"]}},
+    {"id":"decimal","text":"pi 3.14","expect":{"text":"pi three point one four","edits":["en.decimal"]}},
+    {"id":"percent-decimal","text":"rate 12.5%","expect":{"text":"rate twelve point five percent","edits":["en.percent"]}},
+    {"id":"percent-int","text":"rate 12%","expect":{"text":"rate twelve percent","edits":["en.percent"]}},
+    {"id":"model-preserved","text":"GPU RTX5090Ti","expect":{"text":"GPU RTX5090Ti","no_edits":true}},
+    {"id":"version-preserved","text":"v3.1.2","expect":{"text":"v3.1.2","no_edits":true}},
+    {"id":"boundary","text":"A123 123B","expect":{"text":"A123 123B","no_edits":true}},
+    {"id":"billion","text":"999999999999","expect":{"text":"nine hundred ninety-nine billion nine hundred ninety-nine million nine hundred ninety-nine thousand nine hundred ninety-nine","edits":["en.number.quantity"]}},
+    {"id":"too-long","text":"1000000000000","expect":{"text":"1000000000000","no_edits":true}}
+  ]
+}
