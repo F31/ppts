@@ -28,6 +28,9 @@ type JobStore interface {
 	JobCreator
 	Get(ctx context.Context, id, tenantID string) (*pipeline.Job, error)
 	List(ctx context.Context, tenantID, projectID, state, cursor string, pageSize int) ([]*pipeline.Job, string, error)
+	// ListSucceededByKind 返回某项目指定 kind 的全部成功任务（created_at 倒序），
+	// SQL 端按 kind 过滤，供列表页按 kind 归集（配音/解析状态）而非跨 kind 分页扫描。
+	ListSucceededByKind(ctx context.Context, tenantID, projectID string, kind pipeline.JobKind) ([]*pipeline.Job, error)
 	Cancel(ctx context.Context, id, tenantID string) (*pipeline.Job, error)
 	RetryFailed(ctx context.Context, id, tenantID string) (*pipeline.Job, error)
 }

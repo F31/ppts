@@ -681,6 +681,35 @@ func (s *PGStore) LatestSucceededJob(ctx context.Context, tenantID, projectID, k
 	return j, err
 }
 
+// ListSucceededByKind 返回某项目指定 kind 的全部成功任务（created_at 倒序）。
+func (s *PGStore) ListSucceededByKind(ctx context.Context, tenantID, projectID string, kind JobKind) ([]*Job, error) {
+	if kind == "" {
+		return nil, nil
+	}
+	var out []*Job
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE tenant_id=$1 AND project_id=$2 AND kind=$3 AND state='succeeded' ORDER BY created_at DESC",
+			tenantID, projectID, string(kind))
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			job, err := scanJob(rows)
+			if err != nil {
+				return err
+			}
+			out = append(out, job)
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // StepResultRef 返回某任务最近成功的指定步骤的 result_ref；
 // 无记录时不返回错误（ref 为空，由调用方决定 NotFound）。
 // 使用 context 中的租户上下文（调用方应已从身份取得租户）。

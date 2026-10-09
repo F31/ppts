@@ -623,46 +623,36 @@ func editorRevisionVoiceStatus(w http.ResponseWriter, r *http.Request, jobs JobS
 	}
 	voicedByRev := map[int]map[string]int64{}
 	if jobs != nil {
-		var cursor string
-		for {
-			page, next, jerr := jobs.List(r.Context(), principal.TenantID, projectID, string(pipeline.StateSucceeded), cursor, 100)
-			if jerr != nil {
-				writeConnectError(w, connect.NewError(connect.CodeInternal, jerr))
-				return
+		narrationJobs, lerr := jobs.ListSucceededByKind(r.Context(), principal.TenantID, projectID, pipeline.KindNarration)
+		if lerr != nil {
+			writeConnectError(w, connect.NewError(connect.CodeInternal, lerr))
+			return
+		}
+		for _, job := range narrationJobs {
+			var snap app.NarrationSnapshot
+			if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err != nil {
+				continue
 			}
-			for _, job := range page {
-				if job.Kind != pipeline.KindNarration {
+			revNo := snap.RevisionNo
+			if revNo == 0 {
+				revNo = inferNarrationRevision(snap, revs, pagesByRev)
+			}
+			if revNo == 0 {
+				continue
+			}
+			m := voicedByRev[revNo]
+			if m == nil {
+				m = map[string]int64{}
+				voicedByRev[revNo] = m
+			}
+			for _, slide := range snap.Slides {
+				if slide.SlideID == "" {
 					continue
 				}
-				var snap app.NarrationSnapshot
-				if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err != nil {
-					continue
-				}
-				revNo := snap.RevisionNo
-				if revNo == 0 {
-					revNo = inferNarrationRevision(snap, revs, pagesByRev)
-				}
-				if revNo == 0 {
-					continue
-				}
-				m := voicedByRev[revNo]
-				if m == nil {
-					m = map[string]int64{}
-					voicedByRev[revNo] = m
-				}
-				for _, slide := range snap.Slides {
-					if slide.SlideID == "" {
-						continue
-					}
-					if slide.ScriptRevision > m[slide.SlideID] {
-						m[slide.SlideID] = slide.ScriptRevision
-					}
+				if slide.ScriptRevision > m[slide.SlideID] {
+					m[slide.SlideID] = slide.ScriptRevision
 				}
 			}
-			if next == "" {
-				break
-			}
-			cursor = next
 		}
 	}
 	out := make([]revisionVoiceStatus, 0, len(revs))
@@ -718,39 +708,30 @@ func editorRevisionNarration(w http.ResponseWriter, r *http.Request, jobs JobSto
 		return
 	}
 	ctx := r.Context()
-	// 找该版本匹配的成功配音任务（与 editorRevisionVoiceStatus 相同的按版本归集口径）。
+	// 找该修订号匹配的成功配音任务（与 editorRevisionVoiceStatus 相同的按版本归集口径）。
+	// SQL 端按 kind 过滤一次取回，避免对全类型成功任务分页扫描后本地再过滤。
 	var timelineKey string
 	var jobID string
-	var cursor string
-	for {
-		page, next, jerr := jobs.List(ctx, principal.TenantID, projectID, string(pipeline.StateSucceeded), cursor, 100)
-		if jerr != nil {
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
+	narrationJobs, lerr := jobs.ListSucceededByKind(ctx, principal.TenantID, projectID, pipeline.KindNarration)
+	if lerr != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	for _, job := range narrationJobs {
+		var snap app.NarrationSnapshot
+		if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err != nil {
+			continue
 		}
-		for _, job := range page {
-			if job.Kind != pipeline.KindNarration {
-				continue
-			}
-			var snap app.NarrationSnapshot
-			if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err != nil {
-				continue
-			}
-			if snap.RevisionNo != revNo {
-				continue
-			}
-			ref, rerr := jobs.StepResultRef(tenant.WithContext(ctx, principal.TenantID), job.ID, "timeline")
-			if rerr != nil || ref == "" {
-				continue
-			}
-			timelineKey = ref
-			jobID = job.ID
-			break
+		if snap.RevisionNo != revNo {
+			continue
 		}
-		if timelineKey != "" || next == "" {
-			break
+		ref, rerr := jobs.StepResultRef(tenant.WithContext(ctx, principal.TenantID), job.ID, "timeline")
+		if rerr != nil || ref == "" {
+			continue
 		}
-		cursor = next
+		timelineKey = ref
+		jobID = job.ID
+		break
 	}
 	if timelineKey == "" {
 		writeJSON(w, http.StatusOK, map[string]any{"ready": false, "timelineKey": "", "pagePngKeys": []string{}, "revisionNo": revNo})
@@ -798,25 +779,15 @@ func inferNarrationRevision(snap app.NarrationSnapshot, revs []*project.SourceRe
 }
 
 func parseJobForRevision(ctx context.Context, jobs JobStore, tenantID, projectID string, revisionNo int) (*pipeline.Job, error) {
-	var cursor string
-	for {
-		page, next, err := jobs.List(ctx, tenantID, projectID, string(pipeline.StateSucceeded), cursor, 100)
-		if err != nil {
-			return nil, err
+	parseJobs, err := jobs.ListSucceededByKind(ctx, tenantID, projectID, pipeline.KindParse)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range parseJobs {
+		var snap app.ParseSnapshot
+		if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err == nil && snap.RevisionNo == revisionNo {
+			return job, nil
 		}
-		for _, job := range page {
-			if job.Kind != pipeline.KindParse {
-				continue
-			}
-			var snap app.ParseSnapshot
-			if err := json.Unmarshal([]byte(job.InputSnapshot), &snap); err == nil && snap.RevisionNo == revisionNo {
-				return job, nil
-			}
-		}
-		if next == "" {
-			break
-		}
-		cursor = next
 	}
 	return nil, pipeline.ErrNoSucceededJob
 }

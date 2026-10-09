@@ -42,6 +42,10 @@ type VoiceCapabilities struct {
 	Region           string
 	ModelID          string
 	MaxBatchSegments int // 供应商同请求可合成的分段上限
+	// MaxConcurrentSegments 是配音端并发合成的能力声明。
+	// 0（默认）＝不支持并发，只能串行——绝不在供应商未声明时假定它能承受并行调用；
+	// >0＝供应商明确可承受该数量的并发 Synthesize，配音端据此做有界并发。
+	MaxConcurrentSegments int
 }
 
 // TimestampType 对齐时间戳类型（V4.0 §8.4 适配器统一到内部时间基准）。

@@ -125,7 +125,8 @@ func runWorker() error {
 	metrics := observability.NewPipelineMetrics()
 	narrationHandler := app.NewNarrationHandler(stores.scripts, jobs, objects, ttsProvider).
 		WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(stores.pronunciation).
-		WithSourceRevisions(stores.projects)
+		WithSourceRevisions(stores.projects).
+		WithSegmentConcurrency(envInt("PPTS_NARRATION_TTS_CONCURRENCY", 0))
 	// 文本规范化引擎：显式开关，默认关闭。启用时按租户/语言/配置有界缓存，TTL 到期重建，
 	// 词典合并（租户优先+平台种子兜底）只在适配层发生，不改动 pronunciation.Store 语义。
 	if textNormEnabled() {

@@ -656,6 +656,30 @@ func (s *SQLiteStore) LatestSucceededJob(ctx context.Context, tenantID, projectI
 	return j, err
 }
 
+// ListSucceededByKind 返回某项目指定 kind 的全部成功任务（created_at 倒序）。
+func (s *SQLiteStore) ListSucceededByKind(ctx context.Context, tenantID, projectID string, kind JobKind) ([]*Job, error) {
+	if kind == "" {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+jobSelectColumns+` FROM jobs
+		 WHERE tenant_id = ? AND project_id = ? AND kind = ? AND state = 'succeeded'
+		 ORDER BY created_at DESC`, tenantID, projectID, string(kind))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Job
+	for rows.Next() {
+		j, err := sqScanJob(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, j)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLiteStore) StepResultRef(ctx context.Context, jobID, stepType string) (string, error) {
 	var ref string
 	err := s.db.QueryRowContext(ctx,

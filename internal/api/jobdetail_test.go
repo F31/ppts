@@ -54,6 +54,10 @@ func (s *jobDetailStub) List(context.Context, string, string, string, string, in
 	return nil, "", nil
 }
 
+func (s *jobDetailStub) ListSucceededByKind(context.Context, string, string, pipeline.JobKind) ([]*pipeline.Job, error) {
+	return nil, nil
+}
+
 func (s *jobDetailStub) Cancel(context.Context, string, string) (*pipeline.Job, error) {
 	return nil, pipeline.ErrJobNotFound
 }

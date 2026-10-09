@@ -267,3 +267,66 @@ func TestSQLiteQueueDepthByKindIsolatesTenants(t *testing.T) {
 		t.Fatalf("other tenant results = %+v, want empty", stats)
 	}
 }
+
+// TestSQLiteListSucceededByKind 验证按 kind 归集成功任务的读方法（editor 列表页归集基础）。
+// 刻意铺三种：同 kind 成功（应返回）、同 kind 未成功（不应返回）、异 kind 成功（不应返回）。
+func TestSQLiteListSucceededByKind(t *testing.T) {
+	ctx := context.Background()
+	s := newPipelineStore(t)
+	const tenant = db.LocalTenantID
+	const project = "proj-1"
+
+	mk := func(idem, kind string) *Job {
+		t.Helper()
+		j, err := s.Create(ctx, tenant, project, kind, idem, `{"revisionNo":1}`, time.Time{})
+		if err != nil {
+			t.Fatalf("create %s: %v", idem, err)
+		}
+		c, err := s.ClaimNext(ctx, tenant, "w", time.Minute)
+		if err != nil {
+			t.Fatalf("claim %s: %v", idem, err)
+		}
+		if err := s.Complete(ctx, c.ID, "w", c.FencingToken, StateSucceeded, nil); err != nil {
+			t.Fatalf("complete %s: %v", idem, err)
+		}
+		return j
+	}
+	narrA := mk("idem-nA", "narration")
+	mk("idem-nB", "narration")
+	mk("idem-pA", "parse") // 异 kind 成功，不应混入
+	// 一个 narration 保持非成功终态（failed），不应返回。
+	jf, _ := s.Create(ctx, tenant, project, "narration", "idem-nC", `{}`, time.Time{})
+	cf, _ := s.ClaimNext(ctx, tenant, "w", time.Minute)
+	if err := s.Complete(ctx, cf.ID, "w", cf.FencingToken, StateFailed, []byte(`{"message":"x"}`)); err != nil {
+		t.Fatalf("fail complete: %v", err)
+	}
+
+	got, err := s.ListSucceededByKind(ctx, tenant, project, KindNarration)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	idSet := map[string]bool{}
+	for _, j := range got {
+		idSet[j.ID] = true
+		if j.State != StateSucceeded {
+			t.Fatalf("returned job state = %s, want succeeded", j.State)
+		}
+	}
+	if !idSet[narrA.ID] {
+		t.Fatalf("succeeded narration job %s missing from results", narrA.ID)
+	}
+	if idSet[jf.ID] {
+		t.Fatalf("failed narration job %s included in succeeded list", jf.ID)
+	}
+	for _, j := range got {
+		if j.Kind != KindNarration {
+			t.Fatalf("kind %s leaked into narration result", j.Kind)
+		}
+	}
+
+	// 空 kind 直接返回空。
+	empty, err := s.ListSucceededByKind(ctx, tenant, project, "")
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty kind: len=%d err=%v, want 0/nil", len(empty), err)
+	}
+}

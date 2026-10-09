@@ -54,6 +54,9 @@ func (s *observeStore) RetryFailed(context.Context, string, string) (*Job, error
 func (s *observeStore) List(context.Context, string, string, string, string, int) ([]*Job, string, error) {
 	return nil, "", nil
 }
+func (s *observeStore) ListSucceededByKind(context.Context, string, string, JobKind) ([]*Job, error) {
+	return nil, nil
+}
 func (s *observeStore) Get(context.Context, string, string) (*Job, error) { return nil, ErrJobNotFound }
 
 type observeMetrics struct {

@@ -306,6 +306,10 @@ type Store interface {
 	RetryFailed(ctx context.Context, id, tenantID string) (*Job, error)
 	// List 按项目/状态游标分页查询（created_at 倒序）。
 	List(ctx context.Context, tenantID, projectID, state, cursor string, pageSize int) ([]*Job, string, error)
+	// ListSucceededByKind 返回某项目指定 kind 的**全部成功任务**（created_at 倒序）。
+	// 面向"按 kind 归集的列表页/定位"：SQL 端按 kind 过滤，避免对跨 kind 的成功任务
+	// 做 cursor 分页逐页扫描（editor 的配音/解析状态归集即此场景）。kind 传空串返回空。
+	ListSucceededByKind(ctx context.Context, tenantID, projectID string, kind JobKind) ([]*Job, error)
 	// Get 按 ID 查询（含跨步校验）。
 	Get(ctx context.Context, id, tenantID string) (*Job, error)
 }

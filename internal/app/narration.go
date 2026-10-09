@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -115,6 +117,12 @@ type NarrationHandler struct {
 	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
 	// sourceRevisions 是记录时间轴来源所需的窄能力（见 WithSourceRevisions）；nil 时跳过来源记录。
 	sourceRevisions SourceRevisionLookup
+	// segmentConcurrency 是配音分段合成的有界并发上限（operator 覆盖）。
+	// 0＝跟随供应商能力声明（Capabilities.MaxConcurrentSegments，0 即串行）；
+	// >0＝操作员显式上限，只允许**调低**供应商声明，不允许调高（防真实限流/串行供应商被并行打爆）。
+	segmentConcurrency int
+	// stepMu 串行化步骤记录 DB 写：SQLite 并发写会 BUSY（与 scriptdraft 的 dbMu 同源）。
+	stepMu sync.Mutex
 }
 
 // SourceRevisionLookup 是 narration 记录时间轴来源所需的窄能力（避免直接依赖整个 project.Store）：
@@ -188,9 +196,210 @@ func (h *NarrationHandler) providerForTenant(ctx context.Context, tenantID strin
 	return h.provider, nil
 }
 
+// WithSegmentConcurrency 设置配音分段合成的有界并发上限（默认跟随供应商能力声明）。
+// 只允许调低、不允许调高：真实供应商未声明并发（MaxConcurrentSegments=0）时，
+// 即使这里设了 N>0 也保持串行，绝不假定供应商能承受并行调用。
+func (h *NarrationHandler) WithSegmentConcurrency(n int) *NarrationHandler {
+	h.segmentConcurrency = n
+	return h
+}
+
+// effectiveSegmentConcurrency 计算一次配音任务实际使用的分段合成并发度。
+// 结果 = min(供应商声明 MaxConcurrentSegments, 操作员上限)，下限 1。
+// 供应商未声明（0）→ 恒为 1（串行），操作员无法借此强行并发。
+func (h *NarrationHandler) effectiveSegmentConcurrency(capabilities tts.VoiceCapabilities) int {
+	n := capabilities.MaxConcurrentSegments
+	if n < 1 {
+		return 1
+	}
+	if h.segmentConcurrency > 0 && h.segmentConcurrency < n {
+		return h.segmentConcurrency
+	}
+	return n
+}
+
+// markStep 串行化步骤记录 DB 写：并发合成分段的 goroutine 会同时调用 steps.MarkStep，
+// SQLite 并发写会 BUSY（与 scriptdraft 的 dbMu 同源）。publishTimeline 等串行路径
+// 也走此函数，统一保护，互斥开销可忽略。
+func (h *NarrationHandler) markStep(ctx context.Context, step pipeline.JobStep) error {
+	h.stepMu.Lock()
+	defer h.stepMu.Unlock()
+	return h.steps.MarkStep(ctx, step)
+}
+
 type plannedSlide struct {
 	snapshot NarrationSlideSnapshot
 	revision *narration.Revision
+}
+
+// nalInstruction 是一次配音任务里单个"页 × 段"的合成工作单元，固定顺序（预分配槽位）。
+type nalInstruction struct {
+	idx     int // 最终结果槽位索引（= 展平序）
+	slide   plannedSlide
+	segment *narration.Segment
+}
+
+// nalOutcome 是单个工作单元的合成结果（槽位由 instruction 索引，天然有序）。
+type nalOutcome struct {
+	asset  *SegmentAsset
+	cached bool
+}
+
+// timelineAssembly 是一次合成的有序时间轴输入、统计与总时长（组装阶段串行累计）。
+type timelineAssembly struct {
+	slides  []media.SlideInput
+	stats   SynthesisStats
+	totalMS int64
+}
+
+// synthesizeAllSegments 有界并发合成 planned 内所有分段，并按页/段原序组装时间轴。
+//
+// 并发语义（防止"TTS 不支持并发调用"的供应商被并行打爆）：
+//   - 并发度 = effectiveSegmentConcurrency(capabilities)：供应商未声明
+//     MaxConcurrentSegments（0）→ 恒为 1，纯串行，行为与逐段完全一致；
+//   - 操作员上限只允许调低供应商声明，不允许调高；
+//
+// 进度：合成**逐个完成时**增量上报（与改动前逐段上报语义一致）；segmentFilter 非空时
+// 仅统计目标分段（totalTargeted）。并发路径下进度 DB 写经 stepMu 串行化。
+//
+// 错误：串行路径首个错误立即返回；并发路径首个错误触发 runCtx 取消让其余尽快失败，
+// 收敛后返回首个错误。MarkStep（DB 写）经 markStep 互斥串行化，避免 SQLite 并发写 BUSY。
+func (h *NarrationHandler) synthesizeAllSegments(ctx context.Context, job *pipeline.Job, snapshot NarrationSnapshot, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, textNormEngine TextPreparer) (timelineAssembly, error) {
+	concurrency := h.effectiveSegmentConcurrency(capabilities)
+
+	totalTargeted := 0
+	for _, s := range planned {
+		for _, seg := range s.revision.Segments {
+			if segmentFilter == nil {
+				totalTargeted++
+			} else if _, ok := segmentFilter[seg.SegmentID]; ok {
+				totalTargeted++
+			}
+		}
+	}
+	// 进度累计（并发路径用原子计数；DB 写归 stepMu）。
+	isTargeted := func(seg *narration.Segment) bool {
+		if segmentFilter == nil {
+			return true
+		}
+		_, ok := segmentFilter[seg.SegmentID]
+		return ok
+	}
+	var completed atomic.Int64
+	reportProgress := func() {
+		if totalTargeted <= 0 {
+			return
+		}
+		n := completed.Load()
+		pct := int(n * 100 / int64(totalTargeted))
+		if pct > 100 {
+			pct = 100
+		}
+		h.stepMu.Lock()
+		_ = pipeline.ReportProgress(ctx, pct)
+		h.stepMu.Unlock()
+	}
+
+	// 1) 展开全部 (页, 段) 工作单元，idx 即结果槽位（天然有序）。
+	n := 0
+	for _, s := range planned {
+		n += len(s.revision.Segments)
+	}
+	instructions := make([]nalInstruction, 0, n)
+	for _, s := range planned {
+		for _, seg := range s.revision.Segments {
+			instructions = append(instructions, nalInstruction{idx: len(instructions), slide: s, segment: seg})
+		}
+	}
+	outcomes := make([]nalOutcome, len(instructions))
+
+	if concurrency <= 1 {
+		// 串行保底路径：语义与改动前一致（错误立即返回，逐段报进度）。
+		for _, ins := range instructions {
+			if err := ctx.Err(); err != nil {
+				return timelineAssembly{}, err
+			}
+			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, ins.slide.snapshot, provider, capabilities, ins.segment, dictRules, textNormEngine)
+			if err != nil {
+				return timelineAssembly{}, err
+			}
+			outcomes[ins.idx] = nalOutcome{asset: asset, cached: cached}
+			if isTargeted(ins.segment) {
+				completed.Add(1)
+				reportProgress()
+			}
+		}
+	} else {
+		runCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+		var errMu sync.Mutex
+		var firstErr error
+		for _, ins := range instructions {
+			sem <- struct{}{} // 等待并发槽位；runCtx 取消后 slot 会被提前释放，不会死锁
+			if err := runCtx.Err(); err != nil {
+				<-sem
+				break
+			}
+			wg.Add(1)
+			go func(ins nalInstruction) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				asset, cached, err := h.synthesizeSegment(runCtx, job, snapshot, ins.slide.snapshot, provider, capabilities, ins.segment, dictRules, textNormEngine)
+				if err != nil {
+					errMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+						cancel()
+					}
+					errMu.Unlock()
+					return
+				}
+				outcomes[ins.idx] = nalOutcome{asset: asset, cached: cached}
+				if isTargeted(ins.segment) {
+					completed.Add(1)
+					reportProgress()
+				}
+			}(ins)
+		}
+		wg.Wait()
+		if firstErr != nil {
+			return timelineAssembly{}, firstErr
+		}
+	}
+
+	// 2) 串行组装时间轴：保持页/段原序，统计与累计不涉共享写。
+	asm := timelineAssembly{slides: make([]media.SlideInput, 0, len(planned))}
+	currentSlideID := ""
+	for _, ins := range instructions {
+		out := outcomes[ins.idx]
+		asm.stats.Segments++
+		if out.cached {
+			asm.stats.Cached++
+		} else {
+			asm.stats.Synthesized++
+		}
+		asm.totalMS += out.asset.DurationMS
+		displayForTimeline := ins.segment.DisplayText
+		if textNormEngine != nil {
+			// 字幕/导出文本派生：剥离读/停标记（候选引擎 StripLegacyMarkers，V3.1 §10.2）。
+			displayForTimeline = textNormEngine.Display(ins.segment.DisplayText)
+		}
+		// 精确逐字高亮（N2 数值展开）：显示字符 → 朗读 token 下标；不可用时回落比例近似。
+		charToToken := buildCharToToken(ctx, textNormEngine, ins.segment.SpokenText, snapshot.Language, out.asset.Alignment)
+		if currentSlideID != ins.slide.snapshot.SlideID {
+			asm.slides = append(asm.slides, media.SlideInput{SlideID: ins.slide.snapshot.SlideID})
+			currentSlideID = ins.slide.snapshot.SlideID
+		}
+		last := &asm.slides[len(asm.slides)-1]
+		last.Segments = append(last.Segments, media.SegmentInput{
+			SegmentID: scopedSegmentID(ins.slide.snapshot.SlideID, ins.segment.SegmentID), DisplayText: displayForTimeline,
+			AudioKey: out.asset.AudioKey, DurationMS: out.asset.DurationMS, Alignment: out.asset.Alignment,
+			CharToToken: charToToken,
+		})
+	}
+	return asm, nil
 }
 
 // Handle implements pipeline.HandlerFunc for narration jobs.
@@ -283,67 +492,18 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		planned = append(planned, plannedSlide{snapshot: slide, revision: revision})
 	}
 
-	timelineSlides := make([]media.SlideInput, 0, len(planned))
 	totalMS := int64(0)
-	completedSegments := 0
 	// 本次任务的音频来源构成（按 job 局部累计，绝不放 handler 字段：handler 跨任务共享，
 	// 并发任务会互相串数据）。
 	stats := SynthesisStats{}
-	// G2-5 进度统计：有过滤集时仅统计目标分段。
-	totalTargeted := 0
-	for _, slide := range planned {
-		for _, segment := range slide.revision.Segments {
-			if segmentFilter == nil {
-				totalTargeted++
-			} else if _, ok := segmentFilter[segment.SegmentID]; ok {
-				totalTargeted++
-			}
-		}
+
+	asm, err := h.synthesizeAllSegments(ctx, job, snapshot, provider, capabilities, planned, segmentFilter, dictRules, textNormEngine)
+	if err != nil {
+		return err
 	}
-	for _, slide := range planned {
-		timelineSlide := media.SlideInput{SlideID: slide.snapshot.SlideID}
-		for _, segment := range slide.revision.Segments {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			// synthesizeSegment 内部按 content hash 做缓存，未修改分段直接命中缓存，开销极低。
-			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine)
-			if err != nil {
-				return err
-			}
-			stats.Segments++
-			if cached {
-				stats.Cached++
-			} else {
-				stats.Synthesized++
-			}
-			totalMS += asset.DurationMS
-			displayForTimeline := segment.DisplayText
-			if textNormEngine != nil {
-				// 字幕/导出文本派生：剥离读/停标记（候选引擎 StripLegacyMarkers，V3.1 §10.2）。
-				displayForTimeline = textNormEngine.Display(segment.DisplayText)
-			}
-			// 精确逐字高亮（N2 数值展开）：显示字符 → 朗读 token 下标；不可用时回落比例近似。
-			charToToken := buildCharToToken(ctx, textNormEngine, segment.SpokenText, snapshot.Language, asset.Alignment)
-			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
-				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: displayForTimeline,
-				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
-				CharToToken: charToToken,
-			})
-			if segmentFilter == nil {
-				completedSegments++
-			} else if _, ok := segmentFilter[segment.SegmentID]; ok {
-				completedSegments++
-			}
-			if totalTargeted > 0 {
-				pct := completedSegments * 100 / totalTargeted
-				if err := pipeline.ReportProgress(ctx, pct); err != nil {
-					return err
-				}
-			}
-		}
-		timelineSlides = append(timelineSlides, timelineSlide)
-	}
+	timelineSlides := asm.slides
+	stats = asm.stats
+	totalMS = asm.totalMS
 
 	// G2-5 时长控制：首轮合成后若超出目标 ±10%，自动按比例调整速率重合成。
 	if snapshot.TargetDurationMS > 0 && totalMS > 0 {
@@ -432,7 +592,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		} else if ok {
 			h.recordCacheHit(job, "project")
 			step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
-			if err := h.steps.MarkStep(ctx, step); err != nil {
+			if err := h.markStep(ctx, step); err != nil {
 				return nil, false, err
 			}
 			return manifest, true, nil
@@ -466,7 +626,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 				return nil, false, fmt.Errorf("narration job: publish manifest: %w", err)
 			}
 			step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
-			if err := h.steps.MarkStep(ctx, step); err != nil {
+			if err := h.markStep(ctx, step); err != nil {
 				return nil, false, err
 			}
 			return shared, true, nil
@@ -474,12 +634,12 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 	}
 
 	step.State = pipeline.StepPending
-	if err := h.steps.MarkStep(ctx, step); err != nil {
+	if err := h.markStep(ctx, step); err != nil {
 		return nil, false, err
 	}
 	failStep := func(err error) (*SegmentAsset, bool, error) {
 		step.State = pipeline.StepFailed
-		_ = h.steps.MarkStep(ctx, step)
+		_ = h.markStep(ctx, step)
 		return nil, false, err
 	}
 	request := tts.SynthesisRequest{
@@ -543,7 +703,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		return failStep(fmt.Errorf("narration job: publish manifest: %w", err))
 	}
 	step.State, step.ResultRef = pipeline.StepSuccess, manifestKey.String()
-	if err := h.steps.MarkStep(ctx, step); err != nil {
+	if err := h.markStep(ctx, step); err != nil {
 		return nil, false, err
 	}
 	return &manifest, false, nil
@@ -639,7 +799,7 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 		return err
 	} else if complete {
 		step.State = pipeline.StepSuccess
-		return h.steps.MarkStep(ctx, step)
+		return h.markStep(ctx, step)
 	}
 	srt, err := media.RenderSRT(timeline.Subtitles)
 	if err != nil {
@@ -654,12 +814,12 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 		return err
 	}
 	step.State = pipeline.StepPending
-	if err := h.steps.MarkStep(ctx, step); err != nil {
+	if err := h.markStep(ctx, step); err != nil {
 		return err
 	}
 	failStep := func(err error) error {
 		step.State = pipeline.StepFailed
-		_ = h.steps.MarkStep(ctx, step)
+		_ = h.markStep(ctx, step)
 		return err
 	}
 	for _, asset := range []struct {
@@ -678,45 +838,18 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 		}
 	}
 	step.State = pipeline.StepSuccess
-	return h.steps.MarkStep(ctx, step)
+	return h.markStep(ctx, step)
 }
 
 // retryWithAdjustedRate 用调整后的语速重新执行合成（时长控制）。
 func (h *NarrationHandler) retryWithAdjustedRate(ctx context.Context, job *pipeline.Job, adjusted NarrationSnapshot, segmentFilter map[string]struct{}, dictRules pronunciation.Rules, provider tts.TTSProvider, capabilities tts.VoiceCapabilities, planned []plannedSlide, textNormEngine TextPreparer) error {
-	timelineSlides := make([]media.SlideInput, 0, len(planned))
-	totalMS := int64(0)
-	// 语速调整后重跑：构成独立累计（同上，按 job 局部）。
-	stats := SynthesisStats{}
-	for _, slide := range planned {
-		timelineSlide := media.SlideInput{SlideID: slide.snapshot.SlideID}
-		for _, segment := range slide.revision.Segments {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
-			asset, cached, err := h.synthesizeSegment(ctx, job, adjusted, slide.snapshot, provider, capabilities, segment, dictRules, textNormEngine)
-			if err != nil {
-				return err
-			}
-			stats.Segments++
-			if cached {
-				stats.Cached++
-			} else {
-				stats.Synthesized++
-			}
-			totalMS += asset.DurationMS
-			displayForTimeline := segment.DisplayText
-			if textNormEngine != nil {
-				displayForTimeline = textNormEngine.Display(segment.DisplayText)
-			}
-			charToToken := buildCharToToken(ctx, textNormEngine, segment.SpokenText, adjusted.Language, asset.Alignment)
-			timelineSlide.Segments = append(timelineSlide.Segments, media.SegmentInput{
-				SegmentID: scopedSegmentID(slide.snapshot.SlideID, segment.SegmentID), DisplayText: displayForTimeline,
-				AudioKey: asset.AudioKey, DurationMS: asset.DurationMS, Alignment: asset.Alignment,
-				CharToToken: charToToken,
-			})
-		}
-		timelineSlides = append(timelineSlides, timelineSlide)
+	asm, err := h.synthesizeAllSegments(ctx, job, adjusted, provider, capabilities, planned, nil, dictRules, textNormEngine)
+	if err != nil {
+		return err
 	}
+	timelineSlides := asm.slides
+	totalMS := asm.totalMS
+	stats := asm.stats
 	if err := h.publishTimeline(ctx, job, adjusted.Timing, timelineSlides, adjusted.RevisionNo, stats); err != nil {
 		return err
 	}
@@ -932,6 +1065,17 @@ func ttsErrorFlags(err error) (retryable bool, throttled bool) {
 func hashBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// hashReader 流式计算 reader 内容的 SHA-256 与字节数，供导出等大文件路径在不上浮内存的前提下
+// 得到内容寻址键与元数据尺寸。
+func hashReader(r io.Reader) (string, int64, error) {
+	h := sha256.New()
+	n, err := io.Copy(h, r)
+	if err != nil {
+		return "", 0, err
+	}
+	return hex.EncodeToString(h.Sum(nil)), n, nil
 }
 
 // scopedSegmentID 生成时间轴使用的全局分段键：分段 id 只需页内唯一，

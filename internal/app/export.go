@@ -97,7 +97,16 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		sourceRevisionNo = bundle.Timeline.SourceRevisionNo
 		sourceDisplayName = bundle.Timeline.SourceDisplayName
 	}
+	// 成品时长 = 绑定时间轴的实际时长（迁移 0027）。四种格式同源：MP4 的画面长度由各页
+	// PageDurationsMS 决定，而它正是从这里的时间轴推出的，故与时间轴时长一致。
+	durationMS := int64(0)
+	if bundle.Timeline.DurationUS > 0 {
+		durationMS = bundle.Timeline.DurationUS / 1000
+	}
+	// 产物数据来源：小文件（srt/vtt）读入内存；zip/mp4 走临时文件流式化，避免峰值内存随
+	// 音频总量/编码产物线性增长。file != nil 时 data 为 nil，由下方流式上传。
 	var data []byte
+	var file *os.File
 	var contentType, ext string
 	switch snapshot.Format {
 	case artifact.FormatSRT:
@@ -107,10 +116,10 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		data, err = h.readTenantObject(ctx, job.TenantID, bundle.VTTKey)
 		contentType, ext = "text/vtt; charset=utf-8", "vtt"
 	case artifact.FormatMP4:
-		data, err = h.renderMP4(ctx, job, snapshot, bundle)
+		file, err = h.renderMP4(ctx, job, snapshot, bundle)
 		contentType, ext = "video/mp4", "mp4"
 	case artifact.FormatWebProject:
-		data, err = h.packWebProject(ctx, job.TenantID, bundle)
+		file, err = h.packWebProject(ctx, job.TenantID, bundle)
 		contentType, ext = "application/zip", "zip"
 	default:
 		err = fmt.Errorf("export job: unsupported format %q", snapshot.Format)
@@ -118,16 +127,50 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if err != nil {
 		return failStep(err)
 	}
+	// 统一流式上传：文件产物先回卷再哈希/统计，随后 io.Copy 进对象存储。
+	if file != nil {
+		defer file.Close()
+		defer os.Remove(file.Name())
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return failStep(err)
+		}
+		contentHash, size, herr := hashReader(file)
+		if herr != nil {
+			return failStep(fmt.Errorf("export job: hash artifact: %w", herr))
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return failStep(err)
+		}
+		key := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact", AssetType: "artifact", AssetID: contentHash, Ext: ext}
+		if err := h.objects.Put(ctx, key, file, objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: size}); err != nil {
+			return failStep(fmt.Errorf("export job: publish artifact: %w", err))
+		}
+		_ = data
+		data = nil
+		a, aerr := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
+			ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
+			ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: size,
+			DurationMS: durationMS,
+			// 记录本成品绑定的时间轴（迁移 0040）：成品库内嵌预览据此构建播放清单，
+			// 保证预览内容与下载文件同源（而不是"项目最新讲解"的另一个版本）。
+			TimelineKey: snapshot.TimelineKey,
+			// 冗余来源信息（源版本号 + 展示名）：成品库按"PPT 名称 + 版本"精确展示，
+			// 见 internal/media/timeline.go 与 internal/app/narration.go。
+			SourceRevisionNo:  sourceRevisionNo,
+			SourceDisplayName: sourceDisplayName,
+		})
+		if aerr != nil {
+			return failStep(aerr)
+		}
+		step.State, step.ResultRef = pipeline.StepSuccess, a.ID
+		// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
+		pipeline.SetCommitStep(ctx, step)
+		return nil
+	}
 	contentHash := hashBytes(data)
 	key := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact", AssetType: "artifact", AssetID: contentHash, Ext: ext}
 	if err := h.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: int64(len(data))}); err != nil {
 		return failStep(fmt.Errorf("export job: publish artifact: %w", err))
-	}
-	// 成品时长 = 绑定时间轴的实际时长（迁移 0027）。四种格式同源：MP4 的画面长度由各页
-	// PageDurationsMS 决定，而它正是从这里的时间轴推出的，故与时间轴时长一致。
-	durationMS := int64(0)
-	if bundle.Timeline.DurationUS > 0 {
-		durationMS = bundle.Timeline.DurationUS / 1000
 	}
 	a, err := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
 		ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
@@ -151,42 +194,21 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 }
 
 // packWebProject 打包可离线播放的 Web 讲解工程：timeline.json + 字幕 + 各音频片段。
-func (h *ExportHandler) packWebProject(ctx context.Context, tenantID string, bundle *TimelineAsset) ([]byte, error) {
-	timelineJSON, err := json.Marshal(bundle.Timeline)
+//
+// 流式实现：zip 写入临时文件，音频片段逐个 io.Copy 进 zip entry（绝不整体载入内存），
+// 返回 *os.File 供调用方流式上传后关闭。大 deck 的音频总量可能数十 MB，整体进 bytes.Buffer
+// 会让 worker 峰值内存随音频总量线性增长。
+func (h *ExportHandler) packWebProject(ctx context.Context, tenantID string, bundle *TimelineAsset) (*os.File, error) {
+	tmp, err := os.CreateTemp("", "ppts-webproject-*.zip")
 	if err != nil {
 		return nil, err
 	}
-	srt, err := h.readTenantObject(ctx, tenantID, bundle.SRTKey)
-	if err != nil {
-		return nil, err
+	cleanup := func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
 	}
-	vtt, err := h.readTenantObject(ctx, tenantID, bundle.VTTKey)
-	if err != nil {
-		return nil, err
-	}
-	type audioClip struct {
-		name string
-		data []byte
-	}
-	clips := make([]audioClip, 0, len(bundle.Timeline.Slides))
-	seen := map[string]struct{}{}
-	for _, slide := range bundle.Timeline.Slides {
-		for _, segment := range slide.Segments {
-			if _, ok := seen[segment.AudioKey]; ok {
-				continue
-			}
-			seen[segment.AudioKey] = struct{}{}
-			data, err := h.readTenantObject(ctx, tenantID, segment.AudioKey)
-			if err != nil {
-				return nil, err
-			}
-			name := "audio/" + segment.AudioKey[strings.LastIndex(segment.AudioKey, "/")+1:]
-			clips = append(clips, audioClip{name: name, data: data})
-		}
-	}
-	buf := new(bytes.Buffer)
-	zw := zip.NewWriter(buf)
-	add := func(name string, data []byte) error {
+	zw := zip.NewWriter(tmp)
+	addBytes := func(name string, data []byte) error {
 		w, err := zw.Create(name)
 		if err != nil {
 			return err
@@ -194,24 +216,78 @@ func (h *ExportHandler) packWebProject(ctx context.Context, tenantID string, bun
 		_, err = w.Write(data)
 		return err
 	}
-	if err := add("timeline.json", timelineJSON); err != nil {
+	timelineJSON, err := json.Marshal(bundle.Timeline)
+	if err != nil {
+		cleanup()
 		return nil, err
 	}
-	if err := add("subtitles.srt", srt); err != nil {
+	srt, err := h.readTenantObject(ctx, tenantID, bundle.SRTKey)
+	if err != nil {
+		cleanup()
 		return nil, err
 	}
-	if err := add("subtitles.vtt", vtt); err != nil {
+	vtt, err := h.readTenantObject(ctx, tenantID, bundle.VTTKey)
+	if err != nil {
+		cleanup()
 		return nil, err
 	}
-	for _, clip := range clips {
-		if err := add(clip.name, clip.data); err != nil {
-			return nil, err
+	if err := addBytes("timeline.json", timelineJSON); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if err := addBytes("subtitles.srt", srt); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if err := addBytes("subtitles.vtt", vtt); err != nil {
+		cleanup()
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	for _, slide := range bundle.Timeline.Slides {
+		for _, segment := range slide.Segments {
+			if _, ok := seen[segment.AudioKey]; ok {
+				continue
+			}
+			seen[segment.AudioKey] = struct{}{}
+			// 音频逐个流式写入 zip：先建 entry，再从对象存储流式拷贝，不整段驻留内存。
+			name := "audio/" + segment.AudioKey[strings.LastIndex(segment.AudioKey, "/")+1:]
+			w, err := zw.Create(name)
+			if err != nil {
+				cleanup()
+				return nil, err
+			}
+			key, perr := objectstore.Parse(segment.AudioKey)
+			if perr != nil {
+				cleanup()
+				return nil, perr
+			}
+			if perr := key.EnsureTenant(tenantID); perr != nil {
+				cleanup()
+				return nil, perr
+			}
+			r, _, gerr := h.objects.Get(ctx, key)
+			if gerr != nil {
+				cleanup()
+				return nil, gerr
+			}
+			_, cerr := io.Copy(w, r)
+			r.Close()
+			if cerr != nil {
+				cleanup()
+				return nil, cerr
+			}
 		}
 	}
 	if err := zw.Close(); err != nil {
+		cleanup()
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return tmp, nil
 }
 
 func (h *ExportHandler) loadTimelineBundle(ctx context.Context, tenantID, key string) (*TimelineAsset, error) {
@@ -242,7 +318,7 @@ func (h *ExportHandler) readTenantObject(ctx context.Context, tenantID, rawKey s
 	return io.ReadAll(r)
 }
 
-func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset) ([]byte, error) {
+func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset) (*os.File, error) {
 	if h.encoder == nil {
 		return nil, errors.New("export job: mp4 encoder is not configured")
 	}
@@ -304,8 +380,8 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	if err != nil {
 		return nil, err
 	}
+	// 编码产物本就写临时文件；直接返回 *os.File 由调用方流式上传，避免 os.ReadFile 再整份读入内存。
 	tmp := filepath.Join(os.TempDir(), "ppts-export-"+job.ID+".mp4")
-	defer os.Remove(tmp)
 	if _, err := h.encoder.Encode(ctx, media.MP4EncodeOptions{
 		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
 		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioWAV: audio,
@@ -314,7 +390,11 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	}); err != nil {
 		return nil, classifyEncodeError(err)
 	}
-	return os.ReadFile(tmp)
+	f, err := os.Open(tmp)
+	if err != nil {
+		return nil, err
+	}
+	return f, nil
 }
 
 // classifyEncodeError 把 MP4 编码错误映射为 worker 可识别的错误：

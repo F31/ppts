@@ -416,6 +416,13 @@ func (s *jobCreatorStub) List(context.Context, string, string, string, string, i
 	return s.listJobs, s.listNext, nil
 }
 
+func (s *jobCreatorStub) ListSucceededByKind(context.Context, string, string, pipeline.JobKind) ([]*pipeline.Job, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.listJobs, nil
+}
+
 func (s *jobCreatorStub) Cancel(context.Context, string, string) (*pipeline.Job, error) {
 	if s.err != nil {
 		return nil, s.err
@@ -1764,6 +1771,12 @@ func (s *revisionNarrationJobStub) StepResultRef(_ context.Context, jobID, stepT
 func (s *revisionNarrationJobStub) List(_ context.Context, _ string, _ string, _ string, _ string, _ int) ([]*pipeline.Job, string, error) {
 	return s.jobs, "", nil
 }
+func (s *revisionNarrationJobStub) ListSucceededByKind(_ context.Context, _, _ string, kind pipeline.JobKind) ([]*pipeline.Job, error) {
+	if kind != pipeline.KindNarration {
+		return nil, nil
+	}
+	return s.jobs, nil
+}
 func (s *revisionNarrationJobStub) Get(context.Context, string, string) (*pipeline.Job, error) {
 	return nil, pipeline.ErrJobNotFound
 }
@@ -2142,6 +2155,19 @@ func (s *narrationJobStub) Get(context.Context, string, string) (*pipeline.Job, 
 
 func (s *narrationJobStub) List(context.Context, string, string, string, string, int) ([]*pipeline.Job, string, error) {
 	return nil, "", nil
+}
+
+func (s *narrationJobStub) ListSucceededByKind(_ context.Context, _, _ string, kind pipeline.JobKind) ([]*pipeline.Job, error) {
+	if kind == pipeline.KindParse {
+		if s.parseJob == nil {
+			return nil, nil
+		}
+		return []*pipeline.Job{s.parseJob}, nil
+	}
+	if s.jobNotFound || s.job == nil {
+		return nil, nil
+	}
+	return []*pipeline.Job{s.job}, nil
 }
 
 func (s *narrationJobStub) Cancel(context.Context, string, string) (*pipeline.Job, error) {
