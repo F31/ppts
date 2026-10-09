@@ -20,7 +20,7 @@ func TestManifestCarriesVersion(t *testing.T) {
 	if res.Manifest.Version != Version {
 		t.Fatalf("manifest version = %q, want %q", res.Manifest.Version, Version)
 	}
-	if res.Manifest.Version != "v0.1.0" {
+	if res.Manifest.Version != "v0.2.0" {
 		t.Fatalf("pin check failed: %q", res.Manifest.Version)
 	}
 }

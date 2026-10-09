@@ -2,12 +2,10 @@ module github.com/F31/ppts
 
 go 1.25.0
 
-// textnorm 是独立组件模块，已发布到 github.com/F31/textnorm；monorepo 内保留
-// 本地 replace 使 GOWORK=off（CI）可解析当前未发布优化。发布包含这些 API 的新版本后，
-// 更新 require 并移除 replace；v0.1.0 是已发布基线，不包含本地新增规则。
-require github.com/F31/textnorm v0.1.0
-
-replace github.com/F31/textnorm => ./textnorm
+// textnorm 是独立组件模块，已发布到 github.com/F31/textnorm。
+// 生产/CI 走 GOWORK=off 的发布版本 v0.2.0（首次构建由 go mod tidy 生成 go.sum 校验和）；
+// 本地协同开发通过 go.work 的 ./textnorm 使用本地源码。
+require github.com/F31/textnorm v0.2.0
 
 require (
 	connectrpc.com/connect v1.21.0
@@ -21,6 +19,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.46.0
 	golang.org/x/crypto v0.55.0
 	google.golang.org/protobuf v1.36.12
+	modernc.org/sqlite v1.59.0
 )
 
 require (
@@ -30,7 +29,6 @@ require (
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect
-	modernc.org/sqlite v1.59.0 // indirect
 )
 
 require (
