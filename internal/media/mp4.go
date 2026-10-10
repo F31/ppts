@@ -38,7 +38,8 @@ type MP4EncodeOptions struct {
 	PagePNGs [][]byte // 页面图（一页一帧 → 静止画面序列）
 	// PageDurationsMS 按页面指定显示时长；非空时长度必须等于 PagePNGs，且与 Totals 互斥。
 	PageDurationsMS []int64
-	AudioWAV        []byte  // 可选：音频（WAV）；nil 时用静音轨填充
+	AudioWAV        []byte  // 可选：音频（WAV）；nil 时用静音轨填充。与 AudioPath 互斥。
+	AudioPath       string  // 可选：已就绪的音频 WAV 文件路径（与 AudioWAV 互斥）。供大音频调用方直接流式生成文件，避免 []byte 中转。
 	Totals          float64 // 总时长（秒）显式给定；0 = len(PagePNGs)/FPS
 	// BurnSubtitles 为 true 时把 SubtitleASS（优先）或 SubtitleSRT 压进画面
 	// （设计方案 V1_6 §338「字幕烧录选项」）。
@@ -314,12 +315,18 @@ func (e *MP4Encoder) Encode(ctx context.Context, opts MP4EncodeOptions) (*MP4Enc
 		}
 		in.PageFiles = []string{single}
 	}
+	if len(opts.AudioWAV) > 0 && opts.AudioPath != "" {
+		return nil, errors.New("media: AudioWAV and AudioPath are mutually exclusive")
+	}
 	if len(opts.AudioWAV) > 0 {
 		audio := filepath.Join(work, "audio.wav")
 		if err := os.WriteFile(audio, opts.AudioWAV, 0o644); err != nil {
 			return nil, err
 		}
 		in.AudioFile = audio
+	} else if opts.AudioPath != "" {
+		// 调用方提供的 WAV 文件：不复制、不重新分配，直接作为 ffmpeg 音频输入。
+		in.AudioFile = opts.AudioPath
 	}
 	if opts.BurnSubtitles {
 		// ASS 优先（逐行轮换 + 朗读高亮）；否则回退 SRT。

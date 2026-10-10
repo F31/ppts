@@ -1,7 +1,9 @@
 package media
 
 import (
+	"bytes"
 	"encoding/binary"
+	"os"
 	"testing"
 )
 
@@ -109,4 +111,68 @@ func assertSampleRange(t *testing.T, pcm []byte, start, end int, want int16) {
 			t.Fatalf("sample[%d] = %d, want %d", i, got, want)
 		}
 	}
+}
+
+// TestWriteTimelineWAVMatchesBuffer 验证流式（seekable 文件）与内存（[]byte）结果逐字节一致。
+func TestWriteTimelineWAVMatchesBuffer(t *testing.T) {
+	timeline, err := BuildTimeline([]SlideInput{{
+		SlideID: "slide-1",
+		Segments: []SegmentInput{
+			{SegmentID: "seg-1", DisplayText: "one", AudioKey: "audio-1", DurationMS: 100},
+			{SegmentID: "seg-2", DisplayText: "two", AudioKey: "audio-2", DurationMS: 100},
+		},
+	}}, Timing{LeadInMS: 100, GapMS: 50, TailHoldMS: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ones := make([]int16, 100)
+	twos := make([]int16, 100)
+	for i := range ones {
+		ones[i], twos[i] = 1000, -1000
+	}
+	clips := map[string][]byte{
+		"audio-1": pcmWAVForTest(1000, ones),
+		"audio-2": pcmWAVForTest(1000, twos),
+	}
+
+	// 内存回退路径。
+	buf := &bytes.Buffer{}
+	if err := WriteTimelineWAV(buf, timeline, clips); err != nil {
+		t.Fatalf("WriteTimelineWAV(buffer): %v", err)
+	}
+	inMemory := buf.Bytes()
+
+	// 流式 seekable 路径（临时文件，模拟 export 的真实做法）。
+	f, err := os.CreateTemp(t.TempDir(), "audio-*.wav")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := WriteTimelineWAV(f, timeline, clips); err != nil {
+		t.Fatalf("WriteTimelineWAV(file): %v", err)
+	}
+	if err := f.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	streamed := make([]byte, len(inMemory))
+	if _, err := f.ReadAt(streamed, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(inMemory, streamed) {
+		t.Fatal("streamed WAV differs from buffered WAV")
+	}
+
+	// 校验内容仍是正确的编排（首静音 100/ones/间隔/twos/尾静音）。
+	wav, err := parsePCM16WAV(streamed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wav.data)/2 != 500 {
+		t.Fatalf("frames = %d", len(wav.data)/2)
+	}
+	assertSampleRange(t, wav.data, 0, 100, 0)
+	assertSampleRange(t, wav.data, 100, 200, 1000)
+	assertSampleRange(t, wav.data, 200, 250, 0)
+	assertSampleRange(t, wav.data, 250, 350, -1000)
+	assertSampleRange(t, wav.data, 350, 500, 0)
 }

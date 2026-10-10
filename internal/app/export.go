@@ -366,8 +366,19 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 			clips[segment.AudioKey] = data
 		}
 	}
-	audio, err := media.AssembleTimelineWAV(bundle.Timeline, clips)
+	// 拼接 WAV 流式写入临时文件（WriteTimelineWAV 按时间轴位置 seek 落盘），
+	// 不再整份生成 []byte；编码器经 AudioPath 直接复用该文件，避免二次读回内存。
+	audioTmp, err := os.CreateTemp("", "ppts-audio-*.wav")
 	if err != nil {
+		return nil, err
+	}
+	audioTmpName := audioTmp.Name()
+	defer os.Remove(audioTmpName)
+	defer audioTmp.Close()
+	if err := media.WriteTimelineWAV(audioTmp, bundle.Timeline, clips); err != nil {
+		return nil, err
+	}
+	if err := audioTmp.Sync(); err != nil {
 		return nil, err
 	}
 	pageDurations := make([]int64, 0, len(bundle.Timeline.Slides))
@@ -384,7 +395,7 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	tmp := filepath.Join(os.TempDir(), "ppts-export-"+job.ID+".mp4")
 	if _, err := h.encoder.Encode(ctx, media.MP4EncodeOptions{
 		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
-		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioWAV: audio,
+		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioPath: audioTmpName,
 		BurnSubtitles: snapshot.BurnSubtitles, SubtitleASS: subtitleASS,
 		SubtitleFontName: h.subtitleFontName,
 	}); err != nil {
