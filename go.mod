@@ -5,7 +5,7 @@ go 1.25.0
 // textnorm 是独立组件模块，已发布到 github.com/F31/textnorm。
 // 生产/CI 走 GOWORK=off 的发布版本 v0.2.0（首次构建由 go mod tidy 生成 go.sum 校验和）；
 // 本地协同开发通过 go.work 的 ./textnorm 使用本地源码。
-require github.com/F31/textnorm v0.2.0
+require github.com/F31/textnorm v0.2.1
 
 require (
 	connectrpc.com/connect v1.21.0
