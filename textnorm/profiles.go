@@ -18,13 +18,14 @@ const (
 // profileVersions 标记内置配置组合的组合版本（V3.1 §13.1 第二标识：规则/配置组合版本）。
 // 当"同名 profile 的行为"变化时递增；模块主版本不变。模块版本变化不自动升级组合版本。
 var profileVersions = map[string]int{
-	ProfileConservative:        1,
-	ProfileDateDecimal:         1,
-	ProfileDatePreserve:        1,
-	ProfileDictDemo:            1,
-	ProfileQuantity:            1,
-	// en.conservative v2：新增 money/date/ordinal 规则（time 为门控规则，需语义提示才生效）。
-	ProfileEnglishConservative: 2,
+	ProfileConservative: 1,
+	ProfileDateDecimal:  1,
+	ProfileDatePreserve: 1,
+	ProfileDictDemo:     1,
+	ProfileQuantity:     1,
+	// en.conservative v2：新增 money/date/ordinal 规则。
+	// en.conservative v3：新增 unit/abbrev 规则 + time 规则支持 AM/PM（含 12 时制）。
+	ProfileEnglishConservative: 3,
 }
 
 // ProfileInfo 描述一个内置配置组合。
@@ -90,7 +91,10 @@ func ProfileRules(name string) ([]CandidateRule, error) {
 			ENPercentRule(),
 			ENMoneyRule(),
 			ENDateRule(),
+			ENAbbrevRule(),
 			ENOrdinalRule(),
+			ENUnitRule(),
+			ENTimeRule(),
 			ENDecimalRule(),
 			ENNumberRule(ENNumberModeQuantity),
 		}, nil

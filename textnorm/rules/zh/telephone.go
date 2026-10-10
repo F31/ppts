@@ -60,8 +60,8 @@ type scoreRule struct{}
 
 var scoreRe = regexp.MustCompile(`[0-9]{1,4}:[0-9]{1,4}`)
 
-func (scoreRule) RuleID() string             { return "zh.score" }
-func (scoreRule) RulePriority() int          { return 16 }
+func (scoreRule) RuleID() string                      { return "zh.score" }
+func (scoreRule) RulePriority() int                   { return 16 }
 func (scoreRule) SemanticGate() contract.SemanticKind { return contract.SemanticScore }
 
 func (scoreRule) FindCandidates(req contract.Request) []contract.Candidate {

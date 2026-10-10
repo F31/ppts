@@ -1,7 +1,7 @@
 {
   "profile": "en.conservative",
   "cases": [
-    {"id":"quantity","text":"storage 2048 GB","expect":{"text":"storage two thousand forty-eight GB","edits":["en.number.quantity"]}},
+    {"id":"quantity","text":"storage 2048 GB","expect":{"text":"storage two thousand forty-eight gigabytes","edits":["en.unit"]}},
     {"id":"hundred","text":"100 and 101","expect":{"text":"one hundred and one hundred one","edits":["en.number.quantity","en.number.quantity"]}},
     {"id":"decimal","text":"pi 3.14","expect":{"text":"pi three point one four","edits":["en.decimal"]}},
     {"id":"percent-decimal","text":"rate 12.5%","expect":{"text":"rate twelve point five percent","edits":["en.percent"]}},
@@ -20,6 +20,16 @@
     {"id":"date-iso","text":"launched 2024-01-28","expect":{"text":"launched January twenty-eighth, twenty twenty-four","edits":["en.date"]}},
     {"id":"date-slash","text":"launched 2024/12/01","expect":{"text":"launched December first, twenty twenty-four","edits":["en.date"]}},
     {"id":"date-leap-year","text":"day 2000-02-29","expect":{"text":"day February twenty-ninth, two thousand","edits":["en.date"]}},
-    {"id":"date-invalid","text":"day 2024-02-30","expect":{"text":"day 2024-02-30","no_edits":true}}
+    {"id":"date-invalid","text":"day 2024-02-30","expect":{"text":"day 2024-02-30","no_edits":true}},
+    {"id":"unit-no-space","text":"speed 5GHz","expect":{"text":"speed five gigahertz","edits":["en.unit"]}},
+    {"id":"unit-space","text":"capacity 1 GB","expect":{"text":"capacity one gigabyte","edits":["en.unit"]}},
+    {"id":"unit-decimal","text":"memory 3.5 GB","expect":{"text":"memory three point five gigabytes","edits":["en.unit"]}},
+    {"id":"unit-bps-plural","text":"bandwidth 100 Mbps","expect":{"text":"bandwidth one hundred megabits per second","edits":["en.unit"]}},
+    {"id":"unit-embedded","text":"GPU RTX5090Ti","expect":{"text":"GPU RTX5090Ti","no_edits":true}},
+    {"id":"abbrev-month","text":"meet on Jan. 15","expect":{"text":"meet on January fifteen","edits":["en.abbrev","en.number.quantity"]}},
+    {"id":"abbrev-weekday","text":"on Mon. and Thurs.","expect":{"text":"on Monday and Thursday","edits":["en.abbrev","en.abbrev"]}},
+    {"id":"abbrev-ambiguous","text":"born in May","expect":{"text":"born in May","no_edits":true}},
+    {"id":"time-ampm","text":"call at 10:30 AM","expect":{"text":"call at ten thirty AM","edits":["en.time"]}},
+    {"id":"time-pm","text":"meet at 2:15 PM","expect":{"text":"meet at two fifteen PM","edits":["en.time"]}}
   ]
 }

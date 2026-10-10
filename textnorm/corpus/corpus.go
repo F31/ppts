@@ -15,17 +15,17 @@ import (
 
 // Corpus is a set of normalization cases stored as data.
 type Corpus struct {
-	Profile string      `json:"profile"`
+	Profile string       `json:"profile"`
 	Cases   []CorpusCase `json:"cases"`
 }
 
 // CorpusCase is one normalization expectation.
 type CorpusCase struct {
-	ID        string      `json:"id"`
-	Text      string      `json:"text"`
+	ID        string           `json:"id"`
+	Text      string           `json:"text"`
 	Protected []textnorm.Range `json:"protected,omitempty"`
-	Expect    Expectation `json:"expect"`
-	Note      string      `json:"note,omitempty"`
+	Expect    Expectation      `json:"expect"`
+	Note      string           `json:"note,omitempty"`
 }
 
 // Expectation describes the assertions for one corpus case. Omitted fields are

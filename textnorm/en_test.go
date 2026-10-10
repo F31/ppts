@@ -16,7 +16,7 @@ func TestEnglishConservativeProfile(t *testing.T) {
 		{"GPU RTX5090Ti and CPU 12 cores", "GPU RTX5090Ti and CPU twelve cores"},
 		{"ratio 12.5% vs 13%", "ratio twelve point five percent vs thirteen percent"},
 		{"version v3.1.2 stays", "version v3.1.2 stays"},
-		{"size 3.5 GB is a decimal", "size three point five GB is a decimal"},
+		{"size 3.5 GB is a decimal", "size three point five gigabytes is a decimal"},
 	} {
 		res, err := engine.Normalize(context.Background(), Request{Text: tc.in})
 		if err != nil {

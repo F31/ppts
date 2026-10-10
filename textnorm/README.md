@@ -103,9 +103,11 @@ English rules live in `rules/en` and are exposed through the same root API:
 - `ENOrdinalRule()` reads explicit ordinals (`21st` → `twenty-first`, `3rd` → `third`).
 - `ENMoneyRule()` reads currency-prefixed amounts (`$250` → `two hundred fifty US dollars`, `USD 1.5` → `one point five US dollars`, `¥5000` → `five thousand Japanese yen`). Uncountable currencies (`yen`) never inflect; a decimal amount always takes the plural currency.
 - `ENDateRule()` reads ISO dates in US order (`2024-01-28` → `January twenty-eighth, twenty twenty-four`). A calendar-invalid date (e.g. `2024-02-30`) is preserved as-is so number rules do not split its digits.
-- `ENTimeRule()` reads 24-hour `HH:mm[:ss]` forms (`10:30` → `ten thirty`, `14:05` → `fourteen oh five`), requiring a covering `SemanticTime` hint because clock notation is ambiguous with score/ratio forms.
+- `ENTimeRule()` reads clock times. AM/PM suffixed 12-hour forms write as-is with the suffix spoken (`10:30 AM` → `ten thirty AM`) and need no hint; bare 24-hour `HH:mm[:ss]` forms (`10:30` → `ten thirty`, `14:05` → `fourteen oh five`) require a covering `SemanticTime` hint because clock notation is ambiguous with score/ratio.
+- `ENUnitRule()` reads digit-led unit forms with plurality (`5GHz` → `five gigahertz`, `1 GB` → `one gigabyte`, `3.5 GB` → `three point five gigabytes`, `100 Mbps` → `one hundred megabits per second`). Uncountable units (hertz, bps-spelled) never inflect.
+- `ENAbbrevRule()` expands explicit weekday/month abbreviations (`Mon.` → `Monday`, `Jan.` → `January`, `Sept` → `September`). Ambiguous bare forms (`May`, `Mar`) are left untouched.
 
-Digit runs bounded by ASCII letters/digits are left intact (`RTX5090Ti`, `5GHz`), matching the Chinese number rule. The `en.conservative` profile combines technical-model/version preservation with English number, decimal, percent, ordinal, money, and date rules (time is hint-gated).
+Digit runs bounded by ASCII letters/digits are left intact (`RTX5090Ti`, `5GHz`), matching the Chinese number rule. The `en.conservative` profile combines technical-model/version preservation with English number, decimal, percent, ordinal, money, date, unit, and abbreviation rules (bare-time is hint-gated).
 
 ## Language Selection
 
@@ -180,7 +182,7 @@ This package is currently a draft API. PPTS uses it when `PPTS_TEXT_NORM_ENABLED
 
 ## Versioning
 
-Module version is exposed as `Version` (currently `v0.2.1`) and carried on every `Result.Manifest`. `Manifest.ConfigHash` is a deterministic SHA-256 over module version, profile metadata, pause settings, and rule IDs/priorities. Compatibility policy (V3.1 §13):
+Module version is exposed as `Version` (currently `v0.2.2`) and carried on every `Result.Manifest`. `Manifest.ConfigHash` is a deterministic SHA-256 over module version, profile metadata, pause settings, and rule IDs/priorities. Compatibility policy (V3.1 §13):
 
 - Within a major module version, the public API stays backward compatible.
 - Behavioral changes to a named profile must bump that profile's combination version (`Profiles()` / `ProfileVersion`), independently of the module version.

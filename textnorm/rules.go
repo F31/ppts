@@ -80,3 +80,9 @@ func ENDateRule() CandidateRule { return en.DateRule() }
 
 // ENTimeRule reads 24-hour HH:mm[:ss] forms, requiring a covering SemanticTime hint.
 func ENTimeRule() CandidateRule { return en.TimeRule() }
+
+// ENUnitRule reads digit-led unit forms such as 5GHz and 3.5GB with plurality.
+func ENUnitRule() CandidateRule { return en.UnitRule() }
+
+// ENAbbrevRule expands explicit weekday/month abbreviations such as Mon. and Jan.
+func ENAbbrevRule() CandidateRule { return en.AbbrevRule() }
