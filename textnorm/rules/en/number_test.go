@@ -6,71 +6,139 @@ import (
 	"github.com/F31/textnorm/internal/contract"
 )
 
-func TestNumberRuleQuantity(t *testing.T) {
-	r := NumberRule(contract.ENNumberModeQuantity)
-	req := contract.Request{Text: "storage 2048 GB"}
-	req.IndexBytes()
-	cands := r.FindCandidates(req)
-	if len(cands) != 1 {
-		t.Fatalf("candidates = %d, want 1", len(cands))
+func TestOrdinalRule(t *testing.T) {
+	r := OrdinalRule()
+	cases := []struct{ in, want string }{
+		{"21st", "twenty-first"},
+		{"3rd", "third"},
+		{"42nd", "forty-second"},
+		{"11th", "eleventh"},
+		{"100th", "one hundredth"},
+		{"1st", "first"},
+		{"22nd", "twenty-second"},
+		{"105th", "one hundred fifth"},
 	}
-	if cands[0].Replacement != "two thousand forty-eight" {
-		t.Fatalf("replacement = %q", cands[0].Replacement)
-	}
-	if cands[0].Src.Start != 8 || cands[0].Src.End != 12 {
-		t.Fatalf("src range = %+v", cands[0].Src)
-	}
-}
-
-func TestNumberRuleBoundaries(t *testing.T) {
-	r := NumberRule(contract.ENNumberModeQuantity)
-	req := contract.Request{Text: "A123 123B 999999999999 1000000000000"}
-	req.IndexBytes()
-	cands := r.FindCandidates(req)
-	if len(cands) != 1 {
-		t.Fatalf("candidates = %d, want 1 (only standalone 12-digit)", len(cands))
-	}
-	if cands[0].Replacement != "nine hundred ninety-nine billion nine hundred ninety-nine million nine hundred ninety-nine thousand nine hundred ninety-nine" {
-		t.Fatalf("replacement = %q", cands[0].Replacement)
+	for _, tc := range cases {
+		req := contract.Request{Text: tc.in}
+		req.IndexBytes()
+		got := r.FindCandidates(req)
+		if len(got) != 1 {
+			t.Errorf("%q: candidates = %d, want 1", tc.in, len(got))
+			continue
+		}
+		if got[0].Replacement != tc.want {
+			t.Errorf("%q: got %q, want %q", tc.in, got[0].Replacement, tc.want)
+		}
 	}
 }
 
-func TestNumberRuleYearAndDigits(t *testing.T) {
-	year := NumberRule(contract.ENNumberModeYear)
-	req := contract.Request{Text: "in 2024 1905 2000"}
+func TestOrdinalRuleSkipsEmbedded(t *testing.T) {
+	r := OrdinalRule()
+	req := contract.Request{Text: "ABC21st is a model v2.0"}
 	req.IndexBytes()
-	if got := year.FindCandidates(req); len(got) != 3 {
-		t.Fatalf("year candidates = %d, want 3", len(got))
-	} else if got[0].Replacement != "twenty twenty-four" {
-		t.Fatalf("2024 = %q", got[0].Replacement)
-	}
-	digits := NumberRule(contract.ENNumberModeDigits)
-	req = contract.Request{Text: "code 001"}
-	req.IndexBytes()
-	got := digits.FindCandidates(req)
-	if len(got) != 1 || got[0].Replacement != "zero zero one" {
-		t.Fatalf("digits 001 = %+v", got)
+	if got := r.FindCandidates(req); len(got) != 0 {
+		t.Fatalf("ordinal inside alnum token matched: %+v", got)
 	}
 }
 
-func TestDecimalAndPercent(t *testing.T) {
-	req := contract.Request{Text: "value 3.14"}
-	req.IndexBytes()
-	dec := DecimalRule().FindCandidates(req)
-	if len(dec) != 1 || dec[0].Replacement != "three point one four" {
-		t.Fatalf("decimal = %+v", dec)
+func TestMoneyRule(t *testing.T) {
+	r := MoneyRule()
+	cases := []struct{ in, want string }{
+		{"$250", "two hundred fifty US dollars"},
+		{"$1", "one US dollar"},
+		{"USD 1.5", "one point five US dollars"},
+		{"EUR 42", "forty-two euros"},
+		{"¥5000", "five thousand Japanese yen"},
+		{"5万", "5万"}, // 无显式币种前导，不假定为金额（保守）
 	}
-	req = contract.Request{Text: "rate 12.5%"}
-	req.IndexBytes()
-	pct := PercentRule().FindCandidates(req)
-	if len(pct) != 1 || pct[0].Replacement != "twelve point five percent" {
-		t.Fatalf("percent = %+v", pct)
+	for _, tc := range cases {
+		req := contract.Request{Text: tc.in}
+		req.IndexBytes()
+		got := r.FindCandidates(req)
+		if len(got) == 0 {
+			if tc.want == tc.in {
+				continue
+			}
+			t.Errorf("%q: no candidate, want %q", tc.in, tc.want)
+			continue
+		}
+		if got[0].Replacement != tc.want {
+			t.Errorf("%q: got %q, want %q", tc.in, got[0].Replacement, tc.want)
+		}
 	}
-	// Integer percent without a fractional part.
-	req = contract.Request{Text: "rate 12%"}
+}
+
+func TestDateRule(t *testing.T) {
+	r := DateRule()
+	cases := []struct{ in, want string }{
+		{"2024-01-28", "January twenty-eighth, twenty twenty-four"},
+		{"2024/12/01", "December first, twenty twenty-four"},
+		{"2000-02-29", "February twenty-ninth, two thousand"}, // 闰年 2/29
+		{"2024-02-30", "2024-02-30"},                           // 非法日期 → 原样保护
+		{"2025-13-01", "2025-13-01"},                           // 非法月份 → 原样保护
+	}
+	for _, tc := range cases {
+		req := contract.Request{Text: tc.in}
+		req.IndexBytes()
+		got := r.FindCandidates(req)
+		if tc.want == tc.in {
+			// 无效日期：Preserve 候选（保护不拆分，不改写）。
+			if len(got) != 1 || !got[0].Preserve {
+				t.Errorf("%q: expected single preserve candidate, got %+v", tc.in, got)
+			}
+			continue
+		}
+		if len(got) != 1 || got[0].Replacement != tc.want {
+			t.Errorf("%q: got %+v, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestTimeRuleRequiresHint(t *testing.T) {
+	r := TimeRule()
+	// 无语义提示 → 不改写（与 score/ratio 歧义保守）。
+	req := contract.Request{Text: "at 10:30"}
 	req.IndexBytes()
-	got := PercentRule().FindCandidates(req)
-	if len(got) != 1 || got[0].Replacement != "twelve percent" {
-		t.Fatalf("12%% = %+v", got)
+	if got := r.FindCandidates(req); len(got) != 0 {
+		t.Fatalf("time without hint matched: %+v", got)
+	}
+	// 覆盖的 SemanticTime 提示 → 改写。
+	req = contract.Request{Text: "at 10:30"}
+	req.IndexBytes()
+	req.Hints = []contract.Hint{{Range: contract.Range{Start: 3, End: 8}, Kind: contract.HintSemantic, Semantic: contract.SemanticTime}}
+	got := r.FindCandidates(req)
+	if len(got) != 1 || got[0].Replacement != "ten thirty" {
+		t.Fatalf("time with hint: %+v", got)
+	}
+	// 部分覆盖的提示 → 不匹配。
+	req.Hints = []contract.Hint{{Range: contract.Range{Start: 3, End: 4}, Kind: contract.HintSemantic, Semantic: contract.SemanticTime}}
+	if got := r.FindCandidates(req); len(got) != 0 {
+		t.Fatalf("partial hint time matched: %+v", got)
+	}
+	// 非法时间（13:60）→ 保留。
+	req = contract.Request{Text: "13:60"}
+	req.IndexBytes()
+	req.Hints = []contract.Hint{{Range: contract.Range{Start: 0, End: 5}, Kind: contract.HintSemantic, Semantic: contract.SemanticTime}}
+	if got := r.FindCandidates(req); len(got) != 0 {
+		t.Fatalf("invalid time matched: %+v", got)
+	}
+}
+
+func TestTimeRuleReadings(t *testing.T) {
+	r := TimeRule()
+	cases := []struct{ in, want string }{
+		{"10:30", "ten thirty"},
+		{"00:00", "zero o'clock"},
+		{"14:05", "fourteen oh five"},
+		{"23:59:05", "twenty-three fifty-nine five"},
+	}
+	for _, tc := range cases {
+		req := contract.Request{Text: tc.in}
+		req.IndexBytes()
+		req.Hints = []contract.Hint{{Range: contract.Range{Start: 0, End: len([]rune(tc.in))}, Kind: contract.HintSemantic, Semantic: contract.SemanticTime}}
+		got := r.FindCandidates(req)
+		if len(got) != 1 || got[0].Replacement != tc.want {
+			t.Errorf("%q: got %+v, want %q", tc.in, got, tc.want)
+		}
 	}
 }

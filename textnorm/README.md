@@ -100,8 +100,12 @@ English rules live in `rules/en` and are exposed through the same root API:
 - `ENNumberRule(ENNumberModeDigits)` reads each digit and preserves leading zeros (`001` → `zero zero one`).
 - `ENDecimalRule()` reads `3.14` → `three point one four` (fractional digits read one by one).
 - `ENPercentRule()` reads `12.5%` → `twelve point five percent`, `12%` → `twelve percent`.
+- `ENOrdinalRule()` reads explicit ordinals (`21st` → `twenty-first`, `3rd` → `third`).
+- `ENMoneyRule()` reads currency-prefixed amounts (`$250` → `two hundred fifty US dollars`, `USD 1.5` → `one point five US dollars`, `¥5000` → `five thousand Japanese yen`). Uncountable currencies (`yen`) never inflect; a decimal amount always takes the plural currency.
+- `ENDateRule()` reads ISO dates in US order (`2024-01-28` → `January twenty-eighth, twenty twenty-four`). A calendar-invalid date (e.g. `2024-02-30`) is preserved as-is so number rules do not split its digits.
+- `ENTimeRule()` reads 24-hour `HH:mm[:ss]` forms (`10:30` → `ten thirty`, `14:05` → `fourteen oh five`), requiring a covering `SemanticTime` hint because clock notation is ambiguous with score/ratio forms.
 
-Digit runs bounded by ASCII letters/digits are left intact (`RTX5090Ti`, `5GHz`), matching the Chinese number rule. The `en.conservative` profile combines technical-model/version preservation with English number, decimal, and percent rules.
+Digit runs bounded by ASCII letters/digits are left intact (`RTX5090Ti`, `5GHz`), matching the Chinese number rule. The `en.conservative` profile combines technical-model/version preservation with English number, decimal, percent, ordinal, money, and date rules (time is hint-gated).
 
 ## Language Selection
 

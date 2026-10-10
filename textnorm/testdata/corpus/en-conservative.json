@@ -10,6 +10,16 @@
     {"id":"version-preserved","text":"v3.1.2","expect":{"text":"v3.1.2","no_edits":true}},
     {"id":"boundary","text":"A123 123B","expect":{"text":"A123 123B","no_edits":true}},
     {"id":"billion","text":"999999999999","expect":{"text":"nine hundred ninety-nine billion nine hundred ninety-nine million nine hundred ninety-nine thousand nine hundred ninety-nine","edits":["en.number.quantity"]}},
-    {"id":"too-long","text":"1000000000000","expect":{"text":"1000000000000","no_edits":true}}
+    {"id":"too-long","text":"1000000000000","expect":{"text":"1000000000000","no_edits":true}},
+    {"id":"ordinal","text":"rank 21st and 3rd","expect":{"text":"rank twenty-first and third","edits":["en.ordinal","en.ordinal"]}},
+    {"id":"ordinal-embedded","text":"version ABC21stX","expect":{"text":"version ABC21stX","no_edits":true}},
+    {"id":"money-integer","text":"price $250","expect":{"text":"price two hundred fifty US dollars","edits":["en.money"]}},
+    {"id":"money-single","text":"cost $1","expect":{"text":"cost one US dollar","edits":["en.money"]}},
+    {"id":"money-decimal","text":"fee USD 1.5","expect":{"text":"fee one point five US dollars","edits":["en.money"]}},
+    {"id":"money-yen","text":"budget ¥5000","expect":{"text":"budget five thousand Japanese yen","edits":["en.money"]}},
+    {"id":"date-iso","text":"launched 2024-01-28","expect":{"text":"launched January twenty-eighth, twenty twenty-four","edits":["en.date"]}},
+    {"id":"date-slash","text":"launched 2024/12/01","expect":{"text":"launched December first, twenty twenty-four","edits":["en.date"]}},
+    {"id":"date-leap-year","text":"day 2000-02-29","expect":{"text":"day February twenty-ninth, two thousand","edits":["en.date"]}},
+    {"id":"date-invalid","text":"day 2024-02-30","expect":{"text":"day 2024-02-30","no_edits":true}}
   ]
 }

@@ -123,6 +123,10 @@ func enYearToSpeech(digits string) string {
 	first := trimmed[:2]
 	second := trimmed[2:]
 	if second == "00" {
+		if first == "20" {
+			// 2000 的标准读法为 "two thousand"（"twenty hundred" 非常用）。
+			return "two thousand"
+		}
 		h, _ := enIntegerToWords(first)
 		return h + " hundred"
 	}

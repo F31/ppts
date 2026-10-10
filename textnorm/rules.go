@@ -68,3 +68,15 @@ func ENDecimalRule() CandidateRule { return en.DecimalRule() }
 
 // ENPercentRule converts percent forms such as 12.5% to English speech.
 func ENPercentRule() CandidateRule { return en.PercentRule() }
+
+// ENOrdinalRule reads explicit English ordinals such as 21st → "twenty-first".
+func ENOrdinalRule() CandidateRule { return en.OrdinalRule() }
+
+// ENMoneyRule reads currency-prefixed amounts such as $250 and USD 1.5.
+func ENMoneyRule() CandidateRule { return en.MoneyRule() }
+
+// ENDateRule reads ISO-style dates (2024-01-28) in US English order.
+func ENDateRule() CandidateRule { return en.DateRule() }
+
+// ENTimeRule reads 24-hour HH:mm[:ss] forms, requiring a covering SemanticTime hint.
+func ENTimeRule() CandidateRule { return en.TimeRule() }

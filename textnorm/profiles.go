@@ -23,7 +23,8 @@ var profileVersions = map[string]int{
 	ProfileDatePreserve:        1,
 	ProfileDictDemo:            1,
 	ProfileQuantity:            1,
-	ProfileEnglishConservative: 1,
+	// en.conservative v2：新增 money/date/ordinal 规则（time 为门控规则，需语义提示才生效）。
+	ProfileEnglishConservative: 2,
 }
 
 // ProfileInfo 描述一个内置配置组合。
@@ -87,6 +88,9 @@ func ProfileRules(name string) ([]CandidateRule, error) {
 			TechnicalModelRule(),
 			ZHVersionPreserveRule(),
 			ENPercentRule(),
+			ENMoneyRule(),
+			ENDateRule(),
+			ENOrdinalRule(),
 			ENDecimalRule(),
 			ENNumberRule(ENNumberModeQuantity),
 		}, nil
