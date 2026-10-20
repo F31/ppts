@@ -78,20 +78,20 @@ func (w *GoPPTXNarrationWriter) Apply(ctx context.Context, src io.ReaderAt, size
 		if sp.Index < 0 || sp.Index >= len(slides) {
 			return nil, errors.New("integrations: narration plan references out-of-range slide index")
 		}
-		if len(sp.Audio) == 0 {
-			continue
-		}
 		slide := slides[sp.Index]
-		if _, status, err := slide.UpsertNarration(ctx, pptx.BytesMedia(sp.Audio, sp.MIME),
-			pptx.AudioSpec{TrackKey: sp.TrackKey, Role: pptx.AudioRoleNarration},
-			pptx.PlaybackSpec{Trigger: pptx.PlaybackOnSlideEnter},
-		); err != nil {
-			return nil, err
-		} else if status != "added" && status != "updated" && status != "unchanged" {
-			return nil, errors.New("integrations: unexpected narration upsert status: " + status)
+		if len(sp.Audio) > 0 {
+			if _, status, err := slide.UpsertNarration(ctx, pptx.BytesMedia(sp.Audio, sp.MIME),
+				pptx.AudioSpec{TrackKey: sp.TrackKey, Role: pptx.AudioRoleNarration},
+				pptx.PlaybackSpec{Trigger: pptx.PlaybackOnSlideEnter},
+			); err != nil {
+				return nil, err
+			} else if status != "added" && status != "updated" && status != "unchanged" {
+				return nil, errors.New("integrations: unexpected narration upsert status: " + status)
+			}
+			rep.TrackKeys = append(rep.TrackKeys, sp.TrackKey)
+			rep.ChangedSlides = append(rep.ChangedSlides, sp.Index)
 		}
-		rep.TrackKeys = append(rep.TrackKeys, sp.TrackKey)
-		rep.ChangedSlides = append(rep.ChangedSlides, sp.Index)
+		// 静默页（无音频）仍须设置停留时长：否则自动放映会立刻跳过该页。
 		if sp.Advance > 0 {
 			if err := slide.SetAdvanceAfter(sp.Advance); err != nil {
 				return nil, err

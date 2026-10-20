@@ -761,7 +761,6 @@
   "editor.fmtAudioPptx": "Narrated PPTX",
   "editor.exportGated": "Not available",
   "editor.gateAudioPack": "The backend does not yet provide an audio bundle format; unavailable.",
-  "editor.gateAudioPptx": "Narrated PPTX requires narration and render gating; the backend does not provide it yet.",
   "editor.exportBurnSubtitles": "Include subtitles in exported video",
   "editor.exportBurnNote": "Turn off for MP4 with slides and voice only; turn on to burn timeline subtitles into the video.",
   "editor.exportResolutionNote": "MP4 resolution 1920×1080 · 30fps (fixed by server)",

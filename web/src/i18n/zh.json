@@ -761,7 +761,6 @@
   "editor.fmtAudioPptx": "配音 PPTX",
   "editor.exportGated": "暂未开放",
   "editor.gateAudioPack": "后端尚未提供音频包导出格式，暂不可用。",
-  "editor.gateAudioPptx": "配音 PPTX 需配音与渲染门禁齐备，后端尚未提供，暂不可用。",
   "editor.exportBurnSubtitles": "导出视频包含字幕",
   "editor.exportBurnNote": "关闭后导出的 MP4 只有画面和语音；开启后会把同一时间轴的字幕压入视频画面。",
   "editor.exportResolutionNote": "MP4 分辨率 1920×1080 · 30fps（服务端固定）",

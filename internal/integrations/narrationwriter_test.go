@@ -1,8 +1,11 @@
 package integrations
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -163,4 +166,52 @@ func TestNarrationWriterRejectsOutOfRangeSlide(t *testing.T) {
 	if _, err := w.Apply(context.Background(), src, int64(src.Len()), plan); err == nil {
 		t.Fatalf("out-of-range slide should error")
 	}
+}
+
+func TestNarrationWriterSetsAdvanceForSilentSlide(t *testing.T) {
+	p, err := pptx.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	layouts, err := p.Layouts()
+	if err != nil || len(layouts) == 0 {
+		t.Fatalf("Layouts: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := p.AddSlide(layouts[0]); err != nil {
+			t.Fatalf("AddSlide: %v", err)
+		}
+	}
+	var src bytes.Buffer
+	if _, err := p.Write(context.Background(), &src); err != nil {
+		t.Fatal(err)
+	}
+	w := NewGoPPTXNarrationWriter()
+	rep, err := w.Apply(context.Background(), bytes.NewReader(src.Bytes()), int64(src.Len()), NarrationPlan{
+		Slides: []SlideNarration{{Index: 1, TrackKey: "silent-1", Advance: 2 * time.Second}},
+	})
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(rep.Output), int64(len(rep.Output)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range zr.File {
+		if f.Name != "ppt/slides/slide2.xml" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(rc)
+		rc.Close()
+		if !strings.Contains(string(body), "advTm=\"2000\"") {
+			t.Fatalf("silent slide lost advance timing: %s", body)
+		}
+		return
+	}
+	t.Fatal("slide2.xml not found")
 }

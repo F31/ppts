@@ -12,15 +12,15 @@ type ExportChoice = {
   gateKey?: string;
 };
 
-// 导出类型与门禁：后端 exportFormat 仅支持 Web 工程 / MP4 / SRT / VTT；
-// 音频包与配音 PPTX 后端尚未提供，前端显式标注门禁而非静默失败。
+// 导出类型与门禁：音频包后端尚未提供（显式标注门禁，不静默失败）；
+// 配音 PPTX 已接通：在源 PPTX 副本上嵌入逐页音频并设置自动切页。
 const CHOICES: ExportChoice[] = [
   { format: 'ARTIFACT_FORMAT_WEB_PROJECT', labelKey: 'editor.fmtWebProject', enabled: true },
   { format: 'ARTIFACT_FORMAT_MP4', labelKey: 'editor.fmtMp4', enabled: true },
   { format: 'ARTIFACT_FORMAT_SUBTITLE_SRT', labelKey: 'editor.fmtSrt', enabled: true },
   { format: 'ARTIFACT_FORMAT_SUBTITLE_VTT', labelKey: 'editor.fmtVtt', enabled: true },
   { format: 'ARTIFACT_FORMAT_AUDIO_PACK', labelKey: 'editor.fmtAudioPack', enabled: false, gateKey: 'editor.gateAudioPack' },
-  { format: 'ARTIFACT_FORMAT_AUDIO_PPTX', labelKey: 'editor.fmtAudioPptx', enabled: false, gateKey: 'editor.gateAudioPptx' }
+  { format: 'ARTIFACT_FORMAT_AUDIO_PPTX', labelKey: 'editor.fmtAudioPptx', enabled: true }
 ];
 
 export function ExportDialog({

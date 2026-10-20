@@ -87,7 +87,8 @@ TTS 文本规范化由独立通用组件 [textnorm](https://github.com/F31/textn
 - **正式 TTS 供应商**：默认 SiliconFlow（CosyVoice2），OpenAI 兼容接口，换芯只改环境变量
 - **分段级重生成**：只重跑改过的分段，未改分段命中缓存，零 TTS 开销
 - **目标时长闭环**：首轮合成后计算速率偏差，超出 ±10% 自动按比例调语率重合成
-- **导出格式**：Web 讲解工程（zip：时间轴 + 字幕 + 音频片段）/ MP4 / SRT / VTT
+- **导出格式**：Web 讲解工程（zip：时间轴 + 字幕 + 音频片段）/ MP4 / SRT / VTT / 配音 PPTX（在源文件副本上嵌入逐页音频与自动切页）
+- **成品时长上限**：`PPTS_MAX_EXPORT_DURATION_MINUTES`（默认 60 分钟，`0` 不限）；超限在写出任何产物前失败
 - **页面图渲染**：LibreOffice → PDF → PNG，可选增强；渲染失败只记步骤失败，不影响解析成功
 
 ### 平台能力
@@ -280,6 +281,14 @@ docs/               技术方案 / ADR / Runbook / 跟踪计划
 | `PPTS_OTEL_EXPORTER_OTLP_ENDPOINT` | 设置后经 OTLP 导出链路，未设置则 no-op |
 
 ### 身份与登录
+
+注册按网络出口 IP 分层限流：`PPTS_AUTH_REGISTER_PER_HOUR` 控制每小时
+注册请求总数（含失败请求，默认 **60**，必须为正数）；
+`PPTS_REGISTER_DAILY_PER_IP` 控制每日**成功注册数量**（默认 **20**，`0` 关闭每日限制）。
+校验失败或账号创建失败不占每日名额，成功计数与账号创建在同一事务中提交，
+保证多实例并发不会突破上限。窗口按 UTC 对齐，每日窗口在北京时间 08:00 重置。
+同时触发两项限制时，通过 `Retry-After` 返回较长等待时间。新的成功计数从部署时开始，
+不沿用旧的失败尝试计数。校园、公司等共享出口可按实际规模配置更高限额。
 
 - SQLite 模式无登录（固定本地租户 / 用户），开箱即用
 - PostgreSQL 模式支持正式 OIDC：设置 `PPTS_OIDC_ISSUER` / `PPTS_OIDC_CLIENT_ID` 后，API 经 issuer discovery + JWKS 验签，默认从 `tenant_id` 与 `sub` claim 推导租户与用户（可用 `PPTS_OIDC_TENANT_CLAIM` / `PPTS_OIDC_USER_CLAIM` 覆盖）

@@ -14,6 +14,7 @@ const (
 	FormatSRT        Format = "srt"
 	FormatVTT        Format = "vtt"
 	FormatWebProject Format = "web_project"
+	FormatAudioPPTX  Format = "audio_pptx"
 )
 
 type Artifact struct {

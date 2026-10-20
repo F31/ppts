@@ -168,6 +168,8 @@ func exportFormat(format pptsv1.ArtifactFormat) (artifact.Format, error) {
 		return artifact.FormatSRT, nil
 	case pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_VTT:
 		return artifact.FormatVTT, nil
+	case pptsv1.ArtifactFormat_ARTIFACT_FORMAT_AUDIO_PPTX:
+		return artifact.FormatAudioPPTX, nil
 	default:
 		return "", connect.NewError(connect.CodeInvalidArgument, errors.New("unsupported export format"))
 	}
@@ -220,6 +222,8 @@ func toProtoExportFormat(format artifact.Format) pptsv1.ArtifactFormat {
 		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_SRT
 	case artifact.FormatVTT:
 		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_VTT
+	case artifact.FormatAudioPPTX:
+		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_AUDIO_PPTX
 	default:
 		return pptsv1.ArtifactFormat_ARTIFACT_FORMAT_UNSPECIFIED
 	}

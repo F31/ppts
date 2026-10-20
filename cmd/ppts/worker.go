@@ -18,6 +18,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
+	"github.com/F31/ppts/internal/integrations"
 	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/render"
@@ -138,8 +139,15 @@ func runWorker() error {
 	if err != nil {
 		logger.Info("mp4 encoder unavailable", "error", err)
 	}
+	maxExportMinutes := envInt("PPTS_MAX_EXPORT_DURATION_MINUTES", 60)
+	if maxExportMinutes < 0 {
+		maxExportMinutes = 0
+	}
 	exportHandler := app.NewExportHandler(stores.artifacts, jobs, objects, mp4Encoder).
-		WithSubtitleFont(subtitleFontName())
+		WithSubtitleFont(subtitleFontName()).
+		WithNarrationWriter(integrations.NewGoPPTXNarrationWriter()).
+		WithSourceRevisions(stores.projects).
+		WithMaxDuration(time.Duration(maxExportMinutes) * time.Minute)
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
 		_, span := observability.Tracer("ppts.worker").Start(ctx, "job."+string(job.Kind))
 		defer span.End()

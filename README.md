@@ -91,7 +91,8 @@ Upload PPTX ──▶ Parse slides/elements ──▶ Generate AI script ──�
 - **Production TTS provider**: SiliconFlow (CosyVoice2) by default over an OpenAI-compatible interface — swap providers with one env var
 - **Segment-level regeneration**: only changed segments are re-synthesized; untouched ones hit the cache at zero TTS cost
 - **Target-duration loop**: after the first pass the rate deviation is measured; beyond ±10% the speaking rate is adjusted proportionally and the segment re-synthesized
-- **Export formats**: web narrated deck (zip: timeline + subtitles + audio segments) / MP4 / SRT / VTT
+- **Export formats**: web narrated deck (zip: timeline + subtitles + audio segments) / MP4 / SRT / VTT / narrated PPTX (audio + auto-advance embedded in a copy of the source deck)
+- **Export duration cap**: `PPTS_MAX_EXPORT_DURATION_MINUTES` (default 60, `0` disables) rejects overlong timelines before any artifact is written
 - **Slide image rendering**: LibreOffice → PDF → PNG, optional enhancement. Render failure only marks that step failed; parsing still succeeds
 
 ### Platform capabilities
@@ -297,6 +298,17 @@ Most used:
 | `PPTS_OTEL_EXPORTER_OTLP_ENDPOINT` | When set, traces are exported via OTLP; otherwise a no-op |
 
 ### Identity and login
+
+Registration limits are per network egress IP: `PPTS_AUTH_REGISTER_PER_HOUR` limits
+all registration requests (default **60/hour**, positive values only), while
+`PPTS_REGISTER_DAILY_PER_IP` limits **successful account creations** (default
+**20/day**, `0` disables this daily cap). Failed validation or account creation
+does not consume the daily allowance. Success counts commit atomically with the
+account, preventing concurrent requests from exceeding the cap. Windows are UTC
+aligned; a daily window resets at 00:00 UTC (08:00 China time). When both limits
+apply, the response reports the longer wait via `Retry-After`. The new success
+counter is separate from historical attempt counts and begins on deployment.
+Raise these configurable caps as appropriate for shared campus/company networks.
 
 - SQLite mode has no login (fixed local tenant / user) and works out of the box
 - PostgreSQL mode supports production OIDC: set `PPTS_OIDC_ISSUER` / `PPTS_OIDC_CLIENT_ID` and the API validates

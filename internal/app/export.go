@@ -14,8 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/integrations"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
@@ -42,6 +44,12 @@ type ExportHandler struct {
 	}
 	objects objectstore.ObjectStore
 	encoder *media.MP4Encoder
+	// narrationWriter 写带音频 PPTX（nil = 该格式不可用，导出时显式失败）。
+	narrationWriter integrations.NarrationWriter
+	// sourceRevisions 取源版本 PPTX 对象键（nil = 无法定位源文件，带音频 PPTX 显式失败）。
+	sourceRevisions SourceRevisionLookup
+	// maxDuration 是成品时长上限（0 = 不限）。超限在导出步骤失败，不产出半成品。
+	maxDuration time.Duration
 	// subtitleFontName 字幕烧录锁定的字体族名；空 = 由系统默认字体决定（见 media.subtitleStage）。
 	subtitleFontName string
 }
@@ -56,6 +64,24 @@ func NewExportHandler(artifacts artifact.Store, steps interface {
 // 用于与部署镜像安装的字体保持一致，保证中文渲染在各环境一致可复现（V1_6 §338）。
 func (h *ExportHandler) WithSubtitleFont(name string) *ExportHandler {
 	h.subtitleFontName = name
+	return h
+}
+
+// WithNarrationWriter 注入带音频 PPTX 写适配器。
+func (h *ExportHandler) WithNarrationWriter(w integrations.NarrationWriter) *ExportHandler {
+	h.narrationWriter = w
+	return h
+}
+
+// WithSourceRevisions 注入源版本查询能力（带音频 PPTX 需要原始源文件）。
+func (h *ExportHandler) WithSourceRevisions(s SourceRevisionLookup) *ExportHandler {
+	h.sourceRevisions = s
+	return h
+}
+
+// WithMaxDuration 设置成品时长上限；0 表示不限。
+func (h *ExportHandler) WithMaxDuration(d time.Duration) *ExportHandler {
+	h.maxDuration = d
 	return h
 }
 
@@ -103,6 +129,10 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if bundle.Timeline.DurationUS > 0 {
 		durationMS = bundle.Timeline.DurationUS / 1000
 	}
+	if h.maxDuration > 0 && bundle.Timeline.DurationUS > h.maxDuration.Microseconds() {
+		return failStep(fmt.Errorf("export job: timeline duration %s exceeds limit %s",
+			time.Duration(bundle.Timeline.DurationUS)*time.Microsecond, h.maxDuration))
+	}
 	// 产物数据来源：小文件（srt/vtt）读入内存；zip/mp4 走临时文件流式化，避免峰值内存随
 	// 音频总量/编码产物线性增长。file != nil 时 data 为 nil，由下方流式上传。
 	var data []byte
@@ -121,6 +151,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	case artifact.FormatWebProject:
 		file, err = h.packWebProject(ctx, job.TenantID, bundle)
 		contentType, ext = "application/zip", "zip"
+	case artifact.FormatAudioPPTX:
+		data, err = h.renderAudioPPTX(ctx, job, bundle)
+		contentType, ext = "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"
 	default:
 		err = fmt.Errorf("export job: unsupported format %q", snapshot.Format)
 	}
@@ -191,6 +224,92 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
 	pipeline.SetCommitStep(ctx, step)
 	return nil
+}
+
+// renderAudioPPTX 在源 PPTX 副本上按页嵌入音频并设置自动切页。
+// 每页音频由时间轴在该页区间内的片段拼成完整 WAV（含静默间隔），与 MP4/网页播放同源。
+func (h *ExportHandler) renderAudioPPTX(ctx context.Context, job *pipeline.Job, bundle *TimelineAsset) ([]byte, error) {
+	if h.narrationWriter == nil {
+		return nil, errors.New("export job: narrated pptx writer is not configured")
+	}
+	if h.sourceRevisions == nil {
+		return nil, errors.New("export job: source revisions are not available")
+	}
+	revisionNo := bundle.Timeline.SourceRevisionNo
+	if revisionNo <= 0 {
+		return nil, errors.New("export job: timeline has no source revision; regenerate narration before exporting narrated pptx")
+	}
+	rev, err := h.sourceRevisions.GetSourceRevision(ctx, job.TenantID, job.ProjectID, revisionNo)
+	if err != nil {
+		return nil, fmt.Errorf("export job: load source revision %d: %w", revisionNo, err)
+	}
+	if rev == nil || rev.ObjectKey == "" {
+		return nil, fmt.Errorf("export job: source revision %d has no source object", revisionNo)
+	}
+	src, err := h.readTenantObject(ctx, job.TenantID, rev.ObjectKey)
+	if err != nil {
+		return nil, fmt.Errorf("export job: read source pptx: %w", err)
+	}
+	clips := map[string][]byte{}
+	for _, slide := range bundle.Timeline.Slides {
+		for _, segment := range slide.Segments {
+			if _, ok := clips[segment.AudioKey]; ok {
+				continue
+			}
+			data, err := h.readTenantObject(ctx, job.TenantID, segment.AudioKey)
+			if err != nil {
+				return nil, err
+			}
+			clips[segment.AudioKey] = data
+		}
+	}
+	plan := integrations.NarrationPlan{Slides: make([]integrations.SlideNarration, 0, len(bundle.Timeline.Slides))}
+	for i, slide := range bundle.Timeline.Slides {
+		durationUS := slide.EndUS - slide.StartUS
+		if durationUS <= 0 {
+			return nil, fmt.Errorf("export job: slide %d has no duration", i)
+		}
+		trackKey := slide.SlideID
+		if trackKey == "" {
+			trackKey = fmt.Sprintf("slide-%d", i)
+		}
+		entry := integrations.SlideNarration{
+			Index: i, TrackKey: "narration:" + trackKey,
+			Advance: time.Duration(durationUS) * time.Microsecond,
+		}
+		if len(slide.Segments) > 0 {
+			segments := make([]media.SegmentCue, 0, len(slide.Segments))
+			for _, segment := range slide.Segments {
+				shifted := segment
+				shifted.StartUS -= slide.StartUS
+				shifted.EndUS -= slide.StartUS
+				segments = append(segments, shifted)
+			}
+			pageTimeline := &media.Timeline{
+				DurationUS: durationUS,
+				Slides: []media.SlideCue{{
+					SlideID: slide.SlideID, StartUS: 0, EndUS: durationUS, Segments: segments,
+				}},
+			}
+			wav, err := media.AssembleTimelineWAV(pageTimeline, clips)
+			if err != nil {
+				return nil, fmt.Errorf("export job: assemble slide %d audio: %w", i, err)
+			}
+			entry.Audio, entry.MIME = wav, "audio/wav"
+		}
+		plan.Slides = append(plan.Slides, entry)
+	}
+	report, err := h.narrationWriter.Apply(ctx, bytes.NewReader(src), int64(len(src)), plan)
+	if err != nil {
+		return nil, fmt.Errorf("export job: write narrated pptx: %w", err)
+	}
+	if len(report.Unsupported) > 0 {
+		return nil, fmt.Errorf("export job: narrated pptx writer reported unsupported features: %s", strings.Join(report.Unsupported, ", "))
+	}
+	if len(report.Output) == 0 {
+		return nil, errors.New("export job: narrated pptx writer produced no output")
+	}
+	return report.Output, nil
 }
 
 // packWebProject 打包可离线播放的 Web 讲解工程：timeline.json + 字幕 + 各音频片段。

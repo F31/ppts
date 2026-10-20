@@ -14,10 +14,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/F31/go-pptx/v2/pptx"
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/integrations"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/project"
 )
 
 type artifactStoreStub struct {
@@ -343,5 +346,121 @@ func TestClassifyEncodeErrorPermanentStaysPermanent(t *testing.T) {
 	plain := errors.New("media: ffmpeg encode failed")
 	if got := classifyEncodeError(plain); got != plain {
 		t.Fatalf("plain encode error should pass through unchanged: %v", got)
+	}
+}
+
+type sourceRevisionStub struct {
+	rev *project.SourceRevision
+	err error
+}
+
+func (s sourceRevisionStub) GetSourceRevision(context.Context, string, string, int) (*project.SourceRevision, error) {
+	return s.rev, s.err
+}
+
+func sourceDeckBytes(t *testing.T) []byte {
+	t.Helper()
+	p, err := pptx.New()
+	if err != nil {
+		t.Fatalf("pptx.New: %v", err)
+	}
+	defer p.Close()
+	layouts, err := p.Layouts()
+	if err != nil || len(layouts) == 0 {
+		t.Fatalf("layouts: %v", err)
+	}
+	slide, err := p.AddSlide(layouts[0])
+	if err != nil {
+		t.Fatalf("AddSlide: %v", err)
+	}
+	if _, err := slide.AddTextBox(pptx.TextBoxSpec{X: 914400, Y: 914400, Width: 6000000, Height: 914400, Text: "配音 PPTX"}); err != nil {
+		t.Fatalf("AddTextBox: %v", err)
+	}
+	var buf bytes.Buffer
+	if _, err := p.Write(context.Background(), &buf); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestExportHandlerPublishesAudioPPTX(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	bundle.Timeline.SourceRevisionNo = 1
+	bundleBytes, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putObject(t, objects, bundleKey, bundleBytes, "application/json")
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	putObject(t, objects, audioKey, pcmWAVForExportTest(1000, 100), "audio/wav")
+	srcKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "source", AssetType: "source", AssetID: "src", Ext: "pptx"}
+	putObject(t, objects, srcKey, sourceDeckBytes(t), "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
+	artifacts := &artifactStoreStub{}
+	handler := NewExportHandler(artifacts, &stepRecorder{}, objects, nil).
+		WithNarrationWriter(integrations.NewGoPPTXNarrationWriter()).
+		WithSourceRevisions(sourceRevisionStub{rev: &project.SourceRevision{
+			TenantID: "tenant-1", ProjectID: "project-1", RevisionNo: 1, ObjectKey: srcKey.String(),
+		}})
+	if err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatAudioPPTX, TimelineKey: bundleKey.String(),
+	})); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if artifacts.created == nil || artifacts.created.Format != artifact.FormatAudioPPTX || artifacts.created.SizeBytes == 0 {
+		t.Fatalf("artifact = %+v", artifacts.created)
+	}
+	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
+	rc, _, err := objects.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("artifact object: %v", err)
+	}
+	defer rc.Close()
+	out, err := io.ReadAll(rc)
+	if err != nil || len(out) == 0 {
+		t.Fatalf("read artifact: %v", err)
+	}
+	deck, err := pptx.OpenReader(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatalf("artifact is not a valid pptx: %v", err)
+	}
+	defer deck.Close()
+	slides, err := deck.Slides()
+	if err != nil || len(slides) != 1 {
+		t.Fatalf("slides = %d, err = %v", len(slides), err)
+	}
+	// 门禁：自动切页时间必须写入，且音频必须作为 media part 进入包内。
+	zr, err := zip.NewReader(bytes.NewReader(out), int64(len(out)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	var hasAdvance, hasAudio bool
+	for _, f := range zr.File {
+		if f.Name == "ppt/slides/slide1.xml" {
+			rc, _ := f.Open()
+			body, _ := io.ReadAll(rc)
+			rc.Close()
+			hasAdvance = strings.Contains(string(body), "advTm=")
+		}
+		if strings.HasPrefix(f.Name, "ppt/media/") {
+			hasAudio = true
+		}
+	}
+	if !hasAdvance || !hasAudio {
+		t.Fatalf("narrated pptx missing advance/audio: advance=%t audio=%t", hasAdvance, hasAudio)
+	}
+}
+
+func TestExportHandlerRejectsOverlongTimeline(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	_, bundleKey := seedTimelineBundle(t, objects)
+	handler := NewExportHandler(&artifactStoreStub{}, &stepRecorder{}, objects, nil).
+		WithMaxDuration(50 * time.Millisecond)
+	err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatSRT, TimelineKey: bundleKey.String(),
+	}))
+	if err == nil || !strings.Contains(err.Error(), "exceeds limit") {
+		t.Fatalf("err = %v, want duration limit failure", err)
 	}
 }
