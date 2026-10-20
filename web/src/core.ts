@@ -25,11 +25,13 @@ export const MAX_ATTEMPTS = 3;
 
 export class ConnectError extends Error {
   readonly code: string;
+  readonly retryAfterSeconds?: number;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, retryAfterSeconds?: number) {
     super(message);
     this.name = 'ConnectError';
     this.code = code;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -80,7 +82,10 @@ export async function connectErrorFrom(response: Response, label: string): Promi
   if (response.status === 401 && isSessionExpiredCode(code)) {
     notifySessionExpired();
   }
-  return new ConnectError(code, message);
+  const retryHeader = response.headers.get('Retry-After');
+  const retrySeconds = retryHeader === null ? NaN : Number(retryHeader);
+  return new ConnectError(code, message,
+    Number.isFinite(retrySeconds) && retrySeconds > 0 ? Math.ceil(retrySeconds) : undefined);
 }
 
 export async function httpConnectError(response: Response, label: string): Promise<never> {

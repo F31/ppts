@@ -10,7 +10,6 @@ import (
 	"os"
 	"path"
 	"strings"
-	"time"
 
 	"connectrpc.com/connect"
 
@@ -218,13 +217,9 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	if pool != nil {
 		settings := authSettingsFromEnv(opt.PriceVersion)
 		// P2-B1：限流计数走共享后端，共享存储不可用时退回进程内并置降级指标。
-		// 所有认证端点（含每日注册上限）共用同一个后端实例 —— 分开构造就會各计数一遍。
+		// 请求限流共用后端；每日成功注册计数与账号创建在同一数据库事务中提交。
 		rateBackend := rateLimitBackend(pool, opt.Logger)
 		startRateLimitPurge(rateBackend, opt.Logger)
-		var registerDaily *sharedLimiter
-		if settings.registerDailyPerIP > 0 {
-			registerDaily = newSharedLimiter(rateBackend, "auth.register_daily", 24*time.Hour, settings.registerDailyPerIP)
-		}
 		authDeps := &authDeps{
 			pool:                 pool,
 			store:                newAuthStore(pool),
@@ -238,7 +233,6 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			logger:               opt.Logger,
 			dummy:                precomputeDummyHash(),
 			settings:             settings,
-			registerDaily:        registerDaily,
 			quota:                opt.UsageStore,
 			audit:                opt.Audit,
 			senderForTenant: func(ctx context.Context, tenantID string) (mail.Sender, error) {

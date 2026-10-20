@@ -14,6 +14,34 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const core = await import('./src/core.ts');
+const validation = await import('./src/registrationValidation.ts');
+test('registration rejects malformed accounts and weak passwords before sending', () => {
+  for (const account of ['a@b', 'a@@b.com', 'a@b..com', '123']) {
+    assert.equal(validation.registrationAccountError(account), 'login.accountInvalid');
+  }
+  for (const account of ['user@example.com', '+86 (138) 1234-5678']) {
+    assert.equal(validation.registrationAccountError(account), null);
+  }
+  assert.equal(validation.registrationPasswordError('short', 'user@example.com'), 'login.passwordLength');
+  assert.equal(validation.registrationPasswordError('abcdefghijk', 'user@example.com'), 'login.passwordClasses');
+  assert.equal(validation.registrationPasswordError('UserSecure123!', 'user@example.com'), 'login.passwordAccount');
+  assert.equal(validation.registrationPasswordError('密'.repeat(25) + 'Ab1', 'user@example.com'), 'login.passwordLength');
+  assert.equal(validation.registrationPasswordError('StrongSecret42!', 'user@example.com'), null);
+});
+
+test('rate limit preserves retry delay and POST is not automatically repeated', async () => {
+  const mock = installFetch([() => new Response(JSON.stringify({code: 'registration_daily_limited'}), {
+    status: 429, headers: {'Retry-After': '3600'}
+  })]);
+  try {
+    await assert.rejects(requestJSON({method: 'POST', url: '/auth/register'}), err => {
+      assert.equal(err.code, 'registration_daily_limited');
+      assert.equal(err.retryAfterSeconds, 3600);
+      return true;
+    });
+    assert.equal(mock.calls.length, 1);
+  } finally { mock.restore(); }
+});
 const { backoffMs, retryableMethod, retryableStatus, shouldRetryNext, requestRaw, requestJSON, ConnectError, MAX_ATTEMPTS } = core;
 
 // fetchRecorder 替换全局 fetch，按脚本返回响应并记账；测试结束后必须还原，避免污染后续用例。

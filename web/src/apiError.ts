@@ -34,6 +34,14 @@ export function describeApiError(error: unknown, fallback: string, t?: Translato
       if (error.code === 'http_403' || error.code === 'permission_denied') return t('err.forbidden');
       if (error.code === 'http_503' || error.code === 'unavailable') return t('err.unavailable');
       if (error.code === 'registration_failed') return t('err.registrationFailed');
+      if (error.code === 'invalid_account') return t('login.accountInvalid');
+      if (error.code === 'weak_password') return t('login.passwordHint');
+      if (error.code === 'invalid_org_name') return t('login.orgNameInvalid');
+      if (error.code === 'invalid_account_type') return t('login.accountType');
+      if (error.code === 'invalid_invite_code') return t('login.inviteInvalid');
+      if (error.code === 'registration_disabled') return t('login.registrationDisabled');
+      if (error.code === 'registration_daily_limited') return t('login.dailyLimited');
+      if (error.code === 'rate_limited' || error.code === 'http_429') return t('login.rateLimited');
     }
     return `${fallback}（${error.code}）`;
   }

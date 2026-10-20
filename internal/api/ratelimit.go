@@ -121,8 +121,12 @@ type authRateConfig struct {
 }
 
 func defaultAuthRateConfig() authRateConfig {
+	registerPerHour := envIntValue("PPTS_AUTH_REGISTER_PER_HOUR", 60)
+	if registerPerHour <= 0 {
+		registerPerHour = 60
+	}
 	return authRateConfig{
-		registerPerHour: 10,
+		registerPerHour: registerPerHour,
 		loginPer15Min:   30,
 		forgotPerHour:   5,
 		resendPerHour:   5,

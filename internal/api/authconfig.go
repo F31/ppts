@@ -12,7 +12,7 @@ type authSettings struct {
 	registrationEnabled bool
 	// inviteCode 非空时，注册必须携带匹配的邀请码。
 	inviteCode string
-	// registerDailyPerIP 为单 IP 每日注册上限（0 = 不额外限制，仅用每小时限流）。
+	// registerDailyPerIP 为单 IP 每日成功注册上限（0 = 不额外限制，仅用请求限流）。
 	registerDailyPerIP int
 	// defaultGenSeconds 为新租户发放的默认免费配音额度（秒）；<0 表示不限量、=0 表示不发放。
 	defaultGenSeconds float64
@@ -31,6 +31,9 @@ func authSettingsFromEnv(priceVersion string) authSettings {
 		defaultGenSeconds:   envFloatValue("PPTS_DEFAULT_GEN_SECONDS_LIMIT", 600),
 		priceVersion:        priceVersion,
 		operatorIDs:         map[string]bool{},
+	}
+	if s.registerDailyPerIP < 0 {
+		s.registerDailyPerIP = 20
 	}
 	for _, id := range strings.Split(os.Getenv("PPTS_OPERATOR_USER_IDS"), ",") {
 		if id = strings.TrimSpace(id); id != "" {

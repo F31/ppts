@@ -8,7 +8,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -36,9 +38,6 @@ type authDeps struct {
 	dummy                string
 	// settings 为第二批注册治理/运营商配置。
 	settings authSettings
-	// registerDaily 单 IP 每日注册上限（settings.registerDailyPerIP>0 时非 nil）。
-	// 与 d.limits 里的限流器共用同一计数后端（P2-B1），否则每日上限会在多副本下被稀释。
-	registerDaily *sharedLimiter
 	// quota 用于注册时发放默认免费额度；nil 时跳过。
 	quota usage.Store
 	audit audit.Recorder
@@ -187,18 +186,40 @@ func (d *authDeps) sendResetEmail(ctx context.Context, tenantID, to, token, base
 // 注册
 // ---------------------------------------------------------------------------
 
+// Registration uses fixed UTC-aligned windows in both shared and memory backends.
+func registrationLimited(w http.ResponseWriter, window time.Duration, code string) {
+	now := time.Now()
+	seconds := int64((bucketStart(now, window).Add(window).Sub(now) + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{
+		"code": code, "message": "registration limit reached; retry after the indicated wait",
+		"retry_after_seconds": seconds,
+	})
+}
+
 func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if !d.settings.registrationEnabled {
 		observability.AuthEvent("register_disabled")
 		writeJSON(w, http.StatusForbidden, map[string]any{"code": "registration_disabled", "message": "registration is currently disabled"})
 		return
 	}
-	if !d.limits.register.allow(r.Context(), d.ip(r)) {
-		d.tooMany(w)
-		return
+	ip := d.ip(r)
+	hourAllowed := d.limits.register.allow(r.Context(), ip)
+	dailyBlocked := false
+	if d.settings.registerDailyPerIP > 0 {
+		var err error
+		dailyBlocked, err = registrationDailyBlocked(r.Context(), d.pool, ip, d.settings.registerDailyPerIP, time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "unavailable", "message": "registration limit service unavailable"})
+			return
+		}
 	}
-	if d.registerDaily != nil && !d.registerDaily.allow(r.Context(), d.ip(r)) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{"code": "rate_limited", "message": "daily registration limit reached for this network"})
+	if !hourAllowed || dailyBlocked {
+		window, code := registrationLimitWindow(dailyBlocked)
+		registrationLimited(w, window, code)
 		return
 	}
 	var body struct {
@@ -229,7 +250,7 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	acct, err := classifyAccount(rawAccount)
 	if err != nil {
-		http.Error(w, "invalid account", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_account", "message": "invalid email or phone number"})
 		return
 	}
 	if err := validatePassword(body.Password, accountLocalPart(acct)); err != nil {
@@ -238,13 +259,13 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	accountType := strings.TrimSpace(body.AccountType)
 	if accountType != accountTypePersonal && accountType != accountTypeOrganization {
-		http.Error(w, "account_type must be personal or organization", http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_account_type", "message": "account_type must be personal or organization"})
 		return
 	}
 	tenantName := defaultPersonalTenantName(acct.String())
 	if accountType == accountTypeOrganization {
 		if err := validateOrgName(strings.TrimSpace(body.OrgName)); err != nil {
-			http.Error(w, "invalid org_name: "+err.Error(), http.StatusBadRequest)
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_org_name", "message": err.Error()})
 			return
 		}
 		tenantName = strings.TrimSpace(body.OrgName)
@@ -280,6 +301,19 @@ func (d *authDeps) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
+	// Reserve the success slot in the account-creation transaction: failures
+	// roll it back, including concurrent attempts exceeding the daily limit.
+	if d.settings.registerDailyPerIP > 0 {
+		allowed, err := reserveRegistrationSuccess(ctx, tx, ip, d.settings.registerDailyPerIP, time.Now())
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if !allowed {
+			registrationLimited(w, 24*time.Hour, "registration_daily_limited")
+			return
+		}
+	}
 
 	if _, err := tx.Exec(ctx, `INSERT INTO tenants(id, name, status, type) VALUES($1,$2,'active',$3)`, tenantID, tenantName, accountType); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

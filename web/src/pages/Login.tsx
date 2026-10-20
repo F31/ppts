@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ClientIdentity } from '../api';
 import { oidcConfigured, isDevIdentityEnabled, startOIDCLogin } from '../auth';
 import { getAuthConfig, loginEmail, registerEmail, forgotPassword } from '../api';
@@ -6,6 +6,8 @@ import { useI18n } from '../i18n';
 import { useSession } from '../session';
 import { useRoute } from '../router';
 import { describeApiError } from '../apiError';
+import { ConnectError } from '../core';
+import { registrationAccountError, registrationPasswordError } from '../registrationValidation';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
 type EmailMode = 'signin' | 'register' | 'forgot';
@@ -50,6 +52,19 @@ export function Login() {
   const [orgName, setOrgName] = useState('');
   // forgotSent：忘记密码提交后的统一提示（不泄露账号是否存在）。
   const [forgotSent, setForgotSent] = useState(false);
+  const requestInFlight = useRef(false);
+  const [registerRetryAt, setRegisterRetryAt] = useState(0);
+  const [now, setNow] = useState(Date.now());
+  const retrySeconds = Math.max(0, Math.ceil((registerRetryAt - now) / 1000));
+  useEffect(() => {
+    if (!registerRetryAt) return;
+    const timer = window.setInterval(() => {
+      const timestamp = Date.now();
+      setNow(timestamp);
+      if (timestamp >= registerRetryAt) setRegisterRetryAt(0);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [registerRetryAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -97,7 +112,7 @@ export function Login() {
   };
 
   const submitEmail = async () => {
-    if (submitting) return;
+    if (submitting || requestInFlight.current || (emailMode === 'register' && registerRetryAt > Date.now())) return;
     setSubmitting(true);
     setError('');
     const trimmedEmail = email.trim();
@@ -123,6 +138,14 @@ export function Login() {
       return;
     }
     const trimmedOrg = orgName.trim();
+    if (emailMode === 'register') {
+      const validation = registrationAccountError(trimmedEmail) || registrationPasswordError(password, trimmedEmail);
+      if (validation || (inviteRequired && !inviteCode.trim())) {
+        setError(t(validation ?? 'login.inviteRequired'));
+        setSubmitting(false);
+        return;
+      }
+    }
     if (emailMode === 'register' && accountType === 'organization') {
       const orgErr = orgNameError(trimmedOrg);
       if (orgErr) {
@@ -131,6 +154,7 @@ export function Login() {
         return;
       }
     }
+    requestInFlight.current = true;
     try {
       const res =
         emailMode === 'register'
@@ -154,6 +178,15 @@ export function Login() {
         tenantType: res.tenant_type,
       });
     } catch (err) {
+      if (emailMode === 'register' && err instanceof ConnectError &&
+          ['rate_limited', 'registration_daily_limited', 'http_429'].includes(err.code)) {
+        const wait = err.retryAfterSeconds;
+        if (wait) {
+          const timestamp = Date.now();
+          setNow(timestamp);
+          setRegisterRetryAt(timestamp + wait * 1000);
+        }
+      }
       setError(
         describeApiError(
           err,
@@ -162,6 +195,8 @@ export function Login() {
         )
       );
       setSubmitting(false);
+    } finally {
+      requestInFlight.current = false;
     }
   };
 
@@ -207,6 +242,8 @@ export function Login() {
                 placeholder={t('login.accountPlaceholder')}
                 onChange={(e) => setEmail(e.currentTarget.value)}
               />
+              {emailMode === 'register' && email.trim() && registrationAccountError(email) &&
+                <small className="field-error">{t('login.accountInvalid')}</small>}
             </label>
             {emailMode !== 'forgot' && (
               <label>
@@ -217,6 +254,9 @@ export function Login() {
                   autoComplete={emailMode === 'register' ? 'new-password' : 'current-password'}
                   onChange={(e) => setPassword(e.currentTarget.value)}
                 />
+                {emailMode === 'register' && <small>{t('login.passwordHint')}</small>}
+                {emailMode === 'register' && password && registrationPasswordError(password, email) &&
+                  <small className="field-error">{t(registrationPasswordError(password, email)!)}</small>}
               </label>
             )}
             {emailMode === 'register' && inviteRequired && (
@@ -227,6 +267,7 @@ export function Login() {
                   autoComplete="off"
                   onChange={(e) => setInviteCode(e.currentTarget.value)}
                 />
+                {!inviteCode.trim() && <small className="field-error">{t('login.inviteRequired')}</small>}
               </label>
             )}
             {emailMode === 'register' && (
@@ -272,7 +313,7 @@ export function Login() {
             {forgotSent ? (
               <p className="form-success" role="status">{t('login.forgotSent')}</p>
             ) : (
-              <button type="submit" className="primary-login" disabled={submitting || registerBlocked}>
+              <button type="submit" className="primary-login" disabled={submitting || registerBlocked || (emailMode === 'register' && retrySeconds > 0)}>
                 {submitting
                   ? t('login.submitting')
                   : emailMode === 'register'
@@ -281,6 +322,9 @@ export function Login() {
                       ? t('login.forgotSubmit')
                       : t('login.signIn')}
               </button>
+            )}
+            {emailMode === 'register' && retrySeconds > 0 && (
+              <p className="form-error" role="status">{t('login.retryWait')} {Math.floor(retrySeconds / 3600)}h {Math.floor(retrySeconds % 3600 / 60)}m {retrySeconds % 60}s</p>
             )}
             <p className="email-switch">
               {emailMode === 'register' ? (
