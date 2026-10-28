@@ -125,22 +125,20 @@ func TestStageAssetsRejectsEscape(t *testing.T) {
 	}
 }
 
-// TestStageAssetsRejectsSymlink：符号链接可以指向资产根之外，
-// 只校验路径字符串是不够的。
+// TestStageAssetsRejectsSymlink：符号链接可能指向资产根之外，
+// 只校验路径字符串不够——`Stat` 会跟随链接，把 /etc/passwd 当成普通文件复制进来。
+// 这里故意让链接指向**资产根内**的普通文件：若实现用 Stat，这个用例会通过复制。
 func TestStageAssetsRejectsSymlink(t *testing.T) {
 	assets := t.TempDir()
 	work := t.TempDir()
-	target := filepath.Join(t.TempDir(), "secret.png")
-	if err := os.WriteFile(target, []byte("secret"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeAsset(t, assets, "real.png", "real")
 	link := filepath.Join(assets, "link.png")
-	if err := os.Symlink(target, link); err != nil {
+	if err := os.Symlink("real.png", link); err != nil {
 		t.Skipf("本机不支持符号链接: %v", err)
 	}
 
 	err := copyAsset(assets, work, "link.png")
-	if err == nil || !strings.Contains(err.Error(), "不是普通文件") {
+	if err == nil || !strings.Contains(err.Error(), "符号链接") {
 		t.Fatalf("符号链接应被拒绝，err = %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package render
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,12 +59,17 @@ func copyAsset(root, dir, rel string) error {
 	if err != nil {
 		return fmt.Errorf("目标路径非法: %w", err)
 	}
-	info, err := os.Stat(src)
+	// Lstat 而不是 Stat：Stat 会跟随符号链接，一个指向 /etc/passwd 的链接会被
+	// 当成普通文件复制进产物目录——路径字符串合法，但读到的东西在资产根之外。
+	info, err := os.Lstat(src)
 	if err != nil {
 		return fmt.Errorf("资产不存在: %w", err)
 	}
-	// 只接受普通文件：符号链接可能指向资产根之外（例如 /etc/shadow），
-	// 而目录会让下面的 Copy 读出一个空文件，把问题推迟到渲染阶段。
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("资产是符号链接（可能指向资产根之外），拒绝")
+	}
+	// 只接受普通文件：目录会让下面的 Copy 读出一个空文件，
+	// 把问题推迟到渲染阶段才以「画面空白」的形式暴露。
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("资产不是普通文件（mode=%s）", info.Mode().Type())
 	}
