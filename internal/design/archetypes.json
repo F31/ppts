@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "archetypes": [
+    {
+      "id": "cover",
+      "purpose": "开场封面：一句主陈述 + 副标题 + 署名信息。只用于全片第 1 页。",
+      "slots": [
+        { "role": "meta", "col": 1, "colSpan": 6, "row": 3, "rowSpan": 1, "align": "start", "vAlign": "bottom" },
+        { "role": "title", "col": 1, "colSpan": 10, "row": 4, "rowSpan": 2, "align": "start", "vAlign": "top" },
+        { "role": "subtitle", "col": 1, "colSpan": 8, "row": 6, "rowSpan": 1, "align": "start", "vAlign": "top" },
+        { "role": "accent", "col": 1, "colSpan": 2, "row": 7, "rowSpan": 1, "align": "start", "vAlign": "center" }
+      ]
+    },
+    {
+      "id": "section",
+      "purpose": "章节卡：全片 2–4 张，用来分段。章节号与标题并排，右侧留白承担节奏。",
+      "slots": [
+        { "role": "label", "col": 1, "colSpan": 2, "row": 3, "rowSpan": 2, "align": "start", "vAlign": "center" },
+        { "role": "title", "col": 3, "colSpan": 8, "row": 3, "rowSpan": 2, "align": "start", "vAlign": "center" },
+        { "role": "subtitle", "col": 3, "colSpan": 7, "row": 5, "rowSpan": 1, "align": "start", "vAlign": "top" }
+      ]
+    },
+    {
+      "id": "bullets",
+      "purpose": "要点页：3–5 条并列论点。超过 5 条应拆页，而不是缩字号。",
+      "slots": [
+        { "role": "title", "col": 1, "colSpan": 12, "row": 1, "rowSpan": 1, "align": "start", "vAlign": "bottom" },
+        { "role": "bullets", "col": 1, "colSpan": 8, "row": 3, "rowSpan": 5, "align": "start", "vAlign": "top" },
+        { "role": "caption", "col": 1, "colSpan": 6, "row": 8, "rowSpan": 1, "align": "start", "vAlign": "bottom" }
+      ]
+    },
+    {
+      "id": "split",
+      "purpose": "图文左右：左侧论述、右侧视觉。适合概念解释与产品截图。",
+      "slots": [
+        { "role": "title", "col": 1, "colSpan": 12, "row": 1, "rowSpan": 1, "align": "start", "vAlign": "bottom" },
+        { "role": "body", "col": 1, "colSpan": 6, "row": 3, "rowSpan": 4, "align": "start", "vAlign": "top" },
+        { "role": "visual", "col": 8, "colSpan": 5, "row": 3, "rowSpan": 5, "align": "center", "vAlign": "center" },
+        { "role": "caption", "col": 8, "colSpan": 5, "row": 8, "rowSpan": 1, "align": "end", "vAlign": "bottom" }
+      ]
+    },
+    {
+      "id": "full-bleed",
+      "purpose": "通栏大图 + 下方标题：图承担情绪，标题只做一句结论。图内不叠字（叠字会牺牲可读性）。",
+      "slots": [
+        { "role": "visual", "col": 1, "colSpan": 12, "row": 1, "rowSpan": 5, "align": "center", "vAlign": "center" },
+        { "role": "title", "col": 1, "colSpan": 10, "row": 6, "rowSpan": 2, "align": "start", "vAlign": "center" },
+        { "role": "caption", "col": 1, "colSpan": 6, "row": 8, "rowSpan": 1, "align": "start", "vAlign": "bottom" }
+      ]
+    },
+    {
+      "id": "big-number",
+      "purpose": "单数字页：一个可记住的量 + 一句解释。数字必须来自可核对的数据，不是修辞。",
+      "slots": [
+        { "role": "label", "col": 1, "colSpan": 8, "row": 2, "rowSpan": 1, "align": "start", "vAlign": "bottom" },
+        { "role": "number", "col": 1, "colSpan": 8, "row": 3, "rowSpan": 3, "align": "start", "vAlign": "center" },
+        { "role": "body", "col": 1, "colSpan": 8, "row": 6, "rowSpan": 1, "align": "start", "vAlign": "top" },
+        { "role": "caption", "col": 1, "colSpan": 6, "row": 8, "rowSpan": 1, "align": "start", "vAlign": "bottom" }
+      ]
+    },
+    {
+      "id": "quote",
+      "purpose": "引文页：外部观点或用户原话。左侧色条是唯一的装饰，不要加引号图形以外的元素。",
+      "slots": [
+        { "role": "accent", "col": 1, "colSpan": 1, "row": 2, "rowSpan": 4, "align": "start", "vAlign": "stretch" },
+        { "role": "quote", "col": 2, "colSpan": 10, "row": 2, "rowSpan": 4, "align": "start", "vAlign": "center" },
+        { "role": "attribution", "col": 2, "colSpan": 6, "row": 6, "rowSpan": 1, "align": "start", "vAlign": "top" }
+      ]
+    },
+    {
+      "id": "chart-focus",
+      "purpose": "图表主角：左图右结论。结论必须是图表能支撑的一句话，不是重复坐标轴。",
+      "slots": [
+        { "role": "title", "col": 1, "colSpan": 12, "row": 1, "rowSpan": 1, "align": "start", "vAlign": "bottom" },
+        { "role": "chart", "col": 1, "colSpan": 8, "row": 3, "rowSpan": 4, "align": "center", "vAlign": "center" },
+        { "role": "body", "col": 9, "colSpan": 4, "row": 3, "rowSpan": 4, "align": "start", "vAlign": "top" },
+        { "role": "caption", "col": 1, "colSpan": 8, "row": 8, "rowSpan": 1, "align": "start", "vAlign": "bottom" }
+      ]
+    },
+    {
+      "id": "compare",
+      "purpose": "左右对比：两组信息对等呈现。中间分隔线只画一列，不加阴影或色块。",
+      "slots": [
+        { "role": "title", "col": 1, "colSpan": 12, "row": 1, "rowSpan": 1, "align": "start", "vAlign": "bottom" },
+        { "role": "body", "col": 1, "colSpan": 5, "row": 3, "rowSpan": 4, "align": "start", "vAlign": "top" },
+        { "role": "divider", "col": 6, "colSpan": 1, "row": 3, "rowSpan": 4, "align": "center", "vAlign": "stretch" },
+        { "role": "body", "col": 8, "colSpan": 5, "row": 3, "rowSpan": 4, "align": "start", "vAlign": "top" },
+        { "role": "caption", "col": 1, "colSpan": 12, "row": 8, "rowSpan": 1, "align": "start", "vAlign": "bottom" }
+      ]
+    },
+    {
+      "id": "closing",
+      "purpose": "收尾：一句结论 + 行动指引。不要放二维码与新 logo，二维码会打断节奏。",
+      "slots": [
+        { "role": "title", "col": 1, "colSpan": 10, "row": 3, "rowSpan": 2, "align": "start", "vAlign": "center" },
+        { "role": "body", "col": 1, "colSpan": 8, "row": 5, "rowSpan": 2, "align": "start", "vAlign": "top" },
+        { "role": "meta", "col": 1, "colSpan": 8, "row": 7, "rowSpan": 1, "align": "start", "vAlign": "bottom" }
+      ]
+    }
+  ]
+}
