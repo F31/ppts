@@ -52,7 +52,7 @@
 ## 6. 验收门禁（PR1 部分已达成）
 
 - [x] 6.1 `go build ./... && go vet ./internal/animation/...` 通过（2026-10-28 实跑）
-- [ ] 6.2 `go test ./internal/animation/... -race` — 用例全绿，但本机无 gcc，`-race` 需 `CGO_ENABLED=1`，留 CI 复跑
+- [ ] 6.2 `go test ./internal/animation/... -race` — 用例全绿，但 `-race` 跑不了：Windows 上 race detector 依赖 cgo，本机 `CGO_ENABLED=0` 且没有 C 工具链（gcc/cc/clang/zig 全无，2026-10-28 复查）。CI 侧也仍被 `textnorm@v0.2.2` 的 `go.sum` 校验和挡住（干净环境 `go mod download` 报 checksum mismatch），要先解这条才能让 CI 跑 `-race`
 - [x] 6.3 `go list -deps ./internal/animation` 不含 `internal/media`、`internal/app`、`internal/api`（已实跑，仅依赖 `internal/project` 与标准库）
 - [x] 6.4 `go.mod` / `go.sum` 零改动（`git status` 可验），无新增依赖
 - [x] 6.5 `internal/app/export.go`、`internal/media/`、`web/` 零改动（`git diff --stat` 为空）
