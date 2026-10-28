@@ -46,7 +46,7 @@ func run() error {
 		keepOrphans = flag.Bool("keep-orphans", false, "保留上次进程留在 workdir 的 job 目录（多副本共享 workdir 时必须打开）")
 		scriptPath  = flag.String("renderer-script", "", "renderer/render.mjs 路径（默认取 PPTS_RENDERER_SCRIPT）")
 		chromePath  = flag.String("chrome", "", "chrome-headless-shell 路径（默认取 PPTS_CHROME）")
-		renderTO    = flag.Duration("render-timeout", 15*time.Minute, "单次渲染的上限")
+		renderTO    = flag.Duration("render-timeout", 15*time.Minute, "单次渲染的保底超时（按片长自动放宽，上限 6h）")
 		selftest    = flag.Bool("selftest", false, "跑一遍后端自检后退出：staging → 渲染 2 页 → 校验产物")
 	)
 	flag.Parse()

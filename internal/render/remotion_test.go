@@ -255,3 +255,36 @@ func TestVerifyMP4(t *testing.T) {
 		t.Errorf("missing file accepted")
 	}
 }
+
+func TestRenderTimeoutScalesWithContent(t *testing.T) {
+	// 5 分钟长片：实测 2 核 943s（ADR-16），常量 15min 会在第 27 页掐断。
+	if got := renderTimeout(0, 300*time.Second); got < 900*time.Second {
+		t.Errorf("5min 片超时 %v，装不下实测的 943s", got)
+	}
+	// 短视频不该被放宽到离谱：地板仍是调用方给的 15min。
+	if got := renderTimeout(0, 5*time.Second); got != defaultRenderTimeout {
+		t.Errorf("短视频超时 %v，want %v", got, defaultRenderTimeout)
+	}
+	// 急活儿可以把地板调低，但不能低到内容装不下。
+	if got := renderTimeout(2*time.Minute, 60*time.Second); got != 11*time.Minute {
+		t.Errorf("1min 片超时 %v，want 11m", got)
+	}
+	// 计划里的 durationMs 没有上界：必须夹在天花板上，否则畸形计划能长期占住并发位。
+	if got := renderTimeout(0, 100*time.Hour); got != maxRenderTimeout {
+		t.Errorf("超长片超时 %v，want %v", got, maxRenderTimeout)
+	}
+	// 内容时长为 0（异常计划）时退回地板，不能返回 0 让 ctx 立刻超时。
+	if got := renderTimeout(0, 0); got != defaultRenderTimeout {
+		t.Errorf("零时长超时 %v，want %v", got, defaultRenderTimeout)
+	}
+}
+
+func TestContentDurationSumsPages(t *testing.T) {
+	plan := &Timeline{Pages: []Page{{DurationMs: 6000}, {DurationMs: 9000}}}
+	if got := contentDuration(plan); got != 15*time.Second {
+		t.Errorf("contentDuration = %v, want 15s", got)
+	}
+	if got := contentDuration(&Timeline{}); got != 0 {
+		t.Errorf("空计划 contentDuration = %v, want 0", got)
+	}
+}

@@ -4,7 +4,9 @@
 #   1. 只读 rootfs + tmpfs 工作目录：渲染会把页面图、底板、片段写进 /work，
 #      但容器本身不该可写（Chromium 的 CVE 大多要求落盘）。
 #   2. 无外网：渲染不需要网络；给它外网只会多一条数据外泄路径。
-#   3. 资源限额：单 job 峰值内存 ~2GB，超了要 OOM 重启而不是拖垮整台机器。
+#   3. 资源限额：数值来自 5.6 长片压测（ADR-16），不是估算。压测前的 2g / 256 PIDs 会让
+#      单任务在第 4 页崩溃（PIDs 撞顶表现为 Node 的 write EPIPE，看不出原因）、
+#      第 21 秒 OOM（2g 正好压在单任务峰值上，没有余量）。
 services:
   renderer:
     build:
@@ -35,9 +37,14 @@ services:
     # 注意：不要在这里补 -fonts。字体版本由镜像 entrypoint 从 /etc/ppts/fonts.version
     # 拼出来（见 Dockerfile 说明），在这里覆盖会让版本与实际字体脱节。
     network_mode: none
-    cpus: 2
-    mem_limit: 2g
-    pids_limit: 256
+    # 这四行是同一台机器的两种切法，改一个要连带看另一个（ADR-16 §6）：
+    #   cpus 4 + mem 6g + pids 2048  → 2 个任务 × 30 页并发实测 948s / 峰值 4826MB / PIDs 783
+    #   cpus 4 时单任务用不满核，两个任务才能把 4 个渲染位喂饱（聚合吞吐近 2 倍）
+    #   mem 压到 4g 而保留 2 个任务：第二个任务第 21 秒被 OOM 杀
+    #   pids 压到 256：单任务第 4 页就崩，且报错是 EPIPE
+    cpus: 4
+    mem_limit: 6g
+    pids_limit: 2048
     security_opt:
       - no-new-privileges:true
     healthcheck:

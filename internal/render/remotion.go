@@ -41,7 +41,9 @@ type RemotionBackend struct {
 	CRF int
 	// GOP 是固定关键帧间隔（0 = 30）。拼接依赖它，不能交给 x264 自适应。
 	GOP int
-	// Timeout 是整次渲染的上限（0 = 15min）。
+	// Timeout 是整次渲染的**保底**上限（0 = 15min）。
+	// 实际超时会按片长放宽：墙钟与内容长度成正比（ADR-16 实测 2 核 1080p30 约 3.1× 实时），
+	// 常量要么掐断长片，要么给卡死的浏览器留过长的占用窗口。
 	Timeout time.Duration
 	// Logf 用于记录 staging 诊断（可为 nil）。
 	Logf func(format string, args ...any)
@@ -107,7 +109,7 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 		return fmt.Errorf("render: write staged plan: %w", err)
 	}
 
-	if err := b.exec(ctx, script, planPath, dir, len(plan.Pages), progress); err != nil {
+	if err := b.exec(ctx, script, planPath, dir, len(plan.Pages), contentDuration(plan), progress); err != nil {
 		return err
 	}
 
@@ -216,11 +218,48 @@ func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 	return &staged, nil
 }
 
-func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages int, progress func(done, total int)) error {
-	timeout := b.Timeout
-	if timeout <= 0 {
-		timeout = 15 * time.Minute
+// 渲染超时的两个边界：地板是调用方给的 -render-timeout（急活儿可以调小），
+// 天花板是 6h —— 计划里的 durationMs 没有上界，按内容无上限放宽等于给畸形计划发一张
+// 「永久占用并发位」的许可证。
+const (
+	defaultRenderTimeout = 15 * time.Minute
+	maxRenderTimeout     = 6 * time.Hour
+	// renderCostFactor 是「渲染 1 秒视频要多少秒墙钟」的保守倍数：
+	// 实测 2 核 1080p30 约 3.1×（ADR-16），留一倍余量给底图更重/机器更差的场景。
+	renderCostFactor = 6
+	// renderFixedOverhead 盖住 staging（底图复制、底板与图层生成）与 webpack 冷启动。
+	renderFixedOverhead = 5 * time.Minute
+)
+
+// contentDuration 是计划里所有页的声明时长之和。
+func contentDuration(plan *Timeline) time.Duration {
+	var total int64
+	for _, p := range plan.Pages {
+		total += p.DurationMs
 	}
+	return time.Duration(total) * time.Millisecond
+}
+
+// renderTimeout 按片长放宽超时，但夹在 [base, 6h] 之间。
+func renderTimeout(base, content time.Duration) time.Duration {
+	if base <= 0 {
+		base = defaultRenderTimeout
+	}
+	if content <= 0 {
+		return base
+	}
+	need := content*renderCostFactor + renderFixedOverhead
+	if need < base {
+		return base
+	}
+	if need > maxRenderTimeout {
+		return maxRenderTimeout
+	}
+	return need
+}
+
+func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages int, content time.Duration, progress func(done, total int)) error {
+	timeout := renderTimeout(b.Timeout, content)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
