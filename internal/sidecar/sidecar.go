@@ -48,14 +48,14 @@ type HandshakeResponse struct {
 }
 
 // Capabilities 是运行时能力清单（V4.0 §11.8）：只有已安装并通过验证的能力才出现。
-// 桌面首版：local_parse（go-pptx 本地解析）。
+// 桌面首版：local_parse（go-pptx 本地解析）+ local_share（本地生成成品包）。
 func Capabilities() []string {
-	return []string{"local_parse", "local_engine"}
+	return []string{"local_parse", "local_engine", "local_share"}
 }
 
 // SupportedMethods 引擎支持的 RPC 方法。
 func SupportedMethods() []string {
-	return []string{"handshake", "get_capabilities", "ping"}
+	return []string{"handshake", "get_capabilities", "ping", MethodExportBundle}
 }
 
 // Request 是通用请求（V4.0 §11.5）。
@@ -94,6 +94,7 @@ func NewEngine() *Engine {
 	e.methods["handshake"] = methodHandshake
 	e.methods["get_capabilities"] = methodCapabilities
 	e.methods["ping"] = methodPing
+	e.methods[MethodExportBundle] = methodExportBundle
 	return e
 }
 

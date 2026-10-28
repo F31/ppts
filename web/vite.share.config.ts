@@ -8,7 +8,10 @@ import { defineConfig } from 'vite';
 //   - 产物直接落到 internal/share/assets/，由 go:embed 打进二进制，因此 `go build`
 //     不需要 Node；CI 通过 `git diff --exit-code internal/share/assets/` 防止漂移。
 //   - emptyOutDir 必须为 false：该目录同时放着 assets.go（embed 声明），清空会把源码删掉。
+//   - publicDir 必须为 false：web/public 是站内 SPA 的图标与主题引导脚本，成品包用不到；
+//     开着会被复制进 assets/，变成 go:embed 目录里的未跟踪噪音。
 export default defineConfig({
+  publicDir: false,
   build: {
     outDir: '../internal/share/assets',
     emptyOutDir: false,

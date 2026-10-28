@@ -87,139 +87,18 @@ func NewBundleBuilder(reader ResourceReader, logger *slog.Logger) *BundleBuilder
 // 流式策略：页面图逐页转码后立刻写 entry（内存中只保留当前页与"上一页"），
 // 音频片段逐个写 entry，但会保留一份引用供混音轨拼接（与 MP4 路径的 clips 同量级）。
 func (b *BundleBuilder) Build(ctx context.Context, in BundleInput, out io.Writer) (*Manifest, error) {
-	if b == nil || b.reader == nil {
-		return nil, errors.New("share: resource reader is required")
-	}
-	if in.Timeline == nil || len(in.Timeline.Slides) == 0 {
-		return nil, errors.New("share: timeline with at least one slide is required")
-	}
-	if strings.TrimSpace(in.VTTKey) == "" {
-		return nil, errors.New("share: vtt key is required (the bundle must ship subtitles)")
-	}
-	timeline := in.Timeline
-
-	manifest := newManifest(timeline, in.Width, in.Height, in.FPS, in.Title, in.SnapshotHash, in.CreatedAt)
-
 	zw := zip.NewWriter(out)
-	files := make(map[string]struct{}, len(timeline.Slides)+8)
-	write := func(name string, data []byte) error {
-		if err := checkBundlePath(name); err != nil {
-			return err
+	manifest, files, err := b.buildInto(ctx, in, func(name string, data []byte) error {
+		w, createErr := zw.Create(name)
+		if createErr != nil {
+			return createErr
 		}
-		w, err := zw.Create(name)
-		if err != nil {
-			return err
-		}
-		if _, err := w.Write(data); err != nil {
-			return err
-		}
-		files[name] = struct{}{}
-		return nil
-	}
-
-	// ---- 时间轴（与旧 web_project 同名条目，便于下游平滑迁移解析）----
-	timelineJSON, err := json.Marshal(timeline)
-	if err != nil {
-		return nil, fmt.Errorf("share: marshal timeline: %w", err)
-	}
-	if err := write(FileTimelineJSON, timelineJSON); err != nil {
-		return nil, err
-	}
-
-	// ---- 字幕 ----
-	vtt, err := b.readObject(ctx, in.VTTKey)
-	if err != nil {
-		return nil, fmt.Errorf("share: read vtt: %w", err)
-	}
-	if len(vtt) == 0 {
-		return nil, fmt.Errorf("share: vtt object %q is empty", in.VTTKey)
-	}
-	if err := write(FileSubtitlesVTT, vtt); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(in.SRTKey) != "" {
-		srt, srtErr := b.readObject(ctx, in.SRTKey)
-		if srtErr != nil {
-			return nil, fmt.Errorf("share: read srt: %w", srtErr)
-		}
-		if err := write(FileSubtitlesSRT, srt); err != nil {
-			return nil, err
-		}
-	}
-	subtitlesJS, err := subtitlesScriptBody(timeline.Subtitles)
-	if err != nil {
-		return nil, fmt.Errorf("share: marshal subtitles: %w", err)
-	}
-	if err := write(FileSubtitlesJS, subtitlesJS); err != nil {
-		return nil, err
-	}
-
-	// ---- 页面底图 ----
-	slides, err := b.writeSlides(ctx, zw, write, in)
+		_, writeErr := w.Write(data)
+		return writeErr
+	})
 	if err != nil {
 		return nil, err
 	}
-	manifest.Slides = slides
-
-	// ---- 音频 ----
-	audioEntries, clips, err := b.writeAudio(ctx, write, timeline)
-	if err != nil {
-		return nil, err
-	}
-	manifest.Audio = audioEntries
-
-	// 混音轨：把各段按时间轴落位成一条 WAV，播放器只需一个 currentTime。
-	// 拼接失败（素材非 PCM16、时长不符）不阻断打包——播放器有「逐段播放」的降级路径。
-	if len(clips) > 0 {
-		var buf bytes.Buffer
-		if mixErr := media.WriteTimelineWAV(&buf, timeline, clips); mixErr != nil {
-			b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", mixErr)
-		} else if err := write(FileAudioMix, buf.Bytes()); err != nil {
-			return nil, err
-		} else {
-			manifest.AudioMix = FileAudioMix
-		}
-	}
-
-	// ---- 播放器与页面 ----
-	appJS, err := assets.AppJS()
-	if err != nil {
-		return nil, fmt.Errorf("share: embedded player script: %w", err)
-	}
-	appCSS, err := assets.AppCSS()
-	if err != nil {
-		return nil, fmt.Errorf("share: embedded player stylesheet: %w", err)
-	}
-	if err := write(FileAppJS, appJS); err != nil {
-		return nil, err
-	}
-	if err := write(FileAppCSS, appCSS); err != nil {
-		return nil, err
-	}
-	indexHTML, err := renderIndexHTML(in.Title)
-	if err != nil {
-		return nil, fmt.Errorf("share: render index.html: %w", err)
-	}
-	if err := write(FileIndexHTML, indexHTML); err != nil {
-		return nil, err
-	}
-
-	// ---- 清单（最后写：文件名在转码后才知道）----
-	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("share: marshal manifest: %w", err)
-	}
-	if err := write(FileManifestJSON, append(manifestJSON, '\n')); err != nil {
-		return nil, err
-	}
-	manifestJS, err := manifest.scriptBody()
-	if err != nil {
-		return nil, fmt.Errorf("share: marshal manifest script: %w", err)
-	}
-	if err := write(FileManifestJS, manifestJS); err != nil {
-		return nil, err
-	}
-
 	if err := zw.Close(); err != nil {
 		return nil, fmt.Errorf("share: close bundle: %w", err)
 	}
@@ -230,13 +109,152 @@ func (b *BundleBuilder) Build(ctx context.Context, in BundleInput, out io.Writer
 	return manifest, nil
 }
 
+// buildInto 是打包的唯一定义：把清单、字幕、底图、音频与播放器按固定顺序交给 write。
+//
+// 只依赖「写一个条目」这一个动作，因此 zip（Build）与目录（BuildDir）共用同一份
+// 组装逻辑与降级语义——这是隐私模式与云端产物结构一致的实现基础（tasks 5.3）。
+func (b *BundleBuilder) buildInto(
+	ctx context.Context,
+	in BundleInput,
+	write func(name string, data []byte) error,
+) (*Manifest, map[string]struct{}, error) {
+	if b == nil || b.reader == nil {
+		return nil, nil, errors.New("share: resource reader is required")
+	}
+	if in.Timeline == nil || len(in.Timeline.Slides) == 0 {
+		return nil, nil, errors.New("share: timeline with at least one slide is required")
+	}
+	if strings.TrimSpace(in.VTTKey) == "" {
+		return nil, nil, errors.New("share: vtt key is required (the bundle must ship subtitles)")
+	}
+	timeline := in.Timeline
+
+	manifest := newManifest(timeline, in.Width, in.Height, in.FPS, in.Title, in.SnapshotHash, in.CreatedAt)
+
+	files := make(map[string]struct{}, len(timeline.Slides)+8)
+	emit := func(name string, data []byte) error {
+		if err := checkBundlePath(name); err != nil {
+			return err
+		}
+		if err := write(name, data); err != nil {
+			return err
+		}
+		files[name] = struct{}{}
+		return nil
+	}
+
+	// ---- 时间轴（与旧 web_project 同名条目，便于下游平滑迁移解析）----
+	timelineJSON, err := json.Marshal(timeline)
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: marshal timeline: %w", err)
+	}
+	if err := emit(FileTimelineJSON, timelineJSON); err != nil {
+		return nil, nil, err
+	}
+
+	// ---- 字幕 ----
+	vtt, err := b.readObject(ctx, in.VTTKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: read vtt: %w", err)
+	}
+	if len(vtt) == 0 {
+		return nil, nil, fmt.Errorf("share: vtt object %q is empty", in.VTTKey)
+	}
+	if err := emit(FileSubtitlesVTT, vtt); err != nil {
+		return nil, nil, err
+	}
+	if strings.TrimSpace(in.SRTKey) != "" {
+		srt, srtErr := b.readObject(ctx, in.SRTKey)
+		if srtErr != nil {
+			return nil, nil, fmt.Errorf("share: read srt: %w", srtErr)
+		}
+		if err := emit(FileSubtitlesSRT, srt); err != nil {
+			return nil, nil, err
+		}
+	}
+	subtitlesJS, err := subtitlesScriptBody(timeline.Subtitles)
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: marshal subtitles: %w", err)
+	}
+	if err := emit(FileSubtitlesJS, subtitlesJS); err != nil {
+		return nil, nil, err
+	}
+
+	// ---- 页面底图 ----
+	slides, err := b.writeSlides(ctx, emit, in)
+	if err != nil {
+		return nil, nil, err
+	}
+	manifest.Slides = slides
+
+	// ---- 音频 ----
+	audioEntries, clips, err := b.writeAudio(ctx, emit, timeline)
+	if err != nil {
+		return nil, nil, err
+	}
+	manifest.Audio = audioEntries
+
+	// 混音轨：把各段按时间轴落位成一条 WAV，播放器只需一个 currentTime。
+	// 拼接失败（素材非 PCM16、时长不符）不阻断打包——播放器有「逐段播放」的降级路径。
+	if len(clips) > 0 {
+		var buf bytes.Buffer
+		if mixErr := media.WriteTimelineWAV(&buf, timeline, clips); mixErr != nil {
+			b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", mixErr)
+		} else if err := emit(FileAudioMix, buf.Bytes()); err != nil {
+			return nil, nil, err
+		} else {
+			manifest.AudioMix = FileAudioMix
+		}
+	}
+
+	// ---- 播放器与页面 ----
+	appJS, err := assets.AppJS()
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: embedded player script: %w", err)
+	}
+	appCSS, err := assets.AppCSS()
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: embedded player stylesheet: %w", err)
+	}
+	if err := emit(FileAppJS, appJS); err != nil {
+		return nil, nil, err
+	}
+	if err := emit(FileAppCSS, appCSS); err != nil {
+		return nil, nil, err
+	}
+	indexHTML, err := renderIndexHTML(in.Title)
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: render index.html: %w", err)
+	}
+	if err := emit(FileIndexHTML, indexHTML); err != nil {
+		return nil, nil, err
+	}
+
+	// ---- 清单（最后写：文件名在转码后才知道）----
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: marshal manifest: %w", err)
+	}
+	if err := emit(FileManifestJSON, append(manifestJSON, '\n')); err != nil {
+		return nil, nil, err
+	}
+	manifestJS, err := manifest.scriptBody()
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: marshal manifest script: %w", err)
+	}
+	if err := emit(FileManifestJS, manifestJS); err != nil {
+		return nil, nil, err
+	}
+
+	return manifest, files, nil
+}
+
 // writeSlides 逐页转码并写 entry，返回清单条目。
 //
 // 降级语义与 MP4 路径逐条对齐：缺键/读失败 → 沿用上一页（复用同一文件名，
 // 播放器切页时 src 不变，等于"画面停住"）；首屏缺失 → 占位图。
 func (b *BundleBuilder) writeSlides(
 	ctx context.Context,
-	_ *zip.Writer,
 	write func(string, []byte) error,
 	in BundleInput,
 ) ([]SlideEntry, error) {

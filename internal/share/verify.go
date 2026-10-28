@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -26,7 +28,6 @@ func VerifyBundle(data []byte) (*Manifest, map[string][]byte, error) {
 		return nil, nil, fmt.Errorf("share: open zip: %w", err)
 	}
 	files := make(map[string][]byte, len(zr.File))
-	names := make(map[string]struct{}, len(zr.File))
 	var total int64
 	for _, entry := range zr.File {
 		if entry.FileInfo().IsDir() {
@@ -41,6 +42,12 @@ func VerifyBundle(data []byte) (*Manifest, map[string][]byte, error) {
 		if total += int64(entry.UncompressedSize64); total > maxTotalBytes {
 			return nil, nil, fmt.Errorf("share: bundle exceeds %d bytes", maxTotalBytes)
 		}
+		if _, exists := files[entry.Name]; exists {
+			return nil, nil, fmt.Errorf("share: duplicate entry %q", entry.Name)
+		}
+		if _, exists := files[entry.Name]; exists {
+			return nil, nil, fmt.Errorf("share: duplicate entry %q", entry.Name)
+		}
 		rc, openErr := entry.Open()
 		if openErr != nil {
 			return nil, nil, fmt.Errorf("share: read entry %q: %w", entry.Name, openErr)
@@ -50,12 +57,62 @@ func VerifyBundle(data []byte) (*Manifest, map[string][]byte, error) {
 		if readErr != nil {
 			return nil, nil, fmt.Errorf("share: read entry %q: %w", entry.Name, readErr)
 		}
-		if _, exists := names[entry.Name]; exists {
-			return nil, nil, fmt.Errorf("share: duplicate entry %q", entry.Name)
-		}
-		names[entry.Name] = struct{}{}
 		files[entry.Name] = content
 	}
+	return verifyEntries(files)
+}
+
+// VerifyDir 校验目录形态的成品包（隐私模式的主要产物形态）。
+//
+// 与 VerifyBundle 走同一个 verifyEntries：目录里多一个 manifest 之外的文件不会被发现
+// （包本来就可能被用户加说明文件），但清单引用的每个条目、结构约束与外链扫描完全一致。
+func VerifyDir(dir string) (*Manifest, map[string][]byte, error) {
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("share: resolve bundle directory: %w", err)
+	}
+	files := make(map[string][]byte)
+	var total int64
+	walkErr := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, p)
+		if relErr != nil {
+			return relErr
+		}
+		name := filepath.ToSlash(rel)
+		if pathErr := checkBundlePath(name); pathErr != nil {
+			return pathErr
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			return infoErr
+		}
+		if info.Size() > maxEntryBytes {
+			return fmt.Errorf("share: entry %q is too large (%d bytes)", name, info.Size())
+		}
+		if total += info.Size(); total > maxTotalBytes {
+			return fmt.Errorf("share: bundle exceeds %d bytes", maxTotalBytes)
+		}
+		data, readErr := os.ReadFile(p)
+		if readErr != nil {
+			return fmt.Errorf("share: read entry %q: %w", name, readErr)
+		}
+		files[name] = data
+		return nil
+	})
+	if walkErr != nil {
+		return nil, nil, walkErr
+	}
+	return verifyEntries(files)
+}
+
+// verifyEntries 是 zip 与目录共用的结构门禁 + 清单解析。
+func verifyEntries(files map[string][]byte) (*Manifest, map[string][]byte, error) {
 	raw, ok := files[FileManifestJSON]
 	if !ok {
 		return nil, nil, fmt.Errorf("share: bundle is missing %s", FileManifestJSON)
@@ -63,6 +120,10 @@ func VerifyBundle(data []byte) (*Manifest, map[string][]byte, error) {
 	var manifest Manifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
 		return nil, nil, fmt.Errorf("share: parse %s: %w", FileManifestJSON, err)
+	}
+	names := make(map[string]struct{}, len(files))
+	for name := range files {
+		names[name] = struct{}{}
 	}
 	if err := manifest.Validate(names); err != nil {
 		return nil, nil, err
