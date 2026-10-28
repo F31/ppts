@@ -112,8 +112,17 @@ func TestRealignSharedSegmentUsesAlignmentCache(t *testing.T) {
 		TenantID: "tenant-1", ProjectID: sharedCacheProject, Revision: "cache",
 		AssetType: "alignment_vad", AssetID: audioKey.AssetID + "-a1", Ext: "json",
 	}
-	if _, _, err := objects.Get(ctx, cacheKey); err != nil {
+	if rc, meta, err := objects.Get(ctx, cacheKey); err != nil {
 		t.Fatalf("alignment cache object missing after first realign: %v", err)
+	} else {
+		// 必须关闭：Windows 上泄漏的读句柄会让 t.TempDir 的清理失败，
+		// 表现为 "The process cannot access the file..." 的假红灯。
+		if err := rc.Close(); err != nil {
+			t.Fatalf("close cache reader: %v", err)
+		}
+		if meta.Size == 0 {
+			t.Fatalf("alignment cache object is empty")
+		}
 	}
 
 	// 第二次：直接命中对齐缓存（音频对象仍在，但不再触发重算路径的重复副作用）。
