@@ -50,9 +50,10 @@ docker run --rm --network none --read-only --tmpfs /work \
 
 ## 已知阻塞（镜像首次构建前必须解决）
 
-1. **`go mod download` 在干净环境会失败**：`github.com/F31/textnorm@v0.2.2` 的已发布内容与
-   `go.sum` 记录的摘要不一致（`checksum mismatch`）。本机靠 `go.work` 指向 `./textnorm` 绕过，
-   镜像里 `GOWORK=off` 没有这条退路。需要模块所有者确认正确的版本/摘要后更新 `go.sum`，
-   本变更不擅自改它。
+1. ~~**`go mod download` 在干净环境会失败**~~ —— **2026-10-28 已修**。原因是 `go.sum` 里
+   `textnorm@v0.2.2` 的摘要写错了（记 `h1:d3rO7+…`，而 `sum.golang.org` 与真实下载都是
+   `h1:IZDOaanu…`；v0.2.0 / v0.2.1 同样错，说明这些摘要从未对着发布包验证过）。已按 sumdb 值改正，
+   `GOWORK=off go build/test ./...` 已跑通。构建镜像前仍建议先跑一次
+   `GOWORK=off go mod verify` 确认摘要基线。
 2. **`chrome.sha256` 尚未生成**：本机代理下载 Chrome for Testing 失败（curl 56）。
    在有外网的构建机上跑一次 `pin-chrome.sh` 并提交产物即可。

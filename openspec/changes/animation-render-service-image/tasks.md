@@ -42,7 +42,7 @@
 - [x] 4.4 `.dockerignore`：排除 `node_modules` 与 `web/`，避免上下文膨胀
 - [ ] 4.5 生成并提交 `chrome.sha256`（本机代理下载失败，curl 56）
 - [ ] 4.6 镜像首次 `docker build` + `--selftest`（本机无容器环境）
-- [ ] 4.7 解决 `textnorm@v0.2.2` 校验和不一致对 `GOWORK=off` 构建的阻塞（见 README「已知阻塞」）
+- [x] 4.7 解决 `textnorm@v0.2.2` 校验和不一致对 `GOWORK=off` 构建的阻塞：`go.sum` 记的摘要与 sumdb 权威值不符（v0.2.0/v0.2.1 同样错），已按 `h1:IZDOaanu…` 修正；`GOWORK=off go build/test ./...` 跑通（42 包）
 - [ ] 4.8 字体子集化（`pyftsubset` 常用字表）：当前镜像装全量 Noto CJK，约 9MB
 
 ## 5. 验收
@@ -84,6 +84,6 @@
 子元素，填色取自原图），但两个部分重叠、互不包含的兄弟元素仍会互相带出。单张栅格推不出逐元素 alpha，
 要彻底解决需上游提供分层素材；这条是模型限制，不是实现遗漏（5.9）。
 
-**未完成：镜像构建与容器内验收（4.5–4.8、5.4–5.6）。** 本机无 Docker，且 Chrome 包下载被代理阻断，
-`textnorm` 的 `go.sum` 校验和问题会让干净环境构建失败。这两条都登记在
-`deploy/renderer/README.md`，不在本变更里擅自绕过。
+**未完成：镜像构建与容器内验收（4.5、4.6、4.8、5.4–5.6）。** 本机无 Docker，且 Chrome 包下载被代理阻断，
+`chrome.sha256` 仍未生成。`GOWORK=off` 构建的校验和阻塞已于 2026-10-28 解除（4.7），
+剩余阻塞登记在 `deploy/renderer/README.md`。

@@ -47,6 +47,20 @@ jobs:
           go run ./cmd/share-verify /tmp/bundle.zip
           go run ./cmd/share-verify /tmp/bundle
 
+  # 竞态检测（M1 tasks 6.2 / ADR-11）：开发机是 Windows + CGO_ENABLED=0 且无任何 C 工具链，
+  # race detector 依赖 cgo，本地跑不了，只能在这里跑。范围限定在引入并发的三个包，
+  # 不做全仓 -race（相对耗时远大于收益）。首次跑绿后才可以勾掉 tasks 6.2。
+  race:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: go test -race
+        run: go test -race -count=1 ./internal/render/... ./cmd/renderer/... ./internal/animation/...
+
   # 独立模块 textnorm/：可在没有 PPTS 其余源码时独立构建/测试（纯标准库）。
   # 语料 JSON 随模块入库，作为行为契约在 CI 回放。
   textnorm:

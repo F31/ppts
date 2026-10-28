@@ -363,15 +363,33 @@ A 的裁切图是从 `baseImage` 上按盒取的区域，里面本来就烘着 B
 
 1. **镜像从未构建**。本机无 Docker；Chrome for Testing 的 zip 在本机代理下下载失败（curl 56），
    因此 `chrome.sha256` 没有生成，`Dockerfile` 的摘要校验分支没有被执行过。
-2. **干净环境 `GOWORK=off` 构建会在 `textnorm@v0.2.2` 处失败**：`go mod download` 报
-   `checksum mismatch`（下载到 h1:IZDO…，`go.sum` 记的是 h1:d3rO…）。本机构建成功是因为模块已在
-   本地缓存。这条不修，镜像与 CI 的 `-race` 都过不去；修它要动 `go.sum`，属于模块所有者的决定。
+2. ~~**干净环境 `GOWORK=off` 构建会在 `textnorm@v0.2.2` 处失败**~~ —— **2026-10-28 已修，结论见下**。
+
+   查证过程：`sum.golang.org` 对该模块的权威记录是 `h1:IZDOaanuOcR+DCHpQvAZBlTzVOm0y+ua7OxkAdVaohw=`
+   （tree txn 67923328），与实际下载的 zip 一致；`go.sum` 里写的 `h1:d3rO7+xP4Axx…` 既不是权威值、
+   也不是任何一次真实下载的结果。又因 sumdb 是追加式的、记的是首次见到的摘要，**上游从未重发过内容**
+   ——所以这不是「tag 被重推」的供应链问题，而是 `go.sum` 写入时就写错了。同类错误不止一处：
+   v0.2.0（记 `jlXXdnN3…`，权威 `EVY0tJSe…`）、v0.2.1（记 `acBoEnv5…`，权威 `EYKjPfeS…`）同样对不上，
+   说明这几个摘要从未对着发布包验证过，`GOWORK=off` 这条轨道实际**从未成功构建过**。
+
+   修法：按 sumdb 值改写 `go.sum` 的 v0.2.2 行。修后 `go mod download` 通过、`go mod verify` 报
+   `all modules verified`、`go mod tidy -diff` 无差异，`GOWORK=off go build ./...` 与
+   `GOWORK=off go test ./...` 均跑通（42 包）。发布包与本地 `./textnorm` 源码逐文件比对：59 个文件
+   哈希全等，仅缺仓库根的 `.gitignore`/`LICENSE`，即两条轨道内容一致，不存在版本漂移。
+
+   连带影响：工作流顶层本来就设了 `GOWORK: "off"`，所以 `test` / `crossbuild` / `pg` / `s3` / `corpus`
+   这些要构建的 job 自 2026-10-10 起应当一直是红的——这条被当作「仅 `-race` 的阻塞」记录了很久，
+   实际范围大得多。
 
 **并发验证的边界（本轮，必须说清楚）：**
 
 `go test -race` 在本机跑不了：Windows 上 race detector 依赖 cgo，而本机 `CGO_ENABLED=0` 且没有任何
-C 工具链（`gcc` / `cc` / `zig` / `clang` 均不存在）。CI 侧的 `-race` 也仍被上面第 2 条（`textnorm` 的
-`go.sum` 校验和）挡着。因此本轮**没有** race detector 的结论，只有两样替代物：
+C 工具链（`gcc` / `cc` / `zig` / `clang` 均不存在）。原先还有第二层阻塞（`go.sum` 校验和，见上面第 2 条），
+现已解除，因此本轮在 CI 增加了 `race` job（`.github/workflows/ci.yml`，范围为
+`./internal/render/... ./cmd/renderer/... ./internal/animation/...`）。
+
+需要如实说明的是：**本机没有 `gh`、也无法观测 GitHub Actions 的执行结果**，所以这个 job 属于
+「按已验证的本地命令写成、但尚未见到绿灯」的状态，不能当作已有 race 结论。本轮能给出的仍只有两样替代物：
 
 1. **人工审计**：逐行检查 `service.go` 的全部共享状态（`jobs` / `byHash` / `attempts` / `job.*` 字段
    一律在 `s.mu` 下读写）、`RemotionBackend.chromeOnce`（`sync.Once`）、`limitedBuffer`（由 `cmd.Wait()`
@@ -381,5 +399,6 @@ C 工具链（`gcc` / `cc` / `zig` / `clang` 均不存在）。CI 侧的 `-race`
    取消任务的目录真的消失、信号量归零。它**不能**替代 race detector——数据竞争不会让这个用例失败，
    它只能抓到丢任务、死锁、终态与磁盘不一致、槽位泄漏这类可观测后果。
 
-补跑方式：在装有 gcc 的 Linux/macOS 或 CI 上执行
-`go test -race ./internal/render/... ./cmd/renderer/... ./internal/animation/...`。
+补跑方式：推一次 `main` 或在 PR 上看 `race` job；本地等价命令（需 gcc、`CGO_ENABLED=1`）为
+`go test -race -count=1 ./internal/render/... ./cmd/renderer/... ./internal/animation/...`。
+该 job 首次跑绿后，才可以把 M1 tasks 6.2 勾掉——在那之前它仍是「未验证」。
