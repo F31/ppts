@@ -17,13 +17,13 @@ import (
 
 // countingProvider 记录最大在飞并发合成数，用于验证有界并发语义。
 type countingProvider struct {
-	caps       tts.VoiceCapabilities
-	fake       *tts.FakeProvider
-	delay      time.Duration
-	mu         sync.Mutex
-	inFlight   int
+	caps        tts.VoiceCapabilities
+	fake        *tts.FakeProvider
+	delay       time.Duration
+	mu          sync.Mutex
+	inFlight    int
 	maxInflight int
-	calls      int
+	calls       int
 }
 
 func (p *countingProvider) Capabilities(context.Context, string) (tts.VoiceCapabilities, error) {

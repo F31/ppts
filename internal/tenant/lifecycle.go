@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Status 是租户生命周期状态。

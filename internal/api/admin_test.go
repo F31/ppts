@@ -23,8 +23,8 @@ func (s *adminTenantStub) ListTenantsPage(_ context.Context, _ string, _ int) ([
 	return s.list, s.next, nil
 }
 func (s *adminTenantStub) CountTenants(_ context.Context) (int, error) { return s.total, nil }
-func (s *adminTenantStub) Suspend(_ context.Context, id string) error { s.suspended = id; return nil }
-func (s *adminTenantStub) Resume(_ context.Context, id string) error  { s.resumed = id; return nil }
+func (s *adminTenantStub) Suspend(_ context.Context, id string) error  { s.suspended = id; return nil }
+func (s *adminTenantStub) Resume(_ context.Context, id string) error   { s.resumed = id; return nil }
 
 func TestAdminListTenants(t *testing.T) {
 	stub := &adminTenantStub{
