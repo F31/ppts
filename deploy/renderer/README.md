@@ -22,6 +22,44 @@ docker build -f deploy/renderer/Dockerfile \
 `chrome.sha256` 由 `pin-chrome.sh` 生成，**必须提交**。它挡住的是「下载被截断/被镜像源替换」——
 这类问题在运行时的表现是「渲染超时」，跟真实原因毫无关系。
 
+上下文已经在 `.dockerignore` 里收到约 6MB（`dist/`、`build/`、根目录 go build 产物都排除了），
+所以从网络盘（WSL 的 `/mnt/e`、SMB 挂载）构建也不会卡在传上下文这一步。
+
+## 构建期网络（构建机只能走代理时必看）
+
+这个镜像在**构建期**有四处要出网，任一失败都会让 `docker build` 停在中途：
+
+| 步骤 | 目标 | 失败表现 |
+|---|---|---|
+| `apt-get update/install` | Debian 源（curl/unzip/字体） | `Temporary failure resolving deb.debian.org` |
+| `curl` Chrome | `storage.googleapis.com`，121MB | `curl: (56)` / 超时 |
+| `npm ci` | npm registry | `ECONNRESET` / `ETIMEDOUT` |
+| `go build` | `proxy.golang.org`（镜像内 `GOMODCACHE` 为空） | `dial tcp ... i/o timeout` |
+
+代理要在 `docker build` 上传，不是 `docker run` 上——运行期镜像刻意无网：
+
+```bash
+docker build -f deploy/renderer/Dockerfile \
+  --build-arg HTTP_PROXY=http://<proxy-host>:7890 \
+  --build-arg HTTPS_PROXY=http://<proxy-host>:7890 \
+  --build-arg NO_PROXY=localhost,127.0.0.1 \
+  --build-arg CHROME_VERSION="$(cat deploy/renderer/CHROME_VERSION)" \
+  --build-arg CHROME_SHA256="$(cat deploy/renderer/chrome.sha256)" \
+  -t ppts/renderer:dev .
+```
+
+`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 是 Docker 的预定义 build-arg，只在构建阶段作为环境变量
+存在，不会写进镜像历史。
+
+**在 WSL2 里构建时，`<proxy-host>` 不一定是 127.0.0.1**：
+
+- 默认 NAT 模式下，WSL 访问宿主的代理需要代理软件监听 `0.0.0.0`（Clash 的「允许局域网连接」），
+  地址取 WSL 的默认网关：`ip route | awk '/^default/ {print $3}'`。
+- Windows 11 22H2+ 的 mirrored 网络模式（`.wslconfig` 里 `networkingMode=mirrored`）下，
+  `127.0.0.1` 可以直通宿主。
+- 只监听 `127.0.0.1` 又没开 mirrored 时，容器里必然连不上代理，表现仍是 `curl: (56)`——
+  这跟摘要、URL 都无关，别去改 `chrome.sha256`。
+
 ## 自检（发布前必须跑）
 
 ```bash
