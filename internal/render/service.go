@@ -94,7 +94,9 @@ type Service struct {
 	mu     sync.Mutex
 	jobs   map[string]*job
 	byHash map[string]string
-	sem    chan struct{}
+	// attempts 按 planHash 前 24 位计数，用于给重试分配新 id（首次不加后缀）。
+	attempts map[string]int
+	sem      chan struct{}
 }
 
 type job struct {
@@ -131,11 +133,27 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		cfg.Now = time.Now
 	}
 	return &Service{
-		cfg:    cfg,
-		jobs:   make(map[string]*job),
-		byHash: make(map[string]string),
-		sem:    make(chan struct{}, cfg.MaxConcurrent),
+		cfg:      cfg,
+		jobs:     make(map[string]*job),
+		byHash:   make(map[string]string),
+		attempts: make(map[string]int),
+		sem:      make(chan struct{}, cfg.MaxConcurrent),
 	}, nil
+}
+
+// allocID 给这份计划分配一个 job id：首次用 ShortID(hash)，重试追加 -rN 后缀。
+//
+// 重试 MUST 落在新目录：上一轮被取消的 goroutine 可能还在清理自己的目录，
+// 若两轮共用同一个目录，旧轮的 RemoveAll 会把新轮的产物删掉。
+// 调用方必须已持有 s.mu。
+func (s *Service) allocID(hash string) string {
+	base := ShortID(hash)
+	n := s.attempts[base]
+	s.attempts[base] = n + 1
+	if n == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s-r%d", base, n+1)
 }
 
 // Handler 返回 HTTP 路由。路径与 §8.2 一致，额外提供 /healthz。
@@ -216,8 +234,6 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "hash_failed", "", err.Error())
 		return
 	}
-	id := ShortID(hash)
-
 	s.mu.Lock()
 	if existing, ok := s.byHash[hash]; ok {
 		j := s.jobs[existing]
@@ -227,6 +243,7 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
+	id := s.allocID(hash)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &job{id: id, hash: hash, state: StateQueued,
 		prog:   Progress{Done: 0, Total: len(plan.Pages)},
@@ -245,15 +262,25 @@ func (s *Service) run(ctx context.Context, j *job, plan *Timeline) {
 	s.sem <- struct{}{}
 	defer func() { <-s.sem }()
 
+	dir := filepath.Join(s.cfg.WorkDir, j.id)
+
 	s.mu.Lock()
 	if j.state == StateCanceled {
 		s.mu.Unlock()
+		// 排队期就被取消：清掉可能残留的目录再落终态。
+		_ = os.RemoveAll(dir)
+		s.finish(j, StateCanceled, "", nil)
 		return
 	}
 	j.state = StateRunning
 	s.mu.Unlock()
 
-	dir := filepath.Join(s.cfg.WorkDir, j.id)
+	// 先清空本 job 的目录：同一个 id 可能是「失败/取消后重试」，
+	// 上一轮写了一半的片段会让 verifyMP4 误判成可播放产物。
+	if err := os.RemoveAll(dir); err != nil {
+		s.finish(j, StateFailed, fmt.Sprintf("清理工作目录失败: %v", err), nil)
+		return
+	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		s.finish(j, StateFailed, fmt.Sprintf("创建工作目录失败: %v", err), nil)
 		return
@@ -265,15 +292,17 @@ func (s *Service) run(ctx context.Context, j *job, plan *Timeline) {
 		s.mu.Unlock()
 	})
 
+	// 清理排在 finish 之前：对外宣告终态时，这轮的半成品文件应当已经消失，
+	// 客户端不会看到「已失败但目录里还摆着能打开的片段」。
 	if ctx.Err() != nil {
 		// 取消是用户意图，不是失败。
-		s.finish(j, StateCanceled, "", nil)
 		_ = os.RemoveAll(dir)
+		s.finish(j, StateCanceled, "", nil)
 		return
 	}
 	if err != nil {
-		s.finish(j, StateFailed, err.Error(), nil)
 		_ = os.RemoveAll(dir)
+		s.finish(j, StateFailed, err.Error(), nil)
 		return
 	}
 
@@ -311,6 +340,7 @@ func (s *Service) finish(j *job, state JobState, msg string, arts []string) {
 	defer s.mu.Unlock()
 	// 已取消的任务不允许被后到的结果覆盖：否则用户点了取消却看到"成功"。
 	if j.state == StateCanceled && state != StateCanceled {
+		s.releaseHash(j)
 		return
 	}
 	j.state = state
@@ -318,6 +348,18 @@ func (s *Service) finish(j *job, state JobState, msg string, arts []string) {
 	j.arts = arts
 	if state == StateSucceeded {
 		j.prog = Progress{Done: j.prog.Total, Total: j.prog.Total}
+		return
+	}
+	// 失败与取消 MUST 释放 planHash：渲染会因 Chrome 崩溃、超时、OOM 失败，
+	// 取消也常是误触。若重试仍命中这个旧 job，这份计划就再也渲不出来了。
+	// 只有「成功」才配享受幂等复用——那也是唯一能让 byHash 带来收益的终态。
+	s.releaseHash(j)
+}
+
+// releaseHash 解除 planHash → job 的映射。调用方必须已持有 s.mu。
+func (s *Service) releaseHash(j *job) {
+	if s.byHash[j.hash] == j.id {
+		delete(s.byHash, j.hash)
 	}
 }
 
@@ -343,16 +385,25 @@ func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.mu.Lock()
 		j, ok := s.jobs[id]
-		if ok && j.state != StateSucceeded && j.state != StateFailed {
-			j.state = StateCanceled
-			j.cancel()
-		}
-		s.mu.Unlock()
 		if !ok {
+			s.mu.Unlock()
 			writeError(w, http.StatusNotFound, "not_found", "", "job 不存在")
 			return
 		}
-		writeJSON(w, http.StatusOK, JobStatus{ID: id, State: StateCanceled})
+		if j.state != StateSucceeded && j.state != StateFailed {
+			if j.state != StateCanceled {
+				j.state = StateCanceled
+				j.cancel()
+			}
+			// 立刻释放 planHash：取消后马上重试是最常见的动作。
+			// 重试会拿到新 id + 新目录，与这个 job 残留的清理互不干扰。
+			s.releaseHash(j)
+		}
+		// 回实际状态而不是硬编码 canceled：对已完成的任务点取消，它并没有被取消，
+		// 说成 canceled 只会让客户端误以为产物随时会消失。
+		st := JobStatus{ID: j.id, State: j.state}
+		s.mu.Unlock()
+		writeJSON(w, http.StatusOK, st)
 	default:
 		methodNotAllowed(w, http.MethodGet, http.MethodDelete)
 	}
@@ -367,12 +418,12 @@ func (s *Service) Submit(plan *Timeline) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	id := ShortID(hash)
 	s.mu.Lock()
 	if existing, ok := s.byHash[hash]; ok {
 		s.mu.Unlock()
 		return existing, nil
 	}
+	id := s.allocID(hash)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &job{id: id, hash: hash, state: StateQueued,
 		prog: Progress{Total: len(plan.Pages)}, cancel: cancel}
@@ -404,8 +455,12 @@ func (s *Service) Cancel(id string) bool {
 		return false
 	}
 	if j.state != StateSucceeded && j.state != StateFailed {
-		j.state = StateCanceled
-		j.cancel()
+		if j.state != StateCanceled {
+			j.state = StateCanceled
+			j.cancel()
+		}
+		// 与 DELETE 同理：取消必须立刻释放 planHash，否则重试会命中这个已取消的 job。
+		s.releaseHash(j)
 	}
 	return true
 }

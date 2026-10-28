@@ -86,12 +86,29 @@
 
 ### Requirement: 渲染服务无状态且幂等
 
-服务 MUST 提供 `POST /v1/render`（返回 `jobId`）、`GET /v1/render/{jobId}`、`DELETE /v1/render/{jobId}`、`GET /healthz`。相同 `planHash` 的重复提交 MUST 返回同一 `jobId` 且不重复渲染。
+服务 MUST 提供 `POST /v1/render`（返回 `jobId`）、`GET /v1/render/{jobId}`、`DELETE /v1/render/{jobId}`、`GET /healthz`。相同 `planHash` 的重复提交 MUST 返回同一 `jobId` 且不重复渲染，**唯一例外是已有 job 落在 `failed` 或 `canceled` 终态**。
+
+失败与取消表示「这次没成」，MUST NOT 让该 `planHash` 永久不可渲染：重试 MUST 重新渲染，并 MUST 分配新的 `jobId`（重试需要独立的工作目录，不能与被取消那一轮残留的清理抢同一路径）。旧 `jobId` MUST 仍可查询，并保持其终态与错误信息不变。
 
 #### Scenario: 重复提交
 
 - **WHEN** 同一 plan 连续提交两次
 - **THEN** 两次返回同一 `jobId`，backend 只被调用一次
+
+#### Scenario: 失败后重试
+
+- **WHEN** 某份计划渲染失败（瞬时故障），调用方用完全相同的 plan 再次提交
+- **THEN** 服务 MUST 重新渲染而不是复用失败的 job，返回一个新的 `jobId`；旧 `jobId` 查到的仍是 `failed`
+
+#### Scenario: 取消后重试
+
+- **WHEN** 任务被 `DELETE` 取消后，调用方用完全相同的 plan 再次提交
+- **THEN** 服务 MUST 重新渲染并返回新的 `jobId`，产物 MUST 落在新目录
+
+#### Scenario: 已成功后重复提交
+
+- **WHEN** 任务已 `succeeded`，调用方再次提交同一 plan
+- **THEN** 返回同一 `jobId`，MUST NOT 重新渲染（幂等只服务成功结果）
 
 #### Scenario: 非法 plan
 

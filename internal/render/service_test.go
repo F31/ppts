@@ -29,9 +29,10 @@ func (b *countingBackend) Render(ctx context.Context, plan *Timeline, dir string
 	progress func(done, total int)) error {
 	b.mu.Lock()
 	b.calls++
+	fail := b.fail
 	b.mu.Unlock()
-	if b.fail != nil {
-		return b.fail
+	if fail != nil {
+		return fail
 	}
 	return (&StubBackend{DelayPerPage: b.delay}).Render(ctx, plan, dir, progress)
 }

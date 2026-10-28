@@ -211,6 +211,33 @@ A 的裁切图是从 `baseImage` 上按盒取的区域，里面本来就烘着 B
 `TestSegmentTriggerAddsClipOffset` 两个用例。`TestClipTruncatedAtPageEnd` 原本把 800ms 同时写进
 `atTime:800` 与 `startMs:800`，靠「startMs 被忽略」才通过，已改为只表达页尾截断。
 
+### ADR-11 任务生命周期：终态非成功必须释放 `planHash`（本轮修正）
+
+并发审计前，`byHash`（`planHash → jobId`）一旦写入就永不删除。后果是**同一份计划只要失败或取消过一次，
+就再也不会被渲染**：重试命中旧 job，直接拿到 `failed` / `canceled`。
+
+这不是理论问题。真实渲染会因 Chrome 崩溃、超时、OOM 失败，用户最常见的动作就是重试；取消则常是误触。
+一个瞬时故障足以让某份讲稿在该进程生命周期内永久不可渲染，而服务对此没有任何提示。
+
+修法有三条互相咬合的决定：
+
+1. **只有成功才配享受幂等复用。** `finish` 在 `failed` / `canceled` 时删除 `byHash[hash]`
+   （带 `byHash[hash] == jobID` 校验，避免误删新任务的映射）。
+2. **取消立刻释放。** `Cancel` / `DELETE` 在置 `canceled` 的同时释放，而不是等 goroutine 退到 `finish`——
+   否则客户端刚看到 canceled 就重试，仍会命中这个尚未收尾的 job。
+3. **重试分配新 id + 新目录。** 只释放映射还不够：被取消的 goroutine 可能正在 `RemoveAll` 自己的目录，
+   若重试沿用 `ShortID(hash)` 作目录名，就会和这一轮抢同一个路径（旧轮删掉新轮刚写的片段）。
+   因此 `allocID` 在第二次及以后追加 `-r2`、`-r3`……，两轮各写各的目录，不需要任何等待或锁顺序假设。
+
+代价：重试的 jobId 不再等于 `ShortID(hash)`。仓库内没有任何地方自行推导 jobId（客户端只用响应里的值），
+所以这是纯内部约定变化。旧 job 仍可按原 id 查状态，"每次尝试是一个 job" 也比"同一 id 反复改写历史"更诚实。
+
+顺带修掉 `DELETE` 的响应：此前无论实际状态如何都回 `canceled`，对已成功的任务点取消会让客户端
+以为产物随时会消失。现在回 `j.state` 真值。
+
+**未修、已登记（tasks 3.12 / 3.13）**：信号量在 `run` 里才获取，排队 goroutine 无上限且各自持有整份 plan；
+`jobs` / `byHash` / `attempts` 三张表只增不删。两条都需要先定队列上限与保留策略，属产品决策，不在本轮擅自改。
+
 ## 3. 目录与文件
 
 | 路径 | 内容 |
@@ -274,3 +301,20 @@ A 的裁切图是从 `baseImage` 上按盒取的区域，里面本来就烘着 B
 2. **干净环境 `GOWORK=off` 构建会在 `textnorm@v0.2.2` 处失败**：`go mod download` 报
    `checksum mismatch`（下载到 h1:IZDO…，`go.sum` 记的是 h1:d3rO…）。本机构建成功是因为模块已在
    本地缓存。这条不修，镜像与 CI 的 `-race` 都过不去；修它要动 `go.sum`，属于模块所有者的决定。
+
+**并发验证的边界（本轮，必须说清楚）：**
+
+`go test -race` 在本机跑不了：Windows 上 race detector 依赖 cgo，而本机 `CGO_ENABLED=0` 且没有任何
+C 工具链（`gcc` / `cc` / `zig` / `clang` 均不存在）。CI 侧的 `-race` 也仍被上面第 2 条（`textnorm` 的
+`go.sum` 校验和）挡着。因此本轮**没有** race detector 的结论，只有两样替代物：
+
+1. **人工审计**：逐行检查 `service.go` 的全部共享状态（`jobs` / `byHash` / `attempts` / `job.*` 字段
+   一律在 `s.mu` 下读写）、`RemotionBackend.chromeOnce`（`sync.Once`）、`limitedBuffer`（由 `cmd.Wait()`
+   建立 happens-before）。审计发现并修掉了 ADR-11 的三个缺陷。
+2. **压力用例** `TestConcurrentSubmitCancelConsistency`：24 个不同计划并发提交（`MaxConcurrent=4`）、
+   并发取消一半、再并发重复提交同一计划 8 次；断言全部落终态、成功任务的产物真的在盘上、
+   取消任务的目录真的消失、信号量归零。它**不能**替代 race detector——数据竞争不会让这个用例失败，
+   它只能抓到丢任务、死锁、终态与磁盘不一致、槽位泄漏这类可观测后果。
+
+补跑方式：在装有 gcc 的 Linux/macOS 或 CI 上执行
+`go test -race ./internal/render/... ./cmd/renderer/... ./internal/animation/...`。
