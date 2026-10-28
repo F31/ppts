@@ -61,6 +61,18 @@ func TestHashIgnoresPathPrefix(t *testing.T) {
 	}
 }
 
+// 层素材是 baseImage + Boxes 的确定性派生物：文件名不该把缓存搅黄。
+func TestHashIgnoresLayerImage(t *testing.T) {
+	a := validPlan()
+	b := validPlan()
+	b.Pages[0].Layers[0].Image = "layers/layer_000_00.png"
+	ha, _ := a.Hash(HashOptions{})
+	hb, _ := b.Hash(HashOptions{})
+	if ha != hb {
+		t.Fatal("层素材路径不应影响 hash")
+	}
+}
+
 func TestHashIgnoresWarnings(t *testing.T) {
 	a := validPlan()
 	b := validPlan()

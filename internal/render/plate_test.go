@@ -131,3 +131,101 @@ func TestBuildPlateScalesBoxToImageSize(t *testing.T) {
 		t.Errorf("scaled box not filled: %v", got)
 	}
 }
+
+// ADR-9 的回归用例：父层素材里的子元素必须被抹成父层底色，
+// 否则子元素会跟着父层的不透明度出现，自己声明的 startMs 形同失效。
+func TestBuildLayerAssetsErasesNestedChild(t *testing.T) {
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	cardColor := color.NRGBA{0xF1, 0xF5, 0xF9, 0xFF}
+	blue := color.NRGBA{0x1E, 0x3A, 0x8A, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 20, 20, 180, 90, cardColor)
+	fillRect(page, 40, 40, 140, 60, blue)
+
+	assets := BuildLayerAssets(page, []Layer{
+		layer("card", Box{X: 20, Y: 20, W: 160, H: 70}),
+		layer("bullet", Box{X: 40, Y: 40, W: 100, H: 20}),
+	}, 200, 100)
+	if len(assets) != 2 {
+		t.Fatalf("want 2 assets, got %d", len(assets))
+	}
+
+	card := assets[0]
+	if card.ElementID != "card" || card.Index != 0 {
+		t.Fatalf("asset[0] = %s#%d, want card#0", card.ElementID, card.Index)
+	}
+	if got := card.Image.Bounds(); got.Dx() != 160 || got.Dy() != 70 {
+		t.Fatalf("card asset bounds = %v, want 160x70", got)
+	}
+	if len(card.Erased) != 1 || card.Erased[0] != "bullet" {
+		t.Errorf("card should erase its child, erased = %v", card.Erased)
+	}
+	// 卡片素材坐标 = 页坐标 − (20,20)；子元素中心 (90,50) → 素材 (70,30)。
+	if got := card.Image.At(70, 30); !sameColor(got, cardColor) {
+		t.Errorf("nested child not erased from card asset: %v", got)
+	}
+}
+
+// 反向：子层素材必须保留包住它的父层背景，抹了就相当于把自己打穿。
+func TestBuildLayerAssetsKeepsEnclosingBackground(t *testing.T) {
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	cardColor := color.NRGBA{0xF1, 0xF5, 0xF9, 0xFF}
+	blue := color.NRGBA{0x1E, 0x3A, 0x8A, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 20, 20, 180, 90, cardColor)
+	fillRect(page, 40, 40, 140, 60, blue)
+
+	assets := BuildLayerAssets(page, []Layer{
+		layer("card", Box{X: 20, Y: 20, W: 160, H: 70}),
+		layer("bullet", Box{X: 40, Y: 40, W: 100, H: 20}),
+	}, 200, 100)
+	bullet := assets[1]
+	if len(bullet.Erased) != 0 {
+		t.Errorf("enclosing layer must not be erased, got %v", bullet.Erased)
+	}
+	// 自己还在：子层坐标 (50,10) → 页坐标 (90,50)。
+	if got := bullet.Image.At(50, 10); !sameColor(got, blue) {
+		t.Errorf("child pixel lost: %v", got)
+	}
+	// 裁切图只覆盖元素自己的盒子，盒子之外本来就不在素材里；
+	// 「保留父层背景」的含义是：父层的填色没有被涂到子层上，子层四角仍是自己的像素。
+	if got := bullet.Image.At(0, 0); !sameColor(got, blue) {
+		t.Errorf("enclosing fill leaked into child asset: %v", got)
+	}
+}
+
+// 无重叠的兄弟元素互不干扰：各自素材就是原图对应区域的拷贝。
+func TestBuildLayerAssetsLeavesSiblingsIntact(t *testing.T) {
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	blue := color.NRGBA{0x1E, 0x3A, 0x8A, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 10, 10, 60, 40, blue)
+	fillRect(page, 120, 10, 170, 40, blue)
+
+	assets := BuildLayerAssets(page, []Layer{
+		layer("a", Box{X: 10, Y: 10, W: 50, H: 30}),
+		layer("b", Box{X: 120, Y: 10, W: 50, H: 30}),
+	}, 200, 100)
+	if len(assets) != 2 {
+		t.Fatalf("want 2 assets, got %d", len(assets))
+	}
+	for _, asset := range assets {
+		if len(asset.Erased) != 0 {
+			t.Errorf("%s erased siblings: %v", asset.ElementID, asset.Erased)
+		}
+		if got := asset.Image.At(25, 15); !sameColor(got, blue) {
+			t.Errorf("%s lost its own pixels: %v", asset.ElementID, got)
+		}
+	}
+}
+
+// 元素几乎占满整页时没有外环可取色：该层不出素材（调用方按缺省处理），
+// 而不是拿一个猜出来的颜色去抹别人的画面。
+func TestBuildLayerAssetsSkipsWhenNoRingAvailable(t *testing.T) {
+	page := flatPage(60, 60, color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF})
+	if assets := BuildLayerAssets(page, []Layer{
+		layer("full", Box{X: 0, Y: 0, W: 60, H: 60}),
+	}, 60, 60); len(assets) != 0 {
+		t.Fatalf("full-page box should produce no asset, got %d", len(assets))
+	}
+}

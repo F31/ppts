@@ -82,6 +82,13 @@ type Layer struct {
 	AssetMode string   `json:"assetMode"`
 	Box       Box      `json:"box"`
 	Clips     []Motion `json:"clips"`
+	// Image 是本层「只含自己」的位图（相对工作目录）。为空时合成器退回
+	// 「从 baseImage 按 Box 偏移裁切」的旧行为。
+	//
+	// 为什么需要它：元素 A 的 Box 若包含另一个动画元素 B，从 baseImage 裁出来的
+	// A 里就烘着 B，B 会跟着 A 的不透明度出现（ADR-9）。backend 为每层生成一张
+	// 「把其它动画元素抹掉」的图，合成器直出即可。
+	Image string `json:"image,omitempty"`
 }
 
 // Box 是像素矩形（整数像素：半像素会让 1080p 下的描边发虚）。

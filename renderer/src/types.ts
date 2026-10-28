@@ -41,6 +41,11 @@ export type Layer = {
   assetMode: string;
   box: Box;
   clips?: Motion[];
+  /**
+   * 本层「只含自己」的位图，尺寸等于 box。缺省时退回「从 baseImage 按 box 偏移裁切」——
+   * 那条路径在嵌套情形下会把内部元素一起带出来（ADR-9）。
+   */
+  image?: string;
 };
 
 export type Transition = {

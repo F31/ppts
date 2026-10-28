@@ -127,8 +127,14 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 	staged := *plan
 	staged.Pages = append([]Page(nil), plan.Pages...)
+	// Layers 必须逐页深拷贝一层：下面要回填 Image，而切片是引用类型，
+	// 只复制 Page 结构体会把写入落到调用方的数组里（破坏「staging 不改调用方计划」）。
+	for i := range staged.Pages {
+		staged.Pages[i].Layers = append([]Layer(nil), staged.Pages[i].Layers...)
+	}
 
 	plateDir := filepath.Join(dir, "plates")
+	layerDir := filepath.Join(dir, "layers")
 	needPlates := false
 	for _, page := range staged.Pages {
 		for _, layer := range page.Layers {
@@ -146,6 +152,9 @@ func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 	}
 	if err := os.MkdirAll(plateDir, 0o750); err != nil {
 		return nil, fmt.Errorf("render: prepare plate dir: %w", err)
+	}
+	if err := os.MkdirAll(layerDir, 0o750); err != nil {
+		return nil, fmt.Errorf("render: prepare layer dir: %w", err)
 	}
 
 	for i := range staged.Pages {
@@ -171,19 +180,31 @@ func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 		plate, patches := BuildPlate(base, page.Layers, plan.Width, plan.Height)
 
 		name := fmt.Sprintf("plates/plate_%03d.png", i)
-		out, err := os.Create(filepath.Join(dir, filepath.FromSlash(name)))
+		platePath, err := workPath(dir, name)
 		if err != nil {
 			return nil, fmt.Errorf("render: page %d plate: %w", i, err)
 		}
-		encodeErr := png.Encode(out, plate)
-		closeErr := out.Close()
-		if encodeErr != nil {
-			return nil, fmt.Errorf("render: page %d plate encode: %w", i, encodeErr)
-		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("render: page %d plate close: %w", i, closeErr)
+		if err := writePNGFile(platePath, plate); err != nil {
+			return nil, fmt.Errorf("render: page %d plate: %w", i, err)
 		}
 		page.PlateImage = name
+
+		// 每层一张「只含自己」的位图（ADR-9）：大图层的裁切会把嵌套的小元素一起带出来，
+		// 让小元素跟着大图层的不透明度出现，自己声明的 startMs 形同失效。
+		for _, asset := range BuildLayerAssets(base, page.Layers, plan.Width, plan.Height) {
+			layerName := fmt.Sprintf("layers/layer_%03d_%02d.png", i, asset.Index)
+			layerPath, err := workPath(dir, layerName)
+			if err != nil {
+				return nil, fmt.Errorf("render: page %d layer %d: %w", i, asset.Index, err)
+			}
+			if err := writePNGFile(layerPath, asset.Image); err != nil {
+				return nil, fmt.Errorf("render: page %d layer %d: %w", i, asset.Index, err)
+			}
+			page.Layers[asset.Index].Image = layerName
+			if len(asset.Erased) > 0 && b.Logf != nil {
+				b.Logf("render: page %d layer %s: erased nested elements %v", i, asset.ElementID, asset.Erased)
+			}
+		}
 
 		for _, patch := range patches {
 			if patch.Noisy && b.Logf != nil {
@@ -342,6 +363,24 @@ func workPath(dir, rel string) (string, error) {
 		return "", fmt.Errorf("path escapes workdir: %q", rel)
 	}
 	return full, nil
+}
+
+// writePNG 落盘并显式 Close：Windows 上「defer Close + 紧接着读取」会因为句柄
+// 还没释放而失败，这类错误在 CI 上表现为莫名其妙的 remove/unlink 报错。
+func writePNGFile(path string, img image.Image) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	encodeErr := png.Encode(f, img)
+	closeErr := f.Close()
+	if encodeErr != nil {
+		return fmt.Errorf("encode png: %w", encodeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close png: %w", closeErr)
+	}
+	return nil
 }
 
 func readImage(path string) (image.Image, error) {

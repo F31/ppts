@@ -112,6 +112,17 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 		if l.Box.W <= 0 || l.Box.H <= 0 {
 			return planErr(lbase+".box", CodeInvalidPlan, "box %dx%d must be positive", l.Box.W, l.Box.H)
 		}
+		// 层素材是后端生成的派生物，但同样来自计划字节，路径安全不能放宽。
+		if l.Image != "" {
+			if err := SafeAssetPath(l.Image); err != nil {
+				return planErr(lbase+".image", CodeUnsafePath, "%s", err)
+			}
+			// page-layer 就是整页本身，给它一张位图没有意义，只会掩盖调用方搞错了对象。
+			if l.AssetMode != AssetBitmapRegion {
+				return planErr(lbase+".image", CodeInvalidPlan,
+					"only %s layers may carry image", AssetBitmapRegion)
+			}
+		}
 		if l.Box.X < 0 || l.Box.Y < 0 ||
 			l.Box.X+l.Box.W > t.Width || l.Box.Y+l.Box.H > t.Height {
 			return planErr(lbase+".box", CodeInvalidPlan,

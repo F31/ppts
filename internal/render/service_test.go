@@ -131,6 +131,12 @@ func TestSubmitOverHTTP(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("重复提交 status = %d, want 200", resp2.StatusCode)
 	}
+
+	// 等任务落终态再返回：worker 还在往工作目录写产物时，t.TempDir 的清理会撞上
+	// 「目录非空」（Windows 上表现为这条用例偶发红灯，与业务逻辑无关）。
+	if done := waitState(t, svc, st.ID); done.State != StateSucceeded {
+		t.Fatalf("final state = %s, err = %s", done.State, done.Error)
+	}
 }
 
 func TestHTTPRejectsBadPlan(t *testing.T) {

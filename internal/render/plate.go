@@ -56,12 +56,7 @@ func BuildPlate(base image.Image, layers []Layer, canvasW, canvasH int) (image.I
 		if layer.ElementID == "" || layer.Box.W <= 0 || layer.Box.H <= 0 {
 			continue
 		}
-		rect := image.Rect(
-			int(float64(layer.Box.X)*sx),
-			int(float64(layer.Box.Y)*sy),
-			int(float64(layer.Box.X+layer.Box.W)*sx),
-			int(float64(layer.Box.Y+layer.Box.H)*sy),
-		).Intersect(plate.Bounds())
+		rect := scaleRect(layer.Box, sx, sy).Intersect(plate.Bounds())
 		if rect.Empty() {
 			continue
 		}
@@ -137,4 +132,110 @@ func maxSpread(channels ...[]uint8) int {
 		}
 	}
 	return spread
+}
+
+// scaleRect 把画布坐标下的 Box 换算到图像坐标。
+func scaleRect(b Box, sx, sy float64) image.Rectangle {
+	return image.Rect(
+		int(float64(b.X)*sx),
+		int(float64(b.Y)*sy),
+		int(float64(b.X+b.W)*sx),
+		int(float64(b.Y+b.H)*sy),
+	)
+}
+
+// LayerAsset 是一个元素层的独立位图：已按该层 Box 裁切，且不含其它动画元素的像素。
+type LayerAsset struct {
+	// Index 对应传入 layers 的下标（调用方据此回填 Layer.Image）。
+	Index     int
+	ElementID string
+	Image     *image.NRGBA
+	// Erased 记录为出图而抹掉的其它元素 id：排查「这里为什么少一块」时有用。
+	Erased []string
+}
+
+// BuildLayerAssets 为每个元素层生成「只含自己」的位图（design ADR-9）。
+//
+// 与 BuildPlate 的分工：底板要抹掉**所有**元素（它当背景），层素材只抹**子元素**。
+// 不这么做的后果：元素 A 的 Box 含另一个动画元素 B 时，A 从 baseImage 裁出来的图里
+// 就烘着 B，B 会完全跟随 A 的不透明度——编排里给 B 写的 startMs 看起来失效。
+//
+// 两条边界规则：
+//   - 只抹被本层**包住**的元素（O 的矩形完全落在本层矩形内）。若 O 包住本层，它是本层的背景，
+//     抹掉等于把自己的画面打穿；同尺寸的两个元素互不抹，否则两边都被抹空。
+//   - 因此图层必须按「父在前、子在后」绘制：父层的子元素已被抹掉，若父层画在子层之后，
+//     子元素会被整块盖掉。当前编译产物按 track 顺序出层，正是这个顺序。
+//
+// 取色 MUST 基于原图而非底板：底板是按图层顺序递进填的（卡片先被填成白），
+// 拿它给 bullet 取色会得到白色，把卡片打成白条。
+//
+// 没有外环可采样（元素几乎占满整页）时不抹它：宁可退化成旧行为，也不要用
+// 一个错误的填充色制造更大的破坏。
+func BuildLayerAssets(base image.Image, layers []Layer, canvasW, canvasH int) []LayerAsset {
+	if canvasW <= 0 || canvasH <= 0 || len(layers) == 0 {
+		return nil
+	}
+	bounds := base.Bounds()
+	if bounds.Empty() {
+		return nil
+	}
+	src := image.NewNRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+	draw.Draw(src, src.Bounds(), base, bounds.Min, draw.Src)
+
+	sx := float64(bounds.Dx()) / float64(canvasW)
+	sy := float64(bounds.Dy()) / float64(canvasH)
+
+	type target struct {
+		index int
+		id    string
+		rect  image.Rectangle
+		fill  color.NRGBA
+	}
+	targets := make([]target, 0, len(layers))
+	for i, layer := range layers {
+		if layer.ElementID == "" || layer.Box.W <= 0 || layer.Box.H <= 0 {
+			continue
+		}
+		rect := scaleRect(layer.Box, sx, sy).Intersect(src.Bounds())
+		if rect.Empty() {
+			continue
+		}
+		fill, _, ok := ringMedianColor(src, rect, plateRingPx)
+		if !ok {
+			continue
+		}
+		targets = append(targets, target{index: i, id: layer.ElementID, rect: rect, fill: fill})
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+
+	assets := make([]LayerAsset, 0, len(targets))
+	for _, self := range targets {
+		frame := image.NewNRGBA(src.Rect)
+		draw.Draw(frame, frame.Bounds(), src, src.Bounds().Min, draw.Src)
+		var erased []string
+		for _, other := range targets {
+			if other.index == self.index {
+				continue
+			}
+			// 只抹「被本层包住的子元素」。反过来的情形（本层被更大的元素包住）必须保留：
+			// 那是本层的背景，抹了等于把自己的画面打穿。
+			// 同尺寸的两个元素互不抹——否则两边都被抹空。
+			if !other.rect.In(self.rect) || other.rect == self.rect {
+				continue
+			}
+			draw.Draw(frame, other.rect, &image.Uniform{C: other.fill}, image.Point{}, draw.Src)
+			erased = append(erased, other.id)
+		}
+		crop := image.NewNRGBA(image.Rect(0, 0, self.rect.Dx(), self.rect.Dy()))
+		draw.Draw(crop, crop.Bounds(), frame, self.rect.Min, draw.Src)
+		assets = append(assets, LayerAsset{
+			Index:     self.index,
+			ElementID: self.id,
+			Image:     crop,
+			Erased:    erased,
+		})
+	}
+	return assets
 }

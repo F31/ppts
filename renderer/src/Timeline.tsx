@@ -40,17 +40,26 @@ const PageView: React.FC<{
               transformOrigin: 'center center'
             }}
           >
-            <Img
-              src={staticFile(page.baseImage)}
-              style={{
-                position: 'absolute',
-                left: -layer.box.x,
-                top: -layer.box.y,
-                width,
-                height,
-                objectFit: 'fill'
-              }}
-            />
+            {/* 有 layer.image 时直出该层位图（backend 已排除其它动画元素）；
+                否则退回从整页底图按偏移裁切——嵌套元素会跟着本层出现（ADR-9）。 */}
+            {layer.image ? (
+              <Img
+                src={staticFile(layer.image)}
+                style={{ width: layer.box.w, height: layer.box.h, objectFit: 'fill' }}
+              />
+            ) : (
+              <Img
+                src={staticFile(page.baseImage)}
+                style={{
+                  position: 'absolute',
+                  left: -layer.box.x,
+                  top: -layer.box.y,
+                  width,
+                  height,
+                  objectFit: 'fill'
+                }}
+              />
+            )}
           </div>
         );
       })}

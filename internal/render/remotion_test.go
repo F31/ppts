@@ -82,6 +82,50 @@ func TestStageBuildsPlateAndLeavesPlanUntouched(t *testing.T) {
 	}
 }
 
+// 层素材必须落盘并回填到计划副本：父层素材里的子元素应在这一步被抹掉（ADR-9）。
+func TestStageWritesLayerAssets(t *testing.T) {
+	dir := t.TempDir()
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	cardColor := color.NRGBA{0xF1, 0xF5, 0xF9, 0xFF}
+	blue := color.NRGBA{0x1E, 0x3A, 0x8A, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 20, 20, 180, 90, cardColor)
+	fillRect(page, 40, 40, 140, 60, blue)
+	writePNG(t, filepath.Join(dir, "pages", "p000.png"), page)
+
+	plan := onePagePlan("pages/p000.png", []Layer{
+		layer("card", Box{X: 20, Y: 20, W: 160, H: 70}),
+		layer("bullet", Box{X: 40, Y: 40, W: 100, H: 20}),
+	})
+	staged, err := (&RemotionBackend{}).stage(plan, dir)
+	if err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+
+	want := []string{"layers/layer_000_00.png", "layers/layer_000_01.png"}
+	for i, name := range want {
+		if got := staged.Pages[0].Layers[i].Image; got != name {
+			t.Fatalf("layers[%d].image = %q, want %q", i, got, name)
+		}
+	}
+	if plan.Pages[0].Layers[0].Image != "" {
+		t.Errorf("stage mutated caller plan: %q", plan.Pages[0].Layers[0].Image)
+	}
+
+	f, err := os.Open(filepath.Join(dir, filepath.FromSlash(want[0])))
+	if err != nil {
+		t.Fatalf("open card asset: %v", err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatalf("decode card asset: %v", err)
+	}
+	if got := img.At(70, 30); !sameColor(got, cardColor) {
+		t.Errorf("nested child survived in card asset: %v", got)
+	}
+}
+
 // sameColor 按通道值比较：png.Decode 产出的具体类型与内存里的 NRGBA 不同，
 // 直接比较 color.Color 接口会因为动态类型不同而误报不等。
 func sameColor(a, b color.Color) bool {

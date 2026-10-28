@@ -75,6 +75,12 @@ func TestValidateRejects(t *testing.T) {
 		}, CodeUnsupported, "pages[0].layers[0].assetMode"},
 		{"box outside", func(p *Timeline) { p.Pages[0].Layers[0].Box.X = 1000 }, CodeInvalidPlan, "pages[0].layers[0].box"},
 		{"negative box", func(p *Timeline) { p.Pages[0].Layers[0].Box.W = 0 }, CodeInvalidPlan, "pages[0].layers[0].box"},
+		{"unsafe layer image", func(p *Timeline) { p.Pages[0].Layers[0].Image = "../../etc/passwd" },
+			CodeUnsafePath, "pages[0].layers[0].image"},
+		{"image on page layer", func(p *Timeline) {
+			p.Pages[0].Layers[0].AssetMode = AssetPageLayer
+			p.Pages[0].Layers[0].Image = "layers/layer_000_00.png"
+		}, CodeInvalidPlan, "pages[0].layers[0].image"},
 		{"clip beyond page", func(p *Timeline) { p.Pages[0].Layers[0].Clips[0].StartMs = 5900 },
 			CodeInvalidPlan, "pages[0].layers[0].clips[0]"},
 		{"clip zero duration", func(p *Timeline) { p.Pages[0].Layers[0].Clips[0].DurationMs = 0 },

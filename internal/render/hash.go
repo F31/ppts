@@ -45,6 +45,11 @@ func (t *Timeline) CanonicalJSON() ([]byte, error) {
 		p.PlateImage = ""
 		// Layers 复制成非 nil 切片，避免 nil 与 [] 在 JSON 里一个输出 null、一个输出 []。
 		p.Layers = append([]Layer{}, t.Pages[i].Layers...)
+		for li := range p.Layers {
+			// 与 PlateImage 同理：层素材是 baseImage + Boxes 的确定性派生物，
+			// 文件名含页序与层序，算进 hash 会让「换个工作目录」命中不了缓存。
+			p.Layers[li].Image = ""
+		}
 		if len(p.Layers) == 0 {
 			p.Layers = nil
 		}
