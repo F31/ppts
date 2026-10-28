@@ -13,8 +13,10 @@
 #     -t ppts/renderer:dev .
 #
 # 自检（发布前必须跑）：
-#   docker run --rm --network none --read-only --tmpfs /work \
-#     -v "$PWD/tmp/selftest:/work" ppts/renderer:dev --selftest
+#   docker run --rm --network none --read-only \
+#     --tmpfs /work:mode=1777 --tmpfs /tmp:mode=1777 \
+#     ppts/renderer:dev -selftest -backend remotion -workdir /work -renderer-script /app/render.mjs
+#   两个 tmpfs 都不可省：mode=1777 给 UID 10001 写权限；/tmp 是 Remotion bundler 的打包目录。
 
 # syntax=docker/dockerfile:1.7
 
@@ -36,9 +38,15 @@ FROM node:${NODE_VERSION}-bookworm-slim AS base
 ARG CHROME_VERSION
 ARG CHROME_SHA256
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates curl unzip fonts-noto-cjk \
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+      ca-certificates curl unzip fonts-noto-cjk fonts-liberation \
+      libglib2.0-0 libnss3 libnspr4 libdbus-1-3 \
+      libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
+      libcups2 libdrm2 libgbm1 libasound2 \
+      libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libxkbcommon0 \
+      libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
+      libx11-6 libx11-xcb1 libxcb1 libxext6 libxrender1 libxi6 libxtst6 libxss1 \
  && rm -rf /var/lib/apt/lists/*
 
 # 固定版本 + 摘要校验：版本化 URL 是不可变的，但校验和能挡住下载截断与镜像源篡改。
@@ -46,7 +54,7 @@ RUN set -eux; \
     test -n "${CHROME_VERSION}"; \
     test -n "${CHROME_SHA256}"; \
     url="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-headless-shell-linux64.zip"; \
-    curl -fsSL "$url" -o /tmp/chrome.zip; \
+    curl -fsSL --retry 5 --retry-delay 3 --retry-all-errors "$url" -o /tmp/chrome.zip; \
     echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c -; \
     mkdir -p /opt/chrome; \
     unzip -q /tmp/chrome.zip -d /opt/chrome; \
@@ -61,7 +69,9 @@ FROM base AS app
 WORKDIR /app
 # 只装运行时依赖：@remotion/bundler 与 typescript 属构建期，若进入镜像会白增 80MB 与 CVE 面。
 COPY renderer/package.json renderer/package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev \
+      --fetch-retries=5 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000 \
+ && npm cache clean --force
 COPY renderer/src ./src
 COPY renderer/render.mjs renderer/still.mjs ./
 COPY --from=gobuild /out/ppts-renderer /usr/local/bin/ppts-renderer

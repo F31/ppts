@@ -41,7 +41,16 @@
 - [x] 4.3 `compose.yml`：只读 rootfs、tmpfs `/work`、`network_mode: none`、CPU/内存/PID 限额、selftest 服务
 - [x] 4.4 `.dockerignore`：排除 `node_modules` 与 `web/`，避免上下文膨胀
 - [x] 4.5 生成并提交 `chrome.sha256`：`156.0.8078.73` / linux64 / chrome-headless-shell，126,938,225 字节，`sha256=77eb8d52…`；摘要与 `Content-Length`、GCS `x-goog-hash: md5=`、zip 条目（287 项含可执行文件）三重核对。同时修掉 `pin-chrome.sh` 在 Git Bash 下写出 `\<hex>`（coreutils 转义前缀）的问题，并加 `.gitattributes` 固定该文件为 LF
-- [ ] 4.6 镜像首次 `docker build` + `--selftest`（本机无容器环境）
+- [x] 4.6 镜像首次 `docker build` + `-selftest`：在 WSL2（Ubuntu 24.04 / docker 29.4.1）上跑通，
+  `ppts/renderer:dev` 1.36GB，`selftest ok: backend=remotion pages=2 elapsed=13.954s`。暴露并修掉 3 个真实缺陷：
+  ①`node:22-bookworm-slim` 缺 Chrome 运行时库——镜像本身"构建成功"，但 `chrome-headless-shell --version`
+  报 `libglib-2.0.so.0: cannot open shared object file`，补齐 libnss3/libnspr4/libatk*/libcups2/libgbm1/
+  libasound2/libx* 等依赖；②`package-lock.json` 里 `@remotion/compositor-*` 缺 `libc` 字段，npm 在 Debian
+  上装成 musl 变体（运行期 `Cannot find module '@remotion/compositor-linux-x64-gnu'`），补 4 条 `libc: glibc|musl`；
+  ③自检命令只挂 `/work` 且未给 `mode=1777`，UID 10001 写不进去、Remotion 又在只读 `/tmp` 上 `EROFS`，
+  README/compose/Dockerfile 统一改为双 tmpfs。网络侧：代理对大文件与长连接不稳定（Chrome 121MB 走代理
+  6 次全是 `curl: (18)`、`npm ci` 报 `ECONNRESET`），`NO_PROXY` 必须排除 `storage.googleapis.com` 与
+  `registry.npmjs.org`，且 curl/apt/npm 三步各自带重试
 - [x] 4.7 解决 `textnorm@v0.2.2` 校验和不一致对 `GOWORK=off` 构建的阻塞：`go.sum` 记的摘要与 sumdb 权威值不符（v0.2.0/v0.2.1 同样错），已按 `h1:IZDOaanu…` 修正；`GOWORK=off go build/test ./...` 跑通（42 包）
 - [ ] 4.8 字体子集化（`pyftsubset` 常用字表）：当前镜像装全量 Noto CJK，约 9MB
 
@@ -84,6 +93,6 @@
 子元素，填色取自原图），但两个部分重叠、互不包含的兄弟元素仍会互相带出。单张栅格推不出逐元素 alpha，
 要彻底解决需上游提供分层素材；这条是模型限制，不是实现遗漏（5.9）。
 
-**未完成：镜像构建与容器内验收（4.5、4.6、4.8、5.4–5.6）。** 本机无 Docker，且 Chrome 包下载被代理阻断，
-`chrome.sha256` 仍未生成。`GOWORK=off` 构建的校验和阻塞已于 2026-10-28 解除（4.7），
-剩余阻塞登记在 `deploy/renderer/README.md`。
+**未完成：4.8 字体子集化、5.4 容器内 30s 样片、5.5 观感盲评、5.6 长片压测。** 4.5 与 4.6 已于 2026-10-28
+落地（`chrome.sha256` 已提交；镜像在 WSL2 的 docker 上构建成功、自检 14 秒通过），"本机无容器环境"这条阻塞
+不再成立，5.4 可以直接在容器里跑。剩余阻塞登记在 `deploy/renderer/README.md`。

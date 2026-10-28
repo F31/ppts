@@ -31,9 +31,9 @@ docker build -f deploy/renderer/Dockerfile \
 
 | 步骤 | 目标 | 失败表现 |
 |---|---|---|
-| `apt-get update/install` | Debian 源（curl/unzip/字体） | `Temporary failure resolving deb.debian.org` |
-| `curl` Chrome | `storage.googleapis.com`，121MB | `curl: (56)` / 超时 |
-| `npm ci` | npm registry | `ECONNRESET` / `ETIMEDOUT` |
+| `apt-get update/install` | Debian 源（curl/unzip/字体） | `Temporary failure resolving deb.debian.org`；单个包 `502 Bad Gateway` |
+| `curl` Chrome | `storage.googleapis.com`，121MB | `curl: (56)` / `curl: (18) HTTP/2 stream not closed cleanly` / 超时 |
+| `npm ci` | npm registry | `ECONNRESET` / `ETIMEDOUT`（表现为 `npm error network aborted`） |
 | `go build` | `proxy.golang.org`（镜像内 `GOMODCACHE` 为空） | `dial tcp ... i/o timeout` |
 
 代理要在 `docker build` 上传，不是 `docker run` 上——运行期镜像刻意无网：
@@ -42,7 +42,7 @@ docker build -f deploy/renderer/Dockerfile \
 docker build -f deploy/renderer/Dockerfile \
   --build-arg HTTP_PROXY=http://<proxy-host>:7890 \
   --build-arg HTTPS_PROXY=http://<proxy-host>:7890 \
-  --build-arg NO_PROXY=localhost,127.0.0.1 \
+  --build-arg NO_PROXY=storage.googleapis.com,registry.npmjs.org \
   --build-arg CHROME_VERSION="$(cat deploy/renderer/CHROME_VERSION)" \
   --build-arg CHROME_SHA256="$(cat deploy/renderer/chrome.sha256)" \
   -t ppts/renderer:dev .
@@ -50,6 +50,16 @@ docker build -f deploy/renderer/Dockerfile \
 
 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` 是 Docker 的预定义 build-arg，只在构建阶段作为环境变量
 存在，不会写进镜像历史。
+
+**`NO_PROXY` 里的两项不是可选项，是实测结论**。HTTP 代理对**大文件 / 长连接**不稳定：
+- `storage.googleapis.com`（121MB）走代理会稳定在 60–80 秒左右被重置，
+  `curl: (18)` 连试 6 次全挂；直连同一 URL 成功、126,938,225 字节、约 65 秒。
+- `registry.npmjs.org` 走代理时 `curl` 直接 `Transferred a partial file`，
+  `npm ci` 报 `ECONNRESET`；直连 200 / 10MB 包 1.1MB/s。
+
+反过来 `deb.debian.org` 走代理更快，所以不要图省事把 `NO_PROXY` 设成 `*`。
+Dockerfile 里 `curl` / `apt-get` / `npm ci` 各自带了重试（`--retry-all-errors`、
+`Acquire::Retries`、`--fetch-retries`）：这几步要下几十到上百 MB，单次失败不该让整个构建重来。
 
 **在 WSL2 里构建时，`<proxy-host>` 不一定是 127.0.0.1**：
 
@@ -63,13 +73,22 @@ docker build -f deploy/renderer/Dockerfile \
 ## 自检（发布前必须跑）
 
 ```bash
-docker run --rm --network none --read-only --tmpfs /work \
+docker run --rm --network none --read-only \
+  --tmpfs /work:mode=1777 --tmpfs /tmp:mode=1777 \
   ppts/renderer:dev -selftest -backend remotion -workdir /work -renderer-script /app/render.mjs
 ```
 
 成功输出 `selftest ok: backend=remotion pages=2 elapsed=...`，失败非零退出。
 自检走的是与线上**同一个 Backend 实现**：staging（底板）→ Node → 片段校验，
 所以「镜像能起、但渲染必挂」这种状态过不了门禁。
+
+**两个 tmpfs 参数都不能省**（都是踩出来的）：
+
+- `/work:mode=1777` —— 容器以 UID 10001 运行，而 `--tmpfs` 默认是 `root:root 0755`，
+  会盖掉 Dockerfile 里的 `chown renderer`。漏了它报
+  `mkdir /work/selftest-xxx: permission denied`。
+- `/tmp:mode=1777` —— `--read-only` 下 `/tmp` 不可写，Remotion 的 bundler 要在那里
+  `mkdtemp` 打包产物，漏了它报 `EROFS: read-only file system, mkdtemp '/tmp/remotion-webpack-bundle-xxx'`。
 
 `stub` backend 会被明确拒绝——它写的是文本占位片段，自检它等于什么都没证明。
 
