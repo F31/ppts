@@ -119,3 +119,11 @@ type Store interface {
 
 - catalog 不用 codegen，改为 `//go:embed` + 启动解析 + 自检：少一个生成步骤，也就少一种「忘了重新生成」的漂移。
 - `withSegment` 合法性由 `PageContext.SegmentIDs` 注入，而非直接依赖 `internal/narration`：L1 依赖面收敛为「标准库 + internal/project」，比消费者侧窄接口更简单，也与 §4.2 的依赖方向一致。
+
+## 实施记录（PR2，2026-10-28）
+
+**存储层不做 legacy 分叉。** 讲稿在旧源版本上首次编辑会从 legacy 复制一份，因为文字与版本弱相关；动画规格强依赖元素 id 与页时长，旧版锚点在新版排版里可能已经不存在，静默继承会直接产出校验失败的数据，用户看到的却是"一打开就报错"。所以新源版本首次写入即新建，由调用方用 `DefaultSpec` 生成——**读**仍回退 legacy（存量可见），**写**不继承（避免脏锚点）。
+
+**新增 `ErrStatusTransition`。** 状态机只允许 `approved ← draft|locked`、`locked ← approved`；`draft → locked` 跨级被拒。理由：锁定意味着"已审阅并定稿"，允许越过审阅直接锁定会让审批记录失去意义。锁定状态下的写入一律 `ErrLocked`，且**先于**版本冲突判断——"不能写"比"你的版本旧了"更根本，否则用户会去刷新重试，还是写不进去。
+
+**传输形态与设计方案冲突（未决）。** §5 给的是 REST（`GET/PUT /v1/projects/{id}/slides/{slideId}/animation`），而本仓库业务接口全部为 ConnectRPC，`net/http` 路由只承载 health/metrics/auth/object。按 REST 落地会成为第二套约定，按 Connect 落地要改 `proto/ppts/v1` 并重新生成 `gen/`。这是架构选择，已挂起第 5 组任务，待定后再接线；当前存储层与校验层都已就绪，接哪种都不需要改它们。

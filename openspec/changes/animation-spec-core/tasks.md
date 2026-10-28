@@ -29,20 +29,24 @@
 - [x] 3.3 单测：确定性（同输入 `reflect.DeepEqual`）＋ 4 套预设 × 3 种页面形态（纯文本/纯图片/纯表格）+ 综合页 全部通过 V1–V12
 - [ ] 3.4 用真实样本 `智讲PPT-客户方案讲解.pptx` 解析出的页生成默认规格，作为 golden 用例入库（需先接 `internal/project` 的解析入口，留到 PR2 与 API 一起做）
 
-## 4. 存储与迁移（PR2）
+## 4. 存储与迁移（PR2 · 已完成）
 
-- [ ] 4.1 `store.go` 定义 `Store` 接口（`Get`/`Put`/`SetStatus`）与 `Key`
-- [ ] 4.2 `migrations/` 新增 `animation_revisions`：主键 `id`、唯一键 `(tenant_id, project_id, source_revision_no, slide_id, language)`、列 `revision`/`status`/`tracks jsonb`/`preset_id`/`intensity`/`rendered_revision`/`updated_at`、RLS 策略
-- [ ] 4.3 `store_sqlite.go` 实现（`tracks` 以 TEXT 存 JSON，行为与 pg 对齐）
-- [ ] 4.4 `store_postgres.go` 实现，写路径 `UPDATE ... WHERE revision = $expected`，`RowsAffected == 0` → `ErrConflict`
-- [ ] 4.5 共享 `storetest` 表驱动用例：并发写、锁定拒写、legacy 回退、唯一键、跨租户隔离（含 RLS 生效验证）
-- [ ] 4.6 迁移在空库与既有库上各跑一次（`migrate up` / `down`），确认可回滚
+- [x] 4.1 `store.go` 定义 `Store` 接口（`Get`/`Put`/`SetStatus`）、`Key`、`ErrInvalidKey`、`ErrStatusTransition`
+- [x] 4.2 迁移：`migrations/0051_animation_revisions.sql`（建表 + 唯一键 + RLS + 新表授权 + owner）与 `migrations/sqlite/0018_animation_revisions.sql`
+- [x] 4.3 `store_sqlite.go`：tracks 存 TEXT，写入与版本判定同事务，`UPDATE ... WHERE revision = ?` 防插队
+- [x] 4.4 `store_postgres.go`：`tenant.Run` 设 `app.tenant_id`，`tracks $n::jsonb`，`RowsAffected()==0` → `ErrConflict{Latest}`
+- [x] 4.5 共享 `runStoreSuite`：插入/更新/过期冲突/插入时 expected≠0/锁定优先于冲突/状态机跨级/legacy 回退/精确版本优先/租户隔离/非法 key/nil 轨道落 `[]`；SQLite 实跑，PG 走 `-tags pg`
+- [ ] 4.6 迁移在空库与既有库上各跑一次并验回滚 — SQLite 由 `db.MigrateSQLite` 用例覆盖（空库）；PG 侧需真实库，留 CI
 
-## 5. API 接线（PR2）
+## 5. API 接线（待定 · 阻塞于传输形态）
 
-- [ ] 5.1 `internal/api/animation.go`：`GET` 单页规格（`?default=true` 生成不落库）与 `PUT` 单页规格（带 `expected_revision`）
+> **发现（2026-10-28）**：设计方案 §5 给的 `GET/PUT /v1/projects/{id}/slides/{slideId}/animation` 是 REST 契约，但本仓库业务接口全部是 ConnectRPC（`gen/ppts/v1` + `pptsv1connect`），`net/http` 路由只用于 health/metrics/auth/object 这类基础设施端点。直接加 REST 会成为仓库里的第二套约定；改走 protobuf 则要动 `proto/ppts/v1` 并重新生成 `gen/`（需要 buf 工具链）。
+>
+> 这是架构选择，不是实现细节，需先定方向再写第 5 组。倾向：**新增 `AnimationService` 的 Connect 契约**（与 narration/project 一致，鉴权、错误码、租户上下文全部复用现成中间件），REST 版留给 M6 的分享页。
+
+- [ ] 5.1 ~~`internal/api/animation.go` REST handler~~ → 待传输形态确认
 - [ ] 5.2 写路径受 `animation.enabled` 开关控制，关闭时返回 404；读路径不依赖该开关
-- [ ] 5.3 错误映射：`ErrValidation`→400、`ErrLocked`/`ErrConflict`→409、超限→413、`ErrNotFound`→404
+- [ ] 5.3 错误映射：`ValidationError`→400/409/413、`ErrLocked`/`ErrConflict`→409、`ErrNotFound`→404
 - [ ] 5.4 handler 测试：合法读写、409 冲突带回最新版、锁定 409、开关关闭 404、租户隔离 404
 
 ## 6. 验收门禁（PR1 部分已达成）
