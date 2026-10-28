@@ -36,7 +36,12 @@
 - [x] 4.3 `store_sqlite.go`：tracks 存 TEXT，写入与版本判定同事务，`UPDATE ... WHERE revision = ?` 防插队
 - [x] 4.4 `store_postgres.go`：`tenant.Run` 设 `app.tenant_id`，`tracks $n::jsonb`，`RowsAffected()==0` → `ErrConflict{Latest}`
 - [x] 4.5 共享 `runStoreSuite`：插入/更新/过期冲突/插入时 expected≠0/锁定优先于冲突/状态机跨级/legacy 回退/精确版本优先/租户隔离/非法 key/nil 轨道落 `[]`；SQLite 实跑，PG 走 `-tags pg`
-- [ ] 4.6 迁移在空库与既有库上各跑一次并验回滚 — SQLite 由 `db.MigrateSQLite` 用例覆盖（空库）；PG 侧需真实库，留 CI
+- [x] 4.6 迁移在空库与既有库上各跑一次并验回滚 — SQLite 由 `db.MigrateSQLite` 用例覆盖（空库）；
+      PG 侧由 CI `postgres` job 每次执行：`postgres:17` 空库逐个应用全部迁移 → 再全量重放一遍
+      （既有库口径），两步都 `ON_ERROR_STOP=1`（run 40785622034 全绿）。仓库没有 down 脚本，
+      故「回滚」按「重放不炸既有库」的口径验证；重放曾真炸出 4 处问题（0029 函数改参数名、
+      0037 缺 IF NOT EXISTS、0040 缺先 DROP、以及库名不是 `ppts_test` 导致函数授权分支不生效），
+      均已修（commit 9914925 / 0965cf6）
 
 ## 5. API 接线（PR3 · 已完成）
 
@@ -65,6 +70,6 @@
 - [x] 6.5 `internal/app/export.go`、`internal/media/`、`web/` 零改动（`git diff --stat` 为空）
 - [x] 6.6 非法输入拦截：23 条领域用例覆盖 V0–V12；HTTP 层另有 8 条用例（含 V2 拒绝、409 冲突、锁定 409、开关 404）
 - [x] 6.7 回写方案文档 M1 实际落地与偏差（见 design.md「实施记录」PR1/PR2/PR3）；`openspec/specs/` 由 archive 生成
-- [ ] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：6.2 已通，但 3.4（真实样本 golden 用例）
-      与 4.6（PG 侧迁移在既有库上回滚验证）仍未完成——后者要等 `postgres` job 转绿（当前失败在
-      `prepare database` 步骤，exit 3，是迁移脚本自身的问题，与 `-race` 无关）
+- [ ] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：6.2（`-race`）与
+      4.6（PG 迁移空库 + 重放）均已通，仅剩 3.4（真实样本 `智讲PPT-客户方案讲解.pptx` 的
+      golden 用例）未做——它要接 `internal/project` 的解析入口，且样本 PPT 不在仓库里
