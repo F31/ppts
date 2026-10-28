@@ -199,6 +199,9 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 				page.Layers = append(page.Layers, layer)
 			}
 		}
+		// 顺序是语义的一部分：合成器按数组顺序绘制，而父层位图里的子元素已被抹掉，
+		// 父层排在子层之后就会把子元素盖掉（见 layerorder.go）。
+		page.Layers = orderLayersParentsFirst(page.Layers)
 		// 分层冲突按页汇总成一条：catalog 的预设时长（如要点 500ms）普遍落在
 		// 视觉基线的"小元素 240–400ms"之外。逐条报会把诊断变成噪音，
 		// 而"这一页有 N 条不在档内"既能被看见，又不会淹没真正的异常。

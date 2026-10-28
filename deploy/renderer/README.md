@@ -84,11 +84,16 @@ docker build -f deploy/renderer/Dockerfile ... -t ppts/renderer:dev .
   假名、拉丁在这一档。
 - 其余行：best-effort，字体有就收、没有就跳过（靠 Chrome 的 fallback 链，通常是 Liberation Sans）。
   希腊字母、箭头、制表符这类在 Noto CJK 里本来就只有部分字形，标 `must` 会让构建永远红。
+- **不绘制但影响排版的码位照收**：空格 `U+0020`、全角空格 `U+3000`、不换行空格等属于 Zs，
+  没有字形轮廓，但决定词间距与中英混排的断行位置。少了它们，用这份字体排出来的文字会在空格处
+  变成方框（`5□段□sha256□`），或者整行宽度变化——断言不查它们，产出必须收它们。
 - **不收 CJK Ext-A/Ext-B** 与 URO 末尾 `9FF0-9FFF`（Unicode 11 新增，本字体没收录）。
   命中这些字会是方框；要收就改 `charset.txt` 并把对应行标 `must`，构建会告诉你字体支不支持。
 
-字体版本号由 `charset.txt` 的 sha256 推导（`2.004-sub4d24a894` 这种形式），构建期写进
+字体版本号由「实际保留码位集」的摘要推导（`2.004-sub03e7e8d7` 这种形式），构建期写进
 `/etc/ppts/fonts.version`，由 `entrypoint.sh` 拼成 `-fonts` 交给服务，最终进 `planHash`。
+摘要覆盖 `charset.txt` **和**保留集本身：只改 `subset-fonts.py` 的过滤逻辑而字集文件未动时，
+版本也必须变，否则像素变了而缓存键没变。
 **不要**在 `docker run` / compose 里手动传 `-fonts`：手工版本号迟早与 `charset.txt` 脱节，
 而 `planHash` 恰恰靠它区分像素版本。
 

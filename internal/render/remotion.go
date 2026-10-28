@@ -161,6 +161,9 @@ func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 
 	for i := range staged.Pages {
 		page := &staged.Pages[i]
+		// 外部计划（直接 POST 上来的 IR）不保证编译器的出层顺序，
+		// 这里再兜一次：父层必须先画，否则子层被盖掉，表现为「内容凭空消失」。
+		page.Layers = orderLayersParentsFirst(page.Layers)
 		hasElementLayer := false
 		for _, layer := range page.Layers {
 			if layer.ElementID != "" {

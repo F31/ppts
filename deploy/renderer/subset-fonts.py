@@ -12,8 +12,14 @@ ADR-4 已经定了「只做构建期子集」，这里把它落地。
    把它们的缺失算成缺字会让断言永远红。
 2. **家族名不变**：子集后 name 表必须仍能报出 `Noto Sans CJK SC`。fontconfig 靠这个
    匹配，改名会让 `/healthz.fonts` 与实际可用字体对不上。
-3. **版本可推导**：版本号 = 字体自身的 Version + charset.txt 的 sha256 前 8 位。
-   改字集 → 版本变 → planHash 变，不需要任何人记得手改版本号。
+3. **版本可推导**：版本号 = 字体自身的 Version + 「实际保留码位集」的摘要前 8 位。
+   改字集、改本脚本的过滤逻辑 → 版本变 → planHash 变，不需要任何人记得手改版本号。
+
+第 1 条只看「可绘制」码位，但**子集本身不能只收可绘制码位**：U+0020 与 U+3000
+（全角空格）属于 Zs，不带字形轮廓，却决定词的间距与中英混排的断行位置。
+只喂可绘制码位会让它们从 cmap 里消失，用这份字体排版时空格变成 .notdef——
+轻则方块，重则整行宽度变化。所以 populate 喂的是「源字体真实拥有的全部声明码位」，
+断言仍只针对可绘制码位。
 
 产物：
     <out>/NotoSansCJKsc-Regular.otf
@@ -104,12 +110,17 @@ def main() -> int:
     drawable = sorted(c for c in cps if unicodedata.category(chr(c)) not in NON_DRAWING)
     must = [c for c in drawable if cps[c]]
     best = [c for c in drawable if not cps[c]]
+    drawable_set = set(drawable)
     print(f"charset: {len(cps)} 码位，可绘制 {len(drawable)}（must {len(must)} / best-effort {len(best)}），"
           f"sha256={digest[:8]}")
 
     os.makedirs(args.out, exist_ok=True)
     report = {"family": FAMILY, "charsetSha256": digest, "faces": []}
     version = None
+    # 实际进 cmap 的码位并集（跨字面）。版本号要覆盖它，而不只是 charset.txt：
+    # 只改本脚本的过滤逻辑时 charset 不变，若版本号仍只看 charset，
+    # 像素变了而 planHash 不变，缓存就会返回旧片。
+    retained_union: set[int] = set()
 
     for filename, style in FACES.items():
         src = os.path.join(args.src, filename)
@@ -134,7 +145,10 @@ def main() -> int:
         # best-effort：只收源字体有的，缺的交给 fallback 链。
         extra = [c for c in best if c in src_cmap]
         skipped = [c for c in best if c not in src_cmap]
-        wanted = sorted(must + extra)
+        # 不可绘制但必须保留的码位：空格、全角空格、不换行空格、连接符等。
+        # 它们不出字形，却参与 advance width——从 cmap 里消失会让排版宽度变化。
+        invisible = sorted(c for c in cps if c not in drawable_set and c in src_cmap)
+        wanted = sorted(set(must + extra + invisible))
 
         opts = subset.Options()
         opts.layout_features = ["*"]  # 保留 kern/liga：拉丁与标点排版依赖它
@@ -160,9 +174,13 @@ def main() -> int:
             raise SystemExit(f"{filename}: 子集后家族名变成了 {family_after!r}，fontconfig 会匹配不上")
 
         out_cmap = set(font.getBestCmap())
-        missing = [c for c in must if c not in out_cmap]
+        missing = [c for c in wanted if c not in out_cmap]
         if missing:
-            raise SystemExit(f"{filename}: 子集后仍缺 {len(missing)} 个 must 码位，子集参数有问题")
+            sample = " ".join(f"U+{c:04X}" for c in missing[:12])
+            raise SystemExit(
+                f"{filename}: 子集后仍缺 {len(missing)} 个已声明码位（{sample}…），子集参数有问题"
+            )
+        retained_union |= out_cmap & set(cps)
 
         dst = os.path.join(args.out, f"NotoSansCJKsc-{style}.otf")
         font.save(dst)
@@ -177,9 +195,16 @@ def main() -> int:
         print(f"  {style:8s} 码位={len(out_cmap):6d} 体积={size / 1024 / 1024:.2f}MB "
               f"best-effort 跳过={len(skipped)} -> {dst}")
 
-    # 版本号进 planHash：字集一改，所有缓存键失效——这正是要的。
-    full_version = f"{version}-sub{digest[:8]}"
+    # 版本号进 planHash：字集或过滤逻辑一改，所有缓存键失效——这正是要的。
+    # 摘要取「charset 摘要 + 实际保留码位」，而不是只取 charset：
+    # 本脚本改过滤行为（例如补回空格）时 charset.txt 可以一个字都没动。
+    kept = hashlib.sha256(
+        (digest + "|" + ",".join(f"{c:X}" for c in sorted(retained_union))).encode()
+    ).hexdigest()
+    full_version = f"{version}-sub{kept[:8]}"
     report["version"] = full_version
+    report["retainedCodepoints"] = len(retained_union)
+    report["retainedSha256"] = kept
     with open(os.path.join(args.out, "manifest.json"), "w", encoding="utf-8") as fh:
         json.dump(report, fh, ensure_ascii=False, indent=2)
     with open(args.version_file, "w", encoding="utf-8") as fh:
