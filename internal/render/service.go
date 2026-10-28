@@ -89,6 +89,13 @@ type ServiceConfig struct {
 	Backend Backend
 	// WorkDir 是唯一允许写文件的根目录。
 	WorkDir string
+	// AssetDir 是底图的只读根目录（空 = 不接受带底图的计划，保持旧行为）。
+	//
+	// 计划里的 `baseImage` 相对它解析，起跑时复制进 job 目录：工作目录在起跑前
+	// 会被清空，而合成器的 `staticFile()` 只能读工作目录，两者之间必须有人搬运。
+	// 启动时校验它存在且是目录——配错了应该在起不来的时候就报，而不是让每个
+	// 任务都失败一次。
+	AssetDir string
 	// Version 是渲染服务版本，参与 planHash：换版本必须重渲。
 	Version string
 	// Fonts 是镜像内可用字体清单，参与 planHash。
@@ -183,6 +190,16 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = time.Now
+	}
+	if cfg.AssetDir != "" {
+		// 只校验存在与类型，不校验可写：它是只读根，写权限不该被要求。
+		info, err := os.Stat(cfg.AssetDir)
+		if err != nil {
+			return nil, fmt.Errorf("render: asset dir %q: %w", cfg.AssetDir, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("render: asset dir %q is not a directory", cfg.AssetDir)
+		}
 	}
 	s := &Service{
 		cfg:      cfg,
@@ -479,6 +496,13 @@ func (s *Service) run(ctx context.Context, j *job) {
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		s.finish(j, StateFailed, fmt.Sprintf("创建工作目录失败: %v", err), nil)
+		return
+	}
+	// 底图在起跑前必须先落到 job 目录里：合成器只能读工作目录，
+	// 而上一行刚刚把这个目录重建为空（见 assets.go 的注释）。
+	if err := s.stageAssets(plan, dir); err != nil {
+		_ = os.RemoveAll(dir)
+		s.finish(j, StateFailed, err.Error(), nil)
 		return
 	}
 

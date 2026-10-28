@@ -25,6 +25,14 @@ services:
     tmpfs:
       - /work:size=2g,mode=1777
       - /tmp:size=512m,mode=1777
+    # 底图：计划里的 baseImage 相对「只读资产根」解析，起跑时复制进 /work（ADR-14）。
+    # 不挂这个目录、也不给 -assets-dir 时，任何带元素级图层的计划都会在 staging 失败。
+    # 用之前把下面两行取消注释，并把宿主目录换成页面 PNG 的实际位置：
+    # volumes:
+    #   - /srv/ppts/pages:/assets:ro
+    # command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
+    #           "-renderer-script", "/app/render.mjs", "-fonts", "Noto Sans CJK SC@20230817",
+    #           "-assets-dir", "/assets"]
     network_mode: none
     cpus: 2
     mem_limit: 2g

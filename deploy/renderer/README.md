@@ -92,6 +92,41 @@ docker run --rm --network none --read-only \
 
 `stub` backend 会被明确拒绝——它写的是文本占位片段，自检它等于什么都没证明。
 
+## 底图从哪来（`-assets-dir`，必读）
+
+计划里的 `baseImage` 是**相对路径**，合成器用 Remotion 的 `staticFile()` 取图，而
+`staticFile()` 的根就是 `plan.json` 所在目录——也就是本 job 的工作目录。
+问题在于起跑前那个目录会被 `RemoveAll` 清空（重试语义要求上一轮半成品消失），
+于是**没有资产根时，任何带底图的计划都会在 staging 阶段失败**：
+
+```
+准备底图失败: page 0 baseImage "p000.png": 资产不存在: stat /work/<job-id>/p000.png: no such file or directory
+```
+
+所以调用方必须把页面 PNG 放进一个只读目录，并用 `-assets-dir` 指给服务：
+
+```bash
+docker run --rm --network none --read-only \
+  --tmpfs /work:mode=1777 --tmpfs /tmp:mode=1777 \
+  -v /srv/ppts/pages:/assets:ro \
+  ppts/renderer:dev -backend remotion -workdir /work -renderer-script /app/render.mjs \
+  -assets-dir /assets
+```
+
+语义（`internal/render/assets.go`）：
+
+- `baseImage` 同时相对**资产根**（读）与**工作目录**（写）解析，两侧都过同一套
+  `SafeAssetPath` 校验；`..`、绝对路径、盘符一律拒绝。
+- **只复制计划真正引用的文件**，按相对路径去重；不整目录搬运（工作目录常是 tmpfs）。
+- 复制不改计划字节，因此 `planHash` 不受影响：同一份计划不会因为换了资产根而变成另一份缓存。
+- 只接受普通文件：符号链接可以指向资产根之外，直接拒绝。
+- 资产根在启动时校验存在且是目录；配错了服务起不来，而不是让每个任务各失败一次。
+- 不传 `-assets-dir` 时保持旧行为（不搬任何东西）——带底图的计划会如上失败，
+  这条路径只对「计划里没有任何元素级图层」的场景可用。
+
+产物目录因此是**自包含**的：底图副本、`plates/`、`layers/`、`plan.json`、`segment_*.mp4`
+都在同一个目录里，`JobTTL` 到期只删这一个目录。
+
 ## 版本
 
 `/healthz` 返回：

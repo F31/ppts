@@ -33,6 +33,7 @@ func run() error {
 	var (
 		addr       = flag.String("addr", ":8090", "监听地址")
 		workDir    = flag.String("workdir", "", "产物工作目录（必填）")
+		assetDir   = flag.String("assets-dir", "", "底图只读根目录（计划里的 baseImage 相对它解析；空 = 不启用）")
 		backend    = flag.String("backend", "stub", "backend：stub | remotion")
 		version    = flag.String("version", "dev", "服务版本（参与 planHash；remotion 后端建议写成 remotion@x|chrome@y）")
 		fonts      = flag.String("fonts", "", "逗号分隔的可用字体族，格式 family@version")
@@ -82,6 +83,7 @@ func run() error {
 	svc, err := render.NewService(render.ServiceConfig{
 		Backend:        impl,
 		WorkDir:        *workDir,
+		AssetDir:       *assetDir,
 		Version:        *version,
 		Fonts:          parseFonts(*fonts),
 		MaxConcurrent:  *concurrent,
