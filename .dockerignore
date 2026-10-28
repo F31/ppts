@@ -11,3 +11,16 @@ web
 *.exe
 *.test
 *.log
+
+# 本地产物目录：dist 是历次构建出的 Linux 二进制与截图（2.2GB），
+# build 是 ffmpeg 静态包（354MB）。两者都不被 git 跟踪、也不被 Dockerfile 的
+# COPY 引用，留在上下文里就是让 daemon 白收 2.5GB——在 WSL 从 /mnt/e 读的情况下
+# 这一步比构建本身还慢。加进来后上下文实测约 6MB（原来 3.4GB）。
+dist
+build
+
+# 根目录下 go build 的输出（45MB + 26MB）。没有扩展名，*.exe 规则挡不住；
+# 新增命令行产物时记得往这里加一行。
+ppts
+ppts-api
+ppts-renderer
