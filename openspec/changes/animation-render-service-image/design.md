@@ -296,12 +296,62 @@ A 的裁切图是从 `baseImage` 上按盒取的区域，里面本来就烘着 B
 `/healthz` 的 `running` 此前把 `queued` 也算进去，于是「到底几个渲染进程在吃内存」这个最该看数的指标是假的。
 现在 `running` 只数真正在跑的，`queued` / `maxQueued` / `retained` 各自单列。
 
-#### 已知限制（登记为 tasks 3.14）
+#### 已知限制
 
-- **重启即丢索引**：`jobs` 只在内存，进程重启后 `/work` 下的目录成为孤儿，没有任何记录能回收它们。
-  彻底解决要持久化索引（或启动时扫描按 mtime 清理），在「服务无状态」的定位下需要单独评审。
+- ~~**重启即丢索引**：进程重启后 `/work` 下的目录成为孤儿~~ —— 已由 ADR-13 解决（启动清扫）。
 - **`queuedLocked` 是 O(存活 job 数) 扫描**：TTL 内的 job 数量有限（默认 30 分钟窗口），实测可忽略；
   若未来 TTL 拉长到数小时，应改为维护计数器。
+
+### ADR-13 重启后的孤儿目录：启动清扫，不引入持久化索引（本轮落地，对应 tasks 3.14）
+
+ADR-12 的 `JobTTL` 解决了「服务一直跑着」时的磁盘增长，但管不到跨进程：`jobs` 只在内存，
+进程一重启，`/work` 下上一轮留下的 job 目录就再没有任何记录能回收它们。容器反复重启（部署、OOM、节点漂移）
+会让磁盘单调增长。
+
+#### 1. 为什么不做持久化索引
+
+看起来更「完整」的做法是把 job 元数据写进 `/work/<id>/job.json`，启动时恢复。评估后放弃：
+
+- **恢复出来的 id 没有消费者**。契约里 id 只在「进程生命周期 + `JobTTL`」内有效，重启后客户端手里的 id
+  本就该按 404 处理。把产物留在盘上，没有任何人能凭 id 取到它。
+- **要恢复就得回答一堆新问题**：重启时正在渲染的任务标 failed 还是 canceled？半成品目录算不算产物？
+  `byHash`/`attempts` 怎么重建？每一个都是新的状态机分支，而收益是零。
+
+所以本服务坚持**无状态**：重启 = 上一轮的一切作废。
+
+#### 2. 清扫的范围：只删本服务分配的名字
+
+`NewService` 在 `MkdirAll` 之后、返回之前扫一遍 `WorkDir` 顶层，删除名字匹配
+`^[0-9a-f]{24}(-r[1-9][0-9]*)?$` 的目录（`ShortID` + 重试后缀，见 ADR-11）。
+
+只认自己造的名字，是为了让 WorkDir 能和别的东西共处。`cmd/renderer -selftest` 用
+`os.MkdirTemp(workDir, "selftest-")` 造目录、运维可能放 dump、文件系统自带 `lost+found`——
+重启不是「把不认识的目录都删掉」的理由。副作用是**目录名形态即契约**：以后若改 `ShortID` 的长度，
+清扫规则必须同步改，否则老目录会永久残留（下次改这里时记得看这条）。
+
+单个目录删失败（Windows 句柄未释放、权限不足）不阻塞启动：记进 `OrphanReport.Failed` 打日志，
+下次重启再试。一个删不掉的目录不该让整个服务起不来——能起来报错比起不来更好诊断。
+
+#### 3. 多副本共享 WorkDir 必须显式关掉
+
+启动清扫的隐含前提是**单副本**。若多个渲染进程共用一个 `WorkDir`，先起的那个会把其他副本
+正在写的目录删掉，表现为「偶发产物丢失」，极难排查。这类部署必须 `-keep-orphans`
+（`ServiceConfig.KeepOrphans`）。
+
+没有用「只删 mtime 超过 N 分钟的目录」当保护：它挡不住「另一个副本 20 分钟前开始、现在还在写」的目录，
+只会给出虚假的安全感。共享存储的正确形态是每个副本一个子目录，那时清扫也不该跨副本生效——
+所以这里选择显式开关，而不是一个看起来能自适应的阈值。
+
+#### 4. 观测
+
+清扫结果走 `ServiceConfig.Logf`（`cmd/renderer` 接到 `log.Printf`）：
+
+```
+render: 启动清扫删除 3 个孤儿目录，释放 128.4 MiB
+```
+
+体积小于 1 MiB 时退到 KiB——日志里出现「释放 0.0 MiB」会让人以为清扫没生效。
+清扫不产生新指标，也不进 `/healthz`：它是一次性启动动作，没有「当前值」可报。
 
 ## 3. 目录与文件
 
@@ -314,6 +364,7 @@ A 的裁切图是从 `baseImage` 上按盒取的区域，里面本来就烘着 B
 | `renderer/render.mjs` | 程序化渲染入口：bundle → selectComposition → renderMedia，stdout 输出 JSON 行 |
 | `internal/render/plate.go` | 底板生成：中位色补洞 + 噪声判定 |
 | `internal/render/remotion.go` | `RemotionBackend`：staging → exec → 产物回收 |
+| `internal/render/janitor.go` | 启动清扫：删除上一轮进程留下的孤儿 job 目录（ADR-13） |
 | `deploy/renderer/Dockerfile` | 两段构建 |
 | `deploy/renderer/CHROME_VERSION` | Chrome 版本单一事实源 |
 | `deploy/renderer/compose.yml` | 本地/单机部署样例（资源限额、只读 rootfs、tmpfs） |
@@ -328,6 +379,7 @@ A 的裁切图是从 `baseImage` 上按盒取的区域，里面本来就烘着 B
 | Node 与 Go 的 IR 字段漂移 | `renderer/src/types.ts` 与 Go 结构逐字段对齐；`plan.golden.json` 作为两端共用夹具，Node 端加载它做类型断言 |
 | 容器内 Chromium 崩溃/OOM | 服务内并发上限 2；单页 60s 超时；崩溃映射为可重试（M2 D7） |
 | 无本机容器环境，镜像无法在本机构建 | 镜像构建放进 CI job（`docker build` + `--selftest`）；本轮只验证「合成器能在本机 Chrome 上出片」，镜像层留待 CI 首跑 |
+| 多副本共用一个 workdir 时启动清扫误删 | 单副本是默认形态；共享存储部署必须 `-keep-orphans`，且各副本应各用一个子目录。ADR-13 第 3 节写明了为什么不用 mtime 阈值做保护 |
 
 ## 5. 验收
 

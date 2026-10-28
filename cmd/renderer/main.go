@@ -41,10 +41,12 @@ func run() error {
 		jobTTL     = flag.Duration("job-ttl", 30*time.Minute, "终态任务与产物的保留时长")
 		sweepEvery = flag.Duration("retention-sweep", time.Minute, "过期任务回收的最小间隔")
 		maxPlan    = flag.Int64("max-plan-bytes", render.MaxPlanBytes, "请求体上限（字节）")
-		scriptPath = flag.String("renderer-script", "", "renderer/render.mjs 路径（默认取 PPTS_RENDERER_SCRIPT）")
-		chromePath = flag.String("chrome", "", "chrome-headless-shell 路径（默认取 PPTS_CHROME）")
-		renderTO   = flag.Duration("render-timeout", 15*time.Minute, "单次渲染的上限")
-		selftest   = flag.Bool("selftest", false, "跑一遍后端自检后退出：staging → 渲染 2 页 → 校验产物")
+		// 默认清扫：单副本部署下重启就该把上一轮的孤儿目录删掉（tasks 3.14）。
+		keepOrphans = flag.Bool("keep-orphans", false, "保留上次进程留在 workdir 的 job 目录（多副本共享 workdir 时必须打开）")
+		scriptPath  = flag.String("renderer-script", "", "renderer/render.mjs 路径（默认取 PPTS_RENDERER_SCRIPT）")
+		chromePath  = flag.String("chrome", "", "chrome-headless-shell 路径（默认取 PPTS_CHROME）")
+		renderTO    = flag.Duration("render-timeout", 15*time.Minute, "单次渲染的上限")
+		selftest    = flag.Bool("selftest", false, "跑一遍后端自检后退出：staging → 渲染 2 页 → 校验产物")
 	)
 	flag.Parse()
 
@@ -87,6 +89,10 @@ func run() error {
 		JobTTL:         *jobTTL,
 		RetentionSweep: *sweepEvery,
 		MaxPlanBytes:   *maxPlan,
+		KeepOrphans:    *keepOrphans,
+		Logf: func(format string, args ...any) {
+			log.Printf(format, args...)
+		},
 	})
 	if err != nil {
 		return err

@@ -32,7 +32,7 @@
 - [x] 3.11 `DELETE /v1/render/{id}` 回实际状态：对已成功任务点取消，此前硬编码回 `canceled`，与实际不符
 - [x] 3.12 排队上限（ADR-12）：`MaxQueued`（默认 8）只约束 `queued`；超限返回 429 + `Retry-After`（码 `queue_full`），在读 body 之前先判、锁内入队前再判；被拒提交不建 job、不消耗重试编号
 - [x] 3.13 终态保留（ADR-12）：`JobTTL`（默认 30 分钟，从落终态起算）+ 请求路径上的惰性回收；过期删记录、释放 `byHash`、删产物目录；`attempts` 用 live 计数，归零即删
-- [ ] 3.14 重启后 `/work` 下的孤儿目录无人回收（`jobs` 只在内存）：需持久化索引或启动扫描，先评审是否接受有状态
+- [x] 3.14 重启后 `/work` 下的孤儿目录无人回收（`jobs` 只在内存）：选择「保持无状态 + 启动清扫」（ADR-13），`NewService` 只删匹配 `ShortID(-rN)` 形态的目录，外来条目（`selftest-*`、`lost+found`、普通文件）不碰；清扫失败不阻塞启动；多副本共享 workdir 用 `-keep-orphans` 关掉
 
 ## 4. 镜像
 

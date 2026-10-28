@@ -17,6 +17,9 @@ services:
     ports:
       - "8090:8090"
     read_only: true
+    # tmpfs 本身重启即清空，所以启动清扫（ADR-13）在这里是 no-op。
+    # 换成持久卷时要靠它兜底：那种情况下新起的进程会删掉上一轮的孤儿目录，
+    # 多副本共享同一个持久卷则必须给每个副本单独的 workdir（或用 -keep-orphans 关掉清扫）。
     tmpfs:
       - /work:size=2g,mode=1777
     network_mode: none

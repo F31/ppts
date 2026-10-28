@@ -105,6 +105,12 @@ type ServiceConfig struct {
 	RetentionSweep time.Duration
 	// MaxPlanBytes 是请求体上限（0 = MaxPlanBytes）。
 	MaxPlanBytes int64
+	// KeepOrphans 让 NewService 跳过启动时的孤儿目录清扫。
+	// 多副本共用一个 WorkDir 时必须打开：先起的副本会把其他副本正在写的目录删掉。
+	// 单副本（含 compose.yml 的 tmpfs /work）保持 false，重启后磁盘自动回到干净状态。
+	KeepOrphans bool
+	// Logf 是启动清扫等后台事件的日志出口（nil = 不输出）。
+	Logf func(format string, args ...any)
 	// Now 便于测试注入时钟（0 = time.Now）。
 	Now func() time.Time
 }
@@ -178,13 +184,19 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Service{
+	s := &Service{
 		cfg:      cfg,
 		jobs:     make(map[string]*job),
 		byHash:   make(map[string]string),
 		attempts: make(map[string]*attemptStat),
 		sem:      make(chan struct{}, cfg.MaxConcurrent),
-	}, nil
+	}
+	// 启动清扫：进程重启后 jobs 必然为空，上一轮留在 WorkDir 里的 job 目录
+	// 全部无主，删掉它们才能让磁盘随重启回到干净状态（tasks 3.14）。
+	if !cfg.KeepOrphans {
+		s.cleanOrphanDirs()
+	}
+	return s, nil
 }
 
 // allocID 给这份计划分配一个 job id：首次用 ShortID(hash)，重试追加 -rN 后缀。
