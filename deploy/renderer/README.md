@@ -63,12 +63,19 @@ docker run --rm --network none --read-only --tmpfs /work \
 正在写的目录删掉，表现为偶发产物丢失。共享存储的正确形态是每个副本一个子目录，
 并且各自只清扫自己的目录。
 
-## 已知阻塞（镜像首次构建前必须解决）
+## 已知阻塞（两条均已解决，保留记录以免重踩）
 
 1. ~~**`go mod download` 在干净环境会失败**~~ —— **2026-10-28 已修**。原因是 `go.sum` 里
    `textnorm@v0.2.2` 的摘要写错了（记 `h1:d3rO7+…`，而 `sum.golang.org` 与真实下载都是
    `h1:IZDOaanu…`；v0.2.0 / v0.2.1 同样错，说明这些摘要从未对着发布包验证过）。已按 sumdb 值改正，
    `GOWORK=off go build/test ./...` 已跑通。构建镜像前仍建议先跑一次
    `GOWORK=off go mod verify` 确认摘要基线。
-2. **`chrome.sha256` 尚未生成**：本机代理下载 Chrome for Testing 失败（curl 56）。
-   在有外网的构建机上跑一次 `pin-chrome.sh` 并提交产物即可。
+2. ~~**`chrome.sha256` 尚未生成**（本机代理下载 Chrome 失败，curl 56）~~ —— **2026-10-28 已生成并提交**。
+   代理 `127.0.0.1:7890` 下可正常下载（1 分 12 秒 / 121 MiB）。`156.0.8078.73` 的摘要为
+   `77eb8d52798efc7a857ab61abcc62a456d8ea9635b02341d06dffee2761768c8`，与 GCS 的 `x-goog-hash: md5=`
+   及 `Content-Length` 一致，zip 内 287 项含 `chrome-headless-shell-linux64/chrome-headless-shell`。
+   重跑 `pin-chrome.sh` 会重新下载并复算，产出一致可直接 diff。
+
+   注意 `chrome.sha256` 必须保持 **LF**（`.gitattributes` 已固定 `text eol=lf`）：它是 `sha256sum -c`
+   的输入，CRLF 会让校验行变成非法格式。另：Git Bash 下旧版脚本会用 `sha256sum "$path"` 写出
+   `\<hex>`（coreutils 对含反斜杠路径的转义标记），已改为从 stdin 读并断言 64 位十六进制。

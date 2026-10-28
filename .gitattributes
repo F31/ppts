@@ -1,0 +1,9 @@
+# 这两类文件在 Windows 上被 CRLF 化会直接坏掉，固定成 LF：
+#
+# 1. shell 脚本：CRLF 的 shebang 是 "#!/usr/bin/env bash\r"，Linux 上直接
+#    找不到解释器（报错信息还很不像原因）。
+# 2. chrome.sha256：它是 `sha256sum -c` 的输入，\r 会混进校验行。
+#
+# 仓库内本来就存的是 LF，这条规则管的是检出侧（core.autocrlf=true 的 Windows）。
+*.sh text eol=lf
+deploy/renderer/chrome.sha256 text eol=lf

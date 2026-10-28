@@ -40,7 +40,7 @@
 - [x] 4.2 `CHROME_VERSION` 单一事实源 + `pin-chrome.sh`（下载并写 `chrome.sha256`）+ 构建期摘要校验
 - [x] 4.3 `compose.yml`：只读 rootfs、tmpfs `/work`、`network_mode: none`、CPU/内存/PID 限额、selftest 服务
 - [x] 4.4 `.dockerignore`：排除 `node_modules` 与 `web/`，避免上下文膨胀
-- [ ] 4.5 生成并提交 `chrome.sha256`（本机代理下载失败，curl 56）
+- [x] 4.5 生成并提交 `chrome.sha256`：`156.0.8078.73` / linux64 / chrome-headless-shell，126,938,225 字节，`sha256=77eb8d52…`；摘要与 `Content-Length`、GCS `x-goog-hash: md5=`、zip 条目（287 项含可执行文件）三重核对。同时修掉 `pin-chrome.sh` 在 Git Bash 下写出 `\<hex>`（coreutils 转义前缀）的问题，并加 `.gitattributes` 固定该文件为 LF
 - [ ] 4.6 镜像首次 `docker build` + `--selftest`（本机无容器环境）
 - [x] 4.7 解决 `textnorm@v0.2.2` 校验和不一致对 `GOWORK=off` 构建的阻塞：`go.sum` 记的摘要与 sumdb 权威值不符（v0.2.0/v0.2.1 同样错），已按 `h1:IZDOaanu…` 修正；`GOWORK=off go build/test ./...` 跑通（42 包）
 - [ ] 4.8 字体子集化（`pyftsubset` 常用字表）：当前镜像装全量 Noto CJK，约 9MB

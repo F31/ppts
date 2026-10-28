@@ -68,6 +68,19 @@ stage app    COPY renderer/package*.json && npm ci --omit=dev
 
 - 版本写在 `deploy/renderer/CHROME_VERSION`（单一事实源），构建期校验下载包的 SHA-256；
 - 运行期通过 `browserExecutable` 指向 `/opt/chrome/chrome-headless-shell`，**禁止** Remotion 在运行时自动下载（容器无外网，下载失败会表现成「渲染超时」这种误导性错误）。
+- 当前固定值（2026-10-28 生成并提交）：`156.0.8078.73` / `linux64` / `chrome-headless-shell`，
+  126,938,225 字节，`sha256=77eb8d52798efc7a857ab61abcc62a456d8ea9635b02341d06dffee2761768c8`。
+  该摘要经三重核对：与 `Content-Length` 一致、与 GCS 返回的 `x-goog-hash: md5=` 一致、zip 内容为
+  287 个条目且含 `chrome-headless-shell-linux64/chrome-headless-shell`（不是错误页被存成 zip）。
+- `chrome.sha256` 是 `sha256sum -c` 的输入，**必须是 LF**：`.gitattributes` 里固定
+  `deploy/renderer/chrome.sha256 text eol=lf`。`core.autocrlf=true` 的 Windows 检出会把
+  `\r` 带进校验行，而 Linux 侧的 coreutils 不会像 MSYS 那样吞掉它。
+
+`pin-chrome.sh` 有一个 Git Bash 专属坑（已修，2026-10-28）：`sha256sum "$path"` 在文件名含反斜杠时
+会给摘要加前导 `\` 作为转义标记（Git Bash 的 `mktemp -d` 返回 `C:\...\Temp/tmp.x`，正好触发），
+写出来就是 `\<hex>`，构建期 `sha256sum -c` 报格式错误。改为 `sha256sum < "$path"` 从 stdin 读
+（文件名是 `-`，不触发转义），并在写文件前断言 `^[0-9a-f]{64}$`——这个文件是校验值，
+格式错了必须在生成时炸，而不是等构建机拉完 121MB 才失败。
 
 ### ADR-3 Chrome 版本与 renderer 版本进 planHash
 
