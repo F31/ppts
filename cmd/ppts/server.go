@@ -90,6 +90,8 @@ func runServer() error {
 						DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
 						LocalPrincipal: localPrincipal,
 						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
+						// 动画规格写路径：本地 profile 默认开启；生产需显式设置 PPTS_ANIMATION_ENABLED=true。
+						Animation: stores.animation, AnimationEnabled: stores.isSQLite() || os.Getenv("PPTS_ANIMATION_ENABLED") == "true",
 						JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
 						Mailer:               mailer,
 						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",

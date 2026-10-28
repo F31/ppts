@@ -115,9 +115,10 @@ func TestValidateRejects(t *testing.T) {
 			wantRule: RuleTime, wantStatus: 400,
 		},
 		{
-			name: "V3 unknown page duration",
-			mutate: func(_ *Revision, pc *PageContext) {
+			name: "V3 negative start with unknown duration",
+			mutate: func(r *Revision, pc *PageContext) {
 				pc.DurationMS = 0
+				r.Tracks[0].Clips[0].StartMs = -1
 			},
 			wantRule: RuleTime, wantStatus: 400,
 		},
@@ -251,6 +252,19 @@ func TestValidateRejects(t *testing.T) {
 				t.Fatal("validation error must carry a message")
 			}
 		})
+	}
+}
+
+// 编辑期尚无配音时页时长未知（0）：只做结构与下界校验，不判"超出页尾"。
+// 这是产品顺序决定的——用户可以先编排动画再生成配音，此时不该拦着不让保存。
+func TestValidateWithUnknownDurationSkipsTemporalBounds(t *testing.T) {
+	rev := validRevision()
+	rev.Tracks[0].Clips[0].StartMs = 999999 // 远超任何合理页时长
+	rev.Tracks[0].Clips[0].DurationMs = 600
+	pc := validPageContext()
+	pc.DurationMS = 0
+	if err := rev.Validate(pc); err != nil {
+		t.Fatalf("unknown duration should skip upper-bound checks, got %v", err)
 	}
 }
 

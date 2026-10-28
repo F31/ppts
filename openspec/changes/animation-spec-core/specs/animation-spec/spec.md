@@ -66,6 +66,8 @@
 
 `start_ms` MUST ≥ 0；`start_ms + duration_ms` MUST ≤ 该页时长（由 `Timeline` 的 `(EndUS-StartUS)/1000` 得出）加 1 帧容差。整页所有 clip 的归一化覆盖时长 MUST ≤ 页时长。越界 MUST 被拒绝，渲染阶段 MUST NOT 负责裁剪。
 
+当页时长未知（尚无配音与时间轴，`durationMS = 0`）时，系统 SHALL 只校验 `start_ms ≥ 0` 与 clip 时长区间，MUST NOT 因时长未知拒绝保存——先编排动画、后生成配音是正常顺序。此时 MUST 由编译/渲染前用真实页时长重新校验兜底，且该重校验 MUST NOT 被跳过。
+
 #### Scenario: clip 超出页尾
 
 - **WHEN** 页时长 6400ms，某 clip 的 `start_ms = 6000`、`duration_ms = 900`
@@ -75,6 +77,11 @@
 
 - **WHEN** 页时长 6400ms，clip 为 `start_ms = 5800`、`duration_ms = 600`
 - **THEN** 校验通过
+
+#### Scenario: 尚无配音时保存
+
+- **WHEN** 该页还没有配音，页时长未知，用户提交 `start_ms = 12000` 的合法结构规格
+- **THEN** 保存成功，响应 MUST 标记该规格需要渲染前重新校验时长
 
 ### Requirement: 同元素动效不得静默重叠
 

@@ -278,13 +278,11 @@ func validateClipTiming(c *Clip, eff *Effect, pc PageContext, tolerance int64, f
 			Status:  400,
 		}
 	}
+	// 编辑期可能还没有配音，页面时长未知（0）。此时无法判定"是否超出页尾"，
+	// 只做结构与下界校验；渲染前必须用真实时长重新校验（M2 编译期）。
+	// 用 0 当"未知"而不是拒绝保存：用户先编排动画、后生成配音是正常顺序。
 	if pc.DurationMS <= 0 {
-		return &ValidationError{
-			Rule: RuleTime, Field: field + ".startMs",
-			Message: "page duration is unknown",
-			Hint:    "调用方必须提供页时长",
-			Status:  400,
-		}
+		return nil
 	}
 	limit := pc.DurationMS + tolerance
 	if end := c.StartMs + c.DurationMs; end > limit {

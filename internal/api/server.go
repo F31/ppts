@@ -14,6 +14,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
@@ -66,9 +67,13 @@ type Options struct {
 	LocalPrincipal *Principal
 	Pronunciation  pronunciation.Store
 	ContextRule    contextrule.Store
-	Gateway        gateway.StoreResolver
-	ScriptSources  app.ScriptSourceStore
-	VoiceSettings  app.VoiceSettingsStore
+	// Animation 是动画规格存储；nil 时不注册动画端点（能力未上线）。
+	Animation animation.Store
+	// AnimationEnabled 只控制写路径：读路径始终可用，便于灰度前验证契约。
+	AnimationEnabled bool
+	Gateway          gateway.StoreResolver
+	ScriptSources    app.ScriptSourceStore
+	VoiceSettings    app.VoiceSettingsStore
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
@@ -197,6 +202,8 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	if opt.ContextRule != nil {
 		NewContextRuleHandler(opt.ContextRule).Register(mux, auth)
 	}
+	// 动画规格（M1）：REST，与 /api/context-rules 同形；store 为 nil 时整个端点不注册。
+	NewAnimationHandler(opt.Animation, newAnimationResolver(projects, objects, scripts), opt.AnimationEnabled).Register(mux, auth)
 	// 网关路由始终注册：未配置 AES 密钥时 store 为 nil，handler 返回明确 503 feature_disabled，
 	// 避免此前漏挂导致的静默 404。
 	NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)

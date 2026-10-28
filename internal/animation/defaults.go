@@ -233,6 +233,56 @@ func classifyShape(sh *project.Shape) (string, bool) {
 	return "", false
 }
 
+// PageAnchors 把页内形状扁平化为"可挂载动画"的锚点清单，供校验上下文与编辑器使用。
+//
+// 与 pageElements 的区别：这里不做标题/要点的语义归类，也不排除无文字的自选图形——
+// 校验的 V2 只关心"这个元素在不在"，把可动画范围交给 catalog 的 appliesTo 判断。
+// 若这里也按"能生成动效"筛一遍，用户给一个没文字的色块挂 pop 就会被误判为元素不存在。
+func PageAnchors(page *project.Page) []Anchor {
+	if page == nil {
+		return nil
+	}
+	var out []Anchor
+	var walk func(shapes []*project.Shape)
+	walk = func(shapes []*project.Shape) {
+		for _, sh := range shapes {
+			if sh == nil || sh.ID == "" || sh.Opaque || sh.Bounds == nil {
+				continue
+			}
+			kind := anchorKind(sh)
+			if kind != "" {
+				out = append(out, Anchor{ID: sh.ID, Kind: kind, HasBounds: true})
+			}
+			if len(sh.Children) > 0 {
+				walk(sh.Children)
+			}
+		}
+	}
+	walk(page.Shapes)
+	return out
+}
+
+// anchorKind 只做"是否可挂载"的粗分：音视频不参与元素级动画，其余一律给出可用的 kind。
+func anchorKind(sh *project.Shape) string {
+	switch strings.ToLower(strings.TrimSpace(sh.Kind)) {
+	case "audio", "video":
+		return ""
+	case "picture", "image":
+		return KindImage
+	case "chart":
+		return KindChart
+	case "table":
+		return KindTable
+	}
+	if sh.ChartType != "" {
+		return KindChart
+	}
+	if sh.TableRows > 0 || sh.TableCols > 0 {
+		return KindTable
+	}
+	return KindShape
+}
+
 func anchorsOf(elems []pageElement) []Anchor {
 	out := make([]Anchor, 0, len(elems))
 	for _, e := range elems {

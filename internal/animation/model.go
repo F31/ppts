@@ -102,20 +102,20 @@ type Revision struct {
 
 // Track 是一个可视元素上的动效集合。ElementID 为空表示整页轨道（Kind 必须为 page）。
 type Track struct {
-	ElementID string // project.Shape.ID；"" 表示页面级
-	Kind      string // title|bullet|image|shape|icon|chart|table|page
-	Clips     []*Clip
+	ElementID string  `json:"elementId"` // project.Shape.ID；"" 表示页面级
+	Kind      string  `json:"kind"`      // title|bullet|image|shape|icon|chart|table|page
+	Clips     []*Clip `json:"clips"`
 }
 
 // Clip 是单条动效片段。时间一律相对本页起点，单位毫秒（1080p 逻辑量，见设计方案 §5.2）。
 type Clip struct {
-	ID         string
-	Type       string // catalog 白名单
-	StartMs    int64
-	DurationMs int64
-	Easing     string // linear|easeOut|easeInOut|spring
-	Params     Params
-	Trigger    string // onEnter | withSegment:<id> | atTime:<ms>
+	ID         string `json:"id,omitempty"`
+	Type       string `json:"type"` // catalog 白名单
+	StartMs    int64  `json:"startMs"`
+	DurationMs int64  `json:"durationMs"`
+	Easing     string `json:"easing"` // linear|easeOut|easeInOut|spring
+	Params     Params `json:"params,omitempty"`
+	Trigger    string `json:"trigger"` // onEnter | withSegment:<id> | atTime:<ms>
 }
 
 // Params 是动效参数。字段名与 JSON key 一一对应；未登记的 key 一律拒收，

@@ -38,16 +38,16 @@
 - [x] 4.5 共享 `runStoreSuite`：插入/更新/过期冲突/插入时 expected≠0/锁定优先于冲突/状态机跨级/legacy 回退/精确版本优先/租户隔离/非法 key/nil 轨道落 `[]`；SQLite 实跑，PG 走 `-tags pg`
 - [ ] 4.6 迁移在空库与既有库上各跑一次并验回滚 — SQLite 由 `db.MigrateSQLite` 用例覆盖（空库）；PG 侧需真实库，留 CI
 
-## 5. API 接线（待定 · 阻塞于传输形态）
+## 5. API 接线（PR3 · 已完成）
 
-> **发现（2026-10-28）**：设计方案 §5 给的 `GET/PUT /v1/projects/{id}/slides/{slideId}/animation` 是 REST 契约，但本仓库业务接口全部是 ConnectRPC（`gen/ppts/v1` + `pptsv1connect`），`net/http` 路由只用于 health/metrics/auth/object 这类基础设施端点。直接加 REST 会成为仓库里的第二套约定；改走 protobuf 则要动 `proto/ppts/v1` 并重新生成 `gen/`（需要 buf 工具链）。
+> 传输形态已定：沿用仓库既有 REST 先例（`/api/` 前缀 + `auth` 中间件，与 `/api/context-rules` 同形），业务 RPC 面维持 Connect 不变。设计方案写的 `/v1/` 前缀不采用——它会成为仓库里的第三种前缀。
 >
-> 这是架构选择，不是实现细节，需先定方向再写第 5 组。倾向：**新增 `AnimationService` 的 Connect 契约**（与 narration/project 一致，鉴权、错误码、租户上下文全部复用现成中间件），REST 版留给 M6 的分享页。
+> 页时长在编辑期可能未知（时间轴要等配音完成）。`DurationMS = 0` 定义为"未知"：跳过 V3 上界与 V6 预算，响应带 `needsDurationRecheck`，渲染前必须用真实时长重校验（M2 编译期）。
 
-- [ ] 5.1 ~~`internal/api/animation.go` REST handler~~ → 待传输形态确认
-- [ ] 5.2 写路径受 `animation.enabled` 开关控制，关闭时返回 404；读路径不依赖该开关
-- [ ] 5.3 错误映射：`ValidationError`→400/409/413、`ErrLocked`/`ErrConflict`→409、`ErrNotFound`→404
-- [ ] 5.4 handler 测试：合法读写、409 冲突带回最新版、锁定 409、开关关闭 404、租户隔离 404
+- [x] 5.1 `internal/api/animation.go`：`GET`（`?default=true` 时按预设生成、不落库）与 `PUT`（带 `expectedRevision`）单页规格
+- [x] 5.2 写路径受 `AnimationEnabled` 控制（本地 profile 默认开，生产读 `PPTS_ANIMATION_ENABLED`），关闭返回 404；读路径不受影响
+- [x] 5.3 错误映射：`ValidationError`→按其 `Status`（400/409/413）、`ErrLocked`/`ErrConflict`→409（冲突带回 latest）、`ErrNotFound`→404、`ErrInvalidKey`→400
+- [x] 5.4 handler 测试（sqlite + 假 resolver）：缺规格 404 / `default=true` 生成 / 读写往返 / 过期版本 409 带回 latest / V2 拒绝并给规则编号 / 缺 `expectedRevision` 400 / 开关关闭 404 / 锁定 409
 
 ## 6. 验收门禁（PR1 部分已达成）
 
@@ -56,5 +56,6 @@
 - [x] 6.3 `go list -deps ./internal/animation` 不含 `internal/media`、`internal/app`、`internal/api`（已实跑，仅依赖 `internal/project` 与标准库）
 - [x] 6.4 `go.mod` / `go.sum` 零改动（`git status` 可验），无新增依赖
 - [x] 6.5 `internal/app/export.go`、`internal/media/`、`web/` 零改动（`git diff --stat` 为空）
-- [x] 6.6 非法输入拦截：23 条校验用例覆盖 V0–V12，全部返回预期规则编号与状态码；HTTP 层用例属 PR2
-- [ ] 6.7 回写方案文档 M1 实际落地与偏差（见 design.md「实施记录」），并同步 `openspec/specs/`（归档时生成）
+- [x] 6.6 非法输入拦截：23 条领域用例覆盖 V0–V12；HTTP 层另有 8 条用例（含 V2 拒绝、409 冲突、锁定 409、开关 404）
+- [x] 6.7 回写方案文档 M1 实际落地与偏差（见 design.md「实施记录」PR1/PR2/PR3）；`openspec/specs/` 由 archive 生成
+- [ ] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：需等 6.2 的 `-race` 在 CI 跑通

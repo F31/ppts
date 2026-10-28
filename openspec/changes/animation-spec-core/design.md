@@ -89,9 +89,11 @@ type Store interface {
 
 ### D8 API 契约：读先上，写受开关保护
 
-- `GET /v1/projects/{id}/slides/{slideId}/animation?sourceRevisionNo=&language=` → 规格或默认规格（`?default=true` 时生成但不落库）
-- `PUT /v1/projects/{id}/slides/{slideId}/animation` → 带 `expected_revision`
-- 写路径受 `animation.enabled` 控制；开关关闭时读接口仍可用（便于灰度前验证契约），写接口返回 404（不暴露能力存在）
+- `GET /api/projects/{projectId}/slides/{slideId}/animation?sourceRevisionNo=&language=&default=true` → 规格；未保存且 `default=true` 时按预设生成一份（不落库）
+- `PUT /api/projects/{projectId}/slides/{slideId}/animation` → 带 `expectedRevision`
+- 写路径受开关控制；开关关闭时读接口仍可用（便于灰度前验证契约），写接口返回 404（不暴露能力存在）
+
+**为什么前缀是 `/api/` 而不是设计方案写的 `/v1/`**：仓库里唯一的 REST 先例是 `/api/context-rules`（`internal/api/contextrule.go`），业务 RPC 面全部走 ConnectRPC。新增 `/v1/` 会变成第三种前缀；跟随 `/api/` 只多一套"资源式 CRUD vs RPC"的分工，不引入第三套命名。这也是实施时才暴露的设计缺口——方案写的是抽象契约，仓库有它自己的既有约定。
 
 ### D9 错误用哨兵 + 结构化明细
 
@@ -126,4 +128,6 @@ type Store interface {
 
 **新增 `ErrStatusTransition`。** 状态机只允许 `approved ← draft|locked`、`locked ← approved`；`draft → locked` 跨级被拒。理由：锁定意味着"已审阅并定稿"，允许越过审阅直接锁定会让审批记录失去意义。锁定状态下的写入一律 `ErrLocked`，且**先于**版本冲突判断——"不能写"比"你的版本旧了"更根本，否则用户会去刷新重试，还是写不进去。
 
-**传输形态与设计方案冲突（未决）。** §5 给的是 REST（`GET/PUT /v1/projects/{id}/slides/{slideId}/animation`），而本仓库业务接口全部为 ConnectRPC，`net/http` 路由只承载 health/metrics/auth/object。按 REST 落地会成为第二套约定，按 Connect 落地要改 `proto/ppts/v1` 并重新生成 `gen/`。这是架构选择，已挂起第 5 组任务，待定后再接线；当前存储层与校验层都已就绪，接哪种都不需要改它们。
+**页时长在编辑期可能未知。** 时间轴要等配音完成才有，读取入口属于 M2 的编译期。因此 `PageContext.DurationMS = 0` 被定义为"未知"，此时跳过 V3 上界与 V6 预算，只做结构与下界校验，响应带 `needsDurationRecheck: true`。若不这样做，"先编排动画、后生成配音"这个正常顺序会被直接堵死；渲染前必须用真实时长再校验一次，这个兜底不能省。
+
+**传输形态与设计方案冲突（已决）。** §5 给的是 REST（`GET/PUT /v1/projects/{id}/slides/{slideId}/animation`），而本仓库业务接口全部为 ConnectRPC，`net/http` 路由只承载 health/metrics/auth/object。按 REST 落地会成为第二套约定，按 Connect 落地要改 `proto/ppts/v1` 并重新生成 `gen/`。已决策：沿用仓库既有 REST 先例（`/api/` 前缀 + `auth` 中间件），不引入 proto 生成链路（本机没有 buf 与 protoc 插件，且生成物无法验证）。业务 RPC 面维持 Connect 不变。
