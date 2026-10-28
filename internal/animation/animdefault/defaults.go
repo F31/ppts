@@ -1,4 +1,4 @@
-package animation
+package animdefault
 
 import (
 	"errors"
@@ -6,13 +6,14 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/project"
 )
 
 // DefaultPresetID 是未指定预设时使用的默认套件（设计方案 §6.5）。
 const DefaultPresetID = "business-calm"
 
-// DefaultOptions 是默认生成所需的上下文。与 PageContext 一样，只接受已换算好的
+// DefaultOptions 是默认生成所需的上下文。与 animation.PageContext 一样，只接受已换算好的
 // 逻辑量，不引用时间轴类型。
 type DefaultOptions struct {
 	SlideID    string
@@ -34,7 +35,7 @@ type pageElement struct {
 //
 // 确定性要求（设计方案 §14 M1 验收）：相同输入必须产出相同规格（id 也确定），
 // 因为快照测试与"首次打开就能出片"都依赖它。时间戳与租户字段由接入层补齐。
-func DefaultSpec(page *project.Page, opt DefaultOptions) (*Revision, error) {
+func DefaultSpec(page *project.Page, opt DefaultOptions) (*animation.Revision, error) {
 	if page == nil {
 		return nil, errors.New("animation: page is nil")
 	}
@@ -45,13 +46,13 @@ func DefaultSpec(page *project.Page, opt DefaultOptions) (*Revision, error) {
 	if presetID == "" {
 		presetID = DefaultPresetID
 	}
-	preset, ok := Catalog().Preset(presetID)
+	preset, ok := animation.Catalog().Preset(presetID)
 	if !ok {
 		return nil, fmt.Errorf("animation: unknown preset %q", presetID)
 	}
 
 	elems := pageElements(page)
-	pc := PageContext{
+	pc := animation.PageContext{
 		DurationMS: opt.DurationMS,
 		FPS:        opt.FPS,
 		Elements:   anchorsOf(elems),
@@ -59,10 +60,10 @@ func DefaultSpec(page *project.Page, opt DefaultOptions) (*Revision, error) {
 	}
 
 	tracks := buildTracks(preset, elems, opt)
-	rev := &Revision{
+	rev := &animation.Revision{
 		SlideID:   opt.SlideID,
 		Language:  opt.Language,
-		Status:    StatusDraft,
+		Status:    animation.StatusDraft,
 		PresetID:  presetID,
 		Intensity: preset.Intensity,
 		Tracks:    tracks,
@@ -75,36 +76,36 @@ func DefaultSpec(page *project.Page, opt DefaultOptions) (*Revision, error) {
 	return rev, nil
 }
 
-func buildTracks(preset *Preset, elems []pageElement, opt DefaultOptions) []*Track {
-	var tracks []*Track
+func buildTracks(preset *animation.Preset, elems []pageElement, opt DefaultOptions) []*animation.Track {
+	var tracks []*animation.Track
 	clipSeq := 0
 	bulletSeq := 0
 	staggerSeq := 0
 	segments := opt.SegmentIDs
 
 	for _, el := range elems {
-		if len(tracks) >= MaxTracksPerSlide || clipSeq >= MaxClipsPerSlide {
+		if len(tracks) >= animation.MaxTracksPerSlide || clipSeq >= animation.MaxClipsPerSlide {
 			break
 		}
 		templates := preset.Clips[el.kind]
 		if len(templates) == 0 {
 			continue
 		}
-		track := &Track{ElementID: el.id, Kind: el.kind}
+		track := &animation.Track{ElementID: el.id, Kind: el.kind}
 		start := int64(staggerSeq) * preset.StaggerMs
-		trigger := triggerEnter
+		trigger := animation.TriggerEnter
 
-		if el.kind == KindBullet && preset.SegmentAligned && bulletSeq < len(segments) {
+		if el.kind == animation.KindBullet && preset.SegmentAligned && bulletSeq < len(segments) {
 			// 讲到哪条出现哪条：用相对锚定，配音重生成后无需改规格（§5.3）。
-			trigger = triggerSegment + segments[bulletSeq]
+			trigger = animation.TriggerSegmentPrefix + segments[bulletSeq]
 			start = 0
 		}
-		if el.kind == KindBullet {
+		if el.kind == animation.KindBullet {
 			bulletSeq++
 		}
 
 		for _, tpl := range templates {
-			if clipSeq >= MaxClipsPerSlide {
+			if clipSeq >= animation.MaxClipsPerSlide {
 				break
 			}
 			duration := tpl.DurationMs
@@ -118,7 +119,7 @@ func buildTracks(preset *Preset, elems []pageElement, opt DefaultOptions) []*Tra
 				clipStart = opt.DurationMS - duration
 			}
 			clipSeq++
-			track.Clips = append(track.Clips, &Clip{
+			track.Clips = append(track.Clips, &animation.Clip{
 				ID:         fmt.Sprintf("c%d", clipSeq),
 				Type:       tpl.Type,
 				StartMs:    clipStart,
@@ -136,22 +137,22 @@ func buildTracks(preset *Preset, elems []pageElement, opt DefaultOptions) []*Tra
 
 	if len(tracks) == 0 {
 		// 无可挂载元素（或页太短）：退化为整页轨道，保证"零配置也能出一版"。
-		if tpls := preset.Clips[KindPage]; len(tpls) > 0 {
+		if tpls := preset.Clips[animation.KindPage]; len(tpls) > 0 {
 			tpl := tpls[0]
 			duration := tpl.DurationMs
 			if duration > opt.DurationMS {
 				duration = opt.DurationMS
 			}
-			if eff, ok := Catalog().Effect(tpl.Type); ok && duration >= eff.DurationRange[0] {
-				cs := &Clip{
+			if eff, ok := animation.Catalog().Effect(tpl.Type); ok && duration >= eff.DurationRange[0] {
+				cs := &animation.Clip{
 					ID:         "c1",
 					Type:       tpl.Type,
 					DurationMs: duration,
 					Easing:     tpl.Easing,
 					Params:     tpl.Params,
-					Trigger:    triggerEnter,
+					Trigger:    animation.TriggerEnter,
 				}
-				tracks = append(tracks, &Track{Kind: KindPage, Clips: []*Clip{cs}})
+				tracks = append(tracks, &animation.Track{Kind: animation.KindPage, Clips: []*animation.Clip{cs}})
 			}
 		}
 	}
@@ -192,15 +193,15 @@ func pageElements(page *project.Page) []pageElement {
 	// 没有字体信息可用，"第一个"是最稳的启发式：标题在版式上几乎总在最上。
 	titleAssigned := false
 	for i := range out {
-		if out[i].kind != KindShape {
+		if out[i].kind != animation.KindShape {
 			continue
 		}
 		if !titleAssigned {
-			out[i].kind = KindTitle
+			out[i].kind = animation.KindTitle
 			titleAssigned = true
 			continue
 		}
-		out[i].kind = KindBullet
+		out[i].kind = animation.KindBullet
 	}
 	return out
 }
@@ -209,26 +210,26 @@ func classifyShape(sh *project.Shape) (string, bool) {
 	kind := strings.ToLower(strings.TrimSpace(sh.Kind))
 	switch kind {
 	case "picture", "image":
-		return KindImage, true
+		return animation.KindImage, true
 	case "chart":
-		return KindChart, true
+		return animation.KindChart, true
 	case "table":
-		return KindTable, true
+		return animation.KindTable, true
 	case "audio", "video":
 		return "", false
 	}
 	if sh.ChartType != "" {
-		return KindChart, true
+		return animation.KindChart, true
 	}
 	if sh.TableRows > 0 || sh.TableCols > 0 {
-		return KindTable, true
+		return animation.KindTable, true
 	}
 	if strings.TrimSpace(sh.Text) != "" {
 		// 先按"形状"归类，标题/要点的区分在阅读顺序里统一决定。
-		return KindShape, true
+		return animation.KindShape, true
 	}
 	if strings.Contains(kind, "icon") {
-		return KindIcon, true
+		return animation.KindIcon, true
 	}
 	return "", false
 }
@@ -238,11 +239,11 @@ func classifyShape(sh *project.Shape) (string, bool) {
 // 与 pageElements 的区别：这里不做标题/要点的语义归类，也不排除无文字的自选图形——
 // 校验的 V2 只关心"这个元素在不在"，把可动画范围交给 catalog 的 appliesTo 判断。
 // 若这里也按"能生成动效"筛一遍，用户给一个没文字的色块挂 pop 就会被误判为元素不存在。
-func PageAnchors(page *project.Page) []Anchor {
+func PageAnchors(page *project.Page) []animation.Anchor {
 	if page == nil {
 		return nil
 	}
-	var out []Anchor
+	var out []animation.Anchor
 	var walk func(shapes []*project.Shape)
 	walk = func(shapes []*project.Shape) {
 		for _, sh := range shapes {
@@ -251,7 +252,7 @@ func PageAnchors(page *project.Page) []Anchor {
 			}
 			kind := anchorKind(sh)
 			if kind != "" {
-				out = append(out, Anchor{ID: sh.ID, Kind: kind, HasBounds: true})
+				out = append(out, animation.Anchor{ID: sh.ID, Kind: kind, HasBounds: true})
 			}
 			if len(sh.Children) > 0 {
 				walk(sh.Children)
@@ -268,25 +269,25 @@ func anchorKind(sh *project.Shape) string {
 	case "audio", "video":
 		return ""
 	case "picture", "image":
-		return KindImage
+		return animation.KindImage
 	case "chart":
-		return KindChart
+		return animation.KindChart
 	case "table":
-		return KindTable
+		return animation.KindTable
 	}
 	if sh.ChartType != "" {
-		return KindChart
+		return animation.KindChart
 	}
 	if sh.TableRows > 0 || sh.TableCols > 0 {
-		return KindTable
+		return animation.KindTable
 	}
-	return KindShape
+	return animation.KindShape
 }
 
-func anchorsOf(elems []pageElement) []Anchor {
-	out := make([]Anchor, 0, len(elems))
+func anchorsOf(elems []pageElement) []animation.Anchor {
+	out := make([]animation.Anchor, 0, len(elems))
 	for _, e := range elems {
-		out = append(out, Anchor{ID: e.id, Kind: e.kind, HasBounds: true})
+		out = append(out, animation.Anchor{ID: e.id, Kind: e.kind, HasBounds: true})
 	}
 	return out
 }

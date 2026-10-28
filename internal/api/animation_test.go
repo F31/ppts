@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/animdefault"
+	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/db"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/migrations"
@@ -21,7 +23,7 @@ const (
 	anTestSlide   = "slide-3"
 )
 
-func newAnimationTestStore(t *testing.T) animation.Store {
+func newAnimationTestStore(t *testing.T) animstore.Store {
 	t.Helper()
 	ctx := context.Background()
 	sqldb, err := db.OpenSQLite(ctx, filepath.Join(t.TempDir(), "ppts.db"))
@@ -39,7 +41,7 @@ func newAnimationTestStore(t *testing.T) animation.Store {
 	if err := db.EnsureLocalIdentity(ctx, sqldb); err != nil {
 		t.Fatalf("identity: %v", err)
 	}
-	return animation.NewSQLiteStore(sqldb)
+	return animstore.NewSQLiteStore(sqldb)
 }
 
 type fakeAnimationResolver struct {
@@ -62,7 +64,7 @@ func animationTestPage() *project.Page {
 	}
 }
 
-func newAnimationTestServer(t *testing.T, enabled bool) (*httptest.Server, animation.Store) {
+func newAnimationTestServer(t *testing.T, enabled bool) (*httptest.Server, animstore.Store) {
 	t.Helper()
 	store := newAnimationTestStore(t)
 	page := animationTestPage()
@@ -71,7 +73,7 @@ func newAnimationTestServer(t *testing.T, enabled bool) (*httptest.Server, anima
 		pc: animation.PageContext{
 			DurationMS: 6000,
 			FPS:        30,
-			Elements:   animation.PageAnchors(page),
+			Elements:   animdefault.PageAnchors(page),
 			SegmentIDs: []string{"seg-1"},
 		},
 	}

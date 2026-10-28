@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/animdefault"
+	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/project"
@@ -72,7 +74,7 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 	if page == nil {
 		return nil, empty, animation.ErrNotFound
 	}
-	pc := animation.PageContext{DurationMS: 0, Elements: animation.PageAnchors(page)}
+	pc := animation.PageContext{DurationMS: 0, Elements: animdefault.PageAnchors(page)}
 	if r.scripts != nil {
 		// 讲稿缺失不是错误：还没有讲稿时就没有 withSegment 可锚，规格里的相对锚点会被 V7 拒绝，
 		// 这正是需要告诉用户的事实（"先写讲稿再绑分段"），而不是掩盖成 500。
@@ -93,13 +95,13 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 // /api/context-rules 同形；业务 RPC 面继续由 Connect 承载。接口前缀用 /api/ 与既有
 // REST 端点保持一致，避免出现第三种前缀。
 type AnimationHandler struct {
-	store   animation.Store
+	store   animstore.Store
 	pages   AnimationPageResolver
 	enabled bool
 }
 
 // NewAnimationHandler 创建 handler。store 为 nil 时不注册任何路由（等价未上线）。
-func NewAnimationHandler(store animation.Store, pages AnimationPageResolver, enabled bool) *AnimationHandler {
+func NewAnimationHandler(store animstore.Store, pages AnimationPageResolver, enabled bool) *AnimationHandler {
 	return &AnimationHandler{store: store, pages: pages, enabled: enabled}
 }
 
@@ -193,7 +195,7 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	rev, derr := animation.DefaultSpec(page, animation.DefaultOptions{
+	rev, derr := animdefault.DefaultSpec(page, animdefault.DefaultOptions{
 		SlideID: key.SlideID, Language: key.Language, DurationMS: pc.DurationMS,
 		SegmentIDs: pc.SegmentIDs, PresetID: r.URL.Query().Get("preset"),
 	})

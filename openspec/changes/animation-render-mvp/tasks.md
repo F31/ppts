@@ -54,4 +54,4 @@
 - [x] 6.5 `go.mod` 无新增依赖
 - [x] 6.7 回写设计方案偏差（design.md §6）并在 roadmap 更新 M2 状态
 - [ ] 6.6 真实样片（`智讲PPT-客户方案讲解.pptx`，30s）——**阻塞于容器环境**：本机无 ffmpeg、无 Remotion 镜像，stub backend 不产出真实视频。不计入本变更完成条件，转入 `animation-render-service-image` 变更
-- [ ] 6.8 拆分 `internal/animation/animstore`：把 `store_sqlite.go`/`store_postgres.go` 移出模型包，解除渲染器对 `internal/db`+`pgx` 的传递依赖（M3 前置项，见 design.md §1）
+- [x] 6.8 拆分模型/持久化：`animstore`（SQLite/PostgreSQL）与 `animdefault`（依赖 project 的默认规格生成）移出模型包，解除渲染器对 `internal/db`+`pgx`+`sqlite` 的传递依赖。实测二进制 17.10MB → 10.19MB，`cmd/renderer/deps_test.go` 断言传递闭包不含存储栈

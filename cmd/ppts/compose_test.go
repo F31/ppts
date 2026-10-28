@@ -16,6 +16,9 @@ func TestOpenStoresSQLiteSmoke(t *testing.T) {
 	t.Setenv("PPTS_DB_DRIVER", "") // 留空 → 默认 sqlite
 	t.Setenv("PPTS_DATABASE_URL", "")
 	t.Setenv("HOME", dir)
+	// Windows 上 os.UserHomeDir() 读 USERPROFILE 而不是 HOME。只覆盖 HOME 会让测试
+	// 连到开发者真实的 ~/ppts.db，"库里有别人的项目"于是变成一条假红灯。
+	t.Setenv("USERPROFILE", dir)
 	t.Setenv("PPTS_OBJECT_BACKEND", "local")
 	t.Setenv("PPTS_OBJECT_ROOT", filepath.Join(dir, "objects"))
 	t.Setenv("PPTS_OBJECT_SECRET", base64.StdEncoding.EncodeToString(make([]byte, 32)))

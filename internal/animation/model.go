@@ -59,10 +59,13 @@ const (
 )
 
 // 三种触发锚定形式（设计方案 §5.3）。
+//
+// 导出是因为默认规格生成在子包 animdefault：那里要用同一批字面量拼 trigger，
+// 若各写一份字符串，校验器改了前缀而生成器没跟，就会产出自己都不接受的规格。
 const (
-	triggerEnter   = "onEnter"
-	triggerSegment = "withSegment:"
-	triggerAtTime  = "atTime:"
+	TriggerEnter         = "onEnter"
+	TriggerSegmentPrefix = "withSegment:"
+	TriggerAtTimePrefix  = "atTime:"
 )
 
 // 允许的缓动曲线。

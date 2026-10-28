@@ -1,6 +1,6 @@
 //go:build pg
 
-package animation
+package animstore
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/tenant"
 )
 

@@ -14,7 +14,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
-	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
@@ -68,7 +68,7 @@ type Options struct {
 	Pronunciation  pronunciation.Store
 	ContextRule    contextrule.Store
 	// Animation 是动画规格存储；nil 时不注册动画端点（能力未上线）。
-	Animation animation.Store
+	Animation animstore.Store
 	// AnimationEnabled 只控制写路径：读路径始终可用，便于灰度前验证契约。
 	AnimationEnabled bool
 	Gateway          gateway.StoreResolver

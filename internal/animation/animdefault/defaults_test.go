@@ -1,9 +1,10 @@
-package animation
+package animdefault
 
 import (
 	"reflect"
 	"testing"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/project"
 )
 
@@ -40,7 +41,7 @@ func defaultOptions(preset string) DefaultOptions {
 }
 
 func TestDefaultSpecPassesValidationForEveryPreset(t *testing.T) {
-	for _, preset := range Catalog().Presets() {
+	for _, preset := range animation.Catalog().Presets() {
 		t.Run(preset.ID, func(t *testing.T) {
 			rev, err := DefaultSpec(samplePage(), defaultOptions(preset.ID))
 			if err != nil {
@@ -52,10 +53,10 @@ func TestDefaultSpecPassesValidationForEveryPreset(t *testing.T) {
 			if rev.Intensity != preset.Intensity {
 				t.Fatalf("intensity = %v, want %v", rev.Intensity, preset.Intensity)
 			}
-			if rev.Status != StatusDraft {
+			if rev.Status != animation.StatusDraft {
 				t.Fatalf("status = %s, want draft", rev.Status)
 			}
-			pc := PageContext{DurationMS: 6000, FPS: 30, Elements: anchorsOf(pageElements(samplePage())), SegmentIDs: []string{"seg-1", "seg-2"}}
+			pc := animation.PageContext{DurationMS: 6000, FPS: 30, Elements: anchorsOf(pageElements(samplePage())), SegmentIDs: []string{"seg-1", "seg-2"}}
 			if err := rev.Validate(pc); err != nil {
 				t.Fatalf("default spec invalid: %v", err)
 			}
@@ -98,10 +99,10 @@ func TestDefaultSpecSkipsUnusableElements(t *testing.T) {
 			t.Errorf("element %s should not get an animation track", id)
 		}
 	}
-	if seen["shape-title"] != KindTitle {
-		t.Errorf("title kind = %q, want %q", seen["shape-title"], KindTitle)
+	if seen["shape-title"] != animation.KindTitle {
+		t.Errorf("title kind = %q, want %q", seen["shape-title"], animation.KindTitle)
 	}
-	if seen["shape-img"] != KindImage || seen["shape-chart"] != KindChart {
+	if seen["shape-img"] != animation.KindImage || seen["shape-chart"] != animation.KindChart {
 		t.Errorf("image/chart classification wrong: %v", seen)
 	}
 }
@@ -113,7 +114,7 @@ func TestDefaultSpecAlignsBulletsToSegments(t *testing.T) {
 	}
 	var bulletTriggers []string
 	for _, tr := range rev.Tracks {
-		if tr.Kind != KindBullet {
+		if tr.Kind != animation.KindBullet {
 			continue
 		}
 		if len(tr.Clips) != 1 {
@@ -137,10 +138,10 @@ func TestDefaultSpecFallsBackToPageTrack(t *testing.T) {
 	if len(rev.Tracks) != 1 {
 		t.Fatalf("tracks = %d, want 1", len(rev.Tracks))
 	}
-	if rev.Tracks[0].Kind != KindPage || rev.Tracks[0].ElementID != "" {
+	if rev.Tracks[0].Kind != animation.KindPage || rev.Tracks[0].ElementID != "" {
 		t.Fatalf("fallback track = %+v, want page track", rev.Tracks[0])
 	}
-	pc := PageContext{DurationMS: 6000, FPS: 30}
+	pc := animation.PageContext{DurationMS: 6000, FPS: 30}
 	if err := rev.Validate(pc); err != nil {
 		t.Fatalf("fallback spec invalid: %v", err)
 	}
@@ -153,7 +154,7 @@ func TestDefaultSpecShortPageStillValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultSpec: %v", err)
 	}
-	pc := PageContext{DurationMS: 300, FPS: 30, Elements: anchorsOf(pageElements(samplePage()))}
+	pc := animation.PageContext{DurationMS: 300, FPS: 30, Elements: anchorsOf(pageElements(samplePage()))}
 	if err := rev.Validate(pc); err != nil {
 		t.Fatalf("short-page spec invalid: %v", err)
 	}
@@ -190,12 +191,12 @@ func TestDefaultSpecCoversPageShapes(t *testing.T) {
 	}
 	for name, page := range cases {
 		t.Run(name, func(t *testing.T) {
-			for _, preset := range Catalog().Presets() {
+			for _, preset := range animation.Catalog().Presets() {
 				rev, err := DefaultSpec(page, defaultOptions(preset.ID))
 				if err != nil {
 					t.Fatalf("preset %s: %v", preset.ID, err)
 				}
-				pc := PageContext{DurationMS: 6000, FPS: 30, Elements: anchorsOf(pageElements(page)), SegmentIDs: []string{"seg-1", "seg-2"}}
+				pc := animation.PageContext{DurationMS: 6000, FPS: 30, Elements: anchorsOf(pageElements(page)), SegmentIDs: []string{"seg-1", "seg-2"}}
 				if err := rev.Validate(pc); err != nil {
 					t.Fatalf("preset %s produced invalid spec: %v", preset.ID, err)
 				}

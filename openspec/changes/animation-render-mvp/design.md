@@ -16,7 +16,17 @@ cmd/renderer         (L4) 独立进程：HTTP + backend SPI
 
 **几何类型不借用 `project.Box`**：`render.EMUBox` 是本包自己的 4 字段结构。复用 `project.Box` 会把 `internal/project`（连带 `internal/db`、sqlite 驱动）链进渲染服务二进制——渲染容器不需要数据库，也不该背它的 CVE。
 
-**已知的传递依赖（未修，已登记）**：`internal/animation` 的 `store_sqlite.go`、`store_postgres.go` 与模型同包，因此引入 `internal/db`、`pgx`、`tenant`；`cmd/renderer` 经 `animation` 传递链也会链接它们。根因是「模型与持久化实现同包」，正确修法是把两个 store 拆到 `internal/animation/animstore` 子包（M1 遗留结构，改动面约 600 行测试的类型限定）。本变更不动 M1 已验收代码，登记为 M3 前置项。
+**传递依赖已清理（6.8，2026-10-28）**：原实现把模型、默认规格生成与 SQLite/PostgreSQL 存储放在同一个 `internal/animation` 包里，`cmd/renderer` 因此链接了 `internal/db`、`modernc.org/sqlite`、`pgx`。现拆成三层，依赖方向固定为单向：
+
+```
+internal/animation            模型、catalog、V1–V12 校验、IR 前的规格运算（只依赖标准库）
+internal/animation/animdefault 从解析结构生成默认规格（依赖 project.Page/Shape）
+internal/animation/animstore   持久化（依赖 db / pgx / tenant）
+```
+
+`cmd/renderer` 只用到第一层。实测：传递依赖中 `internal/db`、`internal/project`、`pgx`、`modernc.org/sqlite` 全部消失，二进制 17.10MB → 10.19MB（-40%）。`cmd/renderer/deps_test.go` 用 `go list -deps .` 断言这条约束，防止以后有人在模型包里重新 import project 或 db。
+
+为支持分包，模型包导出了三个原本内部使用的符号：`Key.Normalize/Validate`、`Revision.Normalize`、`AllowedTransition`（存储实现要在事务内判定状态机）与 `TriggerEnter/TriggerSegmentPrefix/TriggerAtTimePrefix`（默认生成器要拼出校验器认可的字面量，两边各写一份必然漂移）。
 
 ## 2. 关键决策
 
@@ -156,7 +166,7 @@ IR 不变量清单：`schemaVersion` 匹配；`fps ∈ [12,60]`；画布等于 T
 | 页几何靠推断，自定义页尺寸会偏 | `geometry_inferred` 诊断 + `Geometry` 显式覆盖；M3 从解析器补 `sldSz` 后删除推断分支 |
 | `effect` 字段被后端误用，绕开 IR 语义 | IR 校验拒绝未知后端字段；code review 断言 + 规范明文；后续可加 `-tags strict` 下从 JSON 里剔除 |
 | 单页 40 clip × 500 页导致 plan 过大 | 请求体上限 16MB，页数上限 500，超限 413 |
-| 渲染服务二进制间接链接 pgx/sqlite | 已登记（§1）；镜像落地前拆分 `animstore` 子包。不影响正确性，只影响体积与漏洞面 |
+| 渲染服务二进制间接链接 pgx/sqlite | **已修（6.8）**：拆出 `animdefault` / `animstore`，`cmd/renderer/deps_test.go` 断言传递闭包不含 db/project/pgx/sqlite；二进制 17.10MB → 10.19MB |
 | 分层警告退化为噪音 | 25% 容差 + 按页汇总（D4.5）；`TestPresetDurationsDoNotSpamTierWarnings` 用四套预设守住 |
 
 ## 6. 实施记录

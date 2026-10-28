@@ -1,4 +1,4 @@
-package animation
+package animstore
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/db"
 	"github.com/F31/ppts/migrations"
 )
@@ -35,22 +36,22 @@ func TestSQLiteStoreSuite(t *testing.T) {
 	runStoreSuite(t, newAnimationStore(t), db.LocalTenantID, "p-animation")
 }
 
-func sampleRevision(tenant, project, slide string, sourceRevisionNo int) *Revision {
-	return &Revision{
+func sampleRevision(tenant, project, slide string, sourceRevisionNo int) *animation.Revision {
+	return &animation.Revision{
 		TenantID:         tenant,
 		ProjectID:        project,
 		SlideID:          slide,
 		Language:         "zh-CN",
 		SourceRevisionNo: sourceRevisionNo,
-		Status:           StatusDraft,
+		Status:           animation.StatusDraft,
 		PresetID:         "business-calm",
 		Intensity:        1.0,
-		Tracks: []*Track{{
+		Tracks: []*animation.Track{{
 			ElementID: "shape-1",
-			Kind:      KindTitle,
-			Clips: []*Clip{{
+			Kind:      animation.KindTitle,
+			Clips: []*animation.Clip{{
 				ID: "c1", Type: "slideIn", StartMs: 0, DurationMs: 600, Easing: "easeOut",
-				Params: Params{Direction: "up", Offset: 40}, Trigger: "onEnter",
+				Params: animation.Params{Direction: "up", Offset: 40}, Trigger: "onEnter",
 			}},
 		}},
 	}
@@ -62,10 +63,10 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 	t.Helper()
 	ctx := context.Background()
 
-	t.Run("get missing returns ErrNotFound", func(t *testing.T) {
-		_, err := s.Get(ctx, Key{TenantID: tenantID, ProjectID: projectID, SlideID: "slide-none", Language: "zh-CN"})
-		if !errors.Is(err, ErrNotFound) {
-			t.Fatalf("got %v, want ErrNotFound", err)
+	t.Run("get missing returns animation.ErrNotFound", func(t *testing.T) {
+		_, err := s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: "slide-none", Language: "zh-CN"})
+		if !errors.Is(err, animation.ErrNotFound) {
+			t.Fatalf("got %v, want animation.ErrNotFound", err)
 		}
 	})
 
@@ -75,7 +76,7 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		if err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		if rev.Revision != 1 || rev.Status != StatusDraft {
+		if rev.Revision != 1 || rev.Status != animation.StatusDraft {
 			t.Fatalf("after insert revision=%d status=%s, want 1/draft", rev.Revision, rev.Status)
 		}
 		if len(rev.Tracks) != 1 || rev.Tracks[0].Clips[0].Params.Direction != "up" {
@@ -110,9 +111,9 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 			t.Fatalf("update: %v", err)
 		}
 		_, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 1)
-		var conflict *ErrConflict
+		var conflict *animation.ErrConflict
 		if !errors.As(err, &conflict) {
-			t.Fatalf("got %v, want *ErrConflict", err)
+			t.Fatalf("got %v, want *animation.ErrConflict", err)
 		}
 		if conflict.Latest == nil || conflict.Latest.Revision != 2 {
 			t.Fatalf("conflict latest = %+v, want revision 2", conflict.Latest)
@@ -121,9 +122,9 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 
 	t.Run("insert with non-zero expected conflicts", func(t *testing.T) {
 		_, err := s.Put(ctx, sampleRevision(tenantID, projectID, "slide-ghost", 0), 3)
-		var conflict *ErrConflict
+		var conflict *animation.ErrConflict
 		if !errors.As(err, &conflict) {
-			t.Fatalf("got %v, want *ErrConflict", err)
+			t.Fatalf("got %v, want *animation.ErrConflict", err)
 		}
 	})
 
@@ -132,16 +133,16 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 0); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		if _, err := s.SetStatus(ctx, Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}, StatusApproved); err != nil {
+		if _, err := s.SetStatus(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}, animation.StatusApproved); err != nil {
 			t.Fatalf("approve: %v", err)
 		}
-		if _, err := s.SetStatus(ctx, Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}, StatusLocked); err != nil {
+		if _, err := s.SetStatus(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}, animation.StatusLocked); err != nil {
 			t.Fatalf("lock: %v", err)
 		}
-		// 故意用过期的 expected：仍应报 ErrLocked，而不是 ErrConflict——
+		// 故意用过期的 expected：仍应报 animation.ErrLocked，而不是 animation.ErrConflict——
 		// "不能写"优先于"你的版本旧了"，否则用户会去刷新重试，还是写不进去。
-		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 99); !errors.Is(err, ErrLocked) {
-			t.Fatalf("got %v, want ErrLocked", err)
+		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 99); !errors.Is(err, animation.ErrLocked) {
+			t.Fatalf("got %v, want animation.ErrLocked", err)
 		}
 	})
 
@@ -150,28 +151,28 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 0); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
-		key := Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}
+		key := animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}
 
 		// draft → locked 跳级，必须拒绝。
-		if _, err := s.SetStatus(ctx, key, StatusLocked); !errors.Is(err, ErrStatusTransition) {
-			t.Fatalf("draft→locked: got %v, want ErrStatusTransition", err)
+		if _, err := s.SetStatus(ctx, key, animation.StatusLocked); !errors.Is(err, animation.ErrStatusTransition) {
+			t.Fatalf("draft→locked: got %v, want animation.ErrStatusTransition", err)
 		}
-		if _, err := s.SetStatus(ctx, key, StatusApproved); err != nil {
+		if _, err := s.SetStatus(ctx, key, animation.StatusApproved); err != nil {
 			t.Fatalf("draft→approved: %v", err)
 		}
-		if _, err := s.SetStatus(ctx, key, StatusLocked); err != nil {
+		if _, err := s.SetStatus(ctx, key, animation.StatusLocked); err != nil {
 			t.Fatalf("approved→locked: %v", err)
 		}
-		unlocked, err := s.SetStatus(ctx, key, StatusApproved)
+		unlocked, err := s.SetStatus(ctx, key, animation.StatusApproved)
 		if err != nil {
 			t.Fatalf("locked→approved: %v", err)
 		}
-		if unlocked.Status != StatusApproved {
+		if unlocked.Status != animation.StatusApproved {
 			t.Fatalf("status = %s, want approved", unlocked.Status)
 		}
 		// locked→draft 不是合法回退路径：要么先解锁再改，要么保持锁定。
-		if _, err := s.SetStatus(ctx, key, StatusDraft); !errors.Is(err, ErrStatusTransition) {
-			t.Fatalf("locked→draft: got %v, want ErrStatusTransition", err)
+		if _, err := s.SetStatus(ctx, key, animation.StatusDraft); !errors.Is(err, animation.ErrStatusTransition) {
+			t.Fatalf("locked→draft: got %v, want animation.ErrStatusTransition", err)
 		}
 	})
 
@@ -180,7 +181,7 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 0); err != nil {
 			t.Fatalf("insert legacy: %v", err)
 		}
-		got, err := s.Get(ctx, Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN", SourceRevisionNo: 7})
+		got, err := s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN", SourceRevisionNo: 7})
 		if err != nil {
 			t.Fatalf("get with newer revision: %v", err)
 		}
@@ -194,7 +195,7 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		if _, err := s.Put(ctx, fresh, 0); err != nil {
 			t.Fatalf("insert new revision: %v", err)
 		}
-		got, err = s.Get(ctx, Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN", SourceRevisionNo: 7})
+		got, err = s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN", SourceRevisionNo: 7})
 		if err != nil {
 			t.Fatalf("get revision 7: %v", err)
 		}
@@ -212,15 +213,15 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 			t.Fatalf("insert: %v", err)
 		}
 		otherTenant := "00000000-0000-0000-0000-00000000dead"
-		if _, err := s.Get(ctx, Key{TenantID: otherTenant, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}); !errors.Is(err, ErrNotFound) {
-			t.Fatalf("cross tenant get: got %v, want ErrNotFound", err)
+		if _, err := s.Get(ctx, animation.Key{TenantID: otherTenant, ProjectID: projectID, SlideID: slide, Language: "zh-CN"}); !errors.Is(err, animation.ErrNotFound) {
+			t.Fatalf("cross tenant get: got %v, want animation.ErrNotFound", err)
 		}
 	})
 
 	t.Run("invalid key is rejected", func(t *testing.T) {
-		_, err := s.Get(ctx, Key{TenantID: tenantID, ProjectID: projectID})
-		if !errors.Is(err, ErrInvalidKey) {
-			t.Fatalf("got %v, want ErrInvalidKey", err)
+		_, err := s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID})
+		if !errors.Is(err, animation.ErrInvalidKey) {
+			t.Fatalf("got %v, want animation.ErrInvalidKey", err)
 		}
 	})
 }

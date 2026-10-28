@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
@@ -82,7 +82,7 @@ type storeSet struct {
 	usage         usageBundle
 	pronunciation pronunciation.Store
 	contextRule   contextrule.Store
-	animation     animation.Store
+	animation     animstore.Store
 
 	objects objectstore.ObjectStore
 }
@@ -135,7 +135,7 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		set.usage = usage.NewPGStore(pool)
 		set.pronunciation = pronunciation.NewPGStore(pool)
 		set.contextRule = contextrule.NewPGStore(pool)
-		set.animation = animation.NewPGStore(pool)
+		set.animation = animstore.NewPGStore(pool)
 
 	case db.DriverSQLite:
 		sqldb, err := db.OpenSQLite(ctx, cfg.DSN)
@@ -169,7 +169,7 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		set.usage = usage.NewSQLiteStore(sqldb)
 		set.pronunciation = pronunciation.NewSQLiteStore(sqldb)
 		set.contextRule = contextrule.NewSQLiteStore(sqldb)
-		set.animation = animation.NewSQLiteStore(sqldb)
+		set.animation = animstore.NewSQLiteStore(sqldb)
 
 	default:
 		return nil, fmt.Errorf("db: unsupported driver %q", cfg.Driver)

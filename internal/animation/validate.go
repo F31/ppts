@@ -298,10 +298,10 @@ func validateClipTiming(c *Clip, eff *Effect, pc PageContext, tolerance int64, f
 
 func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, tolerance int64, field string) error {
 	switch {
-	case c.Trigger == triggerEnter:
+	case c.Trigger == TriggerEnter:
 		return nil
-	case strings.HasPrefix(c.Trigger, triggerSegment):
-		id := strings.TrimPrefix(c.Trigger, triggerSegment)
+	case strings.HasPrefix(c.Trigger, TriggerSegmentPrefix):
+		id := strings.TrimPrefix(c.Trigger, TriggerSegmentPrefix)
 		if id == "" {
 			return invalid(RuleStructure, field+".trigger", "missing segment id", 400)
 		}
@@ -316,8 +316,8 @@ func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, 
 			}
 		}
 		return nil
-	case strings.HasPrefix(c.Trigger, triggerAtTime):
-		raw := strings.TrimPrefix(c.Trigger, triggerAtTime)
+	case strings.HasPrefix(c.Trigger, TriggerAtTimePrefix):
+		raw := strings.TrimPrefix(c.Trigger, TriggerAtTimePrefix)
 		ms, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || ms < 0 {
 			return invalid(RuleStructure, field+".trigger", "atTime requires a non-negative millisecond", 400)
