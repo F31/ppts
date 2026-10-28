@@ -1,0 +1,159 @@
+{
+  "schemaVersion": "animation/v1",
+  "effects": [
+    {
+      "id": "fadeIn",
+      "label": "淡入",
+      "level": "L1",
+      "class": "entrance",
+      "appliesTo": ["title", "bullet", "image", "shape", "icon", "chart", "table", "page"],
+      "durationRange": [200, 1000],
+      "defaultDuration": 400,
+      "params": {}
+    },
+    {
+      "id": "slideIn",
+      "label": "滑入",
+      "level": "L1",
+      "class": "entrance",
+      "appliesTo": ["title", "bullet", "image", "icon"],
+      "durationRange": [300, 1200],
+      "defaultDuration": 600,
+      "params": {
+        "direction": { "type": "enum", "values": ["up", "down", "left", "right"], "default": "up" },
+        "offset": { "type": "number", "min": 0, "max": 120, "default": 40 }
+      }
+    },
+    {
+      "id": "pop",
+      "label": "弹出",
+      "level": "L1",
+      "class": "entrance",
+      "appliesTo": ["icon", "title", "shape", "image"],
+      "durationRange": [300, 900],
+      "defaultDuration": 500,
+      "params": {
+        "scaleFrom": { "type": "number", "min": 0.7, "max": 1.0, "default": 0.88 }
+      }
+    },
+    {
+      "id": "grow",
+      "label": "生长",
+      "level": "L2",
+      "class": "entrance",
+      "appliesTo": ["chart", "table", "shape"],
+      "durationRange": [400, 2000],
+      "defaultDuration": 900,
+      "params": {
+        "axis": { "type": "enum", "values": ["x", "y"], "default": "y" }
+      }
+    },
+    {
+      "id": "highlight",
+      "label": "高亮",
+      "level": "L2",
+      "class": "emphasis",
+      "appliesTo": ["bullet", "title"],
+      "durationRange": [400, 3000],
+      "defaultDuration": 900,
+      "params": {}
+    },
+    {
+      "id": "bob",
+      "label": "呼吸",
+      "level": "L2",
+      "class": "emphasis",
+      "looping": true,
+      "appliesTo": ["icon", "image"],
+      "durationRange": [1000, 3000],
+      "defaultDuration": 2000,
+      "params": {
+        "loop": { "type": "bool", "default": true }
+      }
+    },
+    {
+      "id": "fadeOut",
+      "label": "淡出",
+      "level": "L1",
+      "class": "exit",
+      "appliesTo": ["*"],
+      "durationRange": [200, 800],
+      "defaultDuration": 300,
+      "params": {}
+    }
+  ],
+  "presets": [
+    {
+      "id": "business-calm",
+      "label": "商务稳重",
+      "description": "客户方案与汇报：慢节奏，仅淡入与轻微上移",
+      "intensity": 1.0,
+      "staggerMs": 150,
+      "segmentAligned": true,
+      "clips": {
+        "title": [{ "type": "slideIn", "durationMs": 700, "easing": "easeOut", "params": { "direction": "up", "offset": 32 } }],
+        "bullet": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
+        "image": [{ "type": "pop", "durationMs": 600, "easing": "easeOut", "params": { "scaleFrom": 0.96 } }],
+        "chart": [{ "type": "grow", "durationMs": 800, "easing": "easeInOut", "params": { "axis": "y" } }],
+        "table": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
+        "icon": [{ "type": "pop", "durationMs": 500, "easing": "easeOut", "params": { "scaleFrom": 0.9 } }],
+        "shape": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
+        "page": [{ "type": "fadeIn", "durationMs": 400, "easing": "easeOut" }]
+      }
+    },
+    {
+      "id": "tech-dynamic",
+      "label": "科技动感",
+      "description": "产品发布与技术分享：中速，滑入为主",
+      "intensity": 1.15,
+      "staggerMs": 90,
+      "segmentAligned": true,
+      "clips": {
+        "title": [{ "type": "slideIn", "durationMs": 450, "easing": "easeOut", "params": { "direction": "up", "offset": 56 } }],
+        "bullet": [{ "type": "slideIn", "durationMs": 400, "easing": "easeOut", "params": { "direction": "left", "offset": 48 } }],
+        "image": [{ "type": "pop", "durationMs": 420, "easing": "easeOut", "params": { "scaleFrom": 0.92 } }],
+        "chart": [{ "type": "grow", "durationMs": 600, "easing": "easeOut", "params": { "axis": "y" } }],
+        "table": [{ "type": "fadeIn", "durationMs": 420, "easing": "easeOut" }],
+        "icon": [{ "type": "pop", "durationMs": 380, "easing": "spring", "params": { "scaleFrom": 0.86 } }],
+        "shape": [{ "type": "fadeIn", "durationMs": 400, "easing": "easeOut" }],
+        "page": [{ "type": "fadeIn", "durationMs": 320, "easing": "easeOut" }]
+      }
+    },
+    {
+      "id": "teaching-clear",
+      "label": "教学清晰",
+      "description": "培训与课程：中慢，讲到哪条出现哪条",
+      "intensity": 0.9,
+      "staggerMs": 180,
+      "segmentAligned": true,
+      "clips": {
+        "title": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
+        "bullet": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
+        "image": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
+        "chart": [{ "type": "grow", "durationMs": 900, "easing": "easeInOut", "params": { "axis": "y" } }],
+        "table": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
+        "icon": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
+        "shape": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
+        "page": [{ "type": "fadeIn", "durationMs": 450, "easing": "easeOut" }]
+      }
+    },
+    {
+      "id": "launch-bold",
+      "label": "发布会",
+      "description": "营销与路演：快节奏，大幅位移与生长",
+      "intensity": 1.25,
+      "staggerMs": 60,
+      "segmentAligned": true,
+      "clips": {
+        "title": [{ "type": "pop", "durationMs": 340, "easing": "spring", "params": { "scaleFrom": 0.82 } }],
+        "bullet": [{ "type": "slideIn", "durationMs": 320, "easing": "easeOut", "params": { "direction": "left", "offset": 80 } }],
+        "image": [{ "type": "pop", "durationMs": 380, "easing": "spring", "params": { "scaleFrom": 0.86 } }],
+        "chart": [{ "type": "grow", "durationMs": 500, "easing": "easeOut", "params": { "axis": "y" } }],
+        "table": [{ "type": "fadeIn", "durationMs": 360, "easing": "easeOut" }],
+        "icon": [{ "type": "pop", "durationMs": 300, "easing": "spring", "params": { "scaleFrom": 0.8 } }],
+        "shape": [{ "type": "pop", "durationMs": 320, "easing": "spring", "params": { "scaleFrom": 0.88 } }],
+        "page": [{ "type": "fadeIn", "durationMs": 260, "easing": "easeOut" }]
+      }
+    }
+  ]
+}
