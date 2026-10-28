@@ -1,0 +1,21 @@
+{
+  "name": "ppts-renderer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ppts 动画渲染后端（Remotion）：消费 CompiledTimeline，产出逐页 H.264 片段",
+  "scripts": {
+    "render": "node render.mjs",
+    "studio": "remotion studio src/index.tsx"
+  },
+  "dependencies": {
+    "@remotion/bundler": "4.0.539",
+    "@remotion/renderer": "4.0.539",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.539"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "typescript": "5.6.3"
+  }
+}

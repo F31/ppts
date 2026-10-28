@@ -61,7 +61,16 @@ type Page struct {
 	SlideID    string `json:"slideId"`
 	DurationMs int64  `json:"durationMs"`
 	// BaseImage 是相对工作根目录的路径。绝对路径与 .. 一律被拒绝（§8.7）。
-	BaseImage  string     `json:"baseImage"`
+	BaseImage string `json:"baseImage"`
+	// PlateImage 是「去掉元素本体」的底板（相对工作根目录）。
+	//
+	// 底图是整页烘焙的 PNG：把元素区域抬升成图层后，原位置仍留着本体，
+	// 入场动画会看到静态副本与移动副本重叠（design.md ADR-6）。
+	// 底板把那些区域用周围底色填平，图层再盖上去。
+	//
+	// 它是 baseImage + layers[*].box 的确定性派生物，因此**不参与 planHash**；
+	// 缺省表示「没有元素级图层」或调用方未做补洞，合成器退回 baseImage。
+	PlateImage string     `json:"plateImage,omitempty"`
 	Layers     []Layer    `json:"layers,omitempty"`
 	Transition Transition `json:"transition"`
 }

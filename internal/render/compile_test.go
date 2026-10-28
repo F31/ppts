@@ -155,6 +155,59 @@ func TestSegmentTriggerResolvesToPageOffset(t *testing.T) {
 	}
 }
 
+// clip.startMs 是相对锚点的偏移：onEnter 的错落出场必须各自保留起点，
+// 否则编排里的 700/920/1140ms 会全部塌缩到 0ms（三条同时淡入）。
+func TestOnEnterClipKeepsRelativeOffset(t *testing.T) {
+	c := newTestCompiler(t)
+	rev := revisionOf("business-calm", 1,
+		&animation.Track{ElementID: "e0", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c0", "fadeIn", 0, 400, "onEnter")}},
+		&animation.Track{ElementID: "e1", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c1", "fadeIn", 700, 400, "onEnter")}},
+		&animation.Track{ElementID: "e2", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c2", "fadeIn", 920, 400, "onEnter")}},
+	)
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "s", DurationMs: 6000, BaseImage: "p0.png",
+		Elements: []Element{
+			{ID: "e0", Kind: animation.KindBullet, Bounds: emuBox(100, 100, 400, 80)},
+			{ID: "e1", Kind: animation.KindBullet, Bounds: emuBox(100, 200, 400, 80)},
+			{ID: "e2", Kind: animation.KindBullet, Bounds: emuBox(100, 300, 400, 80)},
+		},
+		Revision: rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int64{"e0": 0, "e1": 700, "e2": 920}
+	for _, layer := range page.Layers {
+		if len(layer.Clips) != 1 {
+			t.Fatalf("%s clips = %d, want 1", layer.ElementID, len(layer.Clips))
+		}
+		if got := layer.Clips[0].StartMs; got != want[layer.ElementID] {
+			t.Fatalf("%s startMs = %d, want %d", layer.ElementID, got, want[layer.ElementID])
+		}
+	}
+}
+
+// 锚点与偏移相加：withSegment 给出锚点，startMs 在其上再偏移。
+func TestSegmentTriggerAddsClipOffset(t *testing.T) {
+	c := newTestCompiler(t)
+	page, _, err := c.CompilePage(PageInput{
+		Index: 1, SlideID: "s2", DurationMs: 6400, BaseImage: "p1.png",
+		Elements:       []Element{{ID: "e", Kind: animation.KindBullet, Bounds: emuBox(100, 100, 400, 100)}},
+		SegmentOffsets: map[string]int64{"seg-3": 3500},
+		Revision: revisionOf("", 1, &animation.Track{ElementID: "e", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c", "fadeIn", 120, 500, "withSegment:seg-3")}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := page.Layers[0].Clips[0].StartMs; got != 3620 {
+		t.Fatalf("startMs = %d, want 3620 (3500+120)", got)
+	}
+}
+
 func TestSegmentUnresolvedFallsBackToZero(t *testing.T) {
 	c := newTestCompiler(t)
 	page, diags, err := c.CompilePage(PageInput{
@@ -281,7 +334,9 @@ func TestClipTruncatedAtPageEnd(t *testing.T) {
 		Index: 0, SlideID: "s", DurationMs: 1000, BaseImage: "p0.png",
 		Elements: []Element{{ID: "e", Kind: animation.KindTitle, Bounds: emuBox(0, 0, 800, 200)}},
 		Revision: revisionOf("", 1, &animation.Track{ElementID: "e", Kind: animation.KindTitle,
-			Clips: []*animation.Clip{clipOf("c", "fadeIn", 800, 900, "atTime:800")}}),
+			// atTime 已给出绝对锚点，startMs 只作相对偏移（这里取 0）。
+			// 旧写法把 800ms 同时写进两处，靠「startMs 被忽略」才通过——那正是被修掉的缺陷。
+			Clips: []*animation.Clip{clipOf("c", "fadeIn", 0, 900, "atTime:800")}}),
 	})
 	if err != nil {
 		t.Fatal(err)

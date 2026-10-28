@@ -65,3 +65,6 @@ web/dist/*
 # 校验回放报告是 CI 产物，不入库；要留痕的是语料与判定基线
 # （internal/validation/replay/testdata/*.json）
 testdata/validation/replay-report.json
+
+# 渲染器产物（章节样片、调试帧）
+/renderer/out/

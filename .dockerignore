@@ -1,17 +1,13 @@
+# 构建上下文只留两个镜像需要的部分：Go 源码 + renderer 工程。
+# node_modules 一旦进来，上下文会从几 MB 涨到几百 MB，且会把宿主机的二进制带进镜像。
 .git
 .github
-node_modules
-web/node_modules
-.DS_Store
-*.log
-.tmp
-workbuddy
+docs
 .workbuddy
-.tokenize_bak
-.commitmsg_*
-.commitmsg_m4.txt
-docs/*.pptx
-# 发布产物与打包缓存：镜像是从源码多阶段构建，不需要它们进上下文。
-build/
-dist/
-ppts
+tmp_*
+**/node_modules
+renderer/out
+web
+*.exe
+*.test
+*.log

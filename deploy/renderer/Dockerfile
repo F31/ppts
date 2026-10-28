@@ -1,0 +1,80 @@
+# 渲染服务镜像（两段构建）
+#
+# 为什么拆 base/app：Chrome 是 CVE 的主来源、也是升级最频繁的部件。
+# 放在 base 层后，升 Chrome 只重建 base，node_modules 与 Go 编译层命中缓存。
+#
+# 为什么不用 `apt install chromium`：发行版版本随基础镜像漂移，
+# 同一份 IR 会在不同时间构建的镜像上出不同像素，而缓存键里没有它。
+#
+# 构建（在仓库根目录）：
+#   docker build -f deploy/renderer/Dockerfile \
+#     --build-arg CHROME_VERSION=$(cat deploy/renderer/CHROME_VERSION) \
+#     --build-arg CHROME_SHA256=$(cat deploy/renderer/chrome.sha256) \
+#     -t ppts/renderer:dev .
+#
+# 自检（发布前必须跑）：
+#   docker run --rm --network none --read-only --tmpfs /work \
+#     -v "$PWD/tmp/selftest:/work" ppts/renderer:dev --selftest
+
+# syntax=docker/dockerfile:1.7
+
+ARG GO_VERSION=1.25
+ARG NODE_VERSION=22
+
+# ---------- stage 1: Go 服务 ----------
+FROM golang:${GO_VERSION}-bookworm AS gobuild
+# GOWORK=off 是硬要求：仓库里的 go.work 指向本地 textnorm 源码，不会进镜像。
+ENV CGO_ENABLED=0 GOWORK=off GOFLAGS=-trimpath
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY cmd ./cmd
+COPY internal ./internal
+RUN go build -ldflags "-s -w" -o /out/ppts-renderer ./cmd/renderer
+
+# ---------- stage 2: 运行时 base（Node + Chrome + 字体）----------
+FROM node:${NODE_VERSION}-bookworm-slim AS base
+ARG CHROME_VERSION
+ARG CHROME_SHA256
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl unzip fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/*
+
+# 固定版本 + 摘要校验：版本化 URL 是不可变的，但校验和能挡住下载截断与镜像源篡改。
+RUN set -eux; \
+    test -n "${CHROME_VERSION}"; \
+    test -n "${CHROME_SHA256}"; \
+    url="https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chrome-headless-shell-linux64.zip"; \
+    curl -fsSL "$url" -o /tmp/chrome.zip; \
+    echo "${CHROME_SHA256}  /tmp/chrome.zip" | sha256sum -c -; \
+    mkdir -p /opt/chrome; \
+    unzip -q /tmp/chrome.zip -d /opt/chrome; \
+    rm /tmp/chrome.zip; \
+    /opt/chrome/chrome-headless-shell-linux64/chrome-headless-shell --version
+
+ENV PPTS_CHROME=/opt/chrome/chrome-headless-shell-linux64/chrome-headless-shell \
+    NODE_ENV=production
+
+# ---------- stage 3: 应用 ----------
+FROM base AS app
+WORKDIR /app
+# 只装运行时依赖：@remotion/bundler 与 typescript 属构建期，若进入镜像会白增 80MB 与 CVE 面。
+COPY renderer/package.json renderer/package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY renderer/src ./src
+COPY renderer/render.mjs renderer/still.mjs ./
+COPY --from=gobuild /out/ppts-renderer /usr/local/bin/ppts-renderer
+
+# 非 root：Chromium 因此不需要 --no-sandbox（sandbox 是主要防线之一，不该关掉）。
+RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin renderer \
+ && mkdir -p /work && chown renderer:renderer /work
+USER 10001
+
+EXPOSE 8090
+# 默认命令是 Go 服务：HTTP 契约、幂等、并发都在它里面，Node 只是被它 exec 的合成器。
+# --selftest 由部署流水线覆盖命令触发（见 compose.yml 的 selftest 服务）。
+ENTRYPOINT ["/usr/local/bin/ppts-renderer"]
+CMD ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work", \
+     "-renderer-script", "/app/render.mjs", "-concurrency", "2", \
+     "-fonts", "Noto Sans CJK SC@20230817"]

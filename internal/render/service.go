@@ -58,8 +58,11 @@ type JobStatus struct {
 
 // Health 是 GET /healthz 的响应体（§8.6 能力探测）。
 type Health struct {
-	Version       string `json:"version"`
-	Backend       string `json:"backend"`
+	Version string `json:"version"`
+	Backend string `json:"backend"`
+	// ChromeVersion 是浏览器版本，仅光栅后端会填。它不进 planHash（Version 里已经含了），
+	// 但漏洞台账与「升级后像素为什么变了」的排查需要它单独可读。
+	ChromeVersion string `json:"chromeVersion,omitempty"`
 	SchemaVersion string `json:"schemaVersion"`
 	FPS           int    `json:"maxFps"`
 	Fonts         []Font `json:"fonts"`
@@ -157,9 +160,15 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.mu.Unlock()
+	// 浏览器版本由 backend 自己报：服务层不该知道 Chromium 的存在。
+	chromeVersion := ""
+	if reporter, ok := s.cfg.Backend.(interface{ ChromeVersion() string }); ok {
+		chromeVersion = reporter.ChromeVersion()
+	}
 	writeJSON(w, http.StatusOK, Health{
 		Version:       s.cfg.Version,
 		Backend:       s.cfg.Backend.Name(),
+		ChromeVersion: chromeVersion,
 		SchemaVersion: IRSchemaVersion,
 		FPS:           MaxFPS,
 		Fonts:         s.cfg.Fonts,

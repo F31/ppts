@@ -40,6 +40,9 @@ func (t *Timeline) CanonicalJSON() ([]byte, error) {
 	c.Pages = make([]Page, len(t.Pages))
 	for i, p := range t.Pages {
 		p.BaseImage = path.Base(p.BaseImage)
+		// PlateImage 是 baseImage + boxes 的确定性派生物，且文件名含页序；
+		// 把它算进 hash 会让「同一份规格换了工作目录」命中不了缓存。
+		p.PlateImage = ""
 		// Layers 复制成非 nil 切片，避免 nil 与 [] 在 JSON 里一个输出 null、一个输出 []。
 		p.Layers = append([]Layer{}, t.Pages[i].Layers...)
 		if len(p.Layers) == 0 {

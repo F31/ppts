@@ -87,6 +87,13 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 	if err := SafeAssetPath(p.BaseImage); err != nil {
 		return planErr(base+".baseImage", CodeUnsafePath, "%s", err)
 	}
+	// 底板可选（没有元素级图层时不存在），但一旦出现就必须同样安全：
+	// 它是后端生成的文件名，却也来自计划字节，不能因为是「派生物」就放宽。
+	if p.PlateImage != "" {
+		if err := SafeAssetPath(p.PlateImage); err != nil {
+			return planErr(base+".plateImage", CodeUnsafePath, "%s", err)
+		}
+	}
 	if err := validateTransition(p.Transition); err != nil {
 		return planErr(base+".transition", CodeInvalidPlan, "%s", err)
 	}

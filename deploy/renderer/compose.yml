@@ -1,0 +1,48 @@
+// 渲染服务的本地/单机部署样例。
+//
+// 三件事在这里被固定下来，改部署时不要顺手删：
+//   1. 只读 rootfs + tmpfs 工作目录：渲染会把页面图、底板、片段写进 /work，
+//      但容器本身不该可写（Chromium 的 CVE 大多要求落盘）。
+//   2. 无外网：渲染不需要网络；给它外网只会多一条数据外泄路径。
+//   3. 资源限额：单 job 峰值内存 ~2GB，超了要 OOM 重启而不是拖垮整台机器。
+services:
+  renderer:
+    build:
+      context: ../..
+      dockerfile: deploy/renderer/Dockerfile
+      args:
+        CHROME_VERSION: ${CHROME_VERSION:-156.0.8078.73}
+        CHROME_SHA256: ${CHROME_SHA256:?run deploy/renderer/pin-chrome.sh first}
+    image: ppts/renderer:dev
+    ports:
+      - "8090:8090"
+    read_only: true
+    tmpfs:
+      - /work:size=2g,mode=1777
+    network_mode: none
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # 发布前的一次性门禁：把 selftest 当成独立服务跑，失败即流水线失败。
+  # 用法：docker compose -f deploy/renderer/compose.yml run --rm selftest
+  selftest:
+    image: ppts/renderer:dev
+    profiles: ["selftest"]
+    read_only: true
+    tmpfs:
+      - /work:size=1g,mode=1777
+    network_mode: none
+    entrypoint: ["/usr/local/bin/ppts-renderer"]
+    command:
+      - "-selftest"
+      - "-backend=remotion"
+      - "-workdir=/work"
+      - "-renderer-script=/app/render.mjs"

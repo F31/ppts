@@ -287,13 +287,20 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 	m := Motion{ClipID: clip.ID, Effect: clip.Type}
 	var diags []Diagnostic
 
-	start, ok, diag := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
+	anchor, ok, diag := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
 	if diag != nil {
 		// 分段失效是可恢复的：起点退化为 0 并留痕，用户看到的是"这条提前了"而不是"导出失败"。
 		diags = append(diags, *diag)
 	}
 	if !ok {
 		return m, diags, false
+	}
+	// 触发只给出锚点，startMs 是相对锚点的偏移（设计方案附录 B）。
+	// 两者必须相加：只取锚点会让「同一触发器下的错落出场」全部塌缩到 0ms，
+	// 用户编排的 700/920/1140 会变成三条同时淡入——表现为"错落丢了"，且没有任何诊断。
+	start := anchor + clip.StartMs
+	if start < 0 {
+		start = 0
 	}
 	if start >= in.DurationMs {
 		diags = append(diags, Diagnostic{Code: DiagClipTruncated, Page: in.Index,
@@ -424,7 +431,8 @@ func (c *Compiler) toBox(b *EMUBox, page int, elementID string) (Box, bool, *Dia
 	return Box{X: x, Y: y, W: w, H: h}, true, diag
 }
 
-// resolveTrigger 把三种触发形式解析为页内绝对毫秒。
+// resolveTrigger 把三种触发形式解析为页内锚点毫秒。
+// 返回的是锚点而非最终起点：clip.startMs 的相对偏移由 compileClip 叠加。
 func resolveTrigger(trigger string, offsets map[string]int64, page int, clipID string) (int64, bool, *Diagnostic) {
 	switch {
 	case trigger == "" || trigger == "onEnter":

@@ -33,11 +33,15 @@ func run() error {
 	var (
 		addr       = flag.String("addr", ":8090", "监听地址")
 		workDir    = flag.String("workdir", "", "产物工作目录（必填）")
-		backend    = flag.String("backend", "stub", "backend：stub")
-		version    = flag.String("version", "dev", "服务版本（参与 planHash）")
+		backend    = flag.String("backend", "stub", "backend：stub | remotion")
+		version    = flag.String("version", "dev", "服务版本（参与 planHash；remotion 后端建议写成 remotion@x|chrome@y）")
 		fonts      = flag.String("fonts", "", "逗号分隔的可用字体族，格式 family@version")
 		concurrent = flag.Int("concurrency", 2, "同时渲染任务数")
 		maxPlan    = flag.Int64("max-plan-bytes", render.MaxPlanBytes, "请求体上限（字节）")
+		scriptPath = flag.String("renderer-script", "", "renderer/render.mjs 路径（默认取 PPTS_RENDERER_SCRIPT）")
+		chromePath = flag.String("chrome", "", "chrome-headless-shell 路径（默认取 PPTS_CHROME）")
+		renderTO   = flag.Duration("render-timeout", 15*time.Minute, "单次渲染的上限")
+		selftest   = flag.Bool("selftest", false, "跑一遍后端自检后退出：staging → 渲染 2 页 → 校验产物")
 	)
 	flag.Parse()
 
@@ -48,8 +52,26 @@ func run() error {
 	switch *backend {
 	case "stub":
 		impl = &render.StubBackend{}
+	case "remotion":
+		impl = &render.RemotionBackend{
+			Script:      *scriptPath,
+			Chrome:      *chromePath,
+			Concurrency: *concurrent,
+			Timeout:     *renderTO,
+			Logf: func(format string, args ...any) {
+				log.Printf(format, args...)
+			},
+		}
 	default:
-		return fmt.Errorf("未知 backend %q（当前只内置 stub；真实光栅 backend 随镜像接入）", *backend)
+		return fmt.Errorf("未知 backend %q（可选 stub | remotion）", *backend)
+	}
+
+	// 自检在服务启动之前跑完并退出：镜像构建/部署流水线拿退出码当门禁，
+	// 而不是「容器起来了」就当渲染可用。
+	if *selftest {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		return runSelfTest(ctx, impl, *workDir)
 	}
 
 	svc, err := render.NewService(render.ServiceConfig{
