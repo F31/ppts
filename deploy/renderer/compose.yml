@@ -31,8 +31,9 @@ services:
     # volumes:
     #   - /srv/ppts/pages:/assets:ro
     # command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
-    #           "-renderer-script", "/app/render.mjs", "-fonts", "Noto Sans CJK SC@20230817",
-    #           "-assets-dir", "/assets"]
+    #           "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets"]
+    # 注意：不要在这里补 -fonts。字体版本由镜像 entrypoint 从 /etc/ppts/fonts.version
+    # 拼出来（见 Dockerfile 说明），在这里覆盖会让版本与实际字体脱节。
     network_mode: none
     cpus: 2
     mem_limit: 2g
@@ -40,7 +41,10 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/healthz"]
+      # 用 curl 不是 wget：这个镜像的 apt 列表里只有 curl，wget 从来没有装过，
+      # 于是这条探针永远返回 127（command not found），容器一直被标成 unhealthy。
+      # 实测：`docker run --entrypoint sh ppts/renderer:dev -c 'command -v wget'` 无输出。
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8090/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

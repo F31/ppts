@@ -1,0 +1,52 @@
+# 渲染镜像的字体字集边界 —— 唯一事实源。
+#
+# 为什么要有这个文件：镜像里原本装的是 fonts-noto-cjk 全量（4 个 TTC 共 91MB，
+# 覆盖中日韩 + 假名 + 谚文 + Ext-A/B）。渲染服务只需要「中文正文 + 常见符号」，
+# 全量装的代价是 91MB 体积，和一块永远用不到的字体解析面（字体是 Chrome CVE 的常见入口）。
+#
+# 两档语义（见 subset-fonts.py 的断言）：
+#   must        —— 每个可绘制码位都必须在产物里有字形，缺一个构建就失败。
+#                  这一档是「缺了就是方框」的部分：汉字、中文标点、全角、假名、拉丁。
+#   best-effort —— 默认收，字体没有就跳过，不失败。这一档是符号：缺了 Chrome 会
+#                  沿 fallback 链找 Liberation Sans / DejaVu，不是方框。
+#                  实测 Noto Sans CJK SC 在希腊/箭头/制表符这些区只有部分字形，
+#                  所以它们不能进 must，否则断言永远红。
+#
+# 汉字边界为什么取 URO（4E00-9FFF，20992 码位）而不是 GB2312（6763 字）：
+# 实测 喆/堃/犇/垚/玥/珺/赟/燚/弢/韡/祎 这类真实人名用字 GB2312 全部覆盖不了，
+# 按 GB2312 切会在真实文案上出方框。URO 与 GBK 覆盖几乎相同（20992 vs 21003），
+# 但 URO 是 Unicode 的稳定区间，不依赖某个编解码表实现。
+# 不收 CJK Ext-A/Ext-B（3400-4DBF / 20000+）：生僻字与异体字走 fallback，要收就改这里。
+#
+# 改这个文件 = 改字集边界。字体版本号由本文件的 sha256 推导（见 subset-fonts.py），
+# 所以不需要手改任何版本号：planHash 会自动跟着变。
+#
+# 格式：<码位或区间> [must]   # 注释
+
+0020-007E must   # Basic Latin：可打印 ASCII
+00A0-00FF must   # Latin-1 补充：°±×÷ 与西欧字母
+0370-03FF        # Greek and Coptic：α β γ，理科片子常用（部分字形，其余走 fallback）
+0400-04FF        # Cyrillic
+2000-206F        # General Punctuation：整段尽量收。缺的都是 ‗ ‛ ‣ ‱ ‽ ⁀ 这类生僻符号，
+                 # 常见的那几个单独标 must（见下），别指望整段都能出字形。
+2010-2011 must   # ‐ ‑ 连字符
+2013-2015 must   # – — ― 破折号
+2018-201A must   # ‘ ’ ‚
+201C-201D must   # “ ”
+2020-2022 must   # † ‡ •
+2026 must        # … 省略号
+2030 must        # ‰
+2032-2033 must   # ′ ″
+20A0-20BF        # Currency Symbols：€ ₩
+2100-214F        # Letterlike Symbols：℃ № ™
+2190-21FF        # Arrows：→ ⇒
+2460-24FF        # Enclosed Alphanumerics：①②③
+2500-257F        # Box Drawing：表格线
+25A0-25FF        # Geometric Shapes：■ ▲ ● ○
+2600-26FF        # Miscellaneous Symbols：★ ☆ ♀ ♂
+3000-303F must   # CJK 标点：、。「」【】
+3040-30FF must   # 平假名 / 片假名
+4E00-9FEF must   # CJK 统一表意文字（URO 主体，20976 码位）
+9FF0-9FFF        # URO 末尾 16 个字形是 Unicode 11 新增的，本字体（2.004）没收录；
+                 # 不标 must 是因为它在字体里确实不存在，标了只会让构建永远红。升字体后可改回 must。
+FF00-FFEF must   # 全角字符：！？：（）￥

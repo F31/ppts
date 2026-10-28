@@ -70,6 +70,34 @@ Dockerfile 里 `curl` / `apt-get` / `npm ci` 各自带了重试（`--retry-all-e
 - 只监听 `127.0.0.1` 又没开 mirrored 时，容器里必然连不上代理，表现仍是 `curl: (56)`——
   这跟摘要、URL 都无关，别去改 `chrome.sha256`。
 
+## 字体（`charset.txt`，改字集前必读）
+
+镜像里的中文不是 `fonts-noto-cjk` 全量（4 个 TTC 共 91MB），而是构建期子集化的两个 OTF
+（约 21.9MB）。边界写在 `deploy/renderer/charset.txt`，**那是唯一事实源**：
+
+```bash
+# 改完 charset.txt 直接构建即可，不需要手改任何版本号
+docker build -f deploy/renderer/Dockerfile ... -t ppts/renderer:dev .
+```
+
+- `must` 行：每个可绘制码位都必须在产物里有字形，缺一个**构建失败**。汉字、中文标点、全角、
+  假名、拉丁在这一档。
+- 其余行：best-effort，字体有就收、没有就跳过（靠 Chrome 的 fallback 链，通常是 Liberation Sans）。
+  希腊字母、箭头、制表符这类在 Noto CJK 里本来就只有部分字形，标 `must` 会让构建永远红。
+- **不收 CJK Ext-A/Ext-B** 与 URO 末尾 `9FF0-9FFF`（Unicode 11 新增，本字体没收录）。
+  命中这些字会是方框；要收就改 `charset.txt` 并把对应行标 `must`，构建会告诉你字体支不支持。
+
+字体版本号由 `charset.txt` 的 sha256 推导（`2.004-sub4d24a894` 这种形式），构建期写进
+`/etc/ppts/fonts.version`，由 `entrypoint.sh` 拼成 `-fonts` 交给服务，最终进 `planHash`。
+**不要**在 `docker run` / compose 里手动传 `-fonts`：手工版本号迟早与 `charset.txt` 脱节，
+而 `planHash` 恰恰靠它区分像素版本。
+
+构建期的门禁（任一不过即失败）：`must` 码位覆盖率、子集后家族名仍是 `Noto Sans CJK SC`、
+`fc-cache` 之后 `fc-list` 能精确匹配到该家族名。最后一条挡的是「装了但 fontconfig 认不出来」——
+那种状态下 `/healthz` 会说字体会，Chrome 实际走 fallback。
+
+`python3-fonttools` 只存在于构建期的 `fontsubset` 段，运行时镜像里没有 python。
+
 ## 自检（发布前必须跑）
 
 ```bash

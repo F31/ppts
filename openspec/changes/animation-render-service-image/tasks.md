@@ -52,7 +52,16 @@
   6 次全是 `curl: (18)`、`npm ci` 报 `ECONNRESET`），`NO_PROXY` 必须排除 `storage.googleapis.com` 与
   `registry.npmjs.org`，且 curl/apt/npm 三步各自带重试
 - [x] 4.7 解决 `textnorm@v0.2.2` 校验和不一致对 `GOWORK=off` 构建的阻塞：`go.sum` 记的摘要与 sumdb 权威值不符（v0.2.0/v0.2.1 同样错），已按 `h1:IZDOaanu…` 修正；`GOWORK=off go build/test ./...` 跑通（42 包）
-- [ ] 4.8 字体子集化（`pyftsubset` 常用字表）：当前镜像装全量 Noto CJK，约 9MB
+- [x] 4.8 字体子集化（ADR-15）：实测全量是 **91MB** 不是 9MB（4 个 TTC：Sans/Serif × Regular/Bold，
+  每个 TTC 含 SC/TC/JP/KR/HK 五个地区字形）。边界落 `deploy/renderer/charset.txt`（唯一事实源），
+  分 `must`（汉字/CJK 标点/全角/假名/拉丁，缺一个构建失败）与 best-effort（符号区，缺了走 fallback）两档；
+  汉区取 URO 而非 GB2312——实测 喆/堃/犇/垚/玥/珺/赟/燚/弢/韡/祎 这些人名用字 GB2312 全不覆盖。
+  `subset-fonts.py` 在独立构建段跑（`python3-fonttools` 不进运行时），产物两个 OTF 共 21.89MB；
+  字体版本由 charset 的 sha256 推导（`2.004-sub4d24a894`），经 `/etc/ppts/fonts.version` →
+  `entrypoint.sh` → `-fonts` → `planHash`，不再手写日期。构建期三道门禁：must 覆盖率、
+  子集后家族名不变、`fc-list` 能精确匹配到 `Noto Sans CJK SC`（最后一条挡「装了但 fontconfig 认不出」）。
+  验收：`/usr/share/fonts` 91MB→24MB、镜像 1.36GB→1.23GB、`/healthz.fonts` 报
+  `2.004-sub4d24a894`、同一样片 5 段 sha256 与旧镜像逐字节相同、`selftest ok … elapsed=9.42s`
 
 ## 5. 验收
 
@@ -95,7 +104,19 @@
 子元素，填色取自原图），但两个部分重叠、互不包含的兄弟元素仍会互相带出。单张栅格推不出逐元素 alpha，
 要彻底解决需上游提供分层素材；这条是模型限制，不是实现遗漏（5.9）。
 
-**未完成：4.8 字体子集化、5.5 观感盲评、5.6 长片压测。** 4.5 / 4.6 / 5.4 已于 2026-10-28 落地：`chrome.sha256`
+**未完成：5.5 观感盲评、5.6 长片压测。** 4.5 / 4.6 / 4.8 / 5.4 已于 2026-10-28 落地：`chrome.sha256`
 已提交；镜像在 WSL2 的 docker 上构建成功、自检 13.954s 通过；同一份 5 页 / 30s 样片在容器内走完 HTTP 全链路
 出片（5 × 6.000s，两次渲染字节相同）。5.4 还暴露并修掉了「底图怎么进服务」这个契约缺环（ADR-14），
 这在此前所有 stub 后端的用例里都测不到。剩余阻塞登记在 `deploy/renderer/README.md`。
+
+**4.8 的结论和原来的任务描述不一样，值得单独记一笔。** 任务写的是「装全量 Noto CJK，约 9MB」，
+实测是 **91MB**；而合成器 `Timeline.tsx` 只合成 PNG，**根本不排版文字**——把 `/usr/share/fonts`
+挂成空目录重渲，5 段 sha256 与全量字体时完全相同。所以子集化省下的 67MB 换来的不是性能，
+是**缩小一块永远用不到的攻击面**；字体在这个服务里的真实身份是「契约」而不是「渲染依赖」。
+边界因此不能拍脑袋：`charset.txt` 分成 `must`（缺一个就构建失败）与 best-effort 两档，
+汉字取 URO 而不是 GB2312（实测 13 个真实人名用字 GB2312 全不覆盖）。
+构建期三道门禁里最有用的是 `fc-list` 精确匹配——它挡的是「字体装了但 fontconfig 认不出」
+这种 `/healthz` 说没问题、实际走 fallback 的失败。
+
+顺带修掉一个与字体无关的部署缺陷：`compose.yml` 的 healthcheck 用 `wget`，而镜像里从来没有 wget
+（apt 列表只有 `curl unzip`），这条探针一直返回 127、容器永远 unhealthy。已改成 `curl -fsS`。

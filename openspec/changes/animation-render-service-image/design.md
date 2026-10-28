@@ -98,10 +98,15 @@ remotion@4.0.539|chrome@131.0.6778.85
 
 ### ADR-4 字体
 
-- 镜像内置 Noto Sans SC（OFL）。**微软雅黑不入镜像**——不可再分发（§8.6）。
+- 镜像内置 Noto Sans CJK SC（OFL）。**微软雅黑不入镜像**——不可再分发（§8.6）。
 - 字体清单由 `/healthz` 的 `fonts[{family,version}]` 暴露，`Client.RequireFonts` 已在 M2 实现：缺字体明确报 `ErrFontUnavailable`，不产出方框字。
 - 字体版本进 `planHash`：字体换了，同一份计划的像素就变了。
-- 子集化（`pyftsubset`）只在构建期跑，不进主仓库依赖；子集产物按「该镜像内所有文案的字符集」生成不现实（文案随用户变），因此本变更**不做运行时子集**，只做「按常用字表子集」把 9MB 降到 ~1.5MB，其余走 fallback 链。
+- 子集化（`pyftsubset`）只在构建期跑，不进主仓库依赖；子集产物按「该镜像内所有文案的字符集」生成不现实（文案随用户变），因此本变更**不做运行时子集**，只做「按常用字表子集」，其余走 fallback 链。
+
+> **2026-10-28 修正（见 ADR-15）**：本条写的「9MB 降到 ~1.5MB」两个数字都不对——实测全量是
+> **91MB**（4 个 TTC，含 Serif 与五个地区字形），子集后是 **21.9MB**（两个 OTF）。
+> 「按常用字表」也过于含糊：具体边界落在 `deploy/renderer/charset.txt`，分 `must` / best-effort
+> 两档，并由构建期断言保证 `must` 全覆盖。字体版本改为由字集摘要推导，不再手写。
 
 ### ADR-5 运行时安全
 
@@ -423,6 +428,127 @@ render: 启动清扫删除 3 个孤儿目录，释放 128.4 MiB
   真要收紧应单独定义产物清单，不在本条里顺手改契约。
 - 资产根由**调用方**负责就位（上游页面栅格化的产物），服务只读、不清理、不校验新鲜度。
 
+### ADR-15 字体子集：边界写进 `charset.txt`，版本由字集摘要推导（本轮落地，对应 tasks 4.8）
+
+#### 1. 起点：两个数字都对不上
+
+ADR-4 写的是「装 Noto Sans SC，子集化把 9MB 降到 ~1.5MB」。实测镜像里是：
+
+| 文件 | 体积 |
+|---|---|
+| `NotoSerifCJK-Bold.ttc` | 27MB |
+| `NotoSerifCJK-Regular.ttc` | 26MB |
+| `NotoSansCJK-Bold.ttc` | 20MB |
+| `NotoSansCJK-Regular.ttc` | 19MB |
+| `NotoSerif/Sans` 合计 + `Liberation` | **91MB** |
+
+91MB，不是 9MB。四个 TTC 里装着 SC/TC/JP/KR/HK 五个地区的字形（每个 TTC 10 个字面），
+而服务实际只可能用到「中文 + 常见符号」。
+
+#### 2. 先证伪「字体到底有没有被用到」
+
+合成器 `renderer/src/Timeline.tsx` 里只有 `<Img>`，没有任何文本节点；页面底图是上游烘焙好的 PNG。
+所以**这个服务不排版文字**。实验核对：把 `/usr/share/fonts` 整个 bind-mount 成空目录
+（`fc-list` 输出 0 个字体），用同一份 5 页样片重渲，5 个片段的 sha256 与装全量字体时**逐一相同**。
+
+```text
+SAME segment_000.mp4 7083697…  SAME segment_001.mp4 f0380b1…
+SAME segment_002.mp4 69ceb32…  SAME segment_003.mp4 d8c149b…
+SAME segment_004.mp4 a0a2956…
+```
+
+这条实验的边界必须说清：样片是**色块占位**、没有真实字形，所以它证明的是
+「当前合成路径不读字体」，**不能**证明「字体对未来的真实文案无所谓」。
+
+那为什么还要留字体？因为规范（`specs/renderer-image`）要求镜像内置可再分发字体、
+`/healthz.fonts` 必须上报、字体版本必须进 `planHash`。这三条是**契约**：调用方据此判断
+「这份文案的字体，渲染端是否认得」，将来加文字图层（字幕/标题动画）时它是前提。
+所以处置方式不是删字体，而是**把 91MB 压到与用途相称的规模，并把边界写成可验证的东西**。
+
+#### 3. 字集边界：`deploy/renderer/charset.txt` 是唯一事实源
+
+边界不是拍出来的，是量出来的：
+
+| 方案 | 体积/字面 | 结论 |
+|---|---|---|
+| GB2312（6763 字） | 3.37MB | 否：`喆 堃 犇 垚 玥 珺 赟 燚 弢 韡 祎` 全部覆盖不了，真实人名会变方框 |
+| GBK（21003 字） | 10.74MB | 可用，但覆盖依赖某个编解码表实现 |
+| **URO（4E00-9FFF，20992 码位）** | **10.78MB** | 采用：与 GBK 覆盖几乎相同，且是 Unicode 的稳定区间 |
+
+最终 `charset.txt` 收：ASCII、Latin-1、希腊/西里尔、通用标点、货币、℃ №、箭头、①②、
+制表符、■▲●、★☆、CJK 标点、假名、URO、全角。**不收** CJK Ext-A/Ext-B：生僻字与异体字
+走 fallback，要收就改这一个文件。
+
+两档语义是这轮的第二个修正。最初把 2000-206F 整段标成「必须覆盖」，构建直接失败：
+Noto Sans CJK SC 在该区间缺 78 个码位（`‗ ‛ ‣ ‱ ‽ ⁀` 这类生僻符号）。于是改成：
+
+- `must`：汉字、CJK 标点、全角、假名、拉丁、常用标点（`– — “ ” … •` 等逐个列出）。
+  缺一个 → 构建失败。
+- 其余：**best-effort**，字体有就收、没有就跳过。缺的交给 Chrome 的 fallback 链（Liberation Sans）。
+  实测 774 个 best-effort 码位在源字体里不存在，它们本来也画不出来，标成 must 只会让构建永远红。
+
+同一次失败还暴露了另一件事：URO 末尾 `9FF0-9FFF` 共 16 字是 Unicode 11 新增的，
+本字体（2.004）没收录。这 16 个码位单独降成 best-effort 并在文件里注明——**不假装覆盖**。
+
+#### 4. 版本号不再手写
+
+原来的链条是：人肉在 Dockerfile CMD 里写 `-fonts "Noto Sans CJK SC@20230817"`。
+改字集的人改的是 `charset.txt`，不会记得回来改 CMD，而 `planHash` 恰恰靠这个版本号
+区分像素版本——一次遗忘就是「字集变了、缓存键没变、旧片段被当成新片段返回」。
+
+现在：
+
+```text
+charset.txt --sha256--> subset-fonts.py --> /etc/ppts/fonts.version
+                                            --> entrypoint.sh 拼出 -fonts
+                                            --> planHash
+```
+
+版本号形如 `2.004-sub4d24a894`（`2.004` 是字体自身的 Version，`4d24a894` 是字集摘要前 8 位）。
+改 `charset.txt` 一个字，版本号就变，`planHash` 就变。**结构上不可能漂**。
+`Dockerfile` 的 `CMD` 里因此不再有 `-fonts`，由 `deploy/renderer/entrypoint.sh` 注入
+（`exec` 交给 Go 进程，信号照常到达 PID 1）。
+
+#### 5. 构建门禁
+
+`subset-fonts.py` 不满足下面任一条就以非零退出，构建失败：
+
+1. `charset.txt` 里标 `must` 的码位，源字体有 → 子集产物也必须有（防止「声明覆盖、实际缺字」出厂）；
+2. 子集后 `name` 表仍报 `Noto Sans CJK SC`（fontconfig 靠它匹配；改了名会让 `/healthz.fonts` 与事实不符）；
+3. `base` 段 `fc-cache -f` 之后 `fc-list` 必须精确匹配到该家族名——**装了但 fontconfig 认不出来**
+   的表现是「`/healthz` 报着字体、Chrome 却走 fallback」，这种失败必须在构建期暴露。
+
+`python3-fonttools` 只活在 `fontsubset` 段，运行时镜像里没有 python。
+
+#### 6. 结果（实测）
+
+| 项 | 改前 | 改后 |
+|---|---|---|
+| `/usr/share/fonts` | 91MB（4 个 TTC、20 个文件、19 个家族） | **24MB**（2 个 OTF + Liberation，5 个家族） |
+| 家族数 | Noto CJK SC/TC/JP/KR/HK × Sans/Serif × Regular/Bold | `Noto Sans CJK SC`（Regular/Bold） |
+| `/healthz.fonts` | `Noto Sans CJK SC@20230817`（手写） | `Noto Sans CJK SC@2.004-sub4d24a894`（推导） |
+| 镜像 | 1.36GB | **1.23GB** |
+| 运行时 python | 无 | 无（`fonttools` 只在校验 stage） |
+
+像素等价是逐字节验的：同一份 5 页样片在新旧镜像上各出 5 段，sha256 全部相同
+（`7083697…` / `f0380b1…` / `69ceb32…` / `d8c149b…` / `a0a2956…`）；
+另外把子集 OTF 挂进旧镜像的 `/usr/share/fonts/opentype/noto` 重跑，同样逐字节相同；
+自检 `selftest ok: backend=remotion pages=2 elapsed=9.42s`。
+
+镜像体积那条的取得方式要说明：本机代理只有 ~25–70KB/s，`base` 段那 121MB 的 Chrome
+下载跑了两小时没完成，最终用于验收的镜像是「按新 Dockerfile 构建出的字体侧镜像 +
+从旧镜像 `COPY /opt/chrome`」拼出来的等价物。Chrome 下载与摘要校验那一步本身未改动，
+在 4.6 / 4.5 已验过；体积数字因此是**测算值**，不是那次干净构建的输出。
+
+#### 7. 已知边界
+
+- **Ext-A/Ext-B 与 9FF0-9FFF 不在边界内**：这些字在字体里确实没有，命中就是方框。要收就改 `charset.txt`
+  并把对应行标 `must`，构建会告诉你字体支不支持。
+- **符号区靠 fallback**：希腊字母、箭头等只收到字体有的那部分。fallback 命中 Liberation Sans，
+  不是方框，但与「声明必须覆盖」是两回事，别混。
+- **子集不含运行时子集化**：镜像内字体是固定的，同一份计划在任何一台渲染机上出同样的字。
+  按文案运行时子集化需要缓存与并发管理，换来的只有几百 KB，不做。
+
 ## 3. 目录与文件
 
 | 路径 | 内容 |
@@ -436,8 +562,11 @@ render: 启动清扫删除 3 个孤儿目录，释放 128.4 MiB
 | `internal/render/remotion.go` | `RemotionBackend`：staging → exec → 产物回收 |
 | `internal/render/janitor.go` | 启动清扫：删除上一轮进程留下的孤儿 job 目录（ADR-13） |
 | `internal/render/assets.go` | 底图只读资产根：起跑时把引用的底图复制进 job 目录（ADR-14） |
-| `deploy/renderer/Dockerfile` | 两段构建 |
+| `deploy/renderer/Dockerfile` | 三段构建（Go / 字体子集 / 运行时） |
 | `deploy/renderer/CHROME_VERSION` | Chrome 版本单一事实源 |
+| `deploy/renderer/charset.txt` | 字体字集边界单一事实源（`must` / best-effort 两档，ADR-15） |
+| `deploy/renderer/subset-fonts.py` | 构建期子集化 + 覆盖率/家族名断言，推导字体版本 |
+| `deploy/renderer/entrypoint.sh` | 把 `/etc/ppts/fonts.version` 拼成 `-fonts` 后 exec Go 服务（ADR-15） |
 | `deploy/renderer/compose.yml` | 本地/单机部署样例（资源限额、只读 rootfs、tmpfs） |
 
 ## 4. 风险
