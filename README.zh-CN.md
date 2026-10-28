@@ -369,6 +369,13 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 > ② 依赖外部工具 / 凭据（ffmpeg、poppler、S3、真实音频）的用例一律 `t.Skip` 而非失败，
 > **SKIP 计数必须与 ok / FAIL 一起看**——SKIP 变多往往意味着环境缺了什么，而不是运气变好。
 
+> **测试库必须叫 `ppts_test`。** 多条迁移把「给 `ppts_app` 授予调度函数执行权」写在
+> `IF current_database() = 'ppts_test'` 分支里（生产环境不能让应用角色直接调这些函数）。
+> 库名换成别的，迁移照样全部通过，但 `internal/pipeline` 会报
+> `42501 permission denied for function ppts_claim_next_job`——看着像用例问题，实际是库名问题。
+> 另需注意讲稿按源版本号分版存储：`narration.PGStore.Get` 的匹配条件是
+> `source_revision_no IN ($rev, 0)`，用 `0` 去读 revision 1 的成稿只会得到 `ErrNotFound`。
+
 ### 竞态检测（`-race`）
 
 race detector 依赖 cgo，而开发机是 Windows + `CGO_ENABLED=0` 且没有任何 C 工具链，

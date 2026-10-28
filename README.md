@@ -414,6 +414,13 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 > **Read the SKIP count together with ok / FAIL** — a rising SKIP count usually means the environment is missing
 > something, not that you got lucky.
 
+> **The test database must be named `ppts_test`.** Several migrations only grant `ppts_app` EXECUTE on the scheduler
+> functions inside `IF current_database() = 'ppts_test'` (production must not expose them to the app role). Migrate a
+> database with any other name and everything still applies cleanly, but `internal/pipeline` fails with
+> `42501 permission denied for function ppts_claim_next_job` — which reads like a test bug and is really a naming bug.
+> Also note scripts are stored per source revision: `narration.PGStore.Get` matches `source_revision_no IN ($rev, 0)`,
+> so reading a revision-1 draft with `0` returns `ErrNotFound`.
+
 ### Race detector (`-race`)
 
 The race detector needs cgo, and the dev box is Windows with `CGO_ENABLED=0` and no C toolchain at all, so a local

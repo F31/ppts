@@ -41,13 +41,16 @@ func TestRealChainUploadParseDraftNarration(t *testing.T) {
 	if err := draftHandler.Handle(ctx, draftJob); err != nil {
 		t.Fatalf("draft: %v", err)
 	}
-	rev, err := scripts.Get(ctx, appTenant, appProject, 0, slideID, "zh-CN")
+	rev, err := scripts.Get(ctx, appTenant, appProject, testScriptRevision, slideID, "zh-CN")
 	if err != nil {
 		t.Fatalf("Get script: %v", err)
 	}
 
 	// 3) 配音：固定讲稿 revision 入队 narration 并消费。
+	// RevisionNo 必须与生成讲稿时用的源版本号一致：handler 按它取讲稿
+	// （narration.go: scripts.Get(..., snapshot.RevisionNo, ...)），留空即 0 会查不到。
 	narrSnap := NarrationSnapshot{
+		RevisionNo:    testScriptRevision,
 		Slides:        []NarrationSlideSnapshot{{SlideID: slideID, ScriptRevision: rev.Revision}},
 		Language:      "zh-CN",
 		VoiceID:       "fake-voice-1",
