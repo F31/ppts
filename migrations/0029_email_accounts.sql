@@ -42,7 +42,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON credentials TO ppts_app;
 -- 登录按 email 跨租户定位凭证（绕过 credentials RLS，仅回传必要字段）。
 -- SECURITY DEFINER 以函数所有者（迁移角色）权限执行，ppts_app 调用时仍受 RLS 约束，
 -- 仅能通过本函数按 email 取回自身凭证哈希，不能直接全表扫描 credentials。
-CREATE OR REPLACE FUNCTION auth_lookup_credential(p_email text)
+--
+-- 先 DROP 再建，而不是直接 CREATE OR REPLACE：0043 把入参名改成了 p_account，
+-- 重放迁移时若用 OR REPLACE，PostgreSQL 会拒绝改名
+-- （ERROR: cannot change name of input parameter "p_account"），整条幂等回放就断在这里。
+-- 0043 自己也是 DROP + CREATE，这里保持一致。
+DROP FUNCTION IF EXISTS auth_lookup_credential(text);
+CREATE FUNCTION auth_lookup_credential(p_email text)
 RETURNS TABLE(tenant_id uuid, user_id text, password_hash text)
 LANGUAGE sql
 SECURITY DEFINER

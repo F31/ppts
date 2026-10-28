@@ -13,8 +13,12 @@ env:
 # 2026-10-29 的已知红灯（不要当成新回归，逐个修完再把这段删掉）：
 #   frontend : `i18n check` 报 12 条新增孤儿词条（login.* / user.*，来自 ebec20c 成员富字段改动后
 #              成员页改用 members.* 命名空间），门禁要求人工分诊「删 / 登记基线 + 理由」，机器不代判；
-#   postgres : `prepare database` 步骤 exit 3 —— 迁移脚本在空库上就失败，与 pg 用例无关；
-#   s3       : `start minio` 步骤 exit 125 —— `docker run quay.io/minio/minio` 起不来，需确认镜像与 tag 是否还在。
+#   postgres : 迁移的空库应用与幂等回放已修绿（0029 函数签名改名、0037 ADD COLUMN、0040 约束重加，
+#              见 commit 8b…/本轮），仍红在 `pg tests`：9 个用例失败，形态集中在
+#              `narration: script not found`（handler 按真实源版本号写入，用例按 0 读取）与
+#              手机登录 401，需要单独一轮定「改代码还是改用例」；
+#   s3       : `start minio` 步骤 exit 125 —— 拆出独立的 pull 步骤后，下一次运行会直接指出是
+#              镜像拉不到还是容器起不来（当前只能看到 docker 的 125，日志需登录）。
 # lint / test / race / textnorm / proto / crossbuild 均已转绿（lint 长期红的原因见 commit 8c47e9d：
 # web/dist 缺占位文件 → `go vet ./...` 报 embed 空目录，依赖它的 job 全部 skipped）。
 
@@ -220,6 +224,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
+      - name: pull minio
+        # 单独一步只为可诊断：之前 `docker run` 与拉取混在一起，失败只有 docker 的 125，
+        # 分不清是镜像拉不到、架构不匹配还是端口占用。拆开后失败步骤名本身就是结论。
+        run: docker pull quay.io/minio/minio
       - name: start minio
         run: |
           docker run -d --name minio -p 9000:9000 \

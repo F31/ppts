@@ -5,6 +5,9 @@
 -- 存量行沿用 DEFAULT 0 表示 legacy（读时回退可见）。
 ALTER TABLE narration_scripts ADD COLUMN IF NOT EXISTS source_revision_no integer NOT NULL DEFAULT 0;
 ALTER TABLE narration_scripts DROP CONSTRAINT IF EXISTS narration_scripts_tenant_id_project_id_slide_id_language_key;
+-- 新约束自己也要先 DROP：CI 的幂等回放会把本文件再放一遍，直接 ADD 会撞
+-- "relation narration_scripts_scope_uniq already exists"。
+ALTER TABLE narration_scripts DROP CONSTRAINT IF EXISTS narration_scripts_scope_uniq;
 ALTER TABLE narration_scripts ADD CONSTRAINT narration_scripts_scope_uniq
     UNIQUE (tenant_id, project_id, source_revision_no, slide_id, language);
 
