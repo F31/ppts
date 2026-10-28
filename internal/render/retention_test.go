@@ -152,10 +152,14 @@ func TestHTTPQueueFullReturns429(t *testing.T) {
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("首个任务 status = %d", resp.StatusCode)
 	}
-	waitUntilState(t, svc, idOf(raw), StateRunning)
+	firstID := idOf(raw)
+	waitUntilState(t, svc, firstID, StateRunning)
 
-	if resp, _ := submit(pagesPlan("b", 1)); resp.StatusCode != http.StatusAccepted {
+	var queuedID string
+	if resp, raw := submit(pagesPlan("b", 1)); resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("排队任务 status = %d", resp.StatusCode)
+	} else {
+		queuedID = idOf(raw)
 	}
 
 	resp, body := submit(pagesPlan("c", 1))
@@ -174,6 +178,12 @@ func TestHTTPQueueFullReturns429(t *testing.T) {
 	if e.Code != "queue_full" {
 		t.Errorf("code = %q, want queue_full", e.Code)
 	}
+
+	// 两个已受理的任务必须跑完再退出：TempDir 的清理会撞上后台 goroutine
+	// 仍在写的目录，在 Windows 上表现为 "The directory is not empty"。
+	// countingBackend 每个任务都落 segment 文件，不等就必然偶发红灯。
+	waitState(t, svc, firstID)
+	waitState(t, svc, queuedID)
 }
 
 // TestExpiredJobsAreReclaimed 守住保留策略：终态任务在 TTL 内可查，
