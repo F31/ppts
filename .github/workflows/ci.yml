@@ -86,6 +86,13 @@ jobs:
       - name: build
         working-directory: web
         run: npm run build
+      # 分享播放器产物入库（go:embed 依赖），必须保证「源码改了但没重新生成」在 CI 就失败，
+      # 否则用户下载到的成品包会带着旧播放器（与 catalog 生成物同一纪律）。
+      - name: share player build (drift check)
+        working-directory: web
+        run: |
+          npm run build:share
+          git -C .. diff --exit-code internal/share/assets/app.js internal/share/assets/app.css
 
   # CGO_ENABLED=0 交叉构建：验证架构约束（对齐 go-pptx 的 CI 惯例）。
   crossbuild:

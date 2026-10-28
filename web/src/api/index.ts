@@ -27,7 +27,7 @@ export { listJobs, listJobsPage, getJob, getJobDetail, getJobsSummary, getJobsPa
 export type { JobPage, JobStepState, JobStep, JobScope, JobExtras, JobDetail, JobListSort, JobListRow, JobsPageResult, JobEventMessage } from './jobs';
 export { listMembers, updateMemberProfile, getMyProfile, saveMyProfile, listTags, createTag, renameTag, deleteTag, listFolders, createFolder, renameFolder, deleteFolder, listProjectOrganization, attachTag, detachTag, moveProject, setMemberRole, removeMember, getQuota, getUsage, getProjectUsage, getStorageUsage, getPolicy } from './tenant';
 export type { MyProfile } from './tenant';
-export { createExport, createDownload } from './export';
+export { createExport, createDownload, createHTMLBundleExport } from './export';
 export { listDictionaries, createDictionary, updateDictionary, deleteDictionary } from './pronunciation';
 export { listContextRules, createContextRule, updateContextRule, deleteContextRule } from './contextrules';
 export { listPublicWorks, getShowcaseWork, getShowcaseManifest, publishWork, featureWork, reviewWork, deleteWork, recallWork, listMyPublications, listReviewQueue } from './public';

@@ -6,7 +6,7 @@
 
 import type { ArtifactFormat } from '../types';
 import type { ClientIdentity } from './identity';
-import { connectJSON } from './http';
+import { connectJSON, postJSON } from './http';
 // ---- 导出（ExportService） ----
 
 export async function createExport(
@@ -40,5 +40,27 @@ export async function createDownload(identity: ClientIdentity, artifactId: strin
   return connectJSON<{ signedUrl: string; expiresAtUnix: number }>(identity, '/ppts.v1.ExportService/CreateDownload', {
     artifactId,
     ttlSeconds
+  });
+}
+
+// createHTMLBundleExport 请求「静态讲解成品包」（html_bundle，M6-1）。
+//
+// 走原生 REST 而不是 CreateExport：新增格式意味着在 proto enum 里加值并重新生成，
+// 而构建环境没有 buf/protoc。两个入口产生同一结构的 ExportSnapshot，由同一个导出
+// 处理器消费，因此不构成两套导出逻辑。
+export async function createHTMLBundleExport(
+  identity: ClientIdentity,
+  params: {
+    projectId: string;
+    timelineKey: string;
+    pagePngKeys: string[];
+    idempotencyKey: string;
+  }
+): Promise<{ jobId: string }> {
+  return postJSON<{ jobId: string }>(identity, `/projects/${encodeURIComponent(params.projectId)}/exports`, {
+    format: 'html_bundle',
+    timelineKey: params.timelineKey,
+    pagePngKeys: params.pagePngKeys,
+    idempotencyKey: params.idempotencyKey
   });
 }

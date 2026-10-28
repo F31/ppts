@@ -49,7 +49,8 @@ const artifactFormatKey: Record<ProjectArtifact['format'], string> = {
   mp4: 'artifacts.formatMp4',
   srt: 'artifacts.formatSrt',
   vtt: 'artifacts.formatVtt',
-  web_project: 'artifacts.formatWebProject'
+  web_project: 'artifacts.formatWebProject',
+  html_bundle: 'artifacts.formatHtmlBundle'
 };
 
 type TodoItem = {

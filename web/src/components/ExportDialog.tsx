@@ -5,16 +5,23 @@ import { useDialogA11y } from '../a11y';
 
 export type ExportOptions = { burnSubtitles: boolean; includeNotes: boolean };
 
+// ExportFormat 比 ArtifactFormat 多一个 html_bundle：它不走 Connect（proto enum 里没有该值），
+// 而是走原生 REST 端点。两者对用户是同一层"导出格式"，故在这里统一。
+export type ExportFormat = ArtifactFormat | 'html_bundle';
+
 type ExportChoice = {
-  format: ArtifactFormat;
+  format: ExportFormat;
   labelKey: string;
   enabled: boolean;
   gateKey?: string;
+  noteKey?: string;
 };
 
 // 导出类型与门禁：音频包后端尚未提供（显式标注门禁，不静默失败）；
-// 配音 PPTX 已接通：在源 PPTX 副本上嵌入逐页音频并设置自动切页。
+// 配音 PPTX 已接通：在源 PPTX 副本上嵌入逐页音频并设置自动切页；
+// HTML 成品包（弹窗最上、默认选中）：解压双击 index.html 即可播放，无需后端与网络。
 const CHOICES: ExportChoice[] = [
+  { format: 'html_bundle', labelKey: 'editor.fmtHtmlBundle', enabled: true, noteKey: 'editor.fmtHtmlBundleNote' },
   { format: 'ARTIFACT_FORMAT_WEB_PROJECT', labelKey: 'editor.fmtWebProject', enabled: true },
   { format: 'ARTIFACT_FORMAT_MP4', labelKey: 'editor.fmtMp4', enabled: true },
   { format: 'ARTIFACT_FORMAT_SUBTITLE_SRT', labelKey: 'editor.fmtSrt', enabled: true },
@@ -34,11 +41,11 @@ export function ExportDialog({
   busy: boolean;
   error: string;
   onClose: () => void;
-  onSubmit: (format: ArtifactFormat, options: ExportOptions) => void;
+  onSubmit: (format: ExportFormat, options: ExportOptions) => void;
 }) {
   const { t } = useI18n();
   const dialogRef = useDialogA11y<HTMLDivElement>(onClose);
-  const [format, setFormat] = useState<ArtifactFormat>('ARTIFACT_FORMAT_WEB_PROJECT');
+  const [format, setFormat] = useState<ExportFormat>('html_bundle');
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeNotes, setIncludeNotes] = useState(true);
 
@@ -80,6 +87,8 @@ export function ExportDialog({
             </label>
           ))}
         </fieldset>
+
+        {format === 'html_bundle' && <p className="form-hint">{t('editor.fmtHtmlBundleNote')}</p>}
 
         {format === 'ARTIFACT_FORMAT_MP4' && (
           <div className="export-options">

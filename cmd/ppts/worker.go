@@ -147,7 +147,8 @@ func runWorker() error {
 		WithSubtitleFont(subtitleFontName()).
 		WithNarrationWriter(integrations.NewGoPPTXNarrationWriter()).
 		WithSourceRevisions(stores.projects).
-		WithMaxDuration(time.Duration(maxExportMinutes) * time.Minute)
+		WithMaxDuration(time.Duration(maxExportMinutes) * time.Minute).
+		WithLogger(logger)
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
 		_, span := observability.Tracer("ppts.worker").Start(ctx, "job."+string(job.Kind))
 		defer span.End()

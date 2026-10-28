@@ -63,6 +63,18 @@
    "disposition": "keep",
    "reason": "文本规范化引擎的上下文替换规则 CRUD；opt.ContextRule 非 nil 时才注册，属可选能力。与发音词典互补（正则+捕获组 vs 整段字面替换）。"
   },
+  "animation-spec": {
+   "name": "动画规格（M1）",
+   "prefixes": ["/api/projects/{projectId}/slides/{slideId}/animation"],
+   "disposition": "keep",
+   "reason": "动画规格的读写（GET/PUT）走 REST：新增 proto 契约需要 buf/protoc 与重新生成 pb.go，当前构建环境不具备；与 ContextRuleHandler 同一先例。store 为 nil 或开关关闭时整个端点不注册。收敛方向：工具链恢复后并入 Connect，或作为独立 AnimationService 立项。"
+  },
+  "exports-rest": {
+   "name": "扩展产物格式导出",
+   "prefixes": ["/api/projects/{projectId}/exports"],
+   "disposition": "keep-both",
+   "reason": "与 ExportService.CreateExport（RPC）语义重叠，但新增格式（html_bundle）需在 proto enum 加值并重新生成，当前环境无 buf/protoc。两条入口产出**同一结构**的 ExportSnapshot，由同一个导出处理器消费，不构成两套导出逻辑。收敛方向：工具链恢复后在 enum 中加 ARTIFACT_FORMAT_HTML_BUNDLE，前端切回 RPC 后下线本端点。"
+  },
   "artifacts": {
    "name": "成品库",
    "prefixes": ["/artifacts", "/projects/{pid}/artifacts"],

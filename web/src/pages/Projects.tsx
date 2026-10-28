@@ -3,6 +3,7 @@ import {
   archiveProject,
   attachTag,
   createExport,
+  createHTMLBundleExport,
   createFolder,
   createProject,
   createTag,
@@ -29,7 +30,7 @@ import {
   type SourceRevisionSummary
 } from '../api';
 import { describeApiError } from '../apiError';
-import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
+import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ImportDialog } from '../components/ImportDialog';
 import { useConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
@@ -360,22 +361,33 @@ export function Projects({
     }
   };
 
-  const runExport = async (format: ArtifactFormat, options: ExportOptions) => {
+  const runExport = async (format: ExportFormat, options: ExportOptions) => {
     if (!exportManifest || !exportTarget) return;
     setExportBusy(true);
     setExportError('');
+    const idempotencyKey = `export-${exportTarget.projectId}-${Date.now()}`;
     try {
       // 透传「按 slide 对齐」的页图键（缺图位置为空串）；后端据此缺图降级，而非因一页缺失整单失败。
-      const pagePngKeys = format === 'ARTIFACT_FORMAT_MP4' ? exportPagePngKeys : [];
-      const result = await createExport(identity, {
-        projectId: exportTarget.projectId,
-        format,
-        timelineKey: exportManifest.timelineKey,
-        pagePngKeys: format === 'ARTIFACT_FORMAT_MP4' ? pagePngKeys : [],
-        burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
-        includeNotes: options.includeNotes,
-        idempotencyKey: `export-${exportTarget.projectId}-${Date.now()}`
-      });
+      // HTML 成品包的底图同样来自这些页图，故与 MP4 共用同一份键。
+      const needsPages = format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle';
+      const pagePngKeys = needsPages ? exportPagePngKeys : [];
+      const result =
+        format === 'html_bundle'
+          ? await createHTMLBundleExport(identity, {
+              projectId: exportTarget.projectId,
+              timelineKey: exportManifest.timelineKey,
+              pagePngKeys,
+              idempotencyKey
+            })
+          : await createExport(identity, {
+              projectId: exportTarget.projectId,
+              format,
+              timelineKey: exportManifest.timelineKey,
+              pagePngKeys,
+              burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
+              includeNotes: options.includeNotes,
+              idempotencyKey
+            });
       setExportTarget(null);
       setExportManifest(null);
       pushNotice(t('projects.exportQueued', { jobId: result.jobId }));

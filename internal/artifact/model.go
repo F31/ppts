@@ -15,6 +15,10 @@ const (
 	FormatVTT        Format = "vtt"
 	FormatWebProject Format = "web_project"
 	FormatAudioPPTX  Format = "audio_pptx"
+	// FormatHTMLBundle 是「静态讲解成品包」（M6-1）：解压双击 index.html 即可播放。
+	// 与 FormatWebProject 的区别是**有画面**：后者只有 timeline.json + 字幕 + 音频，
+	// 是给下游程序消费的数据包。两者内容契约不同，故并行存在而非原地升级。
+	FormatHTMLBundle Format = "html_bundle"
 )
 
 type Artifact struct {

@@ -85,6 +85,9 @@
 
 `startUS`/`durationUS` 全部来自 `Timeline.Slides[*].StartUS/EndUS` 与 `Segments[*]`，`slides` 与 `audio` 的时间线 MUST 自洽（spec 已要求误差 ≤100ms）。页面与音频的相对关系沿用现有 `WriteTimelineWAV` 的落位规则，因此 HTML 与 MP4 的时序天然一致。
 
+> 落地修正：实际字段名是 camelCase（`startUs`/`endUs`/`durationUs`），与 `media.Timeline` 的 JSON 一致，
+> 便于播放器把清单直接交给 `slideAt`。见文末 Implementation Notes 1。
+
 ### D5 底图转码用标准库 JPEG，失败回退原始字节
 
 - 解码：`image/png`；缩放：整数倍盒式下采样到长边 ≤1600（1080p 时倍率 1，仅当 4K 源才缩），再按需单次双线性到目标尺寸——与 `blankPagePNG` 的「只用标准库、直接操作 `img.Pix`」先例一致。
@@ -145,3 +148,28 @@ style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'none'; form-actio
 | 音频仍为 WAV，5 分钟约 5MB | 本阶段只记录体积指标；AAC 转码与体积门禁在 M6-4，避免过早引入 ffmpeg 依赖到打包器 |
 | `file://` 下各浏览器行为差异 | 以 Chrome/Edge 100+、Safari 15+ 为支持矩阵；不承诺 IE 与老旧 WebView |
 | 清单与 Timeline 语义漂移 | 清单字段全部由 Timeline 派生，单测断言时间自洽；M6-2 引入动画后复用同一清单 |
+
+## Implementation Notes（落地回写，2026-10-28）
+
+落地过程中有五处与上面的草案不同，均已生效在代码里：
+
+1. **清单字段用 camelCase，不是 D4 草案的 `startUS`/`durationUS`。** `media.Timeline` 的 JSON 就是
+   `startUs`/`endUs`/`durationUs`，播放器要把 `manifest.slides` 直接喂给 `slideAt`（它读 `startUs`），
+   两套命名只会制造转换层。清单因此与时间轴同构，`slides[i]` 就是带 `image` 的 `SlideCue`。
+2. **字幕 cues 直接取 `Timeline.Subtitles`，不解析 `subtitles.vtt`。** VTT 是这些 cues 的渲染结果，
+   反过来解析会丢掉 `chars`（逐字高亮靠它）。`subtitles.vtt` 仍原样入包作为交换格式。
+   这是 2.5 的实现偏差，理由记录在 tasks.md。
+3. **新增 `audioMix`：一条按时间轴落位的 WAV。** 播放器优先用它，`currentTime` 直接等于全局时间；
+   `manifest.audio` 仍列原始片段（M6-4 做 AAC 与体积门禁时按段处理）。混音拼接失败（素材非 PCM16、
+   时长与时间轴不符）**不阻断打包**，播放器回退到逐段播放。
+4. **`html_bundle` 的导出入口是 REST，不是 Connect。** 新增格式需要给 proto enum 加值并重新生成
+   pb.go，当前构建环境没有 buf/protoc。`POST /api/projects/{projectId}/exports` 与既有
+   `ExportService.CreateExport` 产出**同一结构**的 `ExportSnapshot`，由同一个 `ExportHandler` 消费。
+   路由已在 `web/route-inventory.json` 登记为 `keep-both`，收敛条件写在该条目里。
+5. **CSP 显式允许 `file:` scheme。** 双击打开时页面源是 `file://`，只写 `'self'` 在 Chrome/Safari 下
+   会拦掉 `app.js`/`app.css`，页面直接白屏——而"双击能播"是这个产物唯一的存在理由。
+   `file:` 在 http 托管下不会被用到（浏览器禁止 http 页面加载 file 资源），不放宽任何远程来源。
+
+验收补充：用系统 Chrome 的 `--headless=new --dump-dom` 与 `--screenshot` 在 `file://` 下核对了
+脚本执行、CSP 放行、字幕断行与首屏渲染（截图见提交说明）；音频推进与指针交互仍需真机点一次。
+

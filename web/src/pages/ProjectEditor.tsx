@@ -5,6 +5,7 @@ import {
   ConnectError,
   createDictionary,
   createExport,
+  createHTMLBundleExport,
   createGeneration,
   estimateNarration,
   updateDictionary,
@@ -46,7 +47,7 @@ import { describeApiError, isNotFound, isUnimplemented } from '../apiError';
 import { Player } from '../Player';
 import { can } from '../permissions';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
-import { ExportDialog, type ExportOptions } from '../components/ExportDialog';
+import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
@@ -1456,23 +1457,34 @@ export function ProjectEditor({
     await generateNarrationFor(allScriptSlideIds(), {}, true);
   };
 
-  const runExport = async (format: ArtifactFormat, options: ExportOptions) => {
+  const runExport = async (format: ExportFormat, options: ExportOptions) => {
     if (!realManifest || exporting) return;
     setExporting(true);
     setExportError('');
     setNarrationStatus({ phase: 'idle', message: t('editor.exportQueued') });
+    const idempotencyKey = `export-${projectId}-${Date.now()}`;
     try {
       // 透传「按 slide 对齐」的页图键（缺图位置为空串）；后端据此缺图降级，而非因一页缺失整单失败。
-      const pagePngKeys = format === 'ARTIFACT_FORMAT_MP4' ? exportPagePngKeys : [];
-      const result = await createExport(identity, {
-        projectId,
-        format,
-        timelineKey: realManifest.timelineKey,
-        pagePngKeys: format === 'ARTIFACT_FORMAT_MP4' ? pagePngKeys : [],
-        burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
-        includeNotes: options.includeNotes,
-        idempotencyKey: `export-${projectId}-${Date.now()}`
-      });
+      // HTML 成品包的底图同样来自这些页图，故与 MP4 共用同一份键。
+      const needsPages = format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle';
+      const pagePngKeys = needsPages ? exportPagePngKeys : [];
+      const result =
+        format === 'html_bundle'
+          ? await createHTMLBundleExport(identity, {
+              projectId,
+              timelineKey: realManifest.timelineKey,
+              pagePngKeys,
+              idempotencyKey
+            })
+          : await createExport(identity, {
+              projectId,
+              format,
+              timelineKey: realManifest.timelineKey,
+              pagePngKeys,
+              burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
+              includeNotes: options.includeNotes,
+              idempotencyKey
+            });
       setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });
       setExportOpen(false);
     } catch (error) {

@@ -18,10 +18,11 @@ const FORMAT_KEY: Record<string, string> = {
   mp4: 'artifacts.formatMp4',
   srt: 'artifacts.formatSrt',
   vtt: 'artifacts.formatVtt',
-  web_project: 'artifacts.formatWebProject'
+  web_project: 'artifacts.formatWebProject',
+  html_bundle: 'artifacts.formatHtmlBundle'
 };
 
-const FORMATS = ['mp4', 'srt', 'vtt', 'web_project'] as const;
+const FORMATS = ['mp4', 'srt', 'vtt', 'web_project', 'html_bundle'] as const;
 
 const TIME_RANGES = [
   { key: 'all', labelKey: 'library.timeAll', days: 0 },
@@ -45,12 +46,12 @@ function formatDuration(ms: number): string {
 
 // canPreview 判定成品能否内嵌预览：
 //   - mp4：文件本体可读即可（历史行同样支持，播放不需要时间轴绑定）；
-//   - web_project：zip 数据包没有可打开的 HTML，预览等价于用其绑定时间轴走 Player，
-//     因此要求 previewable（迁移 0040 之前的历史行无时间轴绑定，降级为仅下载）；
+//   - web_project / html_bundle：两者都是 zip，浏览器无法就地打开；预览等价于用其绑定
+//     时间轴走 Player，因此要求 previewable（迁移 0040 之前的历史行无时间轴绑定，降级为仅下载）；
 //   - srt/vtt：文本字幕，无播放形态，不提供预览。
 function canPreview(a: LibraryArtifact): boolean {
   if (a.format === 'mp4') return a.downloadable;
-  if (a.format === 'web_project') return a.previewable;
+  if (a.format === 'web_project' || a.format === 'html_bundle') return a.previewable;
   return false;
 }
 
@@ -306,7 +307,7 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
         const { signedUrl } = await createDownload(identity, a.id);
         const link = document.createElement('a');
         link.href = signedUrl;
-        link.download = `${a.id}.${a.format === 'web_project' ? 'zip' : a.format}`;
+        link.download = `${a.id}.${a.format === 'web_project' || a.format === 'html_bundle' ? 'zip' : a.format}`;
         document.body.appendChild(link);
         link.click();
         link.remove();

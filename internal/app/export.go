@@ -11,6 +11,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/share"
 )
 
 // ExportSnapshot fixes all inputs for an export job.
@@ -52,6 +54,8 @@ type ExportHandler struct {
 	maxDuration time.Duration
 	// subtitleFontName 字幕烧录锁定的字体族名；空 = 由系统默认字体决定（见 media.subtitleStage）。
 	subtitleFontName string
+	// logger 用于记录可降级的打包告警（缺页图、转码失败、混音轨拼接失败）；nil 时静默。
+	logger *slog.Logger
 }
 
 func NewExportHandler(artifacts artifact.Store, steps interface {
@@ -82,6 +86,12 @@ func (h *ExportHandler) WithSourceRevisions(s SourceRevisionLookup) *ExportHandl
 // WithMaxDuration 设置成品时长上限；0 表示不限。
 func (h *ExportHandler) WithMaxDuration(d time.Duration) *ExportHandler {
 	h.maxDuration = d
+	return h
+}
+
+// WithLogger 注入日志器（用于 HTML 成品包的可降级告警）。
+func (h *ExportHandler) WithLogger(logger *slog.Logger) *ExportHandler {
+	h.logger = logger
 	return h
 }
 
@@ -150,6 +160,11 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		contentType, ext = "video/mp4", "mp4"
 	case artifact.FormatWebProject:
 		file, err = h.packWebProject(ctx, job.TenantID, bundle)
+		contentType, ext = "application/zip", "zip"
+	case artifact.FormatHTMLBundle:
+		// 成品包（M6-1）：与 web_project 并列、互不影响。web_project 保持"数据包"语义，
+		// 因为已有下游按"zip 内含 timeline.json"解析，原地改内容属于隐性破坏。
+		file, err = h.packHTMLBundle(ctx, job, snapshot, bundle, snapshotHash)
 		contentType, ext = "application/zip", "zip"
 	case artifact.FormatAudioPPTX:
 		data, err = h.renderAudioPPTX(ctx, job, bundle)
@@ -407,6 +422,80 @@ func (h *ExportHandler) packWebProject(ctx context.Context, tenantID string, bun
 		return nil, err
 	}
 	return tmp, nil
+}
+
+// packHTMLBundle 打包「静态讲解成品包」（html_bundle，M6-1）：解压双击 index.html 即可播放。
+//
+// 与 packWebProject 的差别只在内容（多 index.html/清单/底图/播放器），打包方式一致：
+// 写临时文件、资源流式写入，返回值由调用方流式上传后关闭。
+func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset, snapshotHash string) (*os.File, error) {
+	if bundle == nil || bundle.Timeline == nil {
+		return nil, errors.New("export job: timeline bundle is empty")
+	}
+	tmp, err := os.CreateTemp("", "ppts-htmlbundle-*.zip")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
+	manifest, err := builder.Build(ctx, share.BundleInput{
+		Timeline:     bundle.Timeline,
+		PagePNGKeys:  snapshot.PagePNGKeys,
+		SRTKey:       bundle.SRTKey,
+		VTTKey:       bundle.VTTKey,
+		Width:        snapshot.Width,
+		Height:       snapshot.Height,
+		FPS:          snapshot.FPS,
+		Title:        bundle.Timeline.SourceDisplayName,
+		SnapshotHash: snapshotHash,
+		CreatedAt:    time.Now(),
+	}, tmp)
+	if err != nil {
+		cleanup()
+		return nil, fmt.Errorf("export job: pack html bundle: %w", err)
+	}
+	if h.logger != nil {
+		h.logger.Info("export: html bundle assembled",
+			"job", job.ID, "slides", len(manifest.Slides), "audio_segments", len(manifest.Audio),
+			"audio_mix", manifest.AudioMix != "")
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return tmp, nil
+}
+
+// tenantObjectReader 把对象存储适配成 share.ResourceReader。
+//
+// 沿用导出链路既有的租户约束：key 必须属于本租户（EnsureTenant），
+// 否则跨租户 key 会通过"读自己的对象"变成数据泄露通道。
+type tenantObjectReader struct {
+	handler  *ExportHandler
+	tenantID string
+}
+
+func (r tenantObjectReader) OpenPagePNG(ctx context.Context, key string) (io.ReadCloser, error) {
+	return r.open(ctx, key)
+}
+
+func (r tenantObjectReader) OpenObject(ctx context.Context, key string) (io.ReadCloser, error) {
+	return r.open(ctx, key)
+}
+
+func (r tenantObjectReader) open(ctx context.Context, rawKey string) (io.ReadCloser, error) {
+	key, err := objectstore.Parse(rawKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := key.EnsureTenant(r.tenantID); err != nil {
+		return nil, err
+	}
+	reader, _, err := r.handler.objects.Get(ctx, key)
+	return reader, err
 }
 
 func (h *ExportHandler) loadTimelineBundle(ctx context.Context, tenantID, key string) (*TimelineAsset, error) {

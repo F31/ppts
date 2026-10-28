@@ -21,6 +21,7 @@ import (
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/share"
 )
 
 type artifactStoreStub struct {
@@ -184,6 +185,95 @@ func TestExportHandlerPublishesWebProjectArtifact(t *testing.T) {
 	}
 	if !names["audio/a.wav"] {
 		t.Fatalf("web project zip missing audio clip: entries=%v", names)
+	}
+}
+
+// TestExportHandlerPublishesHTMLBundle 覆盖 M6-1 的成品包：产物类型、包结构、清单自洽与零外链。
+// 这里不启无头浏览器（本机与 CI 都没有），"双击能不能播"仍由人工验收清单兜底（tasks 6.6）。
+func TestExportHandlerPublishesHTMLBundle(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	putObject(t, objects, audioKey, pcmWAVForExportTest(1000, 100), "audio/wav")
+	pageKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "render", AssetType: "page", AssetID: "p1", Ext: "png",
+	}
+	putObject(t, objects, pageKey, pngForExportTest(), "image/png")
+
+	artifacts := &artifactStoreStub{}
+	handler := NewExportHandler(artifacts, &stepRecorder{}, objects, nil)
+	err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatHTMLBundle, TimelineKey: bundleKey.String(),
+		PagePNGKeys: []string{pageKey.String()}, Width: 1920, Height: 1080, FPS: 30,
+	}))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if artifacts.created == nil || artifacts.created.Format != artifact.FormatHTMLBundle || artifacts.created.SizeBytes <= 0 {
+		t.Fatalf("artifact = %+v", artifacts.created)
+	}
+	key, err := objectstore.Parse(artifacts.created.ObjectKey)
+	if err != nil {
+		t.Fatalf("artifact key: %v", err)
+	}
+	data := readAll(t, objects, key)
+	manifest, files, err := share.VerifyBundle(data)
+	if err != nil {
+		t.Fatalf("VerifyBundle: %v", err)
+	}
+	if _, ok := files[share.FileIndexHTML]; !ok {
+		t.Fatalf("bundle is missing index.html: %v", files)
+	}
+	if got := share.CountExternalRefs(files); got != 0 {
+		t.Fatalf("bundle has %d external references, want 0", got)
+	}
+	if len(manifest.Slides) != 1 || manifest.Slides[0].Image == "" {
+		t.Fatalf("manifest slides = %+v", manifest.Slides)
+	}
+	if manifest.AudioMix != share.FileAudioMix {
+		t.Fatalf("audioMix = %q, want %q (single-clock playback)", manifest.AudioMix, share.FileAudioMix)
+	}
+	// 时间来自绑定的时间轴，不允许出现第二套时间。
+	if manifest.Artifact.DurationUS != bundle.Timeline.DurationUS {
+		t.Fatalf("duration = %d, want %d", manifest.Artifact.DurationUS, bundle.Timeline.DurationUS)
+	}
+}
+
+// TestExportHandlerWebProjectUnchanged 守护「新增 html_bundle 不改旧包」的承诺：
+// web_project 仍只含 timeline.json + 字幕 + 音频，不应出现 index.html/清单/播放器。
+func TestExportHandlerWebProjectUnchanged(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	putObject(t, objects, audioKey, pcmWAVForExportTest(1000, 100), "audio/wav")
+	artifacts := &artifactStoreStub{}
+	handler := NewExportHandler(artifacts, &stepRecorder{}, objects, nil)
+
+	if err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatWebProject, TimelineKey: bundleKey.String(),
+	})); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
+	data := readAll(t, objects, key)
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("zip reader: %v", err)
+	}
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+	want := []string{"timeline.json", "subtitles.srt", "subtitles.vtt", "audio/a.wav"}
+	for _, name := range want {
+		if !names[name] {
+			t.Fatalf("web_project is missing %s: entries=%v", name, names)
+		}
+	}
+	for _, forbidden := range []string{"index.html", "manifest.json", "app.js", "slides/001.jpg"} {
+		if names[forbidden] {
+			t.Fatalf("web_project must not contain %s (its contract is a data package)", forbidden)
+		}
 	}
 }
 
