@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-10-28
+goal: 把「同一份规格在 MP4 与 HTML 两个后端上必然一致」这件事在数值层面锁死：IR 只留可插值的数值，后端不解释动效名
