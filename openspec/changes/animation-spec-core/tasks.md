@@ -52,10 +52,19 @@
 ## 6. 验收门禁（PR1 部分已达成）
 
 - [x] 6.1 `go build ./... && go vet ./internal/animation/...` 通过（2026-10-28 实跑）
-- [ ] 6.2 `go test ./internal/animation/... -race` — 用例全绿，但本机跑不了 `-race`：Windows 上 race detector 依赖 cgo，本机 `CGO_ENABLED=0` 且没有 C 工具链（gcc/cc/clang/zig 全无，2026-10-28 复查）。CI 侧原先的第二层阻塞（`textnorm@v0.2.2` 的 `go.sum` 校验和写错）已于 2026-10-28 按 sumdb 权威值修正，并新增 `race` job（`.github/workflows/ci.yml`）。**待该 job 首次跑绿后勾选**——本机无法观测 Actions 结果，故保持未完成
+- [x] 6.2 `go test ./internal/animation/... -race` — **2026-10-29 CI 侧跑绿**（run `40780484914` 的 `race` job）。
+      此前「本机没有 C 工具链」只解释了一半：真正的阻塞是 `lint` job 长期红着——`web/embed.go` 的
+      `//go:embed all:dist` 需要 `web/dist` 里至少有一个文件，而 `.gitkeep` 被 vite 构建删掉后又被提交了删除，
+      于是 `go vet ./...` 报 `pattern all:dist: no matching files found`，`race`/`test`/`corpus`/`postgres`/`s3`
+      一律 skipped，连续十个 run 都是红的。修法见 commit `8c47e9d`（占位文件回仓库 + 构建后写回）。
+      本机侧的可行路径也补进了 README「竞态检测（`-race`）」：WSL + go1.25.0 + gcc，
+      `GOWORK=off go test -race -count=1 ./internal/render/... ./cmd/renderer/... ./internal/animation/...`
+      全绿，`-count=3` 复跑仍绿（`-x` 确认编译参数含 `-race`，不是空跑）
 - [x] 6.3 `go list -deps ./internal/animation` 不含 `internal/media`、`internal/app`、`internal/api`（已实跑，仅依赖 `internal/project` 与标准库）
 - [x] 6.4 `go.mod` / `go.sum` 零改动（`git status` 可验），无新增依赖
 - [x] 6.5 `internal/app/export.go`、`internal/media/`、`web/` 零改动（`git diff --stat` 为空）
 - [x] 6.6 非法输入拦截：23 条领域用例覆盖 V0–V12；HTTP 层另有 8 条用例（含 V2 拒绝、409 冲突、锁定 409、开关 404）
 - [x] 6.7 回写方案文档 M1 实际落地与偏差（见 design.md「实施记录」PR1/PR2/PR3）；`openspec/specs/` 由 archive 生成
-- [ ] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：需等 6.2 的 `-race` 在 CI 跑通
+- [ ] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：6.2 已通，但 3.4（真实样本 golden 用例）
+      与 4.6（PG 侧迁移在既有库上回滚验证）仍未完成——后者要等 `postgres` job 转绿（当前失败在
+      `prepare database` 步骤，exit 3，是迁移脚本自身的问题，与 `-race` 无关）

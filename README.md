@@ -414,6 +414,28 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 > **Read the SKIP count together with ok / FAIL** — a rising SKIP count usually means the environment is missing
 > something, not that you got lucky.
 
+### Race detector (`-race`)
+
+The race detector needs cgo, and the dev box is Windows with `CGO_ENABLED=0` and no C toolchain at all, so a local
+run always fails with `-race requires cgo`. Two workable paths:
+
+```bash
+# 1) CI: the race job in .github/workflows/ci.yml, scoped to the three concurrency-owning packages
+# 2) Locally: any Linux with gcc (WSL is enough), same arguments as CI
+GOWORK=off go test -race -count=1 ./internal/render/... ./cmd/renderer/... ./internal/animation/...
+```
+
+If WSL has no Go, skip the apt package (24.04 ships 1.22, below the `go 1.25` in `go.mod`):
+
+```bash
+curl -sSL -o /tmp/go.tgz https://golang.google.cn/dl/go1.25.0.linux-amd64.tar.gz
+mkdir -p ~/sdk && tar -xzf /tmp/go.tgz -C ~/sdk
+export PATH="$HOME/sdk/go/bin:$PATH" GOPROXY=https://goproxy.cn,direct GOSUMDB=off
+```
+
+Do not run it from `/mnt/e` (drvfs) — `-race` compilation and linking is an order of magnitude slower there.
+`git archive HEAD | tar -x -C ~/race-src` into the WSL filesystem first.
+
 ### Frontend
 
 ```bash

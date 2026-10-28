@@ -10,6 +10,14 @@ env:
   # CI 从模块代理按 go.mod 锁定版本解析依赖，不依赖开发期 go.work 本地产库。
   GOWORK: "off"
 
+# 2026-10-29 的已知红灯（不要当成新回归，逐个修完再把这段删掉）：
+#   frontend : `i18n check` 报 12 条新增孤儿词条（login.* / user.*，来自 ebec20c 成员富字段改动后
+#              成员页改用 members.* 命名空间），门禁要求人工分诊「删 / 登记基线 + 理由」，机器不代判；
+#   postgres : `prepare database` 步骤 exit 3 —— 迁移脚本在空库上就失败，与 pg 用例无关；
+#   s3       : `start minio` 步骤 exit 125 —— `docker run quay.io/minio/minio` 起不来，需确认镜像与 tag 是否还在。
+# lint / test / race / textnorm / proto / crossbuild 均已转绿（lint 长期红的原因见 commit 8c47e9d：
+# web/dist 缺占位文件 → `go vet ./...` 报 embed 空目录，依赖它的 job 全部 skipped）。
+
 jobs:
   lint:
     runs-on: ubuntu-latest

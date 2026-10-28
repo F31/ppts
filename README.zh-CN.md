@@ -369,6 +369,28 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 > ② 依赖外部工具 / 凭据（ffmpeg、poppler、S3、真实音频）的用例一律 `t.Skip` 而非失败，
 > **SKIP 计数必须与 ok / FAIL 一起看**——SKIP 变多往往意味着环境缺了什么，而不是运气变好。
 
+### 竞态检测（`-race`）
+
+race detector 依赖 cgo，而开发机是 Windows + `CGO_ENABLED=0` 且没有任何 C 工具链，
+所以本机直接跑必然报 `-race requires cgo`。两条可行路径：
+
+```bash
+# ① CI：push 后由 .github/workflows/ci.yml 的 race job 跑，范围限定在引入并发的三个包
+# ② 本机：任意带 gcc 的 Linux（WSL 即可），用与 CI 相同的参数
+GOWORK=off go test -race -count=1 ./internal/render/... ./cmd/renderer/... ./internal/animation/...
+```
+
+WSL 里没有 Go 时不必装 apt 包（24.04 只有 1.22，低于 `go.mod` 的 1.25）：
+
+```bash
+curl -sSL -o /tmp/go.tgz https://golang.google.cn/dl/go1.25.0.linux-amd64.tar.gz
+mkdir -p ~/sdk && tar -xzf /tmp/go.tgz -C ~/sdk
+export PATH="$HOME/sdk/go/bin:$PATH" GOPROXY=https://goproxy.cn,direct GOSUMDB=off
+```
+
+不要把源码放在 `/mnt/e`（drvfs）上跑——`-race` 的编译与链接会慢一个数量级，
+`git archive HEAD | tar -x -C ~/race-src` 导一份到 WSL 本地盘即可。
+
 ### 前端
 
 ```bash
