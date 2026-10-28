@@ -90,6 +90,7 @@
       "intensity": 1.0,
       "staggerMs": 150,
       "segmentAligned": true,
+      "transition": { "type": "fade", "durationMs": 320 },
       "clips": {
         "title": [{ "type": "slideIn", "durationMs": 700, "easing": "easeOut", "params": { "direction": "up", "offset": 32 } }],
         "bullet": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
@@ -108,6 +109,7 @@
       "intensity": 1.15,
       "staggerMs": 90,
       "segmentAligned": true,
+      "transition": { "type": "slide", "durationMs": 280 },
       "clips": {
         "title": [{ "type": "slideIn", "durationMs": 450, "easing": "easeOut", "params": { "direction": "up", "offset": 56 } }],
         "bullet": [{ "type": "slideIn", "durationMs": 400, "easing": "easeOut", "params": { "direction": "left", "offset": 48 } }],
@@ -126,6 +128,7 @@
       "intensity": 0.9,
       "staggerMs": 180,
       "segmentAligned": true,
+      "transition": { "type": "fade", "durationMs": 280 },
       "clips": {
         "title": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
         "bullet": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
@@ -144,6 +147,7 @@
       "intensity": 1.25,
       "staggerMs": 60,
       "segmentAligned": true,
+      "transition": { "type": "zoom", "durationMs": 260 },
       "clips": {
         "title": [{ "type": "pop", "durationMs": 340, "easing": "spring", "params": { "scaleFrom": 0.82 } }],
         "bullet": [{ "type": "slideIn", "durationMs": 320, "easing": "easeOut", "params": { "direction": "left", "offset": 80 } }],

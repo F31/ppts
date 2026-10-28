@@ -1,0 +1,190 @@
+{
+  "schemaVersion": "compiled-timeline/v1",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "background": "#FFFFFF",
+  "fonts": [
+    {
+      "family": "Noto Sans SC",
+      "version": "2.004"
+    }
+  ],
+  "pages": [
+    {
+      "index": 0,
+      "slideId": "slide-1",
+      "durationMs": 4200,
+      "baseImage": "pages/p0.png",
+      "layers": [
+        {
+          "elementId": "shape-1",
+          "kind": "title",
+          "assetMode": "bitmap-region",
+          "box": {
+            "x": 240,
+            "y": 360,
+            "w": 1440,
+            "h": 260
+          },
+          "clips": [
+            {
+              "clipId": "c1",
+              "effect": "slideIn",
+              "startMs": 0,
+              "durationMs": 700,
+              "easing": {
+                "x1": 0.22,
+                "y1": 1,
+                "x2": 0.36,
+                "y2": 1
+              },
+              "props": [
+                {
+                  "name": "opacity",
+                  "from": 0,
+                  "to": 1
+                },
+                {
+                  "name": "translateY",
+                  "from": 32,
+                  "to": 0
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transition": {
+        "type": "none"
+      }
+    },
+    {
+      "index": 1,
+      "slideId": "slide-2",
+      "durationMs": 9600,
+      "baseImage": "pages/p1.png",
+      "layers": [
+        {
+          "elementId": "shape-2",
+          "kind": "title",
+          "assetMode": "bitmap-region",
+          "box": {
+            "x": 96,
+            "y": 96,
+            "w": 1100,
+            "h": 140
+          },
+          "clips": [
+            {
+              "clipId": "c1",
+              "effect": "slideIn",
+              "startMs": 0,
+              "durationMs": 450,
+              "easing": {
+                "x1": 0.22,
+                "y1": 1,
+                "x2": 0.36,
+                "y2": 1
+              },
+              "props": [
+                {
+                  "name": "opacity",
+                  "from": 0,
+                  "to": 1
+                },
+                {
+                  "name": "translateY",
+                  "from": 64.4,
+                  "to": 0
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "elementId": "shape-3",
+          "kind": "bullet",
+          "assetMode": "bitmap-region",
+          "box": {
+            "x": 120,
+            "y": 320,
+            "w": 820,
+            "h": 420
+          },
+          "clips": [
+            {
+              "clipId": "c2",
+              "effect": "fadeIn",
+              "startMs": 2400,
+              "durationMs": 400,
+              "easing": {
+                "x1": 0.22,
+                "y1": 1,
+                "x2": 0.36,
+                "y2": 1
+              },
+              "props": [
+                {
+                  "name": "opacity",
+                  "from": 0,
+                  "to": 1
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "elementId": "shape-4",
+          "kind": "image",
+          "assetMode": "bitmap-region",
+          "box": {
+            "x": 1080,
+            "y": 300,
+            "w": 720,
+            "h": 480
+          },
+          "clips": [
+            {
+              "clipId": "c3",
+              "effect": "pop",
+              "startMs": 5200,
+              "durationMs": 420,
+              "easing": {
+                "x1": 0.34,
+                "y1": 1.42,
+                "x2": 0.64,
+                "y2": 1
+              },
+              "props": [
+                {
+                  "name": "opacity",
+                  "from": 0,
+                  "to": 1
+                },
+                {
+                  "name": "scale",
+                  "from": 0.908,
+                  "to": 1
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "transition": {
+        "type": "slide",
+        "durationMs": 280
+      }
+    },
+    {
+      "index": 2,
+      "slideId": "slide-3",
+      "durationMs": 3000,
+      "baseImage": "pages/p2.png",
+      "transition": {
+        "type": "none"
+      }
+    }
+  ]
+}

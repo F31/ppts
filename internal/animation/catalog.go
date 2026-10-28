@@ -118,7 +118,27 @@ type Preset struct {
 	StaggerMs      int64                     `json:"staggerMs"`
 	SegmentAligned bool                      `json:"segmentAligned"`
 	Clips          map[string][]ClipTemplate `json:"clips"`
+	// Transition 是套用该预设时的页间转场（L0）。转场不是元素级动效，
+	// 不进入可编辑的 Tracks：它由预设整体决定，避免在 V1–V12 里为它开特例。
+	Transition TransitionSpec `json:"transition"`
 }
+
+// TransitionSpec 是页转场定义。
+type TransitionSpec struct {
+	Type       string `json:"type"` // none|fade|slide|zoom
+	DurationMs int64  `json:"durationMs"`
+}
+
+// 允许的转场类型与时长上限。
+const (
+	TransitionNone  = "none"
+	TransitionFade  = "fade"
+	TransitionSlide = "slide"
+	TransitionZoom  = "zoom"
+
+	// MaxTransitionMS 是转场时长上限：桥接片段必须短，否则会把页内节奏吃掉（§8.4 ≤400ms）。
+	MaxTransitionMS = 400
+)
 
 // Registry 是解析后的 catalog 视图。
 type Registry struct {
@@ -308,7 +328,35 @@ func validatePreset(p *Preset, reg *Registry) error {
 			}
 		}
 	}
+	if err := validateTransition(p.Transition); err != nil {
+		return fmt.Errorf("animation: preset %q: %w", p.ID, err)
+	}
 	return nil
+}
+
+// validateTransition 校验转场定义。
+func validateTransition(t TransitionSpec) error {
+	switch t.Type {
+	case TransitionNone:
+		if t.DurationMs != 0 {
+			return fmt.Errorf("transition %q must have durationMs=0", t.Type)
+		}
+	case TransitionFade, TransitionSlide, TransitionZoom:
+		if t.DurationMs <= 0 || t.DurationMs > MaxTransitionMS {
+			return fmt.Errorf("transition %q duration %d outside (0,%d]", t.Type, t.DurationMs, MaxTransitionMS)
+		}
+	default:
+		return fmt.Errorf("unknown transition type %q", t.Type)
+	}
+	return nil
+}
+
+// TransitionFor 返回预设的转场；未找到预设时返回 fade 缺省值。
+func TransitionFor(presetID string) TransitionSpec {
+	if p, ok := Catalog().Preset(presetID); ok {
+		return p.Transition
+	}
+	return TransitionSpec{Type: TransitionFade, DurationMs: 240}
 }
 
 // validKind 报告轨道类型是否是登记的 8 种之一。
