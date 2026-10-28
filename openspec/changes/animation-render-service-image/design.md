@@ -410,6 +410,13 @@ render: 启动清扫删除 3 个孤儿目录，释放 128.4 MiB
 | `-selftest`（remotion） | 通过，2 页 16.671s |
 | 底板补洞 | 纯色底 spred=0、补丁色=底色；渐变底出 `plate patch may be visible` warning |
 | 残影对照（t=67ms） | 无底板：标题条像素 (30,58,138) 全不透明（动画失效）；有底板：白色底 + 约 25% 不透明度叠加 |
+| `chrome.sha256`（tasks 4.5） | `156.0.8078.73` / 126,938,225 字节 / `sha256=77eb8d52…`；与 `Content-Length`、GCS `x-goog-hash: md5=`、zip 结构（287 项含 209MB 可执行文件）三重一致；三次独立下载同一摘要 |
+
+换行规则的验证用的是对照实验，不是「看着像生效」：同一次 `git checkout-index -f`
+（等价于 clone 的检出路径，走 smudge 转换）下，无规则的 `README.md` 变成 `w/crlf`（81 个 CR），
+带 `text eol=lf` 的 `pin-chrome.sh` 保持 `w/lf`（0 个 CR）。
+注意 `git checkout -- <file>` **看不出**这个问题——它走的是不触发换行转换的恢复路径，
+这条弯路值得记下来，免得下次误判成「规则没用」。
 
 **30s 样片逐帧核对（用 Remotion 自带 ffprobe/ffmpeg，宽 960 缩略后按帧索引比对）：**
 
