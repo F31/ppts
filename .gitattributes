@@ -5,8 +5,11 @@
 # 2. chrome.sha256：它是 `sha256sum -c` 的输入，\r 会混进校验行。
 # 3. charset.txt：它的 sha256 是字体版本号的来源（见 subset-fonts.py），
 #    \r 会让同一个字集在 Windows 检出上算出不同的字体版本、不同的 planHash。
+# 4. python：在 Linux 构建段里跑（subsets 字体）。CRLF 不影响执行，但会影响
+#    「把脚本当输入摘要」的那类用法，也让人 diff 时看到整文件改动。
 #
 # 仓库内本来就存的是 LF，这条规则管的是检出侧（core.autocrlf=true 的 Windows）。
 *.sh text eol=lf
+*.py text eol=lf
 deploy/renderer/chrome.sha256 text eol=lf
 deploy/renderer/charset.txt text eol=lf
