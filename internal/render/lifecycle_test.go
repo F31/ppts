@@ -135,6 +135,9 @@ func TestConcurrentSubmitCancelConsistency(t *testing.T) {
 	be := &countingBackend{delay: 5 * time.Millisecond}
 	svc, err := NewService(ServiceConfig{
 		Backend: be, WorkDir: dir, Version: "test-1", MaxConcurrent: maxConcurrent,
+		// 本用例压的是并发一致性，不是容量：把排队上限放到 n 之上，
+		// 否则 24 个提交会被 429 挡掉，测的就不是它声称要测的东西了。
+		MaxQueued: n,
 	})
 	if err != nil {
 		t.Fatal(err)

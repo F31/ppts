@@ -37,6 +37,9 @@ func run() error {
 		version    = flag.String("version", "dev", "服务版本（参与 planHash；remotion 后端建议写成 remotion@x|chrome@y）")
 		fonts      = flag.String("fonts", "", "逗号分隔的可用字体族，格式 family@version")
 		concurrent = flag.Int("concurrency", 2, "同时渲染任务数")
+		maxQueued  = flag.Int("max-queued", 8, "排队任务数上限（超出返回 429 + Retry-After）")
+		jobTTL     = flag.Duration("job-ttl", 30*time.Minute, "终态任务与产物的保留时长")
+		sweepEvery = flag.Duration("retention-sweep", time.Minute, "过期任务回收的最小间隔")
 		maxPlan    = flag.Int64("max-plan-bytes", render.MaxPlanBytes, "请求体上限（字节）")
 		scriptPath = flag.String("renderer-script", "", "renderer/render.mjs 路径（默认取 PPTS_RENDERER_SCRIPT）")
 		chromePath = flag.String("chrome", "", "chrome-headless-shell 路径（默认取 PPTS_CHROME）")
@@ -75,12 +78,15 @@ func run() error {
 	}
 
 	svc, err := render.NewService(render.ServiceConfig{
-		Backend:       impl,
-		WorkDir:       *workDir,
-		Version:       *version,
-		Fonts:         parseFonts(*fonts),
-		MaxConcurrent: *concurrent,
-		MaxPlanBytes:  *maxPlan,
+		Backend:        impl,
+		WorkDir:        *workDir,
+		Version:        *version,
+		Fonts:          parseFonts(*fonts),
+		MaxConcurrent:  *concurrent,
+		MaxQueued:      *maxQueued,
+		JobTTL:         *jobTTL,
+		RetentionSweep: *sweepEvery,
+		MaxPlanBytes:   *maxPlan,
 	})
 	if err != nil {
 		return err

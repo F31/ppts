@@ -115,6 +115,45 @@
 - **WHEN** plan 未通过 IR 校验
 - **THEN** 返回 400 与具体字段路径，MUST NOT 创建 job
 
+### Requirement: 容量有上限，超限背压而不排队
+
+服务 MUST 为「已受理、尚未起跑」的任务数设上限（`MaxQueued`，默认 8），并 MUST 让排队期持有的计划数不超过该上限。
+
+达到上限时，`POST /v1/render` MUST 返回 `429`、`Retry-After` 头与错误码 `queue_full`，且 MUST NOT 创建 job、MUST NOT 消耗该计划的重试编号。判定 SHOULD 发生在读取请求体之前。
+
+排队中的任务被取消时 MUST 立即释放其计划引用，MUST NOT 等信号量轮到它。`/healthz` 的 `running` MUST 只统计真正在渲染的任务，排队数 MUST 由 `queued` 单独暴露。
+
+#### Scenario: 队列打满
+
+- **WHEN** 并发上限已占满，排队数达到 `MaxQueued`，又来一个新计划
+- **THEN** 返回 429 + `Retry-After`，错误码 `queue_full`，不创建 job；队列消化后重新可受理
+
+#### Scenario: 排队中被取消
+
+- **WHEN** 一个仍处于 `queued` 的任务被 `DELETE`
+- **THEN** 其计划的引用立即释放，任务落 `canceled` 且仍可查询
+
+### Requirement: 终态任务有过期时间
+
+服务 MUST 为终态任务设保留时长（`JobTTL`，默认 30 分钟），**从任务落终态的时刻起算**，不得从受理时刻起算。过期后服务 MUST 删除该 job 记录、释放其 `planHash` 映射、删除其产物目录；此后 `GET /v1/render/{jobId}` MUST 返回 404。
+
+调用方 MUST 在保留时长内取走产物。保留时长与回收节奏 MUST 可配置。
+
+#### Scenario: TTL 内可查
+
+- **WHEN** 任务已终态但未超过保留时长
+- **THEN** 状态与产物仍可获取
+
+#### Scenario: 过期回收
+
+- **WHEN** 终态任务超过保留时长
+- **THEN** 记录、`planHash` 映射与产物目录一并消失，`GET` 返回 404；同一计划再次提交会重新渲染
+
+#### Scenario: 长任务不被误回收
+
+- **WHEN** 一次渲染耗时接近渲染超时上限，成功后才开始计时
+- **THEN** 它不会因「受理后过久」而被立刻回收
+
 ### Requirement: 安全边界可验证
 
 服务 MUST 拒绝工作根目录之外的 `baseImage` 路径（含 `..`、绝对路径、盘符）。MUST 限制请求体大小与页数/帧数上限。

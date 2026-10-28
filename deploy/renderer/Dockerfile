@@ -74,7 +74,11 @@ USER 10001
 EXPOSE 8090
 # 默认命令是 Go 服务：HTTP 契约、幂等、并发都在它里面，Node 只是被它 exec 的合成器。
 # --selftest 由部署流水线覆盖命令触发（见 compose.yml 的 selftest 服务）。
+#
+# -max-queued / -job-ttl 在这里显式写上而不是靠默认值：容器里 /work 是 2g tmpfs，
+# 「排队位」与「产物保留窗口」直接决定它多久写满，属于部署决策，不该藏在代码默认值里。
 ENTRYPOINT ["/usr/local/bin/ppts-renderer"]
 CMD ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work", \
      "-renderer-script", "/app/render.mjs", "-concurrency", "2", \
+     "-max-queued", "8", "-job-ttl", "30m", \
      "-fonts", "Noto Sans CJK SC@20230817"]

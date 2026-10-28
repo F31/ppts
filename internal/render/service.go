@@ -10,10 +10,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// ErrQueueFull 表示排队任务已达上限，提交被拒绝（HTTP 对应 429）。
+var ErrQueueFull = errors.New("render: 渲染队列已满")
+
+// queueRetryAfterSeconds 是 429 里建议的退避秒数。
+// 取 5s：比单页渲染耗时短，客户端按契约退避重试两次就能赶上队列消化。
+const queueRetryAfterSeconds = 5
 
 // Backend 是渲染实现的 SPI。本包只定义契约，不关心是 Remotion、Chromium 还是别的。
 //
@@ -67,7 +75,13 @@ type Health struct {
 	FPS           int    `json:"maxFps"`
 	Fonts         []Font `json:"fonts"`
 	MaxConcurrent int    `json:"maxConcurrent"`
-	Running       int    `json:"running"`
+	// Running 只数正在跑的任务；排队中的单独报 Queued。
+	// 把 queued 混进 running 会让「到底有几个渲染进程在吃内存」这个最该看数的指标失真。
+	Running   int `json:"running"`
+	Queued    int `json:"queued"`
+	MaxQueued int `json:"maxQueued"`
+	// Retained 是仍可查询的终态任务数（受 JobTTL 约束）。
+	Retained int `json:"retained"`
 }
 
 // ServiceConfig 是渲染服务配置。
@@ -81,6 +95,14 @@ type ServiceConfig struct {
 	Fonts []Font
 	// MaxConcurrent 是同时渲染的任务数上限（0 = 2）。
 	MaxConcurrent int
+	// MaxQueued 是排队中（queued）任务数上限（0 = 8）。
+	// 它约束的是「已受理、尚未起跑」的计划占用：每个排队任务持有一份整计划（上限 MaxPlanBytes）。
+	MaxQueued int
+	// JobTTL 是终态任务（含产物目录）的保留时长（0 = 30 分钟），从落终态开始计时。
+	// 超过后 job 查不到、产物被删除；调用方 MUST 在 TTL 内取走产物。
+	JobTTL time.Duration
+	// RetentionSweep 是惰性回收的最小间隔（0 = 1 分钟）。
+	RetentionSweep time.Duration
 	// MaxPlanBytes 是请求体上限（0 = MaxPlanBytes）。
 	MaxPlanBytes int64
 	// Now 便于测试注入时钟（0 = time.Now）。
@@ -95,8 +117,17 @@ type Service struct {
 	jobs   map[string]*job
 	byHash map[string]string
 	// attempts 按 planHash 前 24 位计数，用于给重试分配新 id（首次不加后缀）。
-	attempts map[string]int
+	attempts map[string]*attemptStat
 	sem      chan struct{}
+	// lastSweep 是上一次回收时间：把回收摊在请求上，而不是起一条常驻 goroutine。
+	lastSweep time.Time
+}
+
+// attemptStat 记录一个 planHash 前缀的分配情况。
+// live 归零时整条删除——attempts 不能只增不减，否则它自己就是第三张泄漏的表。
+type attemptStat struct {
+	next int
+	live int
 }
 
 type job struct {
@@ -107,6 +138,12 @@ type job struct {
 	arts   []string
 	err    string
 	cancel context.CancelFunc
+	// plan 只在「受理 → 起跑」期间持有；起跑后置 nil，由局部变量接管。
+	// 若让闭包直接捕获 plan，排队期被取消的任务会把整份计划攥到信号量排到它为止。
+	plan *Timeline
+	// finishedAt 是落终态的时刻，TTL 从这里起算（不是受理时刻：
+	// 一次 15 分钟的长渲染如果从受理算起，成功后马上就会被回收）。
+	finishedAt time.Time
 }
 
 // NewService 校验配置并返回服务。
@@ -126,6 +163,15 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if cfg.MaxConcurrent <= 0 {
 		cfg.MaxConcurrent = 2
 	}
+	if cfg.MaxQueued <= 0 {
+		cfg.MaxQueued = 8
+	}
+	if cfg.JobTTL <= 0 {
+		cfg.JobTTL = 30 * time.Minute
+	}
+	if cfg.RetentionSweep <= 0 {
+		cfg.RetentionSweep = time.Minute
+	}
 	if cfg.MaxPlanBytes <= 0 {
 		cfg.MaxPlanBytes = MaxPlanBytes
 	}
@@ -136,7 +182,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		cfg:      cfg,
 		jobs:     make(map[string]*job),
 		byHash:   make(map[string]string),
-		attempts: make(map[string]int),
+		attempts: make(map[string]*attemptStat),
 		sem:      make(chan struct{}, cfg.MaxConcurrent),
 	}, nil
 }
@@ -148,12 +194,115 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 // 调用方必须已持有 s.mu。
 func (s *Service) allocID(hash string) string {
 	base := ShortID(hash)
-	n := s.attempts[base]
-	s.attempts[base] = n + 1
+	st := s.attempts[base]
+	if st == nil {
+		st = &attemptStat{}
+		s.attempts[base] = st
+	}
+	n := st.next
+	st.next++
+	st.live++
 	if n == 0 {
 		return base
 	}
 	return fmt.Sprintf("%s-r%d", base, n+1)
+}
+
+// queuedLocked 返回排队中的任务数。调用方必须已持有 s.mu。
+func (s *Service) queuedLocked() int {
+	n := 0
+	for _, j := range s.jobs {
+		if j.state == StateQueued {
+			n++
+		}
+	}
+	return n
+}
+
+// queueFull 判断新提交是否该被容量拒绝。
+func (s *Service) queueFull() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.queuedLocked() >= s.cfg.MaxQueued
+}
+
+// writeQueueFull 回 429 + Retry-After。
+//
+// 选 429 而不是 503：契约里 429 已经是「可退避重试」，503 表示服务本身坏了。
+// 队列满不是故障，是流量超过了容量，客户端该做的是等一会儿再来。
+func (s *Service) writeQueueFull(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", strconv.Itoa(queueRetryAfterSeconds))
+	writeError(w, http.StatusTooManyRequests, "queue_full", "",
+		fmt.Sprintf("渲染队列已满（排队上限 %d），请稍后重试", s.cfg.MaxQueued))
+}
+
+// maybeSweep 按 RetentionSweep 的节奏惰性回收过期任务。
+//
+// 不起后台 goroutine 是刻意的：Service 没有 Close 生命周期，起一条 ticker
+// 就等于给每个测试进程留一条永不退出的协程；而回收只在有请求时才有意义——
+// 没有请求，就没有新的内存与磁盘增长。
+func (s *Service) maybeSweep() {
+	s.mu.Lock()
+	now := s.cfg.Now()
+	if !s.lastSweep.IsZero() && now.Sub(s.lastSweep) < s.cfg.RetentionSweep {
+		s.mu.Unlock()
+		return
+	}
+	s.lastSweep = now
+	ids := s.reapLocked(now)
+	s.mu.Unlock()
+	s.removeJobDirs(ids)
+}
+
+// sweepExpired 立即回收所有过期终态任务，返回被回收的 job id。
+// 测试直接调用它，不依赖时钟推进与节流节奏。
+func (s *Service) sweepExpired(now time.Time) []string {
+	s.mu.Lock()
+	s.lastSweep = now
+	ids := s.reapLocked(now)
+	s.mu.Unlock()
+	s.removeJobDirs(ids)
+	return ids
+}
+
+// reapLocked 摘除过期任务的记录与映射，返回待删目录对应的 id。
+// 调用方必须已持有 s.mu；目录删除放在锁外，避免 RemoveAll 拖住提交。
+func (s *Service) reapLocked(now time.Time) []string {
+	var ids []string
+	for id, j := range s.jobs {
+		// 只有终态才回收：running 正在写目录，queued 还没有目录。
+		if j.finishedAt.IsZero() {
+			continue
+		}
+		if now.Sub(j.finishedAt) < s.cfg.JobTTL {
+			continue
+		}
+		delete(s.jobs, id)
+		s.releaseHash(j)
+		s.dropAttempt(j.hash)
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (s *Service) removeJobDirs(ids []string) {
+	for _, id := range ids {
+		_ = os.RemoveAll(filepath.Join(s.cfg.WorkDir, id))
+	}
+}
+
+// dropAttempt 在任务被回收时减计数，归零即删。
+// 调用方必须已持有 s.mu。
+func (s *Service) dropAttempt(hash string) {
+	base := ShortID(hash)
+	st := s.attempts[base]
+	if st == nil {
+		return
+	}
+	st.live--
+	if st.live <= 0 {
+		delete(s.attempts, base)
+	}
 }
 
 // Handler 返回 HTTP 路由。路径与 §8.2 一致，额外提供 /healthz。
@@ -171,10 +320,15 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	running := 0
+	running, queued, retained := 0, 0, 0
 	for _, j := range s.jobs {
-		if j.state == StateRunning || j.state == StateQueued {
+		switch j.state {
+		case StateQueued:
+			queued++
+		case StateRunning:
 			running++
+		default:
+			retained++
 		}
 	}
 	s.mu.Unlock()
@@ -192,12 +346,25 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Fonts:         s.cfg.Fonts,
 		MaxConcurrent: s.cfg.MaxConcurrent,
 		Running:       running,
+		Queued:        queued,
+		MaxQueued:     s.cfg.MaxQueued,
+		Retained:      retained,
 	})
 }
 
 func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, http.MethodPost)
+		return
+	}
+	s.maybeSweep()
+	// 容量在读取请求体之前判：队列满时把 4MB 读进来只为回一句 429 是纯浪费，
+	// 更糟的是每个被拒请求都要在内存里留一份 plan 直到 GC。
+	//
+	// 代价：超载期间「同一份计划的幂等重复提交」也可能拿到 429。
+	// 这是可接受的——429 在客户端契约里本来就可重试，而容量优先于去重。
+	if s.queueFull() {
+		s.writeQueueFull(w)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, s.cfg.MaxPlanBytes+1))
@@ -243,29 +410,44 @@ func (s *Service) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, st)
 		return
 	}
+	// 预检到入队之间可能又挤进来几个请求：入队前必须在锁内再判一次，
+	// 否则上限只是个装饰。判定排在 allocID 之前——被拒的提交不该消耗重试编号。
+	if s.queuedLocked() >= s.cfg.MaxQueued {
+		s.mu.Unlock()
+		s.writeQueueFull(w)
+		return
+	}
 	id := s.allocID(hash)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &job{id: id, hash: hash, state: StateQueued,
 		prog:   Progress{Done: 0, Total: len(plan.Pages)},
-		cancel: cancel}
+		cancel: cancel, plan: &plan}
 	s.jobs[id] = j
 	s.byHash[hash] = id
 	st := JobStatus{ID: id, State: StateQueued, Progress: j.prog, PlanHash: hash}
 	s.mu.Unlock()
 
-	go s.run(ctx, j, &plan)
+	go s.run(ctx, j)
 
 	writeJSON(w, http.StatusAccepted, st)
 }
 
-func (s *Service) run(ctx context.Context, j *job, plan *Timeline) {
-	s.sem <- struct{}{}
+func (s *Service) run(ctx context.Context, j *job) {
+	// 等槽位时也监听取消：否则「提交后立刻取消」会留下一条卡在信号量上的协程，
+	// 一直排到它前面所有任务都跑完才退出。取消风暴能靠这个把协程堆起来。
+	select {
+	case s.sem <- struct{}{}:
+	case <-ctx.Done():
+		s.finish(j, StateCanceled, "", nil)
+		return
+	}
 	defer func() { <-s.sem }()
 
 	dir := filepath.Join(s.cfg.WorkDir, j.id)
 
 	s.mu.Lock()
-	if j.state == StateCanceled {
+	plan := j.plan
+	if j.state == StateCanceled || plan == nil {
 		s.mu.Unlock()
 		// 排队期就被取消：清掉可能残留的目录再落终态。
 		_ = os.RemoveAll(dir)
@@ -273,6 +455,8 @@ func (s *Service) run(ctx context.Context, j *job, plan *Timeline) {
 		return
 	}
 	j.state = StateRunning
+	// 起跑后由局部变量持有计划；job 里再留一份只会延长它的生命周期。
+	j.plan = nil
 	s.mu.Unlock()
 
 	// 先清空本 job 的目录：同一个 id 可能是「失败/取消后重试」，
@@ -346,6 +530,8 @@ func (s *Service) finish(j *job, state JobState, msg string, arts []string) {
 	j.state = state
 	j.err = msg
 	j.arts = arts
+	j.finishedAt = s.cfg.Now()
+	j.plan = nil
 	if state == StateSucceeded {
 		j.prog = Progress{Done: j.prog.Total, Total: j.prog.Total}
 		return
@@ -371,6 +557,7 @@ func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		s.maybeSweep()
 		s.mu.Lock()
 		j, ok := s.jobs[id]
 		if !ok {
@@ -393,6 +580,10 @@ func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 		if j.state != StateSucceeded && j.state != StateFailed {
 			if j.state != StateCanceled {
 				j.state = StateCanceled
+				j.finishedAt = s.cfg.Now()
+				// 排队中的任务直接丢掉计划引用：协程可能还堵在信号量上，
+				// 不为它保留 4MB。
+				j.plan = nil
 				j.cancel()
 			}
 			// 立刻释放 planHash：取消后马上重试是最常见的动作。
@@ -418,19 +609,24 @@ func (s *Service) Submit(plan *Timeline) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.maybeSweep()
 	s.mu.Lock()
 	if existing, ok := s.byHash[hash]; ok {
 		s.mu.Unlock()
 		return existing, nil
 	}
+	if s.queuedLocked() >= s.cfg.MaxQueued {
+		s.mu.Unlock()
+		return "", ErrQueueFull
+	}
 	id := s.allocID(hash)
 	ctx, cancel := context.WithCancel(context.Background())
 	j := &job{id: id, hash: hash, state: StateQueued,
-		prog: Progress{Total: len(plan.Pages)}, cancel: cancel}
+		prog: Progress{Total: len(plan.Pages)}, cancel: cancel, plan: plan}
 	s.jobs[id] = j
 	s.byHash[hash] = id
 	s.mu.Unlock()
-	go s.run(ctx, j, plan)
+	go s.run(ctx, j)
 	return id, nil
 }
 
@@ -457,6 +653,8 @@ func (s *Service) Cancel(id string) bool {
 	if j.state != StateSucceeded && j.state != StateFailed {
 		if j.state != StateCanceled {
 			j.state = StateCanceled
+			j.finishedAt = s.cfg.Now()
+			j.plan = nil
 			j.cancel()
 		}
 		// 与 DELETE 同理：取消必须立刻释放 planHash，否则重试会命中这个已取消的 job。
