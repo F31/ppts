@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n';
 import type { ArtifactFormat, PlaybackManifest } from '../types';
 import type { AnimationExportOptions } from '../api';
@@ -63,6 +63,14 @@ export function ExportDialog({
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeNotes, setIncludeNotes] = useState(true);
   const [wantAnimation, setWantAnimation] = useState(false);
+  const warnRef = useRef<HTMLParagraphElement | null>(null);
+
+  // 降级提示紧贴底部按钮，但对话框内容常常比可视区高（格式选项 7 行 + 说明），
+  // 滚到那一行之前它等于没提示：用户点完「导出」看到的只是按钮又变回可点。
+  // 因此出现时主动滚进视野——这是「必须让用户看见」这一条的实现，不是装饰。
+  useEffect(() => {
+    if (dropped) warnRef.current?.scrollIntoView({ block: 'center' });
+  }, [dropped]);
 
   const pagePngCount = manifest.resources.filter((r) => r.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG').length;
   // 页图是可选增强：缺图不再拦截导出（后端缺图页降级为沿用上一页/占位），仅在完全无页图时给出提示性说明。
@@ -167,7 +175,7 @@ export function ExportDialog({
 
         {error && <p className="form-error" role="alert">{error}</p>}
         {/* 不是错误（任务已入队），但必须显眼：说清这一单实际拿到的是静态版。 */}
-        {dropped && <p className="form-warn" role="status">{dropped}</p>}
+        {dropped && <p className="form-warn" role="status" ref={warnRef}>{dropped}</p>}
 
         <div className="modal-actions">
           <button type="button" className="button-ghost" onClick={onClose} disabled={busy}>

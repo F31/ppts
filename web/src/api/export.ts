@@ -43,28 +43,6 @@ export async function createDownload(identity: ClientIdentity, artifactId: strin
   });
 }
 
-// createHTMLBundleExport 请求「静态讲解成品包」（html_bundle，M6-1）。
-//
-// 走原生 REST 而不是 CreateExport：新增格式意味着在 proto enum 里加值并重新生成，
-// 而构建环境没有 buf/protoc。两个入口产生同一结构的 ExportSnapshot，由同一个导出
-// 处理器消费，因此不构成两套导出逻辑。
-export async function createHTMLBundleExport(
-  identity: ClientIdentity,
-  params: {
-    projectId: string;
-    timelineKey: string;
-    pagePngKeys: string[];
-    idempotencyKey: string;
-  }
-): Promise<{ jobId: string }> {
-  return postJSON<{ jobId: string }>(identity, `/projects/${encodeURIComponent(params.projectId)}/exports`, {
-    format: 'html_bundle',
-    timelineKey: params.timelineKey,
-    pagePngKeys: params.pagePngKeys,
-    idempotencyKey: params.idempotencyKey
-  });
-}
-
 // ---- 动画导出（导出选项 API） ----
 //
 // 后端约定（internal/api/export_options.go）：
@@ -156,7 +134,12 @@ export async function createArtifactExport(
 ): Promise<ExportJobResult> {
   const specs = params.animation ?? [];
   if (params.format === 'html_bundle' || params.format === 'ARTIFACT_FORMAT_MP4') {
-    return postJSON<ExportJobResult>(identity, `/projects/${encodeURIComponent(params.projectId)}/exports`, {
+    // 路径必须带 /api：本端点在 internal/api/export_bundle.go 里注册为
+    // `POST /api/projects/{projectId}/exports`，与动画规格/选项那一族同前缀。
+    // 漏掉前缀时 mux 上是 404（没有 SPA 兜底：SPA 只兜 GET），表现为
+    // 「点导出 → 立刻提示 HTTP 404」，而且只在 UI 上出现——脚本验收走的是完整路径，
+    // 从 M6-1 到本轮一直没被发现。见 api-contract-check.mjs 的路由表校验。
+    return postJSON<ExportJobResult>(identity, `/api/projects/${encodeURIComponent(params.projectId)}/exports`, {
       format: params.format === 'html_bundle' ? 'html_bundle' : 'mp4',
       timelineKey: params.timelineKey,
       pagePngKeys: params.pagePngKeys,

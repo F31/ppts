@@ -2,7 +2,7 @@
 /**
  * api-contract-check —— 前端 HTTP 契约门禁。
  *
- * 守护三条不变量（都源于真实缺陷）：
+ * 守护四条不变量（都源于真实缺陷）：
  *
  * 1) 网络请求只允许出现在 api/*.ts / auth.ts / core.ts。散落在页面组件里的 fetch 会各自发明错误处理，
  *    而 apiError.ts 的 isNotFound / isUnimplemented / describeApiError 依赖 instanceof ConnectError——
@@ -12,6 +12,8 @@
  * 3) api.ts 里同一个函数出现 fetch 又出现 `throw new Error(` —— 说明又写了一份自制错误，直接拦。
  *    （auth.ts 不在此列：它对接外部 OIDC IdP，响应不是本项目的 {code,message} 契约，
  *     但仍必须逐处标注 `// fetch-ok: 理由`。）
+ * 4) 前端 REST 路径必须在 Go 路由表里真实存在。前后端各抄一份路径字符串，
+ *    少一个 `/api` 前缀就是 404，而且只在 UI 上出现（脚本验收走完整路径，看不见）。
  *
  * 用法：node api-contract-check.mjs
  */
@@ -139,6 +141,61 @@ for (const file of files) {
   }
   if (total > 1) {
     errors.push(`请求层发现 ${total} 份 {code,message} 信封解析实现 [${where.join(', ')}]，应只剩 core.ts connectErrorFrom 里的一份。`);
+  }
+}
+
+// 不变量 4：前端调用的 REST 路径必须能在后端路由表里找到。
+//
+// 起因（真实缺陷）：createArtifactExport 的 REST 分支把请求发到 `/projects/{id}/exports`，
+// 后端注册的却是 `/api/projects/{projectId}/exports` → UI 导出 MP4 / HTML 成品包必然 404。
+// 脚本验收用的是完整路径，所以从 M6-1 起一直没被任何门禁或人工步骤发现。
+//
+// 归一规则：模板变量 ${...} 与 Go 的 {param} 都折成 `*`；但只有「紧跟 / 的变量」算路径段，
+// 拼在段尾的（如 `animation-options${query}`）是查询串后缀，直接丢弃。
+function normaliseRoute(path) {
+  return path
+    .replace(/(^|\/)\$\{[^}]*\}/g, (_, pre) => `${pre}*`)
+    .replace(/\$\{[^}]*\}/g, '')
+    .replace(/\{[^}]+\}/g, '*')
+    .replace(/\*+$/, '')
+    .split('?')[0]
+    .replace(/\/$/, '');
+}
+
+{
+  const GO_API = join(ROOT, '..', 'internal', 'api');
+  const routes = new Set();
+  let parsed = 0;
+  try {
+    for (const name of readdirSync(GO_API)) {
+      if (!name.endsWith('.go') || name.endsWith('_test.go')) continue;
+      const src = readFileSync(join(GO_API, name), 'utf8');
+      for (const m of src.matchAll(/mux\.Handle(?:Func)?\(\s*"(?:(?:GET|POST|PUT|PATCH|DELETE) )?([^"]+)"/g)) {
+        routes.add(normaliseRoute(m[1]));
+        parsed += 1;
+      }
+    }
+  } catch (e) {
+    errors.push(`无法读取后端路由表（${GO_API}）：${e.message}。门禁不能静默通过。`);
+  }
+  // 解析崩了会让下面的"全部命中"变成假绿：用数量下限兜住。
+  if (parsed > 0 && parsed < 80) {
+    errors.push(`只从后端解析到 ${parsed} 条路由（预期 100+），路由表解析可能已失效，先修门禁本身。`);
+  }
+  if (parsed === 0 && errors.length === 0) {
+    errors.push('后端路由表解析为空，路径校验形同虚设。');
+  }
+
+  // 只看本仓库自己的 REST 端点：以 /api 或顶层资源名开头。
+  const PATH_LITERAL = /[`'"](\/(?:api\/)?(?:projects|tags|folders|members|auth|ppts|shared|library)\/[^`'"]*)[`'"]/g;
+  for (const target of ALLOWED_API_PATHS) {
+    const src = readFileSync(join(SRC, target), 'utf8');
+    for (const m of src.matchAll(PATH_LITERAL)) {
+      const normalised = normaliseRoute(m[1]);
+      if (!routes.has(normalised)) {
+        errors.push(`src/${target}: 调用的 ${m[1]} 在后端没有对应路由（归一后 ${normalised}）。多半是漏了前缀或改了一侧路径，UI 上会直接 404。`);
+      }
+    }
   }
 }
 
