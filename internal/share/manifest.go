@@ -6,12 +6,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
 )
 
-// ManifestSchemaVersion 是包清单的结构版本。播放器只认这个版本；
-// 后续 M6-2 引入动画字段时递增，并保持旧播放器可忽略未知字段（向前兼容）。
-const ManifestSchemaVersion = 1
+// ManifestSchemaVersion 是包清单的结构版本。播放器只认这个版本；后续引入动画字段时递增，
+// 并保持旧播放器可忽略未知字段（向前兼容）。
+//
+// v2（M6-2）：`slides[i]` 增加 `plate`/`transition`/`layers`。版本位必须升——
+// 因为 v2 的 `image` 语义变了（从「完整页面」变成「挖空底板」），旧播放器读到会
+// 把挖空后的纯色疤当正常画面播。包内自带播放器，正常使用不会跨版本混读，但版本位
+// 能让新播放器明确拒绝它不认识的更高版本，而不是猜着播。
+const ManifestSchemaVersion = 2
 
 // ManifestDurationToleranceUS 是清单与时间轴时长的允许误差。
 // 时间轴以微秒声明、WAV 按帧落位，跨页累加最多引入 1ms 级误差，100ms 足够严格。
@@ -54,6 +60,55 @@ type SlideEntry struct {
 	StartUS int64  `json:"startUs"`
 	EndUS   int64  `json:"endUs"`
 	Image   string `json:"image"`
+	// Plate 为 true 表示 Image 是「挖空元素本体」的底板：元素区域已被周围底色填平，
+	// 由 Layers 盖回去。没有动画的页为 false，Image 就是完整页面图。
+	Plate bool `json:"plate,omitempty"`
+	// Transition 描述「如何进入这一页」，挂在后一页（与 IR 同语义）。
+	Transition *SlideTransition `json:"transition,omitempty"`
+	// Layers 按绘制顺序排列（父在前、子在后），与 IR 的 layers 同序。
+	Layers []SlideLayer `json:"layers,omitempty"`
+}
+
+// SlideTransition 是页间转场。缺省（nil 或 type=none）表示直接切换。
+type SlideTransition struct {
+	// none | fade | slide | zoom
+	Type       string `json:"type"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+}
+
+// SlideLayer 是一个可做元素级动作的区域。
+//
+// 这里的 clips 是 **IR 原样**，不是预编译的 WAAPI 关键帧：预编译要在 Go 里
+// 写一份 cubic-bezier 求解器，而求值代码只有 shared/motion.ts 一份——
+// 两份求解器就是两端漂移的起点（tasks 2.9）。
+type SlideLayer struct {
+	ElementID string   `json:"elementId,omitempty"`
+	Kind      string   `json:"kind,omitempty"`
+	Box       SlideBox `json:"box"`
+	// Image 是包内相对路径，尺寸等于 Box（像素）。
+	Image string `json:"image"`
+	Clips []Clip `json:"clips,omitempty"`
+}
+
+// SlideBox 是画布像素矩形。
+type SlideBox struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// Clip 是 IR 里一条已展开的动效。
+//
+// 叶类型（缓动四点、属性 from/to）直接用 animation 包的定义，不在这里重抄一遍：
+// 重抄就意味着「清单里的 easing 字段名」与「渲染器读的 easing 字段名」有两处来源。
+type Clip struct {
+	ClipID     string                 `json:"clipId,omitempty"`
+	Effect     string                 `json:"effect"`
+	StartMs    int64                  `json:"startMs"`
+	DurationMs int64                  `json:"durationMs"`
+	Easing     animation.CubicBezier  `json:"easing"`
+	Props      []animation.MotionProp `json:"props"`
 }
 
 type AudioEntry struct {
@@ -141,6 +196,9 @@ func (m *Manifest) Validate(files map[string]struct{}) error {
 		if err := checkBundlePath(slide.Image); err != nil {
 			return fmt.Errorf("share: slide %d image: %w", i, err)
 		}
+		if err := validateSlideAnimation(i, slide, files); err != nil {
+			return err
+		}
 		if files != nil {
 			if _, ok := files[slide.Image]; !ok {
 				return fmt.Errorf("share: slide %d image %q is missing from bundle", i, slide.Image)
@@ -184,6 +242,60 @@ func (m *Manifest) Validate(files map[string]struct{}) error {
 		if files != nil {
 			if _, ok := files[name]; !ok {
 				return fmt.Errorf("share: required entry %q is missing from bundle", name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateSlideAnimation 校验一页的动画字段自洽。
+//
+// 三条约束都是「不校验就会静默出错」的类型：
+//   - 有 layers 但没挖空：层图会盖在**已含元素本体**的完整页上，同一元素被画两次，
+//     入场动画期间能看到重影。这种画面不报错，只会被当成「渲染有点糊」。
+//   - 层图尺寸与 box 不一致：浏览器会缩放插值，文字边缘发虚，而两端 SSIM 会莫名偏低。
+//   - 转场类型拼错：播放器不认识就退化成直接切换，看起来「转场没了」却不报错。
+func validateSlideAnimation(index int, slide SlideEntry, files map[string]struct{}) error {
+	if slide.Transition != nil {
+		switch slide.Transition.Type {
+		case "none", "fade", "slide", "zoom":
+		default:
+			return fmt.Errorf("share: slide %d has unknown transition %q", index, slide.Transition.Type)
+		}
+		if slide.Transition.DurationMs < 0 {
+			return fmt.Errorf("share: slide %d transition duration must not be negative", index)
+		}
+	}
+	if len(slide.Layers) == 0 {
+		return nil
+	}
+	if !slide.Plate {
+		return fmt.Errorf("share: slide %d has %d layers but its image is not a plate "+
+			"(elements would be drawn twice)", index, len(slide.Layers))
+	}
+	if slide.Transition == nil {
+		return fmt.Errorf("share: slide %d has layers but no transition entry", index)
+	}
+	for k, layer := range slide.Layers {
+		if layer.Box.W <= 0 || layer.Box.H <= 0 {
+			return fmt.Errorf("share: slide %d layer %d has non-positive box %dx%d",
+				index, k, layer.Box.W, layer.Box.H)
+		}
+		if err := checkBundlePath(layer.Image); err != nil {
+			return fmt.Errorf("share: slide %d layer %d image: %w", index, k, err)
+		}
+		if files != nil {
+			if _, ok := files[layer.Image]; !ok {
+				return fmt.Errorf("share: slide %d layer %d image %q is missing from bundle",
+					index, k, layer.Image)
+			}
+		}
+		for c, clip := range layer.Clips {
+			if clip.DurationMs < 0 {
+				return fmt.Errorf("share: slide %d layer %d clip %d has negative duration", index, k, c)
+			}
+			if clip.Effect == "" {
+				return fmt.Errorf("share: slide %d layer %d clip %d has no effect tag", index, k, c)
 			}
 		}
 	}

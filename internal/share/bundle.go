@@ -39,6 +39,9 @@ const (
 	FileAppCSS        = "app.css"
 	FileAudioMix      = "audio/mix.wav"
 	slideEntryPattern = "slides/%03d%s"
+	// layerEntryPattern 用「页号-layer-层序」，层序与清单 layers 下标一致：
+	// 排查时能直接从文件名定位到清单第几项，不必反查。
+	layerEntryPattern = "slides/%03d-layer-%02d.png"
 	audioEntryPattern = "audio/%03d.wav"
 )
 
@@ -57,6 +60,12 @@ type BundleInput struct {
 	Timeline *media.Timeline
 	// PagePNGKeys 按 slide 位置对齐；短于页数视为后续页缺图（沿用上一页）。
 	PagePNGKeys []string
+	// PagePNGBytes 与 PagePNGKeys 同序；某项非空时直接用这些字节，不再回读。
+	//
+	// HTML 成品包要拿原始 PNG 做挖空（转码后再挖取色会偏），调用方本来就已读进内存，
+	// 再让打包器读一遍等于同一份对象读两次——除了多一次往返，还留下
+	// 「两次读之间对象被替换」这种不该存在的窗口。
+	PagePNGBytes [][]byte
 	// SRTKey / VTTKey 指向既有字幕对象；VTT 必填（成品必须带字幕）。
 	SRTKey string
 	VTTKey string
@@ -66,8 +75,37 @@ type BundleInput struct {
 	Title  string
 	// SnapshotHash 写入清单，便于把成品包与导出快照对照。
 	SnapshotHash string
+	// Pages 是逐页动画素材，按 slide 位置对齐；某项为零值表示该页没有动画。
+	//
+	// 分层位图由调用方（app 层）算好再传进来，打包器不解释动画语义——
+	// 它只负责「把这些字节写进包、把这些元数据写进清单」。这样 share 不必依赖
+	// render（也就不会把 animation 的语义带进一个只管打包的包）。
+	Pages []PageAnimation
 	// CreatedAt 为零值时省略。
 	CreatedAt time.Time
+}
+
+// PageAnimation 是一页的动画素材。
+//
+// 为什么图像在调用方算：挖空要基于**原始页图**取色（转码后再挖，填色会偏），
+// 而打包器拿到的是已经 Decide 好怎么转的字节流。谁先谁后是个容易写反的顺序，
+// 放在调用方一处写清楚，比在打包器里埋一个隐含前提好。
+type PageAnimation struct {
+	// PlatePNG 是挖空元素本体后的整页底图（PNG 字节）。为空表示不挖空。
+	PlatePNG   []byte
+	Transition SlideTransition
+	// Layers 按绘制顺序（父在前、子在后），与 IR 同序。
+	Layers []LayerAsset
+}
+
+// LayerAsset 是一个元素层的独立位图：已按 Box 裁切，且不含其它动画元素的像素。
+type LayerAsset struct {
+	ElementID string
+	Kind      string
+	Box       SlideBox
+	// PNG 是该层的位图字节，尺寸等于 Box。
+	PNG   []byte
+	Clips []Clip
 }
 
 // BundleBuilder 负责把输入组装成 zip。
@@ -253,6 +291,10 @@ func (b *BundleBuilder) buildInto(
 //
 // 降级语义与 MP4 路径逐条对齐：缺键/读失败 → 沿用上一页（复用同一文件名，
 // 播放器切页时 src 不变，等于"画面停住"）；首屏缺失 → 占位图。
+//
+// 有动画的页是例外：它的 `image` 是挖空底板，**不能**被后续缺图页沿用——
+// 沿用会让用户看到一块纯色疤，而且看不到任何错误提示。所以「上一页是底板」时
+// 退到占位图，宁可空白也不要一张有疤的图。
 func (b *BundleBuilder) writeSlides(
 	ctx context.Context,
 	write func(string, []byte) error,
@@ -260,7 +302,40 @@ func (b *BundleBuilder) writeSlides(
 ) ([]SlideEntry, error) {
 	entries := make([]SlideEntry, 0, len(in.Timeline.Slides))
 	previousName := ""
+	previousPlate := false
 	for i, slide := range in.Timeline.Slides {
+		anim := PageAnimation{}
+		if i < len(in.Pages) {
+			anim = in.Pages[i]
+		}
+
+		// 有分层素材的页：底板 + 每层位图，全部走 PNG（层图是文字时 JPEG 会糊边，
+		// 且实测只省 29%，见 design ADR-5）。
+		if len(anim.Layers) > 0 && len(anim.PlatePNG) > 0 {
+			name := fmt.Sprintf(slideEntryPattern, i+1, ".png")
+			if err := write(name, anim.PlatePNG); err != nil {
+				return nil, err
+			}
+			layers := make([]SlideLayer, 0, len(anim.Layers))
+			for k, layer := range anim.Layers {
+				layerName := fmt.Sprintf(layerEntryPattern, i+1, k)
+				if err := write(layerName, layer.PNG); err != nil {
+					return nil, err
+				}
+				layers = append(layers, SlideLayer{
+					ElementID: layer.ElementID, Kind: layer.Kind,
+					Box: layer.Box, Image: layerName, Clips: layer.Clips,
+				})
+			}
+			transition := anim.Transition
+			entries = append(entries, SlideEntry{
+				SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
+				Plate: true, Transition: &transition, Layers: layers,
+			})
+			previousName, previousPlate = name, true
+			continue
+		}
+
 		var rawKey string
 		if i < len(in.PagePNGKeys) {
 			rawKey = in.PagePNGKeys[i]
@@ -272,7 +347,7 @@ func (b *BundleBuilder) writeSlides(
 			if keyErr := checkResourceKey(rawKey); keyErr != nil {
 				return nil, fmt.Errorf("share: slide %d: %w", i, keyErr)
 			}
-			raw, readErr := b.readPagePNG(ctx, rawKey)
+			raw, readErr := b.readPageBytes(ctx, in, i, rawKey)
 			if readErr != nil {
 				// 单页读不到是「能力缺失」而非「内容错误」（A26），降级为沿用上一页。
 				b.logf(slog.LevelWarn, "share: read page image failed, reusing previous frame",
@@ -291,7 +366,8 @@ func (b *BundleBuilder) writeSlides(
 				}
 			}
 		}
-		if name == "" && previousName != "" {
+		// 沿用上一页时排除底板：底板是挖空的，拿来当完整页会看到纯色疤。
+		if name == "" && previousName != "" && !previousPlate {
 			name = previousName
 		}
 		if name == "" {
@@ -304,7 +380,7 @@ func (b *BundleBuilder) writeSlides(
 				return nil, err
 			}
 		}
-		previousName = name
+		previousName, previousPlate = name, false
 		entries = append(entries, SlideEntry{
 			SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
 		})
@@ -356,6 +432,20 @@ func (b *BundleBuilder) readPagePNG(ctx context.Context, key string) ([]byte, er
 		return nil, err
 	}
 	return readAllClose(b.reader.OpenPagePNG(ctx, key))
+}
+
+// readPageBytes 取一页的原始 PNG 字节：优先用调用方已读入的副本，否则回读。
+//
+// 副本路径**仍然要过 checkResourceKey**：key 的合法性是数据契约，与字节从哪来无关。
+// 若因为「反正有字节了」就跳过校验，非法 key 会以另一种方式进到清单里。
+func (b *BundleBuilder) readPageBytes(ctx context.Context, in BundleInput, index int, key string) ([]byte, error) {
+	if index < len(in.PagePNGBytes) && len(in.PagePNGBytes[index]) > 0 {
+		if err := checkResourceKey(key); err != nil {
+			return nil, err
+		}
+		return in.PagePNGBytes[index], nil
+	}
+	return b.readPagePNG(ctx, key)
 }
 
 func (b *BundleBuilder) readObject(ctx context.Context, key string) ([]byte, error) {

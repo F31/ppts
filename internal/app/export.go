@@ -517,9 +517,30 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		os.Remove(tmp.Name())
 	}
 	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
+	// 页图先读一遍：挖空必须基于原始 PNG（转码后再挖取色会偏），而 builder 也要写它们。
+	// 读到的字节同时交给两边，避免同一份对象读两次。
+	pagePNGs, pngErr := h.readPagePNGs(ctx, job.TenantID, snapshot.PagePNGKeys)
+	if pngErr != nil {
+		if h.logger != nil {
+			h.logger.Warn("export: read page images for html bundle failed; bundle will fall back to re-reading",
+				"job", job.ID, "error", pngErr)
+		}
+	}
+	pages, animErr := h.htmlBundleAnimations(ctx, job, snapshot, bundle, pagePNGs)
+	if animErr != nil {
+		// 动画是增强层：组装不出来就出静态包，与 M6-1 逐像素一致。
+		// 但必须留痕——用户会看到「我勾了动画，包里的页面却不动」。
+		if h.logger != nil {
+			h.logger.Warn("export: html bundle animation unavailable; packing static bundle",
+				"job", job.ID, "error", animErr)
+		}
+		pages = nil
+	}
 	manifest, err := builder.Build(ctx, share.BundleInput{
 		Timeline:     bundle.Timeline,
 		PagePNGKeys:  snapshot.PagePNGKeys,
+		PagePNGBytes: pagePNGs,
+		Pages:        pages,
 		SRTKey:       bundle.SRTKey,
 		VTTKey:       bundle.VTTKey,
 		Width:        snapshot.Width,
@@ -534,9 +555,15 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		return nil, fmt.Errorf("export job: pack html bundle: %w", err)
 	}
 	if h.logger != nil {
+		animated := 0
+		for _, p := range pages {
+			if len(p.Layers) > 0 {
+				animated++
+			}
+		}
 		h.logger.Info("export: html bundle assembled",
 			"job", job.ID, "slides", len(manifest.Slides), "audio_segments", len(manifest.Audio),
-			"audio_mix", manifest.AudioMix != "")
+			"audio_mix", manifest.AudioMix != "", "animated_slides", animated)
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		cleanup()

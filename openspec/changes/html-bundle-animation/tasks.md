@@ -24,13 +24,19 @@
 
 ## 3. Go 侧分层出图与打包
 
-- [ ] 3.1 `share.BundleInput` 增逐页动画数据（`[]PageAnimation`：`slideId`、`transition`、`layers`）
-- [ ] 3.2 打包时在**原始 PNG** 上跑 `plate.BuildPlate` 与 `plate.BuildLayerAssets`，转码在其后
-      （顺序反了取色会偏，见 design §5 风险表）
-- [ ] 3.3 图层位图命名（`pages/NNN-layer-KK.png`）与清单回填；图层数上限与资源回收
-- [ ] 3.4 清单 `schemaVersion` 升 2，`slides[i]` 增 `plate`/`transition`/`layers`
-- [ ] 3.5 开关关闭时 `layers` 全空、`image` 仍为完整底图；产物与 M6-1 逐像素一致
-      （除 `createdAt`/`snapshotHash` 这两个天然会变的字段）
+- [x] 3.1 `share.BundleInput` 增 `Pages []PageAnimation`（底板字节 + 转场 + 层素材）。
+      打包器**不 import render**：分层位图由调用方算好，`share` 仍只依赖 `media`/`animation`，
+      「打包」与「渲染」两个包的依赖方向保持不变
+- [x] 3.2 挖空与出层图在**原始 PNG** 上做：`bundleAnimations` 用 `render.BuildPlate`/
+      `BuildLayerAssets` 生成，再 PNG 编码；`BundleInput.PagePNGBytes` 让调用方把已读入的字节
+      传进来，同一份对象不再读两次（副本路径仍过 `checkResourceKey`，key 合法性不因字节来源改变）
+- [x] 3.3 层图命名 `slides/%03d-layer-%02d.png`，层序与清单下标一致（排查时能从文件名定位到清单第几项）。
+      层图直接进 zip、不进对象存储，因此没有回收问题；层数由 IR 的轨道数决定，不另设上限
+- [x] 3.4 `schemaVersion` 升 2；`slides[i]` 增 `plate`/`transition`/`layers`；`Validate` 追加四条约束：
+      有层必须有底板（否则同一元素被画两次）、层 box 必须为正、层图必须在包里、转场类型白名单
+- [x] 3.5 开关关闭时 `layers` 全空、`plate=false`、`image` 仍是 `.jpg`（走原 JPEG 转码路径）。
+      用例 `TestBuildWithoutAnimationStaysStatic` 钉住这三点；另有 `TestMissingPageNeverReusesPlate`
+      覆盖「缺图页不得沿用上一页底板」（沿用会露出一块纯色疤）
 
 ## 4. 播放器动画层
 

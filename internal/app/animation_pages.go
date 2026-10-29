@@ -67,11 +67,22 @@ func (a *AnimationPageAssembler) WithLogger(l *slog.Logger) *AnimationPageAssemb
 
 // Build 实现 AnimationRequestBuilder。
 func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInput) (AnimationRequest, error) {
-	if a == nil || a.publisher == nil {
-		return AnimationRequest{}, errors.New("animation: asset publisher is not configured")
+	if a == nil {
+		return AnimationRequest{}, errors.New("animation: assembler is not configured")
 	}
 	if a.specs == nil {
 		return AnimationRequest{}, errors.New("animation: animation spec source is not configured")
+	}
+	// 发布器只在需要往资产根写图时才必需。HTML 成品包自带页图（BaseImagePaths），
+	// 因此没有发布器也能组装——否则「没配渲染服务就导不出有动画的 HTML 包」这件事
+	// 会成为一个说不出理由的能力边界。
+	useGivenPaths := len(in.BaseImagePaths) > 0
+	if a.publisher == nil && !useGivenPaths {
+		return AnimationRequest{}, errors.New("animation: asset publisher is not configured")
+	}
+	if useGivenPaths && len(in.BaseImagePaths) != len(in.Slides) {
+		return AnimationRequest{}, fmt.Errorf("animation: %d base image paths for %d slides",
+			len(in.BaseImagePaths), len(in.Slides))
 	}
 	// 页图与时间轴必须一一对应：少一张会把后面所有页的图错位一格，
 	// 而成片里看不出来「错了」，只看到「这几页的画面和配音对不上」。
@@ -102,9 +113,15 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 			// 这属于时间轴数据有问题，不是渲染能补救的事，交回上层走静态路径。
 			return AnimationRequest{}, fmt.Errorf("animation: slide %q has non-positive duration", slide.SlideID)
 		}
-		rel, err := a.publisher.Publish(ctx, "image/png", in.PagePNGs[i])
-		if err != nil {
-			return AnimationRequest{}, fmt.Errorf("animation: publish page %d image: %w", i, err)
+		var rel string
+		if useGivenPaths {
+			rel = in.BaseImagePaths[i]
+		} else {
+			published, err := a.publisher.Publish(ctx, "image/png", in.PagePNGs[i])
+			if err != nil {
+				return AnimationRequest{}, fmt.Errorf("animation: publish page %d image: %w", i, err)
+			}
+			rel = published
 		}
 		// 先定规格再取几何：版本不符的页按「没有动画」处理，此时几何读进来也会被丢掉。
 		ref, hasSpec := refs[slide.SlideID]

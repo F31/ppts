@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/F31/ppts/internal/animation"
-	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/render"
 )
@@ -82,6 +81,13 @@ type AnimationPageInput struct {
 	// PagePNGs 与 Slides 同序，是已读入内存的页面 PNG。
 	// 把它们送进渲染服务的资产根由 AssetPublisher 负责（tasks 2.0）。
 	PagePNGs [][]byte
+	// BaseImagePaths 非空时直接用这些路径作为 IR 的 baseImage，不调用发布器。
+	//
+	// 供 HTML 成品包使用：它把页图打进包内，渲染服务的资产根对它没有意义。
+	// 没有这一条，包导出会被迫先往一个用不上的目录写 20 张 PNG——既多一次对象往返，
+	// 又让「HTML 包不需要渲染服务」这句话在代码里不成立。
+	// 非空时必须与 Slides 同序等长。
+	BaseImagePaths []string
 }
 
 // AnimationRequestBuilder 把材料组装成一次动画渲染的完整输入。
@@ -120,28 +126,9 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 	if len(req.Pages) == 0 {
 		return nil, errors.New("animation: no pages to render")
 	}
-	compiler, err := render.NewCompiler(render.Options{
-		Canvas:         design.Canvas{Width: req.Width, Height: req.Height},
-		SlideWidthEMU:  req.SlideWidthEMU,
-		SlideHeightEMU: req.SlideHeightEMU,
-		FPS:            req.FPS,
-		Background:     req.Background,
-		Fonts:          req.Fonts,
-	})
+	plan, err := h.compileAnimationPlan(req)
 	if err != nil {
-		return nil, fmt.Errorf("animation: %w", err)
-	}
-	inputs := make([]render.PageInput, 0, len(req.Pages))
-	for i, p := range req.Pages {
-		inputs = append(inputs, render.PageInput{
-			Index: i, SlideID: p.SlideID, DurationMs: p.DurationMs,
-			BaseImage: p.BaseImage, Elements: p.Elements, Revision: p.Revision,
-			SegmentOffsets: p.SegmentOffsets,
-		})
-	}
-	plan, err := compiler.Compile(inputs)
-	if err != nil {
-		return nil, fmt.Errorf("animation: compile: %w", err)
+		return nil, err
 	}
 	jobID, err := h.renderer.Submit(ctx, plan)
 	if err != nil {
