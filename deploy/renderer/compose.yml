@@ -32,6 +32,8 @@ services:
     # 用之前把下面两行取消注释，并把宿主目录换成页面 PNG 的实际位置：
     # volumes:
     #   - /srv/ppts/pages:/assets:ro
+    # 导出侧（worker）要把 PPTS_ANIMATION_ASSET_DIR 指到**同一个宿主目录**，
+    # 由它把页图写进去（内容寻址命名、原子落地）。接线与 S3 换法见 README「单机部署」。
     # command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
     #           "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets"]
     # 注意：不要在这里补 -fonts。字体版本由镜像 entrypoint 从 /etc/ppts/fonts.version

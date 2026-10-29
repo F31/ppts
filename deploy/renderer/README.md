@@ -187,6 +187,75 @@ docker run --rm --network none --read-only \
 产物目录因此是**自包含**的：底图副本、`plates/`、`layers/`、`plan.json`、`segment_*.mp4`
 都在同一个目录里，`JobTTL` 到期只删这一个目录。
 
+## 单机部署：导出侧怎么把页图放进去（tasks 2.0）
+
+渲染服务只读自己的资产根，而页图在对象存储里，两者之间必须先有人把字节搬过去。
+单机部署用**共享目录**，三个环境变量把链路接通：
+
+| 变量 | 谁读 | 含义 |
+|---|---|---|
+| `PPTS_ANIMATION_ENABLED=true` | 导出 worker | 总开关。不开就完全不建客户端、不探测 |
+| `PPTS_RENDERER_URL` | 导出 worker | 渲染服务地址，例如 `http://renderer:8090` |
+| `PPTS_ANIMATION_ASSET_DIR` | 导出 worker | **导出侧看到的**资产根目录（写）；同一个卷在渲染容器里挂成 `-assets-dir`（读） |
+
+```yaml
+services:
+  worker:
+    environment:
+      PPTS_ANIMATION_ENABLED: "true"
+      PPTS_RENDERER_URL: http://renderer:8090
+      PPTS_ANIMATION_ASSET_DIR: /srv/ppts/pages
+    volumes:
+      - /srv/ppts/pages:/srv/ppts/pages
+
+  renderer:
+    volumes:
+      - /srv/ppts/pages:/assets:ro
+    command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
+              "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets"]
+```
+
+导出侧写入的路径长这样：`pages/<sha256 前 2 位>/<sha256>.png`。
+
+- **按内容命名，不按页码**：不同租户的第 3 页不会写进同一个文件（按页码命名时后写的
+  会让前一次导出渲染出别人的页面，那是串租户）；同一份图重复导出只写一次。
+- **原子落地**：同目录临时文件 + `rename`，渲染侧永远看不到半个文件。
+- **权限**：目录 0755、文件 0644。两个容器常常不是同一个 uid，缺这几位会得到
+  「导出侧写成功了，渲染侧 permission denied」——错误发生在渲染容器里，看起来像服务坏了。
+- **目录只增不减**，它是缓存不是数据：删掉不丢东西，下次导出重写。清理按 mtime 定期 prune，
+  不要放进导出路径（那会把一次导出变成一次全目录扫描）。
+
+三项缺任一项，导出都**照常成功**、只是出静态版；启动日志会明确说是哪一项缺：
+
+```
+animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static
+animation: asset publisher disabled; exports stay static            # 目录不可写，启动即报
+animation: page assembly wired via shared asset dir                 # 接好了（element_geometry=false）
+```
+
+`element_geometry=false` 是当前的能力边界而不是降级：元素几何还没有持久化来源
+（tasks 2.0b），所以**元素级轨道**（标题、要点、图表…逐个入场）会被编译成 `anchor_missing`
+诊断并跳过，**整页轨道**（转场、整页推拉/淡入）正常生效。
+
+### 换 S3 后端要动哪里
+
+只换一个实现：`app.AssetPublisher`（`internal/app/animation_assets.go`）。
+
+```go
+type AssetPublisher interface {
+    Publish(ctx context.Context, contentType string, data []byte) (relPath string, err error)
+}
+```
+
+返回值的语义是「**渲染服务资产根下的相对路径**」，所以换实现时导出侧（组装、编译、拼接）
+一行都不用改。S3 实现需要渲染侧同时具备下面任一条：
+
+1. 渲染服务新增 `PUT /v1/assets/{path}`：导出侧上传，渲染侧落盘后走现有 staging；
+2. 渲染服务直接以 S3 为资产根（`stageAssets` 改为从对象存储取 `baseImage`）。
+
+两条都还没做，所以现在只提供本地盘实现。`PPTS_ANIMATION_ASSET_DIR` 在多机部署下
+本来也不成立——共享卷的前提是导出与渲染在同一台机器上。
+
 ## 计划诊断（`plan.warnings`，出片前先扫一眼）
 
 诊断不阻断渲染，但意味着「成片和输入不完全一致」。全部码定义在 `internal/render/ir.go`。

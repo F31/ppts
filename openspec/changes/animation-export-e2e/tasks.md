@@ -18,22 +18,33 @@
 
 ## 2. 导出接线与开关（PR4-b）
 
-- [ ] 2.0 **底图投递机制（仍未决，是「生产上真正走动画」的前置）**：渲染服务只从自己的
-      `-assets-dir` 读 `baseImage`（ADR-14），而页面 PNG 在对象存储里。两者之间目前**没有通路**：
-      渲染容器 `network_mode: none`、compose 里 `/assets` 挂载仍是注释状态。需要二选一并落成
-      部署契约：
-      （a）共享卷 + 路径映射（单机可行；本项目的对象存储在 S3，通常不成立）；
-      （b）渲染服务加 `PUT /v1/assets/{path}`，由导出侧推页图（多一次上传，但后端无关）。
-      代码侧已把这条通路收敛成一个接缝 `AnimationRequestBuilder`（2.3），
-      适配器未注入 = 不探测、走静态，所以这里只差一个实现与一份部署说明。
-      证据：`internal/render/assets.go`、`deploy/renderer/compose.yml` 的 `-assets-dir` 注释。
+- [x] 2.0 **底图投递机制：单机用本地共享目录，接口为 S3 预留**（已定）
+      决策：单机部署用共享目录（导出侧写 `PPTS_ANIMATION_ASSET_DIR`，渲染容器把同一个卷挂成
+      `-assets-dir`）；投递抽成 `app.AssetPublisher`，返回值语义固定为「渲染服务资产根下的
+      相对路径」，因此换 S3 实现时导出主路径一行不用改。
+
+      - `LocalAssetPublisher`：内容寻址命名 `pages/<sha256[:2]>/<sha256>.png`。
+        不按页码命名——按页码时两个租户的第 3 页是同一个文件，后写的会让前一次导出
+        渲染出别人的页面（串租户），而不只是脏读。
+        原子落地（同目录临时文件 + rename）、目录 0755 / 文件 0644（跨 uid 的渲染容器要读）。
+        启动时探测可写：等第一次导出才发现目录不可写，表现为「每一单都静默降级」。
+      - `AnimationPageAssembler`：页图投递 + 规格取回（按快照里的身份取，核对 `Revision`）
+        + 时间轴换算（页时长、分段偏移）+ 可选元素几何。
+        规格版本不符 → 该页按无规格处理并留痕，**不拿最新版渲下去**：snapshotHash 已承诺
+        产物依据哪一版，用新版会让同一份键产出两份不同的视频。
+      - 接线在 `cmd/ppts/worker.go` 的 `wireAnimationPages`：三项缺任一都只降级、不失败，
+        且日志直接说是哪一项缺。
+      - S3 实现要配的两条渲染侧改动（`PUT /v1/assets` 或渲染服务直接以 S3 为资产根）
+        记在 `deploy/renderer/README.md`「换 S3 后端要动哪里」。
+      证据：`internal/app/animation_assets.go`、`internal/app/animation_pages.go`。
 
 - [ ] 2.0b **元素几何来源（本轮新发现的前置）**：`AnimationPage.Elements` 需要页内元素的
       EMU 框，而导出主路径只有页图与时间轴。几何**是**可得的——`project.reader.go` 在
       Inspect 时已从 go-pptx 取到 `Bounds`——但没有被持久化成解析产物，导出侧无从读取。
       两条路：解析期把 elements 落成对象（一次成本，导出期零成本），或导出期按源版本重解析
       （零存储，每次导出多一次解析）。选哪条取决于「导出频率 vs 存储成本」，未定。
-      在此之前动画段只能编出「整页静态画面」——那与静态版等价，不如不做。
+      现状（2.0 落地后）：几何源未注入时只跳过**元素级轨道**，整页轨道（转场、整页推拉/
+      淡入）仍然生效——所以「缺几何」不等于「动画完全没用」，只是能做的动效少一类。
       证据：`internal/project/reader.go` 的 `Bounds`、`internal/app/ingest.go` 的 `PageEntry`。
 
 - [x] 2.1 `ExportSnapshot` 增加动画字段（`omitempty`），并加一条「开关关闭时 snapshotHash
