@@ -22,6 +22,12 @@
       第 10 帧差异 bbox 完全落在标题框内；反向验证（拿错页 → 平均差 19.7；框缩小 → 23545 像素越界）
       确认检查不是空转。Studio 交互面板本身不是交付物，未纳入
 - [ ] 2.9 与 DOM 端（M6-2）抽出共享插值实现，避免两份 cubic-bezier 各自演化
+      —— 2026-10-29 核查后**推迟**：DOM 端目前根本没有 JS 插值实现。
+      证据：`web/src/sharePlayer/main.ts`（473 行）只有时间推进，零动画/transition/keyframe；
+      `internal/share/assets/app.js` 里 `cubic` 出现 0 次；`web/src/animationState.ts` 只做
+      草稿比对与夹紧，不求值缓动。所以「两份实现各自演化」这个风险现在不存在，
+      此时抽共享实现等于给一个还不存在的调用方造抽象——等 M6-2 的分享播放器真的做动画时，
+      让它直接消费 `renderer/src/motion.ts` 的语义（或把该文件提到共享位置），那时才有第二个调用方
 
 ## 3. Go backend
 
