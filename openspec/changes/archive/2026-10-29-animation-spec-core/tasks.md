@@ -79,6 +79,7 @@
 - [x] 6.5 `internal/app/export.go`、`internal/media/`、`web/` 零改动（`git diff --stat` 为空）
 - [x] 6.6 非法输入拦截：23 条领域用例覆盖 V0–V12；HTTP 层另有 8 条用例（含 V2 拒绝、409 冲突、锁定 409、开关 404）
 - [x] 6.7 回写方案文档 M1 实际落地与偏差（见 design.md「实施记录」PR1/PR2/PR3）；`openspec/specs/` 由 archive 生成
-- [ ] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：6.2（`-race`）与
-      4.6（PG 迁移空库 + 重放）均已通，仅剩 3.4（真实样本 `智讲PPT-客户方案讲解.pptx` 的
-      golden 用例）未做——它要接 `internal/project` 的解析入口，且样本 PPT 不在仓库里
+- [x] 6.8 归档为正式 spec（`openspec archive animation-spec-core`）：6.2（`-race`）、4.6（PG 迁移空库 + 重放）、
+      3.4（真实样本 golden）三条前置全部达成后执行。`openspec validate animation-spec-core --strict` 通过，
+      归档后 `openspec/specs/animation-spec/spec.md` 为正式规格，变更本体移入
+      `openspec/changes/archive/2026-10-29-animation-spec-core/`
