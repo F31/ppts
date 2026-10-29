@@ -225,11 +225,14 @@ func TestDriftingSegments(t *testing.T) {
 }
 
 func TestEscapeConcatPath(t *testing.T) {
-	if got, want := escapeConcatPath(`C:\tmp\a.mp4`), "C:/tmp/a.mp4"; got != want {
-		t.Fatalf("got %q want %q", got, want)
-	}
+	// 斜杠风格由 filepath.ToSlash 决定，是平台相关的（Windows 转、Linux 不转），
+	// 所以这里不断言跨平台转换结果——只断言清单语法真正需要的两件事：
+	// 路径能被单引号包住、路径里的单引号被闭合再续。
 	if got, want := escapeConcatPath("/tmp/it's.mp4"), `/tmp/it'\''s.mp4`; got != want {
 		t.Fatalf("单引号未转义：got %q want %q", got, want)
+	}
+	if got := escapeConcatPath("/tmp/plain.mp4"); got != "/tmp/plain.mp4" {
+		t.Fatalf("普通路径不该被改写：%q", got)
 	}
 }
 
