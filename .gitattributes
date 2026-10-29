@@ -13,3 +13,8 @@
 *.py text eol=lf
 deploy/renderer/chrome.sha256 text eol=lf
 deploy/renderer/charset.txt text eol=lf
+
+# 5. pptx：3.4 golden 用例的输入样本。字节一变，sha256 与解析出的页结构就全变，
+#    而 Windows 侧 core.autocrlf=true 的检出曾把文本文件反复改成 CRLF——这里显式
+#    声明二进制，避免哪天有人加了一条 `* text=auto` 把样本也卷进去。
+*.pptx -text
