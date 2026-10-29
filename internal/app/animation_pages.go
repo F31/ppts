@@ -225,20 +225,25 @@ func specRefsBySlide(snapshot ExportSnapshot) map[string]AnimationSpecRef {
 // segmentOffsets 把分段的绝对时间换算成**相对本页起点**的毫秒偏移。
 // 负偏移（分段的开始早于本页）归零：它只可能来自错位的时间轴，
 // 而归零至少能保证动效从页首开始，而不是从负时间开始。
+//
+// 键用**页内 id**（去掉时间轴的「页:段」前缀）：动画规格里存的、编辑器里列的
+// 都是页内 id，编译器按同一个键查偏移。不换算就等于 withSegment 永远查不到，
+// 动效静默退化到页首。
 func segmentOffsets(slide media.SlideCue) map[string]int64 {
 	if len(slide.Segments) == 0 {
 		return nil
 	}
 	offsets := make(map[string]int64, len(slide.Segments))
 	for _, seg := range slide.Segments {
-		if seg.SegmentID == "" {
+		local := media.UnscopedSegmentID(slide.SlideID, seg.SegmentID)
+		if local == "" {
 			continue
 		}
 		off := (seg.StartUS - slide.StartUS) / 1000
 		if off < 0 {
 			off = 0
 		}
-		offsets[seg.SegmentID] = off
+		offsets[local] = off
 	}
 	if len(offsets) == 0 {
 		return nil

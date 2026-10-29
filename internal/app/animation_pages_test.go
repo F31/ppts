@@ -78,8 +78,10 @@ func assemblerInput() AnimationPageInput {
 			{
 				SlideID: "s1", StartUS: 1_000_000, EndUS: 4_500_000,
 				Segments: []media.SegmentCue{
-					{SegmentID: "seg1", StartUS: 1_000_000},
-					{SegmentID: "seg2", StartUS: 3_000_000},
+					// 时间轴里的分段键是「页:段」（全局唯一），规格里的引用是页内 id——
+					// 两种形态必须在这里出现一次，否则"忘了换算"的回归测不出来。
+					{SegmentID: "s1:seg1", StartUS: 1_000_000},
+					{SegmentID: "s1:seg2", StartUS: 3_000_000},
 				},
 			},
 			{SlideID: "s2", StartUS: 4_500_000, EndUS: 6_000_000},
@@ -123,8 +125,9 @@ func TestAnimationPageAssemblerBuildsPages(t *testing.T) {
 		t.Fatalf("durations = %d / %d, want 3500 / 1500", first.DurationMs, req.Pages[1].DurationMs)
 	}
 	// 偏移必须是**相对本页起点**：seg2 在页内 2s 处，而不是绝对 3000ms。
+	// 键也必须是页内 id：时间轴给的是 "s1:seg2"，规格里存的是 "seg2"。
 	if first.SegmentOffsets["seg1"] != 0 || first.SegmentOffsets["seg2"] != 2000 {
-		t.Fatalf("offsets = %v, want seg1=0 seg2=2000", first.SegmentOffsets)
+		t.Fatalf("offsets = %v, want seg1=0 seg2=2000（键要按页内 id 归一）", first.SegmentOffsets)
 	}
 	if first.Revision == nil || first.Revision.Revision != 7 {
 		t.Fatalf("page1 revision = %+v, want revision 7", first.Revision)

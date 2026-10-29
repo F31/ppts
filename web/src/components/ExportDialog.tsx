@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useI18n } from '../i18n';
 import type { ArtifactFormat, PlaybackManifest } from '../types';
 import type { AnimationExportOptions } from '../api';
+import { animationReasonText } from '../animationText';
 import { useDialogA11y } from '../a11y';
 
 export type ExportOptions = { burnSubtitles: boolean; includeNotes: boolean; animation: boolean };
@@ -35,6 +36,7 @@ export function ExportDialog({
   manifest,
   busy,
   error,
+  dropped,
   animation,
   animationLoading,
   onClose,
@@ -43,6 +45,12 @@ export function ExportDialog({
   manifest: PlaybackManifest;
   busy: boolean;
   error: string;
+  /**
+   * 导出已受理但动效被后端摘掉时的说明（含任务号）。
+   * 非空时对话框保持打开：这是用户点完「导出」才发现的事实，
+   * 关掉再提示就变成一条几秒后消失的消息，用户会以为拿到的是动效视频。
+   */
+  dropped?: string;
   /** 导出选项探测结果（GET .../exports/animation-options）。null = 还没拿到。 */
   animation?: AnimationExportOptions | null;
   animationLoading?: boolean;
@@ -158,6 +166,8 @@ export function ExportDialog({
         <p className="export-snapshot">{t('editor.exportSnapshotNote', { snapshot: snapshotTail })}</p>
 
         {error && <p className="form-error" role="alert">{error}</p>}
+        {/* 不是错误（任务已入队），但必须显眼：说清这一单实际拿到的是静态版。 */}
+        {dropped && <p className="form-warn" role="status">{dropped}</p>}
 
         <div className="modal-actions">
           <button type="button" className="button-ghost" onClick={onClose} disabled={busy}>
@@ -175,23 +185,4 @@ export function ExportDialog({
       </section>
     </div>
   );
-}
-
-// animationReasonText 把后端的不可用原因码翻成一句用户能理解的话。
-//
-// 只按前缀匹配：`renderer_unavailable: <详情>` 的详情里可能带地址与错误串，
-// 对用户没有信息量（还容易把内网地址漏到页面上），所以整段丢弃。
-function animationReasonText(reason: string | undefined, t: (key: string) => string): string {
-  const code = (reason ?? '').split(':')[0].trim();
-  switch (code) {
-    case 'animation_not_available':
-    case 'animation_disabled_by_deployment':
-      return t('editor.exportAnimationNotEnabled');
-    case 'renderer_not_configured':
-      return t('editor.exportAnimationNotConfigured');
-    case 'renderer_unavailable':
-      return t('editor.exportAnimationServiceDown');
-    default:
-      return t('editor.exportAnimationUnavailable');
-  }
 }

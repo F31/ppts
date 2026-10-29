@@ -660,7 +660,11 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 /* ============ 设置页 ============ */
 .form-stack { display: grid; gap: 12px; }
 .form-error { color: #fca5a5; background: rgba(252,165,165,.1); border-radius: 12px; padding: 10px; font-size: 13px; }
+/* 降级提示：任务成功但结果与用户预期不同（例如带动画导出被摘成静态版）。
+   与 .form-error 分开是刻意的——用红色说"成功但有变化"，等于把成功说成失败。 */
+.form-warn { color: #fcd34d; background: rgba(252,211,77,.12); border-radius: 12px; padding: 10px; font-size: 13px; }
 .floating-notice { color: #86efac; background: rgba(134,239,172,.1); border-radius: 12px; padding: 10px; font-size: 13px; }
+.floating-notice.warn { color: #fcd34d; background: rgba(252,211,77,.12); }
 
 /* ============ B4-M1 权限边界（A22） ============ */
 .no-permission { display: grid; gap: 8px; max-width: 640px; }

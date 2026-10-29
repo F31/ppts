@@ -224,16 +224,28 @@ func (h *ExportOptionsHandler) animationOptions(w http.ResponseWriter, r *http.R
 // 顺序有意义：先报配置缺失，再报探测失败。反过来会出现"渲染服务不可达"掩盖
 // "这个部署根本没开动画"——后者是更根本的原因，也更容易修。
 func (h *ExportOptionsHandler) unavailableReason(ctx context.Context) string {
-	if h.specs == nil {
+	// h.probe 是 *cachedProbe：直接传进接口参数会把 nil 包成"非 nil 接口"，
+	// 判定里的 probe==nil 就永远不成立，最后在 Check 里空指针。
+	var probe AnimationProbe
+	if h.probe != nil {
+		probe = h.probe
+	}
+	return animationUnavailableReason(ctx, h.specs, h.enabled, probe)
+}
+
+// animationUnavailableReason 是"这次导出能不能出动画"的唯一判定，导出选项端点与
+// 导出入口共用：两边各写一遍，就会出现"对话框说能用、提交后被静默降级"的分叉。
+func animationUnavailableReason(ctx context.Context, specs animstore.Store, enabled bool, probe AnimationProbe) string {
+	if specs == nil {
 		return "animation_not_available"
 	}
-	if !h.enabled {
+	if !enabled {
 		return "animation_disabled_by_deployment"
 	}
-	if h.probe == nil {
+	if probe == nil {
 		return "renderer_not_configured"
 	}
-	if err := h.probe.Check(ctx); err != nil {
+	if err := probe.Check(ctx); err != nil {
 		return "renderer_unavailable: " + err.Error()
 	}
 	return ""

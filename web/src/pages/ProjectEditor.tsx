@@ -55,6 +55,7 @@ import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
+import { animationDroppedText } from '../animationText';
 import { useDialogA11y } from '../a11y';
 
 type SlidesState =
@@ -260,6 +261,9 @@ export function ProjectEditor({
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportError, setExportError] = useState('');
+  // 后端受理了带动画的导出、但渲不出来时摘掉动画（按静态版导出）的说明。
+  // 与 exportError 分开：任务确实入队并会成功，用错误样式说它反而是假消息。
+  const [exportDropped, setExportDropped] = useState('');
   // 导出选项探测（动画能力 + 逐页规格身份）。null 表示还没拿到/拿不到——
   // 拿不到只影响"能不能勾动画"，不该拦住整次导出。
   const [exportAnimation, setExportAnimation] = useState<AnimationExportOptions | null>(null);
@@ -1491,6 +1495,7 @@ export function ProjectEditor({
     if (!realManifest || exporting) return;
     setExporting(true);
     setExportError('');
+    setExportDropped('');
     setNarrationStatus({ phase: 'idle', message: t('editor.exportQueued') });
     const idempotencyKey = `export-${projectId}-${Date.now()}`;
     try {
@@ -1512,7 +1517,14 @@ export function ProjectEditor({
         idempotencyKey
       });
       setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });
-      setExportOpen(false);
+      if (result.animationDropped) {
+        // 任务已入队，但动画被摘掉了。此时关掉对话框，用户看到的就是一句
+        // 3 秒后消失的「已入队」，然后去任务中心等一个并不存在的动效视频。
+        // 所以留在对话框里把原因和任务号一起说清，由用户自己关。
+        setExportDropped(animationDroppedText(result.animationDropped, result.jobId, t));
+      } else {
+        setExportOpen(false);
+      }
     } catch (error) {
       setExportError(error instanceof Error ? error.message : t('editor.exportFailed'));
     } finally {
@@ -2193,9 +2205,13 @@ export function ProjectEditor({
           manifest={realManifest}
           busy={exporting}
           error={exportError}
+          dropped={exportDropped}
           animation={exportAnimation}
           animationLoading={exportAnimationLoading}
-          onClose={() => setExportOpen(false)}
+          onClose={() => {
+            setExportOpen(false);
+            setExportDropped('');
+          }}
           onSubmit={(format, options) => void runExport(format, options)}
         />
       )}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,5 +205,27 @@ func TestClientCheckBypassesHealthCache(t *testing.T) {
 	}
 	if !c.Available(context.Background()) {
 		t.Fatal("Health 的结论应保持首次结果——两处语义不能互相污染")
+	}
+}
+
+// TestCheckDoesNotDoubleWrapUnavailable 守用户可见的那条错误文案。
+//
+// Check 与 do 都会把连接层失败包成 ErrAnimationUnavailable，两层叠加的产物是
+// "animation service unavailable: animation service unavailable: Get …"，
+// 而这段字符串会原样出现在导出对话框里——重复前缀会让人以为有两个独立故障。
+func TestCheckDoesNotDoubleWrapUnavailable(t *testing.T) {
+	c, err := NewClient(ClientConfig{BaseURL: "http://127.0.0.1:1", Retries: 0, Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	err = c.Check(context.Background())
+	if err == nil {
+		t.Fatal("连不上时必须返回错误，否则导出会以为自己能出动画")
+	}
+	if !errors.Is(err, ErrAnimationUnavailable) {
+		t.Fatalf("error = %v, want ErrAnimationUnavailable", err)
+	}
+	if n := strings.Count(err.Error(), "animation service unavailable"); n != 1 {
+		t.Fatalf("错误前缀出现了 %d 次: %v", n, err)
 	}
 }

@@ -69,6 +69,20 @@ type SegmentCue struct {
 	AlignmentMethod tts.AlignmentMethod `json:"alignmentMethod,omitempty"`
 }
 
+// UnscopedSegmentID 去掉时间轴分段键的页前缀（"slide-3:seg-2" → "seg-2"）。
+//
+// 时间轴用「页:段」做全局键（跨页复用 seg-01 时不会撞车），但**讲稿/动画规格里的
+// 分段引用是页内 id**：编辑器给用户列的就是 seg-01、用户在规格里存的也是它。
+// 两边不做换算的话，withSegment 在编译期查不到偏移，动效会静默退化到页首——
+// 画面上看起来就是"动效没生效"。所有"规格 → 时间轴"的换算都必须过这里。
+func UnscopedSegmentID(slideID, segmentID string) string {
+	prefix := slideID + ":"
+	if slideID != "" && strings.HasPrefix(segmentID, prefix) {
+		return segmentID[len(prefix):]
+	}
+	return segmentID
+}
+
 // SubtitleCue is shared by WebVTT and SRT renderers.
 type SubtitleCue struct {
 	SlideID   string `json:"slideId"`

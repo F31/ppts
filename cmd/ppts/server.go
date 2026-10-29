@@ -25,6 +25,17 @@ import (
 	"github.com/F31/ppts/web"
 )
 
+// animationEnabled 决定动画通道是否开启，api 与 worker 共用这一份判定。
+//
+// 本地 profile（SQLite 单租户）默认开、生产默认关，但**显式设置永远优先**：
+// 之前 api 写的是 `isSQLite() || env=="true"`，worker 写的是 `env=="true"`，
+// 两边不一致的结果是"API 说能出动画、worker 却只出静态版"——用户看到的是静默降级，
+// 而不是任何一条提示。更要紧的是，本地 profile 因此没有任何办法关掉动画，
+// 验收里"关掉开关再导出"这一步根本做不出来。
+func animationEnabled(isSQLite bool) bool {
+	return envBool("PPTS_ANIMATION_ENABLED", isSQLite)
+}
+
 // animationProbeFromEnv 构造导出选项端点的渲染服务探测。
 //
 // 与 worker 各自读同一对 env（PPTS_ANIMATION_ENABLED / PPTS_RENDERER_URL）：两个进程
@@ -33,8 +44,8 @@ import (
 //
 // 返回 nil 表示这个部署没有渲染服务：端点会返回 renderer_not_configured，
 // 前端据此置灰并说明，而不是让用户勾一个必然降级的选项。
-func animationProbeFromEnv(logger *slog.Logger) api.AnimationProbe {
-	if !envBool("PPTS_ANIMATION_ENABLED", false) {
+func animationProbeFromEnv(logger *slog.Logger, enabled bool) api.AnimationProbe {
+	if !enabled {
 		return nil
 	}
 	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
@@ -61,10 +72,11 @@ func animationProbeFromEnv(logger *slog.Logger) api.AnimationProbe {
 // 只配了渲染地址却没配资产目录时，提交能成功而 baseImage 永远找不到，
 // 用户看到的是"预览失败"而不是"这个部署没开预览"——前者会被当成 bug 反复重试。
 //
-// 会话预算（3s）在 handler 里，客户端超时给得比它宽：让 ctx 先到期，
-// 这样超时被归因为"这一页渲得慢"，而不是"渲染服务连不上"。
-func animationPreviewFromEnv(logger *slog.Logger) (*render.Client, app.AssetPublisher) {
-	if !envBool("PPTS_ANIMATION_ENABLED", false) {
+// 会话预算（默认 3s，PPTS_ANIMATION_PREVIEW_BUDGET 可调）在 handler 里，
+// 客户端超时给得比它宽：让 ctx 先到期，这样超时被归因为"这一页渲得慢"，
+// 而不是"渲染服务连不上"。
+func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client, app.AssetPublisher) {
+	if !enabled {
 		return nil, nil
 	}
 	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
@@ -84,6 +96,30 @@ func animationPreviewFromEnv(logger *slog.Logger) (*render.Client, app.AssetPubl
 		return nil, nil
 	}
 	return client, assets
+}
+
+// previewBudgetFromEnv 读取单页预览预算 PPTS_ANIMATION_PREVIEW_BUDGET（Go duration，如 "8s"）。
+//
+// 非法或缺失一律回落到 0（= 用 handler 的默认 3s）而不是报错退出：预览是增强能力，
+// 一个写错的环境变量不该让整个 API 起不来。上下限夹紧交给 api.ClampPreviewBudget，
+// 保证服务端预算始终小于前端 90s 的兜底超时（否则超时会被误判成网络故障）。
+func previewBudgetFromEnv(logger *slog.Logger) time.Duration {
+	raw := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_PREVIEW_BUDGET"))
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		logger.Warn("animation: invalid PPTS_ANIMATION_PREVIEW_BUDGET, falling back to default",
+			"value", raw, "error", err)
+		return 0
+	}
+	clamped := api.ClampPreviewBudget(d)
+	if clamped != d {
+		logger.Warn("animation: PPTS_ANIMATION_PREVIEW_BUDGET clamped",
+			"requested", d.String(), "applied", clamped.String())
+	}
+	return clamped
 }
 
 // runServer 启动 API + 前端控制台（原 cmd/api 的 run）。
@@ -138,7 +174,10 @@ func runServer() error {
 	scriptSources := stores.scriptSourceStore()
 	voiceSettings := stores.voiceSettingsStore()
 
-	previewRenderer, previewAssets := animationPreviewFromEnv(logger)
+	// 动画开关只解析一次：api 的三个入口（写路径、探测、预览）必须同进同退，
+	// 各自读一遍环境变量就会出现"对话框说能用、预览端点却没注册"这种半开状态。
+	animationOn := animationEnabled(stores.isSQLite())
+	previewRenderer, previewAssets := animationPreviewFromEnv(logger, animationOn)
 
 	server := &http.Server{
 		Addr: addr,
@@ -156,9 +195,12 @@ func runServer() error {
 						LocalPrincipal: localPrincipal,
 						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
 						// 动画规格写路径：本地 profile 默认开启；生产需显式设置 PPTS_ANIMATION_ENABLED=true。
-						Animation: stores.animation, AnimationEnabled: stores.isSQLite() || os.Getenv("PPTS_ANIMATION_ENABLED") == "true",
-						AnimationProbe:    animationProbeFromEnv(logger),
+						Animation: stores.animation, AnimationEnabled: animationOn,
+						AnimationProbe:    animationProbeFromEnv(logger, animationOn),
 						AnimationRenderer: previewRenderer, AnimationAssets: previewAssets,
+						// 预览预算按部署硬件可调（默认 3s）：纯 CPU 渲染器上一页的耗时
+						// 取决于核数与字号，固定值会让慢机器上的预览恒定超时。
+						AnimationPreviewBudget: previewBudgetFromEnv(logger),
 						JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
 						Mailer:               mailer,
 						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",

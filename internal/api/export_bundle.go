@@ -9,6 +9,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
@@ -25,14 +26,21 @@ import (
 // 路径与 Connect 入口完全一致（同一个 JobCreator + 同一个 ExportHandler）。
 //
 // 端点：POST /api/projects/{projectId}/exports
-func NewBundleExportHandler(jobs JobCreator, members membership.Reader, recorder audit.Recorder) *BundleExportHandler {
-	return &BundleExportHandler{jobs: jobs, members: members, recorder: recorder}
+func NewBundleExportHandler(jobs JobCreator, members membership.Reader, recorder audit.Recorder,
+	specs animstore.Store, enabled bool, probe AnimationProbe) *BundleExportHandler {
+	return &BundleExportHandler{jobs: jobs, members: members, recorder: recorder,
+		specs: specs, enabled: enabled, probe: probe}
 }
 
 type BundleExportHandler struct {
 	jobs     JobCreator
 	members  membership.Reader
 	recorder audit.Recorder
+	// 动画三件套与导出选项端点同源：入口必须自己判一次"这个部署此刻能不能出动画"，
+	// 不能假设客户端一定先问过选项端点。
+	specs   animstore.Store
+	enabled bool
+	probe   AnimationProbe
 }
 
 func (h *BundleExportHandler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
@@ -161,6 +169,16 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
 		return
 	}
+	// 勾了动画但此刻渲不出来（部署关掉 / 渲染服务不可达）时，**把动画从快照里摘掉**再降级：
+	// 快照是"这次导出依据什么"的承诺，同一份快照必须对应同一份产物。
+	// 若留着动画照着静态渲，这个快照键就会被写成静态字节——之前那份同键的动画产物被覆盖，
+	// 用户下次下载"动画版"拿到的其实是静态版，而且全程没有任何报错。
+	dropped := ""
+	if animation != nil {
+		if reason := animationUnavailableReason(r.Context(), h.specs, h.enabled, h.probe); reason != "" {
+			animation, dropped = nil, reason
+		}
+	}
 	snapshot.Animation = animation
 	// 与 Connect 入口保持同一套默认值：缺省 1080p30，避免同一份时间轴因入口不同产出不同尺寸。
 	if snapshot.FPS <= 0 {
@@ -190,5 +208,10 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	}
 	recordExport(r.Context(), h.recorder, principal.TenantID, principal.UserID, "export.create", job.ID,
 		map[string]any{"project_id": projectID, "format": string(format), "entry": "rest"})
-	writeJSON(w, http.StatusCreated, map[string]string{"jobId": job.ID})
+	out := map[string]any{"jobId": job.ID}
+	if dropped != "" {
+		// 降级事实必须回传给调用方：否则前端只能说"导出成功"，用户以为拿到了动效视频。
+		out["animationDropped"] = dropped
+	}
+	writeJSON(w, http.StatusCreated, out)
 }

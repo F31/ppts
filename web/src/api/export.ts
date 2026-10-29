@@ -122,6 +122,14 @@ export function animationSpecsOf(options: AnimationExportOptions | null | undefi
     }));
 }
 
+// ExportJobResult 是导出受理结果。
+//
+// animationDropped 非空表示「后端接了带动画的请求，但这一单渲不出来，已摘掉动画按静态版导出」
+// （见 internal/api/export_bundle.go：部署关掉了动画 / 渲染服务不可达）。
+// 它**不是**错误：任务照样入队、照样成功，所以不能走 catch。但也绝不能丢——
+// 丢了用户就会以为手里是动效视频，而实际是静态版。调用方必须把它显示出来。
+export type ExportJobResult = { jobId: string; animationDropped?: string };
+
 // createArtifactExport 是页面侧唯一的导出入口：由它决定走 Connect 还是原生 REST。
 //
 // 分工与理由：
@@ -145,10 +153,10 @@ export async function createArtifactExport(
     animation?: AnimationExportSpec[];
     idempotencyKey: string;
   }
-): Promise<{ jobId: string }> {
+): Promise<ExportJobResult> {
   const specs = params.animation ?? [];
   if (params.format === 'html_bundle' || params.format === 'ARTIFACT_FORMAT_MP4') {
-    return postJSON<{ jobId: string }>(identity, `/projects/${encodeURIComponent(params.projectId)}/exports`, {
+    return postJSON<ExportJobResult>(identity, `/projects/${encodeURIComponent(params.projectId)}/exports`, {
       format: params.format === 'html_bundle' ? 'html_bundle' : 'mp4',
       timelineKey: params.timelineKey,
       pagePngKeys: params.pagePngKeys,

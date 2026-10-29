@@ -41,8 +41,23 @@ import (
 //     用户连点五次预览就等于排了五个必然被丢掉的任务。
 
 const (
-	// previewBudget 是"提交→拿到字节"的总预算，也是超时提示的阈值。
+	// previewBudget 是"提交→拿到字节"的默认总预算，也是超时提示的阈值。
+	//
+	// 3s 是产品默认值（这一份契约写在 Q1 决策里），但它必须可配：纯 CPU 渲染器上
+	// 一页 1080p30 的渲染耗时随机器差异极大，本机验收环境单页实测约 4s，硬编码的
+	// 3s 会让这个端点**恒定 504**——一个永远拿不到结果的按钮比没有按钮更糟。
+	// 部署方按自己的硬件把 PPTS_ANIMATION_PREVIEW_BUDGET 调大即可。
 	previewBudget = 3 * time.Second
+	// PreviewBudgetMin 是下限：比这更短的预算连提交请求都发不完，只会制造假超时。
+	PreviewBudgetMin = 1 * time.Second
+	// PreviewBudgetMax 是上限：前端把 HTTP 兜底超时设成 90s，服务端预算必须明显小于它，
+	// 否则用户看到的是"网络断了"（本地超时）而不是"这一页渲得太慢"（服务端 504）。
+	//
+	// 60s 不是拍的：纯 CPU 渲染器上预览吞吐低于实时（实测约 0.8x），
+	// 一页 30s 的讲解就要渲近 40s。这个上限的真实含义是"拒绝比整片还慢的等待"，
+	// 而不是"3s 的体验"。真要 3s 级预览，得改成只渲改变点附近的一小段窗口——
+	// 那是产品决策，不在本轮。
+	PreviewBudgetMax = 60 * time.Second
 	// previewCanvasWidth 是预览画布宽（高度按页图比例推）。
 	previewCanvasWidth = 960
 	previewFPS         = 24
@@ -78,12 +93,30 @@ func NewAnimationPreviewer(store animstore.Store, objects objectstore.ObjectStor
 	}
 }
 
-// WithBudget 覆盖预览预算（测试用）。
+// WithBudget 覆盖预览预算（测试用短预算，或部署方按硬件调整）。
 func (p *AnimationPreviewer) WithBudget(d time.Duration) *AnimationPreviewer {
 	if p != nil && d > 0 {
 		p.budget = d
 	}
 	return p
+}
+
+// ClampPreviewBudget 把配置来的预算收进 [PreviewBudgetMin, PreviewBudgetMax]。
+//
+// 夹紧放在读取配置的边界上，而不是 setter 里：预算不是"越大越好"的旋钮，
+// 它得和前端 90s 的兜底超时保持先后关系，否则用户看到的是"网络断了"而不是
+// "这一页渲得太慢"。测试用 WithBudget 可给更短的值，不受这里约束。
+func ClampPreviewBudget(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	if d < PreviewBudgetMin {
+		return PreviewBudgetMin
+	}
+	if d > PreviewBudgetMax {
+		return PreviewBudgetMax
+	}
+	return d
 }
 
 func (p *AnimationPreviewer) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
@@ -376,21 +409,23 @@ func previewCanvas(png []byte) design.Canvas {
 }
 
 // segmentOffsetsOf 把分段绝对时间换算成相对本页起点的毫秒偏移。
-// 与导出的 AppAnimationPageAssembler 同一规则：负偏移归零（它只可能来自错位的时间轴）。
+// 与导出的 AppAnimationPageAssembler 同一规则：负偏移归零（它只可能来自错位的时间轴），
+// 键用页内 id（时间轴给的是「页:段」全局键，规格里存的是页内 id）。
 func segmentOffsetsOf(slide media.SlideCue) map[string]int64 {
 	if len(slide.Segments) == 0 {
 		return nil
 	}
 	offsets := make(map[string]int64, len(slide.Segments))
 	for _, seg := range slide.Segments {
-		if seg.SegmentID == "" {
+		local := media.UnscopedSegmentID(slide.SlideID, seg.SegmentID)
+		if local == "" {
 			continue
 		}
 		off := (seg.StartUS - slide.StartUS) / 1000
 		if off < 0 {
 			off = 0
 		}
-		offsets[seg.SegmentID] = off
+		offsets[local] = off
 	}
 	if len(offsets) == 0 {
 		return nil

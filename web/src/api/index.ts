@@ -28,7 +28,7 @@ export type { JobPage, JobStepState, JobStep, JobScope, JobExtras, JobDetail, Jo
 export { listMembers, updateMemberProfile, getMyProfile, saveMyProfile, listTags, createTag, renameTag, deleteTag, listFolders, createFolder, renameFolder, deleteFolder, listProjectOrganization, attachTag, detachTag, moveProject, setMemberRole, removeMember, getQuota, getUsage, getProjectUsage, getStorageUsage, getPolicy } from './tenant';
 export type { MyProfile } from './tenant';
 export { createExport, createDownload, createHTMLBundleExport, createArtifactExport, getAnimationExportOptions, animationSpecsOf } from './export';
-export type { AnimationExportOptions, AnimationExportPage, AnimationExportSpec } from './export';
+export type { AnimationExportOptions, AnimationExportPage, AnimationExportSpec, ExportJobResult } from './export';
 export { getAnimationAnchors, getAnimationSpec, getDefaultAnimationSpec, saveAnimationSpec, previewAnimation, AnimationConflictError } from './animation';
 export type { AnimationScope, AnimationPreview } from './animation';
 export { listDictionaries, createDictionary, updateDictionary, deleteDictionary } from './pronunciation';

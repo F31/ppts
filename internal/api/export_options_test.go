@@ -283,7 +283,10 @@ func TestAnimationOptionsRejectsCrossProjectTimeline(t *testing.T) {
 // 否则"勾了动画"只停留在 UI 上。
 func TestBundleExportCarriesAnimationIntoSnapshot(t *testing.T) {
 	jobs := &jobCreatorStub{}
-	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
+	// 能力齐备的部署：本用例要验的是"specs 进快照"，不是降级路径。
+	opts := Options{DevHeaders: true, Animation: newAnimationTestStore(t),
+		AnimationEnabled: true, AnimationProbe: &stubProbe{}}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, opts))
 	t.Cleanup(server.Close)
 
 	body := `{"format":"mp4","timelineKey":"tenant-1/project-1/narration/timeline/tl.json",

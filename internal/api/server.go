@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -81,6 +82,10 @@ type Options struct {
 	// 半可用的预览会让用户以为"动效没生效"。
 	AnimationRenderer *render.Client
 	AnimationAssets   app.AssetPublisher
+	// AnimationPreviewBudget 覆盖单页预览的预算（0 = 默认 3s）。
+	// 渲染耗时随部署硬件差异很大，硬编码会让慢机器上的预览恒定超时；
+	// 具体夹紧规则见 AnimationPreviewer.WithBudget。
+	AnimationPreviewBudget time.Duration
 	Gateway           gateway.StoreResolver
 	ScriptSources     app.ScriptSourceStore
 	VoiceSettings     app.VoiceSettingsStore
@@ -218,7 +223,9 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	animationPages := newAnimationResolver(projects, objects, scripts, jobs)
 	NewAnimationHandler(opt.Animation, animationPages, opt.AnimationEnabled).Register(mux, auth)
 	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
-	NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages).Register(mux, auth)
+	NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages).
+		WithBudget(opt.AnimationPreviewBudget).
+		Register(mux, auth)
 	// 导出选项探测（3.4）：回答"这次导出能不能出动画"以及逐页规格身份。
 	// 与动画规格端点分开挂载：写路径关闭（AnimationEnabled=false）时导出仍应能判定不可用并说明原因，
 	// 所以这里不因 enabled=false 就不注册路由。
@@ -306,7 +313,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
 	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, jobs, objects, auth)
 	// 扩展产物格式导出（html_bundle，M6-1）：REST，绕过 proto enum（本机无 buf/protoc）。
-	NewBundleExportHandler(jobs, opt.Members, opt.Audit).Register(mux, auth)
+	NewBundleExportHandler(jobs, opt.Members, opt.Audit, opt.Animation, opt.AnimationEnabled, opt.AnimationProbe).Register(mux, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
 	registerEditorRoutes(mux, jobs, objects, scripts, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。

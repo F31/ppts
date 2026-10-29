@@ -63,11 +63,11 @@
 
 ## 4. 验收（按 §15.2 演示脚本）
 
-- [ ] 4.1 导入真实 PPT → 选「科技动感」强度 1.1 → 第 2 页第 3 条要点改 `withSegment` 到第 4 段
-- [ ] 4.2 预览该页，确认要点在第 4 段开始时出现
-- [ ] 4.3 导出 1080p，校验时长与静态版一致（≤ 100ms）、字幕位置不变、音画同步、无空洞/残影
-- [ ] 4.4 关闭 `animation.enabled` 再导出，确认回到静态版且无报错
-- [ ] 4.5 故障注入：停掉渲染服务导出，确认拿到静态版且提示明确
+- [x] 4.1 导入真实 PPT → 选「科技动感」强度 1.1 → 第 2 页第 3 条要点改 `withSegment` 到第 4 段
+- [x] 4.2 预览该页，确认要点在第 4 段开始时出现
+- [x] 4.3 导出 1080p，校验时长与静态版一致（≤ 100ms）、字幕位置不变、音画同步、无空洞/残影
+- [x] 4.4 关闭 `animation.enabled` 再导出，确认回到静态版且无报错
+- [x] 4.5 故障注入：停掉渲染服务导出，确认拿到静态版且提示明确
 
 ## 5. 文档
 
@@ -413,3 +413,78 @@ N 次超时。只为**确实要渲动效**的页去读：规格取不回或版�
 `animation: load element geometry failed, page only gets page-level tracks`。
 常见原因：该源版本的解析产物不存在（上传即失败的任务）、规格的 `sourceRevisionNo` 为 0
 （早期用接口手写的规格）、对象存储不可达。这三种都只影响元素轨道，导出仍成功。
+
+第 4 组已落地（2026-10-29 人工验收，动画通道第一次跑真导出）
+
+#### 验收用的输入
+
+真实 PPT（14 页 / 658s）单页就要渲 ~20s，四次导出跑不完，故另做一份 3 页小样
+（python-pptx 生成，20.9s）作为验收对象；形态与真实稿一致（标题 + 三条要点 + 页内 4 段）。
+小样第 1 页 `slide-257` 用 `ScriptService/Update` 拆成 4 段（需带
+`X-PPTS-Source-Revision: 1`）后重新配音，`?default=true&preset=tech-dynamic` 生成规格，
+把 `shape-5`（第 3 条要点）的 `c4` 从 `withSegment:seg-3` 改成 `withSegment:seg-4`，
+强度 1.1，保存为 revision 1。
+
+#### 4.1–4.2 预览
+
+预览 200 / 119966 B / 20.6s / `X-Preview-Layers: 4`；ffprobe 960x540@24、320 帧、13.333s。
+逐帧核验：t=3 只有「能力成熟」，t=8 增「生产方式变了」，t=12 增「多端交付」——
+第 3 条要点确实停到第 4 段（页内 10.95s）才出现，而非页首。
+
+这一步同时挖出两个**产品级** bug，都不是预览独有（导出侧同源）：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 预览恒定 504（实测一页 18–20s，预算写死 3s） | 预算不可配，且前端兜底超时 6s < 实测耗时 | `PPTS_ANIMATION_PREVIEW_BUDGET`（默认 3s，`ClampPreviewBudget` 夹在 1s–60s，夹紧只在读配置边界做）；前端兜底 90s，必须明显大于服务端上限，否则超时会被误判成网络故障 |
+| `withSegment` 永远查不到偏移，静默退回页首 | 时间轴用「页:段」全局键（`slide-258:seg-258-4`），讲稿/规格存页内 id（`seg-258-4`）；不换算 → 编译期查表落空 → `DiagSegmentUnresolved` 降级 | 新增 `media.UnscopedSegmentID`，预览与导出两处偏移构造统一走它（`segmentOffsetsOf` / `segmentOffsets`），不做两套换算 |
+
+第一条的教训是**降级必须留痕**：这两个 bug 都不报错，只是「要点没动」和「一直转圈」，
+没有断言的话人工验收也会判成「就是这样的效果」。
+
+#### 4.3 时长 / 字幕 / 音画
+
+| 指标 | 动画版 | 静态版 | 判定 |
+|---|---|---|---|
+| 文件字节 | 201550 | 164216 | 动画版更大（确实是另一份产物，不是同键覆盖） |
+| 时长 | 20.900000s | 20.900000s | 差 **0ms**（要求 ≤100ms） |
+| 分辨率 / 帧率 | 1920x1080@30 / 627 帧 | 同 | 一致 |
+| 音轨 | aac 单声道 20.9s | 同 | 一致 |
+
+字幕带位置用 PSNR 比对（同时间点的两版取帧）：t=4.5 → 65.2dB、t=12 → 56.1dB，
+t=19 两图字节完全相同 —— 字幕没有因为动画层出现而移位。
+末段要点在 t=15.9 尚未出现、t=16.6 已就位且无残影/黑块，段间没有空洞。
+
+#### 4.4 关掉开关再导出
+
+`PPTS_ANIMATION_ENABLED=false` 后导出，响应体为
+`{"animationDropped":"animation_disabled_by_deployment","jobId":...}`，任务照常成功；
+产物是新的静态版记录（hash 未变、201550 与 164216 两条并存），**没有覆盖**上一次的动画产物。
+
+这里修掉两个 bug：
+
+- **开关判定有两套**：api 是 `isSQLite() || env=="true"`，worker 是 `env=="true"`。本地 profile 下
+  对话框说「可以用」、worker 只出静态版；而且本地**关不掉**（4.4 根本没法执行）。
+  收敛成单一实现 `animationEnabled(isSQLite) = envBool("PPTS_ANIMATION_ENABLED", isSQLite)`，
+  api 与 worker 共用。
+- **降级不摘快照里的 animation**：同一 `snapshot_hash` 会被写成静态字节，把上一次同键的动画产物
+  原地覆盖掉。现在入口自己判能力（`animationUnavailableReason`：`animation_not_available` →
+  `animation_disabled_by_deployment` → `renderer_not_configured` → `renderer_unavailable: …`），
+  渲不出来就把 `snapshot.Animation` 置 nil，原因通过 `animationDropped` 回传。
+
+#### 4.5 渲染服务不可达
+
+停容器后约 10s（探测缓存过期）即报 `renderer_unavailable: … connection refused`；
+带动画导出返回同样的 `animationDropped`，任务 `JOB_STATE_SUCCEEDED`（拿到的就是静态版）。
+
+文案修了一处重复包装：`render.Client.Check` 原来对已经是 `ErrAnimationUnavailable` 的错误
+再 `%w` 一次，界面上出现「animation service unavailable: animation service unavailable: Get …」。
+现在 `errors.Is` 命中即原样返回，`TestCheckDoesNotDoubleWrapUnavailable` 断言前缀只出现一次。
+
+#### 降级必须让用户看见
+
+`animationDropped` 原先只存在于响应 JSON 里，前端 `createArtifactExport` 的返回类型是
+`{ jobId: string }`，字段被静默丢弃 —— 用户以为拿到动效视频，实际是静态版。
+现在：返回类型扩成 `ExportJobResult`；编辑器允许导出但**不关对话框**，就地显示
+「{原因}本次导出已按静态视频处理（任务 {jobId}）」；项目列表页用 warn 样式通知（留 12s，
+普通通知 3s）。原因码 → 文案只有一处映射（`web/src/animationText.ts`），
+避免对话框说「服务不可用」、提示说「未开启」。

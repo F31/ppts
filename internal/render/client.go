@@ -127,6 +127,12 @@ func (c *Client) Available(ctx context.Context) bool {
 func (c *Client) Check(ctx context.Context) error {
 	var h Health
 	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &h); err != nil {
+		// do() 在连接层失败时已经包过 ErrAnimationUnavailable，这里再包一层会得到
+		// "animation service unavailable: animation service unavailable: Get …"——
+		// 这段文字会原样出现在导出对话框里，重复的前缀只会让人以为有两个问题。
+		if errors.Is(err, ErrAnimationUnavailable) {
+			return err
+		}
 		return fmt.Errorf("%w: %v", ErrAnimationUnavailable, err)
 	}
 	if h.SchemaVersion != IRSchemaVersion {

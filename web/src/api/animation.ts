@@ -120,15 +120,16 @@ export async function previewAnimation(
   scope: AnimationScope,
   timelineKey: string
 ): Promise<AnimationPreview> {
-  // 3s 预算在服务端，客户端给到 6s：让服务端的 504 先到达，用户看到的是
-  // "这一页渲得太慢"（可重试），而不是本地超时（看起来像网络断了）。
+  // 服务端预算默认 3s、上限 60s（PPTS_ANIMATION_PREVIEW_BUDGET），客户端兜底给到 90s：
+  // 永远让服务端的 504 先到达，用户看到的是"这一页渲得太慢"（可重试），
+  // 而不是本地超时（看起来像网络断了）。两个数必须保持这个先后关系。
   const res = await requestRaw({
     method: 'POST',
     url: `${basePath(scope)}/preview`,
     headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
     body: { timelineKey },
     label: 'POST animation preview',
-    timeoutMs: 6000
+    timeoutMs: 90000
   });
   const blob = await res.blob();
   const layers = Number(res.headers.get('X-Preview-Layers') ?? '0');

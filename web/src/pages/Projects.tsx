@@ -32,6 +32,7 @@ import {
   type SourceRevisionSummary
 } from '../api';
 import { describeApiError } from '../apiError';
+import { animationDroppedText } from '../animationText';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ImportDialog } from '../components/ImportDialog';
 import { useConfirmDialog } from '../components/ConfirmDialog';
@@ -116,7 +117,7 @@ export function Projects({
   // A26：重命名是乐观更新，失败必须回滚——否则界面留着新名字，用户以为已保存成功。
   const [renameError, setRenameError] = useState<{ projectId: string; message: string } | null>(null);
   const [creating, setCreating] = useState(false);
-  const [notices, setNotices] = useState<Array<{ id: string; text: string }>>([]);
+  const [notices, setNotices] = useState<Array<{ id: string; text: string; tone: 'info' | 'warn' }>>([]);
 
   // 标签/分组组织数据。
   const [tags, setTags] = useState<Tag[]>([]);
@@ -148,13 +149,15 @@ export function Projects({
 
   const canOrganize = roleReady && can(role, 'project.organize' as Capability);
 
-  const pushNotice = (text: string) => {
+  const pushNotice = (text: string, tone: 'info' | 'warn' = 'info') => {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setNotices((current) => [...current, { id, text }].slice(-5));
+    setNotices((current) => [...current, { id, text, tone }].slice(-5));
     // 通知是信息性提示，3 秒后自动消失，避免常驻遮挡列表。
+    // 降级类提示（tone=warn，例如"这一单其实没有动效"）留 12 秒：
+    // 它说的是用户预期被改写的事实，扫一眼就错过的提示等于没提示。
     window.setTimeout(() => {
       setNotices((current) => current.filter((n) => n.id !== id));
-    }, 3000);
+    }, tone === 'warn' ? 12000 : 3000);
   };
 
   // 筛选/搜索/排序/分组/标签状态写回 URL（replaceState，不新增历史记录，刷新或分享链接可还原）。
@@ -402,7 +405,13 @@ export function Projects({
       });
       setExportTarget(null);
       setExportManifest(null);
-      pushNotice(t('projects.exportQueued', { jobId: result.jobId }));
+      // 降级（后端摘掉动画、按静态版导出）不是失败，但绝不能只报"已入队"：
+      // 那样用户会去任务中心等一个动效视频，而那里躺着的是静态版。
+      if (result.animationDropped) {
+        pushNotice(animationDroppedText(result.animationDropped, result.jobId, t), 'warn');
+      } else {
+        pushNotice(t('projects.exportQueued', { jobId: result.jobId }));
+      }
     } catch (err) {
       setExportError(err instanceof Error ? err.message : t('editor.exportFailed'));
     } finally {
@@ -1085,7 +1094,7 @@ export function Projects({
       {error && <p className="form-error" role="alert">{error}</p>}
       {orgError && <p className="form-error" role="alert">{orgError}</p>}
       {notices.map((notice) => (
-        <p key={notice.id} className="floating-notice" role="status" aria-live="polite">
+        <p key={notice.id} className={`floating-notice${notice.tone === 'warn' ? ' warn' : ''}`} role="status" aria-live="polite">
           {notice.text}
         </p>
       ))}

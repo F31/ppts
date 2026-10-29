@@ -417,3 +417,50 @@ func TestAnimationResolverUsesTimelineDuration(t *testing.T) {
 }
 
 var _ = project.Page{}
+
+// TestClampPreviewBudget 守住预算与前端兜底超时的先后关系。
+//
+// 3s 的默认预算是产品决策，但硬件差异让"一页渲不完 3s"成为常态：
+// 部署方调大预算时必须被夹在 15s 以内，否则前端 20s 的兜底会先触发，
+// 用户看到的是"网络断了"——一个会误导排查方向的错误提示。
+func TestClampPreviewBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Duration
+		want time.Duration
+	}{
+		{"未配置", 0, 0},
+		{"过短", 200 * time.Millisecond, PreviewBudgetMin},
+		{"区间内", 8 * time.Second, 8 * time.Second},
+		{"过长", 2 * time.Minute, PreviewBudgetMax},
+		{"恰好上限", PreviewBudgetMax, PreviewBudgetMax},
+	}
+	for _, tc := range cases {
+		if got := ClampPreviewBudget(tc.in); got != tc.want {
+			t.Fatalf("%s: ClampPreviewBudget(%v) = %v, want %v", tc.name, tc.in, got, tc.want)
+		}
+	}
+	if PreviewBudgetMax >= 90*time.Second {
+		t.Fatal("服务端预算上限必须小于前端 90s 兜底，否则超时会被误判为网络故障")
+	}
+}
+
+// TestSegmentOffsetsOfUnscopesTimelineKeys 守预览侧与导出侧同一条换算：
+// 时间轴给 "slide-258:seg-258-4"，规格里存 "seg-258-4"，键对不上就等于
+// "第 4 段开始时出现"变成"第 0 帧出现"——预览和导出会一起错，且都不报错。
+func TestSegmentOffsetsOfUnscopesTimelineKeys(t *testing.T) {
+	slide := media.SlideCue{
+		SlideID: "slide-258", StartUS: 10_000_000, EndUS: 20_000_000,
+		Segments: []media.SegmentCue{
+			{SegmentID: "slide-258:seg-258-1", StartUS: 10_000_000},
+			{SegmentID: "slide-258:seg-258-4", StartUS: 16_000_000},
+		},
+	}
+	got := segmentOffsetsOf(slide)
+	if got["seg-258-1"] != 0 || got["seg-258-4"] != 6000 {
+		t.Fatalf("offsets = %v, want seg-258-1=0 seg-258-4=6000", got)
+	}
+	if _, exists := got["slide-258:seg-258-4"]; exists {
+		t.Fatal("偏移表的键必须是页内 id，不能带页前缀")
+	}
+}

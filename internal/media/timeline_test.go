@@ -324,3 +324,19 @@ func TestBuildTimelinePreciseCharMap(t *testing.T) {
 		}
 	}
 }
+
+// TestUnscopedSegmentID 守「规格用页内 id、时间轴用页:段」这个换算。
+// 两边形式一致时它什么都没做，不一致时缺了它就会让 withSegment 查不到偏移。
+func TestUnscopedSegmentID(t *testing.T) {
+	cases := []struct{ slide, id, want string }{
+		{"slide-258", "slide-258:seg-258-1", "seg-258-1"},
+		{"slide-258", "seg-258-1", "seg-258-1"},
+		{"slide-258", "slide-259:seg-1", "slide-259:seg-1"}, // 别页前缀不剥：那是数据坏了，不该被掩盖
+		{"", "seg-1", "seg-1"},
+	}
+	for _, tc := range cases {
+		if got := UnscopedSegmentID(tc.slide, tc.id); got != tc.want {
+			t.Fatalf("UnscopedSegmentID(%q, %q) = %q, want %q", tc.slide, tc.id, got, tc.want)
+		}
+	}
+}

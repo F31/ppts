@@ -153,7 +153,9 @@ func runWorker() error {
 		WithLogger(logger)
 	// 动画通道（ADR-21）：默认关闭，且要求「开关 + 服务地址」同时具备才接入。
 	// 渲染服务是可选依赖——没有它，导出必须照常成功，所以关闭态不建客户端、不探测。
-	if envBool("PPTS_ANIMATION_ENABLED", false) {
+	// 与 api 同一份判定（见 animationEnabled）：以前这里只认 env，
+	// 本地 profile 下 api 开了动画、worker 却不接，导出静默退回静态版。
+	if animationEnabled(stores.isSQLite()) {
 		if base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL")); base != "" {
 			client, cerr := animrender.NewClient(animrender.ClientConfig{
 				BaseURL: base,
