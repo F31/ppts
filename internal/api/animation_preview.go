@@ -15,13 +15,11 @@ import (
 	"time"
 
 	"github.com/F31/ppts/internal/animation"
-	"github.com/F31/ppts/internal/animation/animdefault"
 	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
-	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -216,7 +214,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		SlideID:        key.SlideID,
 		DurationMs:     durationMS,
 		BaseImage:      rel,
-		Elements:       previewElements(page),
+		Elements:       app.PageElements(page),
 		Revision:       rev,
 		SegmentOffsets: segmentOffsetsOf(*slide),
 	}})
@@ -278,8 +276,9 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 	if status.PlanHash != "" {
 		h.Set("X-Render-Plan-Hash", status.PlanHash)
 	}
-	// 图层数 > 0 说明这次预览含元素级动效，而导出侧目前会跳过它们（tasks 2.0b）。
-	// 前端口径：看到这个头就把差别写在预览旁边，而不是让用户导出一版静态片再来问。
+	// 图层数是"这一页有几个元素在动"的唯一可核对的数字：几何读不到时会静默退化成
+	// 只有整页动效，而画面上看起来就是"动效没生效"。前端据此说明预览含几个元素动效。
+	// 导出侧 2.0b 起读同一份解析产物，两边图层数应当一致（画布分辨率/帧率不同）。
 	h.Set("X-Preview-Layers", fmt.Sprintf("%d", len(plan.Pages[0].Layers)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())
@@ -309,46 +308,6 @@ func (p *AnimationPreviewer) cancel(jobID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_ = p.renderer.Cancel(ctx, jobID)
-}
-
-// previewElements 把页内元素转成渲染几何。
-//
-// kind 用 animdefault.Anchors（与预设生成同一套标题/要点分类），Bounds 从形状树按 id 回填：
-// 分类只走一条路径，几何也只有一个来源，两处各遍历一遍迟早会出现"第 2 条要点"在两个列表里不是同一条。
-func previewElements(page *project.Page) []render.Element {
-	bounds := make(map[string]*project.Box)
-	var walk func([]*project.Shape)
-	walk = func(shapes []*project.Shape) {
-		for _, sh := range shapes {
-			if sh == nil || sh.ID == "" {
-				continue
-			}
-			if sh.Bounds != nil {
-				bounds[sh.ID] = sh.Bounds
-			}
-			if len(sh.Children) > 0 {
-				walk(sh.Children)
-			}
-		}
-	}
-	walk(page.Shapes)
-
-	anchors := animdefault.Anchors(page)
-	out := make([]render.Element, 0, len(anchors))
-	for _, a := range anchors {
-		box := bounds[a.ID]
-		if box == nil {
-			continue
-		}
-		out = append(out, render.Element{
-			ID:   a.ID,
-			Kind: a.Kind,
-			Bounds: &render.EMUBox{
-				X: box.X, Y: box.Y, Width: box.Width, Height: box.Height,
-			},
-		})
-	}
-	return out
 }
 
 // pageImageKey 取该页在对象存储里的 PNG 键（按时间轴页序对齐）。

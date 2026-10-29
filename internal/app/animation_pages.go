@@ -34,17 +34,12 @@ type AnimationSpecSource interface {
 	Get(ctx context.Context, key animation.Key) (*animation.Revision, error)
 }
 
-// PageGeometrySource 返回一页里可挂动效的元素（含 EMU 几何）。
+// AnimationPageAssembler 是 AnimationRequestBuilder 的默认实现。
 //
-// 几何目前还没有持久化来源（tasks 2.0b），所以它是可选注入：
-// 未注入时元素级轨道会被编译成 anchor_missing 诊断并跳过，
+// 元素几何（PageGeometrySource，见 animation_geometry.go）是可选注入：
+// 未注入或读取失败时元素级轨道会被编译成 anchor_missing 诊断并跳过，
 // **整页轨道（转场、整页推拉/淡入）仍然有效**。这条区别很重要——
 // 缺几何不等于「动画完全没用」，只是能做的动效少一类。
-type PageGeometrySource interface {
-	Elements(ctx context.Context, slideID string) ([]render.Element, error)
-}
-
-// AnimationPageAssembler 是 AnimationRequestBuilder 的默认实现。
 type AnimationPageAssembler struct {
 	publisher AssetPublisher
 	specs     AnimationSpecSource
@@ -96,6 +91,9 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		Pages:      make([]AnimationPage, 0, len(in.Slides)),
 	}
 	refs := specRefsBySlide(in.Snapshot)
+	// 同一源版本的几何在一次 Build 里只读一次：一页一次读在 S3 上就是 N 次往返，
+	// 而整份 document.json 本来就是一次对象读。
+	geometryByRevision := make(map[int]map[string][]render.Element, 1)
 
 	for i, slide := range in.Slides {
 		durationMS := (slide.EndUS - slide.StartUS) / 1000
@@ -108,12 +106,15 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		if err != nil {
 			return AnimationRequest{}, fmt.Errorf("animation: publish page %d image: %w", i, err)
 		}
+		// 先定规格再取几何：版本不符的页按「没有动画」处理，此时几何读进来也会被丢掉。
+		ref, hasSpec := refs[slide.SlideID]
+		rev := a.revision(ctx, in, slide.SlideID, refs)
 		req.Pages = append(req.Pages, AnimationPage{
 			SlideID:        slide.SlideID,
 			DurationMs:     durationMS,
 			BaseImage:      rel,
-			Elements:       a.elements(ctx, slide.SlideID),
-			Revision:       a.revision(ctx, in, slide.SlideID, refs),
+			Elements:       a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision),
+			Revision:       rev,
 			SegmentOffsets: segmentOffsets(slide),
 		})
 	}
@@ -165,18 +166,33 @@ func (a *AnimationPageAssembler) revision(ctx context.Context, in AnimationPageI
 	return rev
 }
 
-// elements 取元素几何。几何是可选数据：取不到就只编整页轨道。
-func (a *AnimationPageAssembler) elements(ctx context.Context, slideID string) []render.Element {
-	if a.geometry == nil {
+// elements 取一页的元素几何。
+//
+// 只为**确实要渲动效**的页去读（hasSpec）：几何的唯一用途是编译元素级轨道，
+// 没规格的页读进来只会被丢掉，而一次读是整份 document.json。
+//
+// 读失败只影响元素级轨道，整页轨道照常编译（转场、整页推拉/淡入）。
+// 失败结果也写进缓存：同一源版本的后续页不该为一件事各自重试一遍——
+// 那会让一次存储故障变成 N 次超时。
+func (a *AnimationPageAssembler) elements(ctx context.Context, in AnimationPageInput, ref AnimationSpecRef,
+	hasSpec bool, cache map[int]map[string][]render.Element) []render.Element {
+	if a.geometry == nil || !hasSpec {
 		return nil
 	}
-	elems, err := a.geometry.Elements(ctx, slideID)
-	if err != nil {
-		a.warn("animation: load element geometry failed, page only gets page-level tracks",
-			"slide", slideID, "error", err.Error())
-		return nil
+	bySlide, cached := cache[ref.SourceRevisionNo]
+	if !cached {
+		var err error
+		bySlide, err = a.geometry.ElementsBySlide(ctx, PageGeometryScope{
+			TenantID: in.TenantID, ProjectID: in.ProjectID, SourceRevisionNo: ref.SourceRevisionNo,
+		})
+		if err != nil {
+			a.warn("animation: load element geometry failed, page only gets page-level tracks",
+				"source_revision", ref.SourceRevisionNo, "error", err.Error())
+			bySlide = nil
+		}
+		cache[ref.SourceRevisionNo] = bySlide
 	}
-	return elems
+	return bySlide[ref.SlideID]
 }
 
 func (a *AnimationPageAssembler) warn(msg string, args ...any) {

@@ -257,12 +257,21 @@ services:
 ```
 animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static
 animation: asset publisher disabled; exports stay static            # 目录不可写，启动即报
-animation: page assembly wired via shared asset dir                 # 接好了（element_geometry=false）
+animation: page assembly wired via shared asset dir                 # 接好了（element_geometry=true）
 ```
 
-`element_geometry=false` 是当前的能力边界而不是降级：元素几何还没有持久化来源
-（tasks 2.0b），所以**元素级轨道**（标题、要点、图表…逐个入场）会被编译成 `anchor_missing`
-诊断并跳过，**整页轨道**（转场、整页推拉/淡入）正常生效。
+`element_geometry` 说的是**元素几何有没有来源**（tasks 2.0b）。`true` 时它来自解析期已经落下的
+`<tenant>/<project>/src-NN/document/extracted.json`——那份文档里本来就有每个形状的 EMU 框，
+导出期按源版本读一次即可，不新增产物、也不重解析 PPTX。
+
+`false` 只出现在没有对象存储的接线里（`wireAnimationPages` 拿不到 objects）。
+此时**元素级轨道**（标题、要点、图表…逐个入场）会被编译成 `anchor_missing` 诊断并跳过，
+**整页轨道**（转场、整页推拉/淡入）仍然生效——所以「没有几何」不等于「动画全废」。
+
+几何读失败（解析产物缺失、文档损坏、源版本为 0）只影响那一页的元素轨道，日志里是
+`animation: load element geometry failed, page only gets page-level tracks`。
+看到它就查两件事：该源版本的 `document/extracted.json` 在不在、规格里的 `sourceRevisionNo`
+是不是 0。
 
 ### 前端怎么知道"这次能不能出动画"
 
@@ -331,7 +340,8 @@ type AssetPublisher interface {
 | 情形 | 用户拿到 | 留痕 |
 |---|---|---|
 | 开关关闭（`PPTS_ANIMATION_ENABLED` 未开） | 静态版，行为与上线前逐字节一致 | 无请求、无日志 |
-| 输入组装器未接（底图投递 / 元素几何未配置） | 静态版 | worker 启动时一条 `animation: enabled, but page assembly is not wired yet` |
+| 输入组装器未接（底图投递未配置） | 静态版 | worker 启动时一条 `animation: enabled, but page assembly is not wired yet` |
+| 元素几何读不到（解析产物缺失/文档损坏） | 该页只有整页动效 | `animation: load element geometry failed, page only gets page-level tracks` |
 | 服务不可达 / 提交失败 / 等待超时 | 静态版 | `animation channel degraded to static export` + reason |
 | 整片渲染失败（后端崩溃等） | 静态版 | 同上 |
 | 某一页没有片段 | 该页静态段，其余页动画 | `animation export contains still pages pages=[..]` |

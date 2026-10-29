@@ -38,13 +38,9 @@
         记在 `deploy/renderer/README.md`「换 S3 后端要动哪里」。
       证据：`internal/app/animation_assets.go`、`internal/app/animation_pages.go`。
 
-- [ ] 2.0b **元素几何来源（本轮新发现的前置）**：`AnimationPage.Elements` 需要页内元素的
-      EMU 框，而导出主路径只有页图与时间轴。几何**是**可得的——`project.reader.go` 在
-      Inspect 时已从 go-pptx 取到 `Bounds`——但没有被持久化成解析产物，导出侧无从读取。
-      两条路：解析期把 elements 落成对象（一次成本，导出期零成本），或导出期按源版本重解析
-      （零存储，每次导出多一次解析）。选哪条取决于「导出频率 vs 存储成本」，未定。
-      现状（2.0 落地后）：几何源未注入时只跳过**元素级轨道**，整页轨道（转场、整页推拉/
-      淡入）仍然生效——所以「缺几何」不等于「动画完全没用」，只是能做的动效少一类。
+- [x] 2.0b **元素几何来源**：读解析期已落下的 `document/extracted.json`（见下方落地记录）。
+      几何源未注入时只跳过**元素级轨道**，整页轨道（转场、整页推拉/淡入）仍然生效——
+      所以「缺几何」不等于「动画完全没用」，只是能做的动效少一类。
       证据：`internal/project/reader.go` 的 `Bounds`、`internal/app/ingest.go` 的 `PageEntry`。
 
 - [x] 2.1 `ExportSnapshot` 增加动画字段（`omitempty`），并加一条「开关关闭时 snapshotHash
@@ -292,10 +288,10 @@ REST 入口此前不读 `burnSubtitles` / `includeNotes`，而它现在要承接
 | 画布 960 宽 / 24fps（导出 1080p30） | 预览要回答"第 4 段开始时这行字出现了吗"，不是像素校对；按导出参数渲一页在纯 CPU 上轻易吃掉 3s |
 | 画布比例按**页图**推 | 4:3 的页塞进 16:9 会被拉伸，预览里"字歪了"会被读成动效做坏了 |
 
-预览用 `AnimationPageResolver` 取页文档，因此**有元素几何**，而导出侧还没有（2.0b）。
-这个差别不能藏起来：响应头 `X-Preview-Layers` 给出编译出的图层数，面板据此提示
-"导出侧元素几何尚未接入，成片可能只保留整页动效"。宁可难看，也不能让用户以为
-"预览动、导出也动"。
+预览与导出**现在同源**（2.0b 已接线）：两边都用 `app.PageElements` 从
+`document/extracted.json` 换算几何，所以图层数应当一致，剩下的差别只有画布
+（预览 960 宽 24fps / 导出 1080p30）。响应头 `X-Preview-Layers` 仍然保留：
+几何读不到时会静默退化成"只有整页动效"，这个数字是唯一能当场核对的证据。
 
 #### 前端
 
@@ -339,5 +335,81 @@ REST 入口此前不读 `burnSubtitles` / `includeNotes`，而它现在要承接
 #### 已知边界
 
 - 逐条 clip 的类型/时长/缓动仍不可编辑（第二、三级入口）。
-- 预览的图层数 > 0 时与导出的产物不一致，原因即 2.0b；两者会在几何来源落地后统一。
+- ~~预览图层数与导出不一致~~ 已随 2.0b 统一（同一份解析产物、同一个换算函数）。
 - 预览画布固定 960 宽，与导出 1080p 的画面不逐像素可比。
+
+### 第 2.0b 落地（元素几何来源）
+
+任务的假设是「解析阶段没有持久化 Bounds」。核对仓库后发现这个前提不成立：
+持久化的是**两个不同的产物**，之前把 `PageEntry`（`slideId/index/key`）当成了全部。
+
+| 产物 | 内容 | 谁写的 |
+|---|---|---|
+| `.../src-NN/pages/manifest.json`（`PageEntry`） | 页序、渲染 PNG 键 | `renderPages` |
+| `.../src-NN/document/extracted.json`（`project.Document`） | 完整形状树，**含 `Shape.Bounds`（EMU）** | `ParseHandler` |
+
+所以不需要第三条产物，也不需要重解析 PPTX：**导出期读那份已经存在的 document 即可。**
+
+#### 为什么不是「导出期重解析」
+
+- 重解析要拿源对象（几十 MB）再跑一遍 go-pptx，是一次秒级 CPU 与内存峰值，
+  而拿到的结论与读一份算好的 JSON 完全相同。
+- 更关键的是**同源**：这份 document 正是讲稿与编辑器看到的那一份。几何若来自第二次解析，
+  用户改了源版本后「编辑器里的第 2 条要点」与「成片里动的那条」可能不是同一条——
+  而两边都会各自认为自己是对的。
+
+#### 接口形状
+
+`PageGeometrySource` 从「按页取」改成「按源版本取全量」：
+
+```go
+type PageGeometryScope struct{ TenantID, ProjectID string; SourceRevisionNo int }
+type PageGeometrySource interface {
+    ElementsBySlide(ctx context.Context, scope PageGeometryScope) (map[string][]render.Element, error)
+}
+```
+
+理由：整份 document.json 本来就是一次对象读，逐页调用会把它变成 N 次往返（S3 上是 N 个 RTT）。
+组装器在一次 `Build` 里按 `sourceRevisionNo` 缓存结果，失败也缓存——一次存储故障不该变成
+N 次超时。只为**确实要渲动效**的页去读：规格取不回或版本不符时元素会被丢掉，读了也是白读。
+
+#### 两个刻意的拒绝
+
+| 输入 | 行为 | 为什么 |
+|---|---|---|
+| `sourceRevisionNo <= 0` | 报错，不读 `src-00` | `src-00` 是「上一次解析到第 0 版」的内容，可能与当前讲稿毫无关系；拿它编译出的轨道会动错东西 |
+| 文档尾部有多余字节 | 判为损坏 | `json.Decoder.Decode` 会忽略尾部垃圾，一份截断拼接的产物会「成功」解析出半页形状，几何随之静默错位 |
+
+#### 一处收敛
+
+`app.PageElements` 现在是**唯一**一处「形状 → 渲染几何」的换算：预览（`AnimationPageResolver`
+取到的页）与导出（读 document 的 `DocumentGeometry`）都调它。此前预览自己遍历一遍形状，
+两处一旦在顺序或分类上分叉，表现是「预览动的元素，导出没动」——而输入明明一样。
+
+#### 用例与变异
+
+| 用例 | 断言 |
+|---|---|
+| 读 extracted document | 页全覆盖；按阅读顺序（Y 小在前）而非 JSON 顺序；首个文字元素 `title`、其余 `bullet`；无包围盒的形状被跳过 |
+| 源版本为 0 | 报错且不读 `src-00` |
+| 产物缺失 / 尾部有垃圾 / 无对象存储 | 三种都报错（调用方据此只编整页轨道） |
+| 组装器缓存 | 同一源版本只读一次；无规格的页不触发读取 |
+| **端到端** | 读出的几何经编译后，计划里**真的有**元素层与 clip；无规格页不凭空长层 |
+
+变异验证（全部被拦住）：
+
+| 变异 | 结果 |
+|---|---|
+| 几何读取改成按页 scope（不去重） | 红（读 2 次） |
+| 无规格的页也读几何 | 红 |
+| 允许 `sourceRevisionNo=0` 回退 `src-00` | 红 |
+| 换回 `json.Decoder.Decode`（容忍尾部垃圾） | 红 |
+| `PageElements` 按 JSON 顺序输出而非阅读顺序 | 红 |
+| 元素分类退化成 `shape`（不走 `animdefault.Anchors`） | 红 |
+
+#### 现在的边界
+
+几何读不到时**仍然只有整页动效**，日志是
+`animation: load element geometry failed, page only gets page-level tracks`。
+常见原因：该源版本的解析产物不存在（上传即失败的任务）、规格的 `sourceRevisionNo` 为 0
+（早期用接口手写的规格）、对象存储不可达。这三种都只影响元素轨道，导出仍成功。

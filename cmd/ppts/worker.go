@@ -164,7 +164,7 @@ func runWorker() error {
 			} else {
 				exportHandler = exportHandler.WithAnimation(client,
 					time.Duration(envInt("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
-				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation)
+				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects)
 			}
 		} else {
 			logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; staying static")
@@ -393,7 +393,7 @@ func subtitleFontName() string {
 // 能读的地方，返回同一个相对键），这条接线与导出主路径都不用改。
 //
 // 任何一步缺失都退化为静态导出而不是硬失败：渲染服务是可选依赖，没有它导出必须照常成功。
-func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store) *app.ExportHandler {
+func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store, objects objectstore.ObjectStore) *app.ExportHandler {
 	dir := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ASSET_DIR"))
 	if dir == "" {
 		logger.Warn("animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static",
@@ -409,11 +409,21 @@ func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL s
 		logger.Warn("animation: animation spec store is unavailable; exports stay static")
 		return h
 	}
-	h = h.WithAnimationPages(app.NewAnimationPageAssembler(publisher, specs).WithLogger(logger).Build)
-	// element_geometry=false 不是降级，而是当前的能力边界：元素几何还没有持久化来源（tasks 2.0b），
-	// 元素级轨道会被编译成 anchor_missing 诊断并跳过；整页轨道（转场、整页推拉/淡入）正常生效。
+	assembler := app.NewAnimationPageAssembler(publisher, specs).WithLogger(logger)
+	// 元素几何来自解析期的 extracted document（tasks 2.0b）：按源版本读一次，
+	// 不新增产物、不重解析 PPTX。没有对象存储时退化为「只编整页轨道」——
+	// 那是能力边界而不是错误，导出照常成功。
+	withGeometry := false
+	if objects != nil {
+		assembler = assembler.WithGeometry(app.NewDocumentGeometry(objects))
+		withGeometry = true
+	}
+	h = h.WithAnimationPages(assembler.Build)
+	if !withGeometry {
+		logger.Warn("animation: element geometry unavailable (no object store); pages get page-level tracks only")
+	}
 	logger.Info("animation: page assembly wired via shared asset dir",
-		"renderer", rendererURL, "asset_dir", publisher.Root(), "element_geometry", false)
+		"renderer", rendererURL, "asset_dir", publisher.Root(), "element_geometry", withGeometry)
 	return h
 }
 

@@ -52,15 +52,17 @@ func (f *fakeSpecSource) Get(_ context.Context, key animation.Key) (*animation.R
 }
 
 type fakeGeometry struct {
-	elems map[string][]render.Element
+	docs  map[int]map[string][]render.Element
 	err   error
+	calls []PageGeometryScope
 }
 
-func (f *fakeGeometry) Elements(_ context.Context, slideID string) ([]render.Element, error) {
+func (f *fakeGeometry) ElementsBySlide(_ context.Context, scope PageGeometryScope) (map[string][]render.Element, error) {
+	f.calls = append(f.calls, scope)
 	if f.err != nil {
 		return nil, f.err
 	}
-	return f.elems[slideID], nil
+	return f.docs[scope.SourceRevisionNo], nil
 }
 
 func assemblerInput() AnimationPageInput {
@@ -195,9 +197,13 @@ func TestAnimationPageAssemblerRejectsBadInput(t *testing.T) {
 
 func TestAnimationPageAssemblerUsesGeometryWhenAvailable(t *testing.T) {
 	pub := &recordingPublisher{}
-	specs := &fakeSpecSource{}
-	geom := &fakeGeometry{elems: map[string][]render.Element{
-		"s1": {{ID: "shape-1", Kind: "title", Bounds: &render.EMUBox{X: 10, Y: 20, Width: 30, Height: 40}}},
+	// 几何只在「这一页真要渲动效」时才读：规格取不回（或版本不符）时元素会被丢掉，
+	// 所以这里必须先让规格取得到，否则测的其实是另一条路径。
+	specs := &fakeSpecSource{revs: map[animation.Key]*animation.Revision{
+		{TenantID: "t1", ProjectID: "p1", SlideID: "s1", Language: "zh-CN", SourceRevisionNo: 2}: {Revision: 7},
+	}}
+	geom := &fakeGeometry{docs: map[int]map[string][]render.Element{
+		2: {"s1": {{ID: "shape-1", Kind: "title", Bounds: &render.EMUBox{X: 10, Y: 20, Width: 30, Height: 40}}}},
 	}}
 	a := NewAnimationPageAssembler(pub, specs).WithGeometry(geom)
 
@@ -210,6 +216,61 @@ func TestAnimationPageAssemblerUsesGeometryWhenAvailable(t *testing.T) {
 	}
 	if len(req.Pages[1].Elements) != 0 {
 		t.Fatalf("没有几何的页应当是空元素集，got %+v", req.Pages[1].Elements)
+	}
+	if len(geom.calls) != 1 {
+		t.Fatalf("同一源版本应当只读一次文档，实际读了 %d 次：%+v", len(geom.calls), geom.calls)
+	}
+	if got := geom.calls[0]; got.SourceRevisionNo != 2 || got.TenantID != "t1" || got.ProjectID != "p1" {
+		t.Fatalf("几何读取的作用域不对：%+v", got)
+	}
+}
+
+// 两页都配了动效、同一个源版本：文档只能读一次。
+// 逐页读在 S3 上就是每页一个 RTT，而它们读的本来就是同一个对象。
+func TestAnimationPageAssemblerReadsGeometryOncePerRevision(t *testing.T) {
+	specs := &fakeSpecSource{revs: map[animation.Key]*animation.Revision{
+		{TenantID: "t1", ProjectID: "p1", SlideID: "s1", Language: "zh-CN", SourceRevisionNo: 2}: {Revision: 7},
+		{TenantID: "t1", ProjectID: "p1", SlideID: "s2", Language: "zh-CN", SourceRevisionNo: 2}: {Revision: 3},
+	}}
+	geom := &fakeGeometry{docs: map[int]map[string][]render.Element{2: {}}}
+	a := NewAnimationPageAssembler(&recordingPublisher{}, specs).WithGeometry(geom)
+
+	in := assemblerInput()
+	in.Snapshot.Animation.Specs = append(in.Snapshot.Animation.Specs,
+		AnimationSpecRef{SlideID: "s2", Language: "zh-CN", SourceRevisionNo: 2, Revision: 3})
+	req, err := a.Build(context.Background(), in)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if req.Pages[0].Revision == nil || req.Pages[1].Revision == nil {
+		t.Fatalf("两页都该有规格：%+v", req.Pages)
+	}
+	if len(geom.calls) != 1 {
+		t.Fatalf("同一源版本读了 %d 次文档，want 1", len(geom.calls))
+	}
+}
+
+// 没配动效的页不该触发文档读：整份 document.json 读进来只会被丢掉，
+// 而导出里「只有一页配了动效」是常态。
+func TestAnimationPageAssemblerSkipsGeometryForPagesWithoutSpec(t *testing.T) {
+	geom := &fakeGeometry{docs: map[int]map[string][]render.Element{}}
+	specs := &fakeSpecSource{revs: map[animation.Key]*animation.Revision{
+		{TenantID: "t1", ProjectID: "p1", SlideID: "s1", Language: "zh-CN", SourceRevisionNo: 2}: {Revision: 7},
+	}}
+	a := NewAnimationPageAssembler(&recordingPublisher{}, specs).WithGeometry(geom)
+
+	in := assemblerInput()
+	if _, err := a.Build(context.Background(), in); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+
+	in = assemblerInput()
+	in.Snapshot.Animation = nil
+	if _, err := a.Build(context.Background(), in); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(geom.calls) != 1 {
+		t.Fatalf("没有规格时不该读几何，实际读了 %d 次", len(geom.calls))
 	}
 }
 

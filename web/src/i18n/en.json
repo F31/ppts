@@ -808,7 +808,7 @@
   "editor.animationPreviewNoImage": "This slide has no rendered image, so a preview cannot be composed.",
   "editor.animationPreviewServiceDown": "The motion renderer is unavailable right now. Retry later.",
   "editor.animationPreviewFailed": "Preview failed",
-  "editor.animationPreviewLayers": "Preview includes {count} element animations. The export path does not have element geometry yet (tasks 2.0b), so the final video may only carry whole-page effects.",
+  "editor.animationPreviewLayers": "Preview includes {count} element animations. It renders at 960 wide; the final video is re-composed at the export resolution.",
   "editor.animationPreviewStatic": "This slide currently only has whole-page motion; the preview shows a still frame with that effect.",
   "editor.animationUnavailable": "Motion editing is not enabled on this deployment.",
   "editor.animationPageMissing": "This slide could not be found; the source revision may have changed.",
