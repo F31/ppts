@@ -651,6 +651,8 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .export-gate-note { grid-column: 2 / -1; color: #93a6c4; font-size: 12px; }
 .export-dialog .export-options { display: grid; gap: 4px; padding: 12px; border: 1px dashed rgba(255,255,255,.14); border-radius: 12px; margin: 8px 0; }
 .export-checkbox { display: flex; align-items: center; gap: 8px; color: #e6eefc; padding: 6px 0; }
+/* 禁用态必须看得出"不可用"而不是"可点但没反应"（动画通道未部署时就是这条路径）。 */
+.export-checkbox.disabled { cursor: not-allowed; opacity: .6; }
 .export-snapshot { color: #93a6c4; font-size: 12.5px; margin: 8px 0 0; word-break: break-all; }
 .narration-note { margin: 8px 0 0; color: var(--text-body); font-size: 13px; line-height: 1.6; }
 .narration-note.error { color: #ffb4b4; }

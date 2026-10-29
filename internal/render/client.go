@@ -115,6 +115,27 @@ func (c *Client) Available(ctx context.Context) bool {
 	return err == nil
 }
 
+// Check 真实探测一次，**不**使用 Health 的进程级缓存。
+//
+// 两者刻意的差别：
+//   - Health/Available 的结论在进程生命周期内固定。导出主路径要的正是这个——
+//     服务抖一下不该让同一批导出在"动画/静态"之间来回切。
+//   - Check 用于能力探测端点：用户看到的开关必须反映"现在能不能用"，
+//     否则修好渲染服务后不重启 API，前端就一直置灰。
+//
+// 只校验协议版本，不返回字体清单（那是 RequireFonts 的事）。
+func (c *Client) Check(ctx context.Context) error {
+	var h Health
+	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &h); err != nil {
+		return fmt.Errorf("%w: %v", ErrAnimationUnavailable, err)
+	}
+	if h.SchemaVersion != IRSchemaVersion {
+		return fmt.Errorf("%w: renderer speaks %q, client speaks %q",
+			ErrAnimationUnavailable, h.SchemaVersion, IRSchemaVersion)
+	}
+	return nil
+}
+
 // RequireFonts 校验渲染器是否提供指定字体族。缺失时返回 ErrFontUnavailable，
 // 而不是让渲染器退回默认字体产出方框字（§8.6）。
 func (c *Client) RequireFonts(ctx context.Context, families ...string) error {

@@ -20,8 +20,39 @@ import (
 	"github.com/F31/ppts/internal/messaging"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pricing"
+	"github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/web"
 )
+
+// animationProbeFromEnv 构造导出选项端点的渲染服务探测。
+//
+// 与 worker 各自读同一对 env（PPTS_ANIMATION_ENABLED / PPTS_RENDERER_URL）：两个进程
+// 本来就是分开部署的，共享一份"配置"只能靠同一份 compose/env_file。这里刻意不跨进程
+// 传能力——API 探不通就说明此刻那个地址对它不可达，而这正是"能不能出动画"要回答的问题。
+//
+// 返回 nil 表示这个部署没有渲染服务：端点会返回 renderer_not_configured，
+// 前端据此置灰并说明，而不是让用户勾一个必然降级的选项。
+func animationProbeFromEnv(logger *slog.Logger) api.AnimationProbe {
+	if !envBool("PPTS_ANIMATION_ENABLED", false) {
+		return nil
+	}
+	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
+	if base == "" {
+		logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; export options will report unavailable")
+		return nil
+	}
+	client, err := render.NewClient(render.ClientConfig{
+		BaseURL: base,
+		// 探测要快：导出对话框打开时才问，等 30s 等于对话框卡死。
+		Timeout: 3 * time.Second,
+		Retries: 1,
+	})
+	if err != nil {
+		logger.Warn("animation: renderer probe disabled", "error", err)
+		return nil
+	}
+	return client
+}
 
 // runServer 启动 API + 前端控制台（原 cmd/api 的 run）。
 // 数据库由 PPTS_DB_DRIVER 选择：sqlite（默认，单租户本地模式，无登录）或 postgres（多租户全功能）。
@@ -92,6 +123,7 @@ func runServer() error {
 						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
 						// 动画规格写路径：本地 profile 默认开启；生产需显式设置 PPTS_ANIMATION_ENABLED=true。
 						Animation: stores.animation, AnimationEnabled: stores.isSQLite() || os.Getenv("PPTS_ANIMATION_ENABLED") == "true",
+						AnimationProbe: animationProbeFromEnv(logger),
 						JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
 						Mailer:               mailer,
 						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",

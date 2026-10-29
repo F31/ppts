@@ -194,12 +194,26 @@ docker run --rm --network none --read-only \
 
 | 变量 | 谁读 | 含义 |
 |---|---|---|
-| `PPTS_ANIMATION_ENABLED=true` | 导出 worker | 总开关。不开就完全不建客户端、不探测 |
-| `PPTS_RENDERER_URL` | 导出 worker | 渲染服务地址，例如 `http://renderer:8090` |
+| `PPTS_ANIMATION_ENABLED=true` | 导出 worker **和 api** | 总开关。不开就完全不建客户端、不探测 |
+| `PPTS_RENDERER_URL` | 导出 worker **和 api** | 渲染服务地址，例如 `http://renderer:8090` |
 | `PPTS_ANIMATION_ASSET_DIR` | 导出 worker | **导出侧看到的**资产根目录（写）；同一个卷在渲染容器里挂成 `-assets-dir`（读） |
+
+**api 与 worker 都要配前两个。** 这不是冗余：
+
+- worker 少了它们 → 导出永远静默降级成静态版（用户勾了动画也拿不到）。
+- api 少了它们 → 导出对话框里的「动画视频」永远置灰，reason 是 `renderer_not_configured`。
+  功能其实是好的，只是没人能勾。
+
+api 侧的探测**每次真实请求** `/healthz`（10s TTL 缓存），而不是读配置判断：
+"配置里写了地址但容器没起来"是常态，按配置报可用等于骗用户点一个必然降级的选项。
 
 ```yaml
 services:
+  api:
+    environment:
+      PPTS_ANIMATION_ENABLED: "true"
+      PPTS_RENDERER_URL: http://renderer:8090
+
   worker:
     environment:
       PPTS_ANIMATION_ENABLED: "true"
@@ -236,6 +250,33 @@ animation: page assembly wired via shared asset dir                 # 接好了�
 `element_geometry=false` 是当前的能力边界而不是降级：元素几何还没有持久化来源
 （tasks 2.0b），所以**元素级轨道**（标题、要点、图表…逐个入场）会被编译成 `anchor_missing`
 诊断并跳过，**整页轨道**（转场、整页推拉/淡入）正常生效。
+
+### 前端怎么知道"这次能不能出动画"
+
+`GET /api/projects/{id}/exports/animation-options?timelineKey=<key>`
+
+```json
+{
+  "enabled": true,
+  "pages": [
+    { "slideId": "slide-1", "language": "zh-CN", "sourceRevisionNo": 2, "revision": 5 },
+    { "slideId": "slide-2", "language": "zh-CN", "sourceRevisionNo": 2, "revision": 0 }
+  ],
+  "hasTimeline": true
+}
+```
+
+- `revision=0` 表示这一页没有规格（导出时按静态画面）。**不省略这一类页**——
+  前端要能显示「5/12 页配了动效」，而不是让用户自己数。
+- 前端把 `revision>0` 的项**原样**放进导出请求的 `animation.specs`。不在这里替它
+  "顺便"提交最新版：导出是对「用户看到的那一版」的承诺，排队期间规格被改，
+  该页会因 `Revision` 不符降级并留痕，而不是拿新版渲下去。
+- `enabled=false` 时 `reason` 一定是这四个之一（前缀匹配，冒号后是详情）：
+  `animation_not_available`（规格存储未上线）、`animation_disabled_by_deployment`、
+  `renderer_not_configured`、`renderer_unavailable: ...`。
+
+排查顺序：先看 `reason`，再看 worker 日志的降级 warn。两者说的是不同阶段的事——
+`reason` 管「能不能勾」，worker 日志管「勾了之后为什么这版还是静态」。
 
 ### 换 S3 后端要动哪里
 

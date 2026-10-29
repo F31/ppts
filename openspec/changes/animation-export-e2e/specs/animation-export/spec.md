@@ -81,3 +81,54 @@
 
 - **WHEN** 渲染服务在单页预算内未返回
 - **THEN** 接口返回超时错误并提示可重试，编辑器不得显示空白预览
+
+### Requirement: 导出请求必须显式携带动画规格身份
+
+导出入口 MUST 接受逐页的动画规格身份（`slideId` / `language` / `sourceRevisionNo` / `revision`），MUST NOT 由后端在导出时自行取「当前最新版」。规格身份 MUST 进入 `ExportSnapshot` 并参与 `snapshotHash`，使「排队期间规格被改」表现为另一份产物而不是复用旧键。
+
+空规格集合 MUST 与不传该字段得到同一个快照键（两者都不渲染动画，产物同源）。
+
+#### Scenario: 排队期间规格被改
+
+- **WHEN** 导出任务入队后、执行前，某页规格的 `revision` 从 3 变成 4
+- **THEN** 该页按无规格处理（静态画面），导出成功，日志记录 `snapshot_revision=3 stored_revision=4`
+
+#### Scenario: 规格身份不合法
+
+- **WHEN** 请求里的 `slideId` 为空、在同一请求里重复、或 `revision` ≤ 0
+- **THEN** 入口返回 400 并指出具体是第几项，MUST NOT 创建任务
+
+#### Scenario: 对非视频格式请求动画
+
+- **WHEN** `format=html_bundle`（或其它不产视频的格式）携带 animation
+- **THEN** 入口返回 400：接受它等于承诺一个做不到的效果
+
+### Requirement: 导出前必须能回答「这次能不能出动画」
+
+系统 MUST 提供一个导出选项探测端点，返回三段能力判定（规格存储可用 / 部署开关开启 / 渲染服务此刻可达）与逐页规格身份。任一段不满足时 MUST 返回可区分的原因码，MUST NOT 只返回一个 false。
+
+能力判定 MUST NOT 复用导出主路径的进程级健康缓存：导出主路径要的是「不因抖动来回切」，而探测端点要的是「现在能不能用」——服务恢复后不重启也必须变绿。
+
+#### Scenario: 渲染服务停掉后重新打开导出对话框
+
+- **WHEN** 渲染服务不可达，用户打开导出对话框
+- **THEN** 端点返回 `enabled=false` 且 reason 以 `renderer_unavailable` 开头，前端把「动画视频」置灰并说明原因
+
+#### Scenario: 服务恢复
+
+- **WHEN** 渲染服务恢复，用户重新打开导出对话框（探测缓存已过期）
+- **THEN** 端点返回 `enabled=true`，无需重启 API 进程
+
+#### Scenario: 部分页没有规格
+
+- **WHEN** 时间轴有 12 页，只有 5 页配了规格
+- **THEN** 端点返回 12 项，其中 5 项 `revision>0`、7 项 `revision=0`；前端展示「5/12 页配了动效」而不是让用户自己数
+
+### Requirement: 两个导出入口对同一格式语义一致
+
+REST 导出入口与 Connect 导出入口 MUST 对同一格式产出同一结构的 `ExportSnapshot`（含 `burnSubtitles` / `includeNotes` / `animation`）。MUST NOT 存在「同一份输入从不同入口进来得到不同产物」的分支。
+
+#### Scenario: mp4 从 REST 入口导出
+
+- **WHEN** 用户带 `burnSubtitles=true` 从 REST 入口导出 mp4
+- **THEN** 快照里 `burnSubtitles=true`，与 Connect 入口同参数导出的字幕行为一致

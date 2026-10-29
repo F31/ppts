@@ -71,6 +71,10 @@ type Options struct {
 	Animation animstore.Store
 	// AnimationEnabled 只控制写路径：读路径始终可用，便于灰度前验证契约。
 	AnimationEnabled bool
+	// AnimationProbe 探测渲染服务此刻是否可达，供导出选项端点回答"这次能不能出动画"。
+	// nil = 该部署没有渲染服务，导出选项端点会明确返回 renderer_not_configured
+	// （不是"端点不存在"——前端要据此把选项置灰并说明原因，而不是当成接口 404）。
+	AnimationProbe AnimationProbe
 	Gateway          gateway.StoreResolver
 	ScriptSources    app.ScriptSourceStore
 	VoiceSettings    app.VoiceSettingsStore
@@ -204,6 +208,10 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	// 动画规格（M1）：REST，与 /api/context-rules 同形；store 为 nil 时整个端点不注册。
 	NewAnimationHandler(opt.Animation, newAnimationResolver(projects, objects, scripts), opt.AnimationEnabled).Register(mux, auth)
+	// 导出选项探测（3.4）：回答"这次导出能不能出动画"以及逐页规格身份。
+	// 与动画规格端点分开挂载：写路径关闭（AnimationEnabled=false）时导出仍应能判定不可用并说明原因，
+	// 所以这里不因 enabled=false 就不注册路由。
+	NewExportOptionsHandler(opt.Animation, objects, projects, opt.Members, opt.AnimationEnabled, opt.AnimationProbe).Register(mux, auth)
 	// 网关路由始终注册：未配置 AES 密钥时 store 为 nil，handler 返回明确 503 feature_disabled，
 	// 避免此前漏挂导致的静默 404。
 	NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)

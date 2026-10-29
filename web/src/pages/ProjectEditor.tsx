@@ -4,9 +4,10 @@ import { usePolling } from '../hooks/usePolling';
 import {
   ConnectError,
   createDictionary,
-  createExport,
-  createHTMLBundleExport,
+  animationSpecsOf,
+  createArtifactExport,
   createGeneration,
+  getAnimationExportOptions,
   estimateNarration,
   updateDictionary,
   deleteDictionary,
@@ -36,6 +37,7 @@ import {
   setSourceRevisionPreference,
   setSlideScriptSource,
   updateScript as updateScriptApi,
+  type AnimationExportOptions,
   type ClientIdentity,
   type NarrationEstimate,
   type ProjectVoiceSettings,
@@ -257,6 +259,10 @@ export function ProjectEditor({
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exportError, setExportError] = useState('');
+  // 导出选项探测（动画能力 + 逐页规格身份）。null 表示还没拿到/拿不到——
+  // 拿不到只影响"能不能勾动画"，不该拦住整次导出。
+  const [exportAnimation, setExportAnimation] = useState<AnimationExportOptions | null>(null);
+  const [exportAnimationLoading, setExportAnimationLoading] = useState(false);
   // B2 M2：真实渲染缩略图 / 属性抽屉 / 未保存状态。
   const [renderUrls, setRenderUrls] = useState<Record<string, string>>({});
   // 服务端渲染器（LibreOffice/poppler）缺失：解析会成功但没有页面图。
@@ -312,6 +318,27 @@ export function ProjectEditor({
   const canEditScript = roleReady && can(role, 'script.edit'); // 讲稿编辑：EDITOR+（script.go:55,120）
   const canGenerate = roleReady && can(role, 'narration.generate'); // 配音生成：EDITOR+（narration.go:65,167）
   const canExport = roleReady && can(role, 'export.create'); // 导出：EDITOR+（export.go:39）
+
+  // 打开导出对话框时探测一次动画能力。失败不报错：导出本身照常可用，
+  // 只是"动画视频"这一项会置灰并说明原因（ExportDialog 的 animationNote）。
+  useEffect(() => {
+    if (!exportOpen || !realManifest) return;
+    let cancelled = false;
+    setExportAnimationLoading(true);
+    getAnimationExportOptions(identity, projectId, realManifest.timelineKey)
+      .then((opts) => {
+        if (!cancelled) setExportAnimation(opts);
+      })
+      .catch(() => {
+        if (!cancelled) setExportAnimation(null);
+      })
+      .finally(() => {
+        if (!cancelled) setExportAnimationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [exportOpen, realManifest, identity, projectId]);
 
   useEffect(() => {
     if (!openExport || exportQueryHandledRef.current || !canExport || !realManifest) return;
@@ -1468,23 +1495,19 @@ export function ProjectEditor({
       // HTML 成品包的底图同样来自这些页图，故与 MP4 共用同一份键。
       const needsPages = format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle';
       const pagePngKeys = needsPages ? exportPagePngKeys : [];
-      const result =
-        format === 'html_bundle'
-          ? await createHTMLBundleExport(identity, {
-              projectId,
-              timelineKey: realManifest.timelineKey,
-              pagePngKeys,
-              idempotencyKey
-            })
-          : await createExport(identity, {
-              projectId,
-              format,
-              timelineKey: realManifest.timelineKey,
-              pagePngKeys,
-              burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
-              includeNotes: options.includeNotes,
-              idempotencyKey
-            });
+      // 动画规格只对 mp4 有意义；勾了但探测结果里一页都没有时会传空数组，
+      // 后端归一成"不要动画"，产物与不勾完全一致（同一个快照键）。
+      const animation = options.animation && format === 'ARTIFACT_FORMAT_MP4' ? animationSpecsOf(exportAnimation) : [];
+      const result = await createArtifactExport(identity, {
+        projectId,
+        format,
+        timelineKey: realManifest.timelineKey,
+        pagePngKeys,
+        burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
+        includeNotes: options.includeNotes,
+        animation,
+        idempotencyKey
+      });
       setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });
       setExportOpen(false);
     } catch (error) {
@@ -2141,6 +2164,8 @@ export function ProjectEditor({
           manifest={realManifest}
           busy={exporting}
           error={exportError}
+          animation={exportAnimation}
+          animationLoading={exportAnimationLoading}
           onClose={() => setExportOpen(false)}
           onSubmit={(format, options) => void runExport(format, options)}
         />

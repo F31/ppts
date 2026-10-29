@@ -1,9 +1,9 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  animationSpecsOf,
   archiveProject,
   attachTag,
-  createExport,
-  createHTMLBundleExport,
+  createArtifactExport,
   createFolder,
   createProject,
   createTag,
@@ -11,12 +11,14 @@ import {
   deleteSourceRevision,
   detachTag,
   downloadSourceRevision,
+  getAnimationExportOptions,
   getPlaybackManifest,
   getRevisionNarration,
   getRevisionVoiceStatus,
   getSourceRevisions,
   listFolders,
   listArchivedProjects,
+  type AnimationExportOptions,
   type ArchivedProject,
   listProjectOrganization,
   listProjects,
@@ -328,9 +330,14 @@ export function Projects({
   const [exportError, setExportError] = useState('');
   // 按 slide 对齐的页图键（缺图位置为空串），经 getRevisionNarration 取得，导出时透传给后端做缺图降级。
   const [exportPagePngKeys, setExportPagePngKeys] = useState<string[]>([]);
+  // 导出选项探测（动画能力 + 逐页规格身份）。与弹窗并行加载：探测失败只影响
+  // "能不能勾动画"，不该让用户多等一次往返，更不该拦住整次导出。
+  const [exportAnimation, setExportAnimation] = useState<AnimationExportOptions | null>(null);
+  const [exportAnimationLoading, setExportAnimationLoading] = useState(false);
   const openExport = async (projectId: string, revisionNo: number) => {
     const reqId = ++exportReqRef.current;
     setExportError('');
+    setExportAnimation(null);
     setExportBusy(true);
     try {
       const status = await getRevisionNarration(identity, projectId, revisionNo);
@@ -351,6 +358,17 @@ export function Projects({
       }
       setExportManifest(manifest);
       setExportTarget({ projectId, revisionNo });
+      setExportAnimationLoading(true);
+      void getAnimationExportOptions(identity, projectId, manifest.timelineKey)
+        .then((opts) => {
+          if (reqId === exportReqRef.current) setExportAnimation(opts);
+        })
+        .catch(() => {
+          if (reqId === exportReqRef.current) setExportAnimation(null);
+        })
+        .finally(() => {
+          if (reqId === exportReqRef.current) setExportAnimationLoading(false);
+        });
     } catch (err) {
       if (reqId !== exportReqRef.current) return;
       setExportManifest(null);
@@ -371,23 +389,17 @@ export function Projects({
       // HTML 成品包的底图同样来自这些页图，故与 MP4 共用同一份键。
       const needsPages = format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle';
       const pagePngKeys = needsPages ? exportPagePngKeys : [];
-      const result =
-        format === 'html_bundle'
-          ? await createHTMLBundleExport(identity, {
-              projectId: exportTarget.projectId,
-              timelineKey: exportManifest.timelineKey,
-              pagePngKeys,
-              idempotencyKey
-            })
-          : await createExport(identity, {
-              projectId: exportTarget.projectId,
-              format,
-              timelineKey: exportManifest.timelineKey,
-              pagePngKeys,
-              burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
-              includeNotes: options.includeNotes,
-              idempotencyKey
-            });
+      const animation = options.animation && format === 'ARTIFACT_FORMAT_MP4' ? animationSpecsOf(exportAnimation) : [];
+      const result = await createArtifactExport(identity, {
+        projectId: exportTarget.projectId,
+        format,
+        timelineKey: exportManifest.timelineKey,
+        pagePngKeys,
+        burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
+        includeNotes: options.includeNotes,
+        animation,
+        idempotencyKey
+      });
       setExportTarget(null);
       setExportManifest(null);
       pushNotice(t('projects.exportQueued', { jobId: result.jobId }));
@@ -1434,6 +1446,8 @@ export function Projects({
           manifest={exportManifest}
           busy={exportBusy}
           error={exportError}
+          animation={exportAnimation}
+          animationLoading={exportAnimationLoading}
           onClose={() => {
             setExportTarget(null);
             setExportError('');

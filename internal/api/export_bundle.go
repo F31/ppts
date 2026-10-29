@@ -53,8 +53,35 @@ type bundleExportRequest struct {
 	Width       int      `json:"width"`
 	Height      int      `json:"height"`
 	FPS         int      `json:"fps"`
+	// BurnSubtitles / IncludeNotes 与 Connect 入口同名同义。
+	//
+	// 这两个字段是本轮补的：mp4 带动画时必须走本端点（proto enum 加不了字段，见文件头），
+	// 而本端点此前只读尺寸与帧率——同一种"mp4 导出"从两个入口进来会得到不同的字幕行为，
+	// 且差异只在成片里看得出来。补齐后两个入口对 mp4 语义一致。
+	BurnSubtitles bool `json:"burnSubtitles"`
+	IncludeNotes  bool `json:"includeNotes"`
+	// Animation 是动画通道的输入（只对 mp4 有效）。nil / 空 specs 都是"不要动画"，
+	// 两者得到同一个快照键（见 app.SnapshotBytes）。
+	//
+	// 为什么规格身份要由客户端提交而不是后端取最新版：导出是对一份输入的承诺，
+	// 排队期间规格被改，产物就不同；键若不随之改变，步骤去重会把新任务并进旧产物。
+	Animation *bundleAnimationRequest `json:"animation"`
 	// IdempotencyKey 是 header 的重试兜底：部分客户端无法设置自定义 header。
 	IdempotencyKey string `json:"idempotencyKey"`
+}
+
+// bundleAnimationRequest 是动画选项的请求形状，与 app.AnimationOptions 一一对应。
+// 单独定义而不直接反序列化成 app 类型：入口需要一个"可校验的原始形状"，
+// 校验通过后才转成快照字段（见 animationExportOptions）。
+type bundleAnimationRequest struct {
+	Specs []bundleAnimationSpec `json:"specs"`
+}
+
+type bundleAnimationSpec struct {
+	SlideID          string `json:"slideId"`
+	Language         string `json:"language"`
+	SourceRevisionNo int    `json:"sourceRevisionNo"`
+	Revision         int64  `json:"revision"`
 }
 
 func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
@@ -127,7 +154,14 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	snapshot := app.ExportSnapshot{
 		Format: format, TimelineKey: timelineKey, PagePNGKeys: pageKeys,
 		FPS: req.FPS, Width: req.Width, Height: req.Height,
+		BurnSubtitles: req.BurnSubtitles, IncludeNotes: req.IncludeNotes,
 	}
+	animation, err := animationExportOptions(string(format), req.Animation)
+	if err != nil {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument, err))
+		return
+	}
+	snapshot.Animation = animation
 	// 与 Connect 入口保持同一套默认值：缺省 1080p30，避免同一份时间轴因入口不同产出不同尺寸。
 	if snapshot.FPS <= 0 {
 		snapshot.FPS = 30

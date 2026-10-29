@@ -164,3 +164,45 @@ func TestClientValidatesLocally(t *testing.T) {
 		t.Fatalf("不应发起网络请求，实际 %d 次", got)
 	}
 }
+
+// TestClientCheckBypassesHealthCache 守护 Check 与 Health 的**语义差别**：
+//
+// Health 的结论按进程缓存一次（导出主路径要的是"别因抖动来回切"），
+// Check 每次都真探（导出对话框要的是"现在能不能用"）。
+//
+// 若 Check 复用了 Health 的缓存，这条用例会在第 3 步失败：服务已经 500 了，
+// Check 仍然报可用——用户修好服务后重启前一直置灰的问题会反向变成
+// "服务挂了仍然显示可用"。
+func TestClientCheckBypassesHealthCache(t *testing.T) {
+	var fail atomic.Bool
+	health := `{"backend":"stub","schemaVersion":"` + IRSchemaVersion + `"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		if fail.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(health))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	if err := c.Check(context.Background()); err != nil {
+		t.Fatalf("首次 Check 应通过: %v", err)
+	}
+	// 让 Health 的缓存先建立（此后它对成功的判断不再改变）。
+	if _, err := c.Health(context.Background()); err != nil {
+		t.Fatalf("Health 应通过: %v", err)
+	}
+	fail.Store(true)
+	if err := c.Check(context.Background()); err == nil {
+		t.Fatal("服务已 500，Check 仍报可用（说明它吃了 Health 的进程缓存）")
+	}
+	if !c.Available(context.Background()) {
+		t.Fatal("Health 的结论应保持首次结果——两处语义不能互相污染")
+	}
+}
