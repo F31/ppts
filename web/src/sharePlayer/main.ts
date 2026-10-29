@@ -231,6 +231,12 @@ function mount(): void {
   const reduceMotion =
     typeof window.matchMedia === 'function' &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // 低内存设备不建动画层：合成层与图片解码是这个形态的主要成本，而它换来的只是
+  // "动效更好看"。navigator.deviceMemory 只有 Chromium 系提供（0.25/0.5/1/2/4/8 档），
+  // 拿不到就不降级——不能因为"检测不到"就替所有 Safari/Firefox 用户选最保守的形态。
+  // 注意与 reduceMotion 的差别：后者保留 opacity 动画，这里连 opacity 都不做。
+  const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
+  const lowPower = typeof deviceMemory === 'number' && deviceMemory < 4;
   let activeLayers: CompiledLayer[] = [];
   let activeSlideStartUs = 0;
   // 转场中的「前一页末帧」。MP4 的 PageEntry 不是只换图，而是把前一页的最后一帧
@@ -257,7 +263,7 @@ function mount(): void {
     releaseLayers(activeLayers);
     activeSlideStartUs = slide.startUs;
     const layers = slide.layers ?? [];
-    if (layers.length === 0) return;
+    if (layers.length === 0 || lowPower) return;
     activeLayers = buildLayerNodes(layersBox, layers, videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: (slide.endUs - slide.startUs) / 1000,
@@ -293,7 +299,8 @@ function mount(): void {
     transitionKind = kind;
     transitionMs = ms;
     const layers = before.layers ?? [];
-    if (layers.length === 0) return;
+    // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
+    if (layers.length === 0 || lowPower) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
     prevLayers = buildLayerNodes(prev.layers, layers, videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
