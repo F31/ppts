@@ -21,13 +21,14 @@
       **全部逐像素相同**（平均差 0.000 / 差>32 像素 0），样本含深色页 `#0E1B2E` 与渐变页；
       第 10 帧差异 bbox 完全落在标题框内；反向验证（拿错页 → 平均差 19.7；框缩小 → 23545 像素越界）
       确认检查不是空转。Studio 交互面板本身不是交付物，未纳入
-- [ ] 2.9 与 DOM 端（M6-2）抽出共享插值实现，避免两份 cubic-bezier 各自演化
-      —— 2026-10-29 核查后**推迟**：DOM 端目前根本没有 JS 插值实现。
-      证据：`web/src/sharePlayer/main.ts`（473 行）只有时间推进，零动画/transition/keyframe；
-      `internal/share/assets/app.js` 里 `cubic` 出现 0 次；`web/src/animationState.ts` 只做
-      草稿比对与夹紧，不求值缓动。所以「两份实现各自演化」这个风险现在不存在，
-      此时抽共享实现等于给一个还不存在的调用方造抽象——等 M6-2 的分享播放器真的做动画时，
-      让它直接消费 `renderer/src/motion.ts` 的语义（或把该文件提到共享位置），那时才有第二个调用方
+- [x] 2.9 与 DOM 端抽出共享插值实现，避免两份 cubic-bezier 各自演化
+      —— 2026-10-29 **已由 M6-2 落实**：`renderer/src/motion.ts` 移到 `shared/motion.ts`，
+      成了两端唯一实现。`renderer/src/Timeline.tsx` 与 `web/src/sharePlayer/animation.ts`
+      都 import 同一份；两端各有一个语义检查（`renderer/degrade-check.mjs` 7/7、
+      `web/animation-check.mjs` 16/16），CI 里并排跑。`internal/share/assets/app.js`
+      重跑构建后零漂移，证明是纯搬家。
+      （原来的推迟判断仍然成立且值得留档：抽共享实现必须等第二个调用方真的出现。2026-10-29 核查时
+      DOM 端零插值代码，此时抽象没有消费者；M6-2 的播放器动画层就是那个调用方。）
 
 ## 3. Go backend
 

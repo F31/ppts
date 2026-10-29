@@ -87,7 +87,12 @@
 
 ## 6. 文档与收口
 
-- [ ] 6.1 `README` 补分层位图格式、体积代价、降级行为
-- [ ] 6.2 路线图第 1 节表格更新 `html-bundle-animation` 状态；`animation-render-service-image`
-      的 2.9 勾掉并注明「由 M6-2 的共享 `shared/motion.ts` 落实」
-- [ ] 6.3 `openspec validate --all` 通过后归档，delta 吸收进 `openspec/specs/html-share-bundle`
+- [x] 6.1 本变更补 `README.md`：清单 v1→v2 对照、包结构新增条目、分层位图的来源与
+      「为什么统一 PNG」、播放器回放方式、六种降级行为、体积代价（669 KB / 5 页）、
+      门禁怎么跑、以及与计划的偏差表
+- [x] 6.2 路线图「当前进度」加 `html-bundle-animation` 行、计划表第 6 行改为已归档并写明
+      `targets`/`domFallback` 移出范围；`animation-render-service-image` 的 2.9 勾掉，
+      注明「由 M6-2 的 `shared/motion.ts` 落实」，同时保留当时「等第二个调用方出现」的
+      推迟理由作为决策记录
+- [x] 6.3 `openspec validate --all` 通过（7 passed / 0 failed）；`openspec archive
+      html-bundle-animation` 归档，delta 吸收进 `openspec/specs/html-share-bundle`
