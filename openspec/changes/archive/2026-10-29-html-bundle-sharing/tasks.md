@@ -53,7 +53,7 @@
 
 ## 5. 收口
 
-- [ ] 5.1 变更自带 README：表结构、路由表、cookie 语义、撤销生效延迟（本实现是**即时**，
+- [x] 5.1 变更自带 README：表结构、路由表、cookie 语义、撤销生效延迟（本实现是**即时**，
       没有做设计里提到的 30 秒解析缓存）、内存代价、未做的部分（publication、埋点）
-- [ ] 5.2 路线图进度表与计划表更新 M6-3 状态
-- [ ] 5.3 `openspec validate --all` 通过后归档，delta 吸收进 `openspec/specs/html-share-distribution`
+- [x] 5.2 路线图进度表与计划表更新 M6-3 状态
+- [x] 5.3 `openspec validate --all` 通过后归档，delta 吸收进 `openspec/specs/html-share-distribution`
