@@ -28,6 +28,7 @@ import (
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/pricing"
 	"github.com/F31/ppts/internal/project"
+	animrender "github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/retention"
 	"github.com/F31/ppts/internal/storagelifecycle"
 	"github.com/F31/ppts/internal/usage"
@@ -149,6 +150,28 @@ func runWorker() error {
 		WithSourceRevisions(stores.projects).
 		WithMaxDuration(time.Duration(maxExportMinutes) * time.Minute).
 		WithLogger(logger)
+	// 动画通道（ADR-21）：默认关闭，且要求「开关 + 服务地址」同时具备才接入。
+	// 渲染服务是可选依赖——没有它，导出必须照常成功，所以关闭态不建客户端、不探测。
+	if envBool("PPTS_ANIMATION_ENABLED", false) {
+		if base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL")); base != "" {
+			client, cerr := animrender.NewClient(animrender.ClientConfig{
+				BaseURL: base,
+				Timeout: time.Duration(envInt("PPTS_RENDERER_TIMEOUT_SECONDS", 30)) * time.Second,
+			})
+			if cerr != nil {
+				logger.Warn("animation: renderer client disabled", "error", cerr)
+			} else {
+				exportHandler = exportHandler.WithAnimation(client,
+					time.Duration(envInt("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
+				// 输入组装器还没接（底图投递 tasks 2.0、元素几何 tasks 2.0b），
+				// 所以当前即使打开开关，导出仍走静态路径。明说一句，免得「开了没效果」变成谜。
+				logger.Info("animation: enabled, but page assembly is not wired yet; exports stay static",
+					"renderer", base)
+			}
+		} else {
+			logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; staying static")
+		}
+	}
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
 		_, span := observability.Tracer("ppts.worker").Start(ctx, "job."+string(job.Kind))
 		defer span.End()
