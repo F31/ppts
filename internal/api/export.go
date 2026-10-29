@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -100,7 +99,9 @@ func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[p
 		FPS: 30, Width: 1920, Height: 1080,
 		BurnSubtitles: req.Msg.GetBurnSubtitles(), IncludeNotes: req.Msg.GetIncludeNotes(),
 	}
-	snapshotBytes, err := json.Marshal(snapshot)
+	// 用 app 侧的规范字节：导出步骤会把这份载荷反序列化后重算步骤键，
+	// 两边若各写一遍序列化，迟早会因为规整规则不同而对不上（app.SnapshotBytes 的注释）。
+	snapshotBytes, err := app.SnapshotBytes(snapshot)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}

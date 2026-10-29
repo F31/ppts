@@ -28,6 +28,12 @@ import (
 // ExportSnapshot fixes all inputs for an export job.
 // 快照必须完整记录影响产物的全部输入：除时间轴/页面图/编码参数外，
 // 亦包含 burnSubtitles 与 includeNotes，避免仅因这些选项不同却得到相同 snapshotHash。
+//
+// 字段顺序即序列化顺序（Go 按声明顺序输出 struct 字段），而 snapshotHash 是对序列化
+// 字节取摘要。硬约束只有一条：**新字段在默认零值时必须不出现在 JSON 里**
+// （omitempty，且零值确实表示"没有这个选项"）。少一个 omitempty，历史产物的键会
+// 一次性全部漂移；至于字段摆在哪儿其实不影响——被省略的字段不进字节（实测过：
+// 把 nil 指针字段插到中间，字节不变；只去掉 omitempty，立刻就变）。
 type ExportSnapshot struct {
 	Format        artifact.Format `json:"format"`
 	TimelineKey   string          `json:"timelineKey"`
@@ -37,6 +43,64 @@ type ExportSnapshot struct {
 	FPS           int             `json:"fps,omitempty"`
 	BurnSubtitles bool            `json:"burnSubtitles,omitempty"`
 	IncludeNotes  bool            `json:"includeNotes,omitempty"`
+	// Animation 固定动画通道的输入；nil = 走静态路径（默认）。
+	// 必须是 omitempty 的指针：开关关闭时这一整段不出现在 JSON 里，
+	// 序列化结果与引入动画之前逐字节一致（见 snapshotHashOf 与回归用例）。
+	Animation *AnimationOptions `json:"animation,omitempty"`
+}
+
+// AnimationOptions 固定「这片视频依据哪些动画规格渲染」。
+//
+// 没有 preset / intensity：它们是规格自身的字段（animation.Revision.PresetID /
+// Intensity），已在 Specs 指向的版本里，重复记录会让同一份输入有两种写法，
+// 两种写法又算出两个 snapshotHash。
+type AnimationOptions struct {
+	// Specs 是逐页规格身份，顺序与 PagePNGKeys 对齐。
+	//
+	// 为什么要进哈希：spec 在导出排队期间被改，产物就不同；若键不变，
+	// 步骤去重会把新任务并进旧产物，用户拿到的是旧动画。
+	// 它是**校验**而不是查询键：动画存储按 (页, 语言, 源版本) 取当前版本，
+	// 取回后比对 Revision，不符说明规格已变（见第 2 组接线）。
+	Specs []AnimationSpecRef `json:"specs,omitempty"`
+}
+
+// AnimationSpecRef 是一页动画规格的身份。
+type AnimationSpecRef struct {
+	SlideID string `json:"slideId"`
+	// Language 空 = 默认语言（zh-CN），与 animation.Key.Normalize 一致。
+	Language string `json:"language,omitempty"`
+	// SourceRevisionNo 0 = legacy，与讲稿同规则。
+	SourceRevisionNo int   `json:"sourceRevisionNo,omitempty"`
+	Revision         int64 `json:"revision"`
+}
+
+// SnapshotBytes 返回快照的规范序列化字节。
+//
+// 三个地方要用到同一份字节：Connect 入口与 REST 入口把它写进任务的 input_snapshot，
+// 导出步骤反序列化后再算步骤键。三处各写一遍 json.Marshal 迟早会漂——比如某天有人
+// 只在 app 侧做了规整，入口存下的载荷就和步骤键对不上，表现为「幂等重试创建出第二个任务」。
+//
+// 规整规则：动画选项为零值（无规格）时按 nil 处理。这样「开关关闭」与「开关打开但
+// 一页规格都没有」得到同一个键——两者都不渲染动画，产物同源，分成两个键只会让同一份
+// 静态视频在成品库里出现两次。
+func SnapshotBytes(snapshot ExportSnapshot) ([]byte, error) {
+	if snapshot.Animation != nil && len(snapshot.Animation.Specs) == 0 {
+		snapshot.Animation = nil
+	}
+	b, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, fmt.Errorf("export snapshot is not serializable: %w", err)
+	}
+	return b, nil
+}
+
+// snapshotHashOf 是快照的内容键：步骤键 `export:<format>:<hash>` 的载荷。
+func snapshotHashOf(snapshot ExportSnapshot) (string, error) {
+	b, err := SnapshotBytes(snapshot)
+	if err != nil {
+		return "", err
+	}
+	return hashBytes(b), nil
 }
 
 type ExportHandler struct {
@@ -106,8 +170,10 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if job.TenantID == "" || job.ProjectID == "" || snapshot.TimelineKey == "" || snapshot.Format == "" {
 		return errors.New("export job: incomplete input snapshot")
 	}
-	snapshotBytes, _ := json.Marshal(snapshot)
-	snapshotHash := hashBytes(snapshotBytes)
+	snapshotHash, err := snapshotHashOf(snapshot)
+	if err != nil {
+		return fmt.Errorf("export job: %w", err)
+	}
 	step := pipeline.JobStep{
 		JobID: job.ID, TenantID: job.TenantID, StepType: "export",
 		StepKey: "export:" + string(snapshot.Format) + ":" + snapshotHash,

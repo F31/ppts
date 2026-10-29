@@ -1814,6 +1814,11 @@ func TestCreateExportPersistsFixedSnapshotAndRejectsCrossTenantKeys(t *testing.T
 	if snapshot.Format != artifact.FormatSRT || snapshot.TimelineKey == "" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
+	// 断言原始字节而不只是字段：这份字符串既要当 Idempotency-Key 的载荷比对，
+	// 又是导出步骤算步骤键的输入。只验字段的话，序列化形状怎么改都看不出来。
+	if want := `{"format":"srt","timelineKey":"tenant-1/project-1/narration/timeline/tl.json","width":1920,"height":1080,"fps":30}`; jobs.inputSnapshot != want {
+		t.Fatalf("落库快照字节变了：\n got: %s\nwant: %s", jobs.inputSnapshot, want)
+	}
 
 	badReq := authRequest(&pptsv1.CreateExportRequest{
 		ProjectId: "project-1", Format: pptsv1.ArtifactFormat_ARTIFACT_FORMAT_SUBTITLE_SRT,

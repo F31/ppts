@@ -138,7 +138,8 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	if snapshot.Height <= 0 {
 		snapshot.Height = 1080
 	}
-	snapshotBytes, err := json.Marshal(snapshot)
+	// 与 Connect 入口共用同一份规范字节（见 app.SnapshotBytes）。
+	snapshotBytes, err := app.SnapshotBytes(snapshot)
 	if err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return

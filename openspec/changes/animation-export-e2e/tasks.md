@@ -18,7 +18,7 @@
 
 ## 2. 导出接线与开关（PR4-b）
 
-- [ ] 2.1 `ExportSnapshot` 增加动画字段（`omitempty`），并加一条「开关关闭时 snapshotHash
+- [x] 2.1 `ExportSnapshot` 增加动画字段（`omitempty`），并加一条「开关关闭时 snapshotHash
       与今天逐字节一致」的回归用例
 - [ ] 2.2 `internal/app/animation.go`：编排 `compile → submit → wait → 下载分段`，输出
       分段列表与降级页集合
@@ -61,3 +61,20 @@
   跨平台断言只能写「引号闭合」这类与路径风格无关的性质（a488376）。
 - 下一步是第 2 组：`export.go` 接线。在那之前 `renderMP4` 完全不受影响，
   所以本组的合并对静态导出零风险。
+
+第 2.1 组已落地（`ExportSnapshot.Animation` + 快照键回归用例）：
+
+- 字段：`Animation *AnimationOptions`，内含 `Specs []AnimationSpecRef`
+   （`slideId / language / sourceRevisionNo / revision`）。没有 preset / intensity——
+  它们已经在规格自身的字段里，重复记录会让同一份输入有两种写法、两个键。
+- 字节：抽出 `app.SnapshotBytes` 作为唯一来源，Connect 入口 / REST 入口 / 导出步骤共用；
+  空 `AnimationOptions` 归一到 nil（都不渲染动画、产物同源）。
+- 回归用例 `internal/app/export_snapshot_test.go` 断言的是**字节**而不是哈希：
+  三条字面量取自加字段之前的真实序列化（探针打印），失败信息能直接看出哪个字段插进来或跑掉了。
+- 用例有效性做了变异验证：
+  | 变异 | 结果 |
+  |---|---|
+  | 去掉 `json:"animation,omitempty"` | 红（多出 `"animation":null`）✅ |
+  | 把 nil 指针字段插到 `fps` 与 `burnSubtitles` 之间 | **绿**——被省略的字段不进字节，位置无关 |
+  | 去掉空动画归一 | 红（同键被拆成两个）✅ |
+  第二条变异推翻了我原本写进注释的「新字段只能追加到末尾」：真正的约束是「零值必须被省略」。
