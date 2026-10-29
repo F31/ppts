@@ -4,6 +4,27 @@
 > 末帧逐像素比的是墨量与差值，字形被换成另一种近似字体、字重被换掉、颜色偏了 3 个色阶——
 > 这些在平均差 0.5～1.2 的范围里都能过，只有人眼能一眼看出。
 
+## 零、先跑机器检查（ADR-19）
+
+人眼之前先过一遍机器能判的部分，免得把「分辨率/色偏」这类客观问题带进主观打分：
+
+```bash
+# 1) 用 Studio 同一个 composition 渲染单帧（替代 npm run studio，无头环境也能跑）
+PPTS_CHROME="/path/to/chrome" node renderer/still.mjs \
+    --plan <job>/plan.json --frame 165 --out /tmp/f.png
+
+# 2) 稳定帧：应当与源页逐像素相同
+python3 scripts/review/still-check.py --still /tmp/f.png --page <job>/pages/p000.png --settled
+
+# 3) 动效进行中：与源页的差异必须只落在该元素框内
+python3 scripts/review/still-check.py --still /tmp/f10.png --page <job>/pages/p000.png \
+    --confined-to 116,288,1320,130
+```
+
+2026-10-29 实测（5 页样片）：5 页稳定帧**逐像素相同**（平均差 0.000、差 >32 像素 0），
+其中包含深色页 `#0E1B2E`——只在浅色底上看不出色偏的实现会在这里暴露。
+这一步过了，第 6 项「色彩与对比」基本只剩主观偏好；没过就别急着打分。
+
 ## 一、谁评、怎么评
 
 1. 用播放器按 **100% 缩放**（不要全屏拉伸）看一遍成片，再按联系表逐格核对。

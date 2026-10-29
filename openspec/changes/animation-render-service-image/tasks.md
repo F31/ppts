@@ -14,7 +14,13 @@
 - [x] 2.5 `render.mjs`：逐页 `frameRange` 渲染，stdout 输出 JSON 行进度的，固定 CRF/GOP/像素格式
 - [x] 2.6 `still.mjs`：单帧导出，用于排查残影/转场过冲
 - [x] 2.7 `tsc --noEmit` 通过、`npm ci` 依赖锁定（`package-lock.json` 入库）
-- [ ] 2.8 Studio 人工预览（`npm run studio`）：本机未跑，分辨率/颜色需人眼过一遍
+- [x] 2.8 Studio 预览的「分辨率/颜色」改为可复跑核对（ADR-19）：Studio 是交互式界面，无头环境打不开、
+      也无人眼可用；而它预览的画面就是 `src/index.tsx` 注册的 `Timeline` composition，所以用 `still.mjs`
+      渲染同一帧 + `scripts/review/still-check.py` 逐像素比对（`--settled` 要求与源页相同，
+      `--confined-to` 要求动画中的差异只落在元素框内）。2026-10-29 实测 5 页 1920×1080 稳定帧
+      **全部逐像素相同**（平均差 0.000 / 差>32 像素 0），样本含深色页 `#0E1B2E` 与渐变页；
+      第 10 帧差异 bbox 完全落在标题框内；反向验证（拿错页 → 平均差 19.7；框缩小 → 23545 像素越界）
+      确认检查不是空转。Studio 交互面板本身不是交付物，未纳入
 - [ ] 2.9 与 DOM 端（M6-2）抽出共享插值实现，避免两份 cubic-bezier 各自演化
 
 ## 3. Go backend
