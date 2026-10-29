@@ -22,6 +22,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/share"
 )
 
@@ -120,6 +121,11 @@ type ExportHandler struct {
 	subtitleFontName string
 	// logger 用于记录可降级的打包告警（缺页图、转码失败、混音轨拼接失败）；nil 时静默。
 	logger *slog.Logger
+	// renderer 是动画渲染服务客户端（nil = 未启用动画，导出保持纯静态路径）。
+	// 它与 encoder 是两条互不替代的通道：encoder 出静态版，renderer 出逐页动画片段。
+	renderer *render.Client
+	// animationTimeout 是整片动画渲染的等待上限（0 = 不限，由作业上下文控制）。
+	animationTimeout time.Duration
 }
 
 func NewExportHandler(artifacts artifact.Store, steps interface {

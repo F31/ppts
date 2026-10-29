@@ -18,9 +18,18 @@
 
 ## 2. 导出接线与开关（PR4-b）
 
+- [ ] 2.0 **底图投递机制（未决，2.3 的前置）**：渲染服务只从自己的 `-assets-dir` 读
+      `baseImage`（ADR-14），而页面 PNG 在对象存储里。两者之间目前**没有通路**：
+      渲染容器 `network_mode: none`、compose 里 `/assets` 挂载仍是注释状态。
+      需要二选一并落成部署契约：
+      （a）共享卷 + 路径映射（单机可行，S3 后端不可行）；
+      （b）渲染服务加 `PUT /v1/assets/{path}`，由导出侧推页图（多一次上传，但后端无关）。
+      在此之前 2.3 只能用**已在本机资产根**的页图跑通链路，不能接进 `renderMP4`。
+      证据：`internal/render/assets.go`、`deploy/renderer/compose.yml` 的 `-assets-dir` 注释。
+
 - [x] 2.1 `ExportSnapshot` 增加动画字段（`omitempty`），并加一条「开关关闭时 snapshotHash
       与今天逐字节一致」的回归用例
-- [ ] 2.2 `internal/app/animation.go`：编排 `compile → submit → wait → 下载分段`，输出
+- [x] 2.2 `internal/app/animation.go`：编排 `compile → submit → wait → 下载分段`，输出
       分段列表与降级页集合
 - [ ] 2.3 `renderMP4` 插入动画通道：`tryAnimation` 三态（ADR-21），失败不进入
       `classifyEncodeError`
@@ -78,3 +87,22 @@
   | 把 nil 指针字段插到 `fps` 与 `burnSubtitles` 之间 | **绿**——被省略的字段不进字节，位置无关 |
   | 去掉空动画归一 | 红（同键被拆成两个）✅ |
   第二条变异推翻了我原本写进注释的「新字段只能追加到末尾」：真正的约束是「零值必须被省略」。
+
+### 第 2.2 落地（`internal/app/animation.go`）
+
+编排 `compile → submit → wait → 下载分段` 已完成，两条用例覆盖最要紧的两件事：
+「第 i 段必须是第 i 页」（用可辨识字节验证，不是只看文件存在）与「缺一页不整片失败」。
+
+过程中发现并补掉一个**契约缺口**：渲染服务此前只有 `GET /v1/render/{id}` 返回
+`artifacts` 名字列表，**没有任何下载端点**——分段名字拿到了，字节取不回来。
+补了 `GET /v1/render/{id}/artifacts/{name}`（服务端 + 客户端 + 5 条用例），
+规格增量写在 `animation-render-mvp/specs/render-plan/spec.md`，任务记 4.8。
+
+另外两处刻意的取舍：
+
+- **4:3 页按 16:9 输出 → 编译期 `ErrAspectMismatch`，不静默出歪动画**。
+  静态路径是把整页拉伸（元素跟着页面一起变形才自洽），而 EMU→像素是等比换算，
+  两者不能混。宁可降级成静态版，也不产出一版元素框错位的动画。
+- **`Missing` 与 `Drifted` 分开**：`Missing`（本层，服务端没给这一段）与
+  `media.ConcatSegments` 返回的 `Drifted`（时长漂移超 100ms）是两件事，
+  但 2.4 的处理相同——都换成静态段。分开记录是为了日志里能看出是哪一类。
