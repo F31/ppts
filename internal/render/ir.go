@@ -118,13 +118,14 @@ type Transition struct {
 
 // 诊断码。诊断不阻断渲染，但必须留痕：静默修正比报错更难排查。
 const (
-	DiagAnchorMissing        = "anchor_missing"
-	DiagBoxClamped           = "box_clamped"
-	DiagSegmentUnresolved    = "segment_unresolved"
-	DiagDurationTierConflict = "duration_tier_conflict"
-	DiagGeometryInferred     = "geometry_inferred"
-	DiagClipTruncated        = "clip_truncated"
-	DiagTransitionDefaulted  = "transition_defaulted"
+	DiagAnchorMissing         = "anchor_missing"
+	DiagBoxClamped            = "box_clamped"
+	DiagSegmentUnresolved     = "segment_unresolved"
+	DiagDurationTierConflict  = "duration_tier_conflict"
+	DiagGeometryInferred      = "geometry_inferred"
+	DiagClipTruncated         = "clip_truncated"
+	DiagTransitionDefaulted   = "transition_defaulted"
+	DiagSiblingOverlapPartial = "sibling_overlap_partial"
 )
 
 // Diagnostic 是一条编译诊断。

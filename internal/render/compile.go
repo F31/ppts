@@ -202,6 +202,17 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 		// 顺序是语义的一部分：合成器按数组顺序绘制，而父层位图里的子元素已被抹掉，
 		// 父层排在子层之后就会把子元素盖掉（见 layerorder.go）。
 		page.Layers = orderLayersParentsFirst(page.Layers)
+		// 部分重叠（互不包含）的兄弟元素不在抹除算法的能力范围内：两张层位图会各自
+		// 烘进对方落在重叠区的像素，动谁另一个就跟着动（tasks 5.9）。这不是能修掉的
+		// 缺陷，但必须留痕——静默的画面错误比报错难查得多。
+		if pairs := partialOverlaps(page.Layers); len(pairs) > 0 {
+			diags = append(diags, Diagnostic{
+				Code: DiagSiblingOverlapPartial, Page: in.Index, ElementID: pairs[0][0],
+				Message: fmt.Sprintf("%d 对兄弟元素互不包含但部分重叠（如 %s / %s）："+
+					"出片时重叠区可能互相带出（模型限制，见 tasks 5.9）",
+					len(pairs), pairs[0][0], pairs[0][1]),
+			})
+		}
 		// 分层冲突按页汇总成一条：catalog 的预设时长（如要点 500ms）普遍落在
 		// 视觉基线的"小元素 240–400ms"之外。逐条报会把诊断变成噪音，
 		// 而"这一页有 N 条不在档内"既能被看见，又不会淹没真正的异常。

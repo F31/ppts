@@ -528,3 +528,60 @@ func propFrom(m Motion, name string) float64 {
 	}
 	return -1
 }
+
+// 部分重叠（互不包含）的兄弟元素是 ADR-9 抹除算法管不到的情形：两张层位图会各自
+// 烘进对方落在重叠区的像素。修不掉（单张栅格推不出逐元素 alpha），但不能静默——
+// 编译期给一条诊断，运维/调用方才能知道这一页为什么「动一个另一个跟着动」。
+func TestCompilePageReportsPartialSiblingOverlap(t *testing.T) {
+	c := newTestCompiler(t)
+	compile := func(t *testing.T, boxes map[string]*EMUBox) []Diagnostic {
+		t.Helper()
+		elems := make([]Element, 0, len(boxes))
+		var tracks []*animation.Track
+		i := 0
+		for id, b := range boxes {
+			elems = append(elems, Element{ID: id, Kind: animation.KindBullet, Bounds: b})
+			tracks = append(tracks, &animation.Track{ElementID: id, Kind: animation.KindBullet,
+				Clips: []*animation.Clip{clipOf(id+"-in", "fadeIn", int64(i*200), 500, "onEnter")}})
+			i++
+		}
+		_, diags, err := c.CompilePage(PageInput{
+			Index: 1, SlideID: "slide-2", DurationMs: 6000, BaseImage: "pages/p1.png",
+			Elements: elems, Revision: revisionOf("business-calm", 1, tracks...),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return diags
+	}
+
+	t.Run("部分重叠要报", func(t *testing.T) {
+		diags := compile(t, map[string]*EMUBox{
+			"card": emuBox(0, 0, 400, 300),
+			"note": emuBox(300, 150, 400, 300),
+		})
+		if !hasDiag(diags, DiagSiblingOverlapPartial) {
+			t.Fatalf("缺 %s 诊断，got %+v", DiagSiblingOverlapPartial, diags)
+		}
+	})
+
+	t.Run("包含关系不报（抹除算法已覆盖）", func(t *testing.T) {
+		diags := compile(t, map[string]*EMUBox{
+			"card": emuBox(0, 0, 600, 600),
+			"text": emuBox(100, 100, 300, 100),
+		})
+		if hasDiag(diags, DiagSiblingOverlapPartial) {
+			t.Fatalf("包含关系不该报 %s，got %+v", DiagSiblingOverlapPartial, diags)
+		}
+	})
+
+	t.Run("不相交不报", func(t *testing.T) {
+		diags := compile(t, map[string]*EMUBox{
+			"left":  emuBox(0, 0, 300, 300),
+			"right": emuBox(800, 0, 300, 300),
+		})
+		if hasDiag(diags, DiagSiblingOverlapPartial) {
+			t.Fatalf("不相交不该报 %s，got %+v", DiagSiblingOverlapPartial, diags)
+		}
+	})
+}

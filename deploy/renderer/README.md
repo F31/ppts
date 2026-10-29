@@ -187,6 +187,19 @@ docker run --rm --network none --read-only \
 产物目录因此是**自包含**的：底图副本、`plates/`、`layers/`、`plan.json`、`segment_*.mp4`
 都在同一个目录里，`JobTTL` 到期只删这一个目录。
 
+## 计划诊断（`plan.warnings`，出片前先扫一眼）
+
+诊断不阻断渲染，但意味着「成片和输入不完全一致」。全部码定义在 `internal/render/ir.go`。
+
+| code | 含义 | 怎么处理 |
+|---|---|---|
+| `sibling_overlap_partial` | 两个动画元素**互不包含但部分重叠**（重叠 ≥ 较小的那块 5%）。ADR-9 的抹除只对包含关系成立，这种情形两张层位图会互相烘进对方的像素，动谁另一个就跟着拖影（ADR-20） | **修不掉**（单张栅格推不出逐元素 alpha）。要么改版式把两块拆开，要么接受；告警里带第一对元素 id |
+| `duration_tier_conflict` | 有 N 条 clip 时长不在视觉基线的元素速度分层内（catalog 区间优先，未改动时长） | 通常是预设的固有偏差，可忽略；大量出现说明预设或 catalog 需要调 |
+| `anchor_missing` / `box_clamped` / `clip_truncated` / `segment_unresolved` / `geometry_inferred` / `transition_defaulted` | 锚点/几何/裁剪/分段/画布/转场回退 | 逐条看 message：几何被 clamp 或 clip 被截断通常会直接反映在画面上 |
+
+`sibling_overlap_partial` 的 5% 门槛是刻意的：文本框包围盒普遍带内边距，标题盒与副标题盒
+常有一两像素交叠且交叠区没有墨，纯几何判定会天天误报，告警也就没人看了。
+
 ## 版本
 
 `/healthz` 返回：

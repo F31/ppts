@@ -69,3 +69,32 @@ func ids(layers []Layer) []string {
 	}
 	return out
 }
+
+func TestPartialOverlaps(t *testing.T) {
+	lay := func(id string, x, y, w, h int) Layer {
+		return Layer{ElementID: id, Kind: "bullet", AssetMode: "bitmap-region",
+			Box: Box{X: x, Y: y, W: w, H: h}}
+	}
+
+	cases := []struct {
+		name   string
+		layers []Layer
+		want   int
+	}{
+		{"完全重叠但互不包含的两块（同尺寸）", []Layer{lay("a", 100, 100, 400, 200), lay("b", 100, 100, 400, 200)}, 0},
+		{"包含关系交给抹除算法", []Layer{lay("card", 0, 0, 600, 600), lay("text", 100, 100, 300, 100)}, 0},
+		{"完全不相交", []Layer{lay("a", 0, 0, 100, 100), lay("b", 500, 500, 100, 100)}, 0},
+		{"部分重叠（非包含）", []Layer{lay("a", 0, 0, 400, 300), lay("b", 300, 150, 400, 300)}, 1},
+		{"边距级交叠不算", []Layer{lay("a", 0, 0, 1000, 400), lay("b", 999, 120, 800, 200)}, 0},
+		{"0×0 不参与", []Layer{lay("zero", 10, 10, 0, 0), lay("a", 0, 0, 400, 300)}, 0},
+		{"三块两两部分重叠", []Layer{lay("a", 0, 0, 400, 300), lay("b", 300, 0, 400, 300), lay("c", 600, 0, 400, 300)}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := partialOverlaps(tc.layers)
+			if len(got) != tc.want {
+				t.Fatalf("overlaps = %v, want %d 对", got, tc.want)
+			}
+		})
+	}
+}
