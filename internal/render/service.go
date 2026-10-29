@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -586,9 +588,22 @@ func (s *Service) releaseHash(j *job) {
 }
 
 func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/v1/render/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/render/")
+	// 路径形状：`/v1/render/{id}`（状态/取消）与 `/v1/render/{id}/artifacts/{name}`（下载）。
+	// 名字里允许带子目录（如 plates/x.png），所以只切出 `artifacts/` 前缀，
+	// 剩下的整段原样交给 workPath 做越界校验。
+	id, tail, hasTail := strings.Cut(rest, "/")
+	if id == "" {
 		writeError(w, http.StatusNotFound, "not_found", "", "job 不存在")
+		return
+	}
+	if hasTail {
+		name, ok := strings.CutPrefix(tail, "artifacts/")
+		if !ok || name == "" {
+			writeError(w, http.StatusNotFound, "not_found", "", "路径不存在")
+			return
+		}
+		s.handleArtifact(w, r, id, name)
 		return
 	}
 	switch r.Method {
@@ -697,6 +712,76 @@ func (s *Service) Cancel(id string) bool {
 		s.releaseHash(j)
 	}
 	return true
+}
+
+// handleArtifact 提供产物下载：GET /v1/render/{id}/artifacts/{name}。
+//
+// 只发 `JobStatus.Artifacts` 里列出的文件，而不是「job 目录里存在就发」。
+// 注意清单本身是全目录（listArtifacts 走 WalkDir，plan.json 也在里面），
+// 所以这条检查拦的不是「中间产物」——它拦的是**清单拍完之后才出现的文件**
+// （渲染器残留、清理脚本写进去的东西）和任何越界路径。
+// 两条链路的可见性必须同源：否则调用方按清单逐个取，会在某个文件上撞到 404，
+// 而它明明刚才被列出来过。
+//
+// 这里不做 Range 之外的任何加工（ServeContent 自带 Range/If-Modified-Since）：
+// 分段是 1~10MB 的成品字节，服务端不需要知道它们的内容。
+func (s *Service) handleArtifact(w http.ResponseWriter, r *http.Request, id, name string) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, http.MethodGet)
+		return
+	}
+	s.mu.Lock()
+	j, ok := s.jobs[id]
+	var listed bool
+	var modTime time.Time
+	if ok {
+		modTime = j.finishedAt
+		for _, a := range j.arts {
+			if a == name {
+				listed = true
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+	if !ok {
+		writeError(w, http.StatusNotFound, "not_found", "", "job 不存在")
+		return
+	}
+	// 先校验路径再查清单：越界路径一律按非法请求拒掉，不因为「它不在清单里」
+	// 就退化成 404——那会让真正的攻击尝试与普通打错名字长得一模一样。
+	full, err := workPath(filepath.Join(s.cfg.WorkDir, id), name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "unsafe_path", "", err.Error())
+		return
+	}
+	if !listed {
+		writeError(w, http.StatusNotFound, "not_found", "", "产物不存在")
+		return
+	}
+	// 清单里有、盘上没了（被清理或人工删过）：回 404 而不是 500——
+	// 对调用方来说这与 TTL 到期没有区别，都该降级而不是重试到底。
+	f, err := os.Open(full)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "", "产物不存在")
+		return
+	}
+	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		writeError(w, http.StatusNotFound, "not_found", "", "产物不存在")
+		return
+	}
+	w.Header().Set("Content-Type", artifactContentType(name))
+	http.ServeContent(w, r, path.Base(name), modTime, f)
+}
+
+// artifactContentType 按扩展名给 Content-Type。认不出的按二进制流，
+// 不猜成 text/plain——那会让浏览器把 mp4 当文本渲染成一片乱码。
+func artifactContentType(name string) string {
+	if ct := mime.TypeByExtension(path.Ext(name)); ct != "" {
+		return ct
+	}
+	return "application/octet-stream"
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -116,7 +116,7 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 	// 产物校验：退出码 0 不等于有可播放的片段。缺文件或没有 ftyp box 都要报出来，
 	// 否则上游会拿着空片段去拼接，最后表现成「成片黑屏」。
 	for i := range plan.Pages {
-		name := fmt.Sprintf("segment_%03d.mp4", i)
+		name := SegmentName(i)
 		path := filepath.Join(dir, name)
 		if err := verifyMP4(path); err != nil {
 			return fmt.Errorf("render: page %d: %w", i, err)

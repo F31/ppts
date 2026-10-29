@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +162,52 @@ func (c *Client) Status(ctx context.Context, id string) (JobStatus, error) {
 	var st JobStatus
 	err := c.do(ctx, http.MethodGet, "/v1/render/"+id, nil, &st)
 	return st, err
+}
+
+// DownloadArtifact 把产物（通常是第 i 页的 SegmentName(i)）写入 w，返回写入字节数。
+//
+// 刻意不复用 do()：那里把响应体读进内存并限 1MB，而分段是 1~10MB 的二进制；
+// 也不做重试——调用方是按页下载的，单页失败重试的粒度比「整段重来」更小，
+// 且重试会把尾部延迟叠在已经耗时的渲染之后。
+//
+// 显式比对 Content-Length：截断的分段能被拼接器当成好片（ffprobe 只看头），
+// 最后表现成「某一页黑屏」，比这里直接报错难查得多。
+func (c *Client) DownloadArtifact(ctx context.Context, id, name string, w io.Writer) (int64, error) {
+	u := c.base + "/v1/render/" + url.PathEscape(id) + "/artifacts/" + escapeArtifactPath(name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		return 0, fmt.Errorf("%w: %v", ErrAnimationUnavailable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return 0, decodeHTTPError(resp.StatusCode, data)
+	}
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
+		return n, fmt.Errorf("render: download %s: %w", name, err)
+	}
+	if resp.ContentLength >= 0 && n != resp.ContentLength {
+		return n, fmt.Errorf("render: download %s: got %d bytes, want %d", name, n, resp.ContentLength)
+	}
+	return n, nil
+}
+
+// escapeArtifactPath 逐段转义，保留 "/" 作为分隔符：
+// 整个字符串送进 PathEscape 会把目录层级压成一个文件名，服务端就找不到产物。
+func escapeArtifactPath(name string) string {
+	parts := strings.Split(name, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 // Cancel 取消任务（尽力而为）。

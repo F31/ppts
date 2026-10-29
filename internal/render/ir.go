@@ -10,6 +10,7 @@
 package render
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/F31/ppts/internal/animation"
@@ -154,3 +155,10 @@ func (t *Timeline) TotalDurationMs() int64 {
 	}
 	return total
 }
+
+// SegmentName 是第 i 页片段在产物目录里的文件名。
+//
+// 这是服务端与调用方之间的约定，之前只以字面量形式散在后端实现里：
+// 调用方按下标算不出同一个名字，就只能靠「产物列表里挑看起来像 mp4 的」——
+// 那在产物多起来（未来可能附带封面、音频）时会挑错。
+func SegmentName(i int) string { return fmt.Sprintf("segment_%03d.mp4", i) }

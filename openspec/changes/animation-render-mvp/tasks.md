@@ -37,6 +37,8 @@
 - [x] 4.5 `stub` backend：按页时长写占位片段 + 进度回调，供契约测试
 - [x] 4.6 路径安全：`baseImage` 拒绝绝对路径、盘符、`..`；workDir 隔离
 - [x] 4.7 测试：幂等（backend 只调一次）、400 不建 job、取消、healthz 字段、路径逃逸
+- [x] 4.8 `GET /v1/render/{id}/artifacts/{name}`：按 `Artifacts` 清单发文件、越界 400、
+      清单外 404（M3 发现契约缺口后补：此前只有名字列表，分段取不回来）
 
 ## 5. 客户端（PR2）
 

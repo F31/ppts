@@ -115,6 +115,34 @@
 - **WHEN** plan 未通过 IR 校验
 - **THEN** 返回 400 与具体字段路径，MUST NOT 创建 job
 
+### Requirement: 产物可下载，且可见性只有一份
+
+服务 MUST 提供 `GET /v1/render/{jobId}/artifacts/{name}`，把 `JobStatus.Artifacts` 列出的产物原样返回（含 `Content-Length`，支持 `Range`）。
+
+可下载集合 MUST 与 `JobStatus.Artifacts` 一致：清单里有而磁盘上没了的 MUST 返回 404（与 TTL 到期同等对待，调用方据此降级而非重试）；不在清单里的文件（清单拍完之后才出现的残留）MUST 返回 404，MUST NOT 因为「文件在工作目录里存在」就提供下载。
+
+路径 MUST 经越界校验：绝对路径、`..`、反斜杠一律 400 `unsafe_path`，且该判定 MUST 先于清单查询——否则攻击尝试与打错名字在日志里无法区分。
+
+#### Scenario: 按清单下载
+
+- **WHEN** 任务已 `succeeded`，调用方按 `Artifacts` 中的名字逐个下载
+- **THEN** 每个名字都返回 200 与完整字节；一个都不缺、字节数等于 `Content-Length`
+
+#### Scenario: 下载未列出的文件
+
+- **WHEN** 调用方请求工作目录里存在、但不在 `Artifacts` 里的文件（例如终态后才写入的残留）
+- **THEN** 返回 404，不返回任何内容字节
+
+#### Scenario: 越界路径
+
+- **WHEN** 请求的 `name` 含 `..` 或为绝对路径
+- **THEN** 返回 400 `unsafe_path`，且不触碰工作目录之外的文件
+
+#### Scenario: 清单还在但文件已删
+
+- **WHEN** `Artifacts` 里仍列着某文件，而磁盘上已被删除
+- **THEN** 返回 404（不是 500）：对调用方而言与 TTL 到期一致
+
 ### Requirement: 容量有上限，超限背压而不排队
 
 服务 MUST 为「已受理、尚未起跑」的任务数设上限（`MaxQueued`，默认 8），并 MUST 让排队期持有的计划数不超过该上限。
