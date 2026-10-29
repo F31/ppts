@@ -1,57 +1,35 @@
-// CompiledTimeline 的 TypeScript 镜像。
+// CompiledTimeline 的 TypeScript 镜像（页面与时间轴部分）。
 //
-// 与 internal/render/ir.go 逐字段对齐：JSON 标签、可空性、数值单位（像素/毫秒）。
+// 动画相关类型（`Box`/`Layer`/`Motion`/`Transition`/`CubicBezier`）已搬到仓库根的
+// `shared/types.ts`——它们由 renderer 与 sharePlayer 共用。这里只 re-export，不再定义一遍：
+// 两处各写一份就是两端漂移的起点。
+//
+// 与 `internal/render/ir.go` 逐字段对齐：JSON 标签、可空性、数值单位（像素/毫秒）。
 // 这里刻意不引入 zod 之类的运行时校验：校验的权威在 Go 侧（Validate 已在提交前跑过），
 // Node 端重复校验只会得到两套规则。
 
-export type MotionProp = {
-  name: string;
-  from: number;
-  to: number;
+import type { Layer, Transition } from '../../shared/types';
+
+export type {
+  Box,
+  CubicBezier,
+  Layer,
+  Motion,
+  MotionProp,
+  Transition
+} from '../../shared/types';
+
+export type Font = {
+  family: string;
+  version: string;
 };
 
-export type CubicBezier = {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-};
-
-export type Motion = {
-  clipId?: string;
-  /** 只作审计留痕。合成器 MUST NOT 读它决定行为（IR 不含动效语义）。 */
-  effect: string;
-  startMs: number;
-  durationMs: number;
-  easing: CubicBezier;
-  props: MotionProp[];
-};
-
-export type Box = {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-};
-
-export type Layer = {
+export type Diagnostic = {
+  code: string;
+  page: number;
   elementId?: string;
-  kind: string;
-  /** bitmap-region | page-layer */
-  assetMode: string;
-  box: Box;
-  clips?: Motion[];
-  /**
-   * 本层「只含自己」的位图，尺寸等于 box。缺省时退回「从 baseImage 按 box 偏移裁切」——
-   * 那条路径在嵌套情形下会把内部元素一起带出来（ADR-9）。
-   */
-  image?: string;
-};
-
-export type Transition = {
-  /** none | fade | slide | zoom */
-  type: string;
-  durationMs?: number;
+  clipId?: string;
+  message: string;
 };
 
 export type Page = {
@@ -67,19 +45,6 @@ export type Page = {
   plateImage?: string;
   layers?: Layer[];
   transition: Transition;
-};
-
-export type Font = {
-  family: string;
-  version: string;
-};
-
-export type Diagnostic = {
-  code: string;
-  page: number;
-  elementId?: string;
-  clipId?: string;
-  message: string;
 };
 
 export type Timeline = {

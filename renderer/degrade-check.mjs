@@ -71,7 +71,7 @@ test('零长 clip 交给合成器求值即终态（freeze 手法的全部依据�
   // 这是 real dependency：degrade.mjs 靠「durationMs=0 → 进度恒为 1」冻结画面。
   // 若哪天 motion.ts 改掉这段语义，这里会先红，而不是等到成片里元素停在半路中间。
   // 与 web 侧 animation-check 同样的加载方式（Node 22 的 --experimental-strip-types）。
-  const { evaluateLayer } = await import('./src/motion.ts');
+  const { evaluateLayer } = await import('../shared/motion.ts');
   const layer = {
     elementId: 'el',
     kind: 'element',

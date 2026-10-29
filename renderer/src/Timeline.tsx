@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
-import { evaluateLayer, framesForDuration } from './motion';
+import { evaluateLayer, framesForDuration } from '../../shared/motion';
 import type { Layer, Page, Timeline } from './types';
 
 const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
