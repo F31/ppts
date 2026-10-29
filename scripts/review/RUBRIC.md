@@ -9,6 +9,9 @@
 人眼之前先过一遍机器能判的部分，免得把「分辨率/色偏」这类客观问题带进主观打分：
 
 ```bash
+# 0) 计划级度量：§19.6 的元素数（≤9）与节奏密度（clip/秒 ≤3），不通过直接非零退出
+python3 scripts/review/perception-metrics.py <job>/plan.json
+
 # 1) 用 Studio 同一个 composition 渲染单帧（替代 npm run studio，无头环境也能跑）
 PPTS_CHROME="/path/to/chrome" node renderer/still.mjs \
     --plan <job>/plan.json --frame 165 --out /tmp/f.png

@@ -22,6 +22,12 @@ import (
 
 const emuPerPx = 6350 // 12192000 / 1920
 
+// 画布尺寸：速度分层按面积占比判档，必须知道画布大小才能把 box 换算成占比
+const (
+	canvasW = 1920
+	canvasH = 1080
+)
+
 type element struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
@@ -35,18 +41,34 @@ type pageMeta struct {
 	Elements  []element `json:"elements"`
 }
 
-func revision(elems []element) *animation.Revision {
+func revision(elems []element, tierCompliant bool, pageMs int64) *animation.Revision {
+	// §19.4 的速度分层是按**元素面积占比**判的（≥25% 大元素 600–900、≥8% 中元素 400–600、
+	// 其余 240–400），不是按元素类别。所以合规档不能写死「标题 700 / 要点 320」，
+	// 必须交给档案自己算——否则同一份计划里形状比文字大得多，却被套同一档时长。
+	// 默认档（520/700）是这份样片的历史取值，会落在两档之间的空档里并触发
+	// duration_tier_conflict；保持不变是为了让 ADR-18 的保真基线与 5.10 的记录可复现。
+	prof := design.DefaultMotion()
 	tracks := make([]*animation.Track, 0, len(elems))
 	for i, e := range elems {
+		dur := int64(520)
+		if e.Kind == "title" {
+			dur = 700
+		}
+		if tierCompliant {
+			area := float64(e.Box[2]*e.Box[3]) / float64(canvasW*canvasH)
+			if d := prof.DurationFor(area, pageMs); d > 0 {
+				dur = d
+			}
+		}
 		clip := &animation.Clip{
 			ID: e.ID + "-in", Type: "fadeIn",
-			StartMs: int64(120 + i*180), DurationMs: 520,
+			StartMs: int64(120 + i*180), DurationMs: dur,
 			Easing: "easeOut", Trigger: "onEnter",
 		}
 		if e.Kind == "title" {
 			clip = &animation.Clip{
 				ID: e.ID + "-in", Type: "slideIn",
-				StartMs: 100, DurationMs: 700, Easing: "easeOut",
+				StartMs: 100, DurationMs: dur, Easing: "easeOut",
 				Params: animation.Params{Direction: "up", Offset: 48}, Trigger: "onEnter",
 			}
 		}
@@ -64,6 +86,9 @@ func main() {
 	in := flag.String("in", "", "含 pages/ 与 elements.json 的目录（gen_pages.py 的输出）")
 	out := flag.String("out", "job", "job 目录：plan.json 与底图副本写在这里")
 	duration := flag.Int64("duration", 6000, "每页时长（毫秒）")
+	// 见 revision() 的注释：默认产物必须与 5.10 的保真基线一致，所以合规档只在新开关下启用。
+	tierCompliant := flag.Bool("tier-compliant", false,
+		"按 §19.4 速度分层取时长（小元素 320ms / 大元素 700ms）；盲评样片用")
 	flag.Parse()
 	if *in == "" {
 		log.Fatal("-in 必填")
@@ -130,7 +155,7 @@ func main() {
 		}
 		pages = append(pages, render.PageInput{
 			Index: m.Index, SlideID: m.SlideID, DurationMs: *duration,
-			BaseImage: m.BaseImage, Elements: elems, Revision: revision(m.Elements),
+			BaseImage: m.BaseImage, Elements: elems, Revision: revision(m.Elements, *tierCompliant, *duration),
 		})
 	}
 
