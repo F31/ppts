@@ -16,15 +16,15 @@ import (
 // ⚠️ **不含 password_hash**。匿名读路径共用本清单，把哈希放进来等于让每次匿名
 // 请求都把口令哈希读进内存再丢弃——任何一次日志或序列化失误都会把它送到公网侧。
 // 比对所需的哈希只经 ShareLinkPasswordHash 在租户上下文里单独取。
-const shareLinkColumns = `id, tenant_id, artifact_id, project_id, token, access_mode,
-	password_protected, expires_at, revoked, created_by, created_at, last_accessed_at`
+const shareLinkColumns = `id, tenant_id, artifact_id, project_id, object_key, content_hash, token,
+	access_mode, password_protected, expires_at, revoked, created_by, created_at, last_accessed_at`
 
 func scanShareLink(row rowScanner) (*ShareLink, error) {
 	var l ShareLink
 	var expires, lastAccessed *time.Time
 	var createdBy sql.NullString
-	if err := row.Scan(&l.ID, &l.TenantID, &l.ArtifactID, &l.ProjectID, &l.Token, &l.AccessMode,
-		&l.PasswordProtected, &expires, &l.Revoked, &createdBy, &l.CreatedAt, &lastAccessed); err != nil {
+	if err := row.Scan(&l.ID, &l.TenantID, &l.ArtifactID, &l.ProjectID, &l.ObjectKey, &l.ContentHash,
+		&l.Token, &l.AccessMode, &l.PasswordProtected, &expires, &l.Revoked, &createdBy, &l.CreatedAt, &lastAccessed); err != nil {
 		return nil, err
 	}
 	l.ExpiresAt = expires
@@ -41,12 +41,13 @@ func (s *PGStore) CreateShareLink(ctx context.Context, tenantID string, in NewSh
 	var out *ShareLink
 	err = tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		l, e := scanShareLink(tx.QueryRow(ctx, `INSERT INTO artifact_share_links
-			(tenant_id, artifact_id, project_id, token, access_mode, password_hash,
-			 password_protected, expires_at, created_by)
-			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			(tenant_id, artifact_id, project_id, object_key, content_hash, token,
+			 access_mode, password_hash, password_protected, expires_at, created_by)
+			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 			RETURNING `+shareLinkColumns,
-			tenantID, in.ArtifactID, in.ProjectID, token, normalizeShareAccessMode(in.AccessMode),
-			nullString(in.PasswordHash), in.PasswordHash != "", in.ExpiresAt, nullString(in.CreatedBy)))
+			tenantID, in.ArtifactID, in.ProjectID, in.ObjectKey, in.ContentHash, token,
+			normalizeShareAccessMode(in.AccessMode), nullString(in.PasswordHash),
+			in.PasswordHash != "", in.ExpiresAt, nullString(in.CreatedBy)))
 		out = l
 		return e
 	})

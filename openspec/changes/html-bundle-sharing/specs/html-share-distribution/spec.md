@@ -10,6 +10,8 @@
 
 分享链接 MUST 绑定到一个既有的 `html_bundle` 成品（`artifacts.id`），MUST NOT 绑定到项目。MUST NOT 存在「链接指向项目最新成品」这种间接绑定——那会让链接内容随项目编辑变化。
 
+仅绑定成品 ID 不足以满足上一条：成品行的写路径是 `ON CONFLICT (snapshot_hash, format) DO UPDATE SET object_key = ...`，**同一快照重新导出会原地改写该行**。因此创建链接时 MUST 同时把成品当时指向的 `object_key` 与 `content_hash` 快照进链接行，匿名端 MUST 只读链接行上的快照，MUST NOT 在交付时回查成品行当前指向的对象。
+
 创建链接时 MUST 校验成品属于同一租户、同一项目，且格式为 `html_bundle`；不满足时 MUST 在创建阶段返回 4xx，MUST NOT 拖到匿名访问时才失败。
 
 同一成品 MAY 存在多条同时有效的链接（不同客户、不同有效期）。

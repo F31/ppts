@@ -35,6 +35,7 @@ func TestShareLinkRoundTrip(t *testing.T) {
 	expires := time.Now().Add(48 * time.Hour)
 	l, err := s.CreateShareLink(ctx, "local", NewShareLink{
 		ArtifactID: a.ID, ProjectID: "p1", AccessMode: "view_and_comment",
+		ObjectKey: a.ObjectKey, ContentHash: a.ContentHash,
 		PasswordHash: "bcrypt-hash", CreatedBy: "u1", ExpiresAt: &expires,
 	})
 	if err != nil {
@@ -83,13 +84,13 @@ func TestShareLinkRevokeAndExpiryCloseTheDoor(t *testing.T) {
 	s := newShareLinkTestStore(t)
 	a := mustArtifact(t, s, "p2", "html_bundle")
 
-	live, err := s.CreateShareLink(ctx, "local", NewShareLink{ArtifactID: a.ID, ProjectID: "p2"})
+	live, err := s.CreateShareLink(ctx, "local", NewShareLink{ArtifactID: a.ID, ProjectID: "p2", ObjectKey: a.ObjectKey, ContentHash: a.ContentHash})
 	if err != nil {
 		t.Fatalf("create live: %v", err)
 	}
 	past := time.Now().Add(-time.Minute)
 	if _, err := s.CreateShareLink(ctx, "local", NewShareLink{
-		ArtifactID: a.ID, ProjectID: "p2", ExpiresAt: &past,
+		ArtifactID: a.ID, ProjectID: "p2", ObjectKey: a.ObjectKey, ContentHash: a.ContentHash, ExpiresAt: &past,
 	}); err != nil {
 		t.Fatalf("create expired: %v", err)
 	}
@@ -149,7 +150,8 @@ func TestShareLinkUsableAtMatchesSQL(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			l, err := s.CreateShareLink(ctx, "local", NewShareLink{
-				ArtifactID: a.ID, ProjectID: "p3", ExpiresAt: tc.expires,
+				ArtifactID: a.ID, ProjectID: "p3", ObjectKey: a.ObjectKey, ContentHash: a.ContentHash,
+				ExpiresAt: tc.expires,
 			})
 			if err != nil {
 				t.Fatalf("create: %v", err)
@@ -179,7 +181,9 @@ func TestShareLinkCascadeWithArtifact(t *testing.T) {
 	ctx := context.Background()
 	s := newShareLinkTestStore(t)
 	a := mustArtifact(t, s, "p4", "html_bundle")
-	if _, err := s.CreateShareLink(ctx, "local", NewShareLink{ArtifactID: a.ID, ProjectID: "p4"}); err != nil {
+	if _, err := s.CreateShareLink(ctx, "local", NewShareLink{
+		ArtifactID: a.ID, ProjectID: "p4", ObjectKey: a.ObjectKey, ContentHash: a.ContentHash,
+	}); err != nil {
 		t.Fatalf("create link: %v", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM artifacts WHERE id = ?`, a.ID); err != nil {

@@ -22,6 +22,14 @@ type ShareLink struct {
 	// ProjectID 是冗余列：只为「按项目列出分享」与审计可读，不参与内容定位。
 	ProjectID string
 	Token     string
+	// ObjectKey / ContentHash 是**创建链接那一刻**成品指向的对象键与内容哈希。
+	//
+	// 为什么要快照而不是每次去读 artifacts 行：artifacts 的写路径是
+	// ON CONFLICT(snapshot_hash, format) DO UPDATE SET object_key = EXCLUDED.object_key，
+	// 即「同一快照重新导出」会原地改写该行。分享端若跟着它走，旧链接就会指向新产物——
+	// 而这正是 M6-3 要消灭的行为。快照之后，链接钉住的是字节，不是指针。
+	ObjectKey   string
+	ContentHash string
 	// AccessMode 沿用 project 包的枚举（view_only / view_and_comment）。
 	// 成品播放器目前只读，两种取值的行为差别留给评论能力落地时兑现。
 	AccessMode        string
@@ -39,6 +47,9 @@ type NewShareLink struct {
 	ArtifactID string
 	ProjectID  string
 	AccessMode string
+	// ObjectKey / ContentHash 见 ShareLink 上的同名说明：由调用方在创建时从成品行拷入。
+	ObjectKey   string
+	ContentHash string
 	// PasswordHash 为空表示不设口令（此时 PasswordProtected 由实现置 false）。
 	PasswordHash string
 	CreatedBy    string

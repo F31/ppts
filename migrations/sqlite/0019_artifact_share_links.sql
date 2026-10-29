@@ -12,6 +12,10 @@ CREATE TABLE IF NOT EXISTS artifact_share_links (
     artifact_id        TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
     -- 冗余列：只为「按项目列出分享」与审计可读；不参与内容定位。
     project_id         TEXT NOT NULL,
+    -- 创建链接那一刻成品指向的对象键与内容哈希（快照）。理由见 pg 0052：
+    -- artifacts 的 upsert 会原地改写 object_key，只绑 artifact_id 不够。
+    object_key         TEXT NOT NULL,
+    content_hash       TEXT NOT NULL,
     token              TEXT NOT NULL UNIQUE,
     access_mode        TEXT NOT NULL DEFAULT 'view_only'
                        CHECK (access_mode IN ('view_only', 'view_and_comment')),

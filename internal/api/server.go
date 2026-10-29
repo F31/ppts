@@ -330,6 +330,15 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	registerTagFolderRoutes(mux, projects, opt.Members, opt.Audit, auth)
 	// 私密分享与协作者（#95，原生 HTTP 绕过 proto）：协作者 CRUD + 分享链接 + 匿名最小字段播放链路。
 	registerCollabRoutes(mux, projects, opt.Members, jobs, objects, opt.PasswordPepper, opt.Audit, auth)
+	// 成品级分享（M6-3）：/s/{token} 在线打开**某一版成片**。锚点是 artifact 而不是 project——
+	// 项目内容会变，客户手里的链接不该悄悄换内容。与上一条并存：两者分享的东西不同。
+	//
+	// 用类型断言而不是改 NewHandler 签名：分享链接存储与成品存储由同一个 PGStore/SQLiteStore
+	// 实现，但测试里的 Store 替身不必也实现它。断言失败时分享路由整体不挂，静态包导出不受影响。
+	if shares, ok := artifacts.(artifact.ShareLinkStore); ok {
+		registerArtifactShareRoutes(mux, artifacts, shares, projects, opt.Members, opt.PasswordPepper, opt.Audit, auth)
+		registerArtifactShareAnonRoutes(mux, shares, objects, opt.PasswordPepper, opt.Audit)
+	}
 	if parser, ok := objects.(signedURLParser); ok {
 		objHandler := &signedObjectHandler{objects: objects, parser: parser}
 		// 读写**不套** auth()：这两个端点实现的是预签名直传语义，令牌即授权

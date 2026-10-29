@@ -90,6 +90,9 @@ var requiredAudit = []struct {
 
 	// 匿名分享类：私密链接被谁打开过，是外发传播事故唯一能追的线索。
 	{"internal/api/collab.go", "share_link.anonymous_access", "匿名访问分享链接"},
+	// 成品级分享（M6-3）：与上一条是两件事——「看了这个项目」和「看了这一版成片」。
+	// 分开登记而不是复用同一个 action，才能在事故里回答"泄露的是哪一版"。
+	{"internal/api/artifact_share_serve.go", "artifact_share.anonymous_access", "匿名访问成品分享链接"},
 }
 
 func TestAuditCoverageRequiredActions(t *testing.T) {
@@ -124,7 +127,8 @@ func TestAuditAnonymousSitesRecordNoCredentials(t *testing.T) {
 	sites := auditSites(t)
 	var checked int
 	for _, s := range sites {
-		if s.Action != "publication.anonymous_access" && s.Action != "share_link.anonymous_access" {
+		if s.Action != "publication.anonymous_access" && s.Action != "share_link.anonymous_access" &&
+			s.Action != "artifact_share.anonymous_access" {
 			continue
 		}
 		rel := relFile(root, s.File)

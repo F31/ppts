@@ -20,6 +20,17 @@ CREATE TABLE IF NOT EXISTS artifact_share_links (
     artifact_id        uuid NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
     -- 冗余列：只为「按项目列出分享」与审计可读；不参与内容定位。
     project_id         uuid NOT NULL,
+    -- 创建链接那一刻成品指向的对象键与内容哈希（**快照**）。
+    --
+    -- 只绑 artifact_id 不够：artifacts 的写路径是
+    --   ON CONFLICT (tenant_id, project_id, snapshot_hash, format)
+    --   DO UPDATE SET object_key = EXCLUDED.object_key ...
+    -- 也就是「同一快照重新导出」会**原地改写**成品行。若分享端每次再去读
+    -- artifacts.object_key，旧链接就会指向新产物——这正是本变更要消灭的行为。
+    -- 门禁用例 TestArtifactShareAnchorsToArtifact 就是为了钉住它而写的，第一版实现
+    -- 没存这两列，用例立刻红。
+    object_key         text NOT NULL,
+    content_hash       text NOT NULL,
     token              text NOT NULL UNIQUE DEFAULT replace(gen_random_uuid()::text, '-', ''),
     access_mode        text NOT NULL DEFAULT 'view_only'
                        CHECK (access_mode IN ('view_only', 'view_and_comment')),

@@ -16,16 +16,16 @@ import (
 // ⚠️ 本包踩过这个坑：列清单与 Scan 目标错位在编译期完全不可见，只会在运行时
 // 把值读进错误字段（甚至静默读错值）。规则同 sqArtifactColumns：改一处必改另一处，
 // 由 share_link_test.go 的往返用例兜底。
-const sqShareLinkColumns = `id, tenant_id, artifact_id, project_id, token, access_mode,
-	password_protected, expires_at, revoked, created_by, created_at, last_accessed_at`
+const sqShareLinkColumns = `id, tenant_id, artifact_id, project_id, object_key, content_hash, token,
+	access_mode, password_protected, expires_at, revoked, created_by, created_at, last_accessed_at`
 
 func sqScanShareLink(row rowScanner) (*ShareLink, error) {
 	var l ShareLink
 	var protected, revoked int
 	var createdAt string
 	var expires, lastAccessed, createdBy sql.NullString
-	if err := row.Scan(&l.ID, &l.TenantID, &l.ArtifactID, &l.ProjectID, &l.Token, &l.AccessMode,
-		&protected, &expires, &revoked, &createdBy, &createdAt, &lastAccessed); err != nil {
+	if err := row.Scan(&l.ID, &l.TenantID, &l.ArtifactID, &l.ProjectID, &l.ObjectKey, &l.ContentHash,
+		&l.Token, &l.AccessMode, &protected, &expires, &revoked, &createdBy, &createdAt, &lastAccessed); err != nil {
 		return nil, err
 	}
 	l.PasswordProtected = protected != 0
@@ -44,12 +44,13 @@ func (s *SQLiteStore) CreateShareLink(ctx context.Context, tenantID string, in N
 	}
 	id := uuid.New().String()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO artifact_share_links (id, tenant_id, artifact_id, project_id, token,
-		   access_mode, password_hash, password_protected, expires_at, revoked, created_by, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-		id, tenantID, in.ArtifactID, in.ProjectID, token, normalizeShareAccessMode(in.AccessMode),
-		nullString(in.PasswordHash), in.PasswordHash != "", db.FormatTimePtr(in.ExpiresAt),
-		nullString(in.CreatedBy), db.Now()); err != nil {
+		`INSERT INTO artifact_share_links (id, tenant_id, artifact_id, project_id, object_key,
+		   content_hash, token, access_mode, password_hash, password_protected, expires_at, revoked,
+		   created_by, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		id, tenantID, in.ArtifactID, in.ProjectID, in.ObjectKey, in.ContentHash, token,
+		normalizeShareAccessMode(in.AccessMode), nullString(in.PasswordHash), in.PasswordHash != "",
+		db.FormatTimePtr(in.ExpiresAt), nullString(in.CreatedBy), db.Now()); err != nil {
 		return nil, err
 	}
 	return sqScanShareLink(s.db.QueryRowContext(ctx,

@@ -28,6 +28,8 @@ artifact_share_links（绑 artifacts.id）      bundle cache（按 content_hash 
 | `tenant_id` | uuid / TEXT | 租户隔离（与 0032 同一套 RLS 句式） |
 | `artifact_id` | uuid FK → `artifacts(id)` ON DELETE CASCADE / TEXT | **锚点**：成品，不是项目 |
 | `project_id` | uuid / TEXT | 冗余列，只为「按项目列出分享」与审计可读；**不参与内容定位** |
+| `object_key` | text | **创建链接那一刻**成品指向的对象键（快照）。见 ADR-8 |
+| `content_hash` | text | 同时刻的内容哈希（快照），用作 bundle 缓存的键 |
 | `token` | text UNIQUE | 32 位十六进制，不可反推 |
 | `access_mode` | text CHECK | `view_only` / `view_and_comment`（沿用既有枚举，不新增取值） |
 | `password_hash` | text NULL | bcrypt + pepper；NULL = 无口令 |
@@ -143,6 +145,27 @@ Cache-Control: private, max-age=300
 - 不设 `X-Frame-Options`、不设 `frame-ancestors`：方案明确「官网嵌入」是使用场景之一。
 - `Referrer-Policy: no-referrer`：防止链接出现在外链站点的 Referer 里。
 - `Cache-Control: private, max-age=300`：允许浏览器缓存（同一 token 的包内容不变），但禁止 CDN/代理共享缓存——否则一条 token 的响应可能被缓存给另一个 token 的请求。
+
+### ADR-8：链接必须快照 `object_key`，只绑 `artifact_id` 不够
+
+这条是**写完代码后被门禁逼出来的**，不是设计时想到的。
+
+方案 §20.7 的说法是「token 绑成品 ID，天然对齐 `SnapshotHash` 的版本不可变语义」。前提是「成品行不可变」。核对 `internal/artifact` 的写路径：
+
+```sql
+INSERT INTO artifacts ... ON CONFLICT (tenant_id, project_id, snapshot_hash, format)
+DO UPDATE SET object_key = EXCLUDED.object_key, content_hash = EXCLUDED.content_hash, ...
+```
+
+**成品行是可变的**——同一快照重新导出会原地改写 `object_key`，注释里写得很清楚：「若继续保留旧 object_key，用户重导出下载到的仍是旧产物」。于是「绑 `artifact_id`」只保证了绑到同一行，没保证绑到同一份字节：`TestArtifactShareAnchorsToArtifact` 第一次跑就红了，旧链接读到了新版内容。
+
+修法不是去改 `artifacts` 的 upsert（那会破坏「重导出应拿到新产物」这个正确行为），而是在**创建链接时把 `object_key` 与 `content_hash` 拷进链接行**。之后：
+
+- 分享端只读链接行，不再回查 `artifacts`；
+- 旧链接钉住的是字节，不是指针；
+- 代价是成品行被删除后旧包可能仍在存储里（retention 会清理），此时链接 404——这是**诚实**的失败，比悄悄换内容好。
+
+这条同时也是「门禁先写、实现后补」的价值样本：如果只验「链接能打开」，这个缺陷会一路带到线上，而且表现为「客户说链接里的内容变了」这种极难复现的问题。
 
 ## 4. 边界与失败
 
