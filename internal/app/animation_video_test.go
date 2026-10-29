@@ -33,9 +33,9 @@ type mp4AnimationBackend struct {
 func (b *mp4AnimationBackend) Name() string { return "mp4-animation-test" }
 
 func (b *mp4AnimationBackend) Render(ctx context.Context, plan *render.Timeline, dir string,
-	progress func(done, total int)) error {
+	progress func(done, total int)) (render.RenderReport, error) {
 	if b.fail != nil {
-		return b.fail
+		return render.RenderReport{}, b.fail
 	}
 	for i, p := range plan.Pages {
 		if b.skip[i] {
@@ -47,11 +47,11 @@ func (b *mp4AnimationBackend) Render(ctx context.Context, plan *render.Timeline,
 		}
 		if _, err := b.enc.EncodeStillSegment(ctx, pngForExportTest(), ms,
 			filepath.Join(dir, render.SegmentName(i)), 20, 320, 180); err != nil {
-			return err
+			return render.RenderReport{}, err
 		}
 		progress(i+1, len(plan.Pages))
 	}
-	return nil
+	return render.RenderReport{}, nil
 }
 
 // countedHandler 数请求数：用来证明「开关关闭时一次都没有探测渲染服务」。

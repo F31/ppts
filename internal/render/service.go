@@ -34,7 +34,35 @@ const queueRetryAfterSeconds = 5
 //   - ctx 取消时尽快返回，已写出的文件由服务端清理。
 type Backend interface {
 	Name() string
-	Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) error
+	Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) (RenderReport, error)
+}
+
+// PageDegradation 描述一页为什么没渲成动画。
+//
+// 单页失败不再是整次渲染失败（tasks 3.7）：渲染器会把那一页换成静态画面重出一次，
+// 片段仍按时长产出、仍能拼接，只是这一页「不劲」。这件事必须能报上来——
+// 用户看到的不是错误提示，而是「这页突然没动画」，没有留痕就无从查起。
+type PageDegradation struct {
+	Page int `json:"page"`
+	// Code 是机器可读的原因：page_render_failed（静态重试成功）、
+	// page_skipped（静态重试也失败，该页没有片段，交给上游换静态段）。
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
+}
+
+// 降级原因码。渲染器（render.mjs）与 Go 侧共用这两个字符串，
+// 写成常量是为了让「上游按 code 分支」有唯一来源。
+const (
+	// DegradationStill：单页渲染失败后，用静态画面重出成功。片段齐全，只是该页没动画。
+	DegradationStill = "page_render_failed"
+	// DegradationSkipped：静态重试也失败，该页没有片段，由上游换成静态段（ADR-23）。
+	DegradationSkipped = "page_skipped"
+)
+
+// RenderReport 是一次渲染的自述。目前只有降级信息，单独成类型是因为
+// 它会随 JobStatus 一起被持久化到客户端，加字段时不必动 Backend 签名。
+type RenderReport struct {
+	Degraded []PageDegradation `json:"degraded,omitempty"`
 }
 
 // 任务状态。
@@ -64,6 +92,9 @@ type JobStatus struct {
 	Error     string   `json:"error,omitempty"`
 	// Degraded 为 true 表示服务内部降级（例如渲染器缺失字体），产物可能不完整。
 	Degraded bool `json:"degraded,omitempty"`
+	// DegradedPages 逐页说明哪一页被换成了静态画面。与 Degraded 不重复：
+	// Degraded 是服务级信号（可能整片受影响），这里只讲具体页。
+	DegradedPages []PageDegradation `json:"degradedPages,omitempty"`
 }
 
 // Health 是 GET /healthz 的响应体（§8.6 能力探测）。
@@ -159,6 +190,8 @@ type job struct {
 	// finishedAt 是落终态的时刻，TTL 从这里起算（不是受理时刻：
 	// 一次 15 分钟的长渲染如果从受理算起，成功后马上就会被回收）。
 	finishedAt time.Time
+	// degraded 是本次渲染里被换成静态画面的页（tasks 3.7）。
+	degraded []PageDegradation
 }
 
 // NewService 校验配置并返回服务。
@@ -508,7 +541,7 @@ func (s *Service) run(ctx context.Context, j *job) {
 		return
 	}
 
-	err := s.cfg.Backend.Render(ctx, plan, dir, func(done, total int) {
+	report, err := s.cfg.Backend.Render(ctx, plan, dir, func(done, total int) {
 		s.mu.Lock()
 		j.prog = Progress{Done: done, Total: total}
 		s.mu.Unlock()
@@ -533,7 +566,19 @@ func (s *Service) run(ctx context.Context, j *job) {
 		s.finish(j, StateFailed, fmt.Sprintf("收集产物失败: %v", err), nil)
 		return
 	}
+	// 降级页在成功时才记：失败的任务整片作废，逐页降级没有意义。
+	s.setDegraded(j, report.Degraded)
 	s.finish(j, StateSucceeded, "", arts)
+}
+
+// setDegraded 记录本次渲染里被换成静态画面的页。
+func (s *Service) setDegraded(j *job, pages []PageDegradation) {
+	if len(pages) == 0 {
+		return
+	}
+	s.mu.Lock()
+	j.degraded = append([]PageDegradation(nil), pages...)
+	s.mu.Unlock()
 }
 
 // listArtifacts 按文件名排序返回相对路径：产物列表必须确定，否则客户端对比两次结果会误判。
@@ -616,8 +661,7 @@ func (s *Service) handleJob(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "", "job 不存在")
 			return
 		}
-		st := JobStatus{ID: j.id, State: j.state, Progress: j.prog, PlanHash: j.hash,
-			Artifacts: j.arts, Error: j.err}
+		st := statusOf(j)
 		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, st)
 	case http.MethodDelete:
@@ -682,6 +726,25 @@ func (s *Service) Submit(plan *Timeline) (string, error) {
 }
 
 // Status 返回任务状态（进程内调用）。
+// statusOf 是 JobStatus 的唯一构造点。
+//
+// 两处（HTTP GET 与进程内 Status）各写一遍字段列表时，新增字段必然漏掉一处——
+// degradedPages 第一次就是这样：HTTP 有、进程内没有，测试看着「降级没生效」。
+// 调用方必须已持有 s.mu（读 j 的字段）。
+func statusOf(j *job) JobStatus {
+	return JobStatus{
+		ID:            j.id,
+		State:         j.state,
+		Progress:      j.prog,
+		PlanHash:      j.hash,
+		Artifacts:     j.arts,
+		Error:         j.err,
+		Degraded:      len(j.degraded) > 0,
+		DegradedPages: append([]PageDegradation(nil), j.degraded...),
+	}
+}
+
+// Status 返回任务状态（进程内调用）。
 func (s *Service) Status(id string) (JobStatus, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -689,8 +752,7 @@ func (s *Service) Status(id string) (JobStatus, bool) {
 	if !ok {
 		return JobStatus{}, false
 	}
-	return JobStatus{ID: j.id, State: j.state, Progress: j.prog, PlanHash: j.hash,
-		Artifacts: j.arts, Error: j.err}, true
+	return statusOf(j), true
 }
 
 // Cancel 取消任务（进程内调用）。

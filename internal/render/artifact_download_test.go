@@ -21,17 +21,17 @@ type segmentBackend struct {
 
 func (b *segmentBackend) Name() string { return "segments" }
 
-func (b *segmentBackend) Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) error {
+func (b *segmentBackend) Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) (RenderReport, error) {
 	for i := range plan.Pages {
 		if b.skipPages[i] {
 			continue
 		}
 		if err := os.WriteFile(filepath.Join(dir, SegmentName(i)), b.body, 0o640); err != nil {
-			return err
+			return RenderReport{}, err
 		}
 		progress(i+1, len(plan.Pages))
 	}
-	return nil
+	return RenderReport{}, nil
 }
 
 func newDownloadTestServer(t *testing.T, be Backend) (*Client, string, string) {

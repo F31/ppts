@@ -8,15 +8,21 @@
 //
 // 输出用 JSON 行（stdout），而不是 Remotion 的终端进度条：
 //   {"type":"progress","page":0,"done":42,"total":180}
+//   {"type":"degraded","page":1,"code":"page_render_failed","message":"..."}
 //   {"type":"page","page":0,"file":"segment_000.mp4","frames":180}
 //   {"type":"done","segments":5,"frames":900}
 // Go 侧按行解析，不依赖任何终端控制字符。
+//
+// 单页失败不退出：先用静态画面重出该页（degraded/page_render_failed），
+// 静态也失败才跳过它（degraded/page_skipped），由上游换成静态段（ADR-23）。
+// 只有「一页都没出」才整次失败——那时确实没有可拼接的产物。
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundle } from '@remotion/bundler';
 import { renderMedia, selectComposition } from '@remotion/renderer';
+import { DEGRADED_SKIPPED, DEGRADED_STILL, faultPages, stillTimeline } from './degrade.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COMPOSITION_ID = 'Timeline';
@@ -133,6 +139,23 @@ const common = {
 };
 
 let renderedSegments = 0;
+const faults = faultPages(process.env.PPTS_RENDER_FAULT_PAGES);
+
+// 一页渲一次。抽成函数是因为降级时要「同一页再渲一次」，只是换成静态画面。
+//
+// composition 必须与 inputProps 一起换：renderMedia 用的是 composition 里算好的 props，
+// 只传新 inputProps 不会生效——画面仍是原动画。这一点没有报错，只能靠帧比对发现
+// （降级页第 8 帧与末帧差 42926 像素，差异框正好落在标题条 box 内）。
+const renderPage = (total, from, to, file, inputProps, onProgress, composition = common.composition) =>
+  renderMedia({
+    ...common,
+    composition,
+    inputProps,
+    outputLocation: path.join(outDir, file),
+    frameRange: [from, to],
+    onProgress
+  });
+
 for (let i = 0; i < timeline.pages.length; i++) {
   const total = framesPerPage(timeline.pages[i].durationMs);
   const from = starts[i];
@@ -140,20 +163,41 @@ for (let i = 0; i < timeline.pages.length; i++) {
   const file = `segment_${String(i).padStart(3, '0')}.mp4`;
 
   try {
-    await renderMedia({
-      ...common,
-      outputLocation: path.join(outDir, file),
-      frameRange: [from, to],
-      onProgress: ({ renderedFrames }) => {
-        emit({ type: 'progress', page: i, done: renderedFrames, total });
-      }
+    if (faults.has(i)) throw new Error(`injected fault on page ${i} (PPTS_RENDER_FAULT_PAGES)`);
+    await renderPage(total, from, to, file, timeline, ({ renderedFrames }) => {
+      emit({ type: 'progress', page: i, done: renderedFrames, total });
     });
   } catch (err) {
-    fail(`page ${i} (frameRange ${from}-${to}) failed: ${err.message}`);
+    // 单页失败不再让整次渲染失败：先如实说明「这页降级了」，再用静态画面重出一次。
+    // 注意顺序——降级事件在重试之前发，重试若成功，客户端拿到的仍是「片段齐全、
+    // 但这页没动画」；若重试也失败，后面再补一条 page_skipped。
+    const first = String(err?.message ?? err).split('\n')[0];
+    emit({ type: 'degraded', page: i, code: DEGRADED_STILL, message: first });
+
+    try {
+      // 重试不回报进度：同一页的 done 会从 0 重新开始，进度条会倒退。
+      const still = stillTimeline(timeline, i);
+      const stillComposition = await selectComposition({
+        serveUrl: bundleLocation,
+        id: COMPOSITION_ID,
+        inputProps: still,
+        browserExecutable
+      });
+      await renderPage(total, from, to, file, still, undefined, stillComposition);
+    } catch (stillErr) {
+      const stillFirst = String(stillErr?.message ?? stillErr).split('\n')[0];
+      emit({ type: 'degraded', page: i, code: DEGRADED_SKIPPED, message: stillFirst });
+      continue;
+    }
   }
 
   emit({ type: 'page', page: i, file, frames: total });
   renderedSegments++;
+}
+
+// 一页都没出等于这次渲染失败：返回成功但产物为空，上游会拿到一个 0 段的「成功任务」。
+if (renderedSegments === 0) {
+  fail(`all ${timeline.pages.length} pages failed`);
 }
 
 emit({ type: 'done', segments: renderedSegments, frames: cursor });

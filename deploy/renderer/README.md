@@ -111,9 +111,33 @@ docker run --rm --network none --read-only \
   ppts/renderer:dev -selftest -backend remotion -workdir /work -renderer-script /app/render.mjs
 ```
 
-成功输出 `selftest ok: backend=remotion pages=2 elapsed=...`，失败非零退出。
+成功输出 `selftest ok: backend=remotion pages=2 elapsed=... degraded=0`，失败非零退出。
 自检走的是与线上**同一个 Backend 实现**：staging（底板）→ Node → 片段校验，
 所以「镜像能起、但渲染必挂」这种状态过不了门禁。
+
+`degraded` 不是装饰：自检样例底图齐全，出现非零就说明链路有问题（例如底图取不到）。
+
+### 验收单页降级（tasks 3.7）
+
+真实渲染里没有可靠的「让某一页失败」的造法，所以故障是注入的：
+
+```bash
+# 让第 2 页（0 基）第一次渲染必然失败，期望：它被换成静态画面、片段仍然齐全
+docker run --rm --network none --read-only \
+  --tmpfs /work:mode=1777 --tmpfs /tmp:mode=1777 \
+  ppts/renderer:dev -selftest -selftest-degrade-page 1 \
+  -backend remotion -workdir /work -renderer-script /app/render.mjs
+# → selftest ok: ... degraded=1
+```
+
+自检会断言「恰好降级那一页、原因是 `page_render_failed`」（`page_skipped` 表示静态重试
+也失败、该页会变成空洞，直接算失败）。要拿成片做帧比对时加 `-selftest-keep`，
+产物目录会打印在输出里。
+
+判据不能只看「片段都在」：`renderMedia` 只换 `inputProps` 不换 `composition` 时，
+静态重试实际重渲了原动画，任务照样成功、片段照样齐全。2026-10-29 的实测是
+降级页第 8 帧与末帧差 **42926 像素**（差异框正好落在标题条 box 内），换成
+`selectComposition` 重新计算后归零（mean 0.072、`>8` 像素 0）。
 
 **两个 tmpfs 参数都不能省**（都是踩出来的）：
 
@@ -343,7 +367,9 @@ type AssetPublisher interface {
 | 输入组装器未接（底图投递未配置） | 静态版 | worker 启动时一条 `animation: enabled, but page assembly is not wired yet` |
 | 元素几何读不到（解析产物缺失/文档损坏） | 该页只有整页动效 | `animation: load element geometry failed, page only gets page-level tracks` |
 | 服务不可达 / 提交失败 / 等待超时 | 静态版 | `animation channel degraded to static export` + reason |
-| 整片渲染失败（后端崩溃等） | 静态版 | 同上 |
+| 某一页渲染失败 | 该页静态段（服务端自己出），其余页动画 | `degradedPages` 里 `code=page_render_failed`；worker 记一条 `animation segment degraded to still` |
+| 某一页静态重试也失败 | 该页由上游换静态段，其余页动画 | `code=page_skipped` + 上面的 `pages=[..]` |
+| 整片渲染失败（一页都没出） | 静态版 | 同上 |
 | 某一页没有片段 | 该页静态段，其余页动画 | `animation export contains still pages pages=[..]` |
 | 某一页时长漂移 > 100ms | 换静态段**重拼一次**；仍漂移则整片静态 | `pages=[..] drifted=[..]` |
 | 页面 4:3 但按 16:9 输出 | 静态版 | 编译期 `ErrAspectMismatch`（宁可降级，不出元素框错位的动画） |

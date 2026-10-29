@@ -48,6 +48,13 @@ func run() error {
 		chromePath  = flag.String("chrome", "", "chrome-headless-shell 路径（默认取 PPTS_CHROME）")
 		renderTO    = flag.Duration("render-timeout", 15*time.Minute, "单次渲染的保底超时（按片长自动放宽，上限 6h）")
 		selftest    = flag.Bool("selftest", false, "跑一遍后端自检后退出：staging → 渲染 2 页 → 校验产物")
+		// 故障注入：让指定页在第一次渲染时失败，用来验收「单页失败只降级该页」（tasks 3.7）。
+		// 真实渲染里没有可靠的造法——页面内容合法就不会失败，而这条路径回归时
+		// 用户看到的只是「这页没动画」，不会报错。
+		selftestFaultPage = flag.Int("selftest-degrade-page", -1, "自检时让第 N 页渲染失败，验证降级成静态画面（0 基；-1 = 不注入）")
+		// 自检产物默认随成功删除。要拿成片做帧比对（例如验证降级页确实是静态画面）时打开它，
+		// 路径会打印在输出里——否则只能靠失败来保留现场。
+		selftestKeep = flag.Bool("selftest-keep", false, "自检成功后保留产物目录（用于取片核对）")
 	)
 	flag.Parse()
 
@@ -77,7 +84,7 @@ func run() error {
 	if *selftest {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		return runSelfTest(ctx, impl, *workDir)
+		return runSelfTest(ctx, impl, *workDir, *selftestFaultPage, *selftestKeep)
 	}
 
 	svc, err := render.NewService(render.ServiceConfig{

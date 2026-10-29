@@ -22,18 +22,18 @@ func (b *StubBackend) Name() string { return "stub" }
 
 // Render 写占位产物。它遵守与真实 backend 相同的契约：只写 dir、响应 ctx、回报进度。
 func (b *StubBackend) Render(ctx context.Context, plan *Timeline, dir string,
-	progress func(done, total int)) error {
+	progress func(done, total int)) (RenderReport, error) {
 	total := len(plan.Pages)
 	for i, p := range plan.Pages {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return RenderReport{}, ctx.Err()
 		default:
 		}
 		name := fmt.Sprintf("segment_%03d.mp4.stub", i)
 		body := fmt.Sprintf("stub segment\nslideId=%s\ndurationMs=%d\n", p.SlideID, p.DurationMs)
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o640); err != nil {
-			return fmt.Errorf("render: write stub segment: %w", err)
+			return RenderReport{}, fmt.Errorf("render: write stub segment: %w", err)
 		}
 		if progress != nil {
 			progress(i+1, total)
@@ -41,10 +41,10 @@ func (b *StubBackend) Render(ctx context.Context, plan *Timeline, dir string,
 		if b.DelayPerPage > 0 {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return RenderReport{}, ctx.Err()
 			case <-time.After(b.DelayPerPage):
 			}
 		}
 	}
-	return nil
+	return RenderReport{}, nil
 }

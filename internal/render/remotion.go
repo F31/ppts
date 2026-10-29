@@ -73,56 +73,69 @@ func (b *RemotionBackend) ChromeVersion() string {
 }
 
 // Render 实现 Backend。产物是 dir/segment_000.mp4 起的逐页片段。
-func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) error {
+func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) (RenderReport, error) {
 	if plan == nil || len(plan.Pages) == 0 {
-		return errors.New("render: remotion backend requires a plan with at least one page")
+		return RenderReport{}, errors.New("render: remotion backend requires a plan with at least one page")
 	}
 	script := b.resolveScript()
 	if script == "" {
-		return errors.New("render: renderer script not configured (set PPTS_RENDERER_SCRIPT)")
+		return RenderReport{}, errors.New("render: renderer script not configured (set PPTS_RENDERER_SCRIPT)")
 	}
 	if _, err := os.Stat(script); err != nil {
-		return fmt.Errorf("render: renderer script %q: %w", script, err)
+		return RenderReport{}, fmt.Errorf("render: renderer script %q: %w", script, err)
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("render: prepare workdir: %w", err)
+		return RenderReport{}, fmt.Errorf("render: prepare workdir: %w", err)
 	}
 	// 后续路径全部用绝对路径：node 子进程的 cwd 是脚本目录，
 	// 相对路径会按那个目录解析，最终报「找不到 plan.json」这种误导性错误。
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return fmt.Errorf("render: resolve workdir: %w", err)
+		return RenderReport{}, fmt.Errorf("render: resolve workdir: %w", err)
 	}
 	dir = absDir
 
 	staged, err := b.stage(plan, dir)
 	if err != nil {
-		return err
+		return RenderReport{}, err
 	}
 
 	planPath := filepath.Join(dir, "plan.json")
 	payload, err := json.Marshal(staged)
 	if err != nil {
-		return fmt.Errorf("render: marshal staged plan: %w", err)
+		return RenderReport{}, fmt.Errorf("render: marshal staged plan: %w", err)
 	}
 	if err := os.WriteFile(planPath, payload, 0o640); err != nil {
-		return fmt.Errorf("render: write staged plan: %w", err)
+		return RenderReport{}, fmt.Errorf("render: write staged plan: %w", err)
 	}
 
-	if err := b.exec(ctx, script, planPath, dir, len(plan.Pages), contentDuration(plan), progress); err != nil {
-		return err
+	report, err := b.exec(ctx, script, planPath, dir, len(plan.Pages), contentDuration(plan), progress)
+	if err != nil {
+		return RenderReport{}, err
 	}
 
 	// 产物校验：退出码 0 不等于有可播放的片段。缺文件或没有 ftyp box 都要报出来，
 	// 否则上游会拿着空片段去拼接，最后表现成「成片黑屏」。
+	//
+	// 被降级的页单独说明：它没有片段是预期行为（render.mjs 决定跳过），
+	// 其余页缺片段才是真问题。
+	skipped := make(map[int]struct{}, len(report.Degraded))
+	for _, d := range report.Degraded {
+		if d.Code == DegradationSkipped {
+			skipped[d.Page] = struct{}{}
+		}
+	}
 	for i := range plan.Pages {
 		name := SegmentName(i)
 		path := filepath.Join(dir, name)
 		if err := verifyMP4(path); err != nil {
-			return fmt.Errorf("render: page %d: %w", i, err)
+			if _, ok := skipped[i]; ok {
+				continue
+			}
+			return RenderReport{}, fmt.Errorf("render: page %d: %w", i, err)
 		}
 	}
-	return nil
+	return report, nil
 }
 
 // stage 生成底板并返回一份副本（不修改调用方的 plan：服务端可能还要用它算别的）。
@@ -261,7 +274,7 @@ func renderTimeout(base, content time.Duration) time.Duration {
 	return need
 }
 
-func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages int, content time.Duration, progress func(done, total int)) error {
+func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages int, content time.Duration, progress func(done, total int)) (RenderReport, error) {
 	timeout := renderTimeout(b.Timeout, content)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -283,7 +296,7 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 	// 若脚本本身还是相对路径，Node 会按 cmd.Dir 再拼一次，变成 renderer/renderer/render.mjs。
 	absScript, err := filepath.Abs(script)
 	if err != nil {
-		return fmt.Errorf("render: resolve renderer script: %w", err)
+		return RenderReport{}, fmt.Errorf("render: resolve renderer script: %w", err)
 	}
 
 	args := []string{
@@ -303,18 +316,19 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("render: pipe stdout: %w", err)
+		return RenderReport{}, fmt.Errorf("render: pipe stdout: %w", err)
 	}
 	stderr := &limitedBuffer{limit: 8 << 10}
 	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("render: start renderer (%s): %w", b.resolveNode(), err)
+		return RenderReport{}, fmt.Errorf("render: start renderer (%s): %w", b.resolveNode(), err)
 	}
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	var reported error
+	var report RenderReport
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -325,6 +339,7 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 			Page    int    `json:"page"`
 			File    string `json:"file"`
 			Frames  int    `json:"frames"`
+			Code    string `json:"code"`
 			Message string `json:"message"`
 		}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
@@ -336,6 +351,13 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 			if progress != nil {
 				progress(event.Page+1, pages)
 			}
+		case "degraded":
+			// 单页降级不是错误：渲染继续，把「哪一页变成静态画面」如实记下来。
+			report.Degraded = append(report.Degraded, PageDegradation{
+				Page:    event.Page,
+				Code:    event.Code,
+				Message: event.Message,
+			})
 		case "error":
 			reported = errors.New(event.Message)
 		}
@@ -345,20 +367,20 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 
 	if waitErr != nil {
 		if reported != nil {
-			return fmt.Errorf("render: %w", reported)
+			return RenderReport{}, fmt.Errorf("render: %w", reported)
 		}
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return fmt.Errorf("render: timed out after %s: %w", timeout, waitErr)
+			return RenderReport{}, fmt.Errorf("render: timed out after %s: %w", timeout, waitErr)
 		}
-		return fmt.Errorf("render: renderer exited: %w: %s", waitErr, stderr.String())
+		return RenderReport{}, fmt.Errorf("render: renderer exited: %w: %s", waitErr, stderr.String())
 	}
 	if scanErr != nil {
-		return fmt.Errorf("render: read renderer output: %w", scanErr)
+		return RenderReport{}, fmt.Errorf("render: read renderer output: %w", scanErr)
 	}
 	if reported != nil {
-		return fmt.Errorf("render: %w", reported)
+		return RenderReport{}, fmt.Errorf("render: %w", reported)
 	}
-	return nil
+	return report, nil
 }
 
 func (b *RemotionBackend) resolveScript() string {

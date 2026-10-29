@@ -131,6 +131,11 @@ jobs:
         run: |
           npm run build:share
           git -C .. diff --exit-code internal/share/assets/app.js internal/share/assets/app.css
+      # 单页降级（tasks 3.7）是纯函数 + 一条对 motion.ts 的语义依赖，
+      # 不需要 npm ci 也不需要 Chrome：它只 import 仓库内的 .mjs/.ts。
+      # 真渲染路径靠容器内的故障注入验收，这条守的是「冻结一页」的语义不被改坏。
+      - name: renderer degrade check
+        run: node --experimental-strip-types --test renderer/degrade-check.mjs
 
   # CGO_ENABLED=0 交叉构建：验证架构约束（对齐 go-pptx 的 CI 惯例）。
   crossbuild:

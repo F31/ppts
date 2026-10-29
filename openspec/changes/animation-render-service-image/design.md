@@ -952,3 +952,53 @@ C 工具链（`gcc` / `cc` / `zig` / `clang` 均不存在）。原先还有第�
 补跑方式：推一次 `main` 或在 PR 上看 `race` job；本地等价命令（需 gcc、`CGO_ENABLED=1`）为
 `go test -race -count=1 ./internal/render/... ./cmd/renderer/... ./internal/animation/...`。
 该 job 首次跑绿后，才可以把 M1 tasks 6.2 勾掉——在那之前它仍是「未验证」。
+
+### ADR-24 单页降级的执行位置下沉到渲染服务（本轮落地，对应 tasks 3.7）
+
+ADR-23（已归档的 `animation-export-e2e`）定的是「替换单元是静态段，不是跳过该页」，
+但当时执行位置在**上游**：渲染服务少给一段，`app.RenderAnimation` 发现 artifacts 里没有
+`segment_NNN.mp4`，就把该页记进 `Missing`，由导出侧换成静态段。
+
+本轮把替换下沉到渲染服务内部（`renderer/degrade.mjs` + `render.mjs`），理由是上游补段
+必须自带一套「静态图 → 与页时长等长的视频」的编码路径，而它手里只有导出的 page PNG，
+与渲染器用的 `plateImage`（去残影底板）不是同一张图 —— 两处出来的「静态画面」会在
+残影、字体、边距上不一致，且时长口径要各自维护。渲染器自己出静态段，产物是自洽的：
+artifacts 齐全、时长就是计划里的 durationMs、任何调用方都能直接拼接。
+
+**冻结一页的做法是「把每条 clip 压成零长」，不是删 clips。**
+`clipProgress` 对 `durationMs <= 0` 的定义是「起点之后恒为 1」，于是任意帧取到的都是
+`to` 值，即该页末帧状态。删 clips 会让 `evaluateLayer` 退回恒等（opacity=1、无位移），
+对 `fadeOut` 的出场元素就会「该消失的还留着」——那不是末帧，是和成片对不上的另一张画。
+转场不做处理：它属于页间视觉，且 `PageView(prev, tMs=prev.durationMs)` 取的正是上一页末帧。
+
+**踩到的坑：只换 `inputProps` 不换 `composition` 会静默重渲原动画。**
+`renderMedia` 用的是 `selectComposition` 时算好的 props，第一版就是这样：降级事件照发、
+片段照出、任务 `succeeded`，唯一异常是降级页仍在动。判据只能来自帧比对 ——
+第 8 帧与末帧差 **42926 像素**，差异框 `x 40–441 / y 39–123` 正好是标题条 box 加上
+slideIn 的残余位移。改用 `selectComposition({inputProps: still})` 重新计算后归零
+（mean 0.072、差 >8 的像素 **0**）。这条与 ADR-18 是同一个教训：**能自动判失败的东西，
+必须对真实输入敏感**；「片段都在 + 任务成功」对这个缺陷完全不敏感。
+
+**留痕链路**（降级不报错，所以必须能从外部查到）：
+
+```
+render.mjs stdout {"type":"degraded","page":1,"code":"page_render_failed"}
+  → RemotionBackend.exec 收集成 RenderReport.Degraded
+  → Service 写进 job，JobStatus.degradedPages（HTTP 与进程内共用一个构造点 statusOf）
+  → app.RenderAnimation 记一条 warn：animation segment degraded to still (page=1, reason=…)
+```
+
+`page_skipped` 是第二道兜底：静态重试也失败时该页没有片段，上游仍按 ADR-23 换静态段。
+所以下沉不是替换 ADR-23，而是让它在正常情况下不再被触发。
+
+`Backend.Render` 因此改成返回 `(RenderReport, error)`。没有做成「可选接口」是因为
+降级信息本来就是渲染结果的一部分；两条调用路径（有报告/无报告）只会让 service 里多一个
+类型分支，而 stub / 测试替身本来就要实现同一个契约。
+
+验收（容器内，`ppts/renderer:dev` + 当轮二进制）：
+
+| 情形 | 输出 | 帧比对 |
+|---|---|---|
+| 不注入 | `degraded=0` | — |
+| 注入第 0 页 | `degraded=1` | — |
+| 注入第 1 页 | `degraded=1`，两段均 1.500s / 45 帧 | 降级页 f8 vs f42：mean 0.072、>8 像素 0；动画页 f0 vs f42：mean 25.19、96000 像素 |

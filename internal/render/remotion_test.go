@@ -183,7 +183,7 @@ func TestStageLogsNoisyPatch(t *testing.T) {
 func TestRemotionBackendRequiresScript(t *testing.T) {
 	t.Setenv("PPTS_RENDERER_SCRIPT", "")
 	b := &RemotionBackend{}
-	err := b.Render(context.Background(), onePagePlan("pages/p.png", nil), t.TempDir(), nil)
+	_, err := b.Render(context.Background(), onePagePlan("pages/p.png", nil), t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "PPTS_RENDERER_SCRIPT") {
 		t.Fatalf("want script config error, got %v", err)
 	}
@@ -201,7 +201,7 @@ func TestRemotionBackendReportsMissingNode(t *testing.T) {
 		NodeBin: filepath.Join(dir, "definitely-not-node"),
 		Timeout: 5 * time.Second,
 	}
-	err := b.Render(context.Background(), onePagePlan("pages/p.png", nil), dir, nil)
+	_, err := b.Render(context.Background(), onePagePlan("pages/p.png", nil), dir, nil)
 	if err == nil || !strings.Contains(err.Error(), "start renderer") {
 		t.Fatalf("want start failure, got %v", err)
 	}

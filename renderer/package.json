@@ -5,7 +5,8 @@
   "description": "ppts 动画渲染后端（Remotion）：消费 CompiledTimeline，产出逐页 H.264 片段",
   "scripts": {
     "render": "node render.mjs",
-    "studio": "remotion studio src/index.tsx"
+    "studio": "remotion studio src/index.tsx",
+    "test": "node --experimental-strip-types --test degrade-check.mjs"
   },
   "dependencies": {
     "@remotion/bundler": "4.0.539",

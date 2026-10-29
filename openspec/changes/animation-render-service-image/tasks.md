@@ -31,7 +31,17 @@
 - [x] 3.4 `cmd/renderer` 支持 `-backend remotion`、`-renderer-script`、`-chrome`、`-render-timeout`
 - [x] 3.5 `-selftest`：2 页固定样例走完整链路，失败非零退出；stub backend 明确拒绝
 - [x] 3.6 单测：补洞语义、不修改调用方计划、噪声判定、脚本缺失/Node 缺失的错误信息、路径逃逸、MP4 容器校验
-- [ ] 3.7 单页失败只降级该页（当前整次渲染失败）：需 M3 的降级矩阵接线后才有意义
+- [x] 3.7 单页失败只降级该页（当前整次渲染失败）：需 M3 的降级矩阵接线后才有意义
+      —— 2026-10-29 落地（ADR-24）。执行位置下沉到渲染服务：`render.mjs` 捕获单页失败后
+      用 `stillTimeline` 冻结该页（把每条 clip 压成零长 → 任意帧取 `to` 值，即末帧），
+      重新 `selectComposition` 后重渲一次；成功则 `code=page_render_failed`，仍失败则
+      `page_skipped`（上游按 ADR-23 换静态段，成为第二道兜底）。
+      `Backend.Render` 改为返回 `(RenderReport, error)`，降级页经 `JobStatus.degradedPages`
+      传到 `app.RenderAnimation` 记 warn。
+      验收（容器内）：不注入 `degraded=0`；注入第 0/1 页 `degraded=1` 且两段均 1.500s/45 帧；
+      帧比对——降级页 f8 vs f42 mean 0.072 / >8 像素 0，动画页 f0 vs f42 mean 25.19 / 96000 像素。
+      **踩坑**：只换 `inputProps` 不换 `composition` 会静默重渲原动画（42926 像素差异，
+      任务仍 succeeded），必须 `selectComposition({inputProps: still})` 重新计算。
 - [x] 3.8 `clip.startMs` 与触发锚点相加（ADR-10）：此前 `startMs` 被静默丢弃，错落编排全部塌缩到 0ms
 - [x] 3.9 嵌套元素按层出图（ADR-9）：`BuildLayerAssets` 只抹「被本层包住的子元素」，填色取自原图；IR 增加可选 `layer.image`，合成器直出
 - [x] 3.10 失败/取消不再毒化 `planHash`（ADR-11）：此前终态非成功仍占着 `byHash`，同一份计划失败一次就永远渲染不出来；取消立刻释放，重试分配新 jobId + 新目录

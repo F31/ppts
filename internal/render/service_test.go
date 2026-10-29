@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,20 +22,28 @@ type countingBackend struct {
 	mu    sync.Mutex
 	calls int
 	fail  error
+	// degraded 模拟「某几页被换成静态画面」：片段仍在，只是没有动画。
+	degraded []PageDegradation
 }
 
 func (b *countingBackend) Name() string { return "counting" }
 
 func (b *countingBackend) Render(ctx context.Context, plan *Timeline, dir string,
-	progress func(done, total int)) error {
+	progress func(done, total int)) (RenderReport, error) {
 	b.mu.Lock()
 	b.calls++
 	fail := b.fail
+	degraded := b.degraded
 	b.mu.Unlock()
 	if fail != nil {
-		return fail
+		return RenderReport{}, fail
 	}
-	return (&StubBackend{DelayPerPage: b.delay}).Render(ctx, plan, dir, progress)
+	report, err := (&StubBackend{DelayPerPage: b.delay}).Render(ctx, plan, dir, progress)
+	if err != nil {
+		return report, err
+	}
+	report.Degraded = degraded
+	return report, nil
 }
 
 func (b *countingBackend) Calls() int {
@@ -74,6 +83,58 @@ func TestSubmitRendersAndListsArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, id, "segment_000.mp4.stub")); err != nil {
 		t.Fatalf("产物未落盘: %v", err)
+	}
+}
+
+// TestDegradedPagesReachClient 固定 tasks 3.7 的可观测性：渲染器把某页换成静态画面后，
+// 这个事实必须随 JobStatus 一路传到客户端。否则「这页为什么没动画」在任何一层都查不到——
+// 任务状态是 succeeded、片段数量也对，只有画面不劲。
+func TestDegradedPagesReachClient(t *testing.T) {
+	be := &countingBackend{degraded: []PageDegradation{
+		{Page: 1, Code: DegradationStill, Message: "gpu process crashed"},
+	}}
+	svc, _ := newTestService(t, be)
+	id, err := svc.Submit(validPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, svc, id)
+	if st.State != StateSucceeded {
+		t.Fatalf("state = %s: 单页降级不该让任务失败", st.State)
+	}
+	if !st.Degraded || len(st.DegradedPages) != 1 {
+		t.Fatalf("degraded = %v, pages = %v", st.Degraded, st.DegradedPages)
+	}
+	if got := st.DegradedPages[0]; got.Page != 1 || got.Code != DegradationStill || got.Message == "" {
+		t.Fatalf("降级信息不完整: %+v", got)
+	}
+
+	// JSON 字段名是跨进程契约，单独钉住：客户端按 degradedPages 解析，
+	// 改名会让「降级」静默消失（omitempty 下不报错，就是不出现）。
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"degradedPages"`) || !strings.Contains(string(raw), `"page_render_failed"`) {
+		t.Fatalf("JobStatus JSON 缺少降级字段: %s", raw)
+	}
+}
+
+// TestDegradedPagesClearedOnFailure 固定「失败的任务不保留逐页降级」：
+// 整片作废时逐页信息没有意义，留着会让调用方以为部分页面成了。
+func TestDegradedPagesClearedOnFailure(t *testing.T) {
+	be := &countingBackend{fail: errors.New("chrome died")}
+	svc, _ := newTestService(t, be)
+	id, err := svc.Submit(validPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := waitState(t, svc, id)
+	if st.State != StateFailed {
+		t.Fatalf("state = %s", st.State)
+	}
+	if st.Degraded || len(st.DegradedPages) != 0 {
+		t.Fatalf("失败任务不该带降级页: %+v", st.DegradedPages)
 	}
 }
 

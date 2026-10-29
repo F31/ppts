@@ -165,6 +165,22 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		return nil, fmt.Errorf("animation: prepare work dir: %w", err)
 	}
+	// 服务端把某页换成了静态画面（tasks 3.7）：片段仍然齐全、时长照旧，
+	// 用户拿到的是「这页没有动画」而不是错误。这类降级只发生在渲染器内部，
+	// 不记下来就没有任何地方能解释「为什么这页没动」。
+	//
+	// page_skipped 刻意不在这里记：那一页没有片段，下面的 Missing 循环会再记一条，
+	// 两条日志说同一个问题只会让排查时找不到主线。
+	for _, d := range st.DegradedPages {
+		if d.Code != render.DegradationStill {
+			continue
+		}
+		reason := d.Message
+		if reason == "" {
+			reason = "page render failed"
+		}
+		h.logAnimationDegrade(jobID, d.Page, reason)
+	}
 	present := make(map[string]struct{}, len(st.Artifacts))
 	for _, a := range st.Artifacts {
 		present[a] = struct{}{}

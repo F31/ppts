@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,14 +23,16 @@ type animationBackend struct {
 	fail error
 	// body 是每页片段的内容。用可辨识的字节，验证下载到的是**这一页**而不是上一页。
 	body func(i int) []byte
+	// degraded 模拟渲染服务把某几页换成了静态画面：片段仍在，但该页没动画。
+	degraded []render.PageDegradation
 }
 
 func (b *animationBackend) Name() string { return "animation-test" }
 
 func (b *animationBackend) Render(ctx context.Context, plan *render.Timeline, dir string,
-	progress func(done, total int)) error {
+	progress func(done, total int)) (render.RenderReport, error) {
 	if b.fail != nil {
-		return b.fail
+		return render.RenderReport{}, b.fail
 	}
 	for i := range plan.Pages {
 		if b.skip[i] {
@@ -39,11 +43,11 @@ func (b *animationBackend) Render(ctx context.Context, plan *render.Timeline, di
 			body = b.body(i)
 		}
 		if err := os.WriteFile(filepath.Join(dir, render.SegmentName(i)), body, 0o640); err != nil {
-			return err
+			return render.RenderReport{}, err
 		}
 		progress(i+1, len(plan.Pages))
 	}
-	return nil
+	return render.RenderReport{Degraded: b.degraded}, nil
 }
 
 // newAnimationHandler 起一个真实的渲染服务（HTTP 契约 + 客户端），返回挂好动画通道的导出 handler。
@@ -126,6 +130,49 @@ func TestRenderAnimationDownloadsEverySegment(t *testing.T) {
 	}
 }
 
+// TestRenderAnimationTreatsServerDegradedPageAsPresent 固定 tasks 3.7 的上游语义：
+// 渲染器把某页换成静态画面后仍然产出片段，编排层不能把它当成「缺页」再补一次——
+// 那会把服务端刚出的静态段丢掉，换成另一份静态图，两边的画面还不一定一致。
+func TestRenderAnimationTreatsServerDegradedPageAsPresent(t *testing.T) {
+	handler, _ := newAnimationHandler(t, &animationBackend{
+		degraded: []render.PageDegradation{{Page: 1, Code: render.DegradationStill, Message: "gpu process crashed"}},
+	})
+
+	got, err := handler.RenderAnimation(context.Background(), testAnimationRequest(3), t.TempDir())
+	if err != nil {
+		t.Fatalf("单页降级不该让编排失败: %v", err)
+	}
+	if len(got.Missing) != 0 {
+		t.Fatalf("服务端已出的静态段被当成缺页: %v", got.Missing)
+	}
+	if got.Segments[1] == "" {
+		t.Fatal("降级页的片段没有下载：用户会拿到一个空洞")
+	}
+}
+
+// TestRenderAnimationLogsServerDegradedPage 固定留痕：降级只表现为「这页没动画」，
+// 不留日志的话，用户反馈「这页不劲」时没有任何线索指向渲染器内部失败。
+func TestRenderAnimationLogsServerDegradedPage(t *testing.T) {
+	var buf bytes.Buffer
+	handler, _ := newAnimationHandler(t, &animationBackend{
+		degraded: []render.PageDegradation{{Page: 1, Code: render.DegradationStill, Message: "gpu process crashed"}},
+	})
+	handler.logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+	if _, err := handler.RenderAnimation(context.Background(), testAnimationRequest(3), t.TempDir()); err != nil {
+		t.Fatalf("RenderAnimation: %v", err)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "degraded to still") || !strings.Contains(logged, "page=1") {
+		t.Fatalf("降级页没有留痕: %s", logged)
+	}
+	if !strings.Contains(logged, "gpu process crashed") {
+		t.Fatalf("日志丢了渲染器给的原因: %s", logged)
+	}
+}
+
+// TestRenderAnimationKeepsGoingWhenOneSegmentIsMissing 固定 ADR-23：服务端成功但缺某页时，
+// 编排层换静态段继续，不整片失败。
 func TestRenderAnimationKeepsGoingWhenOneSegmentIsMissing(t *testing.T) {
 	handler, _ := newAnimationHandler(t, &animationBackend{skip: map[int]bool{1: true}})
 
