@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
@@ -163,10 +164,7 @@ func runWorker() error {
 			} else {
 				exportHandler = exportHandler.WithAnimation(client,
 					time.Duration(envInt("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
-				// 输入组装器还没接（底图投递 tasks 2.0、元素几何 tasks 2.0b），
-				// 所以当前即使打开开关，导出仍走静态路径。明说一句，免得「开了没效果」变成谜。
-				logger.Info("animation: enabled, but page assembly is not wired yet; exports stay static",
-					"renderer", base)
+				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation)
 			}
 		} else {
 			logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; staying static")
@@ -388,6 +386,37 @@ func subtitleFontName() string {
 }
 
 // envInt 读取整数环境变量，非法或缺失时返回默认值。
+// wireAnimationPages 接入「页图投递 + 规格取回」（tasks 2.0）。
+//
+// 单机部署用本地共享目录：导出侧把页图写进 PPTS_ANIMATION_ASSET_DIR，渲染容器把**同一个卷**
+// 挂成自己的 -assets-dir。多机 / S3 部署只需要换一个 AssetPublisher 实现（把字节送到渲染服务
+// 能读的地方，返回同一个相对键），这条接线与导出主路径都不用改。
+//
+// 任何一步缺失都退化为静态导出而不是硬失败：渲染服务是可选依赖，没有它导出必须照常成功。
+func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store) *app.ExportHandler {
+	dir := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ASSET_DIR"))
+	if dir == "" {
+		logger.Warn("animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static",
+			"renderer", rendererURL)
+		return h
+	}
+	publisher, err := app.NewLocalAssetPublisher(dir)
+	if err != nil {
+		logger.Warn("animation: asset publisher disabled; exports stay static", "error", err)
+		return h
+	}
+	if specs == nil {
+		logger.Warn("animation: animation spec store is unavailable; exports stay static")
+		return h
+	}
+	h = h.WithAnimationPages(app.NewAnimationPageAssembler(publisher, specs).WithLogger(logger).Build)
+	// element_geometry=false 不是降级，而是当前的能力边界：元素几何还没有持久化来源（tasks 2.0b），
+	// 元素级轨道会被编译成 anchor_missing 诊断并跳过；整页轨道（转场、整页推拉/淡入）正常生效。
+	logger.Info("animation: page assembly wired via shared asset dir",
+		"renderer", rendererURL, "asset_dir", publisher.Root(), "element_geometry", false)
+	return h
+}
+
 func envInt(name string, fallback int) int {
 	raw := os.Getenv(name)
 	if raw == "" {

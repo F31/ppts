@@ -677,7 +677,7 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	}
 	// 动画通道（ADR-21）：开关打开、快照里有逐页规格、且能组装出输入，三者同时成立才探测。
 	// 任一不成立都直接走下面的静态编码 —— 静态路径不因这条分支改变任何行为。
-	if av := h.animatedVideo(ctx, snapshot, bundle, pagePNGs, pageDurations, audioTmpName, subtitleASS); av != nil {
+	if av := h.animatedVideo(ctx, job, snapshot, bundle, pagePNGs, pageDurations, audioTmpName, subtitleASS); av != nil {
 		h.logAnimationPages(av, len(pagePNGs))
 		return av.File, nil
 	}

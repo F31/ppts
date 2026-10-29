@@ -73,10 +73,14 @@ type AnimationRender struct {
 // AnimationPageInput 是组装动画输入时可用的材料。
 type AnimationPageInput struct {
 	Snapshot ExportSnapshot
+	// TenantID/ProjectID 是规格的隔离维度。有了它们，组装器才能按 (租户, 项目, 页,
+	// 语言, 源版本) 取回规格本体——快照里只有规格身份，没有内容。
+	TenantID  string
+	ProjectID string
 	// Slides 是时间轴的逐页区间，页序即成片页序。
 	Slides []media.SlideCue
-	// PagePNGs 与 Slides 同序，是已读入内存的页面图。
-	// 把它们送进渲染服务的资产根是部署问题（tasks 2.0）——投递方式不在这层决定。
+	// PagePNGs 与 Slides 同序，是已读入内存的页面 PNG。
+	// 把它们送进渲染服务的资产根由 AssetPublisher 负责（tasks 2.0）。
 	PagePNGs [][]byte
 }
 

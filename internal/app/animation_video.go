@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/pipeline"
 )
 
 // 本文件把「逐页动画片段」合成为一张 MP4，并处理两件必须由这一层负责的事：
@@ -52,8 +53,9 @@ type AnimatedVideo struct {
 // 三个前置缺一不可：渲染客户端（开关）、快照里的逐页规格（用户确实要动画）、
 // 组装器（能把底图与几何交出去）。缺任何一个都直接回静态路径，
 // 不做「先探一下服务是否活着」这种事——探测本身也是对外部服务的依赖。
-func (h *ExportHandler) animatedVideo(ctx context.Context, snapshot ExportSnapshot, bundle *TimelineAsset,
-	pagePNGs [][]byte, pageDurations []int64, audioPath string, subtitleASS []byte) *AnimatedVideo {
+func (h *ExportHandler) animatedVideo(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
+	bundle *TimelineAsset, pagePNGs [][]byte, pageDurations []int64,
+	audioPath string, subtitleASS []byte) *AnimatedVideo {
 	if h.renderer == nil || h.animationPages == nil {
 		return nil
 	}
@@ -64,7 +66,11 @@ func (h *ExportHandler) animatedVideo(ctx context.Context, snapshot ExportSnapsh
 		return nil
 	}
 	req, err := h.animationPages(ctx, AnimationPageInput{
-		Snapshot: snapshot, Slides: bundle.Timeline.Slides, PagePNGs: pagePNGs,
+		Snapshot:  snapshot,
+		TenantID:  job.TenantID,
+		ProjectID: job.ProjectID,
+		Slides:    bundle.Timeline.Slides,
+		PagePNGs:  pagePNGs,
 	})
 	if err != nil {
 		h.logAnimationSkip("animation: assemble pages: " + err.Error())
