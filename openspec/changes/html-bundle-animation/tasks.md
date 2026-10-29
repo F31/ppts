@@ -19,8 +19,10 @@
 - [x] 2.2 `shared/motion-check.mjs`：8 条语义用例（opacity 相乘 / translate 相加 / scale 相乘 /
       clip 顺序无关 / 零长 clip 起点后恒 1（含起点前仍为 0）/ 未知属性忽略 / 贝塞尔端点与单调性 /
       帧数口径）。`node --test` 8/8 通过
-- [ ] 2.3 两侧构建产物确认引用同一份（渲染器 `tsc` 与 web `vite build:share` 各跑一遍），
-      并删掉任何残留的重复实现 —— 待组 4 播放器真正 import 后再验证
+- [x] 2.3 两侧构建产物确认引用同一份：`renderer` 的 `degrade-check.mjs` 与 `web` 的
+      `animation-check.mjs` 都 import `shared/motion.ts`，`vite build:share` 产物从 6.87 KB
+      增到 11.80 KB（多出来的是完整插值代码，而不是另一份手写实现）；重跑构建后
+      `internal/share/assets/` 零漂移（证明组 2 是纯搬家）
 
 ## 3. Go 侧分层出图与打包
 
@@ -40,13 +42,26 @@
 
 ## 4. 播放器动画层
 
-- [ ] 4.1 编译：`clips` → WAAPI keyframes（属性展开、重叠合并采样、缓动序列化），
-      编译结果缓存在内存，不写回清单
-- [ ] 4.2 回放：`play/pause/seek` 与 WAAPI 同步；seek 先批量 `pause()` 设 `currentTime` 再按状态 `play()`
-- [ ] 4.3 切页时 `cancel()` 上一页全部 animation（不是 `pause()`——留着会占合成层）
-- [ ] 4.4 时钟跟 `audio.currentTime`，不引入 rAF 自走
-- [ ] 4.5 无 WAAPI 降级：删掉 `Element.animate` 后仍能播（静态切页），不抛错
-- [ ] 4.6 `prefers-reduced-motion: reduce`：保留 opacity、去掉位移缩放、**时长不变**（否则音画错位）
+- [x] 4.1 编译：`web/src/sharePlayer/animation.ts` 的 `compileKeyframes` 把 `clips` 采样成
+      WAAPI keyframes（步长 1000/fps），只覆盖 clip 活动区间 + 整页起终点，offset 严格递增
+      （重复 offset 会让画面跳一下）。求值直接调 `shared/motion.ts`，播放器内没有第二份插值
+- [x] 4.2 回放：WAAPI 一律 `pause()` 后设 `currentTime`（`seekLayer`），从不 `play()`——
+      播放推进由 <audio> 负责，动画只是被"拖动"，因此不存在两套时钟抢着走的问题；
+      拖动进度条走 `seek()` → `render()` → `seekLayer`，中途不改变 animation 的播放状态
+- [x] 4.3 切页 `releaseLayers()`：`cancel()` + `remove()`。只 `pause()` 会把层留在合成层上，
+      20 页后是几百个对象，且旧层图片仍会盖住新页
+- [x] 4.4 时钟跟 `audio.currentTime`：`render(us)` 里 `syncLayers(us)`，rAF 只读时钟不累加
+- [x] 4.5 无 WAAPI 降级已实测：`Element.prototype.animate` 置 `undefined` 后，4 个层的计算样式
+      全是 `transform: none; opacity: 1`（终态可见，不是停在 opacity:0 的空白页）；
+      该页在 clip-mid 的截图与 MP4 末帧 SSIM = **0.99953**
+- [x] 4.6 `prefers-reduced-motion: reduce` 已实测（`--force-prefers-reduced-motion`）：
+      同一时刻默认态首层为 `translateY 0.4757px`，降级态为恒等；不透明度两态都是
+      **0.960779 / 0.814493**，完全相同 —— 位移去掉、时长不变
+- [x] 4.7 页间转场（spec 要求，原任务清单漏列）：舞台改双面板，`prev` 面板取前一页末帧、
+      `cur` 面板取当前页，三种类型与 `renderer/src/Timeline.tsx` 的 `PageEntry` 逐条对齐
+      （fade 双向透明度 / slide 只推入 / zoom 淡入 + 1.06 倍收回，未知类型按 fade）。
+      **这一项是页首帧从 0.85–0.91 拉到 0.998 的唯一原因**：MP4 不是"只换图"，
+      而是"前一页末帧 + 当前页交叉"，DOM 只换图必然对不上
 
 ## 5. 门禁工具与验收
 

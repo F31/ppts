@@ -47,6 +47,19 @@ body.ppts-share-page {
   overflow: hidden;
 }
 
+/* 两个面板叠在舞台上：cur 在上、prev 只用于转场（与 MP4 的 PageEntry 同结构）。
+   transform 在转场时由脚本写入，这里不预设，避免与内联值打架。 */
+.ppts-panel {
+  position: absolute;
+  inset: 0;
+  transform-origin: center center;
+  will-change: transform, opacity;
+}
+
+.ppts-panel[hidden] {
+  display: none;
+}
+
 .ppts-slide {
   display: block;
   width: 100%;
@@ -228,4 +241,29 @@ body.ppts-share-page {
   .ppts-time {
     display: none;
   }
+}
+
+/* ---- 动画层（M6-2）----
+   层是按画布像素的百分比定位的，不参与布局流；pointer-events 关掉，
+   避免图层挡住封面按钮与字幕的点击。 */
+.ppts-layers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.ppts-layer {
+  position: absolute;
+  /* 位移与不透明度走合成层；不写 translateZ 之类的小技巧，
+     因为 WAAPI 已经在合成层上跑，多一层变换反而会引入亚像素偏移。 */
+  will-change: transform, opacity;
+}
+
+.ppts-layer-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* 层图由后端按 box 裁切，尺寸与 box 相等，所以 fill 不会失真——
+     若这里用 contain，1px 的舍入会露出底板。 */
+  object-fit: fill;
 }

@@ -8,9 +8,20 @@
 //   - 权威时钟是 <audio>.currentTime；rAF 只负责把时钟读出来画到 DOM，绝不自己累加时间。
 import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } from '../playerClock';
 import type { SlideCue, SubtitleCue, Timeline } from '../types';
+import { buildLayerNodes, releaseLayers, seekLayer } from './animation';
+import type { CompiledLayer, ManifestLayer } from './animation';
 import './player.css';
 
-type ShareSlide = SlideCue & { image: string };
+/** 播放器认识的清单版本。读到更高版本必须拒绝——猜着播比不播更糟。 */
+const MAX_SCHEMA_VERSION = 2;
+
+type ShareSlide = SlideCue & {
+  image: string;
+  /** image 是否为挖空底板（元素位置已被填平，由 layers 盖回去）。 */
+  plate?: boolean;
+  transition?: { type: string; durationMs?: number };
+  layers?: ManifestLayer[];
+};
 
 type ShareAudio = {
   segmentId: string;
@@ -58,10 +69,20 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+/** 与 renderer/src/Timeline.tsx 同一条曲线：转场进度不是线性的，线性会"起步发木"。 */
+const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
+
 function mount(): void {
   const manifest = window.__PPT_MANIFEST__;
   const host = document.getElementById('ppts-share-root');
   if (!host || !manifest || !Array.isArray(manifest.slides) || manifest.slides.length === 0) {
+    return;
+  }
+
+  // 清单版本高于本播放器认识的版本时必须明确拒绝：v2 的 image 语义是「挖空底板」，
+  // 按 v1 的逻辑播会露出一块纯色疤。宁可说"需要更新的播放器"，也不要静默播错。
+  if (typeof manifest.schemaVersion === 'number' && manifest.schemaVersion > MAX_SCHEMA_VERSION) {
+    host.textContent = '该成品包由更新版本的播放器生成，请重新导出或更新播放器后再打开。';
     return;
   }
 
@@ -81,10 +102,25 @@ function mount(): void {
   // ---- DOM 骨架（不使用 innerHTML，PPT 文本一律走 textContent 转义）----
   const root = el('div', 'ppts-share');
   const stage = el('div', 'ppts-stage');
-  const image = el('img', 'ppts-slide');
-  image.alt = title;
-  image.decoding = 'async';
+  // 舞台按成片宽高比铺，层的百分比定位才是准确的（写死 16/9 会让非 16:9 的页错位）。
+  stage.style.aspectRatio = `${manifest.video.width} / ${manifest.video.height}`;
+  // 两个面板：当前页与「上一页的末帧」。转场时两者叠加，与渲染器的 PageEntry
+  // 同结构（前一页取末帧 + 当前页交叉），否则页首那一帧两端必然对不上。
+  const makePanel = (): { panel: HTMLElement; img: HTMLImageElement; layers: HTMLElement } => {
+    const panel = el('div', 'ppts-panel');
+    const img = el('img', 'ppts-slide');
+    img.alt = title;
+    img.decoding = 'async';
+    const layers = el('div', 'ppts-layers');
+    panel.append(img, layers);
+    return { panel, img, layers };
+  };
+  const prev = makePanel();
+  const cur = makePanel();
+  const layersBox = cur.layers;
+  const image = cur.img;
   image.src = manifest.slides[0].image;
+  prev.panel.hidden = true;
 
   const cover = el('button', 'ppts-cover');
   cover.type = 'button';
@@ -101,7 +137,7 @@ function mount(): void {
   const unspoken = el('span', 'ppts-unspoken');
   subtitleBox.append(spoken, unspoken);
 
-  stage.append(image, cover, subtitleBox);
+  stage.append(prev.panel, cur.panel, cover, subtitleBox);
 
   const controls = el('div', 'ppts-controls');
   const prevBtn = el('button', 'ppts-btn', '\u2039');
@@ -187,6 +223,118 @@ function mount(): void {
     return clamp(seg.startUs + current, seg.startUs, seg.endUs);
   };
 
+  // ---- 动画层 ----
+  const videoW = manifest.video.width > 0 ? manifest.video.width : 1920;
+  const videoH = manifest.video.height > 0 ? manifest.video.height : 1080;
+  // 降级只去掉位移与缩放，保留 opacity，且**时长不变**——缩短时长会让动画提前结束，
+  // 与音频、字幕错位，那比"少动一点"严重得多。
+  const reduceMotion =
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let activeLayers: CompiledLayer[] = [];
+  let activeSlideStartUs = 0;
+  // 转场中的「前一页末帧」。MP4 的 PageEntry 不是只换图，而是把前一页的最后一帧
+  // 垫在当前页下面做交叉；DOM 若只换图，页首那一帧必然对不上（实测 fade 页首
+  // SSIM 0.85–0.91，其余时点 ≥0.9936）。
+  let prevLayers: CompiledLayer[] = [];
+  let transitionKind = 'none';
+  let transitionMs = 0;
+
+  // --ppts-k = 1 画布像素等于多少实际像素。层的位移在清单里是画布像素，
+  // 舞台按比例缩放，所以关键帧里的 translate 要乘这个系数（见 animation.ts）。
+  const syncStageScale = (): void => {
+    const width = stage.clientWidth;
+    if (width > 0 && videoW > 0) stage.style.setProperty('--ppts-k', String(width / videoW));
+  };
+  syncStageScale();
+  // 窗口尺寸变了要重算 --ppts-k，否则层位移会按旧比例缩放（画面"错位一点点"，
+  // 而这种错位在小窗里几乎看不出来）。
+  window.addEventListener('resize', syncStageScale);
+
+  const rebuildLayers = (slide: ShareSlide): void => {
+    // 切页必须 cancel：留着 pause 的 animation 会继续占合成层，20 页之后是几百个对象，
+    // 而且旧层的图片还挂在 DOM 上会盖住新页。
+    releaseLayers(activeLayers);
+    activeSlideStartUs = slide.startUs;
+    const layers = slide.layers ?? [];
+    if (layers.length === 0) return;
+    activeLayers = buildLayerNodes(layersBox, layers, videoW, videoH, {
+      fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
+      pageDurationMs: (slide.endUs - slide.startUs) / 1000,
+      reduceMotion
+    });
+  };
+
+  const syncLayers = (us: number): void => {
+    if (activeLayers.length === 0) return;
+    const localMs = (us - activeSlideStartUs) / 1000;
+    for (const layer of activeLayers) seekLayer(layer, localMs);
+  };
+
+  const clearPrev = (): void => {
+    releaseLayers(prevLayers);
+    prev.panel.hidden = true;
+    prev.panel.style.opacity = '1';
+    prev.panel.style.transform = 'none';
+    transitionKind = 'none';
+    transitionMs = 0;
+  };
+
+  /** 切页时把「前一页的末帧」摆好；没有转场就保持隐藏，不白建图层。 */
+  const prepareTransition = (before: ShareSlide | undefined, slide: ShareSlide): void => {
+    clearPrev();
+    const kind = slide.transition?.type ?? 'none';
+    const ms = slide.transition?.durationMs ?? 0;
+    if (!before || kind === 'none' || ms <= 0) return;
+    prev.img.src = before.image;
+    prev.panel.hidden = false;
+    cur.panel.style.opacity = '1';
+    cur.panel.style.transform = 'none';
+    transitionKind = kind;
+    transitionMs = ms;
+    const layers = before.layers ?? [];
+    if (layers.length === 0) return;
+    const pageMs = (before.endUs - before.startUs) / 1000;
+    prevLayers = buildLayerNodes(prev.layers, layers, videoW, videoH, {
+      fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
+      pageDurationMs: pageMs,
+      reduceMotion
+    });
+    // 前一页取的是它自己的末帧（与 MP4 的 PageView tMs=durationMs 一致）：
+    // 若该页有出场动画，末帧才是正确画面，不能拿底板顶替。
+    for (const layer of prevLayers) seekLayer(layer, pageMs);
+  };
+
+  /**
+   * 按转场进度摆两个面板。三种类型与 renderer/src/Timeline.tsx 逐条对齐：
+   * fade 双向透明度、slide 只推入、zoom 淡入 + 轻微放大，未知类型按 fade。
+   */
+  const applyTransition = (slide: ShareSlide, us: number): void => {
+    if (transitionMs <= 0) return;
+    const tMs = (us - slide.startUs) / 1000;
+    if (tMs >= transitionMs) {
+      clearPrev();
+      cur.panel.style.opacity = '1';
+      cur.panel.style.transform = 'none';
+      return;
+    }
+    const p = easeOutCubic(clamp(tMs / transitionMs, 0, 1));
+    switch (transitionKind) {
+      case 'slide':
+        // 位移量是画布像素，舞台缩放过，同样要乘 --ppts-k。
+        cur.panel.style.transform = `translateX(calc(${Math.round((1 - p) * videoW)}px * var(--ppts-k, 1)))`;
+        break;
+      case 'zoom':
+        cur.panel.style.opacity = String(p);
+        cur.panel.style.transform = `scale(${1 + 0.06 * (1 - p)})`;
+        break;
+      default:
+        cur.panel.style.opacity = String(p);
+        prev.panel.style.opacity = String(1 - p);
+        break;
+    }
+  };
+
   // ---- 渲染 ----
   let lastSlideID = '';
   let lastCueIndex = -2;
@@ -227,14 +375,19 @@ function mount(): void {
     // timeline.slides 就是 manifest.slides（带 image），slideAt 的返回类型只描述时间字段。
     const slide = slideAt(timeline, us) as ShareSlide;
     if (slide.slideId !== lastSlideID) {
+      const index = manifest.slides.findIndex((item) => item.slideId === slide.slideId);
       image.src = slide.image;
       image.alt = title;
       lastSlideID = slide.slideId;
-      const index = manifest.slides.findIndex((item) => item.slideId === slide.slideId);
+      rebuildLayers(slide);
+      // 前一页取 index-1 而不是"上一次渲染的页"：拖动进度条跳页时，上一帧
+      // 停在哪与时间轴上的前驱无关，按前驱算才对得上成片。
+      prepareTransition(index > 0 ? manifest.slides[index - 1] : undefined, slide);
       pageLabel.textContent = `${index + 1} / ${manifest.slides.length}`;
       prevBtn.disabled = index <= 0;
       nextBtn.disabled = index < 0 || index >= manifest.slides.length - 1;
     }
+    applyTransition(slide, us);
     const ratio = progress(us, durationUs);
     const fill = Math.round(ratio * 1000);
     if (fill !== lastFill) {
@@ -243,6 +396,7 @@ function mount(): void {
       timeLabel.textContent = `${usecToClock(us)} / ${usecToClock(durationUs)}`;
       lastFill = fill;
     }
+    syncLayers(us);
     renderSubtitle(us);
   };
 

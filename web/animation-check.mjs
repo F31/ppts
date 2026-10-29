@@ -208,3 +208,94 @@ test('降级提示必须同时带上原因与任务号', () => {
   assert.match(msg, /jobId=job-42/, '不带任务号，用户要在任务中心猜是哪一条');
   assert.doesNotMatch(msg, /connection refused|10\.0\.0\.5/, '内网地址与 errno 不该出现在用户界面');
 });
+
+// ---- 成品包动画层：关键帧编译（M6-2）----
+//
+// 这里只测纯函数部分（compileKeyframes）。buildLayerNodes 需要 DOM 与 WAAPI，
+// 那部分靠浏览器验收，不在这里假装能测。
+const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+
+const slideInClip = (startMs, durationMs) => ({
+  clipId: 'c1',
+  effect: 'slideIn',
+  startMs,
+  durationMs,
+  easing: { x1: 0.22, y1: 1, x2: 0.36, y2: 1 },
+  props: [
+    { name: 'opacity', from: 0, to: 1 },
+    { name: 'translateY', from: 48, to: 0 }
+  ]
+});
+
+test('关键帧覆盖整页：首尾 offset 必须是 0 与 1', () => {
+  const frames = compileKeyframes([slideInClip(100, 700)], {
+    fps: 30,
+    pageDurationMs: 6000,
+    reduceMotion: false
+  });
+  assert.ok(frames, '700ms 的入场应该能编译出关键帧');
+  assert.equal(frames[0].offset, 0);
+  assert.equal(frames[frames.length - 1].offset, 1);
+  // 首帧是动画开始前的状态：不可见且偏移 48px（画布像素）。
+  assert.equal(frames[0].opacity, '0');
+  assert.match(frames[0].transform, /48/);
+  // 末帧是落位后：完全可见、无位移。
+  assert.equal(frames[frames.length - 1].opacity, '1');
+});
+
+test('offset 严格递增：重复 offset 会让画面跳一下', () => {
+  const frames = compileKeyframes([slideInClip(0, 900)], {
+    fps: 30,
+    pageDurationMs: 900,
+    reduceMotion: false
+  });
+  assert.ok(frames.length > 2);
+  for (let i = 1; i < frames.length; i++) {
+    assert.ok(
+      frames[i].offset > frames[i - 1].offset,
+      `offset 必须递增：${frames[i - 1].offset} -> ${frames[i].offset}`
+    );
+  }
+});
+
+test('采样步长等于成片帧率：帧时刻上的值与 MP4 同帧对齐', () => {
+  // 30fps → 33.33ms 一个采样点。700ms 的 clip 应产生约 21 个区间内采样点。
+  const frames = compileKeyframes([slideInClip(0, 700)], {
+    fps: 30,
+    pageDurationMs: 700,
+    reduceMotion: false
+  });
+  assert.ok(frames.length >= 20 && frames.length <= 25, `采样点数量异常: ${frames.length}`);
+});
+
+test('reduced-motion 只去掉位移与缩放，opacity 与时长不变', () => {
+  const normal = compileKeyframes([slideInClip(0, 700)], {
+    fps: 30,
+    pageDurationMs: 6000,
+    reduceMotion: false
+  });
+  const reduced = compileKeyframes([slideInClip(0, 700)], {
+    fps: 30,
+    pageDurationMs: 6000,
+    reduceMotion: true
+  });
+  // 时长（由 offset 与 pageDurationMs 决定）必须一致，否则音画错位。
+  assert.equal(reduced.length, normal.length);
+  assert.equal(reduced[0].offset, normal[0].offset);
+  // 位移被去掉，但淡入保留。
+  assert.equal(reduced[0].transform, 'translate(0, 0) scale(1, 1)');
+  assert.equal(reduced[0].opacity, normal[0].opacity);
+});
+
+test('没有 clip 的层不编译关键帧：静态元素不该占一条 animation', () => {
+  assert.equal(compileKeyframes([], { fps: 30, pageDurationMs: 6000, reduceMotion: false }), null);
+  // 零长 clip 也不该产出：它没有可播的时间区间（终态由元素初始样式负责）。
+  assert.equal(
+    compileKeyframes([{ ...slideInClip(0, 0), props: [] }], {
+      fps: 30,
+      pageDurationMs: 6000,
+      reduceMotion: false
+    }),
+    null
+  );
+});
