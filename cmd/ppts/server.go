@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/api"
+	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/messaging"
@@ -52,6 +53,37 @@ func animationProbeFromEnv(logger *slog.Logger) api.AnimationProbe {
 		return nil
 	}
 	return client
+}
+
+// animationPreviewFromEnv 构造单页预览的两个硬依赖：渲染客户端与页图投递。
+//
+// 缺任一就整块返回 nil（= 不注册预览路由）。预览刻意不允许"半开"：
+// 只配了渲染地址却没配资产目录时，提交能成功而 baseImage 永远找不到，
+// 用户看到的是"预览失败"而不是"这个部署没开预览"——前者会被当成 bug 反复重试。
+//
+// 会话预算（3s）在 handler 里，客户端超时给得比它宽：让 ctx 先到期，
+// 这样超时被归因为"这一页渲得慢"，而不是"渲染服务连不上"。
+func animationPreviewFromEnv(logger *slog.Logger) (*render.Client, app.AssetPublisher) {
+	if !envBool("PPTS_ANIMATION_ENABLED", false) {
+		return nil, nil
+	}
+	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
+	dir := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ASSET_DIR"))
+	if base == "" || dir == "" {
+		logger.Info("animation: preview disabled (needs both PPTS_RENDERER_URL and PPTS_ANIMATION_ASSET_DIR)")
+		return nil, nil
+	}
+	client, err := render.NewClient(render.ClientConfig{BaseURL: base, Timeout: 10 * time.Second, Retries: 1})
+	if err != nil {
+		logger.Warn("animation: preview disabled", "error", err)
+		return nil, nil
+	}
+	assets, err := app.NewLocalAssetPublisher(dir)
+	if err != nil {
+		logger.Warn("animation: preview disabled", "error", err)
+		return nil, nil
+	}
+	return client, assets
 }
 
 // runServer 启动 API + 前端控制台（原 cmd/api 的 run）。
@@ -106,6 +138,8 @@ func runServer() error {
 	scriptSources := stores.scriptSourceStore()
 	voiceSettings := stores.voiceSettingsStore()
 
+	previewRenderer, previewAssets := animationPreviewFromEnv(logger)
+
 	server := &http.Server{
 		Addr: addr,
 		Handler: observability.RequestLogger(
@@ -123,7 +157,8 @@ func runServer() error {
 						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
 						// 动画规格写路径：本地 profile 默认开启；生产需显式设置 PPTS_ANIMATION_ENABLED=true。
 						Animation: stores.animation, AnimationEnabled: stores.isSQLite() || os.Getenv("PPTS_ANIMATION_ENABLED") == "true",
-						AnimationProbe: animationProbeFromEnv(logger),
+						AnimationProbe:    animationProbeFromEnv(logger),
+						AnimationRenderer: previewRenderer, AnimationAssets: previewAssets,
 						JWTSecret: os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
 						Mailer:               mailer,
 						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",

@@ -26,12 +26,16 @@ export const MAX_ATTEMPTS = 3;
 export class ConnectError extends Error {
   readonly code: string;
   readonly retryAfterSeconds?: number;
+  // rule 是业务信封里的规则编号（如动画规格校验的 V3）。前端按编号取本地文案，
+  // 不依赖服务端那句话的措辞——文案改了不该让用户看到英文。
+  readonly rule?: string;
 
-  constructor(code: string, message: string, retryAfterSeconds?: number) {
+  constructor(code: string, message: string, retryAfterSeconds?: number, rule?: string) {
     super(message);
     this.name = 'ConnectError';
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
+    this.rule = rule;
   }
 }
 
@@ -70,10 +74,12 @@ function isSessionExpiredCode(code: string): boolean {
 export async function connectErrorFrom(response: Response, label: string): Promise<ConnectError> {
   let code = `http_${response.status}`;
   let message = `${label}: HTTP ${response.status}`;
+  let rule: string | undefined;
   try {
-    const envelope = (await response.json()) as { code?: string; message?: string };
+    const envelope = (await response.json()) as { code?: string; message?: string; rule?: string };
     if (envelope.code) code = envelope.code;
     if (envelope.message) message = envelope.message;
+    if (envelope.rule) rule = envelope.rule;
   } catch {
     // 非 JSON 错误体（如网关 HTML 错误页）：保留 http_<status> 与默认 message。
   }
@@ -85,7 +91,7 @@ export async function connectErrorFrom(response: Response, label: string): Promi
   const retryHeader = response.headers.get('Retry-After');
   const retrySeconds = retryHeader === null ? NaN : Number(retryHeader);
   return new ConnectError(code, message,
-    Number.isFinite(retrySeconds) && retrySeconds > 0 ? Math.ceil(retrySeconds) : undefined);
+    Number.isFinite(retrySeconds) && retrySeconds > 0 ? Math.ceil(retrySeconds) : undefined, rule);
 }
 
 export async function httpConnectError(response: Response, label: string): Promise<never> {

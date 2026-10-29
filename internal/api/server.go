@@ -29,6 +29,7 @@ import (
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/public"
+	"github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/upload"
 	"github.com/F31/ppts/internal/usage"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -75,9 +76,14 @@ type Options struct {
 	// nil = 该部署没有渲染服务，导出选项端点会明确返回 renderer_not_configured
 	// （不是"端点不存在"——前端要据此把选项置灰并说明原因，而不是当成接口 404）。
 	AnimationProbe AnimationProbe
-	Gateway          gateway.StoreResolver
-	ScriptSources    app.ScriptSourceStore
-	VoiceSettings    app.VoiceSettingsStore
+	// AnimationRenderer/AnimationAssets 是单页预览的两个硬依赖（渲染客户端与页图投递）。
+	// 任一为 nil 时不注册预览端点：预览要么完整可用，要么不存在——
+	// 半可用的预览会让用户以为"动效没生效"。
+	AnimationRenderer *render.Client
+	AnimationAssets   app.AssetPublisher
+	Gateway           gateway.StoreResolver
+	ScriptSources     app.ScriptSourceStore
+	VoiceSettings     app.VoiceSettingsStore
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
@@ -207,7 +213,12 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		NewContextRuleHandler(opt.ContextRule).Register(mux, auth)
 	}
 	// 动画规格（M1）：REST，与 /api/context-rules 同形；store 为 nil 时整个端点不注册。
-	NewAnimationHandler(opt.Animation, newAnimationResolver(projects, objects, scripts), opt.AnimationEnabled).Register(mux, auth)
+	// 规格读写与预览共用同一个 resolver：页时长与元素分类只能有一份口径，
+	// 否则"保存时校验用的时长"与"预览渲出的时长"可能是两个数。
+	animationPages := newAnimationResolver(projects, objects, scripts, jobs)
+	NewAnimationHandler(opt.Animation, animationPages, opt.AnimationEnabled).Register(mux, auth)
+	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
+	NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages).Register(mux, auth)
 	// 导出选项探测（3.4）：回答"这次导出能不能出动画"以及逐页规格身份。
 	// 与动画规格端点分开挂载：写路径关闭（AnimationEnabled=false）时导出仍应能判定不可用并说明原因，
 	// 所以这里不因 enabled=false 就不注册路由。

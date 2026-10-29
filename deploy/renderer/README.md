@@ -196,13 +196,16 @@ docker run --rm --network none --read-only \
 |---|---|---|
 | `PPTS_ANIMATION_ENABLED=true` | 导出 worker **和 api** | 总开关。不开就完全不建客户端、不探测 |
 | `PPTS_RENDERER_URL` | 导出 worker **和 api** | 渲染服务地址，例如 `http://renderer:8090` |
-| `PPTS_ANIMATION_ASSET_DIR` | 导出 worker | **导出侧看到的**资产根目录（写）；同一个卷在渲染容器里挂成 `-assets-dir`（读） |
+| `PPTS_ANIMATION_ASSET_DIR` | 导出 worker **和 api** | **导出侧看到的**资产根目录（写）；同一个卷在渲染容器里挂成 `-assets-dir`（读） |
 
-**api 与 worker 都要配前两个。** 这不是冗余：
+**api 与 worker 都要配三个。** 这不是冗余（api 侧第三项从 tasks 3.3 起是单页预览的硬依赖）：
 
 - worker 少了它们 → 导出永远静默降级成静态版（用户勾了动画也拿不到）。
 - api 少了它们 → 导出对话框里的「动画视频」永远置灰，reason 是 `renderer_not_configured`。
   功能其实是好的，只是没人能勾。
+- api 少了 `PPTS_ANIMATION_ASSET_DIR` → 单页预览整块不可用（路由不注册）：预览要先把页图
+  投递到渲染服务能读的位置，而"只配了地址没配目录"比"没开预览"更难解释——提交能成功，
+  图永远找不到，用户看到的是"预览失败"而不是"这个部署没开预览"。
 
 api 侧的探测**每次真实请求** `/healthz`（10s TTL 缓存），而不是读配置判断：
 "配置里写了地址但容器没起来"是常态，按配置报可用等于骗用户点一个必然降级的选项。
@@ -213,6 +216,9 @@ services:
     environment:
       PPTS_ANIMATION_ENABLED: "true"
       PPTS_RENDERER_URL: http://renderer:8090
+      PPTS_ANIMATION_ASSET_DIR: /srv/ppts/pages
+    volumes:
+      - /srv/ppts/pages:/srv/ppts/pages
 
   worker:
     environment:
@@ -229,7 +235,14 @@ services:
               "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets"]
 ```
 
-导出侧写入的路径长这样：`pages/<sha256 前 2 位>/<sha256>.png`。
+导出侧与预览侧写入的路径长这样：`pages/<sha256 前 2 位>/<sha256>.png`。
+两边用同一个实现（`app.LocalAssetPublisher`），同一份页图落在同一个文件上——预览不会
+给导出增加额外的缓存条目。
+
+单页预览（tasks 3.3）的预算与画质是刻意与导出不同的：960 宽 / 24fps / 3s 超时。
+按导出参数（1080p30）渲一页在纯 CPU 上轻易超过 3s，那样每次编辑都要等超时提示；
+预览要回答的是"第 4 段开始时这行字出现了吗"，不是像素校对。超时会 `DELETE` 掉渲染任务，
+否则用户连点五次预览就在渲染服务里排了五个必然被丢掉的任务。
 
 - **按内容命名，不按页码**：不同租户的第 3 页不会写进同一个文件（按页码命名时后写的
   会让前一次导出渲染出别人的页面，那是串租户）；同一份图重复导出只写一次。

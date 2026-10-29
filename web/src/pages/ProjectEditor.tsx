@@ -48,6 +48,7 @@ import {
 import { describeApiError, isNotFound, isUnimplemented } from '../apiError';
 import { Player } from '../Player';
 import { can } from '../permissions';
+import { AnimationEditor } from '../AnimationEditor';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { useI18n } from '../i18n';
@@ -270,6 +271,8 @@ export function ProjectEditor({
   // 但一个是环境未配置、一个是请求出错，混为一谈就无法定位。
   const [renderUnavailable, setRenderUnavailable] = useState(false);
   const [propsOpen, setPropsOpen] = useState(false);
+  // 逐页动效抽屉（tasks 3.2）：与配音设置同一个抽屉形态，不额外占一列。
+  const [animationOpen, setAnimationOpen] = useState(false);
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [oneDraftOpen, setOneDraftOpen] = useState(false);
   const oneDraftDialogRef = useDialogA11y<HTMLElement>(() => setOneDraftOpen(false));
@@ -1572,6 +1575,16 @@ export function ProjectEditor({
           <button type="button" className="button-ghost" onClick={openVoiceDialog} title={t('editor.propertiesTitle')}>
             {t('editor.voiceButton')}
           </button>
+          {/* 逐页动效：需要真实页面（有 slideId 才谈得上"这一页的动效"）。 */}
+          <button
+            type="button"
+            className="button-ghost"
+            disabled={slidesState.mode !== 'real' || !activeSlideID}
+            onClick={() => setAnimationOpen(true)}
+            title={t('editor.animationTitle')}
+          >
+            {t('editor.animationButton')}
+          </button>
           {/* B4-M1：导出要求 EDITOR（export.go:39）；无配音快照时无处可导，不渲染。 */}
           {canExport && realManifest && (
             <button
@@ -1895,6 +1908,22 @@ export function ProjectEditor({
       )}
 
       {/* 语音属性抽屉：仅语音模型 / 音色 / 语速 + 保存。保存后持久化到数据库。 */}
+      {animationOpen && slidesState.mode === 'real' && activeSlideID && (
+        <div className="drawer-backdrop" onClick={() => setAnimationOpen(false)}>
+          <AnimationEditor
+            identity={identity}
+            projectId={projectId}
+            slideId={activeSlideID}
+            slideTitle={activeSlide?.title}
+            sourceRevisionNo={slidesState.revisionNo || initRevisionNo}
+            language={scriptLanguage || 'zh-CN'}
+            timelineKey={realManifest?.timelineKey}
+            canEdit={canEditScript}
+            onClose={() => setAnimationOpen(false)}
+          />
+        </div>
+      )}
+
       {propsOpen && (
         <div className="drawer-backdrop" onClick={() => setPropsOpen(false)}>
           <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()} ref={propsDialogRef}>

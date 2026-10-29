@@ -11,10 +11,11 @@
     "route:check": "node route-inventory-check.mjs",
     "core:test": "node --experimental-strip-types --test core-check.mjs",
     "polling:test": "node --experimental-strip-types --test polling-check.mjs",
-    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && tsc -b && vite build",
+    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && npm run animation:test && tsc -b && vite build",
     "build:share": "vite build --config vite.share.config.ts",
     "typecheck": "tsc -b",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "animation:test": "node --experimental-strip-types --test animation-check.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",

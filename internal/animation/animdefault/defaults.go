@@ -291,3 +291,19 @@ func anchorsOf(elems []pageElement) []animation.Anchor {
 	}
 	return out
 }
+
+// Anchors 返回**与默认规格同一套分类**的锚点清单：按阅读顺序排序，第一个文字元素算标题、
+// 其余算要点。
+//
+// 为什么不能直接给编辑器用 PageAnchors：那份清单不做标题/要点归类（一律 shape），
+// 于是面板里全是"形状 1 / 形状 2"，用户没法把某一行字和某一条轨道对上。
+// 两份分类各写一遍更糟——预设生成的是"第 2 条要点"，编辑器却按另一套顺序编号，
+// 用户改了"第 2 条"，动的却是第 3 条。
+//
+// 校验仍以 PageAnchors 为准（它是超集）：编辑器能选中的元素一定在校验范围内。
+func Anchors(page *project.Page) []animation.Anchor {
+	if page == nil {
+		return nil
+	}
+	return anchorsOf(pageElements(page))
+}

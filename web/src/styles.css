@@ -1264,3 +1264,30 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .player-sync { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text-muted); }
 .player-sync button { padding: 0 6px; line-height: 1.6; }
 .player-sync-value { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* 逐页动效抽屉（tasks 3.2）：与配音设置同一个抽屉形态，内容按"风格 / 强度 / 逐条要点"分层。 */
+.animation-drawer { width: 460px; }
+.animation-slide { margin: 2px 0 0; color: var(--text-muted); font-size: 12.5px; }
+.animation-block { display: grid; gap: 8px; }
+.animation-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.animation-preset { display: grid; gap: 4px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-body); cursor: pointer; }
+.animation-preset strong { color: var(--text-strong); font-size: 13px; }
+.animation-preset span { color: var(--text-muted); font-size: 11.5px; line-height: 1.35; }
+.animation-preset.active { border-color: rgba(103, 232, 249, .6); box-shadow: inset 0 0 0 1px rgba(103, 232, 249, .35); }
+.animation-preset:disabled { opacity: .55; cursor: not-allowed; }
+.animation-intensity { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-muted); }
+.animation-intensity strong { color: var(--text-strong); font-variant-numeric: tabular-nums; }
+.animation-intensity input { grid-column: 1 / -1; }
+.animation-block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.animation-summary { color: var(--text-muted); font-size: 12px; }
+.animation-tracks { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.animation-track { display: grid; grid-template-columns: minmax(0, 1fr) 150px; gap: 8px; align-items: center; }
+.animation-track-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-body); font-size: 12.5px; }
+.animation-track select { height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-strong); font-size: 12px; }
+.animation-conflict { display: grid; gap: 8px; padding: 10px 12px; border-radius: 10px; border: 1px solid rgba(255, 184, 120, .45); background: rgba(255, 184, 120, .08); color: var(--text-body); }
+.animation-conflict strong { color: #ffd9a8; font-size: 13px; }
+.animation-actions { align-items: center; flex-wrap: wrap; }
+.animation-status { color: var(--text-muted); font-size: 12px; }
+.animation-status.dirty { color: #ffd9a8; }
+.animation-preview { display: grid; gap: 6px; }
+.animation-preview video { width: 100%; border-radius: 10px; background: #05080f; border: 1px solid var(--border); }

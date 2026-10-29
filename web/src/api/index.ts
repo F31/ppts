@@ -29,6 +29,8 @@ export { listMembers, updateMemberProfile, getMyProfile, saveMyProfile, listTags
 export type { MyProfile } from './tenant';
 export { createExport, createDownload, createHTMLBundleExport, createArtifactExport, getAnimationExportOptions, animationSpecsOf } from './export';
 export type { AnimationExportOptions, AnimationExportPage, AnimationExportSpec } from './export';
+export { getAnimationAnchors, getAnimationSpec, getDefaultAnimationSpec, saveAnimationSpec, previewAnimation, AnimationConflictError } from './animation';
+export type { AnimationScope, AnimationPreview } from './animation';
 export { listDictionaries, createDictionary, updateDictionary, deleteDictionary } from './pronunciation';
 export { listContextRules, createContextRule, updateContextRule, deleteContextRule } from './contextrules';
 export { listPublicWorks, getShowcaseWork, getShowcaseManifest, publishWork, featureWork, reviewWork, deleteWork, recallWork, listMyPublications, listReviewQueue } from './public';

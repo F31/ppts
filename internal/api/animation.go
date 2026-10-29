@@ -14,7 +14,9 @@ import (
 	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/narration"
+	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // maxAnimationBodyBytes 限制请求体：正常规格 ≤256KB（V12），留一倍余量给 DTO 包装。
@@ -29,18 +31,25 @@ type AnimationPageResolver interface {
 	Resolve(ctx context.Context, tenantID, userID, projectID string, sourceRevisionNo int, slideID, language string) (*project.Page, animation.PageContext, error)
 }
 
-// animationResolver 从对象存储里的 extracted document.json 还原页与元素锚点。
+// animationResolver 从对象存储里的 extracted document.json 还原页与元素锚点，
+// 并从最近一次成功的配音时间轴取页时长。
 //
-// 页时长目前恒为 0（未知）：时间轴要等配音完成才有，读取入口属于 M2 的编译期。
-// 0 的语义是"暂不判上界"，保存照常进行，渲染前必须用真实时长再校验一次。
+// 页时长的来源只有时间轴（EndUS-StartUS）——它是"这一页到底播多久"的唯一事实，
+// 讲稿字数估算、原始 PPT 的 advTm 都不是。取不到（还没配音）时给 0，
+// 0 的语义是"暂不判上界"：保存照常进行（V3 跳过），渲染前再用真实时长校验一次。
+//
+// 之前这里恒返回 0，导致 `?default=true`（按预设生成一份默认规格）永远走
+// duration_unknown 分支——逐页编辑器一打开就没有可编辑的起点。接上时间轴后
+// 它才真的可用，而且用户改强度/锚点时校验依据的是真实页长。
 type animationResolver struct {
 	projects project.ProjectStore
 	objects  objectstore.ObjectStore
 	scripts  narration.Store
+	jobs     JobCreator
 }
 
-func newAnimationResolver(projects project.ProjectStore, objects objectstore.ObjectStore, scripts narration.Store) *animationResolver {
-	return &animationResolver{projects: projects, objects: objects, scripts: scripts}
+func newAnimationResolver(projects project.ProjectStore, objects objectstore.ObjectStore, scripts narration.Store, jobs JobCreator) *animationResolver {
+	return &animationResolver{projects: projects, objects: objects, scripts: scripts, jobs: jobs}
 }
 
 func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, projectID string, sourceRevisionNo int, slideID, language string) (*project.Page, animation.PageContext, error) {
@@ -74,7 +83,7 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 	if page == nil {
 		return nil, empty, animation.ErrNotFound
 	}
-	pc := animation.PageContext{DurationMS: 0, Elements: animdefault.PageAnchors(page)}
+	pc := animation.PageContext{DurationMS: r.pageDurationMS(ctx, tenantID, projectID, slideID), Elements: animdefault.PageAnchors(page)}
 	if r.scripts != nil {
 		// 讲稿缺失不是错误：还没有讲稿时就没有 withSegment 可锚，规格里的相对锚点会被 V7 拒绝，
 		// 这正是需要告诉用户的事实（"先写讲稿再绑分段"），而不是掩盖成 500。
@@ -87,6 +96,39 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 		}
 	}
 	return page, pc, nil
+}
+
+// pageDurationMS 从最近一次成功的配音时间轴取该页时长；取不到返回 0。
+//
+// 任何一步失败都只返回 0，不返回 error：动画规格的保存不该因为"时间轴读不到"
+// 而失败——那会把一次存储抖动变成"用户改不动动效"。0 的语义本就表示未知，
+// 上层据此跳过上界校验并标记 needsDurationRecheck。
+func (r *animationResolver) pageDurationMS(ctx context.Context, tenantID, projectID, slideID string) int64 {
+	if r.jobs == nil || r.objects == nil {
+		return 0
+	}
+	job, err := r.jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindNarration))
+	if err != nil || job == nil {
+		return 0
+	}
+	ref, err := r.jobs.StepResultRef(tenant.WithContext(ctx, tenantID), job.ID, "timeline")
+	if err != nil || ref == "" {
+		return 0
+	}
+	bundle, _, err := loadBundle(ctx, r.objects, tenantID, ref)
+	if err != nil || bundle == nil || bundle.Timeline == nil {
+		return 0
+	}
+	for _, cue := range bundle.Timeline.Slides {
+		if cue.SlideID != slideID {
+			continue
+		}
+		if d := (cue.EndUS - cue.StartUS) / 1000; d > 0 {
+			return d
+		}
+		return 0
+	}
+	return 0
 }
 
 // AnimationHandler 提供单页动画规格的读写（REST，与 /api/context-rules 同一约定）。
@@ -111,6 +153,9 @@ func (h *AnimationHandler) Register(mux *http.ServeMux, auth func(http.Handler) 
 		return
 	}
 	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation", auth(http.HandlerFunc(h.get)))
+	// 逐页编辑器需要的页级上下文（可挂元素、分段、页时长、预设）。读路径，不受写入开关影响：
+	// 开关关闭时编辑器据此把"配置动效"整块说明清楚，而不是先渲染出一个空面板。
+	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation/anchors", auth(http.HandlerFunc(h.anchors)))
 	mux.Handle("PUT /api/projects/{projectId}/slides/{slideId}/animation", auth(http.HandlerFunc(h.put)))
 }
 
@@ -276,6 +321,134 @@ func (h *AnimationHandler) put(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, animationDTO(saved, pc.DurationMS <= 0))
+}
+
+// animationAnchorDTO 是编辑器可挂动效的一个元素。
+//
+// 带 text 的理由：面板里列"第 2 条要点"比列形状 ID 有用得多，
+// 而形状 ID 在页面上不可见，用户没有任何办法把它和具体那行字对上。
+type animationAnchorDTO struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Text        string `json:"text,omitempty"`
+	Index       int    `json:"index"`
+	BulletIndex int    `json:"bulletIndex,omitempty"`
+}
+
+// animationSegmentDTO 是讲稿分段的引用（只给 id 与序号，正文前端已有）。
+type animationSegmentDTO struct {
+	SegmentID string `json:"segmentId"`
+	Index     int    `json:"index"`
+}
+
+// animationPresetDTO 是预设的展示信息。强度缺省值随预设走，前端据此初始化滑块。
+type animationPresetDTO struct {
+	ID          string  `json:"id"`
+	Label       string  `json:"label"`
+	Description string  `json:"description"`
+	Intensity   float64 `json:"intensity"`
+}
+
+type animationAnchorsDTO struct {
+	SlideID    string                `json:"slideId"`
+	Language   string                `json:"language"`
+	DurationMs int64                 `json:"durationMs"`
+	Elements   []animationAnchorDTO  `json:"elements"`
+	Segments   []animationSegmentDTO `json:"segments"`
+	Presets    []animationPresetDTO  `json:"presets"`
+}
+
+// anchors 返回逐页编辑器所需的页级上下文。
+//
+// 为什么不并进 GET /animation（规格本体）：规格可能还不存在（未配置过动效的页 404），
+// 而锚点在"还没配置"时恰恰最需要。把两件事放在一个响应里，就得给 404 加语义，
+// 或者让调用方从错误体里读数据——两条都不好读。
+func (h *AnimationHandler) anchors(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "unauthenticated"})
+		return
+	}
+	key, ok := animationKeyFromRequest(w, r, principal.TenantID)
+	if !ok {
+		return
+	}
+	if h.pages == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_unavailable"})
+		return
+	}
+	page, pc, err := h.pages.Resolve(r.Context(), principal.TenantID, principal.UserID, key.ProjectID, key.SourceRevisionNo, key.SlideID, key.Language)
+	if err != nil {
+		writeAnimationError(w, err)
+		return
+	}
+	if page == nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": "page_not_found"})
+		return
+	}
+
+	texts := make(map[string]string)
+	var walk func([]*project.Shape)
+	walk = func(shapes []*project.Shape) {
+		for _, sh := range shapes {
+			if sh == nil || sh.ID == "" {
+				continue
+			}
+			if t := strings.TrimSpace(sh.Text); t != "" {
+				texts[sh.ID] = clipAnchorText(t)
+			}
+			if len(sh.Children) > 0 {
+				walk(sh.Children)
+			}
+		}
+	}
+	walk(page.Shapes)
+
+	// 用 animdefault.Anchors：与"按预设生成默认规格"同一套分类与顺序。
+	// 用 PageAnchors 的话每个文字元素都是 shape，面板只能显示"形状 1/2/3"，
+	// 而用户改的是"第 2 条要点"——两套编号必然错位。
+	resp := animationAnchorsDTO{
+		SlideID: key.SlideID, Language: key.Language, DurationMs: pc.DurationMS,
+		Elements: make([]animationAnchorDTO, 0, len(pc.Elements)),
+		Segments: make([]animationSegmentDTO, 0, len(pc.SegmentIDs)),
+		Presets:  presetDTOs(),
+	}
+	anchors := animdefault.Anchors(page)
+	bullets := 0
+	for i, a := range anchors {
+		bullet := 0
+		if a.Kind == animation.KindBullet {
+			bullets++
+			bullet = bullets
+		}
+		resp.Elements = append(resp.Elements, animationAnchorDTO{
+			ID: a.ID, Kind: a.Kind, Text: texts[a.ID], Index: i + 1, BulletIndex: bullet,
+		})
+	}
+	for i, id := range pc.SegmentIDs {
+		resp.Segments = append(resp.Segments, animationSegmentDTO{SegmentID: id, Index: i + 1})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func presetDTOs() []animationPresetDTO {
+	presets := animation.Catalog().Presets()
+	out := make([]animationPresetDTO, 0, len(presets))
+	for _, p := range presets {
+		out = append(out, animationPresetDTO{ID: p.ID, Label: p.Label, Description: p.Description, Intensity: p.Intensity})
+	}
+	return out
+}
+
+// clipAnchorText 截断过长文本：面板只用来让用户认出"是哪一条"，
+// 整段正文会把侧栏撑成一张讲稿页。
+func clipAnchorText(s string) string {
+	const maxRunes = 40
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "…"
 }
 
 func animationKeyFromRequest(w http.ResponseWriter, r *http.Request, tenantID string) (animation.Key, bool) {
