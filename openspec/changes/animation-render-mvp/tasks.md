@@ -53,5 +53,9 @@
 - [x] 6.4 `internal/app/export.go`、`internal/media/`、`web/` 零改动（`git diff --stat` 断言）
 - [x] 6.5 `go.mod` 无新增依赖
 - [x] 6.7 回写设计方案偏差（design.md §6）并在 roadmap 更新 M2 状态
-- [ ] 6.6 真实样片（`智讲PPT-客户方案讲解.pptx`，30s）——**阻塞于容器环境**：本机无 ffmpeg、无 Remotion 镜像，stub backend 不产出真实视频。不计入本变更完成条件，转入 `animation-render-service-image` 变更
+- [ ] 6.6 真实样片（`智讲PPT-客户方案讲解.pptx`，30s）——**转出到 `animation-render-service-image`**，
+      不计入本变更完成条件。原记录的阻塞（「本机无 ffmpeg、无 Remotion 镜像」）已不成立：
+      该变更 5.1/5.4 已在本机容器内出片、5.10 出了带真实文字的 5 页 30s 样片、5.6 跑了 30 页长片。
+      仍不勾的原因只剩口径：**这份 deck 本身从未被栅格化**——PPTX→页图属于上游 L0，
+      渲染器只接受底图 + 元素矩形，所以「用真实 deck 出 30s」要等 L0 接线，不是渲染器侧能补的
 - [x] 6.8 拆分模型/持久化：`animstore`（SQLite/PostgreSQL）与 `animdefault`（依赖 project 的默认规格生成）移出模型包，解除渲染器对 `internal/db`+`pgx`+`sqlite` 的传递依赖。实测二进制 17.10MB → 10.19MB，`cmd/renderer/deps_test.go` 断言传递闭包不含存储栈
