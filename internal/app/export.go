@@ -126,6 +126,10 @@ type ExportHandler struct {
 	renderer *render.Client
 	// animationTimeout 是整片动画渲染的等待上限（0 = 不限，由作业上下文控制）。
 	animationTimeout time.Duration
+	// animationPages 组装逐页动画输入（底图路径、元素几何、规格）。nil = 无法组装：
+	// 底图投递（tasks 2.0）与元素几何来源（tasks 2.0b）都还没有落地，
+	// 此时导出保持纯静态路径，且不探测渲染服务。
+	animationPages AnimationRequestBuilder
 }
 
 func NewExportHandler(artifacts artifact.Store, steps interface {
@@ -670,6 +674,12 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	subtitleASS, err := h.subtitleASSForBurning(snapshot, bundle)
 	if err != nil {
 		return nil, err
+	}
+	// 动画通道（ADR-21）：开关打开、快照里有逐页规格、且能组装出输入，三者同时成立才探测。
+	// 任一不成立都直接走下面的静态编码 —— 静态路径不因这条分支改变任何行为。
+	if av := h.animatedVideo(ctx, snapshot, bundle, pagePNGs, pageDurations, audioTmpName, subtitleASS); av != nil {
+		h.logAnimationPages(av, len(pagePNGs))
+		return av.File, nil
 	}
 	// 编码产物本就写临时文件；直接返回 *os.File 由调用方流式上传，避免 os.ReadFile 再整份读入内存。
 	tmp := filepath.Join(os.TempDir(), "ppts-export-"+job.ID+".mp4")

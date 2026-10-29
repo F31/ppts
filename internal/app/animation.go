@@ -10,6 +10,7 @@ import (
 
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/design"
+	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -67,6 +68,30 @@ type AnimationRender struct {
 	PlanHash string
 	// Diagnostics 是编译期诊断（anchor_missing 等）。它们不阻断渲染，但必须留痕。
 	Diagnostics []render.Diagnostic
+}
+
+// AnimationPageInput 是组装动画输入时可用的材料。
+type AnimationPageInput struct {
+	Snapshot ExportSnapshot
+	// Slides 是时间轴的逐页区间，页序即成片页序。
+	Slides []media.SlideCue
+	// PagePNGs 与 Slides 同序，是已读入内存的页面图。
+	// 把它们送进渲染服务的资产根是部署问题（tasks 2.0）——投递方式不在这层决定。
+	PagePNGs [][]byte
+}
+
+// AnimationRequestBuilder 把材料组装成一次动画渲染的完整输入。
+//
+// 它是导出主路径与「动画数据来源」之间唯一的接缝：页图投递（tasks 2.0）与
+// 元素几何来源（tasks 2.0b）都还没定，所以这两件事不进导出主路径，
+// 而是由各自的适配器在这里补上。未注入 = 无法组装 = 导出保持纯静态路径。
+type AnimationRequestBuilder func(ctx context.Context, in AnimationPageInput) (AnimationRequest, error)
+
+// WithAnimationPages 注入动画输入组装器。不注入时导出走纯静态路径，
+// 即使渲染客户端已配置也不会被探测——「开关关闭」必须与「没有这个功能」等价。
+func (h *ExportHandler) WithAnimationPages(b AnimationRequestBuilder) *ExportHandler {
+	h.animationPages = b
+	return h
 }
 
 // WithAnimation 注入动画渲染客户端。client 为 nil 表示未启用（导出保持纯静态路径）。
