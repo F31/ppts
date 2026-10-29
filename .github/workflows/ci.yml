@@ -19,6 +19,11 @@ env:
 #             函数授权分支不生效（commit 9914925 与本轮）；用例读讲稿的源版本号也全部对齐；
 #   s3        MinIO 社区版停发镜像/二进制 → 改用其接续维护分支 SILO（pgsty/silo），
 #             tag + digest 双锁（见 s3 job 内注释）。
+#   lint(2)   改结构体漏跑 gofmt：本地 Windows 检出是 CRLF，`gofmt -l .` 会把一大堆文件
+#             报成未格式化（真信号被噪声盖住），于是本地习惯性跳过这一步；CI 在 LF 检出上
+#             一跑就红，且 28s 结束、其余 6 个 job 全部 skipped（88f0d13 修）。
+#             本地等价判据：忽略换行风格比对内容 ——
+#             `diff <(gofmt f | tr -d '\r') <(tr -d '\r' < f)`。
 
 jobs:
   lint:

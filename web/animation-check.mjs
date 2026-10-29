@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * animation-check —— 逐页动画编辑的纯状态门禁（tasks 3.1）。
+ * animation-check —— 逐页动画编辑的纯状态门禁（tasks 3.1）+ 导出降级文案（tasks 4.4/4.5）。
  *
  * 与 core-check/polling-check 同一风格：node --experimental-strip-types 直接加载
  * src/animationState.ts，测的就是组件真正调用的那份代码，不存在"测试抄一份逻辑"。
@@ -175,4 +175,36 @@ test('锚点标签优先文字，其次要点序号', () => {
   assert.equal(anchorLabel(anchors, 'bullet-2', 'element'), '#2');
   assert.equal(anchorLabel(anchors, 'ghost', '#unknown'), '#unknown');
   assert.equal(anchorLabel(null, 'ghost', 'x'), 'x');
+});
+
+// ---- 导出降级文案（tasks 4.4/4.5 的「提示明确」） ----
+//
+// 后端把「动画被摘掉」的原因码放在 animationDropped 里，前端负责翻成人话。
+// 这段映射只允许有一份（src/animationText.ts）：对话框置灰的原因与导出后降级的
+// 原因如果各写一遍，迟早出现「对话框说服务不可用、提示里说未开启」。
+const text = await import('./src/animationText.ts');
+// t 的替身：把 vars 原样拼回 key，这样断言能看出「原因有没有传进去」「jobId 有没有丢」。
+const fakeT = (key, vars) => (vars ? `${key}(${Object.entries(vars).map(([k, v]) => `${k}=${v}`).join(',')})` : key);
+
+test('原因码按前缀归一，详情串不进 UI', () => {
+  const { animationReasonText } = text;
+  assert.equal(animationReasonText('animation_disabled_by_deployment', fakeT), 'editor.exportAnimationNotEnabled');
+  assert.equal(animationReasonText('animation_not_available', fakeT), 'editor.exportAnimationNotEnabled');
+  assert.equal(animationReasonText('renderer_not_configured', fakeT), 'editor.exportAnimationNotConfigured');
+  // renderer_unavailable 的详情里有内网地址与 errno，整段丢弃
+  assert.equal(
+    animationReasonText('renderer_unavailable: Get "http://10.0.0.5:8090/healthz": connection refused', fakeT),
+    'editor.exportAnimationServiceDown'
+  );
+  assert.equal(animationReasonText('something_new', fakeT), 'editor.exportAnimationUnavailable');
+  assert.equal(animationReasonText(undefined, fakeT), 'editor.exportAnimationUnavailable');
+});
+
+test('降级提示必须同时带上原因与任务号', () => {
+  const { animationDroppedText } = text;
+  const msg = animationDroppedText('renderer_unavailable: connection refused', 'job-42', fakeT);
+  assert.ok(msg.startsWith('editor.exportAnimationDropped('), msg);
+  assert.match(msg, /reason=editor\.exportAnimationServiceDown/, '原因必须翻成用户语言，而不是原样贴错误串');
+  assert.match(msg, /jobId=job-42/, '不带任务号，用户要在任务中心猜是哪一条');
+  assert.doesNotMatch(msg, /connection refused|10\.0\.0\.5/, '内网地址与 errno 不该出现在用户界面');
 });
