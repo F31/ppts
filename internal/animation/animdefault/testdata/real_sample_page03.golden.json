@@ -1,0 +1,80 @@
+[
+  {
+    "elementId": "shape-2",
+    "kind": "title",
+    "clips": [
+      {
+        "id": "c1",
+        "type": "slideIn",
+        "startMs": 0,
+        "durationMs": 700,
+        "easing": "easeOut",
+        "params": {
+          "direction": "up",
+          "offset": 32
+        },
+        "trigger": "onEnter"
+      }
+    ]
+  },
+  {
+    "elementId": "shape-3",
+    "kind": "bullet",
+    "clips": [
+      {
+        "id": "c2",
+        "type": "fadeIn",
+        "startMs": 150,
+        "durationMs": 500,
+        "easing": "easeOut",
+        "params": {},
+        "trigger": "onEnter"
+      }
+    ]
+  },
+  {
+    "elementId": "shape-5",
+    "kind": "table",
+    "clips": [
+      {
+        "id": "c3",
+        "type": "fadeIn",
+        "startMs": 300,
+        "durationMs": 600,
+        "easing": "easeOut",
+        "params": {},
+        "trigger": "onEnter"
+      }
+    ]
+  },
+  {
+    "elementId": "shape-4",
+    "kind": "bullet",
+    "clips": [
+      {
+        "id": "c4",
+        "type": "fadeIn",
+        "startMs": 450,
+        "durationMs": 500,
+        "easing": "easeOut",
+        "params": {},
+        "trigger": "onEnter"
+      }
+    ]
+  },
+  {
+    "elementId": "shape-6",
+    "kind": "bullet",
+    "clips": [
+      {
+        "id": "c5",
+        "type": "fadeIn",
+        "startMs": 600,
+        "durationMs": 500,
+        "easing": "easeOut",
+        "params": {},
+        "trigger": "onEnter"
+      }
+    ]
+  }
+]

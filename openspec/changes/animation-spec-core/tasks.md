@@ -27,7 +27,16 @@
 - [x] 3.1 `defaults.go` 实现 `DefaultSpec(page, DefaultOptions)`：标题 `slideIn@onEnter`、要点 `fadeIn`（有分段则 `withSegment`，否则递增 `start_ms`）、图片 `pop`、图表 `grow`
 - [x] 3.2 无 `Bounds` / `Opaque` / 音视频元素跳过且不阻塞整页；无可挂载元素或页太短时退化为 `kind=page` 的整页轨道
 - [x] 3.3 单测：确定性（同输入 `reflect.DeepEqual`）＋ 4 套预设 × 3 种页面形态（纯文本/纯图片/纯表格）+ 综合页 全部通过 V1–V12
-- [ ] 3.4 用真实样本 `智讲PPT-客户方案讲解.pptx` 解析出的页生成默认规格，作为 golden 用例入库（需先接 `internal/project` 的解析入口，留到 PR2 与 API 一起做）
+- [x] 3.4 用真实样本 `智讲PPT-客户方案讲解.pptx` 解析出的页生成默认规格，作为 golden 用例入库
+      —— `internal/animation/animdefault/real_sample_test.go`：样本随 `testdata/sample-customer-deck.pptx`
+      入库（14 页 / 282KB / sha256 `d75b66a5…`），用例走 `internal/project.NewGoPPTXReader` **真解析**
+      （不喂预制 JSON），14 页 × 4 套预设 = 56 份规格全部生成成功且自校验通过；golden 记逐页
+      `specHash`（`testdata/real_sample.golden.json`），另存第 3 页完整快照（表格页，
+      `testdata/real_sample_page03.golden.json`）——hash 只说「变了」，快照说「变成什么」。
+      就地断言 5 条不变量：轨道 ≤30、clip ≤40、clip 时长在 catalog 区间内、时间轴不溢出页时长、
+      trigger 合法；并要求真实页两次生成结果一致（同坐标形状多，排序稳定性只有这种页压得出）。
+      变异验证：把 `business-calm` 的 title 时长 700→650，golden 立刻报 14 页 specHash 全漂移（已还原）。
+      重定基线：`go test ./internal/animation/animdefault -run TestDefaultSpecRealSampleGolden -update`
 
 ## 4. 存储与迁移（PR2 · 已完成）
 

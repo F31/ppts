@@ -1,0 +1,491 @@
+{
+  "sample": {
+    "file": "testdata/sample-customer-deck.pptx",
+    "originalName": "智讲PPT-客户方案讲解.pptx",
+    "sha256": "d75b66a5a4097ba4f5abb7d39c95bbd92bea4d2f0c5b5727047c62762496de26",
+    "bytes": 288116,
+    "pages": 14,
+    "schemaVersion": "1.0",
+    "parser": "go-pptx/v2.0.0"
+  },
+  "pageDurationMs": 8000,
+  "fps": 30,
+  "presets": [
+    {
+      "id": "business-calm",
+      "tracks": 182,
+      "clips": 182,
+      "pages": [
+        {
+          "index": 0,
+          "slideId": "slide-256",
+          "anchors": 7,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "e52ec57f2733ad0648c0f620c416b6d01a222b18eee623978f4181de6091a9c6"
+        },
+        {
+          "index": 1,
+          "slideId": "slide-257",
+          "anchors": 13,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "5c1a31e5145577aad8154782ddb19f3437946f8ed80ecfbfa051a60184f41667"
+        },
+        {
+          "index": 2,
+          "slideId": "slide-258",
+          "anchors": 19,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "af7afa496b384968b2fd8bb55f4b181b7f2207a80b1ff8c06ec283c78e2fc5f9"
+        },
+        {
+          "index": 3,
+          "slideId": "slide-259",
+          "anchors": 5,
+          "tracks": 5,
+          "clips": 5,
+          "specHash": "b41ddba3eb8a6e57e3944e82d3773b72fbdb3d616b9f29a8e935b12b7b904173"
+        },
+        {
+          "index": 4,
+          "slideId": "slide-260",
+          "anchors": 21,
+          "tracks": 14,
+          "clips": 14,
+          "specHash": "a5eb5203f3f79dac2c307627a32d8ccbe6d55b888a5a16b8d0e23b6454a7be2b"
+        },
+        {
+          "index": 5,
+          "slideId": "slide-261",
+          "anchors": 5,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "af68ed5311347606d76156be22ba1cf411f4f006d36cd5e7cfcde977f4fb62c1"
+        },
+        {
+          "index": 6,
+          "slideId": "slide-262",
+          "anchors": 23,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "f3d78de9dd687734fd7ac0af98f86106004664ea0a6d93d1a2a63c85d624e038"
+        },
+        {
+          "index": 7,
+          "slideId": "slide-263",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "11a749e62677ed1f9f2929e90fe6834cf45d4aebb513311186a5725992a5a3ce"
+        },
+        {
+          "index": 8,
+          "slideId": "slide-264",
+          "anchors": 22,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "001af06a064c2bf35262d05fcad6dcb20631fc2fe7421115c3c31bf77d81b57a"
+        },
+        {
+          "index": 9,
+          "slideId": "slide-265",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "91d1cbee0d29fdf1ba30d427dbec88db4e0dd691c8f0b5afee5d326fda846fd9"
+        },
+        {
+          "index": 10,
+          "slideId": "slide-266",
+          "anchors": 22,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "697dcc8ad477293ce2a110aa1dd92b62bbf587b212970588b57c0598725aad97"
+        },
+        {
+          "index": 11,
+          "slideId": "slide-267",
+          "anchors": 26,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "05f218d97ebc0013ce075e2615079a5c3724187973fa5e6851f0f9b407d0ae93"
+        },
+        {
+          "index": 12,
+          "slideId": "slide-268",
+          "anchors": 27,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "49bec9bf6c2ec4c5db63b781967e60a63a3442b11744d5a41b6398cb736a56d3"
+        },
+        {
+          "index": 13,
+          "slideId": "slide-269",
+          "anchors": 24,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "3ca2f91f150a43294538ddcf124abb8f830cf2c6f8cc40fbd42c747ea8e906ad"
+        }
+      ]
+    },
+    {
+      "id": "launch-bold",
+      "tracks": 182,
+      "clips": 182,
+      "pages": [
+        {
+          "index": 0,
+          "slideId": "slide-256",
+          "anchors": 7,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "2e0af30f6d521bb0b7d2406eddd6ef457ad83bd637ecb6e7496dd9857f812f07"
+        },
+        {
+          "index": 1,
+          "slideId": "slide-257",
+          "anchors": 13,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "16b6cbe56135b314958512e37957205cb2cb7d10a40f569274892514f4353a2e"
+        },
+        {
+          "index": 2,
+          "slideId": "slide-258",
+          "anchors": 19,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "24d778fceed4635b33e05f059094d4f59d5828fb655050baaf2c7e9cb27db29c"
+        },
+        {
+          "index": 3,
+          "slideId": "slide-259",
+          "anchors": 5,
+          "tracks": 5,
+          "clips": 5,
+          "specHash": "b5c42c96f8641db45bd5e5c7c40fb801b8f1302518ce1197e2a3755f0d1b3c5b"
+        },
+        {
+          "index": 4,
+          "slideId": "slide-260",
+          "anchors": 21,
+          "tracks": 14,
+          "clips": 14,
+          "specHash": "4b955f0afbb252bf7d992400fe13a3348fb1ffc2eceb39e33a1d90e268679c2c"
+        },
+        {
+          "index": 5,
+          "slideId": "slide-261",
+          "anchors": 5,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "f618d5d6ef04f6d234da2776b57ae969ab81a7ce9a154bc88280b9d4a73c62a6"
+        },
+        {
+          "index": 6,
+          "slideId": "slide-262",
+          "anchors": 23,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "e7631b5dbc039970d56115344d6bc1fb820582b1c744730e9bb3a936475d131f"
+        },
+        {
+          "index": 7,
+          "slideId": "slide-263",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "8ce3094ea5a4f29ff88f8852ed88723f36c4e5a569056c331f40ec9b934cfa43"
+        },
+        {
+          "index": 8,
+          "slideId": "slide-264",
+          "anchors": 22,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "bd85bbc482b0b240df4dbdaddaeb9b9ec13b1f1ab4201761a14ccacad246075d"
+        },
+        {
+          "index": 9,
+          "slideId": "slide-265",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "fb75b58cdbac0a57e23070ca4662ddb35c1b7e2b7589a752812f4e300012ef0f"
+        },
+        {
+          "index": 10,
+          "slideId": "slide-266",
+          "anchors": 22,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "529d07b2d6aba57346ff55f999df0770d9d5bfbba6c02cc4b34e0e57c9483e48"
+        },
+        {
+          "index": 11,
+          "slideId": "slide-267",
+          "anchors": 26,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "58434ef150d80abd9e1ccf6b789b841a9f86f023d2b873d6c9ae9f1135c55c60"
+        },
+        {
+          "index": 12,
+          "slideId": "slide-268",
+          "anchors": 27,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "570052395a5542325d67a99d48db2cc94586e1275c12e31f6b4bcca72a47075b"
+        },
+        {
+          "index": 13,
+          "slideId": "slide-269",
+          "anchors": 24,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "ea9c75ddc8cd20b25827793f75b1fdc89469f92aa611bd158237cf3731ff8906"
+        }
+      ]
+    },
+    {
+      "id": "teaching-clear",
+      "tracks": 182,
+      "clips": 182,
+      "pages": [
+        {
+          "index": 0,
+          "slideId": "slide-256",
+          "anchors": 7,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "7ba9485d89ca9c51c56adb235006002d9a533ff39b8dbfcfb011c21d4cf825a4"
+        },
+        {
+          "index": 1,
+          "slideId": "slide-257",
+          "anchors": 13,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "748213a90d7803f7a975cf43772cddd928b190d8f999ad81861b59272b801deb"
+        },
+        {
+          "index": 2,
+          "slideId": "slide-258",
+          "anchors": 19,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "b48668118f621772594107bc840f6dc57ecd1b9588658fdd9a56def9a518c639"
+        },
+        {
+          "index": 3,
+          "slideId": "slide-259",
+          "anchors": 5,
+          "tracks": 5,
+          "clips": 5,
+          "specHash": "f2fb19324ab36df50c3991b4b2dbc0ebc84d3491b6b11b3a6c4068fa3a4a45b1"
+        },
+        {
+          "index": 4,
+          "slideId": "slide-260",
+          "anchors": 21,
+          "tracks": 14,
+          "clips": 14,
+          "specHash": "2500257eca2b166cac503cc6b7ef93597155ea6fc2b86de1d30a923813100f8b"
+        },
+        {
+          "index": 5,
+          "slideId": "slide-261",
+          "anchors": 5,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "f9eae801b802b26d6eea9c221fcf6f76af74285004a7f41a81fcd47741d9b128"
+        },
+        {
+          "index": 6,
+          "slideId": "slide-262",
+          "anchors": 23,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "e779f41e23844dfe4e61c55a49c33db192bb967660e049e974f9cbd58484dcfc"
+        },
+        {
+          "index": 7,
+          "slideId": "slide-263",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "d02a2819f9edf9a2a2770598a2ef43980d97d0ccf6f23fe35e19843c398fa6b2"
+        },
+        {
+          "index": 8,
+          "slideId": "slide-264",
+          "anchors": 22,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "0a60dce046d685e84d63e0e81d3c1f5e0e659a11b2d2ea2b8e0c27b8af74eee4"
+        },
+        {
+          "index": 9,
+          "slideId": "slide-265",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "ec12f1448b421b762562e8947c64412f13ae9172f5697f00a0fbd09dce7d2efc"
+        },
+        {
+          "index": 10,
+          "slideId": "slide-266",
+          "anchors": 22,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "fe89e024a4619fa4649d8fe1c5d49ff68b95fd40ba553f43e2aca4cd42d66ce9"
+        },
+        {
+          "index": 11,
+          "slideId": "slide-267",
+          "anchors": 26,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "4803382f8d461eaac79dfc8ccbc6e68ff53c5fe87fcef0ca3129945ca7a025d5"
+        },
+        {
+          "index": 12,
+          "slideId": "slide-268",
+          "anchors": 27,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "c06c3f3f34a0326e292ef1935494f43486355c0592e2b6dfdf430ee17ac96843"
+        },
+        {
+          "index": 13,
+          "slideId": "slide-269",
+          "anchors": 24,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "56cd465c0560b0a86027d59edaf95525cca07514252ebcad5c5b6a39a4d3b78b"
+        }
+      ]
+    },
+    {
+      "id": "tech-dynamic",
+      "tracks": 182,
+      "clips": 182,
+      "pages": [
+        {
+          "index": 0,
+          "slideId": "slide-256",
+          "anchors": 7,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "f02dccf634c7683bf7328ceb5642913ba84cdddcc7c01f1c90946baf19acb0ee"
+        },
+        {
+          "index": 1,
+          "slideId": "slide-257",
+          "anchors": 13,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "e8023847b8dc1fe64e0d31ac0a9407976c0eac0cb46de02dbf02f79a942413ed"
+        },
+        {
+          "index": 2,
+          "slideId": "slide-258",
+          "anchors": 19,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "03b78090786eeb2b393694df780ef091b4d941c872888392f4ba1cde5c8e2d16"
+        },
+        {
+          "index": 3,
+          "slideId": "slide-259",
+          "anchors": 5,
+          "tracks": 5,
+          "clips": 5,
+          "specHash": "aee17c8f78ca43ae1ad6042681f9af96d79480e9f1efd511ce29520aa452df1d"
+        },
+        {
+          "index": 4,
+          "slideId": "slide-260",
+          "anchors": 21,
+          "tracks": 14,
+          "clips": 14,
+          "specHash": "85bbda92eb14bde2a4ac9b70815526b447b1d204c13955cfe95cd562851bce9a"
+        },
+        {
+          "index": 5,
+          "slideId": "slide-261",
+          "anchors": 5,
+          "tracks": 4,
+          "clips": 4,
+          "specHash": "c543a4c429d5a05251073848d84c1ed41aae8312a3bf11018bfee3f93edf5bc3"
+        },
+        {
+          "index": 6,
+          "slideId": "slide-262",
+          "anchors": 23,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "81b47b6890e200620682e2d6c6f1466bddcccf489cfc982344893444c0dca268"
+        },
+        {
+          "index": 7,
+          "slideId": "slide-263",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "8e9cce03328c7db941eb519ee524ae6cabfcbca6fca2b626b5b4a218074f35bd"
+        },
+        {
+          "index": 8,
+          "slideId": "slide-264",
+          "anchors": 22,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "717971f81b156d4cc3c53f8286a9f8ec37ed7b928e0c1c011381fe31dc5bb608"
+        },
+        {
+          "index": 9,
+          "slideId": "slide-265",
+          "anchors": 23,
+          "tracks": 16,
+          "clips": 16,
+          "specHash": "ae6ce9a96147b4021b6e81d46d8d12157bbcab4af98dd754659041806e21339f"
+        },
+        {
+          "index": 10,
+          "slideId": "slide-266",
+          "anchors": 22,
+          "tracks": 15,
+          "clips": 15,
+          "specHash": "cea78f0b01e13c2b36143686750c5026417afb2bedc01471281043a1d768dfad"
+        },
+        {
+          "index": 11,
+          "slideId": "slide-267",
+          "anchors": 26,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "07efc24507754d328afa115eda74e33445a0959cc6773f99f9b6657fd07d2a1a"
+        },
+        {
+          "index": 12,
+          "slideId": "slide-268",
+          "anchors": 27,
+          "tracks": 19,
+          "clips": 19,
+          "specHash": "fe35dee869a00032c2b57cf1ab2e04f5eca712bc0d33cf93ee321c5188e17ecf"
+        },
+        {
+          "index": 13,
+          "slideId": "slide-269",
+          "anchors": 24,
+          "tracks": 13,
+          "clips": 13,
+          "specHash": "e3e5dcdf604f66c8feabf7325be62b73389d2c74c0fe1fb8baa52ce6b804fd5f"
+        }
+      ]
+    }
+  ]
+}
