@@ -86,9 +86,9 @@ type Options struct {
 	// 渲染耗时随部署硬件差异很大，硬编码会让慢机器上的预览恒定超时；
 	// 具体夹紧规则见 AnimationPreviewer.WithBudget。
 	AnimationPreviewBudget time.Duration
-	Gateway           gateway.StoreResolver
-	ScriptSources     app.ScriptSourceStore
-	VoiceSettings     app.VoiceSettingsStore
+	Gateway                gateway.StoreResolver
+	ScriptSources          app.ScriptSourceStore
+	VoiceSettings          app.VoiceSettingsStore
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
