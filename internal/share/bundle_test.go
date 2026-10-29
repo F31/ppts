@@ -394,9 +394,11 @@ func TestGoldenBundleStructure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("VerifyBundle: %v", err)
 	}
+	// 混音轨拼成时不再保留逐段文件：mix 已含全部采样，再存一份等于音频体积翻倍。
+	// 条目集合的变化是**契约变化**，所以要在这里显式钉住，而不是让它悄悄发生。
 	want := []string{
 		"app.css", "app.js",
-		"audio/001.wav", "audio/002.wav", "audio/mix.wav",
+		"audio/mix.wav",
 		"index.html", "manifest.js", "manifest.json",
 		"slides/001.jpg", "slides/002.jpg",
 		"subtitles.js", "subtitles.srt", "subtitles.vtt",
@@ -415,6 +417,17 @@ func TestGoldenBundleStructure(t *testing.T) {
 	}
 	if len(manifest.Audio) != 2 || manifest.Audio[1].StartUS != 100_000 {
 		t.Fatalf("audio entries = %+v", manifest.Audio)
+	}
+	// 区间仍然逐段准确，src 统一指向混音轨（播放器在 mix 模式下不读 src）。
+	for i, entry := range manifest.Audio {
+		if entry.Src != FileAudioMix {
+			t.Fatalf("audio %d src = %q, want %q when a mix track exists", i, entry.Src, FileAudioMix)
+		}
+	}
+	for name := range files {
+		if strings.HasPrefix(name, "audio/") && name != FileAudioMix {
+			t.Fatalf("per-segment audio %q duplicated the mix track", name)
+		}
 	}
 	if manifest.Subtitles.Src != FileSubtitlesVTT || manifest.Subtitles.Inline != FileSubtitlesJS {
 		t.Fatalf("subtitles = %+v", manifest.Subtitles)

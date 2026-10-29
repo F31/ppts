@@ -8,8 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
 )
 
 const (
@@ -131,20 +129,25 @@ func verifyEntries(files map[string][]byte) (*Manifest, map[string][]byte, error
 	return &manifest, files, nil
 }
 
-// externalRefPattern 匹配 src/href/url() 指向远程资源的引用。
-// 只关心"会发网络请求"的形态：协议相对 // 与 http(s)://；data: 是内联，不算外链。
-var externalRefPattern = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*["']?\s*(?:https?:)?//|url\(\s*["']?\s*(?:https?:)?//`)
-
 // CountExternalRefs 统计包内文本文件的外部引用数量（spec: MUST 为 0）。
+//
+// 规则在 ScanExternalRefs 里，这里只做汇总：打包时自检与事后校验**必须**同一套判据，
+// 否则会出现"打包认为没事、校验报外链"这种互相矛盾的报告，让人开始怀疑门禁本身。
 func CountExternalRefs(files map[string][]byte) int {
 	count := 0
 	for name, content := range files {
-		switch {
-		case strings.HasSuffix(name, ".html"), strings.HasSuffix(name, ".css"), strings.HasSuffix(name, ".js"):
-		default:
-			continue
-		}
-		count += len(externalRefPattern.FindAllIndex(content, -1))
+		count += len(ScanExternalRefs(name, content))
 	}
 	return count
+}
+
+// ExternalRefSamples 返回外链条目与片段，供校验输出与失败信息使用。
+func ExternalRefSamples(files map[string][]byte) map[string][]string {
+	out := make(map[string][]string)
+	for name, content := range files {
+		if refs := ScanExternalRefs(name, content); len(refs) > 0 {
+			out[name] = refs
+		}
+	}
+	return out
 }

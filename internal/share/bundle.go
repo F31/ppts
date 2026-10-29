@@ -174,6 +174,11 @@ func (b *BundleBuilder) buildInto(
 		if err := checkBundlePath(name); err != nil {
 			return err
 		}
+		// 自包含自检（V14）：外链必须在打包时失败，而不是等断网的客户看到白屏。
+		// 挂在唯一出口上，新增条目类型自动被覆盖。
+		if err := checkExternalRefs(name, data); err != nil {
+			return err
+		}
 		if err := write(name, data); err != nil {
 			return err
 		}
@@ -226,24 +231,12 @@ func (b *BundleBuilder) buildInto(
 	manifest.Slides = slides
 
 	// ---- 音频 ----
-	audioEntries, clips, err := b.writeAudio(ctx, emit, timeline)
+	audioEntries, mixName, err := b.writeAudio(ctx, emit, timeline)
 	if err != nil {
 		return nil, nil, err
 	}
 	manifest.Audio = audioEntries
-
-	// 混音轨：把各段按时间轴落位成一条 WAV，播放器只需一个 currentTime。
-	// 拼接失败（素材非 PCM16、时长不符）不阻断打包——播放器有「逐段播放」的降级路径。
-	if len(clips) > 0 {
-		var buf bytes.Buffer
-		if mixErr := media.WriteTimelineWAV(&buf, timeline, clips); mixErr != nil {
-			b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", mixErr)
-		} else if err := emit(FileAudioMix, buf.Bytes()); err != nil {
-			return nil, nil, err
-		} else {
-			manifest.AudioMix = FileAudioMix
-		}
-	}
+	manifest.AudioMix = mixName
 
 	// ---- 播放器与页面 ----
 	appJS, err := assets.AppJS()
@@ -260,7 +253,7 @@ func (b *BundleBuilder) buildInto(
 	if err := emit(FileAppCSS, appCSS); err != nil {
 		return nil, nil, err
 	}
-	indexHTML, err := renderIndexHTML(in.Title)
+	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles)
 	if err != nil {
 		return nil, nil, fmt.Errorf("share: render index.html: %w", err)
 	}
@@ -388,43 +381,82 @@ func (b *BundleBuilder) writeSlides(
 	return entries, nil
 }
 
-// writeAudio 逐段写 entry，返回清单条目与供混音轨使用的片段字节。
+// writeAudio 写音频条目，返回清单条目与混音轨条目名（空表示没拼成）。
+//
+// 混音轨拼成时**不再保留逐段文件**：mix 已经包含全部采样，再存一份逐段等于
+// 音频体积翻倍（实测 30 秒包：音频 2.75 MiB 占 80%，砍掉重复后降到 1.4 MiB）。
+// 此时 `audio[].src` 统一指向 mix——条目语义从"这一段自己的音频"变成
+// "这段讲稿在混音轨上的区间"，区间字段仍然准确，播放器在 mix 模式下也不读 src。
+//
+// 拼不成（素材非 PCM16、时长不符）时退回逐段文件 + 逐段播放：此时体积换可用性，
+// 因为"有声音但多一份"显然好过"没声音"。
+//
 // 音频缺失必须失败：没有声音的"讲解成品"没有意义（design D8）。
 func (b *BundleBuilder) writeAudio(
 	ctx context.Context,
 	write func(string, []byte) error,
 	timeline *media.Timeline,
-) ([]AudioEntry, map[string][]byte, error) {
-	entries := make([]AudioEntry, 0)
+) ([]AudioEntry, string, error) {
+	// 先读齐：能不能拼成混音轨，决定了要不要写逐段文件。
 	clips := make(map[string][]byte)
-	names := make(map[string]string)
+	var order []string
 	for _, slide := range timeline.Slides {
 		for _, segment := range slide.Segments {
-			name, ok := names[segment.AudioKey]
-			if !ok {
-				if strings.TrimSpace(segment.AudioKey) == "" {
-					return nil, nil, fmt.Errorf("share: segment %q has no audio key", segment.SegmentID)
-				}
-				data, err := b.readObject(ctx, segment.AudioKey)
-				if err != nil {
-					return nil, nil, fmt.Errorf("share: read audio segment %q: %w", segment.AudioKey, err)
-				}
-				if len(data) == 0 {
-					return nil, nil, fmt.Errorf("share: audio segment %q is empty", segment.AudioKey)
-				}
-				name = fmt.Sprintf(audioEntryPattern, len(names)+1)
-				if err := write(name, data); err != nil {
-					return nil, nil, err
-				}
-				names[segment.AudioKey] = name
-				clips[segment.AudioKey] = data
+			if _, ok := clips[segment.AudioKey]; ok {
+				continue
 			}
+			if strings.TrimSpace(segment.AudioKey) == "" {
+				return nil, "", fmt.Errorf("share: segment %q has no audio key", segment.SegmentID)
+			}
+			data, err := b.readObject(ctx, segment.AudioKey)
+			if err != nil {
+				return nil, "", fmt.Errorf("share: read audio segment %q: %w", segment.AudioKey, err)
+			}
+			if len(data) == 0 {
+				return nil, "", fmt.Errorf("share: audio segment %q is empty", segment.AudioKey)
+			}
+			clips[segment.AudioKey] = data
+			order = append(order, segment.AudioKey)
+		}
+	}
+
+	names := make(map[string]string, len(order))
+	mixName := ""
+	var mix bytes.Buffer
+	if len(order) > 0 {
+		if mixErr := media.WriteTimelineWAV(&mix, timeline, clips); mixErr != nil {
+			b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", mixErr)
+		} else if err := write(FileAudioMix, mix.Bytes()); err != nil {
+			return nil, "", err
+		} else {
+			mixName = FileAudioMix
+		}
+	}
+
+	if mixName != "" {
+		for _, key := range order {
+			names[key] = mixName
+		}
+	} else {
+		for i, key := range order {
+			name := fmt.Sprintf(audioEntryPattern, i+1)
+			if err := write(name, clips[key]); err != nil {
+				return nil, "", err
+			}
+			names[key] = name
+		}
+	}
+
+	entries := make([]AudioEntry, 0)
+	for _, slide := range timeline.Slides {
+		for _, segment := range slide.Segments {
 			entries = append(entries, AudioEntry{
-				SegmentID: segment.SegmentID, Src: name, StartUS: segment.StartUS, EndUS: segment.EndUS,
+				SegmentID: segment.SegmentID, Src: names[segment.AudioKey],
+				StartUS: segment.StartUS, EndUS: segment.EndUS,
 			})
 		}
 	}
-	return entries, clips, nil
+	return entries, mixName, nil
 }
 
 func (b *BundleBuilder) readPagePNG(ctx context.Context, key string) ([]byte, error) {
