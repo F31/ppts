@@ -74,6 +74,8 @@
 - [x] 5.1 `deploy/renderer/README.md`：降级矩阵与「什么情况下用户拿到静态版」
 - [ ] 5.2 归档时把能力并入 `openspec/specs/animation-export/`（本变更新建的能力路径；
       `animation-spec` 管规格域，导出通道是另一个关注点，不塞进同一个 spec）
+      入口是 `openspec archive animation-export-e2e`，不手工编辑 `openspec/specs/`；
+      门禁同 `animation-spec-core`：等本轮提交的 CI（含 `-race`）全绿后再执行。
 
 ## 落地状态（2026-10-29）
 
