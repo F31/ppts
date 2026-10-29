@@ -76,8 +76,9 @@ func TestBuildWritesLayeredSlides(t *testing.T) {
 // 与 M6-1 逐像素一致的判据就是「layers 为空、plate 为 false」。
 func TestBuildWithoutAnimationStaysStatic(t *testing.T) {
 	reader := baseReader(t)
+	in := buildInput()
 	var buf bytes.Buffer
-	manifest, err := NewBundleBuilder(reader, nil).Build(context.Background(), buildInput(), &buf)
+	manifest, err := NewBundleBuilder(reader, nil).Build(context.Background(), in, &buf)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -95,6 +96,29 @@ func TestBuildWithoutAnimationStaysStatic(t *testing.T) {
 		// 若这里变成 .png，说明静态路径被新逻辑顺带改了（体积会翻倍）。
 		if !strings.HasSuffix(slide.Image, ".jpg") {
 			t.Fatalf("slide %d image = %q, want a JPEG transcoded entry", i, slide.Image)
+		}
+	}
+
+	// 逐字节：包里的页图必须**就是** EncodePage 的输出，说明分层分支没有
+	// 顺带换掉静态页的转码（换质量、换尺寸都算回归），归档里也不能残留层图。
+	_, files, err := VerifyBundle(buf.Bytes())
+	if err != nil {
+		t.Fatalf("VerifyBundle: %v", err)
+	}
+	want, ext, err := EncodePage(reader.pages[in.PagePNGKeys[0]], NewBundleBuilder(reader, nil).maxLongEdge)
+	if err != nil {
+		t.Fatalf("EncodePage: %v", err)
+	}
+	got, ok := files["slides/001"+ext]
+	if !ok {
+		t.Fatalf("slides/001%s missing from bundle", ext)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("static page bytes differ from EncodePage output (%d vs %d bytes)", len(got), len(want))
+	}
+	for name := range files {
+		if strings.Contains(name, "-layer-") {
+			t.Fatalf("static bundle must not contain layer assets: %s", name)
 		}
 	}
 }
