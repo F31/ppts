@@ -5,15 +5,15 @@
 
 ## 1. 媒体层：分段拼接与静态段（PR4-a）
 
-- [ ] 1.1 `media.VideoSegment` + `ConcatOptions`：分段拼成整片，支持可选音频、可选字幕烧录
-- [ ] 1.2 `compileConcatArgs` 纯函数：三条路径（copy / 字幕重编码 / copy 失败回退重编码）
+- [x] 1.1 `media.VideoSegment` + `ConcatOptions`：分段拼成整片，支持可选音频、可选字幕烧录
+- [x] 1.2 `compileConcatArgs` 纯函数：三条路径（copy / 字幕重编码 / copy 失败回退重编码）
       的参数构造，**不 exec**，保证在没有 ffmpeg 的机器上也能单测
-- [ ] 1.3 `ConcatSegments`：写 concat 清单 → 执行 → ffprobe 校验（时长 / 分辨率 / 是否有音轨）；
+- [x] 1.3 `ConcatSegments`：写 concat 清单 → 执行 → ffprobe 校验（时长 / 分辨率 / 是否有音轨）；
       `-map 0:v:0` 只取视频流，避免把降级段的静音轨拼进去
-- [ ] 1.4 `EncodeStillSegment`：把单页静态图编码成与动画段同参数的 mp4（复用既有编码预设），
+- [x] 1.4 `EncodeStillSegment`：把单页静态图编码成与动画段同参数的 mp4（复用既有编码预设），
       供单页降级替换
-- [ ] 1.5 逐段时长校验：拼接前 ffprobe 每段，累计偏差 > 100ms 的页标记为待降级
-- [ ] 1.6 单测：纯函数路径断言（不依赖 ffmpeg）+ 真拼接用例（ffmpeg 缺失时 Skip，
+- [x] 1.5 逐段时长校验：拼接前 ffprobe 每段，累计偏差 > 100ms 的页标记为待降级
+- [x] 1.6 单测：纯函数路径断言（不依赖 ffmpeg）+ 真拼接用例（ffmpeg 缺失时 Skip，
       与 `mp4_test.go` 同一惯例）
 
 ## 2. 导出接线与开关（PR4-b）
@@ -47,4 +47,17 @@
 ## 5. 文档
 
 - [ ] 5.1 `deploy/renderer/README.md`：降级矩阵与「什么情况下用户拿到静态版」
-- [ ] 5.2 归档时把能力并入 `openspec/specs/animation-spec/`（沿用已有能力路径，不新建）
+- [ ] 5.2 归档时把能力并入 `openspec/specs/animation-export/`（本变更新建的能力路径；
+      `animation-spec` 管规格域，导出通道是另一个关注点，不塞进同一个 spec）
+
+## 落地状态（2026-10-29）
+
+第 1 组已落地（`internal/media/segments.go`，提交 87b4f11 / 修复 a488376）：
+
+- 纯函数用例本机跑（无 ffmpeg，只验参数构造）；真拼接在 CI 与 WSL 两处跑过。
+  WSL（ffmpeg 6.1.1）整包 2.4s 全绿；CI run 40798181655 的 13 个 job 全绿。
+- 一次真实红灯值得记下来：`TestEscapeConcatPath` 断言了 `filepath.ToSlash` 会把
+  `C:\tmp\a.mp4` 转成 `C:/tmp/a.mp4`，而它在 Linux 上是恒等函数。**错的是用例**——
+  跨平台断言只能写「引号闭合」这类与路径风格无关的性质（a488376）。
+- 下一步是第 2 组：`export.go` 接线。在那之前 `renderMP4` 完全不受影响，
+  所以本组的合并对静态导出零风险。
