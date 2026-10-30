@@ -76,14 +76,18 @@ go run ./scripts/fidelity/plan -in tmp/q7/fid -out tmp/q7/job \
 bash tmp/q7/run_all.sh
 #    → tmp/q7/film_C_narrated.mp4
 
-# 4) 量「元素到底在什么时候出现」
-python3 scripts/fidelity/check_alignment.py tmp/q7/film_C_narrated.mp4 \
-  tmp/q7/segments.json tmp/q7/fid/elements.json 2.0
-#    → 每个元素的 pre（开口前 400ms 内的最大变化）、onset、delay
+# 4) 一次跑完全部测量 + 26 项判据
+PPTS_SEG_DIR=tmp/q7/out-k python3 scripts/fidelity/verify.py \
+  --film tmp/q7/film_K_narrated.mp4 --segments tmp/q7/segments.json \
+  --elements tmp/q7/fid/elements.json --plan tmp/q7/job/plan.json \
+  --alignment tmp/q7/alignment-k.json --appearance tmp/q7/appearance-k.json \
+  --motion tmp/q7/motion-k.json --chart tmp/q7/chart-k.json --focus tmp/q7/focus-k.json \
+  --words tmp/q7/words.json --json tmp/q7/verify-k.json --rerun
+#    --rerun 会重跑六个测量脚本，再审计；报告一律按 -k 后缀分版，不要共用一个文件
 
 # 5) 人工评审
 python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html \
-  --film film_C_narrated.mp4 --port 8089
+  --film film_K_narrated.mp4 --port 8089
 ```
 
 ### 只改绑定、不改讲解词
@@ -336,7 +340,7 @@ python3 scripts/fidelity/verify.py               # 只审计已有报告（快�
 不足 1s —— 它不影响任何一刻的画面完整度，但等于没出现），并且打印每个时段的
 缺件清单，适合调排版时手跑。
 
-### 24 项检查
+### 26 项检查
 
 | 组 | 项 | 内容 |
 |---|---|---|
@@ -351,11 +355,17 @@ python3 scripts/fidelity/verify.py               # 只审计已有报告（快�
 | V9 真实性 | V9.1 | 柱高与标注值成比例（≤1.08 倍）。**第一组问「内容和它的数据对不对得上」** |
 | V10 叙事 | V10.1 | 图上标了数的元素，整页讲解必须念到这个数。**第一组跨到旁白文本** |
 | V11 同拍 | V11.1 | 「讲它」的时刻（焦点，没焦点则出场）落在念到它的那个词上（早 ≤120ms／晚 ≤350ms）。**第一次问「是不是那一刻讲的」** |
+| V12 放手 | V12.1 | 讲它的那一段结束、而下一段没紧接换人时，压暗必须有终点（空档 ≥500ms 却不给 `endMs` 就红）。**第一次问「讲完之后还指着谁」** |
+| V13 唯一 | V13.1 | 有人被压暗时，满墨的元素恰好一个（`check_focus.py` 逐采样点量框内墨量）。**第一次问「此刻亮着几个」** |
 
-五层盲区是逐个被片子逼出来的：V5 全过而人看着空（→V7），V7 全过而画面静（→V8），
+六层盲区是逐个被片子逼出来的：V5 全过而人看着空（→V7），V7 全过而画面静（→V8），
 V7/V8 全过而图在说谎（→V9），V9 全过而讲稿漏讲了图上两根柱子（→V10），
 V10 全过而**讲的时刻不对**（→V11）：柱子在「时间都花在哪」里就长齐了，
 三秒后讲到 943 才把注意力挪过去——数字念到了，只是先给了答案。
+V11 让「开始讲」落在词上之后，**讲完之后没人放手**（→V12）：页 2 说「两核跑五分钟」的
+头 1.4 秒，画面还压着上一句讲的四核那根柱子。
+V12 给压暗补上终点时量出一个活了五版的 bug：`focusDim` 里 `out[focus[0]] = 0` 少了
+`i === 0`，从第 3 个焦点起第一个元素永远重新点亮，**页面上两根柱子同时满墨**（→V13）。
 
 前三次是「门禁全绿、人看着不对」，后两次反过来：**人也看不出来**。
 讲稿自己读着是通顺的，只有把图和讲稿并排数一遍才知道四根柱子只讲了两根；
@@ -364,7 +374,7 @@ V10 全过而**讲的时刻不对**（→V11）：柱子在「时间都花在哪
 V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要数字（「两个 30 页长片」）
 不必逐个念，硬判会逼着讲稿变成报数。
 
-`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 30 项）。
+`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 35 项）。
 没有它，门禁本身会重演「看起来通过了」，而那正是 5.6 的教训。
 
 ### `check_appearance.py` 现在报三个数，别用错

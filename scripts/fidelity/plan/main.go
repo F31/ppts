@@ -251,6 +251,12 @@ func scriptRevision(elems []element, page scriptPage, tierCompliant bool) *anima
 	}
 }
 
+// focusReleaseGapMS 是「这一句讲完」到「下一句开口讲下一个对象」之间，允许直接
+// 交棒的最大空档。小于它就把压暗保持到下一段开始——下一句紧接着讲下一个对象时
+// 放手，画面会闪一下全亮，比一直压着更难听。大于它就必须放手：那段时间旁白在
+// 说别的（页 2 的「两核跑五分钟，」「两条并发，」），压着上一个对象等于指错人。
+const focusReleaseGapMS = 500
+
 // focusSpans 把「这一段讲的是谁」编译成页级焦点序列。
 //
 // 只有带 Focus 的段参与：段的顺序就是注意力转移的顺序，段的开口时刻就是切换时刻。
@@ -266,24 +272,31 @@ func focusSpans(page scriptPage) []render.FocusSpan {
 	}
 
 	// 两路来源合成一条时间线：段级 Focus 落在段开口，FocusAt 落在句内偏移。
+	// segEnd 一并带上：焦点的「该讲完了」就是它所属那一段的结束时刻。
 	type at struct {
-		ms   int64
-		id   string
-		from string
+		ms     int64
+		segEnd int64
+		id     string
+		from   string
 	}
 	var all []at
 	for _, seg := range page.Segments {
+		end := seg.EndMs
+		if end == 0 {
+			end = seg.StartMs + seg.DurationMs
+		}
 		if seg.Focus != "" {
-			all = append(all, at{seg.StartMs, seg.Focus, seg.ID})
+			all = append(all, at{seg.StartMs, end, seg.Focus, seg.ID})
 		}
 		for _, fa := range seg.FocusAt {
-			all = append(all, at{seg.StartMs + fa.AtMs, fa.ElementID,
+			all = append(all, at{seg.StartMs + fa.AtMs, end, fa.ElementID,
 				fmt.Sprintf("%s@%dms", seg.ID, fa.AtMs)})
 		}
 	}
 	sort.SliceStable(all, func(i, j int) bool { return all[i].ms < all[j].ms })
 
 	var spans []render.FocusSpan
+	var owns []int64 // 与 spans 一一对应：该焦点所属段的结束时刻
 	seen := make(map[string]struct{}, len(all))
 	for _, a := range all {
 		if _, ok := static[a.id]; ok {
@@ -303,11 +316,25 @@ func focusSpans(page scriptPage) []render.FocusSpan {
 		}
 		seen[a.id] = struct{}{}
 		spans = append(spans, render.FocusSpan{StartMs: a.ms, ElementID: a.id})
+		owns = append(owns, a.segEnd)
 	}
 	// 少于两个不同的焦点元素时不启用：一个元素从头亮到尾，没有「让位」可言，
 	// 生成出来的序列只会让求值器每帧多查一次表。
 	if len(spans) < 2 {
 		return nil
+	}
+	// 给每个跨度一个终点：讲它的那一段结束、而下一段又隔了足够久，就放手。
+	// 不写 EndMs 等于「保持到下一段开始」，那正是「讲 B 时还压着 A」的来源。
+	for i := range spans {
+		next := page.DurationMs
+		if i+1 < len(spans) {
+			next = spans[i+1].StartMs
+		}
+		if g := next - owns[i]; g >= focusReleaseGapMS {
+			spans[i].EndMs = owns[i]
+			log.Printf("页 %d：焦点 %s 在 %dms 放手（空档 %dms）",
+				page.Index, spans[i].ElementID, spans[i].EndMs, g)
+		}
 	}
 	return spans
 }

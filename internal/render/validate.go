@@ -188,6 +188,29 @@ func validateFocus(p *Page, base string) error {
 			return planErr(fb+".fadeMs", CodeInvalidPlan,
 				"fade %d outside [0,%d]", f.FadeMs, MaxFocusFadeMS)
 		}
+		// EndMs=0 是「不放手」，不是「在 0ms 放手」：0 与「没写」在 JSON 里是同一个
+		// 字节（omitempty），所以终点只能表达成非零值。要是有人真写 0，落到这里报错
+		// 比让它静默变成「保持到下一段」好——那正是这条字段要修的病。
+		if f.EndMs != 0 {
+			if f.EndMs < 0 {
+				return planErr(fb+".endMs", CodeInvalidPlan, "negative end %d", f.EndMs)
+			}
+			if f.EndMs <= f.StartMs {
+				return planErr(fb+".endMs", CodeInvalidPlan,
+					"focus ends at %d, starts at %d", f.EndMs, f.StartMs)
+			}
+			if f.EndMs > p.DurationMs {
+				return planErr(fb+".endMs", CodeInvalidPlan,
+					"focus ends at %d, page is %dms", f.EndMs, p.DurationMs)
+			}
+			// 盖住下一段等于「同时指两个对象」，求值器只会认最后一段，前一段的终点
+			// 静默失效——编排以为放掉了，画面没放。
+			if i+1 < len(p.Focus) && f.EndMs > p.Focus[i+1].StartMs {
+				return planErr(fb+".endMs", CodeInvalidPlan,
+					"focus ends at %d, after next focus starts at %d",
+					f.EndMs, p.Focus[i+1].StartMs)
+			}
+		}
 		prev = f.StartMs
 	}
 	return nil

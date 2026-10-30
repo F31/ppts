@@ -117,6 +117,18 @@ func TestValidateRejects(t *testing.T) {
 		{"focus fade too long", func(p *Timeline) {
 			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", FadeMs: MaxFocusFadeMS + 1}}
 		}, CodeInvalidPlan, "pages[0].focus[0].fadeMs"},
+		{"focus ends before it starts", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 1000, ElementID: "e1", EndMs: 1000}}
+		}, CodeInvalidPlan, "pages[0].focus[0].endMs"},
+		{"focus ends beyond page", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", EndMs: 6001}}
+		}, CodeInvalidPlan, "pages[0].focus[0].endMs"},
+		// 终点盖住下一段 = 同时指两个对象：求值器只认最后一段，前一段的终点静默失效。
+		{"focus ends after next", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{
+				{StartMs: 0, ElementID: "e1", EndMs: 900}, {StartMs: 800, ElementID: "e2"},
+			}
+		}, CodeInvalidPlan, "pages[0].focus[0].endMs"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,5 +194,10 @@ func TestFocusPasses(t *testing.T) {
 	p.Pages[0].Focus = []FocusSpan{{StartMs: 1000, ElementID: "e1", FadeMs: 120}}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("单条焦点不应报错: %v", err)
+	}
+	// 放手：终点落在页内，应当通过（终点 == 页长也算合法，等于「讲到页尾才放」）。
+	p.Pages[0].Focus = []FocusSpan{{StartMs: 1000, ElementID: "e1", EndMs: 2000}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("带终点的焦点不应报错: %v", err)
 	}
 }

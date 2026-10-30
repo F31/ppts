@@ -150,6 +150,10 @@ const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
  * （违反合成器「顺序无关」的不变式）。这里按时间点解一次，天然唯一。
  *
  * 只影响不透明度，不改布局：退后的元素位置不动，讲到的元素也不会跳。
+ *
+ * `endMs` 是「放手」：讲到这一刻就先让开，整页回到全亮，直到下一段焦点开始。
+ * 没有它的时候，最后一个焦点会一路压到下一个对象开口——那段时间里旁白已经
+ * 在说别的了，画面却还指着上一个（H 片页 2 有两处：1.54s / 1.28s）。
  */
 export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<string, number> {
   const out: Record<string, number> = {};
@@ -160,11 +164,29 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
   let i = 0;
   while (i + 1 < focus.length && focus[i + 1].startMs <= tMs) i++;
 
+  const cur = focus[i];
+  const fade = cur.fadeMs ?? FOCUS_FADE_MS;
+
+  // 放手之后到下一段开始之间：只有刚放下的那个元素还有淡出尾巴，其余一律全亮。
+  // 注意这里返回的是「空表 + 一个渐亮的值」，不是「把别的元素调亮」——全亮是
+  // 缺省态，不做任何让位就等于全亮。
+  if (cur.endMs && tMs >= cur.endMs) {
+    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.endMs) / fade));
+    // 放手是「从退后回到全亮」：dim 从 1 走到 0，所以是 1−p。
+    // 写成 p 会让元素在放手那一刻反而更暗、到淡出结束再突然点亮——
+    // 测出来是 0.95 → 0.63 → 0.56 → 1.00 这个先暗后亮的形状（V13 抓到的正是它）。
+    if (p < 1) out[cur.elementId] = 1 - p;
+    return out;
+  }
+
   for (const f of focus) out[f.elementId] = 1;
-  out[focus[0].elementId] = 0;
-  if (i > 0) {
-    const cur = focus[i];
-    const fade = cur.fadeMs ?? FOCUS_FADE_MS;
+  if (i === 0) {
+    // 第 0 段：只有它在亮。这一句必须**只在 i===0 时**执行——之前漏了条件，
+    // 于是从第 3 个焦点起，`focus[0]` 被重新点成 0（全亮）后再也没人改回去，
+    // 一页上出现两根柱子同时满墨（页 2 从 6.0s 起，bar0 与 bar2 都亮）。
+    // 这个 bug 活了整整五版，因为没有任何判据问过「此刻亮着几个」。
+    out[focus[0].elementId] = 0;
+  } else {
     const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.startMs) / fade));
     // 上一个焦点从亮到暗、当前焦点从暗到亮，两件事同时发生且互不重叠。
     out[focus[i - 1].elementId] = p;

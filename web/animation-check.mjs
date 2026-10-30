@@ -439,3 +439,51 @@ test('焦点切换点必须在关键帧里：否则网页从最后关键帧线�
   assert.ok(Number(last.opacity) < 0.6, `页末应已压暗，实际 ${last.opacity}`);
   assert.equal(Number(frames[0].opacity), 0, '页首还没开口，应当透明');
 });
+
+test('放手时刻也必须在关键帧里：否则「回到全亮」被插值抹成一整页渐变', async () => {
+  // 分段之后，a 讲到 4402 就放手，b 到 5938 才开讲。若只采样切换点（5938），
+  // 4402→5938 这段会被线性插值填成「从压暗慢慢变亮」——看起来像褪色。
+  const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const ease = { x1: 0.2, y1: 0, x2: 0, y2: 1 };
+  const clips = [
+    { effect: 'fadeIn', startMs: 220, durationMs: 520, easing: ease, props: [{ name: 'opacity', from: 0, to: 1 }] }
+  ];
+  const focus = [
+    { startMs: 1772, elementId: 'a', endMs: 4402 },
+    { startMs: 5938, elementId: 'b' }
+  ];
+  const pageMs = 9855;
+  const opts = { fps: 30, pageDurationMs: pageMs, reduceMotion: false, focus };
+  const frames = compileKeyframes(clips, opts, 'a');
+  const at = (ms) => frames.some((f) => Math.abs(f.offset * pageMs - ms) <= 20);
+  assert.ok(at(4402), '放手时刻没有关键帧');
+  assert.ok(at(4402 + 240), '放手后的淡出终点没有关键帧');
+  // 终点才是判据：放手那一刻仍然是压暗值（0.55），一个淡出之后才是 1。
+  // 第一版把 dim 写成了 p，两个端点都成了 1——片子里的形状是「先更暗、然后突然全亮」
+  // （0.95 → 0.63 → 0.56 → 1.00），眼睛看得出，但只看「最后是不是 1」是看不出的。
+  const atEnd = frames.find((f) => Math.abs(f.offset * pageMs - 4402) <= 20);
+  assert.ok(Math.abs(Number(atEnd.opacity) - 0.55) < 0.02,
+    `放手那一刻应仍是压暗值 0.55，实际 ${atEnd.opacity}`);
+  const relax = frames.find((f) => Math.abs(f.offset * pageMs - (4402 + 240)) <= 20);
+  assert.equal(Number(relax.opacity), 1, `放手后不透明度应为 1，实际 ${relax.opacity}`);
+});
+
+test('同一时刻只指一个：第 3 个焦点开始后，第 1 个元素必须已经退后', async () => {
+  // 这条测的是 focusDim 的一个曾存在的 bug：`out[focus[0]] = 0` 少了 i===0 的条件，
+  // 于是每帧都把第 1 个元素重新点成全亮，从第 3 个焦点起页面上有两根柱子同时满墨。
+  // 肉眼看得出来（两根一样深），但没有任何判据问过「此刻亮着几个」。
+  const { focusDim } = await import('../shared/motion.ts');
+  const focus = [
+    { startMs: 1772, elementId: 'bar0' },
+    { startMs: 3572, elementId: 'bar1' },
+    { startMs: 5938, elementId: 'bar2' },
+    { startMs: 8208, elementId: 'bar3' }
+  ];
+  const dims = focusDim(focus, 6500);
+  const bright = Object.entries(dims).filter(([, d]) => d <= 0.01).map(([k]) => k);
+  assert.deepEqual(bright, ['bar2'], `6500ms 时应当只有 bar2 在亮，实际 ${JSON.stringify(bright)}`);
+  assert.equal(dims.bar0, 1, `bar0 应当已退后，实际 ${dims.bar0}`);
+  // 放手后的空档里一个都不指（全亮是缺省态，返回空表）。
+  const gap = focusDim([{ startMs: 0, elementId: 'a', endMs: 400 }, { startMs: 900, elementId: 'b' }], 700);
+  assert.deepEqual(gap, {}, '空档里不应有任何压暗');
+});

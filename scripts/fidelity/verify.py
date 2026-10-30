@@ -75,6 +75,8 @@ TOL_AV_S = 0.033          # 音画 lag（1 帧）
 TOL_STORY_EARLY_MS = 120  # 「讲它」比念到它的词早多少算抢话（≈4 帧，只够量化误差）
 TOL_STORY_LATE_MS = 350   # 「讲它」比念到它的词晚多少算走神（一句话里的正常拖尾）
 TOL_DUR_MS = 400          # 成片与旁白原件的时长差
+TOL_RELEASE_GAP_MS = 500  # 讲完到下一段开讲之间，空档超过这个就必须放手（与 plan/main.go 同值）
+TOL_RELEASE_EARLY_MS = 300  # 比句尾早这么多就放手 = 话没说完先撤了（反向也会红）
 MIN_MEAN_DB = -50.0       # 低于这个当静音轨
 MAX_SHARP = 0.7           # 互相关峰在 ±100ms 处高于此值 = 峰太宽，lag 不可信
 LAYOUT_COVER_MIN = 0.50   # 画面内容覆盖低于此值 = 观众看到半页
@@ -292,6 +294,85 @@ def attention_findings(design, words, appear=None, elems=None):
              "detail": bad + unjudged}]
 
 
+def focus_unique_findings(rep):
+    """V13：同一时刻亮着几个——压暗是互斥的，满墨的只能有一个。
+
+    这条问的是**取景**，不是内容：四个元素都在、都按时出现、切换时刻也对，
+    但第一根柱子从第 3 个焦点开始一直没被压暗（`focusDim` 少了一个 `i === 0`），
+    页面上两根柱子一样深，「现在讲的是哪根」就没人知道了。
+
+    前面十二条判据没有一条会红：V5 问「该动时动了没」（动了），V7/V8 问「空不空、
+    静不静」（不空不静），V11 问「什么时候切」（切得对）。压暗本身是从未被审的对象。
+    """
+    bad = []
+    for page in rep.get("pages") or []:
+        for v in page.get("violations") or []:
+            bad.append("页 %d %.2f–%.2fs：%s 同时满墨（该退后的没退）"
+                       % (page.get("index"), v["fromAbsMs"] / 1000, v["toAbsMs"] / 1000,
+                          " / ".join(v.get("bright") or [])))
+    return [{"code": "V13.1", "ok": not bad,
+             "msg": "只指一个：有人被压暗时，满墨的元素恰好一个",
+             "detail": bad}]
+
+
+def focus_release_findings(design, plan):
+    """V12：压暗有没有定义终点——「这一句讲完了」之后是不是还指着上一个对象。
+
+    审的是编排（plan.json 的 focus 区间），不是成片像素。这两件事要分开：
+    压暗区间是不是这么算的，是编排的事；渲染端有没有照做，由 V5.2 的起播延迟
+    与抽帧目视一起兜。要是拿成片的亮度去反推「谁被压暗」，深色元素与浅色元素
+    会得出两种阈值，判据自己先不稳。
+
+    规则只有一条：**讲它的那一段结束之后，若下一段没有紧接着换人，就必须放手。**
+    「放手」= 整页回到全亮（不指任何人），而不是「把焦点让给另一个对象」——
+    那段时间旁白在说别的事，画面唯一诚实的做法是不指。
+    """
+    findings = []
+    by_page = {p.get("index"): p for p in (plan.get("pages") or [])}
+    bad = []
+    checked = 0
+    for page in design.get("pages") or []:
+        pl = by_page.get(page.get("index"))
+        if pl is None:
+            continue
+        spans = pl.get("focus") or []
+        if len(spans) < 2:
+            continue
+        page_ms = page.get("durationMs", 0)
+        segs = page.get("segments") or []
+        for i, f in enumerate(spans):
+            start = f.get("startMs", 0)
+            owner = next((s for s in segs
+                          if s.get("startMs", 0) <= start
+                          < s.get("startMs", 0) + s.get("durationMs", 0)), None)
+            if owner is None:
+                continue
+            seg_end = owner.get("endMs") or owner.get("startMs", 0) + owner.get("durationMs", 0)
+            nxt = spans[i + 1].get("startMs", page_ms) if i + 1 < len(spans) else page_ms
+            gap = nxt - seg_end
+            if gap < TOL_RELEASE_GAP_MS:
+                # 下一句紧接着讲下一个对象：这里放手会闪一下全亮，比一直压着难听。
+                continue
+            checked += 1
+            end = f.get("endMs") or 0
+            if end == 0:
+                bad.append("页 %d %s：「%s」讲完（%dms）之后仍压着它 %dms 才换人"
+                           % (page.get("index"), f.get("elementId"),
+                              owner.get("text", owner.get("id", ""))[:12],
+                              seg_end, nxt - seg_end))
+            elif end < seg_end - TOL_RELEASE_EARLY_MS:
+                bad.append("页 %d %s：%dms 就放手，那一句还有 %dms 没讲完"
+                           % (page.get("index"), f.get("elementId"),
+                              end, seg_end - end))
+            elif end > nxt:
+                bad.append("页 %d %s：放手时刻 %dms 晚于下一段 %dms"
+                           % (page.get("index"), f.get("elementId"), end, nxt))
+    return [{"code": "V12.1", "ok": not bad,
+             "msg": "讲完就放手：空档 ≥%dms 时压暗必须有终点（共 %d 处要放手）"
+                    % (TOL_RELEASE_GAP_MS, checked),
+             "detail": bad}]
+
+
 def _bound_of(design):
     """设计意图 → {元素: [(段号, 段内错落)]}，顺序保留，用来发现重复绑定。"""
     out = {}
@@ -303,7 +384,7 @@ def _bound_of(design):
     return out
 
 
-def audit(design, align, appear, film, elems=None):
+def audit(design, align, appear, film, elems=None, plan=None):
     """纯函数：只吃数据，不碰文件。返回 [(code, ok, msg, detail)]。
 
     拆出来的目的是 `--self-test` 能往合成数据里注入故障——门禁自己也得被验证。
@@ -471,6 +552,12 @@ def audit(design, align, appear, film, elems=None):
         findings.extend(narration_findings(design, elems))
     # ---- V11 讲与念是否同拍：V10 管「念没念到」，这一条管「是不是那一刻念的」
     findings.extend(attention_findings(design, film.get("words"), appear, elems))
+    # ---- V12 讲完有没有放手：V11 管「开始讲它」的时刻，这一条管「讲完之后还压着谁」
+    if plan:
+        findings.extend(focus_release_findings(design, plan))
+    # ---- V13 只指一个：压暗是互斥的，看「此刻亮着几个」。要成片像素，不要计划
+    if film.get("focus"):
+        findings.extend(focus_unique_findings(film["focus"]))
 
     return findings
 
@@ -621,6 +708,8 @@ def load_inputs(args):
     film["mtime"] = os.path.getmtime(args.film)
     if args.motion and os.path.exists(args.motion):
         film["motion"] = json.load(open(args.motion, encoding="utf-8"))
+    if args.focus and os.path.exists(args.focus):
+        film["focus"] = json.load(open(args.focus, encoding="utf-8"))
     if args.chart and os.path.exists(args.chart):
         film["chart"] = json.load(open(args.chart, encoding="utf-8"))
     if args.words and os.path.exists(args.words):
@@ -676,6 +765,8 @@ def rerun(args):
          "--out", args.motion],
         [py, os.path.join(HERE, "check_chart.py"), args.film, args.segments,
          args.elements, "--out", args.chart],
+        [py, os.path.join(HERE, "check_focus.py"), args.film, args.segments,
+         args.elements, args.plan, "--out", args.focus],
     ):
         if cmd[1].endswith("check_av_sync.py") and args.skip_sync:
             continue
@@ -853,7 +944,36 @@ def self_test():
     got11b = {x["code"]: x["ok"] for x in attention_findings(d11b, w11, p11, e11)}
     cases.append(("V11.1-ok", got11b.get("V11.1") is True, got11b))
 
-    # V7：内容页上第二件内容晚 4s 才到 —— 半页空了 4s，框也挂了 4s
+    # V12：a 在 3200ms 讲完，b 到 4000ms 才开讲 —— 中间 800ms 该放手
+    d12 = {"pages": [{"index": 0, "durationMs": 5000, "segments": [
+        {"id": "s1", "startMs": 200, "durationMs": 3000, "text": "两核"},
+        {"id": "s2", "startMs": 4000, "durationMs": 800, "text": "四核"}]}]}
+    plan12 = {"pages": [{"index": 0, "durationMs": 5000, "focus": [
+        {"startMs": 400, "elementId": "a"},
+        {"startMs": 4000, "elementId": "b"}]}]}
+    got12 = {x["code"]: x["ok"] for x in focus_release_findings(d12, plan12)}
+    cases.append(("V12.1-hold", got12.get("V12.1") is False, got12))
+    # 反向一：给终点 → 绿（否则这条判据只是在惩罚「有焦点」）
+    plan12b = json.loads(json.dumps(plan12))
+    plan12b["pages"][0]["focus"][0]["endMs"] = 3200
+    got12b = {x["code"]: x["ok"] for x in focus_release_findings(d12, plan12b)}
+    cases.append(("V12.1-ok", got12b.get("V12.1") is True, got12b))
+    # 反向二：终点写在话没说完的位置（2000ms，句尾还有 1200ms）→ 红
+    plan12c = json.loads(json.dumps(plan12))
+    plan12c["pages"][0]["focus"][0]["endMs"] = 2000
+    got12c = {x["code"]: x["ok"] for x in focus_release_findings(d12, plan12c)}
+    cases.append(("V12.1-early", got12c.get("V12.1") is False, got12c))
+
+    # V13：同一时刻两根柱子满墨 —— focusDim 少了 i===0 的那个 bug 在成片里的样子
+    rep13 = {"pages": [{"index": 1, "pageStartMs": 12000, "violations": [
+        {"fromMs": 6100, "toMs": 9000, "fromAbsMs": 18100, "toAbsMs": 21000,
+         "frames": 30, "bright": ["bar0", "bar2"], "dimmed": ["bar1"]}]}]}
+    got13 = {x["code"]: x["ok"] for x in focus_unique_findings(rep13)}
+    cases.append(("V13.1-two", got13.get("V13.1") is False, got13))
+    got13b = {x["code"]: x["ok"] for x in focus_unique_findings({"pages": [{"index": 1, "violations": []}]})}
+    cases.append(("V13.1-ok", got13b.get("V13.1") is True, got13b))
+
+
     d7, p7, e7 = _layout_fixture(late_ms=4000)
     got7 = {x["code"]: x["ok"] for x in layout_findings(d7, p7, e7)}
     cases.append(("V7.1", got7.get("V7.1") is False, got7.get("V7.1")))
@@ -914,6 +1034,10 @@ def main():
     ap.add_argument("--ref-audio", default="tmp/q7/audio/timeline.wav")
     ap.add_argument("--words", default="tmp/q7/words.json",
                     help="narrate.py 的逐词边界：V11 的参照物")
+    ap.add_argument("--plan", default="tmp/q7/job/plan.json",
+                    help="编译后的计划：V12 审压暗区间有没有终点；不存在则跳过 V12")
+    ap.add_argument("--focus", default="tmp/q7/focus.json",
+                    help="check_focus.py 的输出：V13 看「同一时刻亮着几个」")
     ap.add_argument("--rerun", action="store_true", help="先重跑三个测量再审计")
     ap.add_argument("--skip-sync", action="store_true", help="跳过音画检查（无参考音轨时）")
     ap.add_argument("--json", default="tmp/q7/verify.json")
@@ -935,7 +1059,11 @@ def main():
             return 2
 
     design, align, appear, film, elems = load_inputs(args)
-    findings = audit(design, align, appear, film, elems)
+    plan = None
+    if args.plan and os.path.exists(args.plan):
+        with open(args.plan, encoding="utf-8") as fh:
+            plan = json.load(fh)
+    findings = audit(design, align, appear, film, elems, plan)
     # 报告必须比成片新：改了片子忘记重测，门禁就会对着旧数据说「全过」。
     reports = [args.alignment, args.appearance]
     findings.append({"code": "V6.1", "ok": not stale(reports, film["mtime"]),

@@ -72,10 +72,12 @@ type SlideEntry struct {
 	Focus []SlideFocus `json:"focus,omitempty"`
 }
 
-// SlideFocus 是一段焦点区间：从 StartMs 起焦点落在 ElementID 上，直到下一段开始。
+// SlideFocus 是一段焦点区间：从 StartMs 起焦点落在 ElementID 上；EndMs 非零时
+// 到那一刻放手（整页回到全亮），否则保持到下一段开始。
 type SlideFocus struct {
 	StartMs   int64  `json:"startMs"`
 	ElementID string `json:"elementId"`
+	EndMs     int64  `json:"endMs,omitempty"`
 	FadeMs    int64  `json:"fadeMs,omitempty"`
 }
 

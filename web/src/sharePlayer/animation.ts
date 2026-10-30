@@ -84,6 +84,12 @@ export function compileKeyframes(
   for (const f of opts.focus ?? []) {
     times.push(f.startMs);
     times.push(f.startMs + (f.fadeMs ?? 240));
+    // 放手也是一个采样点，理由同上：它落在 clip 区间之外，漏了就会被线性插值
+    // 抹成「一路慢慢变亮」——看起来像褪色，不像放手。
+    if (f.endMs) {
+      times.push(f.endMs);
+      times.push(f.endMs + (f.fadeMs ?? 240));
+    }
   }
   times.push(pageMs);
   const points: number[] = [];

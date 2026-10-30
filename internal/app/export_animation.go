@@ -238,7 +238,8 @@ func slideFocus(in []render.FocusSpan) []share.SlideFocus {
 	}
 	out := make([]share.SlideFocus, 0, len(in))
 	for _, f := range in {
-		out = append(out, share.SlideFocus{StartMs: f.StartMs, ElementID: f.ElementID, FadeMs: f.FadeMs})
+		out = append(out, share.SlideFocus{StartMs: f.StartMs, ElementID: f.ElementID,
+			EndMs: f.EndMs, FadeMs: f.FadeMs})
 	}
 	return out
 }

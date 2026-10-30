@@ -91,11 +91,19 @@ type Page struct {
 	Focus []FocusSpan `json:"focus,omitempty"`
 }
 
-// FocusSpan 是一段焦点区间：从 StartMs 起，焦点落在 ElementID 上，直到下一段开始。
+// FocusSpan 是一段焦点区间：从 StartMs 起，焦点落在 ElementID 上。
+//
+// 这段区间**可以没有终点**（EndMs=0），此时焦点一直保持到下一段开始——那是
+// 「下一句紧接着就讲下一个对象」的常态，压暗不落地，观众不会看见一闪。
+// 但下一段若隔了一段「讲别的事」的空档，就必须给 EndMs：不给的话，那段时间里
+// 画面仍指着上一个对象，而旁白已经在说别的（H 片页 2 有两处，1.54s 与 1.28s）。
 type FocusSpan struct {
 	StartMs int64 `json:"startMs"`
 	// ElementID 必须是本页某个图层的 elementId。
 	ElementID string `json:"elementId"`
+	// EndMs 是这份焦点的终点：到此为止「放手」，整页回到全亮，直到下一段焦点开始。
+	// 0 表示不放手（保持到下一段开始或页末）。
+	EndMs int64 `json:"endMs,omitempty"`
 	// FadeMs 是切换的过渡时长（缺省 240ms）。0 表示硬切，用于「不需要喘口气」的场景。
 	FadeMs int64 `json:"fadeMs,omitempty"`
 }
