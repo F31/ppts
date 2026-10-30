@@ -150,6 +150,9 @@ func runWorker() error {
 		WithNarrationWriter(integrations.NewGoPPTXNarrationWriter()).
 		WithSourceRevisions(stores.projects).
 		WithMaxDuration(time.Duration(maxExportMinutes) * time.Minute).
+		// 动画渲染分钟按实际渲了的页结算（M4 §7.5）：预占在 api 受理时，
+		// 只有这里知道哪几页降级成了静态段。
+		WithUsage(usageStore).
 		WithLogger(logger)
 	// 动画通道（ADR-21）：默认关闭，且要求「开关 + 服务地址」同时具备才接入。
 	// 渲染服务是可选依赖——没有它，导出必须照常成功，所以关闭态不建客户端、不探测。
@@ -190,21 +193,38 @@ func runWorker() error {
 	}
 	hostname, _ := os.Hostname()
 	owner := hostname + "-" + strconv.Itoa(os.Getpid())
+	// 取消与失败终态的善后：把已经预占的额度放掉。
+	//
+	// 两者共用一个实现：漏掉任何一个都会把额度锁到账期结束，而用户看到的是
+	// "这个月没额度了"，实际一次都没渲成功——这类故障最难自查。
+	releaseUsage := func(ctx context.Context, job *pipeline.Job) error {
+		if job == nil || job.IDempotencyKey == "" {
+			return nil
+		}
+		var err error
+		switch job.Kind {
+		case pipeline.KindNarration:
+			err = usageStore.Release(ctx, job.TenantID, job.IDempotencyKey, usage.KindGenSeconds)
+		case pipeline.KindExport:
+			// 只有带动画的导出才预占过；静态导出 Release 会返回 NotFound，属正常。
+			err = usageStore.Release(ctx, job.TenantID, job.IDempotencyKey, animationMinutesKind(job))
+		default:
+			return nil
+		}
+		if errors.Is(err, usage.ErrReservationNotFound) || errors.Is(err, usage.ErrReservationReleased) || errors.Is(err, usage.ErrReservationSettled) {
+			return nil
+		}
+		return err
+	}
 	worker := pipeline.NewWorker(jobs, owner, tenantID, dispatch, pipeline.WorkerOptions{
 		Metrics:     metrics,
 		Logger:      stdLogger,
 		Claimer:     claimer,
 		MaxAttempts: envInt("PPTS_WORKER_MAX_ATTEMPTS", 10),
-		OnCanceled: func(ctx context.Context, job *pipeline.Job) error {
-			if job.Kind != pipeline.KindNarration || job.IDempotencyKey == "" {
-				return nil
-			}
-			err := usageStore.Release(ctx, job.TenantID, job.IDempotencyKey, usage.KindGenSeconds)
-			if errors.Is(err, usage.ErrReservationNotFound) || errors.Is(err, usage.ErrReservationReleased) || errors.Is(err, usage.ErrReservationSettled) {
-				return nil
-			}
-			return err
-		},
+		OnCanceled:  releaseUsage,
+		// 失败终态也要释放：渲染失败（服务不可达、超时）不会产生渲染分钟，
+		// 预占留着就是白占一个月的额度。
+		OnFailed: releaseUsage,
 	})
 
 	// 后台循环（保留清理/审计归档/存储生命周期）依赖控制面全租户视图，仅 PostgreSQL 启用。
@@ -533,4 +553,16 @@ func ttsProviderFromEnv(logger *slog.Logger) (tts.TTSProvider, error) {
 	default:
 		return nil, fmt.Errorf("unsupported PPTS_TTS_PROVIDER=%q (supported: fake, siliconflow); refusing to run because failure to configure TTS must not silently produce silent audio", provider)
 	}
+}
+
+// animationMinutesKind 返回任务所属账期的动画计量种类。
+//
+// 账期取**任务创建时间**：预占发生在受理时（api），结算与释放可能发生在下一个账期
+// （月末提交、月初跑完）。两边都按创建时间算账期，才指向同一行额度。
+func animationMinutesKind(job *pipeline.Job) usage.Kind {
+	created := job.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	return usage.KindAnimationMinutes.Period(usage.MonthPeriod(created))
 }

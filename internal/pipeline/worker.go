@@ -41,6 +41,7 @@ type Worker struct {
 	logger      *log.Logger
 	metrics     WorkerMetrics
 	onCanceled  func(context.Context, *Job) error
+	onFailed    func(context.Context, *Job) error
 	// claimMu 串行化进程内的领取。SQLite 的 ClaimNext 是「SELECT 后 UPDATE」的延迟事务，
 	// 多 goroutine 并发领取会相互 BUSY/重领；领取本身极短，加锁成本可忽略，处理仍并发。
 	claimMu sync.Mutex
@@ -59,6 +60,12 @@ type WorkerOptions struct {
 	Logger      *log.Logger
 	Metrics     WorkerMetrics
 	OnCanceled  func(context.Context, *Job) error
+	// OnFailed 在任务进入**失败终态**（不可重试，或重试次数耗尽）时调用；
+	// 与 OnCanceled 对称，用来释放"失败了但已经预占"的资源（M4 动画渲染额度）。
+	//
+	// 只在终态调用，不在每次可重试失败时调用：重试期间预占必须保留，
+	// 否则重试成功后结算会找不到预占，那笔用量就漏账了。
+	OnFailed func(context.Context, *Job) error
 	// Claimer 指定的独立领取器（跨租户调度连接）。nil 时使用 store 领取。
 	Claimer Claimer
 }
@@ -112,6 +119,7 @@ func NewWorker(store Store, owner, tenantID string, handler HandlerFunc, opts Wo
 		w.metrics = noopWorkerMetrics{}
 	}
 	w.onCanceled = opts.OnCanceled
+	w.onFailed = opts.OnFailed
 	return w
 }
 
@@ -222,6 +230,7 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 					w.logger.Printf("worker: complete failed after max attempts job=%s: %v", job.ID, cerr)
 				} else {
 					w.metrics.JobCompleted(job, StateFailed, time.Since(started))
+					w.failed(ctx, job)
 				}
 				w.logger.Printf("worker: job %s exhausted %d attempts, marked failed", job.ID, job.Attempt)
 				return
@@ -242,6 +251,7 @@ func (w *Worker) process(ctx context.Context, job *Job) {
 			w.logger.Printf("worker: complete failed job=%s: %v", job.ID, cerr)
 		} else {
 			w.metrics.JobCompleted(job, StateFailed, time.Since(started))
+			w.failed(ctx, job)
 		}
 		return
 	}
@@ -276,6 +286,19 @@ func (w *Worker) releaseCanceled(ctx context.Context, job *Job) {
 	}
 	if err := w.onCanceled(ctx, job); err != nil {
 		w.logger.Printf("worker: on canceled job=%s: %v", job.ID, err)
+	}
+}
+
+// failed 在任务落为失败终态后调用 OnFailed。
+//
+// 与 releaseCanceled 一样，钩子的错误只记日志：任务状态已经提交，钩子失败不该
+// 反过来影响任务的结果——它只是"善后"，不是业务流程的一部分。
+func (w *Worker) failed(ctx context.Context, job *Job) {
+	if w.onFailed == nil {
+		return
+	}
+	if err := w.onFailed(ctx, job); err != nil {
+		w.logger.Printf("worker: on failed job=%s: %v", job.ID, err)
 	}
 }
 

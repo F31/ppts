@@ -230,3 +230,61 @@ func TestWorkerUsesGlobalClaimWhenTenantEmpty(t *testing.T) {
 		t.Fatalf("worker did not use global claim")
 	}
 }
+
+// OnFailed 只在失败**终态**调用：重试期间调动会把预占放掉，重试成功后结算就找不到预占，
+// 那笔用量成了无主账（M4 动画渲染额度的释放路径依赖这条语义）。
+func TestWorkerCallsOnFailedOnlyOnTerminalFailure(t *testing.T) {
+	base := func() *Job {
+		return &Job{ID: "j-fail", TenantID: "tenant-1", ProjectID: "project-1", Kind: KindExport,
+			LeaseOwner: "wk", FencingToken: 1}
+	}
+
+	t.Run("永久失败", func(t *testing.T) {
+		store := &observeStore{}
+		failed := 0
+		w := NewWorker(store, "wk", "tenant-1", func(context.Context, *Job) error {
+			return errors.New("permanent")
+		}, WorkerOptions{OnFailed: func(context.Context, *Job) error {
+			failed++
+			return nil
+		}})
+		w.process(context.Background(), base())
+		if store.completed != StateFailed || failed != 1 {
+			t.Fatalf("completed=%s onFailed=%d", store.completed, failed)
+		}
+	})
+
+	t.Run("重试次数耗尽", func(t *testing.T) {
+		store := &observeStore{}
+		failed := 0
+		job := base()
+		job.Attempt = 1
+		w := NewWorker(store, "wk", "tenant-1", func(context.Context, *Job) error {
+			return &RetryError{Err: errors.New("rate limited"), At: time.Now().Add(time.Minute)}
+		}, WorkerOptions{MaxAttempts: 1, OnFailed: func(context.Context, *Job) error {
+			failed++
+			return nil
+		}})
+		w.process(context.Background(), job)
+		if store.completed != StateFailed || failed != 1 {
+			t.Fatalf("completed=%s onFailed=%d", store.completed, failed)
+		}
+	})
+
+	t.Run("还有重试机会", func(t *testing.T) {
+		store := &observeStore{}
+		failed := 0
+		job := base()
+		job.Attempt = 1
+		w := NewWorker(store, "wk", "tenant-1", func(context.Context, *Job) error {
+			return &RetryError{Err: errors.New("rate limited"), At: time.Now().Add(time.Minute)}
+		}, WorkerOptions{MaxAttempts: 3, OnFailed: func(context.Context, *Job) error {
+			failed++
+			return nil
+		}})
+		w.process(context.Background(), job)
+		if !store.retried || failed != 0 {
+			t.Fatalf("retried=%v onFailed=%d, want retried and no onFailed", store.retried, failed)
+		}
+	})
+}

@@ -130,6 +130,9 @@ type ExportHandler struct {
 	// 底图投递（tasks 2.0）与元素几何来源（tasks 2.0b）都还没有落地，
 	// 此时导出保持纯静态路径，且不探测渲染服务。
 	animationPages AnimationRequestBuilder
+	// usage 是动画渲染分钟的结算账本（M4 §7.5）。nil = 不结算（本地/单测），
+	// 额度不是导出路径的必需依赖。
+	usage UsageSettler
 }
 
 func NewExportHandler(artifacts artifact.Store, steps interface {
@@ -705,8 +708,14 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	// 动画通道（ADR-21）：开关打开、快照里有逐页规格、且能组装出输入，三者同时成立才探测。
 	// 任一不成立都直接走下面的静态编码 —— 静态路径不因这条分支改变任何行为。
 	if av := h.animatedVideo(ctx, job, snapshot, bundle, pagePNGs, pageDurations, audioTmpName, subtitleASS); av != nil {
+		h.settleAnimationMinutes(ctx, job, pageDurations, av)
 		h.logAnimationPages(av, len(pagePNGs))
 		return av.File, nil
+	}
+	// 声明了动画却退回静态：结算 0 分钟，把受理时占住的额度放掉。
+	// 不做这一步，一次渲染失败就会把额度锁到账期结束（用户看到的是"没额度了"，实际一次都没渲）。
+	if snapshot.Animation != nil {
+		h.settleAnimationMinutes(ctx, job, pageDurations, nil)
 	}
 	// 编码产物本就写临时文件；直接返回 *os.File 由调用方流式上传，避免 os.ReadFile 再整份读入内存。
 	tmp := filepath.Join(os.TempDir(), "ppts-export-"+job.ID+".mp4")
