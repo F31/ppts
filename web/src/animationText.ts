@@ -38,3 +38,26 @@ export function animationReasonText(reason: string | undefined, t: Translate): s
 export function animationDroppedText(reason: string, jobId: string, t: Translate): string {
   return t('editor.exportAnimationDropped', { reason: animationReasonText(reason, t), jobId });
 }
+
+// exportFailureText 把导出请求的失败翻成一句用户能看懂的话。
+//
+// 额度用尽是一条**必须单独解释**的失败：它是 429，但既不是限流（重试没用），
+// 也不是"功能没开通"（找管理员开开关也没用）。用通用的 `error.message` 顶上，
+// 用户看到的是一句英文的 "animation render quota for 2026-10 is exhausted"，
+// 既不知道该怎么办，也不知道要等到什么时候。
+//
+// 恢复时间取 Retry-After（core.ts 已解析成 retryAfterSeconds）：用相对秒数换算成
+// 本地日期，避免让前端去解析业务字段。
+export function exportFailureText(error: unknown, t: Translate): string {
+  const coded = error as { code?: string; retryAfterSeconds?: number } | null;
+  if (coded && coded.code === 'animation_quota_exceeded') {
+    const seconds = coded.retryAfterSeconds;
+    if (typeof seconds === 'number' && seconds > 0) {
+      const reset = new Date(Date.now() + seconds * 1000);
+      return t('editor.exportAnimationQuotaReset', { date: reset.toLocaleDateString() });
+    }
+    return t('editor.exportAnimationQuota');
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return t('editor.exportFailed');
+}

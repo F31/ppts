@@ -55,7 +55,7 @@ import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
-import { animationDroppedText } from '../animationText';
+import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
 
 type SlidesState =
@@ -1526,7 +1526,8 @@ export function ProjectEditor({
         setExportOpen(false);
       }
     } catch (error) {
-      setExportError(error instanceof Error ? error.message : t('editor.exportFailed'));
+      // 额度用尽的 429 要单独解释（等账期重置 / 导出静态版），不能把英文原文糊到界面上。
+      setExportError(exportFailureText(error, t));
     } finally {
       setExporting(false);
     }

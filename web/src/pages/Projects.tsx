@@ -32,7 +32,7 @@ import {
   type SourceRevisionSummary
 } from '../api';
 import { describeApiError } from '../apiError';
-import { animationDroppedText } from '../animationText';
+import { animationDroppedText, exportFailureText } from '../animationText';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ImportDialog } from '../components/ImportDialog';
 import { useConfirmDialog } from '../components/ConfirmDialog';
@@ -413,7 +413,8 @@ export function Projects({
         pushNotice(t('projects.exportQueued', { jobId: result.jobId }));
       }
     } catch (err) {
-      setExportError(err instanceof Error ? err.message : t('editor.exportFailed'));
+      // 额度用尽的 429 要单独解释（等账期重置 / 导出静态版），不能把英文原文糊到界面上。
+      setExportError(exportFailureText(err, t));
     } finally {
       setExportBusy(false);
     }

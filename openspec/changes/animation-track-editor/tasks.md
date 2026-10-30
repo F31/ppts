@@ -32,10 +32,20 @@
 
 ## 4. 配额 `animation.minutes`（第 2 段）
 
-- [ ] 4.1 `internal/usage` 新增 `KindAnimationMinutes`
-- [ ] 4.2 导出受理时预占、渲染完成时按真实时长结算；失败释放
-- [ ] 4.3 超限返回明确原因与恢复时间（不静默排队）
-- [ ] 4.4 用例：预占/结算/释放、超限拒绝、并发预占不超卖
+- [x] 4.1 `internal/usage` 新增 `KindAnimationMinutes`；账期限定 `Kind.Period/Base/PeriodOf`、
+      `MonthPeriod`（UTC）、`MonthReset`。账期编进计量种类，跨月是额度表新行——
+      这样"按月"与"单行条件更新防超卖"能同时成立（design ADR-7）
+- [x] 4.2 导出受理时按时间轴总时长预占（`internal/api/animation_quota.go`）；
+      渲染完成按**实际渲了动画的页**结算（`internal/app/animation_quota.go`，
+      降级页不计费、整体退回静态结算 0）；失败终态与取消释放（worker 新增 `OnFailed`，
+      与既有 `OnCanceled` 对称；重试期间保留预占）
+- [x] 4.3 超限 429 + `code=animation_quota_exceeded` + `limitMinutes`/`usedMinutes`/
+      `requestedMinutes`/`reservedMinutes`/`resetAt` + `Retry-After`；前端翻成
+      「将于 {date} 恢复 / 可以先导出静态版」
+- [x] 4.4 用例：预占（5 分钟/上限 60）、超限拒绝（上限 4 < 5）且不建任务、
+      建任务失败后释放、静态导出不占额度、**30 并发上限 10 每单 4 → 只成功 2 单（预占 8）**；
+      结算侧 5 条（降级页排除、整体静态结算 0、跨月按任务创建时间、账本报错不阻断、无账本 noop）；
+      `OnFailed` 三条（永久失败 / 重试耗尽 / 仍有重试机会不触发）
 
 ## 5. 轨道编辑 UI（第 3 段）
 

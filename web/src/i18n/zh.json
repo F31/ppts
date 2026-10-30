@@ -776,6 +776,8 @@
   "editor.exportAnimationPages": "{animated}/{total} 页配了动效，其余页按静态画面渲染。",
   "editor.exportAnimationDegradeNote": "个别页渲染失败或时长对不上时会自动换成该页的静态画面，成片仍会导出成功。",
   "editor.exportAnimationDropped": "{reason}本次导出已按静态视频处理（任务 {jobId}），任务仍会正常完成。",
+  "editor.exportAnimationQuota": "本月动画渲染额度已用完，暂时无法导出带动画的视频。导出静态视频不受影响。",
+  "editor.exportAnimationQuotaReset": "本月动画渲染额度已用完，将于 {date} 恢复。在此之前可以导出静态视频。",
   "editor.animationButton": "动效",
   "editor.animationEyebrow": "逐页动效",
   "editor.animationTitle": "页面动效",

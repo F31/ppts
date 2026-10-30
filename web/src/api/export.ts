@@ -71,6 +71,11 @@ export type AnimationCapability = {
   source: string;
   /** 灰度桶 0–99；-1 表示未计算 */
   bucket: number;
+  /**
+   * 每月动画渲染分钟数上限；缺省表示不限（design ADR-7：升级当天不给存量租户加硬停）。
+   * 这里只做透传：超限的拒绝发生在导出受理（429 animation_quota_exceeded）。
+   */
+  maxMinutes?: number;
   reason?: string;
 };
 

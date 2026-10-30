@@ -62,8 +62,15 @@
 
 ### 4. 配额：`animation.minutes`（第 2 段）
 
-复用 `internal/usage` 的预占/结算账本，新增计量种类 `animation_minutes`。超限返回明确原因与
-恢复时间（设计 §7.5：不静默排队）。
+复用 `internal/usage` 的预占/结算账本，新增计量种类 `animation_minutes`，**账期编进计量种类**
+（`animation_minutes:2026-10`）——这样"按月"与"并发不超卖"能同时成立，见 design ADR-7。
+
+- 受理时按时间轴总时长预占；超限 **429** 并给出上限、已用、本次申请与恢复时间，不建任务（不静默排队）；
+- 渲染完按「真的渲了动画的页」结算，降级成静态段的页不计费；
+- 失败终态与取消释放预占，重试期间保留；
+- 上限取自租户策略 `animation.max_minutes`，**未配置为不限量**（ADR-7：不在升级当天给存量租户加硬停）。
+
+前端把 429 翻成一句人话（等账期重置 / 可以先导出静态版），不把英文原文糊到界面上。
 
 ### 5. 轨道编辑 UI（第 3 段）
 
@@ -72,10 +79,12 @@
 ## 影响
 
 - `internal/tenant/policy.go`：新增 `Animation *animation.AnimationPolicy`（jsonb 新键，无迁移）。
+- `internal/usage`：新增 `KindAnimationMinutes` 与账期限定（`Kind.Period` / `Base` / `PeriodOf` / `MonthPeriod` / `MonthReset`）。
 - `internal/api`：能力解析器与三处入口；`animation-options` 响应新增 `capabilities`（`enabled`/`reason`
-  保持原样，前端不需改）。
+  保持原样，前端不需改）；导出受理增加额度预占与 429。
+- `internal/app` + `internal/pipeline`：导出按实际渲染页结算；worker 新增 `OnFailed` 钩子用于终态释放。
 - `cmd/ppts`：新增 `PPTS_ANIMATION_ROLLOUT`（默认 100）与 `PPTS_ANIMATION_ROLLOUT_SALT`。
-- 前端：本段无必改项；`capabilities.trackEditor` 供第 3 段使用。
+- 前端：导出失败文案接入额度原因；`capabilities.trackEditor` 供第 3 段使用。
 
 ## 一个必须承认的迁移决策
 

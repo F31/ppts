@@ -776,6 +776,8 @@
   "editor.exportAnimationPages": "{animated} of {total} pages have animation; the rest render as static frames.",
   "editor.exportAnimationDegradeNote": "Pages that fail to render or drift in duration fall back to that page's static frame; the video still exports.",
   "editor.exportAnimationDropped": "{reason} This export is processed as a static video (job {jobId}) and will still complete.",
+  "editor.exportAnimationQuota": "This month's animation render quota is used up, so animated export is unavailable. Static video export is unaffected.",
+  "editor.exportAnimationQuotaReset": "This month's animation render quota is used up. It resets on {date}. Static video export is unaffected until then.",
   "editor.animationButton": "Motion",
   "editor.animationEyebrow": "Per-slide motion",
   "editor.animationTitle": "Slide motion",
