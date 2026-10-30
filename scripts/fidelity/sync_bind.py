@@ -11,6 +11,16 @@ plan 编译器只认 segments.json（它要的是实测算出的 `startMs`），
 这个脚本只做那次「抄写」，前提是**文本一字未变**：段 id 对不上、文本对不上就报错退出，
 不做任何猜测。时间戳（startMs/endMs/durationMs）一律不动——它们描述的是已经生成的音频。
 
+## `atText`：把「念到它的那个词」翻译成毫秒
+
+绑定也可以不写 `offsetMs`，改写成 `atText: "一百七十四"`。这里用 `words.json`
+（`narrate.py` 产出的逐词边界）把它解析成本段的毫秒偏移，再写进 segments.json——
+plan 编译器仍然只看到 `offsetMs`，一行都不用改。
+
+为什么不让手调：`offsetMs: 2000` 这种数是听出来的，没有人能复核它对不对；换一个字、
+换一次语速，全部作废。词边界是 TTS 自己给的，改文本后重跑一次就自动跟上。
+找不到、或出现多次而没指定 `nth`，一律报错退出：错绑一个时刻比不绑更糟。
+
     python3 scripts/fidelity/sync_bind.py \
         --script scripts/fidelity/q7-script.json \
         --segments tmp/q7/segments.json           # 原地改，先备份
@@ -19,6 +29,7 @@ plan 编译器只认 segments.json（它要的是实测算出的 `startMs`），
 """
 import argparse
 import json
+import os
 import sys
 
 
@@ -36,16 +47,82 @@ def binds_of(doc):
     return out
 
 
+def word_ms(words, phrase, nth=1):
+    """在逐词序列里定位 `phrase`，返回它所在词的起点（相对本段开口）。
+
+    词粒度就是 TTS 给的粒度：`一百七十四` 常常是**一个词**，`五分钟` 也是，所以
+    「整句里第几个字」这种细分既没有数据也不该假装有。短语跨词时取起点所在的那个词。
+    """
+    concat = "".join(w["text"] for w in words)
+    hits, i = [], concat.find(phrase)
+    while i != -1:
+        hits.append(i)
+        i = concat.find(phrase, i + 1)
+    if len(hits) < nth:
+        return None, len(hits)
+    pos, acc = hits[nth - 1], 0
+    for w in words:
+        if pos < acc + len(w["text"]):
+            return w["tMs"], len(hits)
+        acc += len(w["text"])
+    return None, len(hits)
+
+
+def resolve(refs, words, seg_id, kind, dur_ms=None):
+    """把一组 {elementId, atText} 解析成 {elementId, offsetMs/atMs}。
+
+    `kind` 决定字段名（bind 用 offsetMs、focusAt 用 atMs）——两者都在算「相对段开口
+    多少毫秒」，但 plan 的 schema 是两个名字，这里不做归一化，免得读代码的人以为
+    它们可以互换。
+    """
+    field = "offsetMs" if kind == "bind" else "atMs"
+    out, notes = [], []
+    for ref in refs:
+        if "atText" not in ref:
+            if field not in ref:
+                raise SystemExit("段 %s 的 %s 缺 %s/atText：%r"
+                                 % (seg_id, kind, field, ref))
+            out.append(ref)
+            continue
+        if field in ref:
+            raise SystemExit("段 %s 的 %s 同时给了 %s 与 atText，二者只能选一个：%r"
+                             % (seg_id, kind, field, ref))
+        if words is None:
+            raise SystemExit("段 %s 用了 atText，但没有 words.json——先重跑 narrate.py"
+                             % seg_id)
+        ms, hits = word_ms(words, ref["atText"], ref.get("nth", 1))
+        if ms is None:
+            raise SystemExit("段 %s 里找不到「%s」（出现 %d 次）" % (seg_id, ref["atText"], hits))
+        if hits > ref.get("nth", 1) and "nth" not in ref:
+            # 出现多次而没指定 nth 时，取第一次是猜测；宁可停下让人写清楚。
+            raise SystemExit("段 %s 里「%s」出现 %d 次，用 nth 指定取哪一个"
+                             % (seg_id, ref["atText"], hits))
+        if dur_ms is not None and ms > dur_ms:
+            raise SystemExit("段 %s 的「%s」解析到 %dms，超出段长 %dms"
+                             % (seg_id, ref["atText"], ms, dur_ms))
+        item = {"elementId": ref["elementId"], field: ms}
+        notes.append("%s.%s「%s」→ +%dms" % (seg_id, ref["elementId"], ref["atText"], ms))
+        out.append(item)
+    return out, notes
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--script", required=True, help="q7-script.json（绑定的来源）")
     ap.add_argument("--segments", required=True, help="segments.json（plan 的输入）")
     ap.add_argument("--out", help="写到新文件；不给就原地改")
+    ap.add_argument("--words", help="逐词边界；缺省取 segments 同目录的 words.json")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
     script = load(args.script)
     seg = load(args.segments)
+    words_path = args.words or os.path.join(
+        os.path.dirname(os.path.abspath(args.segments)), "words.json")
+    words_by_id = {}
+    if os.path.exists(words_path):
+        for sid, rec in load(words_path).get("segments", {}).items():
+            words_by_id[sid] = rec["words"]
     src = binds_of(script)
     dst = binds_of(seg)
 
@@ -55,18 +132,26 @@ def main():
         print("段集合不一致：脚本多 %s；segments 多 %s" % (only_s, only_d), file=sys.stderr)
         return 1
 
-    changed = []
+    changed, notes = [], []
     for key in sorted(src):
         s, d = src[key], dst[key]
         if s["text"] != d["text"]:
             print("段 %s 的文本不一致，拒绝同步：\n  脚本: %s\n  音频: %s"
                   % (key[1], s["text"], d["text"]), file=sys.stderr)
             return 1
+        # atText 在这里落成毫秒；之后一律按「已经算好的偏移」比较与写入。
+        # 于是同一份脚本重复跑，只要 words.json 没变，结果逐字节一样。
+        wl = words_by_id.get(key[1])
+        want_bind, nb = resolve(s.get("bind", []), wl, key[1], "bind",
+                                None if wl is None else d.get("durationMs"))
+        want_fa, nf = resolve(s.get("focusAt", []), wl, key[1], "focusAt",
+                              None if wl is None else d.get("durationMs"))
+        notes.extend(nb + nf)
         old = [(b["elementId"], b.get("offsetMs", 0)) for b in d.get("bind", [])]
-        new = [(b["elementId"], b.get("offsetMs", 0)) for b in s.get("bind", [])]
+        new = [(b["elementId"], b.get("offsetMs", 0)) for b in want_bind]
         if old != new:
             changed.append((key[1], old, new))
-            d["bind"] = s.get("bind", [])
+            d["bind"] = want_bind
         # focus 与 bind 并列抄写：前者决定「讲它时谁让位」，后者决定「它何时出场」。
         # 漏抄 focus 不会报错，只会让这页回到「铺满之后不再变化」——那正是要修的病。
         if s.get("focus") or d.get("focus"):
@@ -80,7 +165,7 @@ def main():
         # focusAt 是句内切换点（相对本段开口）。它与 focus 一样只影响「谁让位」，
         # 不影响任何时间戳；漏抄同样不报错，只是那句 3 秒的话里画面不动了。
         if s.get("focusAt") or d.get("focusAt"):
-            want = s.get("focusAt", [])
+            want = want_fa
             if d.get("focusAt", []) != want:
                 changed.append((key[1], "focusAt=%r" % d.get("focusAt", []), "focusAt=%r" % want))
                 if want:
@@ -101,6 +186,8 @@ def main():
             else:
                 page.pop("static", None)
 
+    for line in notes:
+        print("  atText %s" % line)
     for sid, old, new in changed:
         print("  %-6s %s → %s" % (sid, old, new))
     print("同步 %d 段（共 %d 段），文本与时间戳未动" % (len(changed), len(src)))

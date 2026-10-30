@@ -25,6 +25,7 @@
     V8 连续    讲着话时画面连续多久没变——「空」是元素没出现，「静」是全出现了却不动
     V9 数据    图里画出来的高度和它自己标的数值成不成比例（柱子会不会说谎）
     V10 叙事   图上标了数的元素，讲解有没有念到这个数（讲稿会不会漏讲）
+    V11 同拍   念到某个数的那一刻，注意力是不是正好挪到它身上（讲早了就是抢话）
 
   V7 与 V8 是仅有的两组**不问元素、只问画面**的：
   前六组全过而人看着不对，差异就在这里。V7 管「每一刻只有半页内容」，
@@ -35,6 +36,12 @@
   V9 对的是元素自带的 `value`（作图数据），V10 对的是旁白文本。共同点是人可以一路看完
   而不觉得有问题——只有把两个来源并排放才看得见。V10 尤其：讲稿读起来是通的，
   要对着图数一遍才知道「四根柱子只讲了两根」。
+
+  V11 把这件事推到时间轴上：V10 只问「念到没有」，念到也可能**太早**。柱子在
+  「时间都花在哪」这句里就长齐了，三秒后讲到 943 才把注意力挪过去——观众先看结论、
+  再听数字，而那三秒里画面不动，V8 也正好判不了它（它量的是「全片」静止，不是
+  「这元素该动时动了没」）。参照物是 TTS 的逐词边界（`words.json`），不是脚本里的
+  偏移——偏移正是被审的对象。
 
 `--self-test` 是给这个门禁自己的：往合成数据里逐条注入故障，断言每种都能被红下来。
 没有它，门禁本身也会重演「看起来通过了」——这正是 5.6 的教训。
@@ -65,6 +72,8 @@ TOL_LATE_MS = 100         # 「3 帧内出现」
 TOL_EARLY_MS = 100        # 反向的容差：早于开口 100ms 以上才算提前
 TOL_STAGGER_MS = 67       # 同段错落与设计值之差（2 帧）
 TOL_AV_S = 0.033          # 音画 lag（1 帧）
+TOL_STORY_EARLY_MS = 120  # 「讲它」比念到它的词早多少算抢话（≈4 帧，只够量化误差）
+TOL_STORY_LATE_MS = 350   # 「讲它」比念到它的词晚多少算走神（一句话里的正常拖尾）
 TOL_DUR_MS = 400          # 成片与旁白原件的时长差
 MIN_MEAN_DB = -50.0       # 低于这个当静音轨
 MAX_SHARP = 0.7           # 互相关峰在 ±100ms 处高于此值 = 峰太宽，lag 不可信
@@ -122,6 +131,9 @@ _CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 
 _CN_UNIT = {"十": 10, "百": 100, "千": 1000}
 # 一段里既可能有「174s」，也可能有「一百七十四秒」。两者要折成同一个数才能比。
 _NUM_RE = re.compile(r"\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+")
+# 「从一个数开头」：跨词拼一个数时只认这种词做起点，否则前面的任意词都能和后面的数
+# 拼成「含一个数」的假词，同一个数就会得到一串更早的假时刻。
+_NUM_TOKEN_RE = re.compile(r"[\d零〇一二两三四五六七八九十百千万]+")
 
 
 def _cn_int(s):
@@ -194,6 +206,90 @@ def narration_findings(design, elems):
                                % (page.get("index"), e.get("id"), v))
     return [{"code": "V10.1", "ok": not missing,
              "msg": "讲稿覆盖：图上每个数值都被念到", "detail": missing}]
+
+
+def attention_findings(design, words, appear=None, elems=None):
+    """V11：讲哪个数，就在**念到它的那个词**上开始讲（不许抢话）。
+
+    V10 只问「这个数念到没有」。念到了，也可能念得太早或太晚：柱子在「时间都花在哪」
+    这句里就长齐了，直到三秒后讲到 943 才把注意力挪过去——观众先看见结论，再听人念
+    一遍数字，画面等于提前剧透，而那 3 秒里柱子一动不动，V8 也正好判不了它。
+    所以这一条问的是**两个时刻之间的距离**：注意力（焦点，或它自己出场）对准该元素的
+    那一刻，与 TTS 念到这个数的那一刻。
+
+    参照物是 `words.json` 的逐词边界，不是脚本里的偏移：脚本里的偏移正是被审的对象。
+    这也是唯一一条**同时**吃「音频的词」与「编排的数」的判据——两边各自都对、
+    对不上，只有把两列并排放才看得见。
+
+    容差不对称：早 120ms 只够覆盖渲染量化与测量粒度，晚 350ms 才是一句话里的正常拖尾。
+    抢话比迟到难听得多（先给答案再提问），所以早的那一边收得紧。
+    """
+    if not words:
+        return [{"code": "V11.1", "ok": True,
+                 "msg": "逐词时间轴未提供（--words），本项跳过", "detail": []}]
+    wmap = words.get("segments") or {}
+    pages = {p.get("index"): p for p in (elems or [])}
+    appear_by = {r["element"]: r for r in (appear or [])}
+    bad, unjudged = [], []
+    for page in design.get("pages") or []:
+        idx = page.get("index")
+        vals = {e["id"]: e["value"]
+                for e in (pages.get(idx) or {}).get("elements") or []
+                if e.get("value") is not None}
+        if not vals:
+            continue
+        # 逐词 → 页内绝对时刻。数值常常不是单独一个词（「一百七十四」是一个词，
+        # 「五分钟」也是一个词，但换个文本就可能劈开），所以单字、双词、三词都试一遍。
+        word_at = []
+        for seg in page.get("segments") or []:
+            rec = wmap.get(seg.get("id")) or {}
+            ws = rec.get("words") or []
+            base = seg.get("startMs", 0)
+            for i in range(len(ws)):
+                for span in (1, 2, 3):
+                    chunk = ws[i:i + span]
+                    if len(chunk) < span:
+                        break
+                    # 跨词拼接只用来救「一个数被劈成两个词」（如 九百 / 四十三）。
+                    # 不加这道门，任何词都能跟后面的数拼成一个「含一个数」的大词，
+                    # 于是同一个数会在它真正被念出来之前就有一堆更早的假时刻——
+                    # 判据会静悄悄地松掉（自检里 V11.1-early 就是这么红的）。
+                    if span > 1 and not _NUM_TOKEN_RE.match(chunk[0]["text"]):
+                        continue
+                    ns = numbers_in("".join(w["text"] for w in chunk))
+                    if len(ns) == 1:
+                        word_at.append((base + chunk[0]["tMs"], ns[0]))
+        word_at.sort()
+        # 注意力时刻：句内/句级焦点优先，没有焦点就用它的实测出场时刻。
+        att = {}
+        for seg in page.get("segments") or []:
+            if seg.get("focus"):
+                att.setdefault(seg["focus"], seg.get("startMs", 0))
+            for fa in seg.get("focusAt") or []:
+                att.setdefault(fa["elementId"], seg.get("startMs", 0) + fa.get("atMs", 0))
+        for eid, v in sorted(vals.items()):
+            tw = next((t for t, n in word_at if abs(n - v) < 1e-6), None)
+            if tw is None:
+                continue  # 没念到是 V10 的事，这里不重复报
+            if eid in att:
+                ta, how = att[eid], "焦点"
+            else:
+                r = appear_by.get(eid)
+                if not r or r.get("settledMs") is None:
+                    unjudged.append("%s = %g：既没有焦点也没有出场记录" % (eid, v))
+                    continue
+                ta, how = r["settledMs"] - r.get("pageStart", 0), "出场"
+            gap = ta - tw
+            if gap < -TOL_STORY_EARLY_MS:
+                bad.append("页 %d %s = %g：%s比念到它早 %dms（抢话）"
+                           % (idx, eid, v, how, -gap))
+            elif gap > TOL_STORY_LATE_MS:
+                bad.append("页 %d %s = %g：%s比念到它晚 %dms（>%dms）"
+                           % (idx, eid, v, how, gap, TOL_STORY_LATE_MS))
+    return [{"code": "V11.1", "ok": not bad and not unjudged,
+             "msg": "不抢话：讲哪个数就在念到它的词上开始（早 ≤%dms / 晚 ≤%dms）"
+                    % (TOL_STORY_EARLY_MS, TOL_STORY_LATE_MS),
+             "detail": bad + unjudged}]
 
 
 def _bound_of(design):
@@ -373,6 +469,8 @@ def audit(design, align, appear, film, elems=None):
     # ---- V10 讲稿覆盖：画面与旁白对不对得上（不需要成片，纯查两份文本）
     if elems:
         findings.extend(narration_findings(design, elems))
+    # ---- V11 讲与念是否同拍：V10 管「念没念到」，这一条管「是不是那一刻念的」
+    findings.extend(attention_findings(design, film.get("words"), appear, elems))
 
     return findings
 
@@ -525,6 +623,8 @@ def load_inputs(args):
         film["motion"] = json.load(open(args.motion, encoding="utf-8"))
     if args.chart and os.path.exists(args.chart):
         film["chart"] = json.load(open(args.chart, encoding="utf-8"))
+    if args.words and os.path.exists(args.words):
+        film["words"] = json.load(open(args.words, encoding="utf-8"))
     if args.skip_sync:
         film["lag"] = None
     else:
@@ -733,6 +833,26 @@ def self_test():
                   and numbers_in("九百四十三") == [943.0],
                   [numbers_in("一百七十四秒"), numbers_in("二点七 GB")]))
 
+    # V11：注意力（焦点）在段开口就落在 174 上，而「一百七十四」1.5s 后才念到 —— 抢话
+    d11 = {"pages": [{"index": 0, "durationMs": 6000, "segments": [
+        {"id": "s0", "startMs": 200, "durationMs": 3000,
+         "bind": [{"elementId": "bar", "offsetMs": 0}], "focus": "bar"}]}]}
+    w11 = {"segments": {"s0": {"startMs": 200, "words": [
+        {"tMs": 0, "dMs": 300, "text": "时间"},
+        {"tMs": 1500, "dMs": 600, "text": "一百七十四"}]}}}
+    e11 = [{"index": 0, "elements": [{"id": "bar", "kind": "bar", "value": 174}]}]
+    p11 = [{"element": "bar", "page": 0, "pageStart": 0, "seg": "s0", "at": 200,
+            "offsetMs": 0, "settledMs": 700, "onsetMs": 240, "always": False,
+            "preSegLevel": 0.0}]
+    got11 = {x["code"]: x["ok"] for x in attention_findings(d11, w11, p11, e11)}
+    cases.append(("V11.1-early", got11.get("V11.1") is False, got11))
+    # 反向：焦点挪到念到它的那个词 → 绿（否则这条判据只是在惩罚「有焦点」）
+    d11b = json.loads(json.dumps(d11))
+    d11b["pages"][0]["segments"][0].pop("focus")
+    d11b["pages"][0]["segments"][0]["focusAt"] = [{"elementId": "bar", "atMs": 1500}]
+    got11b = {x["code"]: x["ok"] for x in attention_findings(d11b, w11, p11, e11)}
+    cases.append(("V11.1-ok", got11b.get("V11.1") is True, got11b))
+
     # V7：内容页上第二件内容晚 4s 才到 —— 半页空了 4s，框也挂了 4s
     d7, p7, e7 = _layout_fixture(late_ms=4000)
     got7 = {x["code"]: x["ok"] for x in layout_findings(d7, p7, e7)}
@@ -792,6 +912,8 @@ def main():
     ap.add_argument("--chart", default="tmp/q7/chart.json",
                     help="check_chart.py 的输出：每根柱子的实测高度与标注值")
     ap.add_argument("--ref-audio", default="tmp/q7/audio/timeline.wav")
+    ap.add_argument("--words", default="tmp/q7/words.json",
+                    help="narrate.py 的逐词边界：V11 的参照物")
     ap.add_argument("--rerun", action="store_true", help="先重跑三个测量再审计")
     ap.add_argument("--skip-sync", action="store_true", help="跳过音画检查（无参考音轨时）")
     ap.add_argument("--json", default="tmp/q7/verify.json")

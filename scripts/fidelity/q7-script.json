@@ -128,23 +128,33 @@
      "focusAt": [
       {
        "elementId": "p2-bar0",
-       "atMs": 350
+       "atText": "一百七十四"
       },
       {
        "elementId": "p2-bar1",
-       "atMs": 2000
+       "atText": "一百三十一"
       }
      ]
     },
     {
      "id": "s2-3",
      "text": "两核跑五分钟，九百四十三秒。",
-     "focus": "p2-bar2"
+     "focusAt": [
+      {
+       "elementId": "p2-bar2",
+       "atText": "九百四十三"
+      }
+     ]
     },
     {
      "id": "s2-4",
      "text": "两条并发，九百四十八秒。",
-     "focus": "p2-bar3"
+     "focusAt": [
+      {
+       "elementId": "p2-bar3",
+       "atText": "九百四十八"
+      }
+     ]
     }
    ],
    "static": [
