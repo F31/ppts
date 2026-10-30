@@ -303,7 +303,9 @@ func (b *RemotionBackend) stagePages(plan *Timeline, dir string, pages []int) (*
 
 		for _, patch := range patches {
 			if patch.Noisy && b.Logf != nil {
-				b.Logf("render: page %d element %s: plate patch may be visible (spread=%d)",
+				// 带上规格里写的那个码（`plate_patch_noisy`），否则按规格去日志里
+				// 搜这个串是搜不到的——只有一句英文描述，等于没有可查的标识。
+				b.Logf("render: page %d element %s: plate_patch_noisy (spread=%d): patch may be visible",
 					i, patch.ElementID, patch.Spread)
 			}
 		}

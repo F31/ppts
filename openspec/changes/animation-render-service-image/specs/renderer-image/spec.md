@@ -2,23 +2,28 @@
 
 ## Purpose
 
-定义渲染服务的运行时与镜像契约：什么能力由谁渲染（L0/L1 分层）、镜像里必须固定什么（浏览器/字体）、像素级约束（去残影、编码参数）、以及不可用时如何降级。目标是让「同一份 IR 在任何一台渲染机上出同样的片段」这件事可验证，而不是靠部署时口头约定。
+定义渲染服务的运行时与镜像契约：什么由合成器画、什么由 worker 做（转场与元素动画同批合成）、镜像里必须固定什么（浏览器/字体）、像素级约束（去残影、编码参数）、以及不可用时如何降级。目标是让「同一份 IR 在任何一台渲染机上出同样的片段」这件事可验证，而不是靠部署时口头约定。
 
 ## ADDED Requirements
 
-### Requirement: 渲染能力按层选择，L0 不启动渲染服务
+### Requirement: 转场与元素动画共用一次合成
 
-页转场（`transition.type ∈ {fade, slide, zoom}`）MUST 由 worker 内的 ffmpeg `xfade` 完成，MUST NOT 提交渲染服务。元素级属性动画（`layers[*].clips` 非空）MUST 提交渲染服务。
+页转场（`transition.type ∈ {fade, slide, zoom}`）MUST 由合成器在**入场页开头**绘制前一页末帧，占该页前 `transition.durationMs`，MUST NOT 改变任何一页的时长。
+
+worker MUST NOT 另建一条 ffmpeg 交叉淡化（`xfade`）路径：`xfade` 是重叠语义，会让成片变短，与本条的时间约定冲突，两套时序并存必然对不齐。片段缓存的键也因此把「前一页」纳入（`openspec/specs/render-plan/spec.md`）。
+
+整份导出不含任何元素级动画（`layers[*].clips` 全空）时 MUST NOT 提交渲染服务——此时转场也不产出，输出为硬切（已知限制，见 tasks 7.1）。
 
 #### Scenario: 只有页转场
 
 - **WHEN** 计划中所有页的 `layers` 均为空，仅有 `transition`
-- **THEN** worker 直接以 ffmpeg 合成，不发起任何 `/v1/render` 请求
+- **THEN** worker 不发起任何 `/v1/render` 请求，输出为硬切（转场不产出）
+- **AND** 该限制 MUST 在 tasks 7.1 有明确记录，MUST NOT 让用户以为「转场已生效」
 
 #### Scenario: 有元素级动画
 
 - **WHEN** 任一页存在带 clip 的图层
-- **THEN** worker 提交完整 IR 到渲染服务，并等待逐页片段
+- **THEN** worker 提交完整 IR 到渲染服务，并等待逐页片段，转场在同一批片段里由合成器绘制
 
 ### Requirement: 浏览器版本固定且可读
 
@@ -72,20 +77,11 @@
 - **WHEN** 计划含绝对路径或 `..` 逃逸
 - **THEN** 服务返回 `unsafe_path`，MUST NOT 读取工作目录之外的文件
 
-### Requirement: 元素级动画必须先去残影
+### Requirement: 元素级动画必须先去残影（底板）
 
 当一页存在 `elementId` 非空的图层时，backend MUST 在合成前生成底板：把每个图层 Box 用「盒外采样环的逐通道中位色」填平，并以 `page.plateImage` 交给合成器。图层素材 MUST 取自原图。
 
-当某图层的 Box **包住**另一个动画元素时，backend MUST 为该层生成「已抹掉这些子元素」的位图并以 `layers[i].image` 交给合成器；抹除用的填充色 MUST 取自**原图**的盒外环，MUST NOT 取自底板（底板按图层顺序递进填充，取它会得到上一层被抹后的颜色）。合成器见到 `image` MUST 直出该位图、MUST NOT 再做偏移裁切。
-
-`image` 缺省时合成器 MUST 退回「从 `baseImage` 按 Box 偏移裁切」。合成器 MUST 先画父层、后画子层（父层的子元素已被抹掉，顺序反了会把子元素盖掉）。
-
-`plateImage` 缺省时合成器 MUST 退回 `baseImage`（等价于旧行为），且 backend MUST 记录 warning，MUST NOT 静默产出双影画面。
-
-采样环颜色极差超过阈值时 MUST 记录 `plate_patch_noisy`（该页补丁可能可见）。
-
-> **边界**：只处理「包含」关系。两个部分重叠、互不包含的兄弟元素仍会互相带出——
-> 单张栅格无法推断逐元素 alpha，要彻底解决需上游提供分层素材。
+`plateImage` 缺省时合成器 MUST 退回 `baseImage`（等价于旧行为），且 backend MUST 记录 warning，MUST NOT 静默产出双影画面。采样环颜色极差超过阈值时 MUST 记录 `plate_patch_noisy`（该页补丁可能可见）。
 
 #### Scenario: 标题滑入
 
@@ -96,6 +92,15 @@
 
 - **WHEN** 底图是照片，元素区域周围颜色差异超过阈值
 - **THEN** 补丁照常生成，同时记录 `plate_patch_noisy` 警告
+
+### Requirement: 嵌套图层先抹掉子元素再抬升
+
+当某图层的 Box **包住**另一个动画元素时，backend MUST 为该层生成「已抹掉这些子元素」的位图并以 `layers[i].image` 交给合成器。抹除用的填充色 MUST 取自**原图**的盒外环，MUST NOT 取自底板（底板按图层顺序递进填充，取它会得到上一层被抹后的颜色）。
+
+合成器见到 `image` MUST 直出该位图、MUST NOT 再做偏移裁切；`image` 缺省时 MUST 退回「从 `baseImage` 按 Box 偏移裁切」。合成器 MUST 先画父层、后画子层（父层的子元素已被抹掉，顺序反了会把子元素盖掉）。
+
+> **边界**：只处理「包含」关系。两个部分重叠、互不包含的兄弟元素仍会互相带出——
+> 单张栅格无法推断逐元素 alpha，要彻底解决需上游提供分层素材（tasks 5.9）。
 
 #### Scenario: 卡片内的要点依次入场
 

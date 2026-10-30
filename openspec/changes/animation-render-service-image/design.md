@@ -22,12 +22,23 @@ type Backend interface {
 
 ## 2. 关键决策
 
-### ADR-1 后端选型：L0 用 ffmpeg，L1 用 Remotion
+### ADR-1 后端选型：转场与元素动画同一次合成
 
 | 层 | 能力 | 实现 | 是否启动渲染服务 |
 |---|---|---|---|
-| L0 | 页转场（fade/slide/zoom） | worker 内 ffmpeg `xfade` | 否 |
+| L0 | 页转场（fade/slide/zoom） | 合成器在**入场页开头**绘制前一页末帧（`renderer/src/Timeline.tsx`） | 与 L1 同批 |
 | L1 | 元素入场（fadeIn/slideIn/pop/grow/bob） | Remotion（Chromium 逐帧） | 是 |
+
+> **修订（2026-10-31）**：本表原写「L0 由 worker 内 ffmpeg `xfade` 完成，不启动渲染服务」，
+> 与实现和已归档规格都不符——全仓没有任何 `xfade` 调用，`openspec/specs/render-plan/spec.md`
+> 明写「转场在该页开头绘制前一页的末帧」，片段缓存也据此把前一页纳入键（`segkey.go`）。
+> 走 xfade 会**改变时长语义**（xfade 是重叠，会让成片变短；本设计的转场只占入场页开头 N ms、
+> 不改变任何一页时长），两套时序并存必然对不齐。因此转场与元素动画共用一次合成。
+> 代价见 tasks 7.1：动画通道关闭时（`backend=none`）转场一并失效。
+>
+> 这处错能留这么久，有个次要原因：路线图里「L0」另指**PPTX→页图**的上游阶段
+> （「渲染器只吃底图 + 元素矩形」），与 ADR-1 这张表的分层编号撞名。读到「L0」时
+> 默认想成了上游，就没再追问「worker 里到底哪段代码在做 xfade」——而答案是零处。
 
 理由是**逐条能力核对**，不是「Remotion 更现代」这种偏好。本 IR 的属性白名单只有六项，逐个看 ffmpeg 能不能做：
 
@@ -167,7 +178,8 @@ base page.png ──┬── crop(box) ──► 图层素材（保留原像素
 animation.backend = remotion | none
 ```
 
-- `none`：worker 不构造渲染计划，直接走 L0（ffmpeg `xfade`）或静态导出；
+- `none`：worker 不构造渲染计划，直接走静态导出——**转场也随之失效**（`backend=none`
+  时不发起任何渲染请求，见 tasks 7.1）；
 - `remotion`：worker 启动时探测 `/healthz`，失败则整进程按 `ErrAnimationUnavailable` 处理；
 - 服务不可用 / 单页失败：沿用 M2 D7 的降级矩阵——**动画是增强，不是前置条件**。
 

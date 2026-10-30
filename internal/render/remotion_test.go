@@ -174,8 +174,10 @@ func TestStageLogsNoisyPatch(t *testing.T) {
 	if _, err := b.stage(plan, dir); err != nil {
 		t.Fatalf("stage: %v", err)
 	}
-	if len(logs) == 0 || !strings.Contains(logs[0], "plate patch may be visible") {
-		t.Fatalf("want noisy warning, got %v", logs)
+	// 断言的是规格里的**码**，不是那句英文：告警要被检索/告警规则认领，
+	// 靠的是稳定的字符串，而描述文案随时会改。
+	if len(logs) == 0 || !strings.Contains(logs[0], "plate_patch_noisy") {
+		t.Fatalf("want plate_patch_noisy, got %v", logs)
 	}
 }
 
