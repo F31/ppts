@@ -99,8 +99,9 @@ pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
 
   <section class="card">
     <h2>打分 · 第 7 项「该动的时候才动」</h2>
-    <p class="hint">1–5 分，3 分 = 可用。只对能定位到「具体秒数 + 具体元素」的问题扣分；说不出位置的观感写进备注，不计分。
-    每条判据的锚点见 <span class="mono">scripts/review/RUBRIC.md §五</span>。</p>
+    <p class="hint"><b>5 分</b> = 该判据成立；<b>3 分</b> = 成立但有 1–2 处例外；<b>1 分</b> = 该判据整体没做到。
+    低于 5 分<b>必须</b>填「扣分定位」（秒数 + 元素），否则导不出来——说不出位置的观感写进备注，不计分。
+    锚点见 <span class="mono">scripts/review/RUBRIC.md §五 5.1</span>。</p>
     <table id="sheet">
       <thead><tr><th style="width:120px">判据</th><th>怎么判</th><th style="width:190px">分</th></tr></thead>
       <tbody></tbody>
@@ -120,11 +121,18 @@ pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
 
 <script>
 const CRITERIA = [
-  ["不提前", "元素不早于它所在段落的开口。早了就是剧透——话还没说，答案先摆出来。"],
-  ["不滞后", "段落开口后 3 帧（约 100ms）内开始出现。超过就是「讲到了还没出」。"],
-  ["有层次", "同一段里多个元素仍有先后（stagger），不是同时蹦出来。"],
-  ["不空转", "讲解没提到的元素不在页首铺满；本片把它们放到页末淡入，作为对照。"],
+  ["不提前", "元素不早于它所在段落的开口。早了就是剧透——话还没说，答案先摆出来。",
+   ["全部元素都在开口后才动", "有 1–2 处提前", "开口前就整页铺好"]],
+  ["不滞后", "段落开口后 3 帧（约 100ms）内开始出现。超过就是「讲到了还没出」。",
+   ["全部在 3 帧内出现", "有 1–2 处超过 3 帧", "讲完了才出，或不出现"]],
+  ["有层次", "同一段里多个元素仍有先后（stagger），不是同时蹦出来。",
+   ["同段都有错落", "个别段同时蹦出", "全片同时出现"]],
+  ["不空转", "讲解没提到的元素不在页首铺满；本片把它们放到页末淡入，作为对照。",
+   ["未提及的元素没有提前铺满", "个别元素空转", "页首一次性铺满"]],
 ];
+// 三档而不是 1–5 连续刻度：这条判据问的是「成立 / 不成立」，中间那一档只表示
+// 「成立但有例外」。连续刻度会让 1 分和 2 分变成「更差一点」，而这里没有这个语义。
+const SCORES = [5, 3, 1];
 
 const state = { meta: null, segs: [], starts: [], cur: -2, scores: {} };
 
@@ -267,20 +275,27 @@ function showExpect(idx) {
 function renderSheet() {
   const tb = document.querySelector("#sheet tbody");
   tb.innerHTML = "";
-  CRITERIA.forEach(([name, how], i) => {
+  CRITERIA.forEach(([name, how, anchors], i) => {
     const cells = el("div", { class: "rate" });
-    for (let s = 1; s <= 5; s++) {
+    const why = el("div", { class: "hint", style: "margin-top:4px" }, [el("span", { text: "未打分" })]);
+    SCORES.forEach((s, k) => {
       const id = "c" + i + "_" + s;
-      const lab = el("label", { for: id }, [
-        el("input", { type: "radio", name: "c" + i, id, value: String(s), onchange: () => { state.scores[name] = s; } }),
+      const lab = el("label", { for: id, title: anchors[k] }, [
+        el("input", {
+          type: "radio", name: "c" + i, id, value: String(s),
+          onchange: () => {
+            state.scores[name] = s;
+            why.textContent = s + " 分：" + anchors[k];
+          },
+        }),
         el("span", { text: String(s) }),
       ]);
       cells.appendChild(lab);
-    }
+    });
     tb.appendChild(el("tr", {}, [
       el("td", {}, [el("b", { text: name })]),
       el("td", { class: "hint", text: how }),
-      el("td", {}, [cells]),
+      el("td", {}, [cells, why]),
     ]));
   });
 }
@@ -307,20 +322,42 @@ function buildMarkdown() {
   return lines.join("\n");
 }
 
+// RUBRIC §一第 3 条 / §五 5.1：说不出位置的扣分不计分。以前只写在文档里，靠人记得；
+// 结果第一次回收的表是四个 1 分、定位全空——「需返工」连返什么都不知道。
+// 这里做成导出前的硬校验：低于 5 分必须有定位。
+function gate() {
+  const missing = CRITERIA.filter(([n]) => state.scores[n] == null).map(([n]) => n);
+  if (missing.length) {
+    return "还不能导出：未打分 —— " + missing.join("、");
+  }
+  const locate = document.getElementById("locate").value.trim();
+  const low = CRITERIA.filter(([n]) => state.scores[n] < 5).map(([n]) => n);
+  if (low.length && !locate) {
+    return "还不能导出：" + low.join("、") + " 低于 5 分，但「扣分定位」为空。\n\n"
+      + "按 RUBRIC §一第 3 条 / §五 5.1：只对能指到「秒数 + 元素」的问题扣分。"
+      + "补一条定位，或把该项改回 5 分、把观感写进备注（备注不计分）。";
+  }
+  return null;
+}
+
 document.getElementById("export").addEventListener("click", async () => {
-  const text = buildMarkdown();
   const out = document.getElementById("out");
   out.hidden = false;
+  const err = gate();
+  if (err) { out.textContent = err; return; }
+  const text = buildMarkdown();
   out.textContent = text;
   try { await navigator.clipboard.writeText(text); out.textContent = text + "\n\n（已复制到剪贴板）"; } catch (e) {}
 });
 
 document.getElementById("save").addEventListener("click", () => {
-  const lines = state.meta ? state.meta.segments.pages : [];
+  const msg = document.getElementById("saveMsg");
+  const err = gate();
+  if (err) { msg.textContent = err.split("\n")[0]; return; }
   // 无后端：落到 localStorage，界面上明确说是本机、不落库。
   const key = "ppts.q7.score";
   localStorage.setItem(key, JSON.stringify({ at: new Date().toISOString(), md: buildMarkdown() }));
-  document.getElementById("saveMsg").textContent = "已存到本机浏览器（localStorage），不会上传。";
+  msg.textContent = "已存到本机浏览器（localStorage），不会上传。";
 });
 
 boot();
