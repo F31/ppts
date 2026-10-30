@@ -13,8 +13,10 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
+	"github.com/F31/ppts/internal/usage"
 )
 
 // RegisterBundleExport 挂载扩展产物格式的导出入口（原生 REST）。
@@ -27,12 +29,14 @@ import (
 //
 // 端点：POST /api/projects/{projectId}/exports
 func NewBundleExportHandler(jobs JobCreator, members membership.Reader, recorder audit.Recorder,
-	specs animstore.Store, gate AnimationGate, probe AnimationProbe) *BundleExportHandler {
+	specs animstore.Store, gate AnimationGate, probe AnimationProbe,
+	objects objectstore.ObjectStore, usageStore usage.Store) *BundleExportHandler {
 	if gate == nil {
 		gate = deployGate{}
 	}
 	return &BundleExportHandler{jobs: jobs, members: members, recorder: recorder,
-		specs: specs, gate: gate, probe: probe}
+		specs: specs, gate: gate, probe: probe, objects: objects,
+		quota: &animationQuota{store: usageStore, objects: objects}}
 }
 
 type BundleExportHandler struct {
@@ -44,6 +48,11 @@ type BundleExportHandler struct {
 	specs animstore.Store
 	gate  AnimationGate
 	probe AnimationProbe
+	// objects 只用于额度预估（读时间轴总时长）。额度必须按"这次要渲多少分钟"预占，
+	// 而请求里只有 timelineKey —— 页数与时长都在时间轴本体里。
+	objects objectstore.ObjectStore
+	// quota 是动画渲染额度的受理侧（M4 §7.5）；store 为 nil 时全部操作退化为不限。
+	quota *animationQuota
 }
 
 func (h *BundleExportHandler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
@@ -176,10 +185,42 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	// 快照是"这次导出依据什么"的承诺，同一份快照必须对应同一份产物。
 	// 若留着动画照着静态渲，这个快照键就会被写成静态字节——之前那份同键的动画产物被覆盖，
 	// 用户下次下载"动画版"拿到的其实是静态版，而且全程没有任何报错。
+	capability := h.gate.Resolve(r.Context(), principal.TenantID)
 	dropped := ""
 	if animation != nil {
-		if reason := animationUnavailableReason(r.Context(), h.specs, h.gate.Resolve(r.Context(), principal.TenantID), h.probe); reason != "" {
+		if reason := animationUnavailableReason(r.Context(), h.specs, capability, h.probe); reason != "" {
 			animation, dropped = nil, reason
+		}
+	}
+	// 额度预占必须在建任务之前：超限应当是**受理失败**，不是"任务入队后失败"。
+	// 先建任务再在 worker 里拒绝，就是设计 §7.5 禁止的"静默排队"。
+	//
+	// 只对真的要走动画的请求预占：静态导出不该占渲染额度，否则用户导出十次静态版
+	// 就把动画额度耗光了。
+	var reserved *usage.Reservation
+	if animation != nil {
+		res, _, qerr := h.quota.Reserve(r.Context(), principal.TenantID, idempotencyKey, timelineKey, capability.MaxMinutes)
+		if qerr != nil {
+			var exceeded *quotaExhaustedError
+			if errors.As(qerr, &exceeded) {
+				writeQuotaExceeded(w, exceeded)
+				return
+			}
+			writeConnectError(w, connect.NewError(connect.CodeInternal, qerr))
+			return
+		}
+		reserved = res
+	}
+	// 预占是幂等的：同一幂等键重放返回既有记录（Created=false）。
+	// 只有"本次新建"的预占才允许在后续失败时释放——否则会把重放请求对应的在途任务额度放掉。
+	releaseReservation := func() {
+		if reserved == nil || !reserved.Created {
+			return
+		}
+		kind := usage.KindAnimationMinutes.Period(usage.MonthPeriod(time.Now()))
+		err := h.quota.store.Release(r.Context(), principal.TenantID, idempotencyKey, kind)
+		if errors.Is(err, usage.ErrReservationNotFound) || errors.Is(err, usage.ErrReservationReleased) || errors.Is(err, usage.ErrReservationSettled) {
+			return
 		}
 	}
 	snapshot.Animation = animation
@@ -196,15 +237,19 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	// 与 Connect 入口共用同一份规范字节（见 app.SnapshotBytes）。
 	snapshotBytes, err := app.SnapshotBytes(snapshot)
 	if err != nil {
+		releaseReservation()
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return
 	}
 	job, err := h.jobs.Create(r.Context(), principal.TenantID, projectID, string(pipeline.KindExport), idempotencyKey, string(snapshotBytes), time.Time{})
 	if err != nil {
+		releaseReservation()
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return
 	}
 	if job.InputSnapshot != string(snapshotBytes) {
+		// 幂等键被另一份请求占用：本次没有产生任何任务，预占必须放掉。
+		releaseReservation()
 		writeConnectError(w, connect.NewError(connect.CodeAlreadyExists,
 			errors.New("Idempotency-Key was already used for a different request")))
 		return

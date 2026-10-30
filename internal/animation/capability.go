@@ -87,8 +87,14 @@ type Capability struct {
 	Preview     bool   `json:"preview"`
 	Source      string `json:"source"`
 	// Bucket 是租户所在灰度桶（0–99）；-1 表示未计算（租户 ID 缺失或未走到分桶）。
-	Bucket int    `json:"bucket"`
-	Reason string `json:"reason,omitempty"`
+	Bucket int `json:"bucket"`
+	// MaxMinutes 是每月动画渲染分钟数上限；0 表示不限。
+	//
+	// 0 是默认值，不是"用系统默认的 60"：升级当天给所有存量租户加一道硬停，
+	// 比"默认值不够严格"严重得多（design ADR-7，与 ADR-3 同一条理由）。
+	// 只在该租户确实可用时带出——封禁的租户不需要知道自己的额度。
+	MaxMinutes float64 `json:"maxMinutes,omitempty"`
+	Reason     string  `json:"reason,omitempty"`
 }
 
 // Resolve 给出能力快照。优先级：部署闸 > 租户显式 > 租户灰度 > 部署默认。
@@ -138,6 +144,9 @@ func (p AnimationPolicy) Resolve(tenantID string, cfg GateConfig) Capability {
 		// 子能力不能越过总闸：总开关关着时 track_editor:true 没有意义。
 		c.TrackEditor = boolValue(p.TrackEditor, false)
 		c.Preview = boolValue(p.Preview, true)
+		if p.MaxMinutes > 0 {
+			c.MaxMinutes = p.MaxMinutes
+		}
 	}
 	return c
 }
