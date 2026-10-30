@@ -27,20 +27,23 @@ import (
 //
 // 端点：POST /api/projects/{projectId}/exports
 func NewBundleExportHandler(jobs JobCreator, members membership.Reader, recorder audit.Recorder,
-	specs animstore.Store, enabled bool, probe AnimationProbe) *BundleExportHandler {
+	specs animstore.Store, gate AnimationGate, probe AnimationProbe) *BundleExportHandler {
+	if gate == nil {
+		gate = deployGate{}
+	}
 	return &BundleExportHandler{jobs: jobs, members: members, recorder: recorder,
-		specs: specs, enabled: enabled, probe: probe}
+		specs: specs, gate: gate, probe: probe}
 }
 
 type BundleExportHandler struct {
 	jobs     JobCreator
 	members  membership.Reader
 	recorder audit.Recorder
-	// 动画三件套与导出选项端点同源：入口必须自己判一次"这个部署此刻能不能出动画"，
+	// 动画三件套与导出选项端点同源：入口必须自己判一次"这个租户此刻能不能出动画"，
 	// 不能假设客户端一定先问过选项端点。
-	specs   animstore.Store
-	enabled bool
-	probe   AnimationProbe
+	specs animstore.Store
+	gate  AnimationGate
+	probe AnimationProbe
 }
 
 func (h *BundleExportHandler) Register(mux *http.ServeMux, auth func(http.Handler) http.Handler) {
@@ -175,7 +178,7 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	// 用户下次下载"动画版"拿到的其实是静态版，而且全程没有任何报错。
 	dropped := ""
 	if animation != nil {
-		if reason := animationUnavailableReason(r.Context(), h.specs, h.enabled, h.probe); reason != "" {
+		if reason := animationUnavailableReason(r.Context(), h.specs, h.gate.Resolve(r.Context(), principal.TenantID), h.probe); reason != "" {
 			animation, dropped = nil, reason
 		}
 	}

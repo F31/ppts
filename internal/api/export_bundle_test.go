@@ -9,6 +9,8 @@ import (
 
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
+	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/tenant"
 )
 
 // TestBundleExportRouteCreatesJob 守护 M6-1 的 REST 导出入口：
@@ -141,20 +143,32 @@ func TestBundleExportDropsAnimationWhenUnavailable(t *testing.T) {
 			`"pagePngKeys":["tenant-1/project-1/render/page/p1.png"],` +
 			`"animation":{"specs":[{"slideId":"slide-1","language":"zh-CN","sourceRevisionNo":1,"revision":2}]}}`
 	}
+	closed := false
 	cases := []struct {
 		name        string
 		enabled     bool
 		probe       *stubProbe
+		policy      *tenant.Policy
 		wantDropped string
 	}{
 		{name: "部署关闭动画", enabled: false, probe: &stubProbe{}, wantDropped: "animation_disabled_by_deployment"},
 		{name: "渲染服务不可达", enabled: true, probe: &stubProbe{err: errUnreachable}, wantDropped: "renderer_unavailable"},
+		{
+			// 租户封禁与部署关闭是两条不同的路径，但结果必须一样：入口摘掉动画、返回原因，
+			// 快照里不留 animation——否则同键会把上一次的动画产物覆盖成静态字节。
+			name: "租户被关闭", enabled: true, probe: &stubProbe{},
+			policy:      &tenant.Policy{Animation: &animation.AnimationPolicy{Enabled: &closed}},
+			wantDropped: "animation_disabled_by_tenant",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			jobs := &jobCreatorStub{}
 			opts := Options{DevHeaders: true, Animation: newAnimationTestStore(t),
 				AnimationEnabled: tc.enabled, AnimationProbe: tc.probe}
+			if tc.policy != nil {
+				opts.Policy = fakePolicyReader{policy: tc.policy}
+			}
 			server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{},
 				jobs, &fakeArtifactStore{}, testObjects(t), nil, opts))
 			t.Cleanup(server.Close)

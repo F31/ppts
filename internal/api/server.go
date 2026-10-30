@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/animation/animstore"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
@@ -71,8 +72,17 @@ type Options struct {
 	ContextRule    contextrule.Store
 	// Animation 是动画规格存储；nil 时不注册动画端点（能力未上线）。
 	Animation animstore.Store
-	// AnimationEnabled 只控制写路径：读路径始终可用，便于灰度前验证契约。
+	// AnimationEnabled 是部署闸：关闭时任何租户策略都不能开启能力。
+	// 写路径、导出选项与导出入口都从这个值出发，再叠加租户策略与灰度。
 	AnimationEnabled bool
+	// AnimationRolloutPercent 是租户未配置策略时的默认灰度百分比（0–100）。
+	// nil = 100，即「部署开了闸就等于所有租户可用」，与引入租户策略之前行为一致；
+	// 生产建议显式设 0 再逐个开租户（见 openspec/changes/animation-track-editor/design.md ADR-3）。
+	// 用指针而不是 int：零值 0 会被误读成"默认全关"，而这个结构体在测试里到处被字面量构造。
+	AnimationRolloutPercent *int
+	// AnimationRolloutSalt 是分桶盐。不得随灰度批次轮换——改 salt 等于重新洗牌，
+	// 会把已经吃到灰度的租户踢回未开放状态（ADR-4）。
+	AnimationRolloutSalt string
 	// AnimationProbe 探测渲染服务此刻是否可达，供导出选项端点回答"这次能不能出动画"。
 	// nil = 该部署没有渲染服务，导出选项端点会明确返回 renderer_not_configured
 	// （不是"端点不存在"——前端要据此把选项置灰并说明原因，而不是当成接口 404）。
@@ -221,7 +231,14 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 规格读写与预览共用同一个 resolver：页时长与元素分类只能有一份口径，
 	// 否则"保存时校验用的时长"与"预览渲出的时长"可能是两个数。
 	animationPages := newAnimationResolver(projects, objects, scripts, jobs)
-	NewAnimationHandler(opt.Animation, animationPages, opt.AnimationEnabled).Register(mux, auth)
+	// 能力判定只构造一次，三处入口共用：写规格、导出选项、导出入口。
+	// 各构造一份也不是不行（判定是纯函数），但共用一份能保证灰度盐与默认百分比不会在某处漏配。
+	animationGate := newTenantAnimationGate(opt.Policy, animation.GateConfig{
+		DeployEnabled:  opt.AnimationEnabled,
+		DefaultPercent: rolloutPercentOrDefault(opt.AnimationRolloutPercent),
+		Salt:           opt.AnimationRolloutSalt,
+	})
+	NewAnimationHandlerWithGate(opt.Animation, animationPages, animationGate).Register(mux, auth)
 	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
 	NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages).
 		WithBudget(opt.AnimationPreviewBudget).
@@ -229,7 +246,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 导出选项探测（3.4）：回答"这次导出能不能出动画"以及逐页规格身份。
 	// 与动画规格端点分开挂载：写路径关闭（AnimationEnabled=false）时导出仍应能判定不可用并说明原因，
 	// 所以这里不因 enabled=false 就不注册路由。
-	NewExportOptionsHandler(opt.Animation, objects, projects, opt.Members, opt.AnimationEnabled, opt.AnimationProbe).Register(mux, auth)
+	NewExportOptionsHandler(opt.Animation, objects, projects, opt.Members, animationGate, opt.AnimationProbe).Register(mux, auth)
 	// 网关路由始终注册：未配置 AES 密钥时 store 为 nil，handler 返回明确 503 feature_disabled，
 	// 避免此前漏挂导致的静默 404。
 	NewGatewayHandler(opt.Gateway, opt.Members, opt.Audit).Register(mux, auth)
@@ -313,7 +330,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 成品列表路由（按项目列出产物，前端按快照聚合），供成品与版本页展示与下载（B3-M1）。
 	registerArtifactRoutes(mux, artifacts, opt.Members, projects, opt.Audit, jobs, objects, auth)
 	// 扩展产物格式导出（html_bundle，M6-1）：REST，绕过 proto enum（本机无 buf/protoc）。
-	NewBundleExportHandler(jobs, opt.Members, opt.Audit, opt.Animation, opt.AnimationEnabled, opt.AnimationProbe).Register(mux, auth)
+	NewBundleExportHandler(jobs, opt.Members, opt.Audit, opt.Animation, animationGate, opt.AnimationProbe).Register(mux, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
 	registerEditorRoutes(mux, jobs, objects, scripts, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。

@@ -137,14 +137,25 @@ func (r *animationResolver) pageDurationMS(ctx context.Context, tenantID, projec
 // /api/context-rules 同形；业务 RPC 面继续由 Connect 承载。接口前缀用 /api/ 与既有
 // REST 端点保持一致，避免出现第三种前缀。
 type AnimationHandler struct {
-	store   animstore.Store
-	pages   AnimationPageResolver
-	enabled bool
+	store animstore.Store
+	pages AnimationPageResolver
+	gate  AnimationGate
 }
 
 // NewAnimationHandler 创建 handler。store 为 nil 时不注册任何路由（等价未上线）。
+//
+// enabled 是部署级开关，等价于「所有租户同一答案」——保留这个构造是为了本地 profile 与既有用例，
+// 生产走 NewAnimationHandlerWithGate。
 func NewAnimationHandler(store animstore.Store, pages AnimationPageResolver, enabled bool) *AnimationHandler {
-	return &AnimationHandler{store: store, pages: pages, enabled: enabled}
+	return NewAnimationHandlerWithGate(store, pages, deployGate{enabled: enabled})
+}
+
+// NewAnimationHandlerWithGate 用租户级能力判定创建 handler（M4）。
+func NewAnimationHandlerWithGate(store animstore.Store, pages AnimationPageResolver, gate AnimationGate) *AnimationHandler {
+	if gate == nil {
+		gate = deployGate{}
+	}
+	return &AnimationHandler{store: store, pages: pages, gate: gate}
 }
 
 // Register 挂载路由。读路径始终可用（便于灰度前验证契约），写路径受 enabled 控制。
@@ -255,14 +266,15 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AnimationHandler) put(w http.ResponseWriter, r *http.Request) {
-	if !h.enabled {
-		// 开关关闭时返回 404 而不是 403：不暴露能力存在，避免外部探测与半成品文案。
-		writeJSON(w, http.StatusNotFound, map[string]any{"code": "not_found"})
-		return
-	}
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "unauthenticated"})
+		return
+	}
+	// 判定必须在拿到 principal 之后：租户级灰度需要 tenantID，而部署级开关只是它的一个特例。
+	if !h.gate.Resolve(r.Context(), principal.TenantID).Enabled {
+		// 开关关闭时返回 404 而不是 403：不暴露能力存在，避免外部探测与半成品文案。
+		writeJSON(w, http.StatusNotFound, map[string]any{"code": "not_found"})
 		return
 	}
 	key, ok := animationKeyFromRequest(w, r, principal.TenantID)

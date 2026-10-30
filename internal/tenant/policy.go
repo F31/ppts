@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -30,6 +31,9 @@ type Policy struct {
 	// synth/document/notes/scriptdraft）共用的保留天数。jsonb 存储，新增键无需迁移；
 	// 0 表示不自动过期（与其余 *_retention_days 语义一致：0 是「未设档」，不是「立即删」）。
 	DerivedRetentionDays int `json:"derived_retention_days"`
+	// Animation 是动画能力的租户级开放策略（M4）。jsonb 新增键，无需迁移；
+	// nil 表示"没配过"，由部署级默认百分比决定（见 internal/animation/capability.go）。
+	Animation *animation.AnimationPolicy `json:"animation,omitempty"`
 }
 
 // LifecyclePolicySetting 是租户级存储生命周期策略下发所需的控制面行。

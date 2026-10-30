@@ -45,16 +45,19 @@ type ExportOptionsHandler struct {
 	objects  objectstore.ObjectStore
 	projects project.ProjectStore
 	members  membership.Reader
-	// enabled 是部署侧的动画通道开关，与动画规格写路径同一个 env（PPTS_ANIMATION_ENABLED）。
-	enabled bool
-	probe   *cachedProbe
+	// gate 是租户级能力判定（M4）。引入租户策略前它等价于部署级开关。
+	gate  AnimationGate
+	probe *cachedProbe
 }
 
 // NewExportOptionsHandler 创建 handler。specs 为 nil 时不注册路由（能力未上线）。
 func NewExportOptionsHandler(specs animstore.Store, objects objectstore.ObjectStore,
-	projects project.ProjectStore, members membership.Reader, enabled bool, probe AnimationProbe) *ExportOptionsHandler {
+	projects project.ProjectStore, members membership.Reader, gate AnimationGate, probe AnimationProbe) *ExportOptionsHandler {
+	if gate == nil {
+		gate = deployGate{}
+	}
 	h := &ExportOptionsHandler{
-		specs: specs, objects: objects, projects: projects, members: members, enabled: enabled,
+		specs: specs, objects: objects, projects: projects, members: members, gate: gate,
 	}
 	if probe != nil {
 		h.probe = &cachedProbe{client: probe, ttl: defaultProbeTTL}
@@ -114,6 +117,10 @@ func (h *ExportOptionsHandler) Register(mux *http.ServeMux, auth func(http.Handl
 type exportAnimationOptions struct {
 	Enabled bool   `json:"enabled"`
 	Reason  string `json:"reason,omitempty"`
+	// Capabilities 是租户级能力快照（M4）。Enabled 仍是"此刻真的能出动画"（含渲染服务可达），
+	// Capabilities.Enabled 是"这个租户有没有资格"。两者分开：服务挂了时前者 false、后者 true，
+	// 这个组合正好告诉前端"不是没开通，是服务不可用"，比一个 bool 有用。
+	Capabilities *animation.Capability `json:"capabilities,omitempty"`
 	// Pages 为 nil（而非空数组）时表示没有给出 timelineKey，只回答了能力问题。
 	Pages []exportAnimationPage `json:"pages,omitempty"`
 
@@ -150,7 +157,9 @@ func (h *ExportOptionsHandler) animationOptions(w http.ResponseWriter, r *http.R
 	}
 
 	resp := exportAnimationOptions{}
-	if reason := h.unavailableReason(r.Context()); reason != "" {
+	capability := h.gate.Resolve(r.Context(), principal.TenantID)
+	resp.Capabilities = &capability
+	if reason := h.unavailableReason(r.Context(), capability); reason != "" {
 		resp.Reason = reason
 		writeJSON(w, http.StatusOK, resp)
 		return
@@ -223,24 +232,27 @@ func (h *ExportOptionsHandler) animationOptions(w http.ResponseWriter, r *http.R
 //
 // 顺序有意义：先报配置缺失，再报探测失败。反过来会出现"渲染服务不可达"掩盖
 // "这个部署根本没开动画"——后者是更根本的原因，也更容易修。
-func (h *ExportOptionsHandler) unavailableReason(ctx context.Context) string {
+func (h *ExportOptionsHandler) unavailableReason(ctx context.Context, capability animation.Capability) string {
 	// h.probe 是 *cachedProbe：直接传进接口参数会把 nil 包成"非 nil 接口"，
 	// 判定里的 probe==nil 就永远不成立，最后在 Check 里空指针。
 	var probe AnimationProbe
 	if h.probe != nil {
 		probe = h.probe
 	}
-	return animationUnavailableReason(ctx, h.specs, h.enabled, probe)
+	return animationUnavailableReason(ctx, h.specs, capability, probe)
 }
 
 // animationUnavailableReason 是"这次导出能不能出动画"的唯一判定，导出选项端点与
 // 导出入口共用：两边各写一遍，就会出现"对话框说能用、提交后被静默降级"的分叉。
-func animationUnavailableReason(ctx context.Context, specs animstore.Store, enabled bool, probe AnimationProbe) string {
+//
+// 顺序有意义：能力未开通 → 部署未上线 → 渲染服务不可达。反过来会出现"渲染服务不可达"
+// 掩盖"这个租户根本没开"，后者是更根本的原因，也更容易修。
+func animationUnavailableReason(ctx context.Context, specs animstore.Store, capability animation.Capability, probe AnimationProbe) string {
 	if specs == nil {
 		return "animation_not_available"
 	}
-	if !enabled {
-		return "animation_disabled_by_deployment"
+	if reason := capabilityUnavailableReason(capability); reason != "" {
+		return reason
 	}
 	if probe == nil {
 		return "renderer_not_configured"
@@ -249,6 +261,28 @@ func animationUnavailableReason(ctx context.Context, specs animstore.Store, enab
 		return "renderer_unavailable: " + err.Error()
 	}
 	return ""
+}
+
+// capabilityUnavailableReason 把能力快照的关闭原因映射成导出侧的原因码。
+//
+// 两套码各有分工：animation.* 是租户可见的"没开通/不在灰度"，来自能力判定；
+// renderer_* 是部署故障。前端按前缀分别给文案，这两类问题要找的人不同。
+func capabilityUnavailableReason(c animation.Capability) string {
+	if c.Enabled {
+		return ""
+	}
+	switch c.Reason {
+	case animation.ReasonTenantDisabled:
+		return "animation_disabled_by_tenant"
+	case animation.ReasonRolloutMiss, animation.ReasonDefaultOff:
+		return "animation_not_in_rollout"
+	case animation.ReasonPolicyUnreadable:
+		return "animation_policy_unreadable"
+	default:
+		// deploy_disabled / unknown_tenant 都归到部署未开启：对用户是同一句话，
+		// 运维侧的区分在 capabilities.source / reason 里仍然拿得到。
+		return "animation_disabled_by_deployment"
+	}
 }
 
 func (h *ExportOptionsHandler) currentRevision(ctx context.Context, principal Principal, projectID string) int {

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -34,6 +35,34 @@ import (
 // 验收里"关掉开关再导出"这一步根本做不出来。
 func animationEnabled(isSQLite bool) bool {
 	return envBool("PPTS_ANIMATION_ENABLED", isSQLite)
+}
+
+// animationRolloutFromEnv 读取「租户未配置策略时」的默认灰度百分比。
+//
+// 默认 100：部署开了闸就等于所有租户可用，与引入租户策略之前完全一致。
+// 不默认 0 的唯一原因是迁移——设计文档里 animation.enabled 的租户默认是 false，
+// 但一次发版就把现网所有客户的动画关掉，比"默认值不够严格"严重得多。
+// 生产收口请显式设 PPTS_ANIMATION_ROLLOUT=0 再逐个开租户（design ADR-3）。
+func animationRolloutFromEnv(logger *slog.Logger) int {
+	raw := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ROLLOUT"))
+	if raw == "" {
+		return 100
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 || n > 100 {
+		// 非法值不静默当 0：那会把"写错了"变成"所有人突然没动画"。
+		logger.Warn("animation: invalid PPTS_ANIMATION_ROLLOUT, falling back to 100", "value", raw)
+		return 100
+	}
+	return n
+}
+
+// animationRolloutSaltFromEnv 读取分桶盐。
+//
+// 这是一份"写进部署配置后不要再动"的值：改 salt 等于重新洗牌，会把已经吃到灰度的租户
+// 踢回未开放状态，而它可能正在用这个功能交付（design ADR-4）。
+func animationRolloutSaltFromEnv() string {
+	return strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ROLLOUT_SALT"))
 }
 
 // animationProbeFromEnv 构造导出选项端点的渲染服务探测。
@@ -177,6 +206,7 @@ func runServer() error {
 	// 动画开关只解析一次：api 的三个入口（写路径、探测、预览）必须同进同退，
 	// 各自读一遍环境变量就会出现"对话框说能用、预览端点却没注册"这种半开状态。
 	animationOn := animationEnabled(stores.isSQLite())
+	animationRollout := animationRolloutFromEnv(logger)
 	previewRenderer, previewAssets := animationPreviewFromEnv(logger, animationOn)
 
 	server := &http.Server{
@@ -194,9 +224,12 @@ func runServer() error {
 						DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
 						LocalPrincipal: localPrincipal,
 						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
-						// 动画规格写路径：本地 profile 默认开启；生产需显式设置 PPTS_ANIMATION_ENABLED=true。
+						// 动画：部署闸 + 租户策略 + 灰度，判定收敛在 internal/animation.Resolve。
+						// 本地 profile 默认开启；生产需显式设置 PPTS_ANIMATION_ENABLED=true。
 						Animation: stores.animation, AnimationEnabled: animationOn,
-						AnimationProbe:    animationProbeFromEnv(logger, animationOn),
+						AnimationRolloutPercent: &animationRollout,
+						AnimationRolloutSalt:    animationRolloutSaltFromEnv(),
+						AnimationProbe:          animationProbeFromEnv(logger, animationOn),
 						AnimationRenderer: previewRenderer, AnimationAssets: previewAssets,
 						// 预览预算按部署硬件可调（默认 3s）：纯 CPU 渲染器上一页的耗时
 						// 取决于核数与字号，固定值会让慢机器上的预览恒定超时。
