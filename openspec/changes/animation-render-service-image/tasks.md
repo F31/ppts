@@ -215,6 +215,20 @@
       `xfade`，实现是合成器在入场页开头画前一页末帧，`openspec/specs/render-plan/spec.md`
       与 `segkey.go` 也都是这么写的。已改写该需求（详见 review-packet §8.16）
 - [ ] 6.4 方案文档回写（`docs/` 已移出仓库，改在变更归档时并入 `openspec/specs/`）
+- [x] 6.6 片段编码契约补断言（2026-10-31）：§8.16 审计里唯一一条「只有字面量、没有断言」
+      的 MUST。原计划调 `ffprobe`，实际不行——运行时镜像里没有 ffmpeg，门禁会变成
+      「本机有没有 ffprobe」决定跑不跑，在部署环境里永远静默跳过。改成纯 Go 解容器
+      （`internal/render/segment_encoding.go`：`stsd` 编码类型、`avcC`→SPS 色度、
+      `stss` 关键帧、`stsz` 帧数），接进 `-selftest`，逐页验并输出
+      `codec=… chroma=… gop<=…`。补的过程中两次「先证明会红」各抓到一个洞：
+      ① SPS 头部连写三次 `bits(8)` 后把第四次当 `profile_idc`，实际取到
+      `seq_parameter_set_id`，所有高档次被当成 Baseline、一律回 4:2:0（两个不同色度的
+      样例读数相同）；② GOP 只算相邻差，整段一个关键帧时最大值为 0，`gopSize` 放大
+      十倍自检照样绿——片尾那段也必须计入。修后 `yuv444p` 与 `gopSize×10` 都红。
+      规格同步改三处：`固定 30` → `≤30 且片尾计入`、补「无音轨」守卫（解析 `soun` 轨）、
+      把「每个片段」限定为「渲染服务返回的片段」（worker 侧 ffmpeg 静态降级沿用默认
+      预设，keyint 250，无害但不在契约内）。M 片 5 段实测与 ffprobe 逐项一致
+      （详见 review-packet §8.17）
 
 ## 7. 未闭环（需决策，不阻塞当前验收）
 

@@ -17,10 +17,12 @@
 deploy/renderer/chrome.sha256 text eol=lf
 deploy/renderer/charset.txt text eol=lf
 
-# 5. pptx：3.4 golden 用例的输入样本。字节一变，sha256 与解析出的页结构就全变，
-#    而 Windows 侧 core.autocrlf=true 的检出曾把文本文件反复改成 CRLF——这里显式
-#    声明二进制，避免哪天有人加了一条 `* text=auto` 把样本也卷进去。
+# 5. pptx / mp4：3.4 golden 用例的输入样本、6.x 片段编码用例的容器样本。字节一变，
+#    sha256 与解析出的页结构/编码参数就全变，而 Windows 侧 core.autocrlf=true 的检出
+#    曾把文本文件反复改成 CRLF——这里显式声明二进制，避免哪天有人加了一条
+#    `* text=auto` 把样本也卷进去。
 *.pptx -text
+*.mp4 -text
 
 # 6. golden：TestCompileGolden 把 json.MarshalIndent 的产物（只会是 \n）与文件
 #    逐字节比较。仓库里存的是 LF，但 core.autocrlf=true 的 Windows 检出会把它改成

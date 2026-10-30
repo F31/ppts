@@ -91,8 +91,18 @@ func runSelfTest(ctx context.Context, backend render.Backend, workDir string, fa
 			return fmt.Errorf("selftest: segment %d is suspiciously small (%d bytes)", i, info.Size())
 		}
 	}
-	fmt.Printf("selftest ok: backend=%s pages=%d elapsed=%s degraded=%d\n",
-		backend.Name(), len(plan.Pages), time.Since(started).Round(time.Millisecond), len(report.Degraded))
+
+	// 编码契约：规格要求 H.264 / yuv420p / GOP 30，而运行时镜像里没有 ffprobe
+	// （见 Dockerfile 的 base 段），所以这里用纯 Go 解容器。这条检查只放在自检里、
+	// 没塞进 verifyMP4：后者管的是「有没有可播放产物」，一旦要求真编码参数，
+	// 所有 stub / fake backend 的用例都得造真片段，而那批用例考的不是编码。
+	enc, err := checkSegmentEncodings(plan, dir)
+	if err != nil {
+		return fmt.Errorf("%w (workdir kept at %s)", err, dir)
+	}
+	fmt.Printf("selftest ok: backend=%s pages=%d elapsed=%s degraded=%d codec=%s chroma=%s gop<=%d\n",
+		backend.Name(), len(plan.Pages), time.Since(started).Round(time.Millisecond),
+		len(report.Degraded), enc.Codec, enc.ChromaName(), render.SegmentEncodingContract.GOP)
 
 	// 成功即清理；失败保留现场，便于把镜像里的目录挂出来看。
 	if keep {
@@ -100,6 +110,24 @@ func runSelfTest(ctx context.Context, backend render.Backend, workDir string, fa
 		return nil
 	}
 	return os.RemoveAll(dir)
+}
+
+// checkSegmentEncodings 逐页验编码参数，返回最后一页的实测值（用于输出）。
+//
+// 只比对契约里的三项：编码、色度抽样、关键帧间隔上限。码率与画质不判——
+// 它们随编码器版本漂，判了只会让人不断去改阈值；而这三项一旦变了，
+// 表现是「拼接处花屏 / 部分播放器黑屏」，是必须在发布前挡住的那类。
+func checkSegmentEncodings(plan *render.Timeline, dir string) (render.SegmentEncoding, error) {
+	var last render.SegmentEncoding
+	for i := range plan.Pages {
+		name := filepath.Join(dir, fmt.Sprintf("segment_%03d.mp4", i))
+		got, err := render.CheckSegmentEncoding(name, render.SegmentEncodingContract)
+		if err != nil {
+			return last, fmt.Errorf("selftest: segment %d 编码不符合契约: %w", i, err)
+		}
+		last = got
+	}
+	return last, nil
 }
 
 // checkSelftestDegradation 判降级是否符合预期。

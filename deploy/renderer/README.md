@@ -111,11 +111,26 @@ docker run --rm --network none --read-only \
   ppts/renderer:dev -selftest -backend remotion -workdir /work -renderer-script /app/render.mjs
 ```
 
-成功输出 `selftest ok: backend=remotion pages=2 elapsed=... degraded=0`，失败非零退出。
+成功输出 `selftest ok: backend=remotion pages=2 elapsed=... degraded=0 codec=avc1 chroma=yuv420p gop<=30`，
+失败非零退出。
 自检走的是与线上**同一个 Backend 实现**：staging（底板）→ Node → 片段校验，
 所以「镜像能起、但渲染必挂」这种状态过不了门禁。
 
 `degraded` 不是装饰：自检样例底图齐全，出现非零就说明链路有问题（例如底图取不到）。
+
+### 编码契约（`codec=… chroma=… gop<=…` 这半句）
+
+自检除了「片段存在且是合法容器」，还解容器验三件事：编码是 `avc1`、色度是 `yuv420p`、
+关键帧间隔 ≤ 30 帧（含片尾那段），且片段不带音轨。这三项写错的表现是「拼接处花屏」
+或「部分播放器黑屏」，而样片恰好每页都短、每段都从关键帧起，会把问题盖住。
+
+解析在 `internal/render/segment_encoding.go` 里，纯 Go，**不依赖 ffprobe**——运行时镜像
+里没有 ffmpeg，把门禁建在镜像之外等于没有门禁。样例片段与用例在
+`internal/render/segment_encoding_test.go`。
+
+注意这条只守着**渲染服务产出的片段**。worker 侧 ffmpeg 静态降级（服务不可用时的
+整页静态图）沿用项目默认预设（libx264 / yuv420p，关键帧间隔按编码器默认），
+不在这条契约内：那些片段不长、每段首帧都是 IDR，`-c copy` 拼接不受影响。
 
 ### 验收单页降级（tasks 3.7）
 

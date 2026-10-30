@@ -1244,7 +1244,7 @@ V14.1 共判 10 处切换，L 片红 2 处（**都是各页的第一个焦点**�
 | 4 | 只含可再分发字体 | `client_test.go` `TestRequireFonts`；镜像侧 `subset-fonts.py` + `charset.txt` | 是 |
 | 5 | 运行时最小权限 / `unsafe_path` | `validate_test.go` 四条 + `service_test.go`；非 root／只读／tmpfs 只在 `compose.yml` | 部分 |
 | 6 | 去残影 + `plate_patch_noisy` | `plate_test.go` 四例、`remotion_test.go` `TestStageLogsNoisyPatch` | 是 |
-| 7 | 片段编码参数（H.264/yuv420p/GOP 30） | **只有** `renderer/render.mjs` 里的 `crf: 18, gop: 30, yuv420p` 三个字面量，无断言 | 否 |
+| 7 | 片段编码参数（H.264/yuv420p/GOP≤30/无音轨） | `internal/render/segment_encoding.go` 解容器 + `cmd/renderer/selftest.go` 逐页验；`segment_encoding_test.go` 六个方向 | 是（§8.17 补的） |
 | 8 | 镜像自带自检 | `cmd/renderer/selftest.go` + `-selftest`；发布前手工跑（README 有命令） | 手工 |
 | 9 | 渲染不可用不阻断导出 | `animation_test.go` 三例 + `animation_video_test.go` `TestTryAnimationDegradesSinglePageToStill` | 是 |
 
@@ -1279,8 +1279,71 @@ V14.1 共判 10 处切换，L 片红 2 处（**都是各页的第一个焦点**�
 
 #### 五、审计没覆盖到的
 
-- 需求 7（编码参数）没有断言。GOP 写错的表现是「拼接偶发花屏」，不跑真片子看不
-  出来，而样片恰好每页都短、每段都从关键帧起，掩盖了它。要补得在 `selftest` 里
-  加一条 `ffprobe` 读 `nb_frames`/关键帧位置。
+- ~~需求 7（编码参数）没有断言~~ → 已在 §8.17 补上。原设想是「在 selftest 里调
+  `ffprobe`」，实际不能这么做：运行时镜像里没有 ffmpeg，等于把门禁建在镜像之外。
+  改成纯 Go 解容器，顺带把「无音轨」这条一直没人守的 MUST 也接上了。
 - 需求 2、5 的「镜像侧」部分（固定版本、非 root、只读 rootfs、限额）只有配置与
   文档，没有自动断言——它们要真验证得跑容器，而容器重建这条路目前不通（见 §旁注）。
+
+### 8.17 最后一条「只有字面量、没有断言」的 MUST（2026-10-31 凌晨）
+
+#### 起点：审计表里唯一的「否」
+
+§8.16 把九条需求逐条对到守卫上，只有需求 7（片段编码参数）是「只有 `render.mjs`
+里 `crf: 18, gop: 30, pixelFormat: 'yuv420p'` 三个字面量」。当时设想的补法是
+「在 selftest 里调 `ffprobe` 读 `nb_frames`／关键帧位置」——动手时发现这条路不通：
+
+- 运行时镜像里没有 ffmpeg（`Dockerfile` 的 base 段只装 Chrome、字体、`libnss` 那一串），
+  为读三个字段装 ffprobe，等于给镜像加几十 MB 与一片 CVE 面；
+- 更糟的是门禁位置：自检会变成「本机有没有 ffprobe」决定跑不跑，而镜像里恰好没有——
+  于是这条断言在实际部署环境里**永远静默跳过**。
+
+改成纯 Go 解容器（`internal/render/segment_encoding.go`）：`stsd` 读 sample entry 类型、
+`avcC` 里的 SPS 读 `chroma_format_idc`、`stss` 读关键帧样本号、`stsz` 读帧数。
+只解这四个字段，码率与画质不碰——后者随编码器版本漂，判了只会让人不断改阈值。
+
+#### 两次「它红了，但红的原因不对」
+
+这两次都是**先证明会红**才发现的，只跑绿的路径两次都会静默通过。
+
+**第一次：两个不同色度的样例读数一样。** 用 ffmpeg 造了 `yuv420p` 与 `yuv444p` 两个
+2400 字节的样例，跑出来都是 `chroma=1`。原因是 SPS 头部连写了三个 `bits(8)`
+（profile / constraint / level），第四次取出来当 `profile_idc`——实际拿到的是
+`seq_parameter_set_id`。任何高档次（100/110/…）因此都被当成 Baseline，一律按
+「只有 4:2:0」返回 1。它不报错，它只是**让两个样例得到同一个答案**。
+
+**第二次：GOP 改成 300，自检照样绿。** 把 `render.mjs` 的 `gopSize` 乘 10（页长 45 帧，
+等于整段只有一个关键帧），自检输出 `gop<=30`。因为间隔只按「相邻关键帧的差」算——
+整段只有一个关键帧时表是空的，最大值算成 0，任何上限都能过。片尾那段
+「最后一个关键帧到最后一帧」同样是一段解不动就得回头的区间，必须计入。修完再跑：
+
+```
+renderer: selftest: segment 0 编码不符合契约: segment keyframe gap = 45 frames, want ≤30
+```
+
+#### 规格改了哪三处
+
+| 原文 | 现在 | 为什么 |
+|---|---|---|
+| 关键帧间隔 MUST **固定**（默认 30 帧），MUST NOT 使用场景切换自适应 GOP | MUST **≤30 帧**，且片尾那段计入 | x264 默认就在场景切换处插关键帧，间隔会变短。我们从没关过 `sc_threshold`，所以「固定 30」是做不到的说法，而「不得场景切换自适应」更是与编码器的默认行为相反 |
+| 无音轨（没有任何检查） | 无音轨（解析 `soun` 轨，有则失败） | 这条 MUST 此前零守卫；而它写错的后果是 concat 流布局不一致——要么重编码，要么静默丢音 |
+| 每个片段 | **渲染服务返回的**每个片段 | worker 侧 ffmpeg 静态降级沿用项目默认预设（keyint 250）。严格读「每个片段」会把那条路也判红，而它的片段不长、首帧都是 IDR，`-c copy` 拼接不受影响——已知且无害，写进 `deploy/renderer/README.md` |
+
+#### 读数
+
+| 对象 | 实测 |
+|---|---|
+| 自检（2 页 × 45 帧） | `codec=avc1 chroma=yuv420p gop<=30`，14.7s |
+| 自检 + 第 2 页故障注入 | 同上，`degraded=1`——降级页走 Remotion 静态重试，编码仍合规 |
+| M 片 5 段真实成片 | 6/12/10/6/3 个关键帧，间隔全 30；帧数 166/360/296/169/75，与 ffprobe **逐项一致** |
+| 把 `pixelFormat` 改成 `yuv444p` | 红：`segment chroma = yuv444p, want yuv420p` |
+| 把 `gopSize` 乘 10 | 红：`segment keyframe gap = 45 frames, want ≤30` |
+
+跨校验那句是这一节最要紧的：解析器不是在自造样例上自证，它在 5 段真实成片上与
+ffprobe 的帧数、关键帧位置逐项对齐（`tmp/q7/probe_enc`，每次渲染后可直接复跑）。
+
+#### 仍未覆盖
+
+- worker 侧 ffmpeg 静态降级片段不在契约内（见上表第三行）。
+- 需求 2、5 的镜像侧（Chrome 版本固定、非 root、只读 rootfs、限额）仍只有配置与
+  文档。要真验证得跑容器，而容器重建这条路目前还不通。

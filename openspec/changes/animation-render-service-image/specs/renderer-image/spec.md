@@ -110,16 +110,25 @@ worker MUST NOT 另建一条 ffmpeg 交叉淡化（`xfade`）路径：`xfade` �
 
 ### Requirement: 片段编码参数固定
 
-每个片段 MUST 为 H.264 / `yuv420p` / 无音轨，关键帧间隔 MUST 固定（默认 30 帧），MUST NOT 使用场景切换自适应 GOP。片段帧数 MUST 等于 `round(durationMs × fps / 1000)`（至少 1 帧）。
+渲染服务返回的每个片段 MUST 为 H.264（sample entry `avc1`）/ `yuv420p` / 只有视频轨。第一个样本 MUST 是关键帧；相邻关键帧的间隔 MUST ≤ 30 帧，「最后一个关键帧到片尾」那一段同样计入间隔。
+
+间隔 MUST NOT 被断言为恰好 30：x264 默认会在场景切换处插入更密的关键帧，变短是正常编码行为。契约只约束上限——变长会让按页 seek 变慢，也会让拼接处的首帧落在 P 帧上。
+
+片段帧数 MUST 等于 `round(durationMs × fps / 1000)`（至少 1 帧）。
 
 #### Scenario: 片段被 `-c copy` 拼接
 
 - **WHEN** worker 用 concat demuxer 拼接全部片段
 - **THEN** 拼接 MUST 不触发重编码，且输出时长等于各页 `durationMs` 之和（误差 ≤ 半帧/页）
 
+#### Scenario: 合成器的编码参数被改坏
+
+- **WHEN** `pixelFormat` 被改成 `yuv444p`，或 `gopSize` 被放大到超过页长
+- **THEN** 镜像自检 MUST 以非零退出码结束，并报出实测值与期望值（`chroma = yuv444p, want yuv420p` / `keyframe gap = 45 frames, want ≤30`）
+
 ### Requirement: 镜像自带可执行自检
 
-镜像 MUST 提供自检入口：用固定样例渲染至少 2 页，校验产物存在且为合法 MP4 容器。自检失败 MUST 以非零退出码结束。部署流水线 MUST 在发布前执行自检。
+镜像 MUST 提供自检入口：用固定样例渲染至少 2 页，校验产物存在、为合法 MP4 容器，且编码参数符合「片段编码参数固定」。自检 MUST NOT 依赖 ffprobe 等镜像外的二进制——运行时镜像里没有 ffmpeg，靠它校验等于把门禁建在镜像之外。自检失败 MUST 以非零退出码结束，并在失败信息里带上实测值。部署流水线 MUST 在发布前执行自检。
 
 #### Scenario: 浏览器缺失
 
