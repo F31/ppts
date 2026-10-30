@@ -176,6 +176,55 @@ docker run --rm --network none --read-only \
 `-render-timeout` 不必手调：它现在按片长推导（`6 × 片长 + 5min`，夹在给定值与 6h 之间），
 常量 15 分钟装不下 5 分钟长片（实测 943s）。
 
+## 片段缓存与页级并行（M5）
+
+三个新开关，都是可选的，不配就是引入缓存前的行为：
+
+| 开关 | 默认 | 作用 |
+|---|---|---|
+| `-segment-cache <dir>` | 空（关闭） | 逐页片段的缓存目录。**必须在持久卷上**，不能放 `/work` / `/tmp`（tmpfs 重启即空） |
+| `-segment-cache-max-bytes` | 4 GiB | 缓存容量软上限；超限按 mtime 从旧到新淘汰到 90% |
+| `-page-concurrency` | 1（串行） | 同时渲染几页；**总渲染位 = 任务并发 × 页并发 × 帧并发** |
+
+四条使用纪律：
+
+1. **缓存目录必须共享才有意义**：单副本就是本地卷；多副本指向同一份共享存储，
+   命中才能跨副本。缓存按 `root/<key[:2]>/<key>.mp4` 布局，键是内容的 SHA-256。
+2. **它不会让渲染失败**：读错误按未命中处理，写错误只记日志。截断的缓存项会被
+   最小容器校验拦下并重渲——缓存坏了的代价是「慢一次」，不是「导出失败」。
+3. **被降级的页不写缓存**：降级是瞬时故障的表现，缓存它会让「这页永远不动」固化下来。
+4. **页级并行按乘积算内存**：`-concurrency` 同时喂「任务数」与「帧并发」，
+   所以 `-concurrency 2 -page-concurrency 2` 是 2×2×2 = 8 个位，不是 4 个。
+
+### 达标配置（30s/1080p 的 P95 ≤ 120s）
+
+同一台机器、10 页 × 3 秒 / 1080p30 / 5 次冷渲染（`cmd/render-perf -scenario cold`）：
+
+| 配置 | 渲染位 | P95 | 结论 |
+|---|---|---|---|
+| `-concurrency 2`（页并发 1） | 2 | 133.9s | **不达标**（默认值，差 14 秒） |
+| `-concurrency 2 -page-concurrency 2` | 8（2 任务） | 71.6s* | 达标（按 1 任务算 4 位） |
+| **`-concurrency 1 -page-concurrency 4`** | **4** | **49.3s** | **达标且最快：推荐** |
+
+\* 该行实测时只跑 1 个任务，所以实际是 4 位。
+
+两条结论：
+
+- **默认的 2 位达不到 120s 目标**。要达标必须显式开页级并行；推荐
+  `-concurrency 1 -page-concurrency 4`（1 个任务 × 4 页 × 1 帧 = 4 位，正好对上 4 vCPU）。
+- **同样是 4 个位，「4 页 × 1 帧」比「2 页 × 2 帧」快 30%**（49.3s vs 71.6s）。
+  页级并行更省，因为每页一个标签页、图片解码与合成器往返不再互相排队。
+
+观测：`GET /v1/render/{id}` 的 `cachedPages` / `renderedPages` 是本次的命中与实渲页数。
+门禁命令（需要 Chrome + ffmpeg，几分钟）：
+
+```bash
+go run ./cmd/render-perf -pages 10 -seconds 3 -runs 5 \
+  -chrome "$PPTS_CHROME" -json        # 冷渲染 P95 / 全命中二次渲染 / 命中率 / 三路一致性
+go run ./cmd/render-perf -pages 10 -seconds 3 -scenario parallel -page-concurrency 3 \
+  -chrome "$PPTS_CHROME"             # 页级并行：产物一致 + 串行对照墙钟
+```
+
 ## 底图从哪来（`-assets-dir`，必读）
 
 计划里的 `baseImage` 是**相对路径**，合成器用 Remotion 的 `staticFile()` 取图，而

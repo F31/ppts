@@ -36,6 +36,22 @@ services:
     # 由它把页图写进去（内容寻址命名、原子落地）。接线与 S3 换法见 README「单机部署」。
     # command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
     #           "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets"]
+    # 片段缓存（M5）：落在**持久卷**上，不能放 /work 或 /tmp（都是 tmpfs，重启即空，
+    # 等于每次都是冷启动）。多副本部署把它指向同一份共享存储，命中即可跨副本共享。
+    # 不给 -segment-cache 就是「每页都渲」的旧行为。
+    # 容量上限按「近 30 天可能被再次导出的片子」估：1080p30 的 30 秒片约 10–20MB，
+    # 4GiB 大致对应 200–400 部；超限按 mtime 从旧到新淘汰，不会删刚写进去的那一条。
+    # volumes:
+    #   - /srv/ppts/segment-cache:/cache
+    # command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
+    #           "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets",
+    #           "-segment-cache", "/cache", "-segment-cache-max-bytes", "4294967296",
+    #           "-concurrency", "1", "-page-concurrency", "4"]
+    # 上面最后的两个数是**达标配置**，不是随手填的（M5 实测，10 页 × 3s / 1080p30 / 5 次）：
+    #   1 任务 × 4 页 × 1 帧 = 4 个渲染位 → P95 49.3s
+    #   1 任务 × 2 页 × 2 帧 = 4 个渲染位 → P95 71.6s（同样的位，切开方式差 30%）
+    #   1 任务 × 1 页 × 2 帧 = 2 个渲染位 → P95 133.9s（默认值，**达不到 120s 目标**）
+    # 注意 -concurrency 同时喂「任务数」与「帧并发」，总位是三者乘积（ADR-16 的乘积结论）。
     # 注意：不要在这里补 -fonts。字体版本由镜像 entrypoint 从 /etc/ppts/fonts.version
     # 拼出来（见 Dockerfile 说明），在这里覆盖会让版本与实际字体脱节。
     network_mode: none
