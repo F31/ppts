@@ -49,17 +49,20 @@ def envelope(x, rate, hz=100):
     return np.sqrt((x ** 2).mean(1))
 
 
-def main():
-    film = sys.argv[1] if len(sys.argv) > 1 else "tmp/q7/film_C_narrated.mp4"
-    ref = sys.argv[2] if len(sys.argv) > 2 else "tmp/q7/audio/timeline.wav"
+def measure(film, ref):
+    """成片音轨 vs 参考音轨的最佳 lag 与峰形。
 
+    返回 dict(lag=秒, sharp=±100ms 处归一化相关值, durFilm, durRef)。
+    `sharp` 是给调用方判「这个 lag 读数可不可信」用的：两条包络都平的时候，
+    互相关在任何位置都差不多高，argmax 落哪纯属偶然，lag 好看看但没有意义。
+    所以这个函数只报数，不判断——判断留给调用方（CLI 与 verify.py 各有一套阈值语境）。
+    """
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "film.wav")
         subprocess.run([ffmpeg_bin(), "-v", "error", "-y", "-i", film,
                         "-vn", "-ac", "1", "-ar", "24000", "-f", "wav", out], check=True)
         a, ra = load(out)
     b, rb = load(ref)
-    print("成片音轨 %.3fs / 参考 %.3fs" % (len(a) / ra, len(b) / rb))
 
     ea, eb = envelope(a, ra), envelope(b, rb)
     m = min(len(ea), len(eb))
@@ -69,11 +72,21 @@ def main():
     lag = (peak - (len(eb) - 1)) / 100.0
     norm = (c - c.min()) / (c.max() - c.min() + 1e-9)
     side = max(norm[max(0, peak - 10)], norm[min(len(norm) - 1, peak + 10)])
-    print("最佳 lag %+.3fs（正 = 成片音频滞后）· ±100ms 处相关值 %.2f" % (lag, side))
-    ok = abs(lag) <= 0.033
+    return {"lag": round(lag, 3), "sharp": round(float(side), 2),
+            "durFilm": round(len(a) / ra, 3), "durRef": round(len(b) / rb, 3)}
+
+
+def main():
+    film = sys.argv[1] if len(sys.argv) > 1 else "tmp/q7/film_C_narrated.mp4"
+    ref = sys.argv[2] if len(sys.argv) > 2 else "tmp/q7/audio/timeline.wav"
+
+    r = measure(film, ref)
+    print("成片音轨 %.3fs / 参考 %.3fs" % (r["durFilm"], r["durRef"]))
+    print("最佳 lag %+.3fs（正 = 成片音频滞后）· ±100ms 处相关值 %.2f" % (r["lag"], r["sharp"]))
+    ok = abs(r["lag"]) <= 0.033
     print("判据 |lag| ≤ 33ms（1 帧）：%s" % ("通过" if ok else "不通过"))
-    if side > 0.7:
-        print("注意：峰不够尖（±100ms 处 %.2f），说明两条包络都很平，lag 不可信" % side)
+    if r["sharp"] > 0.7:
+        print("注意：峰不够尖（±100ms 处 %.2f），说明两条包络都很平，lag 不可信" % r["sharp"])
         return 2
     return 0 if ok else 1
 

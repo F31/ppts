@@ -115,6 +115,18 @@ class Handler(BaseHTTPRequestHandler):
                 out["elements"] = json.loads(elems.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 pass
+        # 机器门禁的结果（scripts/fidelity/verify.py 产出）。页面**默认折叠**它：
+        # 第 7 项是盲评，先看到「机器全过」会把人往 5 分上推，那就白评了。
+        # 同时给出它相对成片的年龄——报告比片子旧的时候，数字再好看也是旧的。
+        ver = self.root / "verify.json"
+        if ver.is_file():
+            try:
+                out["verify"] = json.loads(ver.read_text(encoding="utf-8"))
+                if film.is_file():
+                    out["verify"]["ageSec"] = round(
+                        film.stat().st_mtime - ver.stat().st_mtime, 0)
+            except json.JSONDecodeError:
+                out["verifyError"] = "verify.json 不是合法 JSON"
         body = json.dumps(out, ensure_ascii=False).encode("utf-8")
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "application/json; charset=utf-8")

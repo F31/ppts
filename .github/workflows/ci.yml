@@ -297,3 +297,21 @@ jobs:
         working-directory: proto
         run: buf breaking --against '../.git#branch=main,subdir=proto'
 
+  # 第 7 项「该动的时候才动」的机器门禁自检。
+  #
+  # 为什么 CI 只跑 --self-test：真正的审计要成片、旁白音轨与三份测量报告，
+  # 那些在 tmp/q7（.gitignore 里），CI 上不存在。但门禁**本身**是纯逻辑，
+  # 可以喂合成数据——16 项逐条注入故障（剧透、无音轨、覆盖缺口、错落不符…），
+  # 断言每种都能红。这样「门禁写坏了、永远返回通过」不会静默通过。
+  #
+  # 本地要跑真片：python3 scripts/fidelity/verify.py --rerun（约 2 分钟）
+  fidelity:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 门禁自检（16 项故障注入）
+        run: python3 scripts/fidelity/verify.py --self-test

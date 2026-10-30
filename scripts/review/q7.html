@@ -20,6 +20,15 @@ h2{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600;
 .id{display:flex;flex-wrap:wrap;gap:18px;font-size:13px;color:var(--muted)}
 .id b{color:var(--ink);font-weight:600}
 .mono{font-family:ui-monospace,Consolas,monospace}
+/* 机器实测是 <details>：收起来时不占版面，展开也不破坏卡片间距 */
+details.card>summary{cursor:pointer;font-size:15px;color:var(--ink);list-style:none}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"▸ ";color:var(--muted)}
+details.card[open]>summary::before{content:"▾ "}
+.gt{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+.gt td{padding:3px 8px;border-bottom:1px solid var(--line)}
+.gt td:first-child{width:56px;color:var(--muted);font-family:ui-monospace,Consolas,monospace}
+.bad{color:#b4232c}
 .grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:16px}
 @media(max-width:960px){.grid{grid-template-columns:1fr}}
 video{width:100%;border-radius:8px;background:#000;display:block}
@@ -117,6 +126,14 @@ pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
     </section>
   </div>
 
+  <details class="card" id="gate">
+    <summary><b>机器实测</b><span class="hint">　默认收起：先自己看完再展开。这里写着「全过」，很容易把人推向 5 分，盲评就白评了。</span></summary>
+    <div id="gateBody"><p class="hint">—</p></div>
+    <p class="hint" style="margin-top:10px">机器判的是<b>时间关系</b>（什么时候开始动、动了几帧），
+    判不了「这个动效看着自然不自然」，也判不了「该不该动」——那两条仍然只能由你给。
+    两边不一致时，以你能指到「秒数 + 元素」的那一条为准，它比任何一方的结论都硬。</p>
+  </details>
+
   <section class="card">
     <h2>打分 · 第 7 项「该动的时候才动」</h2>
     <p class="hint"><b>5 分</b> = 该判据成立；<b>3 分</b> = 成立但有 1–2 处例外；<b>1 分</b> = 该判据整体没做到。
@@ -170,10 +187,52 @@ function el(tag, props = {}, kids = []) {
   return n;
 }
 
+// 机器门禁的结果。三件事必须在页面上说清楚：
+//   1) 通过几项、哪几项红；
+//   2) 这份结果是不是比片子旧（旧了等于没有）；
+//   3) 它判不了什么——不然「机器全过」会被当成「片子没问题」。
+function renderGate(v) {
+  const box = document.getElementById("gateBody");
+  box.innerHTML = "";
+  if (!v) {
+    box.appendChild(el("p", { class: "hint", text: "没有 verify.json。跑 python3 scripts/fidelity/verify.py 就有了。" }));
+    return;
+  }
+  const fs = v.findings || [];
+  const bad = fs.filter((f) => !f.ok);
+  const s = v.summary || {};
+  const head = el("p", {}, [
+    el("b", { text: bad.length ? `门禁 ${fs.length - bad.length}/${fs.length} 通过` : `门禁全部通过（${fs.length} 项）`,
+              class: bad.length ? "bad" : "" }),
+    el("span", { class: "hint", text: `　成片 ${v.film || ""}` }),
+  ]);
+  box.appendChild(head);
+  if (s.bound) {
+    box.appendChild(el("p", { class: "hint", text:
+      `绑定 ${s.bound} 个元素 · 两份报告都测到 ${s.measured} 个 · 未绑定 ${s.unbound} 个` +
+      `　开口后延迟 ${s.minLagMs}~${s.maxLagMs}ms（设计错落已扣除）` }));
+  }
+  if (v.ageSec > 1) {
+    box.appendChild(el("p", { class: "bad", text:
+      `注意：这份结果比成片旧 ${v.ageSec}s，改过片子之后没有重测——上面的数字不能代表现在这条片。` }));
+  }
+  const t = el("table", { class: "gt" }, []);
+  for (const f of fs) {
+    t.appendChild(el("tr", {}, [
+      el("td", { text: f.code }),
+      el("td", { class: f.ok ? "" : "bad", text: f.msg }),
+    ]));
+    for (const d of f.detail || []) {
+      t.appendChild(el("tr", {}, [el("td", {}), el("td", { class: "bad", text: "· " + d })]));
+    }
+  }
+  box.appendChild(t);
+}
+
 async function boot() {
   const meta = await (await fetch("/meta.json")).json();
   state.meta = meta;
-  const f = meta.film;
+  renderGate(meta.verify);  const f = meta.film;
   const id = document.getElementById("identity");
   id.innerHTML = "";
   if (!f) { id.appendChild(el("span", { text: "找不到成片 film_C_narrated.mp4" })); return; }

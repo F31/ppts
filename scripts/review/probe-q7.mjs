@@ -84,6 +84,15 @@ check("音轨未静音", st.muted === false && st.vol > 0);
 
 check("评分表 4 行 × 3 档", st.rows === 4 && st.radios === 12, st.rows + " 行 / " + st.radios + " 个选项");
 
+// 机器门禁卡片：必须存在、必须默认收起（免得数字先把人推向 5 分）、必须有内容
+const gateCard = await evalJs(`(() => {
+  const g = document.getElementById("gate"), b = document.getElementById("gateBody");
+  return { exists: !!g, open: g && g.open, rows: b ? b.querySelectorAll(".gt tr").length : 0,
+           text: b ? b.textContent : "" };
+})()`);
+check("机器门禁卡片默认收起", gateCard.exists && gateCard.open === false);
+check("门禁列出逐项结果", gateCard.rows >= 10 && /门禁/.test(gateCard.text), gateCard.rows + " 行");
+
 // 逐帧：点两次「›」应前进 2 帧（67ms），读数要显示「距开口 ±N 帧」
 await evalJs(`document.querySelectorAll(".seg")[3].click(), 1`);
 await new Promise((r) => setTimeout(r, 600));
@@ -141,16 +150,6 @@ check("补了定位后可导出", gate.passed);
 
 ws.close();
 child.kill();
-// 无头 Chrome 会派生 renderer：只杀父进程留一堆僵尸，下次起不来
-try {
-  const { execSync } = await import("node:child_process");
-  if (process.platform === "win32") execSync(`taskkill /PID ${child.pid} /T /F`, { stdio: "ignore" });
-  else process.kill(-child.pid, "SIGKILL");
-} catch {}
-try {
-  const fs = await import("node:fs/promises");
-  await fs.rm(PROFILE, { recursive: true, force: true });
-} catch {}
 // 无头 Chrome 会派生 renderer：只杀父进程留一堆僵尸，下次起不来
 try {
   const { execSync } = await import("node:child_process");

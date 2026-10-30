@@ -21,12 +21,29 @@ FPS = 30
 FRAME_MS = 1000.0 / FPS
 
 
-def probe_ms(path, entries="format=duration"):
-    out = subprocess.check_output(
-        ["ffprobe", "-v", "error", "-show_entries", entries, "-of", "csv=p=0", path],
-        text=True,
-    ).strip()
-    return int(round(float(out) * 1000))
+def ffmpeg_bin():
+    """ffmpeg 未必在 PATH 上（本机就只有 imageio-ffmpeg 自带的那一份）。
+    硬写 "ffmpeg" 会让这个脚本在自动重跑时直接 FileNotFoundError，
+    而调用方看到的只是「测量失败」——所以统一走这里。"""
+    p = os.environ.get("FFMPEG")
+    if p:
+        return p
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return "ffmpeg"
+
+
+def probe_ms(path):
+    """时长从 `ffmpeg -i` 的 Duration 行读：ffprobe 是独立二进制，更容易缺。"""
+    err = subprocess.run([ffmpeg_bin(), "-hide_banner", "-i", path],
+                         capture_output=True, text=True, errors="replace").stderr
+    for line in err.splitlines():
+        if "Duration:" in line:
+            h, m, s = line.split("Duration:")[1].split(",")[0].strip().split(":")
+            return round((int(h) * 3600 + int(m) * 60 + float(s)) * 1000)
+    return 0
 
 
 def extract(film, start_ms, count, outdir):
@@ -36,7 +53,7 @@ def extract(film, start_ms, count, outdir):
         if name.startswith("f_"):
             os.remove(os.path.join(outdir, name))
     subprocess.run(
-        ["ffmpeg", "-y", "-loglevel", "error", "-i", film,
+        [ffmpeg_bin(), "-y", "-loglevel", "error", "-i", film,
          "-ss", "%.3f" % (start_ms / 1000.0), "-frames:v", str(count),
          "-vsync", "0", os.path.join(outdir, "f_%03d.png")],
         check=True,
@@ -49,7 +66,7 @@ def gray_box(png, box):
     x, y, w, h = box
     # 裁包围盒后转灰度原始字节；-f rawvideo 走 stdout，不落盘。
     return subprocess.check_output(
-        ["ffmpeg", "-v", "error", "-i", png,
+        [ffmpeg_bin(), "-v", "error", "-i", png,
          "-vf", "crop=%d:%d:%d:%d,format=gray" % (w, h, x, y),
          "-f", "rawvideo", "-"],
     )

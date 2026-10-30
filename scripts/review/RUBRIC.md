@@ -123,6 +123,16 @@ trigger 全是 `onEnter`。没有讲解，就没有「该动」的判据，也�
 评之前先跑这两条，它们**排除「片子没问题但看起来像有问题」**：
 
 ```bash
+python3 scripts/fidelity/verify.py --rerun     # 一条命令：重跑三个测量 + 14 项对账
+```
+
+`verify.py` 不是把三个脚本串起来，是**对账**：V1 制品、V2 音画、V3 覆盖、V4 工具盲区、
+V5 四条判据、V6 新鲜度（报告比成片旧直接作废）。`--self-test` 往合成数据里注入 16 种故障，
+断言每种都能红——门禁自己也要有回归，否则它会重演「看起来通过了」。
+
+单独跑某一项时：
+
+```bash
 python3 scripts/fidelity/check_appearance.py   # 元素真正出现在什么时候（整页范围）
 python3 scripts/fidelity/check_av_sync.py      # 音轨相对旁白原件偏了多少
 ```
