@@ -36,6 +36,7 @@
   {
    "index": 1,
    "slideId": "slide-1",
+   "static": ["p1-card"],
    "segments": [
     {
      "id": "s1-1",
@@ -46,50 +47,42 @@
        "offsetMs": 0
       },
       {
-       "elementId": "p1-card",
-       "offsetMs": 140
+       "elementId": "p1-item0",
+       "offsetMs": 240
+      },
+      {
+       "elementId": "p1-item1",
+       "offsetMs": 380
+      },
+      {
+       "elementId": "p1-item2",
+       "offsetMs": 520
+      },
+      {
+       "elementId": "p1-item3",
+       "offsetMs": 660
       }
      ]
     },
     {
      "id": "s1-2",
      "text": "稳定出片，两次渲染逐字节相同。",
-     "bind": [
-      {
-       "elementId": "p1-item0",
-       "offsetMs": 0
-      }
-     ]
+     "bind": []
     },
     {
      "id": "s1-3",
      "text": "资源可控，峰值二点七 GB。",
-     "bind": [
-      {
-       "elementId": "p1-item1",
-       "offsetMs": 0
-      }
-     ]
+     "bind": []
     },
     {
      "id": "s1-4",
      "text": "字体可验，字集写进门禁。",
-     "bind": [
-      {
-       "elementId": "p1-item2",
-       "offsetMs": 0
-      }
-     ]
+     "bind": []
     },
     {
      "id": "s1-5",
      "text": "可观测，失败能定位。",
-     "bind": [
-      {
-       "elementId": "p1-item3",
-       "offsetMs": 0
-      }
-     ]
+     "bind": []
     }
    ]
   },
@@ -132,6 +125,10 @@
        "offsetMs": 0
       },
       {
+       "elementId": "p3-hero",
+       "offsetMs": 240
+      },
+      {
        "elementId": "p3-flow",
        "offsetMs": 700
       }
@@ -140,12 +137,7 @@
     {
      "id": "s3-2",
      "text": "右边是部署视图。",
-     "bind": [
-      {
-       "elementId": "p3-hero",
-       "offsetMs": 0
-      }
-     ]
+     "bind": []
     }
    ]
   },

@@ -79,10 +79,19 @@ def mad(a, b):
 
 
 def main():
-    film = sys.argv[1] if len(sys.argv) > 1 else "tmp/q7/film_C_narrated.mp4"
-    seg_path = sys.argv[2] if len(sys.argv) > 2 else "tmp/q7/segments.json"
-    elems_path = sys.argv[3] if len(sys.argv) > 3 else "tmp/q7/fid/elements.json"
-    threshold = float(sys.argv[4]) if len(sys.argv) > 4 else 2.0
+    # 报告路径可覆盖：同一份样片的两个版本（C/D）要能并排比，不能互相覆盖。
+    # 先把 --out 摘出去，剩下的才按位置读——否则 "--out" 会被当成 threshold。
+    raw = sys.argv[1:]
+    out_path = "tmp/q7/alignment.json"
+    if "--out" in raw:
+        k = raw.index("--out")
+        out_path = raw[k + 1]
+        del raw[k:k + 2]
+
+    film = raw[0] if len(raw) > 0 else "tmp/q7/film_C_narrated.mp4"
+    seg_path = raw[1] if len(raw) > 1 else "tmp/q7/segments.json"
+    elems_path = raw[2] if len(raw) > 2 else "tmp/q7/fid/elements.json"
+    threshold = float(raw[3]) if len(raw) > 3 else 2.0
 
     script = json.load(open(seg_path, encoding="utf-8"))
     elems = json.load(open(elems_path, encoding="utf-8"))
@@ -142,7 +151,8 @@ def main():
         print("%-12s %-6s %-6s %6d %7s %8s %6.1f  %s" % (
             r["element"], r["seg"], r["kind"], r["at"], r["onset"], r["delayMs"],
             r["preMax"], r["series"]))
-    json.dump(rows, open("tmp/q7/alignment.json", "w", encoding="utf-8"),
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    json.dump(rows, open(out_path, "w", encoding="utf-8"),
               ensure_ascii=False, indent=1)
 
 

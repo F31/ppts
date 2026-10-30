@@ -104,6 +104,11 @@ type scriptPage struct {
 	SlideID    string          `json:"slideId"`
 	DurationMs int64           `json:"durationMs"`
 	Segments   []scriptSegment `json:"segments"`
+	// Static 是「页首就在、不参与入场」的元素：容器底板、分隔线这类东西。
+	// 不给它们建轨道，它们就留在底板里（stagePages 只擦有轨道的层），
+	// 于是页一开就完整，既没有空框悬挂，也不会在别人的包围盒里制造灰度变化
+	// （后者会把子元素的实测 onset 全部拉平到容器淡入的那一刻）。
+	Static []string `json:"static,omitempty"`
 }
 
 type scriptDoc struct {
@@ -143,8 +148,20 @@ func scriptRevision(elems []element, page scriptPage, tierCompliant bool) *anima
 
 	prof := design.DefaultMotion()
 	tracks := make([]*animation.Track, 0, len(elems))
+	static := make(map[string]struct{}, len(page.Static))
+	for _, id := range page.Static {
+		static[id] = struct{}{}
+	}
 	var unbound []string
 	for _, e := range elems {
+		if _, ok := static[e.ID]; ok {
+			// 常驻元素不建轨道：留在底板里，页首就完整。绑了也按常驻处理——两者语义冲突，
+			// 常驻更保守（少一次不该有的淡入），日志留痕。
+			if prev, bound := bound[e.ID]; bound {
+				log.Printf("警告：%s 同时是常驻元素和段 %q 的绑定，按常驻处理（不建轨道）", e.ID, prev.segment)
+			}
+			continue
+		}
 		dur := int64(520)
 		if e.Kind == "title" {
 			dur = 700

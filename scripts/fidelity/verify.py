@@ -210,8 +210,20 @@ def audit(design, align, appear, film, elems=None):
         last_start[page["index"]] = max(
             [s["startMs"] for s in page["segments"]] or [0])
     idle = []
+    # 容器（完整包住别的元素）不算「内容」：底板、隔板这类东西页首就在，是版式决定的，
+    # 不是「没讲到却自己冒出来」。V7.2 判空框时已经不把它算进分母，这里同口径。
+    containers = set()
+    for page in (elems or []):
+        boxes = {e["id"]: e["box"] for e in page.get("elements") or []}
+        for a, ba in boxes.items():
+            for b, bb in boxes.items():
+                if a != b and bb[0] >= ba[0] - 1 and bb[1] >= ba[1] - 1 \
+                        and bb[0] + bb[2] <= ba[0] + ba[2] + 1 \
+                        and bb[1] + bb[3] <= ba[1] + ba[3] + 1:
+                    containers.add(a)
+                    break
     for e, r in appear_by.items():
-        if e in bound or r.get("page") not in last_start:
+        if e in bound or e in containers or r.get("page") not in last_start:
             continue
         if r.get("always"):
             idle.append("%s 页首就在（没被讲到却常驻）" % e)
@@ -396,12 +408,29 @@ def stale(design_paths, film_mtime):
     return out
 
 
+def elements_stale(elements_path, report_paths, now=None):
+    """elements.json 比报告新 = 包围盒换了但报告还是按旧版面量的。
+
+    注意方向：元素集是**输入**，比成片新是正常的（先有版面再渲染）；
+    只有比报告新才说明「报告没跟上」。把它并进 V6.1 会让任何正常顺序都误报。
+    """
+    if not os.path.exists(elements_path):
+        return []
+    rep_m = min(os.path.getmtime(p) for p in report_paths if os.path.exists(p))
+    el_m = os.path.getmtime(elements_path)
+    if el_m <= rep_m + 1:
+        return []
+    return ["elements.json 比报告新 %.0fs：包围盒改了，报告要对新版面重测" % (el_m - rep_m)]
+
+
 def rerun(args):
     """重跑三个测量。--rerun 存在的理由：门禁读的是报告，报告得先是真的。"""
     py = sys.executable or "python3"
     for cmd in (
-        [py, os.path.join(HERE, "check_alignment.py"), args.film, args.segments, args.elements],
-        [py, os.path.join(HERE, "check_appearance.py"), args.film, args.segments, args.elements],
+        [py, os.path.join(HERE, "check_alignment.py"), args.film, args.segments, args.elements,
+         "--out", args.alignment],
+        [py, os.path.join(HERE, "check_appearance.py"), args.film, args.segments, args.elements,
+         "--out", args.appearance],
         [py, os.path.join(HERE, "check_av_sync.py"), args.film, args.ref_audio],
     ):
         if cmd[1].endswith("check_av_sync.py") and args.skip_sync:
@@ -531,6 +560,14 @@ def self_test():
     got7b = {x["code"]: x["ok"] for x in layout_findings(d7b, p7b, e7b)}
     cases.append(("V7-normal", all(got7b.values()), got7b))
 
+    # V5.4 反例：页首常驻的是**容器**（把别的元素整个包住）——那是版式，不是空转。
+    # 容器判定与 V7.2 同口径；没有 elems 时退化成「一律按内容算」，所以这里必须给 elems。
+    d4, p4, e4 = _layout_fixture(late_ms=600)
+    p4 = [dict(r) for r in p4]
+    p4[0].update(always=True, settledMs=0, onsetMs=0)  # box 页首就在
+    got4 = {x["code"]: x["ok"] for x in audit(d4, [], p4, film, e4)}
+    cases.append(("V5.4-container", got4.get("V5.4") is True, got4.get("V5.4")))
+
     # 新鲜度单独测：报告比成片旧
     with tempfile.TemporaryDirectory() as tmp:
         rp = os.path.join(tmp, "report.json")
@@ -539,6 +576,15 @@ def self_test():
         cases.append(("V6.1", bool(stale([rp], 2_000_000)), stale([rp], 2_000_000)))
         os.utime(rp, (3_000_000, 3_000_000))
         cases.append(("V6.1-fresh", not stale([rp], 2_000_000), None))
+
+        # V6.2 方向要分开测：元素集比报告新 = 报告没跟上（红）；
+        # 元素集比报告旧 = 正常顺序（绿）。反过来设，会让每次正常出片都误报。
+        el = os.path.join(tmp, "elements.json")
+        open(el, "w").close()
+        os.utime(el, (4_000_000, 4_000_000))
+        cases.append(("V6.2", bool(elements_stale(el, [rp])), elements_stale(el, [rp])))
+        os.utime(el, (2_000_000, 2_000_000))
+        cases.append(("V6.2-ok", not elements_stale(el, [rp]), None))
 
     bad = 0
     for code, ok, extra in cases:
@@ -581,11 +627,17 @@ def main():
 
     design, align, appear, film, elems = load_inputs(args)
     findings = audit(design, align, appear, film, elems)
-    # V7 依赖 elements.json：它改了但没重测，覆盖率的面积权重就对着旧版面算。
-    fresh_inputs = [args.alignment, args.appearance, args.elements]
-    findings.append({"code": "V6.1", "ok": not stale(fresh_inputs, film["mtime"]),
+    # 报告必须比成片新：改了片子忘记重测，门禁就会对着旧数据说「全过」。
+    reports = [args.alignment, args.appearance]
+    findings.append({"code": "V6.1", "ok": not stale(reports, film["mtime"]),
                      "msg": "报告不旧于成片",
-                     "detail": stale(fresh_inputs, film["mtime"])})
+                     "detail": stale(reports, film["mtime"])})
+    # elements.json 是**输入**不是报告：它比成片新是正常的（先有版面再渲染），
+    # 比报告新才是问题——那意味着包围盒换了、而报告还是按旧版面量的。
+    # 曾经把它并进 V6.1，结果任何「先放元素、后渲染」的顺序都会误报。
+    el_detail = elements_stale(args.elements, reports)
+    findings.append({"code": "V6.2", "ok": not el_detail,
+                     "msg": "elements.json 不新于测量报告", "detail": el_detail})
 
     s = summarize(design, align, appear)
     print("成片 %s · %.3fs · 音轨 %s · mean %s dB" % (
