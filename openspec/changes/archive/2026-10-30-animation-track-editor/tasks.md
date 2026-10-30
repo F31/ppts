@@ -64,7 +64,13 @@
 
 ## 6. 归档
 
-- [ ] 6.1 `go build ./... && go vet ./... && go test ./internal/... ./cmd/...`
-- [ ] 6.2 `openspec validate --all`
-- [ ] 6.3 部署文档：`PPTS_ANIMATION_ROLLOUT` 的收口步骤与「salt 不得轮换」禁令
-- [ ] 6.4 能力规格吸收进 `openspec/specs/animation-rollout`；路线图 M4 行更新
+- [x] 6.1 `go build ./... && go vet ./... && go test ./internal/... ./cmd/...`
+      —— 通过；42 包全绿（2026-10-30 归档前复跑）
+- [x] 6.2 `openspec validate --all` —— 归档前 9 passed / 0 failed；归档并补写 Purpose 后
+      **11 passed / 0 failed**（10 份能力规格 + 1 个在途变更；2 条既有「Requirement 正文过长」告警）
+- [x] 6.3 部署文档：`PPTS_ANIMATION_ROLLOUT` 的收口步骤与「salt 不得轮换」禁令
+      —— `deploy/renderer/README.md`「租户级开放与灰度」：两步收口、salt 禁令、
+      `enabled/preview/track_editor/max_minutes` 四个字段的缺省语义（`track_editor` 默认 **false**，
+      按角色/套餐卖的能力位）
+- [x] 6.4 能力规格吸收进 `openspec/specs/`（`animation-rollout` 6 条、`animation-quota` 6 条、
+      `animation-track-editing` 5 条，共 17 条 Requirement）；路线图 M4 行更新为已归档
