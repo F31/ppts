@@ -35,6 +35,7 @@ from pathlib import Path
 EXPECTED = {
     "film_B_tier_30s.mp4": "cdddb11e",  # 评审对象
     "film_30s.mp4": "6f55b67e",         # 回归片 A
+    "film_L_narrated.mp4": "b08c70c1",  # 当前验收样片（26 项全过，V11 句首口径）
 }
 
 REVIEW_PAGE = Path(__file__).with_name("review.html")

@@ -94,7 +94,7 @@ pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
   <div class="grid">
     <section class="card">
       <h2>成片（带音轨）</h2>
-      <video id="film" controls preload="metadata" src="/film_C_narrated.mp4"></video>
+      <video id="film" controls preload="metadata"></video>
       <div class="seek">
         <button class="act ghost" id="b10" title="后退 10 帧">« −10帧</button>
         <button class="act ghost" id="b1" title="后退 1 帧">‹</button>
@@ -122,7 +122,7 @@ pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
       <div id="unbound" class="hint"></div>
       <h2 style="margin-top:14px">源页</h2>
       <div class="pages" id="pages"></div>
-      <p class="hint" style="margin-top:8px">联系表：<a href="/film_C_storyboard.png" target="_blank">film_C_storyboard.png</a></p>
+      <p class="hint" style="margin-top:8px">联系表：<a id="sheetLink" href="#" target="_blank">按当前片名查找</a></p>
     </section>
   </div>
 
@@ -244,7 +244,7 @@ async function boot() {
   renderGate(meta.verify);  const f = meta.film;
   const id = document.getElementById("identity");
   id.innerHTML = "";
-  if (!f) { id.appendChild(el("span", { text: "找不到成片 film_C_narrated.mp4" })); return; }
+  if (!f) { id.appendChild(el("span", { text: "找不到成片（--film 指定的文件）" })); return; }
   id.appendChild(el("span", {}, [el("b", { text: f.name })]));
   id.appendChild(el("span", {}, [el("b", { text: "sha256 " }), el("span", { class: "mono", text: f.sha256.slice(0, 16) + "…" })]));
   id.appendChild(el("span", {}, [el("b", { text: "大小 " }), el("span", { text: (f.bytes / 1048576).toFixed(2) + " MB" })]));
@@ -265,6 +265,23 @@ async function boot() {
   renderPages(s.pages.length);
   renderSheet();
   const v = document.getElementById("film");
+  // 片名以 --film 为准，不要写死在 HTML 里。写死的后果不是「404」，是更坏的一种：
+  // identity 上写的是 `film_L_narrated.mp4`（meta.film 来自服务端参数），
+  // 播放器放的却是那个 href 里的旧片子——评审看的是 C 片，签的却是 L 片的名字。
+  // 评审页最不该出的错就是「说一套、放一套」。
+  v.src = "/" + encodeURIComponent(f.name);
+  // 联系表也按片名推导（film_X_narrated.mp4 → film_X_storyboard.png）；不存在就把整行收起，
+  // 留一个必然 404 的链接等于让人点开后再怀疑片子。
+  const sl = document.getElementById("sheetLink");
+  if (sl) {
+    const sn = f.name.replace(/_narrated\.mp4$/, "_storyboard.png");
+    fetch("/" + encodeURIComponent(sn), { method: "HEAD" })
+      .then((r) => {
+        if (r.ok) { sl.href = "/" + encodeURIComponent(sn); sl.textContent = sn; }
+        else { sl.parentElement.remove(); }
+      })
+      .catch(() => sl.parentElement.remove());
+  }
   v.addEventListener("timeupdate", () => onTime(v.currentTime * 1000));
   v.addEventListener("loadedmetadata", () => onTime(v.currentTime * 1000));
   // ?t=7.2 直接定位：对表时要说「回看 7.2s」，能把链接发给另一位评审。
