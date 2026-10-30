@@ -6,17 +6,21 @@
 相对窗口首帧的灰度差恒为 0 → `preMax = 0`、`delay = 0`，工具报「不提前、准时」，
 而人看到的是「话还没讲，东西已经摆好了」。400ms 之外的提前，这个工具结构上量不到。
 
-这里以**该页最后一帧**为终态，逐帧量每个包围盒与终态的差，得到三样东西：
+这里以**每个包围盒自身的对比度能量**为信号，逐帧量它相对峰值的水平，得到三样东西：
 
-- `settledMs`：最后一次与终态不同的帧之后，即它**到位**的时刻。带淡入的元素
+- `settledMs`：能量最后一次低于半程的下一帧，即它**到位**的时刻。带淡入的元素
   这个值比开口晚整整一个淡入时长（220–450ms），**不能拿它判「滞后」**。
-- `onsetMs`：相邻帧差第一次越阈值，即它**开始变**的时刻。对「从无到有」的元素准
+- `onsetMs`：能量第一次相对上一帧跳起的时刻。对「从无到有」的元素准
   （实测对齐设计值 ±44ms 内），但**会被背后的容器带偏**：卡片淡入时，坐在卡片上的
   每个条目框都会变，于是条目全都报成卡片出现的时刻。所以它只作诊断，不作判据。
-- `preSegDiff`：**开口前 100ms 那一帧与终态的差**。这是「不提前」这条判据本来在问的事，
-  而且是单帧比较：元素还没出现 → 框里是底色 → 与终态差得远；已经在 → 差接近 0。
-  不看淡入曲线、不看阈值，也就不受容器与缓动的影响。（`settledMs` 判「提前」会把
-  「淡入很长」误判成「到位得晚」，`onsetMs` 判「提前」会被容器骗。）
+- `preSegLevel`：**开口前 100ms 那一帧的能量相对峰值**（0 = 框里空的，1 = 已到位）。
+  这是「不提前」这条判据本来在问的事，而且是单帧比较，不看曲线、不看阈值，
+  也就不受容器与缓动影响。
+
+为什么不用「与该页最后一帧的灰度差」：页级焦点（IR 的 `page.focus`）会把非焦点元素
+压暗，页末那一帧恰好是「最后一条亮、前面几条暗」。拿它当终态，前面几条会在被压暗的
+那一刻被判成刚到位——实测量出 item0 的 6.03s 变成 12.43s。能量只关心框里有没有东西，
+对这类整体明暗变化免疫。
 
 用法：
   python3 scripts/fidelity/check_appearance.py [film] [segments.json] [elements.json] [阈值]
@@ -40,6 +44,31 @@ W, H = 1920, 1080
 # 「不提前」的取样点：开口前 3 帧（与判据「3 帧内出现」同量级）。取 1 帧的话，
 # 瞬时出现（无淡入）的元素会正好落在边界上被误判成提前。
 PRE_SEG_MS = 100
+
+# 框内平均偏离中位数低于这个值，就认为框里没有内容（纯色块、容器底色）。
+CONTENT_ENERGY_MIN = 2.0
+
+# 能量超过峰值的这个比例，就算「到位」。0.5 留足了淡入尾部与轻微压暗的余量：
+# 焦点的非目标元素会整体压到 0.55 不透明度，能量随之落到约 0.55——仍在半程以上。
+LEVEL_SETTLED = 0.5
+
+# 开口前那一帧的能量达到峰值的这个比例，就算「话还没讲、东西已经摆好了」。
+# 与 LEVEL_SETTLED 同值：两条判据问的是同一个问题的两个时刻。
+LEVEL_EARLY = 0.5
+
+
+def energy(arr):
+    """框内对比度能量：像素偏离**自身中位数**的平均绝对值。
+
+    为什么不用「与最后一帧的灰度差」：页级焦点会把非焦点元素压暗，而页末那一帧
+    恰好是「最后一条亮、前面几条暗」——拿它当终态，前面几条会在被压暗的那一刻
+    被判成刚到位（实测把 item0 的 6.03s 报成 12.43s）。
+    能量只关心框里有没有东西：压暗是仿射变换（a·x+(1−a)·底色），中位数跟着移动，
+    偏离量等比缩小，信号还在。
+    """
+    a = arr.astype(np.int16)
+    med = np.median(a)
+    return float(np.mean(np.abs(a - med)))
 
 
 def ffmpeg_bin():
@@ -132,38 +161,37 @@ def main():
         boxes = {e["id"]: clip(e["box"]) for e in page_els}
 
         # 先攒一遍：每帧只留各盒子的小图，内存可控（一页 ~180 帧 × 15 个盒子）
-        seq = []          # [(t_ms, {eid: array})]
-        prev = None
+        # 逐帧只留「框内对比度能量」：判「有没有内容」是能量问题，不是亮度问题。
+        seq = []          # [(t_ms, {eid: 能量})]
         for t, frame in page_frames(film, base, dur):
-            cur = {eid: frame[b[0]:b[1], b[2]:b[3]].copy() for eid, b in boxes.items()}
-            seq.append((t, cur))
-            prev = cur
+            seq.append((t, {eid: energy(frame[b[0]:b[1], b[2]:b[3]]) for eid, b in boxes.items()}))
         if not seq:
             continue
-        ref = seq[-1][1]                     # 终态 = 该页最后一帧
 
         for eid, b in boxes.items():
-            r = ref[eid].astype(np.int16)
-            series = [float(np.abs(v[eid].astype(np.int16) - r).mean()) for _, v in seq]
-            # 取**最后一次**与终态不同的帧的下一个：那之前它还没到位，之后一直是终态。
-            # 不能取第一次不同——元素在页首是「不存在」，与终态本来就不同，
-            # 第一次不同会被量成「页首就出现」（第一版就写反了，全页都报页首）。
-            last = max((i for i, v in enumerate(series) if v > threshold), default=None)
-            if last is None:
-                # 整页与终态一致：要么页首就在（常驻底板/阴影），要么根本没画。
-                # 两者对「什么时候出现」的答案是同一个——页首。
-                settled, always = seq[0][0], True
+            vals = [v[eid] for _, v in seq]
+            peak = max(vals) if vals else 0.0
+            if peak < CONTENT_ENERGY_MIN:
+                # 框里始终没有内容：容器底色、纯色块、或这一页就没画它。
+                # 对「什么时候出现」而言，它与「页首就在」同义。
+                settled, always, onset = seq[0][0], True, None
+                row_norm = [0.0] * min(12, len(vals))
             else:
-                settled = seq[last + 1][0] if last + 1 < len(seq) else None
-                always = False
-            # 开始变：相邻帧差第一次越阈值。诊断用，容器旁边的元素会被带偏。
-            onset = None
-            for i in range(1, len(seq)):
-                d = float(np.abs(seq[i][1][eid].astype(np.int16)
-                                 - seq[i - 1][1][eid].astype(np.int16)).mean())
-                if d > 1.5:
-                    onset = seq[i][0]
-                    break
+                norm = [v / peak for v in vals]
+                # 取**最后一次**低于半程的帧的下一个：那之前它还没到位，之后一直在。
+                # 不能取第一次越线——元素在页首是「不存在」，第一次越线会被量成
+                # 「页首就出现」（第一版写反过，全页都报页首）。
+                last = max((i for i, v in enumerate(norm) if v < LEVEL_SETTLED), default=None)
+                if last is None:
+                    settled, always = seq[0][0], True
+                else:
+                    settled = seq[last + 1][0] if last + 1 < len(seq) else None
+                    always = False
+                # 开始变：能量第一次达到峰值的 30%。不用「相邻帧跳幅」——淡入是渐进的，
+                # 逐帧增幅可能一直低于阈值，反而在**被点亮**（压暗 → 全亮）的那一帧
+                # 抓到最大的跳变，报出一个比 settled 还晚的 onset（p3-hero 真踩过）。
+                onset = next((seq[i][0] for i, v in enumerate(norm) if v >= 0.3), None)
+                row_norm = [round(v, 2) for v in norm[:12]]
             row = {
                 "element": eid,
                 "kind": next(e["kind"] for e in page_els if e["id"] == eid),
@@ -172,21 +200,20 @@ def main():
                 "settledMs": settled,
                 "onsetMs": onset,
                 "always": always,
-                "series": [round(v, 1) for v in series[:12]],
-                "peak": round(max(series), 1),
+                "series": row_norm,
+                "peak": round(peak, 1),
             }
-            # 「开口那一刻到位了没有」：取 at-PRE_SEG_MS 最近的一帧，与终态比。
-            # 注意扣掉段内设计错落：offset=+700 的元素本来就该晚 700ms 才动，
-            # 拿 at 来比会把「照设计来的错落」判成「提前」。
+            # 「开口那一刻到位了没有」：取 at-PRE_SEG_MS 最近的一帧，看它的能量
+            # 相对峰值有多少。0 = 框里空的，1 = 已经是最终状态。
+            # 注意扣掉段内设计错落：offset=+700 的元素本来就该晚 700ms 才动。
             if eid in bind_at:
                 sid, at, off = bind_at[eid]
                 target = at + off - PRE_SEG_MS
                 near_t, near = min(seq, key=lambda s: abs(s[0] - target))
-                row["preSegDiff"] = round(float(np.abs(
-                    near[eid].astype(np.int16) - r).mean()), 1)
+                row["preSegLevel"] = round(near[eid] / peak, 2) if peak > 0 else 0.0
                 row["preSegAt"] = near_t
             else:
-                row["preSegDiff"] = None
+                row["preSegLevel"] = None
             rows.append(row)
         print("page %d ok: %d 元素 / %d 帧" % (page["index"], len(boxes), len(seq)))
 
@@ -205,7 +232,7 @@ def main():
     print("%-12s %-5s %-6s %7s %8s %8s %6s  %s" % (
         "element", "kind", "seg", "at", "onset", "settled", "pre", "判定"))
     for r in sorted(rows, key=lambda x: (x["page"], x["settledMs"] or 0)):
-        early = r["preSegDiff"] is not None and r["preSegDiff"] <= 1.0
+        early = r["preSegLevel"] is not None and r["preSegLevel"] >= LEVEL_EARLY
         if r["settledMs"] is None:
             verdict = "整页未稳定出现"
         elif early:
@@ -220,7 +247,7 @@ def main():
             verdict = "开口后到位"
         print("%-12s %-5s %-6s %7s %8s %8s %6s  %s" % (
             r["element"], r["kind"], r["seg"] or "-", r["at"] if r["at"] else "-",
-            r["onsetMs"], r["settledMs"], r["preSegDiff"], verdict))
+            r["onsetMs"], r["settledMs"], r["preSegLevel"], verdict))
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     json.dump(rows, open(out_path, "w", encoding="utf-8"),

@@ -97,6 +97,10 @@ type scriptSegment struct {
 	EndMs      int64     `json:"endMs"`
 	DurationMs int64     `json:"durationMs"`
 	Bind       []bindRef `json:"bind"`
+	// Focus 是「这一段讲的是哪个元素」。它与 Bind 是两件事：
+	// Bind 决定元素何时**出场**，Focus 决定讲它时谁**让位**。
+	// 混用会产生两种病：绑得太早（元素齐活，后面全静）或绑得太晚（讲到才出现，前面全空）。
+	Focus string `json:"focus,omitempty"`
 }
 
 type scriptPage struct {
@@ -216,6 +220,43 @@ func scriptRevision(elems []element, page scriptPage, tierCompliant bool) *anima
 	}
 }
 
+// focusSpans 把「这一段讲的是谁」编译成页级焦点序列。
+//
+// 只有带 Focus 的段参与：段的顺序就是注意力转移的顺序，段的开口时刻就是切换时刻。
+// 少于两个不同的焦点元素时不启用——一个元素从头亮到尾，没有「让位」可言，
+// 生成出来的序列只会让求值器每帧多查一次表。
+//
+// 注意这里**不看** Bind：出场与焦点已经解耦。把两者绑在一起，就会出现
+// 「元素一起出场后再无变化」的静默页（V8 量的正是它）。
+func focusSpans(page scriptPage) []render.FocusSpan {
+	static := make(map[string]struct{}, len(page.Static))
+	for _, id := range page.Static {
+		static[id] = struct{}{}
+	}
+	var spans []render.FocusSpan
+	seen := make(map[string]struct{}, len(page.Segments))
+	for _, seg := range page.Segments {
+		if seg.Focus == "" {
+			continue
+		}
+		if _, ok := static[seg.Focus]; ok {
+			// 常驻元素不建轨道，不能被让位：它不在图层里，压暗也无从谈起。
+			log.Printf("警告：页 %d 段 %q 的焦点 %q 是常驻元素，忽略", page.Index, seg.ID, seg.Focus)
+			continue
+		}
+		if _, dup := seen[seg.Focus]; dup {
+			// 同一元素二次成为焦点会与「唯一焦点」的假设冲突（压暗量按元素查表）。
+			continue
+		}
+		seen[seg.Focus] = struct{}{}
+		spans = append(spans, render.FocusSpan{StartMs: seg.StartMs, ElementID: seg.Focus})
+	}
+	if len(spans) < 2 {
+		return nil
+	}
+	return spans
+}
+
 func main() {
 	in := flag.String("in", "", "含 pages/ 与 elements.json 的目录（gen_pages.py 的输出）")
 	out := flag.String("out", "job", "job 目录：plan.json 与底图副本写在这里")
@@ -324,19 +365,24 @@ func main() {
 		pageMs := *duration
 		rev := revision(m.Elements, *tierCompliant, pageMs)
 		var offsets map[string]int64
+		var focus []render.FocusSpan
 		if script != nil {
 			sp := script.Pages[i]
 			pageMs = sp.DurationMs
 			rev = scriptRevision(m.Elements, sp, *tierCompliant)
+			focus = focusSpans(sp)
 			offsets = make(map[string]int64, len(sp.Segments))
 			for _, seg := range sp.Segments {
 				offsets[seg.ID] = seg.StartMs
+			}
+			if len(focus) > 0 {
+				log.Printf("页 %d：焦点序列 %v", sp.Index, focus[:min(len(focus), 8)])
 			}
 		}
 		pages = append(pages, render.PageInput{
 			Index: m.Index, SlideID: m.SlideID, DurationMs: pageMs,
 			BaseImage: m.BaseImage, Elements: elems, Revision: rev,
-			SegmentOffsets: offsets,
+			SegmentOffsets: offsets, Focus: focus,
 		})
 	}
 

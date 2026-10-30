@@ -49,6 +49,9 @@ type PageInput struct {
 	Revision   *animation.Revision
 	// SegmentOffsets 是分段 id → 相对本页起点的毫秒偏移。
 	SegmentOffsets map[string]int64
+	// Focus 是页级焦点序列（见 Page.Focus）。这里只透传：焦点不是动效，
+	// 由画布求值器推导非焦点元素的压暗量，编译器不参与。
+	Focus []FocusSpan
 }
 
 // Options 是编译器的环境参数。
@@ -159,6 +162,7 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 		DurationMs: in.DurationMs,
 		BaseImage:  in.BaseImage,
 		Transition: Transition{Type: animation.TransitionNone},
+		Focus:      in.Focus,
 	}
 	if in.DurationMs <= 0 {
 		return page, nil, fmt.Errorf("%w: page %d (%s)", ErrDurationUnknown, in.Index, in.SlideID)

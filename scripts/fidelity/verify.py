@@ -22,11 +22,14 @@
     V5 判据    不提前 / 不滞后 / 有层次 / 不空转，逐条给数
     V6 新鲜度  报告比成片旧就作废（改了片子忘记重测，是最容易发生的假通过）
     V7 观感    这一刻画面上有多少东西：内容覆盖不到一半持续多久、容器空框挂多久
+    V8 连续    讲着话时画面连续多久没变——「空」是元素没出现，「静」是全出现了却不动
 
-  V7 是后加的，也是唯一一组**不问元素、只问画面**的：前六组全过而人看着不对，
-  差异就在这里。元素各就各位，但每一刻只有半页内容。
+  V7 与 V8 都是后加的，也是仅有的两组**不问元素、只问画面**的：
+  前六组全过而人看着不对，差异就在这里。V7 管「每一刻只有半页内容」，
+  V8 管「内容铺满之后画面不再变化」——D 片页 1 在第 1.4s 铺满，之后 10.8s 静止，
+  而旁白还在逐条念。两个病都不是「元素准不准」，是「该不该在这时候动」。
 
-`--self-test` 是给这个门禁自己的：往合成数据里逐条注入六种故障，断言每种都能被红下来。
+`--self-test` 是给这个门禁自己的：往合成数据里逐条注入故障，断言每种都能被红下来。
 没有它，门禁本身也会重演「看起来通过了」——这正是 5.6 的教训。
 
 用法：
@@ -49,7 +52,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 # 判据阈值集中在这里：改口径只改这一处，别散落在各个检查脚本里。
-TOL_PRE_DIFF = 1.0        # 开口前那一帧与终态的灰度差 ≤ 1.0 = 已经到位（剧透）
+TOL_PRE_LEVEL = 0.5       # 开口前那一帧的对比度能量 ≥ 峰值的这个比例 = 已经到位（剧透）
 TOL_LATE_MS = 100         # 「3 帧内出现」
 TOL_EARLY_MS = 100        # 反向的容差：早于开口 100ms 以上才算提前
 TOL_STAGGER_MS = 67       # 同段错落与设计值之差（2 帧）
@@ -60,6 +63,7 @@ MAX_SHARP = 0.7           # 互相关峰在 ±100ms 处高于此值 = 峰太宽�
 LAYOUT_COVER_MIN = 0.50   # 画面内容覆盖低于此值 = 观众看到半页
 LAYOUT_HOLD_MS = 1500     # 半页状态持续多久算问题
 AHEAD_MS = 2000           # 容器的框比最后一件内容早多久算「空框悬挂」
+SILENT_MAX_MS = 3500      # 讲着话时画面连续多久不变算「静」——本片最长一句 3.24s
 
 
 def ffmpeg_bin():
@@ -172,9 +176,9 @@ def audit(design, align, appear, film, elems=None):
         if r is not None:
             if r.get("settledMs") is None:
                 never.append(e)
-            if r.get("preSegDiff") is not None and r["preSegDiff"] <= TOL_PRE_DIFF:
-                early.append("%s 开口前已到位（preSegDiff %.1f ≤ %.1f）"
-                             % (e, r["preSegDiff"], TOL_PRE_DIFF))
+            if r.get("preSegLevel") is not None and r["preSegLevel"] >= TOL_PRE_LEVEL:
+                early.append("%s 开口前已到位（preSegLevel %.2f ≥ %.2f）"
+                             % (e, r["preSegLevel"], TOL_PRE_LEVEL))
         if a is not None and a.get("delayMs") is not None:
             lag = a["delayMs"] - a.get("offsetMs", 0)
             if lag > TOL_LATE_MS:
@@ -237,6 +241,22 @@ def audit(design, align, appear, film, elems=None):
     # ---- V7 观感：元素都准时，不代表画面是完整的
     if elems:
         findings.extend(layout_findings(design, appear, elems))
+
+    # ---- V8 画面连续性：元素都在，不代表画面还在动
+    motion = film.get("motion")
+    if motion is None:
+        add("V8.1", True, "画面连续性未测（--motion），本项跳过", [])
+    else:
+        longest = motion.get("longestMs") or 0
+        ok = longest <= SILENT_MAX_MS
+        detail = []
+        if not ok:
+            for s in sorted(motion.get("spans", []), key=lambda x: -x["durMs"]):
+                if s["durMs"] > SILENT_MAX_MS:
+                    detail.append("%.2fs–%.2fs 画面 %.2fs 未变（其中讲解 %.2fs）"
+                                  % (s["startMs"] / 1000, s["endMs"] / 1000,
+                                     s["durMs"] / 1000, s["speechMs"] / 1000))
+        add("V8.1", ok, "讲着话时画面不长静止（最长 %.2fs）" % (longest / 1000), detail)
 
     return findings
 
@@ -385,6 +405,8 @@ def load_inputs(args):
     appear = json.load(open(args.appearance, encoding="utf-8"))
     film = probe_film(args.film)
     film["mtime"] = os.path.getmtime(args.film)
+    if args.motion and os.path.exists(args.motion):
+        film["motion"] = json.load(open(args.motion, encoding="utf-8"))
     if args.skip_sync:
         film["lag"] = None
     else:
@@ -432,6 +454,8 @@ def rerun(args):
         [py, os.path.join(HERE, "check_appearance.py"), args.film, args.segments, args.elements,
          "--out", args.appearance],
         [py, os.path.join(HERE, "check_av_sync.py"), args.film, args.ref_audio],
+        [py, os.path.join(HERE, "check_motion.py"), args.film, args.segments,
+         "--out", args.motion],
     ):
         if cmd[1].endswith("check_av_sync.py") and args.skip_sync:
             continue
@@ -463,16 +487,19 @@ def _fixture():
     ]
     appear = [
         {"element": "a", "page": 0, "pageStart": 0, "seg": "s0", "at": 200, "offsetMs": 0,
-         "settledMs": 640, "onsetMs": 240, "always": False, "preSegDiff": 30.0},
+         "settledMs": 640, "onsetMs": 240, "always": False, "preSegLevel": 0.05},
         {"element": "b", "page": 0, "pageStart": 0, "seg": "s0", "at": 200, "offsetMs": 300,
-         "settledMs": 900, "onsetMs": 540, "always": False, "preSegDiff": 28.0},
+         "settledMs": 900, "onsetMs": 540, "always": False, "preSegLevel": 0.06},
         {"element": "c", "page": 0, "pageStart": 0, "seg": "s1", "at": 2600, "offsetMs": 0,
-         "settledMs": 3020, "onsetMs": 2620, "always": False, "preSegDiff": 22.0},
+         "settledMs": 3020, "onsetMs": 2620, "always": False, "preSegLevel": 0.03},
         {"element": "d", "page": 0, "pageStart": 0, "seg": None, "at": None, "offsetMs": 0,
-         "settledMs": 5400, "onsetMs": 5400, "always": False, "preSegDiff": None},
+         "settledMs": 5400, "onsetMs": 5400, "always": False, "preSegLevel": None},
     ]
     film = {"hasAudio": True, "durMs": 6000, "refDurMs": 6010, "meanDb": -26.0,
-            "lag": 0.0, "sharp": 0.44}
+            "lag": 0.0, "sharp": 0.44,
+            "motion": {"silentDiff": 0.25, "sampleMs": 100, "longestMs": 1200,
+                       "spans": [{"startMs": 600, "endMs": 1800, "durMs": 1200,
+                                  "speechMs": 1100}]}}
     # elems 给空：只有一页，V7 会因「封面页不查」整组跳过。
     # V7 的故障注入用单独的 _layout_fixture()，见 _fixture 之后。
     return design, align, appear, film, []
@@ -495,11 +522,11 @@ def _layout_fixture(late_ms):
     appear = [
         # 容器先出（onset 2400），内容 2600 / 2600+late_ms
         {"element": "box", "page": 1, "pageStart": 2000, "settledMs": 2700,
-         "onsetMs": 2400, "always": False, "preSegDiff": None},
+         "onsetMs": 2400, "always": False, "preSegLevel": None},
         {"element": "x", "page": 1, "pageStart": 2000, "settledMs": 2600,
-         "onsetMs": 2500, "always": False, "preSegDiff": None},
+         "onsetMs": 2500, "always": False, "preSegLevel": None},
         {"element": "y", "page": 1, "pageStart": 2000, "settledMs": 2600 + late_ms,
-         "onsetMs": 2500 + late_ms, "always": False, "preSegDiff": None},
+         "onsetMs": 2500 + late_ms, "always": False, "preSegLevel": None},
     ]
     # x 占内容面积 40%、y 占 60%：只在 x 到位时覆盖 40% < 50%，V7.1 会看见。
     elems = [{"index": 1, "elements": [
@@ -543,12 +570,16 @@ def self_test():
     # 盲区：元素在 alignment 窗口起点（at+offset-400=100）之前就到位
     red("V4.1", lambda d, a, p, f: p[1].update(settledMs=60))
     # 剧透：开口前那一帧已经与终态一致
-    red("V5.1", lambda d, a, p, f: p[0].update(preSegDiff=0.2))
+    red("V5.1", lambda d, a, p, f: p[0].update(preSegLevel=0.95))
     red("V5.2", lambda d, a, p, f: a[0].update(delayMs=480))
     # 错落：设计差 300ms，实测差 40ms
     red("V5.3", lambda d, a, p, f: a[1].update(delayMs=240))
     red("V5.4", lambda d, a, p, f: p[3].update(always=True))
     red("V5.5", lambda d, a, p, f: p[0].update(settledMs=None))
+    # 静：讲着话，画面 8 秒没变（D 片页 1 的读数）
+    red("V8.1", lambda d, a, p, f: f["motion"].update(
+        longestMs=8000, spans=[{"startMs": 6700, "endMs": 14700, "durMs": 8000,
+                                "speechMs": 7600}]))
 
     # V7：内容页上第二件内容晚 4s 才到 —— 半页空了 4s，框也挂了 4s
     d7, p7, e7 = _layout_fixture(late_ms=4000)
@@ -604,6 +635,8 @@ def main():
     ap.add_argument("--elements", default="tmp/q7/fid/elements.json")
     ap.add_argument("--alignment", default="tmp/q7/alignment.json")
     ap.add_argument("--appearance", default="tmp/q7/appearance.json")
+    ap.add_argument("--motion", default="tmp/q7/motion.json",
+                    help="check_motion.py 的输出：讲着话时画面静止的区间")
     ap.add_argument("--ref-audio", default="tmp/q7/audio/timeline.wav")
     ap.add_argument("--rerun", action="store_true", help="先重跑三个测量再审计")
     ap.add_argument("--skip-sync", action="store_true", help="跳过音画检查（无参考音轨时）")

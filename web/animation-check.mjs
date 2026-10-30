@@ -415,3 +415,27 @@ test('整页轨道不参与拖动（起点是页边界，没有可调空间）',
     ['title-1', 'bullet-1']
   );
 });
+
+test('焦点切换点必须在关键帧里：否则网页从最后关键帧线性插到页末', async () => {
+  // 页级 focus（IR 的 page.focus）在播放器里是「谁让位」，采样只覆盖 clip 活动区间
+  // 时，切换点（1390/4500）会落在采样之外，压暗被拉长成整页。
+  const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const ease = { x1: 0.2, y1: 0, x2: 0, y2: 1 };
+  const clips = [
+    { effect: 'fadeIn', startMs: 220, durationMs: 520, easing: ease, props: [{ name: 'opacity', from: 0, to: 1 }] }
+  ];
+  const focus = [
+    { startMs: 1390, elementId: 'a' },
+    { startMs: 4500, elementId: 'b' }
+  ];
+  const pageMs = 12005;
+  const opts = { fps: 30, pageDurationMs: pageMs, reduceMotion: false, focus };
+  const frames = compileKeyframes(clips, opts, 'a');
+  assert.ok(frames && frames.length > 2);
+  const at = (ms) => frames.some((f) => Math.abs(f.offset * pageMs - ms) <= 20);
+  assert.ok(at(1390), '第 1 个切换点没有关键帧');
+  assert.ok(at(4500), '第 2 个切换点没有关键帧');
+  const last = frames[frames.length - 1];
+  assert.ok(Number(last.opacity) < 0.6, `页末应已压暗，实际 ${last.opacity}`);
+  assert.equal(Number(frames[0].opacity), 0, '页首还没开口，应当透明');
+});

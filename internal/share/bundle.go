@@ -96,6 +96,8 @@ type PageAnimation struct {
 	Transition SlideTransition
 	// Layers 按绘制顺序（父在前、子在后），与 IR 同序。
 	Layers []LayerAsset
+	// Focus 是页级焦点序列，原样透传到清单。
+	Focus []SlideFocus
 }
 
 // LayerAsset 是一个元素层的独立位图：已按 Box 裁切，且不含其它动画元素的像素。
@@ -323,7 +325,7 @@ func (b *BundleBuilder) writeSlides(
 			transition := anim.Transition
 			entries = append(entries, SlideEntry{
 				SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
-				Plate: true, Transition: &transition, Layers: layers,
+				Plate: true, Transition: &transition, Layers: layers, Focus: anim.Focus,
 			})
 			previousName, previousPlate = name, true
 			continue

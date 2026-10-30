@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
-import { evaluateLayer, framesForDuration } from '../../shared/motion';
+import { evaluateLayer, focusDim, focusOpacity, framesForDuration } from '../../shared/motion';
 import type { Layer, Page, Timeline } from './types';
 
 const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
@@ -20,11 +20,15 @@ const PageView: React.FC<{
   tMs: number;
 }> = ({ page, width, height, tMs }) => {
   const plate = staticFile(page.plateImage ?? page.baseImage);
+  // 页级焦点：非焦点元素整体退后。位置不动，只降不透明度——
+  // 版面是烘焙的底图，改布局不是合成器的事。
+  const dims = focusDim(page.focus, tMs);
   return (
     <AbsoluteFill>
       <Img src={plate} style={{ width, height, objectFit: 'fill' }} />
       {(page.layers ?? []).map((layer: Layer, i: number) => {
         const state = evaluateLayer(layer, tMs);
+        const dim = layer.elementId ? dims[layer.elementId] ?? 0 : 0;
         return (
           <div
             key={layer.elementId ?? `layer-${i}`}
@@ -35,7 +39,7 @@ const PageView: React.FC<{
               width: layer.box.w,
               height: layer.box.h,
               overflow: 'hidden',
-              opacity: state.opacity,
+              opacity: state.opacity * focusOpacity(dim),
               transform: `translate(${state.tx}px, ${state.ty}px) scale(${state.sx}, ${state.sy})`,
               transformOrigin: 'center center'
             }}

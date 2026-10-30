@@ -8,6 +8,7 @@
 //   - 权威时钟是 <audio>.currentTime；rAF 只负责把时钟读出来画到 DOM，绝不自己累加时间。
 import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } from '../playerClock';
 import type { SlideCue, SubtitleCue, Timeline } from '../types';
+import type { FocusSpan } from '../../../shared/types';
 import { buildLayerNodes, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import './player.css';
@@ -21,6 +22,8 @@ type ShareSlide = SlideCue & {
   plate?: boolean;
   transition?: { type: string; durationMs?: number };
   layers?: ManifestLayer[];
+  /** 页级焦点序列：此刻讲的是谁（与 MP4 同一份求值）。 */
+  focus?: FocusSpan[];
 };
 
 type ShareAudio = {
@@ -267,7 +270,8 @@ function mount(): void {
     activeLayers = buildLayerNodes(layersBox, layers, videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: (slide.endUs - slide.startUs) / 1000,
-      reduceMotion
+      reduceMotion,
+      focus: slide.focus
     });
   };
 
@@ -305,7 +309,8 @@ function mount(): void {
     prevLayers = buildLayerNodes(prev.layers, layers, videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: pageMs,
-      reduceMotion
+      reduceMotion,
+      focus: before.focus
     });
     // 前一页取的是它自己的末帧（与 MP4 的 PageView tMs=durationMs 一致）：
     // 若该页有出场动画，末帧才是正确画面，不能拿底板顶替。

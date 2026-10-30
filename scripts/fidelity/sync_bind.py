@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把讲解脚本里的 `bind` 同步进 narrate.py 产出的 segments.json。
+"""把讲解脚本里的 `bind` 与 `focus` 同步进 narrate.py 产出的 segments.json。
 
 ## 为什么需要这一步
 
@@ -67,6 +67,16 @@ def main():
         if old != new:
             changed.append((key[1], old, new))
             d["bind"] = s.get("bind", [])
+        # focus 与 bind 并列抄写：前者决定「讲它时谁让位」，后者决定「它何时出场」。
+        # 漏抄 focus 不会报错，只会让这页回到「铺满之后不再变化」——那正是要修的病。
+        if s.get("focus") or d.get("focus"):
+            want = s.get("focus", "")
+            if d.get("focus", "") != want:
+                changed.append((key[1], "focus=%r" % d.get("focus", ""), "focus=%r" % want))
+                if want:
+                    d["focus"] = want
+                else:
+                    d.pop("focus", None)
 
     # 页级「常驻」清单也一并抄：它是编排的一部分，和 bind 一样属于脚本，
     # 但不体现在 segments.json 的段落里——漏抄就等于没生效，而且没有任何报错。

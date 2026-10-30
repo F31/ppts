@@ -82,7 +82,7 @@ console.log("成片 " + st.w + "×" + st.h + " · " + st.dur.toFixed(2) + "s · 
 check("视频可解码（readyState=4，无 error）", st.ready === 4 && !st.err, "readyState=" + st.ready);
 check("音轨未静音", st.muted === false && st.vol > 0);
 
-check("评分表 5 行 × 3 档", st.rows === 5 && st.radios === 15, st.rows + " 行 / " + st.radios + " 个选项");
+check("评分表 6 行 × 3 档", st.rows === 6 && st.radios === 18, st.rows + " 行 / " + st.radios + " 个选项");
 
 // 机器门禁卡片：必须存在、必须默认收起（免得数字先把人推向 5 分）、必须有内容
 const gateCard = await evalJs(`(() => {
@@ -129,10 +129,10 @@ const gate = await evalJs(`(() => {
   const r = document.querySelectorAll("#sheet input[type=radio]");
   const ev = document.getElementById("export");
   const out = document.getElementById("out");
-  for (let i = 0; i < 5; i++) r[i * 3].click();          // 全 5 分（5 条判据）
+  for (let i = 0; i < 6; i++) r[i * 3].click();          // 全 5 分（6 条判据）
   ev.click();
   const pass5 = out.textContent.includes("结论：可用");
-  for (let i = 0; i < 5; i++) r[i * 3 + 2].click();      // 全 1 分，定位留空
+  for (let i = 0; i < 6; i++) r[i * 3 + 2].click();      // 全 1 分，定位留空
   ev.click();
   const blocked = out.textContent.includes("还不能导出");
   document.getElementById("locate").value = "第 2 页 7.05s，第一条要点比语音晚约 4 帧";

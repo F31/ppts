@@ -67,6 +67,16 @@ type SlideEntry struct {
 	Transition *SlideTransition `json:"transition,omitempty"`
 	// Layers 按绘制顺序排列（父在前、子在后），与 IR 的 layers 同序。
 	Layers []SlideLayer `json:"layers,omitempty"`
+	// Focus 是页级焦点序列，与 IR 的 page.focus 同语义：此刻讲的是谁，
+	// 其余层由 shared/motion.ts 的 focusDim 推导出压暗量。播放器与 MP4 共用同一份求值。
+	Focus []SlideFocus `json:"focus,omitempty"`
+}
+
+// SlideFocus 是一段焦点区间：从 StartMs 起焦点落在 ElementID 上，直到下一段开始。
+type SlideFocus struct {
+	StartMs   int64  `json:"startMs"`
+	ElementID string `json:"elementId"`
+	FadeMs    int64  `json:"fadeMs,omitempty"`
 }
 
 // SlideTransition 是页间转场。缺省（nil 或 type=none）表示直接切换。

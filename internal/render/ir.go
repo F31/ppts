@@ -27,6 +27,10 @@ const (
 	MaxPages = 500
 	// MaxPlanBytes 是 POST /v1/render 的请求体上限。
 	MaxPlanBytes = 16 << 20
+
+	// MaxFocusFadeMS 是焦点切换的过渡上限。超过一秒的「渐隐渐显」会被看成
+	// 画面在发灰，而不是注意力转移。
+	MaxFocusFadeMS = 1000
 )
 
 // 资产模式（设计方案 §6.2）。首版只支持前两种：底图来自整页渲染的 PNG。
@@ -74,6 +78,26 @@ type Page struct {
 	PlateImage string     `json:"plateImage,omitempty"`
 	Layers     []Layer    `json:"layers,omitempty"`
 	Transition Transition `json:"transition"`
+	// Focus 是「这一刻讲的是谁」：按 StartMs 升序的焦点序列。
+	//
+	// 它不改变任何一层的动效，只告诉合成器**此刻谁该被让出来**——
+	// 非焦点元素降透明度，焦点元素保持。没有它，一页内容在 1.4s 铺满之后
+	// 就再没有变化，讲解还在继续（V8 的「静默」正是量这个）。
+	//
+	// 为什么放在页级而不是给每层加一条「压暗」clip：压暗是**互斥关系**
+	// （A 亮则 B 暗），而 clip 的叠加规则是逐属性相加/相乘，无法表达互斥。
+	// 页级序列只描述「此刻焦点是谁」，由求值器推导其余元素的压暗量，
+	// 因此天然不会出现「两个元素同时被压暗一半」这类矛盾状态。
+	Focus []FocusSpan `json:"focus,omitempty"`
+}
+
+// FocusSpan 是一段焦点区间：从 StartMs 起，焦点落在 ElementID 上，直到下一段开始。
+type FocusSpan struct {
+	StartMs int64 `json:"startMs"`
+	// ElementID 必须是本页某个图层的 elementId。
+	ElementID string `json:"elementId"`
+	// FadeMs 是切换的过渡时长（缺省 240ms）。0 表示硬切，用于「不需要喘口气」的场景。
+	FadeMs int64 `json:"fadeMs,omitempty"`
 }
 
 // Layer 是一个可做元素级动作的区域。ElementID 为空表示整页图层。

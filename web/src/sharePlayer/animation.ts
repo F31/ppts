@@ -15,8 +15,8 @@
 //
 // 时钟一律由调用方给（音频 currentTime），这里不持有任何"当前时间"。
 
-import { evaluateLayer } from '../../../shared/motion.ts';
-import type { Layer, Motion } from '../../../shared/types.ts';
+import { evaluateLayer, focusDim, focusOpacity } from '../../../shared/motion.ts';
+import type { FocusSpan, Layer, Motion } from '../../../shared/types.ts';
 
 /** 清单里的一层（字段是 IR 的投影，见 internal/share/manifest.go 的 SlideLayer）。 */
 export type ManifestLayer = {
@@ -34,6 +34,8 @@ export type CompileOptions = {
   pageDurationMs: number;
   /** prefers-reduced-motion：保留 opacity，去掉位移与缩放，**时长不变**。 */
   reduceMotion: boolean;
+  /** 页级焦点：此刻讲的是谁。缺省表示这页没有让位关系。 */
+  focus?: FocusSpan[];
 };
 
 /** 一页编译结果：每层一个 Animation，按清单顺序。 */
@@ -52,7 +54,8 @@ const IDENTITY_TRANSFORM = 'translate(0, 0) scale(1, 1)';
  */
 export function compileKeyframes(
   clips: Motion[],
-  opts: CompileOptions
+  opts: CompileOptions,
+  elementId?: string
 ): Keyframe[] | null {
   if (!clips || clips.length === 0) return null;
   let start = Infinity;
@@ -73,6 +76,13 @@ export function compileKeyframes(
   const times: number[] = [0];
   for (let t = start; t < end; t += step) times.push(t);
   times.push(end);
+  // 焦点切换点必须显式采样：它通常落在任何 clip 的活动区间之外（讲完才切换），
+  // 只按 clip 区间采样会让播放器从最后一个关键帧直接线性插到页末，
+  // 压暗过程被拉长成整页——MP4 里有 240ms 的过渡，网页里变成 8 秒的渐暗。
+  for (const f of opts.focus ?? []) {
+    times.push(f.startMs);
+    times.push(f.startMs + (f.fadeMs ?? 240));
+  }
   times.push(pageMs);
   const points: number[] = [];
   for (const t of times) {
@@ -92,7 +102,8 @@ export function compileKeyframes(
   const frames: Keyframe[] = [];
   for (const t of points) {
     const state = evaluateLayer(layer, t);
-    const opacity = clamp01(state.opacity);
+    const dim = elementId ? focusDim(opts.focus, t)[elementId] ?? 0 : 0;
+    const opacity = clamp01(state.opacity * focusOpacity(dim));
     const tx = opts.reduceMotion ? 0 : state.tx;
     const ty = opts.reduceMotion ? 0 : state.ty;
     const sx = opts.reduceMotion ? 1 : state.sx;
@@ -148,7 +159,7 @@ export function buildLayerNodes(
     container.append(node);
 
     let animation: Animation | null = null;
-    const frames = compileKeyframes(layer.clips ?? [], opts);
+    const frames = compileKeyframes(layer.clips ?? [], opts, layer.elementId);
     if (canAnimate && frames) {
       animation = node.animate(frames, {
         duration: Math.max(1, opts.pageDurationMs),

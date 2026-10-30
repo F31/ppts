@@ -8,11 +8,12 @@
 // 这里刻意不引入 zod 之类的运行时校验：校验的权威在 Go 侧（Validate 已在提交前跑过），
 // Node 端重复校验只会得到两套规则。
 
-import type { Layer, Transition } from '../../shared/types';
+import type { FocusSpan, Layer, Transition } from '../../shared/types';
 
 export type {
   Box,
   CubicBezier,
+  FocusSpan,
   Layer,
   Motion,
   MotionProp,
@@ -45,6 +46,8 @@ export type Page = {
   plateImage?: string;
   layers?: Layer[];
   transition: Transition;
+  /** 页级焦点序列：此刻讲的是谁（见 shared/motion.ts 的 focusDim）。 */
+  focus?: FocusSpan[];
 };
 
 export type Timeline = {

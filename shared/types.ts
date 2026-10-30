@@ -58,3 +58,16 @@ export type Transition = {
   type: string;
   durationMs?: number;
 };
+
+/**
+ * 页级焦点：从 startMs 起，「此刻讲的是谁」切换到 elementId，直到下一段开始。
+ *
+ * 它不含动效语义，只是一条时间—对象的对照表。非焦点的压暗量由 `focusDim`
+ * 推导（与渲染器共用同一份代码），因此两端不会算出两种观感。
+ */
+export type FocusSpan = {
+  startMs: number;
+  elementId: string;
+  /** 切换过渡时长，缺省 240ms。 */
+  fadeMs?: number;
+};

@@ -36,7 +36,9 @@
   {
    "index": 1,
    "slideId": "slide-1",
-   "static": ["p1-card"],
+   "static": [
+    "p1-card"
+   ],
    "segments": [
     {
      "id": "s1-1",
@@ -67,22 +69,26 @@
     {
      "id": "s1-2",
      "text": "稳定出片，两次渲染逐字节相同。",
-     "bind": []
+     "bind": [],
+     "focus": "p1-item0"
     },
     {
      "id": "s1-3",
      "text": "资源可控，峰值二点七 GB。",
-     "bind": []
+     "bind": [],
+     "focus": "p1-item1"
     },
     {
      "id": "s1-4",
      "text": "字体可验，字集写进门禁。",
-     "bind": []
+     "bind": [],
+     "focus": "p1-item2"
     },
     {
      "id": "s1-5",
      "text": "可观测，失败能定位。",
-     "bind": []
+     "bind": [],
+     "focus": "p1-item3"
     }
    ]
   },
@@ -132,12 +138,14 @@
        "elementId": "p3-flow",
        "offsetMs": 700
       }
-     ]
+     ],
+     "focus": "p3-flow"
     },
     {
      "id": "s3-2",
      "text": "右边是部署视图。",
-     "bind": []
+     "bind": [],
+     "focus": "p3-hero"
     }
    ]
   },

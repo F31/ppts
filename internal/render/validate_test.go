@@ -93,6 +93,27 @@ func TestValidateRejects(t *testing.T) {
 		{"bad easing", func(p *Timeline) {
 			p.Pages[0].Layers[0].Clips[0].Easing = animation.CubicBezier{X1: 1.4, Y1: 0, X2: 1, Y2: 1}
 		}, CodeInvalidPlan, "pages[0].layers[0].clips[0].easing"},
+
+		// 页级焦点：三种错法各有各的后果，都必须在这里被挡住。
+		{"focus unknown element", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "nope"}}
+		}, CodeInvalidPlan, "pages[0].focus[0].elementId"},
+		{"focus duplicate element", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{
+				{StartMs: 0, ElementID: "e1"}, {StartMs: 500, ElementID: "e1"},
+			}
+		}, CodeInvalidPlan, "pages[0].focus[1].elementId"},
+		{"focus not increasing", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{
+				{StartMs: 500, ElementID: "e1"}, {StartMs: 500, ElementID: "e1"},
+			}
+		}, CodeInvalidPlan, "pages[0].focus[1]"},
+		{"focus beyond page", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 6000, ElementID: "e1"}}
+		}, CodeInvalidPlan, "pages[0].focus[0].startMs"},
+		{"focus fade too long", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", FadeMs: MaxFocusFadeMS + 1}}
+		}, CodeInvalidPlan, "pages[0].focus[0].fadeMs"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,5 +169,15 @@ func TestSafeAssetPath(t *testing.T) {
 		if err := SafeAssetPath(p); err == nil {
 			t.Fatalf("%q 应被拒绝", p)
 		}
+	}
+}
+
+// TestFocusPasses：合法的焦点序列不应报错。它不改动效，只描述「此刻讲的是谁」，
+// 因此 clip 一条都不用动——这条断言同时固定了「焦点不是动效」这个设计。
+func TestFocusPasses(t *testing.T) {
+	p := validPlan()
+	p.Pages[0].Focus = []FocusSpan{{StartMs: 1000, ElementID: "e1", FadeMs: 120}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("单条焦点不应报错: %v", err)
 	}
 }

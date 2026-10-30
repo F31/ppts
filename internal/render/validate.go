@@ -135,6 +135,55 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 			}
 		}
 	}
+	if err := validateFocus(p, base); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateFocus 校验页级焦点序列。
+//
+// 三条必须成立：焦点指向本页真实存在的图层（否则「让位」没有对象）、
+// 起点严格递增（同一时刻两个焦点是自相矛盾的状态）、不越过页长
+// （越过意味着后半页没有焦点，非焦点元素会一直压暗着播到页尾）。
+func validateFocus(p *Page, base string) error {
+	layers := make(map[string]struct{}, len(p.Layers))
+	for _, l := range p.Layers {
+		if l.ElementID != "" {
+			layers[l.ElementID] = struct{}{}
+		}
+	}
+	prev := int64(-1)
+	seen := make(map[string]struct{}, len(p.Focus))
+	for i, f := range p.Focus {
+		fb := fmt.Sprintf("%s.focus[%d]", base, i)
+		if _, ok := layers[f.ElementID]; !ok {
+			return planErr(fb+".elementId", CodeInvalidPlan,
+				"focus element %q is not a layer of this page", f.ElementID)
+		}
+		if _, dup := seen[f.ElementID]; dup {
+			// 求值器按 elementId 查压暗量，「甲又亮又暗」无法表达。
+			return planErr(fb+".elementId", CodeInvalidPlan,
+				"focus element %q appears twice", f.ElementID)
+		}
+		seen[f.ElementID] = struct{}{}
+		if f.StartMs < 0 {
+			return planErr(fb+".startMs", CodeInvalidPlan, "negative start %d", f.StartMs)
+		}
+		if f.StartMs >= p.DurationMs {
+			return planErr(fb+".startMs", CodeInvalidPlan,
+				"focus starts at %d, page is %dms", f.StartMs, p.DurationMs)
+		}
+		if f.StartMs <= prev {
+			return planErr(fb+".startMs", CodeInvalidPlan,
+				"focus starts must be strictly increasing (%d after %d)", f.StartMs, prev)
+		}
+		if f.FadeMs < 0 || f.FadeMs > MaxFocusFadeMS {
+			return planErr(fb+".fadeMs", CodeInvalidPlan,
+				"fade %d outside [0,%d]", f.FadeMs, MaxFocusFadeMS)
+		}
+		prev = f.StartMs
+	}
 	return nil
 }
 

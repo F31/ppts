@@ -73,6 +73,7 @@ func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte) ([]share.PageAni
 		// 转场仍然是它的一部分（转场不需要分层素材）。
 		anim := share.PageAnimation{
 			Transition: share.SlideTransition{Type: page.Transition.Type, DurationMs: page.Transition.DurationMs},
+			Focus:      slideFocus(page.Focus),
 		}
 
 		plateImg, _ := render.BuildPlate(base, page.Layers, plan.Width, plan.Height)
@@ -80,7 +81,7 @@ func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte) ([]share.PageAni
 		if plateImg == nil || len(assets) == 0 {
 			// 挖空不可用（元素几乎占满整页、取不到外环色）：退回整页图 + 无层。
 			// 这一页会「不动的入场」——但至少画面是对的，不会出现纯色疤。
-			out[i] = share.PageAnimation{Transition: anim.Transition}
+			out[i] = share.PageAnimation{Transition: anim.Transition, Focus: anim.Focus}
 			continue
 		}
 
@@ -226,4 +227,17 @@ func encodePNG(img image.Image) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// slideFocus 把 IR 的页级焦点搬到分享清单：两处字段一一对应，但分享包不依赖
+// internal/render 的类型（清单是给浏览器看的，IR 是给渲染后端看的）。
+func slideFocus(in []render.FocusSpan) []share.SlideFocus {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideFocus, 0, len(in))
+	for _, f := range in {
+		out = append(out, share.SlideFocus{StartMs: f.StartMs, ElementID: f.ElementID, FadeMs: f.FadeMs})
+	}
+	return out
 }
