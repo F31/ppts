@@ -45,6 +45,8 @@ import sys
 
 import numpy as np
 
+from _segtime import page_starts
+
 FPS = 30
 FRAME_MS = 1000 // FPS
 W, H = 1920, 1080
@@ -98,9 +100,18 @@ def probe_ms(path):
 
 
 def page_frames(film, start_ms, dur_ms):
-    """把一页解成 gray 帧，逐帧 yield (t_ms, ndarray HxW)。流式，不落盘。"""
+    """把一页解成 gray 帧，逐帧 yield (t_ms, ndarray HxW)。流式，不落盘。
+
+    末尾**少解一帧**：段边界是按帧切的，而 dur_ms 换算成帧数往往不是整数
+    （G 片页 2 是 9855ms = 295.65 帧）。按 `-t dur_ms` 取，ffmpeg 会多解出
+    下一段的第一帧——那一帧里是下一版的版面，框内差直接崩到底，
+    于是「最后一次低于半程」落在最后一帧、`settled` 判成 None，整页元素
+    被报成「未稳定出现」（G 片页 2 五个元素全中，而片子是对的）。
+    留一帧不影响判断：settled 真正关心的是「什么时候到位」，不是页尾那 33ms。
+    """
+    span = max(0.0, (dur_ms - FRAME_MS) / 1000.0)
     cmd = [ffmpeg_bin(), "-v", "error", "-ss", "%.3f" % (start_ms / 1000),
-           "-t", "%.3f" % (dur_ms / 1000), "-i", film,
+           "-t", "%.3f" % span, "-i", film,
            "-vf", "fps=%d" % FPS, "-f", "rawvideo", "-pix_fmt", "gray", "-"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     size = W * H
@@ -144,12 +155,11 @@ def main():
     script = json.load(open(seg_path, encoding="utf-8"))
     elems = json.load(open(elems_path, encoding="utf-8"))
 
-    # 页起点用实测段时长累计（与 check_alignment.py 同一口径，否则两边的 t 对不上）
-    page_start, starts = 0, {}
-    for page in script["pages"]:
-        starts[page["index"]] = page_start
-        seg_file = "tmp/q7/out/segment_%03d.mp4" % page["index"]
-        page_start += probe_ms(seg_file) if os.path.exists(seg_file) else page["durationMs"]
+    # 页起点用实测段时长累计（与 check_alignment.py 同一口径，否则两边的 t 对不上）。
+    # 段目录由 PPTS_SEG_DIR 指定：写死路径时，产物换目录就会拿上一版片子当这一版量，
+    # 报出「元素整页未出现」的假失败（G 片踩过，见 _segtime.py）。
+    starts, _ = page_starts(script, probe_ms)
+    starts = {page["index"]: starts[i] for i, page in enumerate(script["pages"])}
 
     # 元素 → 它被绑到的那一段（段号、绝对时刻、段内错落）
     bind_at = {}

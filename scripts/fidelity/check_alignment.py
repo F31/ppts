@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 
+from _segtime import page_starts
+
 FPS = 30
 FRAME_MS = 1000.0 / FPS
 
@@ -103,11 +105,8 @@ def main():
 
     # 页起点用**实测段时长**累计：渲染器按帧输出，每页会比计划短几毫秒，
     # 用计划值当起点会把误差一路累加到最后几页。
-    page_start, starts = 0, []
-    for page in script["pages"]:
-        starts.append(page_start)
-        seg_file = "tmp/q7/out/segment_%03d.mp4" % page["index"]
-        page_start += probe_ms(seg_file) if os.path.exists(seg_file) else page["durationMs"]
+    # 段目录由 PPTS_SEG_DIR 指定，缺文件或对不上计划页长直接退出（见 _segtime.py）。
+    starts, _ = page_starts(script, probe_ms)
 
     rows = []
     with tempfile.TemporaryDirectory() as tmp:

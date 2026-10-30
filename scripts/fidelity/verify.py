@@ -23,11 +23,18 @@
     V6 新鲜度  报告比成片旧就作废（改了片子忘记重测，是最容易发生的假通过）
     V7 观感    这一刻画面上有多少东西：内容覆盖不到一半持续多久、容器空框挂多久
     V8 连续    讲着话时画面连续多久没变——「空」是元素没出现，「静」是全出现了却不动
+    V9 数据    图里画出来的高度和它自己标的数值成不成比例（柱子会不会说谎）
+    V10 叙事   图上标了数的元素，讲解有没有念到这个数（讲稿会不会漏讲）
 
-  V7 与 V8 都是后加的，也是仅有的两组**不问元素、只问画面**的：
+  V7 与 V8 是仅有的两组**不问元素、只问画面**的：
   前六组全过而人看着不对，差异就在这里。V7 管「每一刻只有半页内容」，
   V8 管「内容铺满之后画面不再变化」——D 片页 1 在第 1.4s 铺满，之后 10.8s 静止，
   而旁白还在逐条念。两个病都不是「元素准不准」，是「该不该在这时候动」。
+
+  V9 与 V10 又是另一种：它们不问「画面内部自不自洽」，而是问**画面与另一个来源对不对得上**。
+  V9 对的是元素自带的 `value`（作图数据），V10 对的是旁白文本。共同点是人可以一路看完
+  而不觉得有问题——只有把两个来源并排放才看得见。V10 尤其：讲稿读起来是通的，
+  要对着图数一遍才知道「四根柱子只讲了两根」。
 
 `--self-test` 是给这个门禁自己的：往合成数据里逐条注入故障，断言每种都能被红下来。
 没有它，门禁本身也会重演「看起来通过了」——这正是 5.6 的教训。
@@ -44,6 +51,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -104,6 +112,89 @@ def probe_film(path):
 
 
 # ---------------------------------------------------------------- 对账
+
+# ---------------------------------------------------------------- 讲稿覆盖
+
+# 中文数字的字面值。只认读数用的那一套，不认财务大写（壹贰叁）：讲稿里不会用大写，
+# 认了反而会把「壹」这类正常用字误判成数字。
+_CN_DIGIT = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000}
+# 一段里既可能有「174s」，也可能有「一百七十四秒」。两者要折成同一个数才能比。
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?|[零〇一二两三四五六七八九十百千万点]+")
+
+
+def _cn_int(s):
+    """把「一百七十四」折成 174。按位读，不做「十二万三千」这类口语省略。"""
+    total = 0
+    num = None
+    for ch in s:
+        if ch in _CN_DIGIT:
+            num = _CN_DIGIT[ch]
+        elif ch in _CN_UNIT:
+            total += (1 if num is None else num) * _CN_UNIT[ch]
+            num = None
+        elif ch == "万":
+            total = (total + (num or 0)) * 10000
+            num = None
+    if num is not None:
+        total += num
+    return total
+
+
+def numbers_in(text):
+    """抽出文本里的全部数值。小数按「点」后逐位读（二点七 = 2.7，一点二五 = 1.25）。
+
+    量词会被一并吞掉：「两次」→ 2、「四核」→ 4。这对判据无害——它只问
+    「图上这个数在讲稿里出现过没有」，多认几个量词只会让判据更宽松，不会让它说谎。
+    """
+    out = []
+    for m in _NUM_RE.finditer(text):
+        tok = m.group()
+        if tok[0].isdigit():
+            out.append(float(tok))
+            continue
+        if "点" in tok:
+            head, _, tail = tok.partition("点")
+            val = float(_cn_int(head))
+            for i, ch in enumerate(tail):
+                val += _CN_DIGIT.get(ch, 0) / (10 ** (i + 1))
+            out.append(val)
+            continue
+        out.append(float(_cn_int(tok)))
+    return out
+
+
+def narration_findings(design, elems):
+    """V10：图上标了数的元素，讲解必须念到这个数。
+
+    为什么这一条不归画面管：V5～V9 量的是「画面自己准不准」。图上有四根柱子、
+    讲稿只念了前两根时，画面每一帧都是对的——柱子比例对、出现时机对、整页也不静。
+    漏掉的是**观众要的那个数**：后两根柱子正是「长片线性放大、并发只多 5 秒」
+    这句结论的证据，不讲，那张图就只是背景。
+
+    人为什么看不出：讲稿自己读起来是通的（「两核一百七十四秒，四核一百三十一秒」
+    是个完整句子）。只有把图和讲稿并排数一遍，才知道四根柱子只讲了 2/4。
+    """
+    pages = {p.get("index"): p for p in (elems or [])}
+    missing = []
+    for page in design.get("pages") or []:
+        meta = pages.get(page.get("index"))
+        if meta is None:
+            continue
+        spoken = []
+        for seg in page.get("segments") or []:
+            spoken.extend(numbers_in(seg.get("text") or ""))
+        for e in meta.get("elements") or []:
+            v = e.get("value")
+            if v is None:
+                continue
+            if not any(abs(v - s) < 1e-6 for s in spoken):
+                missing.append("页 %d %s = %g：整页讲解没有念这个数"
+                               % (page.get("index"), e.get("id"), v))
+    return [{"code": "V10.1", "ok": not missing,
+             "msg": "讲稿覆盖：图上每个数值都被念到", "detail": missing}]
+
 
 def _bound_of(design):
     """设计意图 → {元素: [(段号, 段内错落)]}，顺序保留，用来发现重复绑定。"""
@@ -278,6 +369,10 @@ def audit(design, align, appear, film, elems=None):
                               % (r["page"], r["spread"], CHART_SPREAD_MAX))
         add("V9.1", all(r.get("ok") for r in chart),
             "图表不说谎：柱高与标注值成比例", detail)
+
+    # ---- V10 讲稿覆盖：画面与旁白对不对得上（不需要成片，纯查两份文本）
+    if elems:
+        findings.extend(narration_findings(design, elems))
 
     return findings
 
@@ -615,6 +710,28 @@ def self_test():
     _f["chart"][0].update(ok=False, missing=["bar1"])
     _got = {x["code"]: x["ok"] for x in audit(design, align, appear, _f, elems)}
     cases.append(("V9.1-missing", _got.get("V9.1") is False, _got.get("V9.1")))
+
+    # V10 讲稿漏讲：图上有 174 和 943 两根柱子，讲稿只念了 174。
+    # 这是 F→G 时发现的真实读数，页 2 的四根柱子只讲了两根。
+    d10 = {"pages": [{"index": 1, "segments": [
+        {"id": "s1", "text": "两核一百七十四秒。"}]}]}
+    e10 = [{"index": 1, "elements": [
+        {"id": "bar0", "kind": "chart", "box": [0, 0, 10, 10], "value": 174},
+        {"id": "bar2", "kind": "chart", "box": [0, 0, 10, 10], "value": 943}]}]
+    got10 = {x["code"]: x["ok"] for x in narration_findings(d10, e10)}
+    cases.append(("V10.1", got10.get("V10.1") is False, got10))
+    # 反向：把两个数都念到就绿。中文读法与图上阿拉伯数字必须折成同一个数。
+    d10b = json.loads(json.dumps(d10))
+    d10b["pages"][0]["segments"][0]["text"] = "两核一百七十四秒，长片九百四十三秒。"
+    got10b = {x["code"]: x["ok"] for x in narration_findings(d10b, e10)}
+    cases.append(("V10.1-ok", got10b.get("V10.1") is True, got10b))
+    # 解析器本身也要有回归：这个函数错了，V10 会静静地全绿。
+    cases.append(("V10-parse",
+                  numbers_in("一百七十四秒") == [174.0]
+                  and numbers_in("二点七 GB") == [2.7]
+                  and numbers_in("174s") == [174.0]
+                  and numbers_in("九百四十三") == [943.0],
+                  [numbers_in("一百七十四秒"), numbers_in("二点七 GB")]))
 
     # V7：内容页上第二件内容晚 4s 才到 —— 半页空了 4s，框也挂了 4s
     d7, p7, e7 = _layout_fixture(late_ms=4000)

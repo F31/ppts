@@ -44,6 +44,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from check_appearance import ffmpeg_bin, page_frames, probe_ms, W, H   # noqa: E402
+from _segtime import page_starts                                      # noqa: E402
 
 # 内容覆盖低于这个比例就算「画面上本页的东西不到一半」。
 # 50% 是刻意选的：一页里一半内容还没出来时，观众会认为「这页还没加载完」，
@@ -161,11 +162,8 @@ def main():
     script = json.load(open(seg_path, encoding="utf-8"))
     elems = json.load(open(elems_path, encoding="utf-8"))
 
-    starts, page_start = {}, 0
-    for page in script["pages"]:
-        starts[page["index"]] = page_start
-        sf = "tmp/q7/out/segment_%03d.mp4" % page["index"]
-        page_start += probe_ms(sf) if os.path.exists(sf) else page["durationMs"]
+    rows, page_start = page_starts(script, probe_ms)
+    starts = {p["index"]: rows[i] for i, p in enumerate(script["pages"])}
     ends = {p["index"]: starts.get(p["index"] + 1, page_start) for p in script["pages"]}
 
     findings = []
