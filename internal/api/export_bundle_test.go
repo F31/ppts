@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
-	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/tenant"
 )
 

@@ -40,7 +40,7 @@ func animatedPlan() *render.Timeline {
 			Transition: render.Transition{Type: "fade", DurationMs: 300},
 			Layers: []render.Layer{{
 				ElementID: "box-1", Kind: "shape",
-				Box:   render.Box{X: 80, Y: 30, W: 40, H: 40},
+				Box: render.Box{X: 80, Y: 30, W: 40, H: 40},
 				Clips: []render.Motion{{Effect: "fadeIn", StartMs: 0, DurationMs: 500,
 					Easing: animation.CubicBezier{X1: 0, Y1: 0, X2: 1, Y2: 1},
 					Props:  []animation.MotionProp{{Name: "opacity", From: 0, To: 1}}}},

@@ -230,7 +230,7 @@ func runServer() error {
 						AnimationRolloutPercent: &animationRollout,
 						AnimationRolloutSalt:    animationRolloutSaltFromEnv(),
 						AnimationProbe:          animationProbeFromEnv(logger, animationOn),
-						AnimationRenderer: previewRenderer, AnimationAssets: previewAssets,
+						AnimationRenderer:       previewRenderer, AnimationAssets: previewAssets,
 						// 预览预算按部署硬件可调（默认 3s）：纯 CPU 渲染器上一页的耗时
 						// 取决于核数与字号，固定值会让慢机器上的预览恒定超时。
 						AnimationPreviewBudget: previewBudgetFromEnv(logger),

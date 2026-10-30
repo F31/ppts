@@ -29,3 +29,8 @@ deploy/renderer/charset.txt text eol=lf
 #    CRLF，于是这个用例在本机恒红、在 CI 恒绿——红灯说的不是语义变了，是行尾变了。
 #    2026-10-30 复核时就踩了：go test ./... 41 个包通过，只有它失败。
 internal/render/testdata/*.golden.json text eol=lf
+
+# 7. Go：`gofmt -l` 会把 CRLF 检出的文件整篇判成「未格式化」——它比的是重排后的字节流，
+#    而 CRLF 让每一行都不一样。这不是格式问题，是检出侧的问题；但不管它，`gofmt -l` 的
+#    输出就会常年有内容，于是没人再当它是门禁（2026-10-31 复核时 30 多个文件挂着）。
+*.go text eol=lf
