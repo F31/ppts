@@ -77,6 +77,16 @@ def main():
                     d["focus"] = want
                 else:
                     d.pop("focus", None)
+        # focusAt 是句内切换点（相对本段开口）。它与 focus 一样只影响「谁让位」，
+        # 不影响任何时间戳；漏抄同样不报错，只是那句 3 秒的话里画面不动了。
+        if s.get("focusAt") or d.get("focusAt"):
+            want = s.get("focusAt", [])
+            if d.get("focusAt", []) != want:
+                changed.append((key[1], "focusAt=%r" % d.get("focusAt", []), "focusAt=%r" % want))
+                if want:
+                    d["focusAt"] = want
+                else:
+                    d.pop("focusAt", None)
 
     # 页级「常驻」清单也一并抄：它是编排的一部分，和 bind 一样属于脚本，
     # 但不体现在 segments.json 的段落里——漏抄就等于没生效，而且没有任何报错。

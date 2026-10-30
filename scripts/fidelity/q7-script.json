@@ -103,19 +103,42 @@
       {
        "elementId": "p2-title",
        "offsetMs": 0
+      },
+      {
+       "elementId": "p2-bar0",
+       "offsetMs": 60
+      },
+      {
+       "elementId": "p2-bar1",
+       "offsetMs": 160
+      },
+      {
+       "elementId": "p2-bar2",
+       "offsetMs": 260
+      },
+      {
+       "elementId": "p2-bar3",
+       "offsetMs": 360
       }
      ]
     },
     {
      "id": "s2-2",
      "text": "两核一百七十四秒，四核一百三十一秒。",
-     "bind": [
+     "focusAt": [
       {
-       "elementId": "p2-chart",
-       "offsetMs": 0
+       "elementId": "p2-bar0",
+       "atMs": 350
+      },
+      {
+       "elementId": "p2-bar1",
+       "atMs": 2000
       }
      ]
     }
+   ],
+   "static": [
+    "p2-chart"
    ]
   },
   {

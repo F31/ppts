@@ -47,6 +47,11 @@ export type Layer = {
   box: Box;
   clips?: Motion[];
   /**
+   * 缩放锚点：center（缺省）| bottom | top | left | right。
+   * 柱子按 scaleY 居中缩放会同时向上、向下长穿基线——锚底才是「从基线长上去」。
+   */
+  origin?: string;
+  /**
    * 本层「只含自己」的位图，尺寸等于 box。缺省时退回「从 baseImage 按 box 偏移裁切」——
    * 那条路径在嵌套情形下会把内部元素一起带出来（ADR-9）。
    */

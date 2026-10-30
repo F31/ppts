@@ -106,8 +106,10 @@ type LayerAsset struct {
 	Kind      string
 	Box       SlideBox
 	// PNG 是该层的位图字节，尺寸等于 Box。
-	PNG   []byte
-	Clips []Clip
+	PNG []byte
+	// Origin 是缩放锚点（center/bottom/…），与 IR 的 layer.origin 同义。
+	Origin string
+	Clips  []Clip
 }
 
 // BundleBuilder 负责把输入组装成 zip。
@@ -319,7 +321,7 @@ func (b *BundleBuilder) writeSlides(
 				}
 				layers = append(layers, SlideLayer{
 					ElementID: layer.ElementID, Kind: layer.Kind,
-					Box: layer.Box, Image: layerName, Clips: layer.Clips,
+					Box: layer.Box, Image: layerName, Origin: layer.Origin, Clips: layer.Clips,
 				})
 			}
 			transition := anim.Transition

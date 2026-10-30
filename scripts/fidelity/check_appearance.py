@@ -6,29 +6,37 @@
 相对窗口首帧的灰度差恒为 0 → `preMax = 0`、`delay = 0`，工具报「不提前、准时」，
 而人看到的是「话还没讲，东西已经摆好了」。400ms 之外的提前，这个工具结构上量不到。
 
-这里以**每个包围盒自身的对比度能量**为信号，逐帧量它相对峰值的水平，得到三样东西：
+## 参照物换了三次，前两次都被片子推翻
 
-- `settledMs`：能量最后一次低于半程的下一帧，即它**到位**的时刻。带淡入的元素
-  这个值比开口晚整整一个淡入时长（220–450ms），**不能拿它判「滞后」**。
-- `onsetMs`：能量第一次相对上一帧跳起的时刻。对「从无到有」的元素准
-  （实测对齐设计值 ±44ms 内），但**会被背后的容器带偏**：卡片淡入时，坐在卡片上的
-  每个条目框都会变，于是条目全都报成卡片出现的时刻。所以它只作诊断，不作判据。
-- `preSegLevel`：**开口前 100ms 那一帧的能量相对峰值**（0 = 框里空的，1 = 已到位）。
-  这是「不提前」这条判据本来在问的事，而且是单帧比较，不看曲线、不看阈值，
-  也就不受容器与缓动影响。
+1. **该页最后一帧**（第一版）。页级焦点把非焦点元素压暗，页末那一帧恰好是
+   「最后一条亮、前面几条暗」——前面几条在被压暗的那一刻被判成「刚到位」，
+   `p1-item0` 的 6.03s 被报成 12.43s。
+2. **框内对比度能量**（第二版，像素偏离自身中位数）。对压暗免疫，因为压暗是仿射变换。
+   但它对**实心块**是瞎的：一根柱子长满之后，框里是一整块纯色，内部几乎没有偏离，
+   能量在「长了一半、上半截还是卡片底」时最高、在终态最低。于是柱子被报成
+   「整页未稳定出现」——片子是对的，量法错了。
+3. **出场前那一帧**（本版）。信号改为「框内与**它出现之前**差多少」：
+   柱子从 0 长到满，这个差从 0 升到峰值；淡入是 0→峰值；压暗按比例缩小到约 0.55 倍，
+   仍在一半以上。参照点在**之前**而不是之后，是这一版的关键——元素的「终态」会被
+   后来的编排改写（压暗、二次强调），而「出场前」不会被改写。
 
-为什么不用「与该页最后一帧的灰度差」：页级焦点（IR 的 `page.focus`）会把非焦点元素
-压暗，页末那一帧恰好是「最后一条亮、前面几条暗」。拿它当终态，前面几条会在被压暗的
-那一刻被判成刚到位——实测量出 item0 的 6.03s 变成 12.43s。能量只关心框里有没有东西，
-对这类整体明暗变化免疫。
+   顺带记一个中间版为什么不行：先试的是「与出场前不同的**像素占比**」（阈值化），
+   它对压暗不免疫——页 3 的流程块是浅色卡片，压到 0.55 后与白底的差从 17 灰度掉到 8，
+   低于阈值就不计数了，于是 `p3-flow` 被报成「整页未稳定出现」。连续量（平均绝对差）
+   保留了「差多少」的信息，压暗只是等比缩放，不会归零。
+
+三样输出：
+
+- `settledMs`：填充率达到峰值 85% 的最后一帧的下一帧，即它**到位**的时刻。带淡入的
+  元素这个值比开口晚整整一个淡入时长（220–450ms），**不能拿它判「滞后」**。
+- `onsetMs`：填充率第一次达到峰值 30% 的时刻。诊断用：若背后有同步淡入的容器，
+  容器一变，坐在它上面的元素框里也跟着变，读数会一起塌到容器出现的那一刻。
+- `preSegLevel`：**开口前 100ms 那一帧的填充率相对峰值**（0 = 框里空的，1 = 已到位）。
+  这是「不提前」这条判据本来在问的事，单帧比较，不看曲线。
 
 用法：
-  python3 scripts/fidelity/check_appearance.py [film] [segments.json] [elements.json] [阈值]
+  python3 scripts/fidelity/check_appearance.py [film] [segments.json] [elements.json]
 输出：tmp/q7/appearance.json
-
-一条已知局限：`settledMs` 与 `preSegDiff` 都取整个包围盒的均值，**容器类元素**
-（卡片底板、整块 shape）的读数会被子元素污染——本片 `p1-card` 的 `settledMs` 报 12.5s，
-而它自己在 5.9s 就淡入了。判读按 `kind` 区分：大容器只看 `preSegDiff`。
 """
 import json
 import os
@@ -45,30 +53,25 @@ W, H = 1920, 1080
 # 瞬时出现（无淡入）的元素会正好落在边界上被误判成提前。
 PRE_SEG_MS = 100
 
-# 框内平均偏离中位数低于这个值，就认为框里没有内容（纯色块、容器底色）。
-CONTENT_ENERGY_MIN = 2.0
+# 与「出场前」的平均绝对差低于这个灰度值，就认为框里自始至终没变（纯底板、容器描边）。
+CONTENT_MIN = 1.0
 
-# 能量超过峰值的这个比例，就算「到位」。0.5 留足了淡入尾部与轻微压暗的余量：
-# 焦点的非目标元素会整体压到 0.55 不透明度，能量随之落到约 0.55——仍在半程以上。
+# 变化量达到峰值的这个比例，就算「到位」。0.5 是必需的余量：焦点的非目标元素
+# 会整体压到 0.55 不透明度，变化量随之落到约 0.55——仍在半程以上，不会被判成
+# 「又变了一次」。取 0.85 的话，压暗那一刻就会被当成新的到位点（页 3 的流程块踩过）。
 LEVEL_SETTLED = 0.5
 
-# 开口前那一帧的能量达到峰值的这个比例，就算「话还没讲、东西已经摆好了」。
-# 与 LEVEL_SETTLED 同值：两条判据问的是同一个问题的两个时刻。
+# 开口前那一帧的变化量达到峰值的这个比例，就算「话还没讲、东西已经摆好了」。
 LEVEL_EARLY = 0.5
 
 
-def energy(arr):
-    """框内对比度能量：像素偏离**自身中位数**的平均绝对值。
+def change_level(arr, ref):
+    """框内相对「出场前」的平均绝对差。
 
-    为什么不用「与最后一帧的灰度差」：页级焦点会把非焦点元素压暗，而页末那一帧
-    恰好是「最后一条亮、前面几条暗」——拿它当终态，前面几条会在被压暗的那一刻
-    被判成刚到位（实测把 item0 的 6.03s 报成 12.43s）。
-    能量只关心框里有没有东西：压暗是仿射变换（a·x+(1−a)·底色），中位数跟着移动，
-    偏离量等比缩小，信号还在。
+    连续量，不是阈值化的占比：压暗是仿射变换（a·x+(1−a)·底色），差按 a 等比缩小、
+    不会归零；而「有多少像素超过阈值」会在压暗后整块掉到 0。
     """
-    a = arr.astype(np.int16)
-    med = np.median(a)
-    return float(np.mean(np.abs(a - med)))
+    return float(np.mean(np.abs(arr.astype(np.int16) - ref.astype(np.int16))))
 
 
 def ffmpeg_bin():
@@ -112,6 +115,16 @@ def page_frames(film, start_ms, dur_ms):
     finally:
         proc.stdout.close()
         proc.wait()
+
+
+def frame_gray(film, t_ms):
+    """抽一帧灰度图。用于取「出场前」的参照。"""
+    cmd = [ffmpeg_bin(), "-v", "error", "-ss", "%.3f" % (t_ms / 1000.0),
+           "-i", film, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"]
+    out = subprocess.run(cmd, capture_output=True).stdout
+    if len(out) < W * H:
+        return None
+    return np.frombuffer(out[:W * H], np.uint8).reshape(H, W)
 
 
 def main():
@@ -160,19 +173,36 @@ def main():
         page_els = elems[page["index"]]["elements"]
         boxes = {e["id"]: clip(e["box"]) for e in page_els}
 
-        # 先攒一遍：每帧只留各盒子的小图，内存可控（一页 ~180 帧 × 15 个盒子）
-        # 逐帧只留「框内对比度能量」：判「有没有内容」是能量问题，不是亮度问题。
-        seq = []          # [(t_ms, {eid: 能量})]
+        # 「出场前」参照：取该元素**设计起点前一帧**的框内画面。
+        # 参照点必须在之前——终态会被后来的编排改写（压暗、二次强调），而之前不会。
+        refs = {}
+        for eid, b in boxes.items():
+            if eid in bind_at:
+                _, at, off = bind_at[eid]
+                t_ref = at + off - FRAME_MS
+            else:
+                t_ref = base
+            t_ref = max(base, min(base + dur - FRAME_MS, t_ref))
+            fr = frame_gray(film, t_ref)
+            if fr is None:
+                continue
+            refs[eid] = fr[b[0]:b[1], b[2]:b[3]].copy()
+
+        seq = []          # [(t_ms, {eid: 填充率})]
         for t, frame in page_frames(film, base, dur):
-            seq.append((t, {eid: energy(frame[b[0]:b[1], b[2]:b[3]]) for eid, b in boxes.items()}))
+            # 注意别用上一个循环残留的 b：按元素逐个取自己的框（第一版写错过，
+            # 所有元素都拿最后一个元素的框去裁，形状对不上直接抛异常）。
+            seq.append((t, {eid: change_level(frame[b[0]:b[1], b[2]:b[3]], refs[eid])
+                            for eid, b in boxes.items() if eid in refs}))
         if not seq:
             continue
+        boxes = {eid: b for eid, b in boxes.items() if eid in refs}
 
         for eid, b in boxes.items():
             vals = [v[eid] for _, v in seq]
             peak = max(vals) if vals else 0.0
-            if peak < CONTENT_ENERGY_MIN:
-                # 框里始终没有内容：容器底色、纯色块、或这一页就没画它。
+            if peak < CONTENT_MIN:
+                # 框里自始至终没有变化：纯底色、容器描边、或这一页就没画它。
                 # 对「什么时候出现」而言，它与「页首就在」同义。
                 settled, always, onset = seq[0][0], True, None
                 row_norm = [0.0] * min(12, len(vals))

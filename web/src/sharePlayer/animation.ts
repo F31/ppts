@@ -15,7 +15,7 @@
 //
 // 时钟一律由调用方给（音频 currentTime），这里不持有任何"当前时间"。
 
-import { evaluateLayer, focusDim, focusOpacity } from '../../../shared/motion.ts';
+import { evaluateLayer, focusDim, focusOpacity, originCss } from '../../../shared/motion.ts';
 import type { FocusSpan, Layer, Motion } from '../../../shared/types.ts';
 
 /** 清单里的一层（字段是 IR 的投影，见 internal/share/manifest.go 的 SlideLayer）。 */
@@ -25,6 +25,8 @@ export type ManifestLayer = {
   box: { x: number; y: number; w: number; h: number };
   image: string;
   clips?: Motion[];
+  /** 缩放锚点；缺省 center。柱子的「从基线长上去」靠它。 */
+  origin?: string;
 };
 
 export type CompileOptions = {
@@ -146,6 +148,8 @@ export function buildLayerNodes(
     node.style.top = pct(layer.box.y, canvasH);
     node.style.width = pct(layer.box.w, canvasW);
     node.style.height = pct(layer.box.h, canvasH);
+    // 锚点写进内联样式：WAAPI 只动 transform，不会碰 transform-origin。
+    node.style.transformOrigin = originCss(layer.origin);
     // 关键：初始样式是「终态」。没有 WAAPI、或动画被丢弃时，元素必须原地可见，
     // 而不是停在 opacity:0 上——那会让整页看起来空白，且没有任何报错。
     node.style.opacity = '1';

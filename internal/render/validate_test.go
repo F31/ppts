@@ -90,6 +90,9 @@ func TestValidateRejects(t *testing.T) {
 		{"unknown prop", func(p *Timeline) {
 			p.Pages[0].Layers[0].Clips[0].Props[0].Name = "rotate"
 		}, CodeUnsupported, "pages[0].layers[0].clips[0].props[0].name"},
+		{"bad origin", func(p *Timeline) {
+			p.Pages[0].Layers[0].Origin = "middle"
+		}, CodeInvalidPlan, "pages[0].layers[0].origin"},
 		{"bad easing", func(p *Timeline) {
 			p.Pages[0].Layers[0].Clips[0].Easing = animation.CubicBezier{X1: 1.4, Y1: 0, X2: 1, Y2: 1}
 		}, CodeInvalidPlan, "pages[0].layers[0].clips[0].easing"},

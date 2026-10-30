@@ -97,7 +97,9 @@ type SlideLayer struct {
 	Box       SlideBox `json:"box"`
 	// Image 是包内相对路径，尺寸等于 Box（像素）。
 	Image string `json:"image"`
-	Clips []Clip `json:"clips,omitempty"`
+	// Origin 是缩放锚点（缺省 center）。柱子的「从基线长上去」靠它。
+	Origin string `json:"origin,omitempty"`
+	Clips  []Clip `json:"clips,omitempty"`
 }
 
 // SlideBox 是画布像素矩形。

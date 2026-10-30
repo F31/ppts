@@ -14,6 +14,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 
 	"github.com/F31/ppts/internal/animation"
@@ -33,6 +34,12 @@ type element struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Box  [4]int `json:"box"`
+	// Enter 覆盖按 kind 选的默认入场方式。目前只用于柱子：grow 让柱高从 0 长到终值，
+	// 锚点由编译期从 scaleY 推出来（见 render.originFor），这里不必声明。
+	Enter string `json:"enter,omitempty"`
+	// Value 是图表的数值（秒）。plan 编译用不到它，但 check_chart 要用它
+	// 核对「柱高与标注值成比例」——把数值留在元素清单里，判据才不必去解析图上的字。
+	Value *int `json:"value,omitempty"`
 }
 
 type pageMeta struct {
@@ -90,6 +97,16 @@ type bindRef struct {
 	OffsetMs  int64  `json:"offsetMs"`
 }
 
+// focusAtRef 是「句内」的焦点切换：这一句讲到第 AtMs 毫秒时，注意力转到 ElementID。
+//
+// 为什么需要它：一句 3 秒的话里念两个数字，而段级 focus 只能给出一个切换点，
+// 于是这 3 秒画面必然不动（V8 量的就是它）。把切换点落到句内，等于承认
+// 「一句话里可以有两次强调」——这也是唯一不需要给渲染器新增效果的做法。
+type focusAtRef struct {
+	ElementID string `json:"elementId"`
+	AtMs      int64  `json:"atMs"`
+}
+
 type scriptSegment struct {
 	ID         string    `json:"id"`
 	Text       string    `json:"text"`
@@ -101,6 +118,8 @@ type scriptSegment struct {
 	// Bind 决定元素何时**出场**，Focus 决定讲它时谁**让位**。
 	// 混用会产生两种病：绑得太早（元素齐活，后面全静）或绑得太晚（讲到才出现，前面全空）。
 	Focus string `json:"focus,omitempty"`
+	// FocusAt 是句内焦点切换点，时间相对本段开口。
+	FocusAt []focusAtRef `json:"focusAt,omitempty"`
 }
 
 type scriptPage struct {
@@ -203,7 +222,19 @@ func scriptRevision(elems []element, page scriptPage, tierCompliant bool) *anima
 			clip.StartMs = 0
 			unbound = append(unbound, e.ID)
 		}
-		if e.Kind == "title" {
+		switch {
+		case e.Enter == "grow":
+			// 生长要看得见「长」这件事：520ms 的淡入里看不出高度在变。
+			// catalog 给 grow 的范围是 400–2000，而速度分层对小元素只给到 400——
+			// 取 400 是两者唯一不冲突的取值（取 700 会被判 duration_tier_conflict）。
+			clip.Type = "grow"
+			clip.DurationMs = 400
+			// 必须 easeOut：easeInOut 的起步段几乎没有位移，柱子前 100ms 在画面上
+			// 等于没动，实测被记成「开口后 120ms 才动」（V5.2 判红），错落也跟着错位。
+			clip.Easing = "easeOut"
+		case e.Enter != "":
+			clip.Type = e.Enter
+		case e.Kind == "title":
 			clip.Type = "slideIn"
 			clip.Params = animation.Params{Direction: "up", Offset: 48}
 		}
@@ -233,24 +264,48 @@ func focusSpans(page scriptPage) []render.FocusSpan {
 	for _, id := range page.Static {
 		static[id] = struct{}{}
 	}
-	var spans []render.FocusSpan
-	seen := make(map[string]struct{}, len(page.Segments))
+
+	// 两路来源合成一条时间线：段级 Focus 落在段开口，FocusAt 落在句内偏移。
+	type at struct {
+		ms   int64
+		id   string
+		from string
+	}
+	var all []at
 	for _, seg := range page.Segments {
-		if seg.Focus == "" {
-			continue
+		if seg.Focus != "" {
+			all = append(all, at{seg.StartMs, seg.Focus, seg.ID})
 		}
-		if _, ok := static[seg.Focus]; ok {
+		for _, fa := range seg.FocusAt {
+			all = append(all, at{seg.StartMs + fa.AtMs, fa.ElementID,
+				fmt.Sprintf("%s@%dms", seg.ID, fa.AtMs)})
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].ms < all[j].ms })
+
+	var spans []render.FocusSpan
+	seen := make(map[string]struct{}, len(all))
+	for _, a := range all {
+		if _, ok := static[a.id]; ok {
 			// 常驻元素不建轨道，不能被让位：它不在图层里，压暗也无从谈起。
-			log.Printf("警告：页 %d 段 %q 的焦点 %q 是常驻元素，忽略", page.Index, seg.ID, seg.Focus)
+			log.Printf("警告：页 %d 焦点 %q（来自 %q）是常驻元素，忽略", page.Index, a.id, a.from)
 			continue
 		}
-		if _, dup := seen[seg.Focus]; dup {
+		if _, dup := seen[a.id]; dup {
 			// 同一元素二次成为焦点会与「唯一焦点」的假设冲突（压暗量按元素查表）。
 			continue
 		}
-		seen[seg.Focus] = struct{}{}
-		spans = append(spans, render.FocusSpan{StartMs: seg.StartMs, ElementID: seg.Focus})
+		// 焦点序列要求起点严格递增：同一毫秒出现两个焦点，后一个会被校验拒掉。
+		// 句内偏移与前一段的段级焦点撞车时，先到先得。
+		if n := len(spans); n > 0 && a.ms <= spans[n-1].StartMs {
+			log.Printf("警告：页 %d 焦点 %q 与上一个同一时刻（%dms），跳过", page.Index, a.id, a.ms)
+			continue
+		}
+		seen[a.id] = struct{}{}
+		spans = append(spans, render.FocusSpan{StartMs: a.ms, ElementID: a.id})
 	}
+	// 少于两个不同的焦点元素时不启用：一个元素从头亮到尾，没有「让位」可言，
+	// 生成出来的序列只会让求值器每帧多查一次表。
 	if len(spans) < 2 {
 		return nil
 	}

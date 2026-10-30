@@ -106,6 +106,7 @@ func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte) ([]share.PageAni
 				Kind:      layer.Kind,
 				Box:       share.SlideBox{X: layer.Box.X, Y: layer.Box.Y, W: layer.Box.W, H: layer.Box.H},
 				PNG:       layerPNG,
+				Origin:    layer.Origin,
 				Clips:     bundleClips(layer.Clips),
 			})
 		}

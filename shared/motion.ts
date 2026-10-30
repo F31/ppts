@@ -179,3 +179,24 @@ export function focusOpacity(dim: number): number {
   if (dim >= 1) return FOCUS_DIM_OPACITY;
   return 1 - (1 - FOCUS_DIM_OPACITY) * dim;
 }
+
+/**
+ * 缩放锚点的 CSS 映射。
+ *
+ * 只映射、不推导：Go 侧的白名单与这里必须是同一组值，否则写错一个词
+ * 就退化成 center——柱子从中间长出来，而渲染不报任何错。
+ */
+export function originCss(origin?: string): string {
+  switch (origin) {
+    case 'bottom':
+      return 'center bottom';
+    case 'top':
+      return 'center top';
+    case 'left':
+      return 'left center';
+    case 'right':
+      return 'right center';
+    default:
+      return 'center center';
+  }
+}

@@ -34,6 +34,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fonts", required=True, help="含 NotoSansCJKsc-{Regular,Bold}.otf 的目录")
     ap.add_argument("--out", required=True)
+    # 只重画指定页（逗号分隔）。改一页版面时不该顺带重画另外四页：
+    # 其余页的底图是别人量过的对照，重画会让已记录的对齐/外观读数失去意义。
+    ap.add_argument("--only", default="", help="只生成这些页，如 2 或 1,3")
     args = ap.parse_args()
 
     reg = os.path.join(args.fonts, "NotoSansCJKsc-Regular.otf")
@@ -43,7 +46,15 @@ def main():
             raise SystemExit(f"缺字体：{p}（从镜像 docker cp 出来）")
 
     def f(path, size):
-        return ImageFont.truetype(path, size)
+        ft = ImageFont.truetype(path, size)
+        # 可变字体（如 NotoSansSC-VF）在同一个文件里装全部字重：路径叫 Bold 就把实例
+        # 切到 Bold。静态字体没有这个接口，异常吞掉即可——行为与从前一致。
+        if "Bold" in os.path.basename(path) and hasattr(ft, "set_variation_by_name"):
+            try:
+                ft.set_variation_by_name("Bold")
+            except Exception:
+                pass
+        return ft
 
     def bg(img, top=(0xFF, 0xFF, 0xFF), bottom=None):
         d = ImageDraw.Draw(img)
@@ -112,22 +123,53 @@ def main():
         d.text((120, 96), "压测数据：时间都花在哪", font=f(bld, 62), fill=INK)
         d.text((120, 180), "1080p30，细纹理底图，单位：秒（越短越好）", font=f(reg, 30), fill=MUTED)
         d.rounded_rectangle([120, 260, 1800, 930], radius=24, fill=(0xFA, 0xFB, 0xFD), outline=LINE, width=2)
-        data = [("2 核 / 50s 片", 174, 0.72), ("4 核 / 50s 片", 131, 0.54),
-                ("2 核 / 300s 片", 943, 1.0), ("2×300s 并发", 948, 1.0)]
-        base_y, max_h = 850, 420
-        for i, (label, v, ratio) in enumerate(data):
-            x = 220 + i * 400
-            h = int(max_h * ratio)
-            d.rounded_rectangle([x, base_y - h, x + 200, base_y], radius=8,
-                                fill=ACCENT if i < 2 else ACCENT2)
-            d.text((x, base_y - h - 62), f"{v}s", font=f(bld, 38), fill=INK)
+
+        # 【真值】柱高 = 值 ÷ 轴上限。
+        #
+        # 旧版给每根柱子手填了一个 ratio（0.72 / 0.54 / 1.0 / 1.0）：174s 被画成
+        # 943s 的 72%，而它实际只有 18%——图上「50s 片和 300s 片差不多贵」，
+        # 数据说的正好相反。这张图在撒谎，而当时 20 条判据一条都没发现：
+        # 它们量的是「元素在不在、准不准、空不空、动不动」，没有一条量**图里画的对不对**。
+        axis_max = 1000
+        base_y, plot_top = 850, 300
+        plot_h = base_y - plot_top
+        bars = [("2 核 / 50s 片", 174, ACCENT),
+                ("4 核 / 50s 片", 131, ACCENT),
+                ("2 核 / 300s 片", 943, ACCENT2),
+                ("2×300s 并发", 948, ACCENT2)]
+
+        # y 轴刻度画在柱子左侧、不横穿柱体：底板是按「元素外环取色」擦除的，
+        # 网格线一旦从柱子背后穿过，擦完就在底板上留一道断口，柱子长起来时看得见。
+        d.line([236, plot_top, 236, base_y], fill=(0xC8, 0xD2, 0xDE), width=3)
+        for tick in (0, 250, 500, 750, 1000):
+            y = base_y - round(plot_h * tick / axis_max)
+            d.line([224, y, 238, y], fill=(0xC8, 0xD2, 0xDE), width=2)
+            d.text((216 - d.textlength(str(tick), font=f(reg, 26)), y - 17),
+                   str(tick), font=f(reg, 26), fill=MUTED)
+        d.line([236, base_y + 1, 1740, base_y + 1], fill=(0xC8, 0xD2, 0xDE), width=3)
+
+        elems = []
+        for i, (label, v, color) in enumerate(bars):
+            x = 320 + i * 360
+            h = max(2, round(plot_h * v / axis_max))
+            top = base_y - h
+            # PIL 的矩形两端都含：画到 x+160 会多出第 161 列，而元素框是 160 宽，
+            # 多出的那一列留在底板里——柱子生长时，右边会出现一条通到顶的竖线。
+            # 同理底边少画一行，基线那一行留给坐标轴。
+            d.rounded_rectangle([x, top, x + 159, base_y - 1], radius=8, fill=color)
+            d.text((x, top - 58), f"{v}s", font=f(bld, 38), fill=INK)
             d.text((x - 6, base_y + 24), label, font=f(reg, 28), fill=MUTED)
-        d.line([180, base_y + 4, 1740, base_y + 4], fill=(0xC8, 0xD2, 0xDE), width=2)
+            # 每根柱子是一个独立元素：既能各自入场（念到哪根长哪根），
+            # 也能被逐根测量——「柱高与标注值成比例」这条判据需要它。
+            elems.append((f"p2-bar{i}", "chart", (x, top, 160, h), f"{v}s",
+                          {"value": v, "enter": "grow"}))
+
         d.text((180, 900), "注：并发用例为两条 5 分钟长片同时提交，统计到最后一个任务收敛",
                font=f(reg, 26), fill=MUTED)
         return img, [("p2-title", "title", (116, 84, 1000, 84), "压测数据：时间都花在哪"),
                      ("p2-chart", "chart", (120, 260, 1680, 670),
-                      "2 核 / 50s 片 174s 4 核 / 50s 片 131s 2 核 / 300s 片 943s 2×300s 并发 948s")]
+                      "y 轴 0–1000 秒；2 核 / 50s 片 174s；4 核 / 50s 片 131s；"
+                      "2 核 / 300s 片 943s；2×300s 并发 948s")] + elems
 
     def page3():
         img = Image.new("RGB", (W, H), (0xFF, 0xFF, 0xFF))
@@ -177,14 +219,33 @@ def main():
                       "联系：li.zhe@example.com · 分机 8021")]
 
     os.makedirs(os.path.join(args.out, "pages"), exist_ok=True)
+    only = {int(x) for x in args.only.split(",") if x.strip()}
     meta = []
+    if only:
+        # 只改部分页时沿用已有的 elements.json：其余页的元素清单是量过的输入。
+        prev_path = os.path.join(args.out, "elements.json")
+        if not os.path.exists(prev_path):
+            raise SystemExit(f"--only 需要已存在的 {prev_path}")
+        with open(prev_path, encoding="utf-8") as fh:
+            meta = json.load(fh)
+        meta = [m for m in meta if m["index"] not in only]
     for i, fn in enumerate([page0, page1, page2, page3, page4]):
+        if only and i not in only:
+            continue
         img, elems = fn()
         rel = f"pages/p{i:03d}.png"
         img.save(os.path.join(args.out, rel))
+        items = []
+        for e in elems:
+            item = {"id": e[0], "kind": e[1], "box": list(e[2]), "text": e[3]}
+            # 第 5 项是可选附加字段：value（图表的数值，供「柱高成比例」判据）
+            # 与 enter（入场方式，如柱子用 grow）。
+            if len(e) > 4:
+                item.update(e[4])
+            items.append(item)
         meta.append({"index": i, "slideId": f"slide-{i}", "baseImage": rel,
-                     "elements": [{"id": e[0], "kind": e[1], "box": e[2], "text": e[3]}
-                                  for e in elems]})
+                     "elements": items})
+    meta.sort(key=lambda m: m["index"])
     with open(os.path.join(args.out, "elements.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, ensure_ascii=False, indent=1)
     print(f"pages={len(meta)} out={args.out}")

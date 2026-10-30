@@ -112,6 +112,12 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 		if l.Box.W <= 0 || l.Box.H <= 0 {
 			return planErr(lbase+".box", CodeInvalidPlan, "box %dx%d must be positive", l.Box.W, l.Box.H)
 		}
+		// 锚点写错不会报错、只会「长得不对」，是最难查的一类：
+		// 合成器会把未知值当默认，柱子就从中间长出来，而一切看起来都正常。
+		if !ValidOrigin(l.Origin) {
+			return planErr(lbase+".origin", CodeInvalidPlan,
+				"unknown origin %q (want center|bottom|top|left|right)", l.Origin)
+		}
 		// 层素材是后端生成的派生物，但同样来自计划字节，路径安全不能放宽。
 		if l.Image != "" {
 			if err := SafeAssetPath(l.Image); err != nil {

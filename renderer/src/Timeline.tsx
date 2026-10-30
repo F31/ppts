@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
-import { evaluateLayer, focusDim, focusOpacity, framesForDuration } from '../../shared/motion';
+import { evaluateLayer, focusDim, focusOpacity, framesForDuration, originCss } from '../../shared/motion';
 import type { Layer, Page, Timeline } from './types';
 
 const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
@@ -41,7 +41,8 @@ const PageView: React.FC<{
               overflow: 'hidden',
               opacity: state.opacity * focusOpacity(dim),
               transform: `translate(${state.tx}px, ${state.ty}px) scale(${state.sx}, ${state.sy})`,
-              transformOrigin: 'center center'
+              // 缩放锚点。缺省 center 与旧计划一致；bottom 用于「从基线长上去」的柱子。
+              transformOrigin: originCss(layer.origin)
             }}
           >
             {/* 有 layer.image 时直出该层位图（backend 已排除其它动画元素）；

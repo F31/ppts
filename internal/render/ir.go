@@ -107,6 +107,11 @@ type Layer struct {
 	AssetMode string   `json:"assetMode"`
 	Box       Box      `json:"box"`
 	Clips     []Motion `json:"clips"`
+	// Origin 是缩放的锚点（center/bottom/top/left/right，缺省 center）。
+	// 为什么必须能指定：一根柱子锚在中心做 scaleY，会同时向上长、向下长穿基线，
+	// 看起来像「柱子从中间冒出来」；锚底才是「从基线长上去」。
+	// 它只影响 transform-origin，不改任何属性轨道——同一份 clips 换个锚点即可。
+	Origin string `json:"origin,omitempty"`
 	// Image 是本层「只含自己」的位图（相对工作目录）。为空时合成器退回
 	// 「从 baseImage 按 Box 偏移裁切」的旧行为。
 	//
@@ -122,6 +127,24 @@ type Box struct {
 	Y int `json:"y"`
 	W int `json:"w"`
 	H int `json:"h"`
+}
+
+// 缩放锚点的取值集合。空串等价于 OriginCenter（兼容旧计划）。
+const (
+	OriginCenter = "center"
+	OriginBottom = "bottom"
+	OriginTop    = "top"
+	OriginLeft   = "left"
+	OriginRight  = "right"
+)
+
+// ValidOrigin 报告锚点是否在白名单内。
+func ValidOrigin(origin string) bool {
+	switch origin {
+	case "", OriginCenter, OriginBottom, OriginTop, OriginLeft, OriginRight:
+		return true
+	}
+	return false
 }
 
 // Motion 是一条已展开的动效。

@@ -62,6 +62,9 @@ MIN_MEAN_DB = -50.0       # 低于这个当静音轨
 MAX_SHARP = 0.7           # 互相关峰在 ±100ms 处高于此值 = 峰太宽，lag 不可信
 LAYOUT_COVER_MIN = 0.50   # 画面内容覆盖低于此值 = 观众看到半页
 LAYOUT_HOLD_MS = 1500     # 半页状态持续多久算问题
+# 图表：两根柱子的「每单位数值对应多少像素」之间允许的最大倍数差。
+# 旧样片是 3.92 倍（174s 被画成 943s 的 72%），新图是 1.003 倍。
+CHART_SPREAD_MAX = 1.08
 AHEAD_MS = 2000           # 容器的框比最后一件内容早多久算「空框悬挂」
 SILENT_MAX_MS = 3500      # 讲着话时画面连续多久不变算「静」——本片最长一句 3.24s
 
@@ -258,6 +261,24 @@ def audit(design, align, appear, film, elems=None):
                                      s["durMs"] / 1000, s["speechMs"] / 1000))
         add("V8.1", ok, "讲着话时画面不长静止（最长 %.2fs）" % (longest / 1000), detail)
 
+    # ---- V9 图表真实性：画面都对，不代表图没在说谎
+    chart = film.get("chart")
+    if chart is None:
+        add("V9.1", True, "图表比例未测（--chart），本项跳过", [])
+    else:
+        detail = []
+        for r in chart:
+            if r.get("ok"):
+                continue
+            if r.get("missing"):
+                detail.append("页 %d：标注有值但柱体没画出来 %s"
+                              % (r["page"], ", ".join(r["missing"])))
+            if r.get("spread"):
+                detail.append("页 %d：柱高/数值 最大差 %.2f 倍（容差 %.2f）"
+                              % (r["page"], r["spread"], CHART_SPREAD_MAX))
+        add("V9.1", all(r.get("ok") for r in chart),
+            "图表不说谎：柱高与标注值成比例", detail)
+
     return findings
 
 
@@ -407,6 +428,8 @@ def load_inputs(args):
     film["mtime"] = os.path.getmtime(args.film)
     if args.motion and os.path.exists(args.motion):
         film["motion"] = json.load(open(args.motion, encoding="utf-8"))
+    if args.chart and os.path.exists(args.chart):
+        film["chart"] = json.load(open(args.chart, encoding="utf-8"))
     if args.skip_sync:
         film["lag"] = None
     else:
@@ -456,6 +479,8 @@ def rerun(args):
         [py, os.path.join(HERE, "check_av_sync.py"), args.film, args.ref_audio],
         [py, os.path.join(HERE, "check_motion.py"), args.film, args.segments,
          "--out", args.motion],
+        [py, os.path.join(HERE, "check_chart.py"), args.film, args.segments,
+         args.elements, "--out", args.chart],
     ):
         if cmd[1].endswith("check_av_sync.py") and args.skip_sync:
             continue
@@ -499,7 +524,8 @@ def _fixture():
             "lag": 0.0, "sharp": 0.44,
             "motion": {"silentDiff": 0.25, "sampleMs": 100, "longestMs": 1200,
                        "spans": [{"startMs": 600, "endMs": 1800, "durMs": 1200,
-                                  "speechMs": 1100}]}}
+                                  "speechMs": 1100}]},
+            "chart": [{"page": 1, "spread": 1.003, "missing": [], "ok": True}]}
     # elems 给空：只有一页，V7 会因「封面页不查」整组跳过。
     # V7 的故障注入用单独的 _layout_fixture()，见 _fixture 之后。
     return design, align, appear, film, []
@@ -581,6 +607,15 @@ def self_test():
         longestMs=8000, spans=[{"startMs": 6700, "endMs": 14700, "durMs": 8000,
                                 "speechMs": 7600}]))
 
+    # 图表在说谎：174s 的柱子按 943s 的比例画（旧样片的真实读数 3.92 倍）
+    red("V9.1", lambda d, a, p, f: f["chart"][0].update(ok=False, spread=3.92))
+    # 标注有值、柱体没画出来：没有比例可算，但同样是假的。
+    # red() 按「故障码」查结果，这里两种故障同属 V9.1，得自己断言。
+    _f = json.loads(json.dumps(film))
+    _f["chart"][0].update(ok=False, missing=["bar1"])
+    _got = {x["code"]: x["ok"] for x in audit(design, align, appear, _f, elems)}
+    cases.append(("V9.1-missing", _got.get("V9.1") is False, _got.get("V9.1")))
+
     # V7：内容页上第二件内容晚 4s 才到 —— 半页空了 4s，框也挂了 4s
     d7, p7, e7 = _layout_fixture(late_ms=4000)
     got7 = {x["code"]: x["ok"] for x in layout_findings(d7, p7, e7)}
@@ -637,6 +672,8 @@ def main():
     ap.add_argument("--appearance", default="tmp/q7/appearance.json")
     ap.add_argument("--motion", default="tmp/q7/motion.json",
                     help="check_motion.py 的输出：讲着话时画面静止的区间")
+    ap.add_argument("--chart", default="tmp/q7/chart.json",
+                    help="check_chart.py 的输出：每根柱子的实测高度与标注值")
     ap.add_argument("--ref-audio", default="tmp/q7/audio/timeline.wav")
     ap.add_argument("--rerun", action="store_true", help="先重跑三个测量再审计")
     ap.add_argument("--skip-sync", action="store_true", help="跳过音画检查（无参考音轨时）")

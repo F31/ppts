@@ -297,7 +297,35 @@ func (c *Compiler) compileTrack(in PageInput, track *animation.Track, elems map[
 	if len(layer.Clips) == 0 {
 		return layer, diags, false
 	}
+	layer.Origin = originFor(layer.Clips)
 	return layer, diags, true
+}
+
+// originFor 从「实际被插值的缩放轴」推出缩放锚点。
+//
+// 规则简单到可以当不变式：只在一个方向上缩放 → 锚在另一端。柱子按 scaleY 从 0 长到 1，
+// 锚在中心就会同时向上、向下长，向下那一半穿过基线盖住坐标轴——画面「在动」，
+// 但没人能说清柱子的底边去哪了。锚底之后，底边固定、顶边上升，正是柱状图的生长。
+//
+// 为什么从 Props 推而不从 Effect 推：Effect 是留痕字段，真正被插值的是 scaleX/scaleY，
+// 两者一旦不同步（例如规格里写 pop 却展开出 scaleY），按 Effect 推就会锚错。
+// 注意 pop 用的是 scale（等比），仍锚中心——它不是「从某端长出来」，是「从小变大」。
+func originFor(clips []Motion) string {
+	// 中心锚点返回空串而不是 "center"：它是缺省值，写出来只会让**每一份**计划
+	// 的字节都变一次，planHash 跟着变，所有已缓存的产物与「逐字节相同」的基线
+	// 全部失效。缺省值不进 JSON 是这里唯一稳妥的写法。
+	origin := ""
+	for _, m := range clips {
+		for _, p := range m.Props {
+			switch p.Name {
+			case animation.PropScaleY:
+				origin = OriginBottom
+			case animation.PropScaleX:
+				origin = OriginLeft
+			}
+		}
+	}
+	return origin
 }
 
 func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
