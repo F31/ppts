@@ -9,6 +9,9 @@
 #    「把脚本当输入摘要」的那类用法，也让人 diff 时看到整文件改动。
 #
 # 仓库内本来就存的是 LF，这条规则管的是检出侧（core.autocrlf=true 的 Windows）。
+# 本文件自身也固定成 LF：被 CRLF 化之后规则虽仍能解析，但每次 checkout 都会被
+# 报一句「LF will be replaced by CRLF」，而这条警告恰好指向的就是下面要防的事。
+.gitattributes text eol=lf
 *.sh text eol=lf
 *.py text eol=lf
 deploy/renderer/chrome.sha256 text eol=lf
@@ -18,3 +21,9 @@ deploy/renderer/charset.txt text eol=lf
 #    而 Windows 侧 core.autocrlf=true 的检出曾把文本文件反复改成 CRLF——这里显式
 #    声明二进制，避免哪天有人加了一条 `* text=auto` 把样本也卷进去。
 *.pptx -text
+
+# 6. golden：TestCompileGolden 把 json.MarshalIndent 的产物（只会是 \n）与文件
+#    逐字节比较。仓库里存的是 LF，但 core.autocrlf=true 的 Windows 检出会把它改成
+#    CRLF，于是这个用例在本机恒红、在 CI 恒绿——红灯说的不是语义变了，是行尾变了。
+#    2026-10-30 复核时就踩了：go test ./... 41 个包通过，只有它失败。
+internal/render/testdata/*.golden.json text eol=lf

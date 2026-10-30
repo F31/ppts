@@ -45,6 +45,15 @@ func TestCompileGolden(t *testing.T) {
 		t.Fatalf("读取 golden 失败（首次生成请加 -update）: %v", err)
 	}
 	if !bytes.Equal(got, want) {
+		// 只差行尾时不要让人去 -update：那会把「检出被 CRLF 化」当成「语义变了」，
+		// 顺手重写 golden，真正的改动就再也不拦人了。这条提示是 2026-10-30 加的——
+		// 当时 go test ./... 41 个包通过、只有这个用例在本机恒红，原因是
+		// core.autocrlf=true 把 testdata 也改了行尾（.gitattributes 现已固定 eol=lf）。
+		if bytes.Equal(got, bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))) {
+			t.Fatalf("golden 与编译结果只差行尾（CRLF vs LF），不是语义变更。\n" +
+				"请重新检出该文件：rm -f internal/render/testdata/plan.golden.json && git checkout -- internal/render/testdata/plan.golden.json\n" +
+				"并确认 .gitattributes 里 `internal/render/testdata/*.golden.json text eol=lf` 生效。")
+		}
 		t.Fatalf("编译结果与 golden 不一致。\n若这是有意的语义变更，请跑 `go test ./internal/render -run TestCompileGolden -update` 并 review diff。\n--- 实际 ---\n%s", got)
 	}
 }
