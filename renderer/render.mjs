@@ -37,7 +37,7 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const out = { plan: '', outDir: '', concurrency: 2, crf: 18, gop: 30 };
+  const out = { plan: '', outDir: '', concurrency: 2, crf: 18, gop: 30, pageConcurrency: 1, onlyPages: null };
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -60,6 +60,19 @@ function parseArgs(argv) {
         break;
       case '--gop':
         out.gop = Number(value);
+        i++;
+        break;
+      case '--page-concurrency':
+        out.pageConcurrency = Math.max(1, Number(value) || 1);
+        i++;
+        break;
+      case '--only-pages':
+        // 只渲这些页（页序号，逗号分隔）。空串 = 不限制。
+        // 页号是**整份计划**里的位置，不是本次的第几个——片段文件名也按它命名。
+        out.onlyPages = value
+          .split(',')
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isInteger(n) && n >= 0);
         i++;
         break;
       default:
@@ -139,7 +152,17 @@ const common = {
 };
 
 let renderedSegments = 0;
+let renderedFrames = 0;
 const faults = faultPages(process.env.PPTS_RENDER_FAULT_PAGES);
+
+// 本次要渲的页。缺省是全部；给了 --only-pages 就只渲那些页（M5 增量重渲：
+// 命中缓存的页不进这个列表，也就不产生任何渲染成本）。
+const renderList =
+  args.onlyPages && args.onlyPages.length > 0
+    ? args.onlyPages.filter((i) => i < timeline.pages.length)
+    : timeline.pages.map((_, i) => i);
+if (renderList.length === 0) fail('no pages to render');
+const pageConcurrency = Math.min(args.pageConcurrency, renderList.length);
 
 // 一页渲一次。抽成函数是因为降级时要「同一页再渲一次」，只是换成静态画面。
 //
@@ -156,7 +179,7 @@ const renderPage = (total, from, to, file, inputProps, onProgress, composition =
     onProgress
   });
 
-for (let i = 0; i < timeline.pages.length; i++) {
+const renderOnePage = async (i) => {
   const total = framesPerPage(timeline.pages[i].durationMs);
   const from = starts[i];
   const to = from + total - 1;
@@ -164,8 +187,8 @@ for (let i = 0; i < timeline.pages.length; i++) {
 
   try {
     if (faults.has(i)) throw new Error(`injected fault on page ${i} (PPTS_RENDER_FAULT_PAGES)`);
-    await renderPage(total, from, to, file, timeline, ({ renderedFrames }) => {
-      emit({ type: 'progress', page: i, done: renderedFrames, total });
+    await renderPage(total, from, to, file, timeline, ({ renderedFrames: done }) => {
+      emit({ type: 'progress', page: i, done, total });
     });
   } catch (err) {
     // 单页失败不再让整次渲染失败：先如实说明「这页降级了」，再用静态画面重出一次。
@@ -187,17 +210,40 @@ for (let i = 0; i < timeline.pages.length; i++) {
     } catch (stillErr) {
       const stillFirst = String(stillErr?.message ?? stillErr).split('\n')[0];
       emit({ type: 'degraded', page: i, code: DEGRADED_SKIPPED, message: stillFirst });
-      continue;
+      return;
     }
   }
 
   emit({ type: 'page', page: i, file, frames: total });
   renderedSegments++;
+  renderedFrames += total;
+};
+
+// 页级并行（M5）：N 个 worker 分摊页列表。
+//
+// 为什么默认 1：总渲染位 = pageConcurrency × concurrency（帧并发），而 ADR-16 的
+// 内存结论是按乘积算的。多开一页就多一个浏览器上下文，默认值必须留给部署方决定。
+// 页之间没有共享写入：每页写自己的 segment_NNN.mp4，降级重试也在页内闭合，
+// 所以并行不改变产物（判据：串行与并行的逐页 sha256 相同）。
+if (pageConcurrency <= 1) {
+  for (const i of renderList) {
+    await renderOnePage(i);
+  }
+} else {
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const slot = next++;
+      if (slot >= renderList.length) return;
+      await renderOnePage(renderList[slot]);
+    }
+  };
+  await Promise.all(Array.from({ length: pageConcurrency }, worker));
 }
 
 // 一页都没出等于这次渲染失败：返回成功但产物为空，上游会拿到一个 0 段的「成功任务」。
 if (renderedSegments === 0) {
-  fail(`all ${timeline.pages.length} pages failed`);
+  fail(`all ${renderList.length} pages failed`);
 }
 
-emit({ type: 'done', segments: renderedSegments, frames: cursor });
+emit({ type: 'done', segments: renderedSegments, frames: renderedFrames });

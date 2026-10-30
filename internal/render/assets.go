@@ -8,28 +8,38 @@ import (
 	"path/filepath"
 )
 
-// stageAssets 把计划里引用的底图从只读资产根复制进本 job 的工作目录。
+// stageAssetsFor 把**选定页**引用的底图从只读资产根复制进本 job 的工作目录。
+// pages 为 nil 表示全部页。
 //
-// 为什么需要这一步：任务起跑前会 `RemoveAll` 工作目录（ADR-11 的重试语义要求
-// 上一轮半成品必须消失），所以提交上来的计划里那些相对路径在起跑时一定不存在。
+// 为什么需要这一步（原有理由）：任务起跑前会 `RemoveAll` 工作目录（ADR-11 的重试语义
+// 要求上一轮半成品必须消失），所以提交上来的计划里那些相对路径在起跑时一定不存在。
 // 而合成器只能从 `publicDir`（= 工作目录）取图——Remotion 的 `staticFile()`
-// 不接受工作目录之外的路径。两者相加的结果是：没有资产根时，任何带 `baseImage`
-// 的计划都渲染不了（实测报 `open /work/<id>/p000.png: no such file`）。
+// 不接受工作目录之外的路径。
 //
-// 选择「复制」而不是「直接读资产根」有三条理由：
-//  1. `staticFile()` 的根就是工作目录，跨目录读不到；
-//  2. 产物目录必须自包含：JobTTL 到期回收时只删一个目录，不该留下指向别处的引用；
-//  3. `planHash` 在提交时就定了，复制不改变计划字节，也就不会让同一份计划算出两个哈希。
-//
-// 只复制计划真正引用的文件（按相对路径去重），不整目录搬运：一份 30 页计划可能
-// 只用到资产根里很小一部分，而工作目录常常是 tmpfs。
-func (s *Service) stageAssets(plan *Timeline, dir string) error {
+// 为什么需要「选定页」（M5）：只有未命中缓存的页才会被渲染，给命中页复制底图
+// 纯属搬运——10 页计划里改 1 页时，这等于白搬 9 张 1080p PNG 进 tmpfs。
+// 调用方必须把「转场依赖的前一页」也算进集合（见 withTransitionPrevs），
+// 少传一页的表现是转场那几帧空白，而不是报错。
+func (s *Service) stageAssetsFor(plan *Timeline, dir string, pages []int) error {
 	root := s.cfg.AssetDir
 	if root == "" {
 		return nil
 	}
-	seen := make(map[string]struct{}, len(plan.Pages))
-	for _, page := range plan.Pages {
+	selected := make(map[int]struct{}, len(pages))
+	if pages == nil {
+		for i := range plan.Pages {
+			selected[i] = struct{}{}
+		}
+	} else {
+		for _, i := range pages {
+			selected[i] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(selected))
+	for i, page := range plan.Pages {
+		if _, ok := selected[i]; !ok {
+			continue
+		}
 		rel := page.BaseImage
 		if rel == "" {
 			continue
@@ -43,6 +53,11 @@ func (s *Service) stageAssets(plan *Timeline, dir string) error {
 		}
 	}
 	return nil
+}
+
+// stageAssets 复制全部页的底图，保留给只关心「整片」的调用方与既有用例。
+func (s *Service) stageAssets(plan *Timeline, dir string) error {
+	return s.stageAssetsFor(plan, dir, nil)
 }
 
 // copyAsset 把 root/rel 复制成 dir/rel，两侧都要过路径校验。

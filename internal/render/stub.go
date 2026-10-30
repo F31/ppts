@@ -20,23 +20,33 @@ type StubBackend struct {
 // Name 返回 backend 名，出现在 /healthz。
 func (b *StubBackend) Name() string { return "stub" }
 
-// Render 写占位产物。它遵守与真实 backend 相同的契约：只写 dir、响应 ctx、回报进度。
+// Render 按其契约渲染全部页。
 func (b *StubBackend) Render(ctx context.Context, plan *Timeline, dir string,
 	progress func(done, total int)) (RenderReport, error) {
-	total := len(plan.Pages)
-	for i, p := range plan.Pages {
+	return b.RenderPages(ctx, plan, dir, allPages(len(plan.Pages)), progress)
+}
+
+// RenderPages 只写 pages 里的占位产物（实现 PageRenderer）。
+func (b *StubBackend) RenderPages(ctx context.Context, plan *Timeline, dir string, pages []int,
+	progress func(done, total int)) (RenderReport, error) {
+	total := len(pages)
+	for n, i := range pages {
 		select {
 		case <-ctx.Done():
 			return RenderReport{}, ctx.Err()
 		default:
 		}
+		if i < 0 || i >= len(plan.Pages) {
+			return RenderReport{}, fmt.Errorf("render: page index %d out of range", i)
+		}
+		p := plan.Pages[i]
 		name := fmt.Sprintf("segment_%03d.mp4.stub", i)
 		body := fmt.Sprintf("stub segment\nslideId=%s\ndurationMs=%d\n", p.SlideID, p.DurationMs)
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o640); err != nil {
 			return RenderReport{}, fmt.Errorf("render: write stub segment: %w", err)
 		}
 		if progress != nil {
-			progress(i+1, total)
+			progress(n+1, total)
 		}
 		if b.DelayPerPage > 0 {
 			select {

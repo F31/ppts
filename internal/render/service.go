@@ -37,6 +37,18 @@ type Backend interface {
 	Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) (RenderReport, error)
 }
 
+// PageRenderer 是 Backend 的可选扩展：只渲染给定的页。
+//
+// 存在的理由只有一个——片段缓存（M5）：命中页已经从缓存复制进工作目录，
+// 再让渲染器顺带渲一遍，等于「缓存只省了编码、没省渲染」。整片渲染与页级渲染
+// 的像素必须完全一致，因此实现的正确性判据是「同一份计划两种调用路径的片段逐字节相同」。
+//
+// progress 的 done 是**已渲完的页数**（不是页序号）：页级并行下完成顺序不确定，
+// 用序号会让进度条倒退。
+type PageRenderer interface {
+	RenderPages(ctx context.Context, plan *Timeline, dir string, pages []int, progress func(done, total int)) (RenderReport, error)
+}
+
 // PageDegradation 描述一页为什么没渲成动画。
 //
 // 单页失败不再是整次渲染失败（tasks 3.7）：渲染器会把那一页换成静态画面重出一次，
@@ -95,6 +107,12 @@ type JobStatus struct {
 	// DegradedPages 逐页说明哪一页被换成了静态画面。与 Degraded 不重复：
 	// Degraded 是服务级信号（可能整片受影响），这里只讲具体页。
 	DegradedPages []PageDegradation `json:"degradedPages,omitempty"`
+	// CachedPages / RenderedPages 是本次的缓存命中页数与实渲页数（M5）。
+	//
+	// 两个数一起报，是为了让「这次为什么这么快」与「缓存到底有没有用」在接口上可读：
+	// 只看耗时无法区分「缓存命中」与「这一版本来就短」。0/0 表示没配缓存。
+	CachedPages   int `json:"cachedPages,omitempty"`
+	RenderedPages int `json:"renderedPages,omitempty"`
 }
 
 // Health 是 GET /healthz 的响应体（§8.6 能力探测）。
@@ -149,6 +167,11 @@ type ServiceConfig struct {
 	// 多副本共用一个 WorkDir 时必须打开：先起的副本会把其他副本正在写的目录删掉。
 	// 单副本（含 compose.yml 的 tmpfs /work）保持 false，重启后磁盘自动回到干净状态。
 	KeepOrphans bool
+	// SegmentCache 是可选的片段缓存（M5）。nil = 关闭，每页都渲（引入缓存前的行为）。
+	//
+	// 缓存是**派生物**：读写出错都只退化，不影响任务终态。多副本部署时指向同一份
+	// 共享存储（目录挂载或对象存储适配器）即可共享命中。
+	SegmentCache SegmentCache
 	// Logf 是启动清扫等后台事件的日志出口（nil = 不输出）。
 	Logf func(format string, args ...any)
 	// Now 便于测试注入时钟（0 = time.Now）。
@@ -192,6 +215,9 @@ type job struct {
 	finishedAt time.Time
 	// degraded 是本次渲染里被换成静态画面的页（tasks 3.7）。
 	degraded []PageDegradation
+	// cached / rendered 是本次的缓存命中页数与实渲页数（M5），供 statusOf 透出。
+	cached   int
+	rendered int
 }
 
 // NewService 校验配置并返回服务。
@@ -533,19 +559,30 @@ func (s *Service) run(ctx context.Context, j *job) {
 		s.finish(j, StateFailed, fmt.Sprintf("创建工作目录失败: %v", err), nil)
 		return
 	}
-	// 底图在起跑前必须先落到 job 目录里：合成器只能读工作目录，
-	// 而上一行刚刚把这个目录重建为空（见 assets.go 的注释）。
-	if err := s.stageAssets(plan, dir); err != nil {
-		_ = os.RemoveAll(dir)
-		s.finish(j, StateFailed, err.Error(), nil)
-		return
+	// 片段缓存（M5）：先问缓存哪些页已经有了，再决定要渲染什么。
+	// 全命中时连 staging 都不做——底图复制与底板生成也是成本，而它们的产物
+	// 只被「要渲染的页」消费。
+	keys, hit := s.lookupSegments(ctx, plan, dir)
+	dirty := make([]int, 0, len(plan.Pages))
+	cached := 0
+	for i := range plan.Pages {
+		if hit[i] {
+			cached++
+			continue
+		}
+		dirty = append(dirty, i)
 	}
+	s.mu.Lock()
+	j.cached, j.rendered = cached, 0
+	j.prog = Progress{Done: cached, Total: len(plan.Pages)}
+	s.mu.Unlock()
 
-	report, err := s.cfg.Backend.Render(ctx, plan, dir, func(done, total int) {
-		s.mu.Lock()
-		j.prog = Progress{Done: done, Total: total}
-		s.mu.Unlock()
-	})
+	report := RenderReport{}
+	var renderErr error
+	if len(dirty) > 0 {
+		report, renderErr = s.renderPages(ctx, j, plan, dir, dirty, keys, cached)
+	}
+	err := renderErr
 
 	// 清理排在 finish 之前：对外宣告终态时，这轮的半成品文件应当已经消失，
 	// 客户端不会看到「已失败但目录里还摆着能打开的片段」。
@@ -569,6 +606,165 @@ func (s *Service) run(ctx context.Context, j *job) {
 	// 降级页在成功时才记：失败的任务整片作废，逐页降级没有意义。
 	s.setDegraded(j, report.Degraded)
 	s.finish(j, StateSucceeded, "", arts)
+}
+
+// lookupSegments 查询缓存，返回每页的键与命中标记。
+//
+// 两条「不做」的边界：
+//   - 未配置缓存 → 返回空键、全未命中（调用方据此走原有整片渲染）；
+//   - backend 不支持页级渲染 → 只算键不查询。此时命中也没有意义：
+//     整片渲染会把命中页重写一遍，先复制一份只是白花 IO，进度也会多算。
+func (s *Service) lookupSegments(ctx context.Context, plan *Timeline, dir string) ([]string, []bool) {
+	hit := make([]bool, len(plan.Pages))
+	if s.cfg.SegmentCache == nil {
+		return nil, hit
+	}
+	keys, err := SegmentKeys(plan, s.segmentEnv())
+	if err != nil {
+		s.logf("render: skip segment cache for this job: %v", err)
+		return nil, hit
+	}
+	if _, ok := s.cfg.Backend.(PageRenderer); !ok {
+		return keys, hit
+	}
+	for i := range plan.Pages {
+		dst := filepath.Join(dir, SegmentName(i))
+		ok, gerr := s.cfg.SegmentCache.Get(ctx, keys[i], dst)
+		if gerr != nil {
+			// 读缓存出错按未命中处理：缓存坏了不该让一次导出失败。
+			s.logf("render: segment cache get page %d: %v", i, gerr)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		// 命中也要验容器。缓存目录是共享可写的，外部清理工具截断过一个文件
+		// 就会一路走到成片里变成黑屏——这类问题的表现比「重渲一次」贵得多。
+		if verr := verifyMP4(dst); verr != nil {
+			s.logf("render: cached segment for page %d is unusable (%v), rerendering", i, verr)
+			_ = os.Remove(dst)
+			continue
+		}
+		hit[i] = true
+	}
+	return keys, hit
+}
+
+// renderPages 只渲染未命中的页，并把结果回填缓存。
+func (s *Service) renderPages(ctx context.Context, j *job, plan *Timeline, dir string,
+	dirty []int, keys []string, cached int) (RenderReport, error) {
+	total := len(plan.Pages)
+	progress := func(done, _ int) {
+		s.mu.Lock()
+		j.prog = Progress{Done: cached + done, Total: total}
+		s.mu.Unlock()
+	}
+
+	pageRenderer, pageLevel := s.cfg.Backend.(PageRenderer)
+	rendered := dirty
+	// stageSet=nil 表示「全部页」；页级渲染时只复制未命中页与它们转场依赖的前一页。
+	var stageSet []int
+	if pageLevel {
+		stageSet = withTransitionPrevs(plan, dirty)
+	} else {
+		rendered = allPages(total)
+	}
+	if err := s.stageAssetsFor(plan, dir, stageSet); err != nil {
+		_ = os.RemoveAll(dir)
+		return RenderReport{}, err
+	}
+
+	s.mu.Lock()
+	j.rendered = len(rendered)
+	s.mu.Unlock()
+
+	var report RenderReport
+	var err error
+	if pageLevel {
+		report, err = pageRenderer.RenderPages(ctx, plan, dir, rendered, progress)
+	} else {
+		report, err = s.cfg.Backend.Render(ctx, plan, dir, progress)
+	}
+	if err != nil {
+		return report, err
+	}
+	s.storeSegments(ctx, plan, dir, rendered, keys, report)
+	return report, nil
+}
+
+// storeSegments 把本次渲染出的片段写进缓存。
+//
+// 被降级的页 MUST NOT 写入：降级是瞬时故障（Chrome 崩溃、超时）的表现，
+// 缓存它等于把「这一页永远不动」固化下来，而日志只会说「这次降级了」。
+func (s *Service) storeSegments(ctx context.Context, plan *Timeline, dir string, rendered []int, keys []string, report RenderReport) {
+	if s.cfg.SegmentCache == nil || len(keys) == 0 {
+		return
+	}
+	degraded := make(map[int]struct{}, len(report.Degraded))
+	for _, d := range report.Degraded {
+		degraded[d.Page] = struct{}{}
+	}
+	stored := 0
+	for _, i := range rendered {
+		if i < 0 || i >= len(plan.Pages) || i >= len(keys) {
+			continue
+		}
+		if _, bad := degraded[i]; bad {
+			continue
+		}
+		path := filepath.Join(dir, SegmentName(i))
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if err := s.cfg.SegmentCache.Put(ctx, keys[i], path); err != nil {
+			s.logf("render: segment cache put page %d: %v", i, err)
+			continue
+		}
+		stored++
+	}
+	if stored > 0 {
+		s.logf("render: cached %d of %d rendered segments", stored, len(rendered))
+	}
+}
+
+// segmentEnv 组装参与片段键的环境量。版本号以服务配置为准：
+// backend 只报自己知道的（编码参数、浏览器版本），不知道就别猜。
+func (s *Service) segmentEnv() SegmentEnv {
+	env := SegmentEnv{}
+	if provider, ok := s.cfg.Backend.(SegmentEnvProvider); ok {
+		env = provider.SegmentEnv()
+	}
+	env.RendererVersion = s.cfg.Version
+	return env
+}
+
+// allPages 返回 0..n-1。
+func allPages(n int) []int {
+	out := make([]int, n)
+	for i := range out {
+		out[i] = i
+	}
+	return out
+}
+
+// withTransitionPrevs 补上「被选中页的转场所依赖的前一页」。
+//
+// 合成器在页面开头画前一页的末帧，所以渲染第 i 页时第 i-1 页的底图与图层必须在场。
+// 少传一页的表现不是报错，而是转场那几帧变成空白/旧图——只能逐帧比对才能发现。
+func withTransitionPrevs(plan *Timeline, pages []int) []int {
+	set := make(map[int]struct{}, len(pages)*2)
+	for _, i := range pages {
+		set[i] = struct{}{}
+		if i > 0 && effectiveTransition(plan.Pages[i].Transition) != nil {
+			set[i-1] = struct{}{}
+		}
+	}
+	out := make([]int, 0, len(set))
+	for i := range set {
+		out = append(out, i)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // setDegraded 记录本次渲染里被换成静态画面的页。
@@ -741,6 +937,8 @@ func statusOf(j *job) JobStatus {
 		Error:         j.err,
 		Degraded:      len(j.degraded) > 0,
 		DegradedPages: append([]PageDegradation(nil), j.degraded...),
+		CachedPages:   j.cached,
+		RenderedPages: j.rendered,
 	}
 }
 

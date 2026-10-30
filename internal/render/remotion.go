@@ -37,6 +37,12 @@ type RemotionBackend struct {
 	Chrome string
 	// Concurrency 是 Remotion 的帧渲染并发（0 = 2）。
 	Concurrency int
+	// PageConcurrency 是同时渲染的页数（0 = 1，即串行）。
+	//
+	// 它乘在 Concurrency 上：总渲染位 = PageConcurrency × Concurrency。
+	// 默认 1 是刻意的——ADR-16 的压测结论是「并发是乘积，配额按乘积算」，
+	// 把一个没在本机型上量过的乘数设成默认值，等于把 OOM 装进默认配置。
+	PageConcurrency int
 	// CRF 是 x264 质量（0 = 18）。
 	CRF int
 	// GOP 是固定关键帧间隔（0 = 30）。拼接依赖它，不能交给 x264 自适应。
@@ -72,10 +78,31 @@ func (b *RemotionBackend) ChromeVersion() string {
 	return b.chromeVersion
 }
 
-// Render 实现 Backend。产物是 dir/segment_000.mp4 起的逐页片段。
+// Render 实现 Backend：渲染计划里的全部页。
 func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string, progress func(done, total int)) (RenderReport, error) {
+	if plan == nil {
+		return RenderReport{}, errors.New("render: remotion backend requires a plan with at least one page")
+	}
+	return b.RenderPages(ctx, plan, dir, allPages(len(plan.Pages)), progress)
+}
+
+// RenderPages 实现 PageRenderer：只渲染 pages 里的页。
+//
+// 关键不变式：**渲染第 i 页的效果与「整片渲染时渲第 i 页」逐字节相同**。
+// 做法是仍然把整份计划（含所有页）写成 plan.json，只把 frameRange 限定在目标页——
+// 合成器需要前一页的数据来画转场，少一页就会出空白而不是报错。
+func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir string,
+	pages []int, progress func(done, total int)) (RenderReport, error) {
 	if plan == nil || len(plan.Pages) == 0 {
 		return RenderReport{}, errors.New("render: remotion backend requires a plan with at least one page")
+	}
+	if len(pages) == 0 {
+		return RenderReport{}, errors.New("render: remotion backend requires at least one page to render")
+	}
+	for _, i := range pages {
+		if i < 0 || i >= len(plan.Pages) {
+			return RenderReport{}, fmt.Errorf("render: page index %d out of range (0..%d)", i, len(plan.Pages)-1)
+		}
 	}
 	script := b.resolveScript()
 	if script == "" {
@@ -95,7 +122,10 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 	}
 	dir = absDir
 
-	staged, err := b.stage(plan, dir)
+	// staging 的页集合要比「要渲的页」更大：转场页会在页首画**前一页的末帧**，
+	// 而前一页的末帧要用它自己的底板与层图（带出场动画的页，底图与「底板 + 图层」
+	// 在末帧并不相同）。只 staging 目标页，转场那几帧会悄悄用回底图烘焙版。
+	staged, err := b.stagePages(plan, dir, withTransitionPrevs(plan, pages))
 	if err != nil {
 		return RenderReport{}, err
 	}
@@ -109,7 +139,7 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 		return RenderReport{}, fmt.Errorf("render: write staged plan: %w", err)
 	}
 
-	report, err := b.exec(ctx, script, planPath, dir, len(plan.Pages), contentDuration(plan), progress)
+	report, err := b.exec(ctx, script, planPath, dir, pages, contentDuration(plan), progress)
 	if err != nil {
 		return RenderReport{}, err
 	}
@@ -117,6 +147,7 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 	// 产物校验：退出码 0 不等于有可播放的片段。缺文件或没有 ftyp box 都要报出来，
 	// 否则上游会拿着空片段去拼接，最后表现成「成片黑屏」。
 	//
+	// 只校验**本次要求渲染的页**：未要求渲染的页可能来自缓存，不在本函数的职责里。
 	// 被降级的页单独说明：它没有片段是预期行为（render.mjs 决定跳过），
 	// 其余页缺片段才是真问题。
 	skipped := make(map[int]struct{}, len(report.Degraded))
@@ -125,7 +156,7 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 			skipped[d.Page] = struct{}{}
 		}
 	}
-	for i := range plan.Pages {
+	for _, i := range pages {
 		name := SegmentName(i)
 		path := filepath.Join(dir, name)
 		if err := verifyMP4(path); err != nil {
@@ -138,8 +169,43 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 	return report, nil
 }
 
+// SegmentEnv 实现 SegmentEnvProvider：编码参数与浏览器版本变了，同一份计划产出的
+// 字节就变了，片段缓存必须跟着失效。
+func (b *RemotionBackend) SegmentEnv() SegmentEnv {
+	return SegmentEnv{
+		Encoding:      fmt.Sprintf("crf=%d;gop=%d", b.crf(), b.gop()),
+		ChromeVersion: b.ChromeVersion(),
+	}
+}
+
+func (b *RemotionBackend) crf() int {
+	if b.CRF <= 0 {
+		return 18
+	}
+	return b.CRF
+}
+
+func (b *RemotionBackend) gop() int {
+	if b.GOP <= 0 {
+		return 30
+	}
+	return b.GOP
+}
+
 // stage 生成底板并返回一份副本（不修改调用方的 plan：服务端可能还要用它算别的）。
+//
+// pages 是「本次要渲染的页」：只有这些页需要底板与层图。命中缓存的页不渲染，
+// 为它们生成底板纯属浪费——一次 1080p 的挖空 + PNG 编码是百毫秒级的成本。
+// 但 plan.json 仍然写全部页：合成器要靠前一页的数据画转场。
+// stage 为全部页生成底板（既有调用方与用例的入口）。
 func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
+	if plan == nil {
+		return nil, errors.New("render: staging requires a plan")
+	}
+	return b.stagePages(plan, dir, allPages(len(plan.Pages)))
+}
+
+func (b *RemotionBackend) stagePages(plan *Timeline, dir string, pages []int) (*Timeline, error) {
 	staged := *plan
 	staged.Pages = append([]Page(nil), plan.Pages...)
 	// Layers 必须逐页深拷贝一层：下面要回填 Image，而切片是引用类型，
@@ -148,10 +214,18 @@ func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 		staged.Pages[i].Layers = append([]Layer(nil), staged.Pages[i].Layers...)
 	}
 
+	selected := make(map[int]struct{}, len(pages))
+	for _, i := range pages {
+		selected[i] = struct{}{}
+	}
+
 	plateDir := filepath.Join(dir, "plates")
 	layerDir := filepath.Join(dir, "layers")
 	needPlates := false
-	for _, page := range staged.Pages {
+	for i, page := range staged.Pages {
+		if _, ok := selected[i]; !ok {
+			continue
+		}
 		for _, layer := range page.Layers {
 			if layer.ElementID != "" {
 				needPlates = true
@@ -173,6 +247,9 @@ func (b *RemotionBackend) stage(plan *Timeline, dir string) (*Timeline, error) {
 	}
 
 	for i := range staged.Pages {
+		if _, ok := selected[i]; !ok {
+			continue
+		}
 		page := &staged.Pages[i]
 		// 外部计划（直接 POST 上来的 IR）不保证编译器的出层顺序，
 		// 这里再兜一次：父层必须先画，否则子层被盖掉，表现为「内容凭空消失」。
@@ -274,7 +351,7 @@ func renderTimeout(base, content time.Duration) time.Duration {
 	return need
 }
 
-func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages int, content time.Duration, progress func(done, total int)) (RenderReport, error) {
+func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages []int, content time.Duration, progress func(done, total int)) (RenderReport, error) {
 	timeout := renderTimeout(b.Timeout, content)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -283,13 +360,14 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 	if concurrency <= 0 {
 		concurrency = 2
 	}
-	crf := b.CRF
-	if crf <= 0 {
-		crf = 18
+	crf := b.crf()
+	gop := b.gop()
+	pageConcurrency := b.PageConcurrency
+	if pageConcurrency <= 0 {
+		pageConcurrency = 1
 	}
-	gop := b.GOP
-	if gop <= 0 {
-		gop = 30
+	if pageConcurrency > len(pages) {
+		pageConcurrency = len(pages)
 	}
 
 	// 脚本路径转成绝对路径：cmd.Dir 会被设成脚本所在目录（node_modules 在那），
@@ -306,6 +384,8 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 		"--concurrency", strconv.Itoa(concurrency),
 		"--crf", strconv.Itoa(crf),
 		"--gop", strconv.Itoa(gop),
+		"--page-concurrency", strconv.Itoa(pageConcurrency),
+		"--only-pages", joinInts(pages),
 	}
 	cmd := exec.CommandContext(ctx, b.resolveNode(), args...)
 	cmd.Dir = filepath.Dir(absScript)
@@ -329,6 +409,7 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	var reported error
 	var report RenderReport
+	done := 0
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -348,8 +429,11 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 		}
 		switch event.Type {
 		case "page":
+			// 按「已完成页数」计数，而不是 event.Page+1：页级并行下完成顺序不确定，
+			// 也用不上页序号（只渲部分页时序号是全集里的位置，不是本次的第几个）。
+			done++
 			if progress != nil {
-				progress(event.Page+1, pages)
+				progress(done, len(pages))
 			}
 		case "degraded":
 			// 单页降级不是错误：渲染继续，把「哪一页变成静态画面」如实记下来。
@@ -405,6 +489,18 @@ func (b *RemotionBackend) resolveChrome() string {
 		return b.Chrome
 	}
 	return os.Getenv("PPTS_CHROME")
+}
+
+// joinInts 把页序号拼成 `0,3,5`。空集合拼成空串——渲染器据此判定「没给范围」。
+func joinInts(xs []int) string {
+	if len(xs) == 0 {
+		return ""
+	}
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.Itoa(x)
+	}
+	return strings.Join(parts, ",")
 }
 
 // workPath 把「相对工作目录的路径」解析成绝对路径，并拒绝逃逸。
@@ -485,8 +581,7 @@ func verifyMP4(path string) error {
 	return nil
 }
 
-// limitedBuffer 只保留末尾 N 字节：Node 的报错通常在最末几行，
-// 而一个失控的日志不该把内存吃穿。
+// limitedBuffer 只保留末尾 N 字节：Node 的报错通常在最末几行，// 而一个失控的日志不该把内存吃穿。
 type limitedBuffer struct {
 	limit int
 	buf   bytes.Buffer

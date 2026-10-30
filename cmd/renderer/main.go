@@ -55,6 +55,11 @@ func run() error {
 		// 自检产物默认随成功删除。要拿成片做帧比对（例如验证降级页确实是静态画面）时打开它，
 		// 路径会打印在输出里——否则只能靠失败来保留现场。
 		selftestKeep = flag.Bool("selftest-keep", false, "自检成功后保留产物目录（用于取片核对）")
+		// 片段缓存（M5）：目录共享即多副本共享命中。空 = 关闭（每页都渲）。
+		segCacheDir = flag.String("segment-cache", "", "片段缓存目录（空 = 关闭缓存）")
+		segCacheMax = flag.Int64("segment-cache-max-bytes", 4<<30, "片段缓存容量上限（字节；0 = 不限）")
+		// 页级并发：总渲染位 = 页并发 × 帧并发，内存按乘积算（ADR-16）。
+		pageConcurrency = flag.Int("page-concurrency", 1, "同时渲染的页数（1 = 串行）")
 	)
 	flag.Parse()
 
@@ -67,10 +72,11 @@ func run() error {
 		impl = &render.StubBackend{}
 	case "remotion":
 		impl = &render.RemotionBackend{
-			Script:      *scriptPath,
-			Chrome:      *chromePath,
-			Concurrency: *concurrent,
-			Timeout:     *renderTO,
+			Script:          *scriptPath,
+			Chrome:          *chromePath,
+			Concurrency:     *concurrent,
+			PageConcurrency: *pageConcurrency,
+			Timeout:         *renderTO,
 			Logf: func(format string, args ...any) {
 				log.Printf(format, args...)
 			},
@@ -87,6 +93,19 @@ func run() error {
 		return runSelfTest(ctx, impl, *workDir, *selftestFaultPage, *selftestKeep)
 	}
 
+	// 片段缓存是可选组件：配错目录不该让服务起不来（缓存没有能力让渲染失败），
+	// 但必须吼一声——「以为开了缓存其实没开」是性能问题里最难发现的一种。
+	var segCache render.SegmentCache
+	if *segCacheDir != "" {
+		c, cerr := render.NewDirSegmentCache(*segCacheDir, *segCacheMax)
+		if cerr != nil {
+			log.Printf("segment cache disabled: %v", cerr)
+		} else {
+			segCache = c
+			log.Printf("segment cache: %s (max %d bytes)", c.Root(), *segCacheMax)
+		}
+	}
+
 	svc, err := render.NewService(render.ServiceConfig{
 		Backend:        impl,
 		WorkDir:        *workDir,
@@ -99,6 +118,7 @@ func run() error {
 		RetentionSweep: *sweepEvery,
 		MaxPlanBytes:   *maxPlan,
 		KeepOrphans:    *keepOrphans,
+		SegmentCache:   segCache,
 		Logf: func(format string, args ...any) {
 			log.Printf(format, args...)
 		},
