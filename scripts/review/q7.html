@@ -23,6 +23,14 @@ h2{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600;
 .grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:16px}
 @media(max-width:960px){.grid{grid-template-columns:1fr}}
 video{width:100%;border-radius:8px;background:#000;display:block}
+.seek{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}
+.seek .act{padding:3px 9px;font-size:12px}
+.seek .spd{display:flex;gap:4px;margin-left:auto}
+.seek .spd button{border:1px solid var(--line);background:#fff;border-radius:5px;
+  padding:2px 7px;font-size:11px;cursor:pointer;color:var(--muted)}
+.seek .spd button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.seek .frame{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--ink);
+  background:#eef4fb;border-radius:5px;padding:3px 8px;min-width:190px;text-align:right}
 .now{margin-top:10px;padding:10px 12px;background:#eef4fb;border-radius:8px;
   font-size:13px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .now .t{font-family:ui-monospace,Consolas,monospace;color:var(--accent);font-weight:600}
@@ -78,6 +86,18 @@ pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
     <section class="card">
       <h2>成片（带音轨）</h2>
       <video id="film" controls preload="metadata" src="/film_C_narrated.mp4"></video>
+      <div class="seek">
+        <button class="act ghost" id="b10" title="后退 10 帧">« −10帧</button>
+        <button class="act ghost" id="b1" title="后退 1 帧">‹</button>
+        <button class="act" id="play">▶</button>
+        <button class="act ghost" id="f1" title="前进 1 帧">›</button>
+        <button class="act ghost" id="f10" title="前进 10 帧">+10帧 »</button>
+        <span class="spd" id="spd"></span>
+        <span class="frame" id="frame">—</span>
+      </div>
+      <p class="hint" style="margin:6px 0 0">键盘：<b>←/→</b> 逐帧，<b>Shift+←/→</b> 十帧，<b>空格</b> 播放/暂停，<b>[</b> 回到本段开口前十帧。
+      右侧「距开口 +N 帧」是<b>直接读数</b>：判据「3 帧内」不用靠眼睛估。
+      <b id="sndWarn" hidden style="color:#b4232c">现在没有声音——第 7 项四个判据都以语音为参照，静音状态下无法评，先开音量。</b></p>
       <div class="now">
         <span class="t" id="nowT">0.00s</span>
         <span id="nowText">—</span>
@@ -184,6 +204,8 @@ async function boot() {
   if (t !== null && !Number.isNaN(parseFloat(t))) {
     v.addEventListener("loadedmetadata", () => { v.currentTime = parseFloat(t); onTime(parseFloat(t) * 1000); });
   }
+  bindPlayer();
+  renderPos();
 }
 
 function renderTimeline(total) {
@@ -230,6 +252,87 @@ function onTime(ms) {
   state.cur = idx;
   document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("on", Number(b.dataset.i) === idx));
   showExpect(idx);
+}
+
+// 逐帧：判据写的是「段落开口后 3 帧内」，而原生播放器没有步进键——
+// 评审人只能凭整体观感估，估出来的分没法定位、也没法复核。这里补帧级控制，
+// 并把「距本段开口 ±N 帧」直接读出来，让判据变成可数的事实而不是印象。
+const FPS = 30;
+const FRAME_MS = 1000 / FPS;
+
+function renderPos() {
+  const v = document.getElementById("film");
+  const out = document.getElementById("frame");
+  if (!out) return;
+  const ms = v.currentTime * 1000;
+  onTime(ms);
+  let rel = "未进入段落";
+  if (state.cur >= 0 && state.segs[state.cur]) {
+    const seg = state.segs[state.cur];
+    const d = Math.round((ms - (seg.pageStart + seg.startMs)) / FRAME_MS);
+    rel = d === 0 ? "开口这一帧" : (d > 0 ? "距开口 +" + d + " 帧" : "距开口 " + d + " 帧");
+  }
+  out.textContent = "帧 " + Math.round(v.currentTime * FPS) + " · " +
+    v.currentTime.toFixed(2) + "s · " + rel;
+}
+
+function stepFrames(n) {
+  const v = document.getElementById("film");
+  v.pause();
+  v.currentTime = Math.max(0, Math.min((v.duration || 0) - 0.001, v.currentTime + n * FRAME_MS / 1000));
+  renderPos();
+}
+
+function bindPlayer() {
+  const v = document.getElementById("film");
+  const play = document.getElementById("play");
+  document.getElementById("b10").onclick = () => stepFrames(-10);
+  document.getElementById("b1").onclick = () => stepFrames(-1);
+  document.getElementById("f1").onclick = () => stepFrames(1);
+  document.getElementById("f10").onclick = () => stepFrames(10);
+  play.onclick = () => { v.paused ? v.play() : v.pause(); };
+  v.addEventListener("seeked", renderPos);
+  v.addEventListener("timeupdate", renderPos);
+  v.addEventListener("play", () => { play.textContent = "❚❚"; });
+  v.addEventListener("pause", () => { play.textContent = "▶"; });
+
+  const spd = document.getElementById("spd");
+  // 静音时第 7 项四个判据全部失去参照点，必须在页面上说出来，
+  // 否则「元素在乱动」会被记成片子的毛病。
+  const warn = document.getElementById("sndWarn");
+  const checkSound = () => { if (warn) warn.hidden = !(v.muted || v.volume === 0); };
+  v.addEventListener("volumechange", checkSound);
+  checkSound();
+  for (const r of [0.25, 0.5, 1]) {
+    const b = el("button", {
+      text: r + "×",
+      class: r === 1 ? "on" : "",
+      onclick: () => {
+        v.playbackRate = r;
+        spd.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+      },
+    });
+    spd.appendChild(b);
+  }
+
+  document.addEventListener("keydown", (e) => {
+    const tag = (e.target.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA") return;   // 正在填分数/定位，不劫持
+    const n = e.shiftKey ? 10 : 1;
+    if (e.key === "ArrowLeft") { e.preventDefault(); stepFrames(-n); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); stepFrames(n); }
+    else if (e.key === " ") { e.preventDefault(); v.paused ? v.play() : v.pause(); }
+    else if (e.key === "[") {
+      // 回到本段开口前 10 帧：这里是判「提前」的起点
+      e.preventDefault();
+      if (state.cur >= 0 && state.segs[state.cur]) {
+        const seg = state.segs[state.cur];
+        v.pause();
+        v.currentTime = Math.max(0, (seg.pageStart + seg.startMs) / 1000 - 10 * FRAME_MS / 1000);
+        renderPos();
+      }
+    }
+  });
 }
 
 function showExpect(idx) {
