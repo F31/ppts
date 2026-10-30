@@ -211,13 +211,20 @@ def narration_findings(design, elems):
 
 
 def attention_findings(design, words, appear=None, elems=None):
-    """V11：讲哪个数，就在**念到它的那个词**上开始讲（不许抢话）。
+    """V11：该指它的时候，注意力要在它身上。
 
     V10 只问「这个数念到没有」。念到了，也可能念得太早或太晚：柱子在「时间都花在哪」
     这句里就长齐了，直到三秒后讲到 943 才把注意力挪过去——观众先看见结论，再听人念
     一遍数字，画面等于提前剧透，而那 3 秒里柱子一动不动，V8 也正好判不了它。
-    所以这一条问的是**两个时刻之间的距离**：注意力（焦点，或它自己出场）对准该元素的
-    那一刻，与 TTS 念到这个数的那一刻。
+
+    所以这一条问的是**两个时刻之间的距离**。但「该指的时刻」有两种，参照物不同：
+
+    - **一段里的第一个焦点**：这一段讲的就是它，参照是**段开口**。句首就该指过去。
+      原口径一律拿「念到那个数」当参照，于是 s2-3「两核跑五分钟，九百四十三秒」
+      要等到 1.4s 后的「九百四十三」才切——前半句在讲 bar2，画面却全亮着不指任何人。
+      观众听到「两核跑五分钟」，眼睛找不到这根柱子；这不是「不抢话」，是「讲话了没反应」。
+    - **句中换人**（同段第二个及以后的焦点）：参照是**念到它的那个数**。
+      一句话里从 A 讲到 B，切换点必然落在 B 的那个数上，早一点就是替旁白剧透。
 
     参照物是 `words.json` 的逐词边界，不是脚本里的偏移：脚本里的偏移正是被审的对象。
     这也是唯一一条**同时**吃「音频的词」与「编排的数」的判据——两边各自都对、
@@ -225,6 +232,9 @@ def attention_findings(design, words, appear=None, elems=None):
 
     容差不对称：早 120ms 只够覆盖渲染量化与测量粒度，晚 350ms 才是一句话里的正常拖尾。
     抢话比迟到难听得多（先给答案再提问），所以早的那一边收得紧。
+
+    另有一半走「出场」：没有焦点的元素，用它自己的实测出场时刻去比数值词（原逻辑）。
+    这条同时覆盖了「有焦点」和「只有出场」两种编排，也是 V11 与 V5 的接口。
     """
     if not words:
         return [{"code": "V11.1", "ok": True,
@@ -262,34 +272,52 @@ def attention_findings(design, words, appear=None, elems=None):
                     if len(ns) == 1:
                         word_at.append((base + chunk[0]["tMs"], ns[0]))
         word_at.sort()
-        # 注意力时刻：句内/句级焦点优先，没有焦点就用它的实测出场时刻。
+        # 注意力时刻。与旧版的差别只在这里：**段内第一个焦点对齐段开口**，
+        # 其余焦点才对齐数值词。att[eid] = (t, how, ref, 参照名)，
+        # ref 非 None 表示有一个不依赖数值的直接参照（句首）。
         att = {}
         for seg in page.get("segments") or []:
+            base = seg.get("startMs", 0)
+            focals = []
             if seg.get("focus"):
-                att.setdefault(seg["focus"], seg.get("startMs", 0))
+                focals.append((base, seg["focus"], "段级焦点"))
             for fa in seg.get("focusAt") or []:
-                att.setdefault(fa["elementId"], seg.get("startMs", 0) + fa.get("atMs", 0))
+                focals.append((base + fa.get("atMs", 0), fa["elementId"], "句内焦点"))
+            # 段内按时间排：「第一个」指的是观众最先被指到的那个，不是脚本里先写的那个。
+            focals.sort(key=lambda x: x[0])
+            for i, (t, eid, how) in enumerate(focals):
+                if i == 0:
+                    att.setdefault(eid, (t, how, base, "句首"))
+                else:
+                    att.setdefault(eid, (t, how, None, "念到它的词"))
         for eid, v in sorted(vals.items()):
-            tw = next((t for t, n in word_at if abs(n - v) < 1e-6), None)
-            if tw is None:
-                continue  # 没念到是 V10 的事，这里不重复报
             if eid in att:
-                ta, how = att[eid], "焦点"
+                ta, how, ref, refname = att[eid]
+                if ref is not None:
+                    tw = ref
+                else:
+                    tw = next((t for t, n in word_at if abs(n - v) < 1e-6), None)
+                    if tw is None:
+                        continue  # 没念到是 V10 的事，这里不重复报
             else:
                 r = appear_by.get(eid)
                 if not r or r.get("settledMs") is None:
                     unjudged.append("%s = %g：既没有焦点也没有出场记录" % (eid, v))
                     continue
-                ta, how = r["settledMs"] - r.get("pageStart", 0), "出场"
+                ta, how, refname = r["settledMs"] - r.get("pageStart", 0), "出场", "念到它的词"
+                tw = next((t for t, n in word_at if abs(n - v) < 1e-6), None)
+                if tw is None:
+                    continue
             gap = ta - tw
             if gap < -TOL_STORY_EARLY_MS:
-                bad.append("页 %d %s = %g：%s比念到它早 %dms（抢话）"
-                           % (idx, eid, v, how, -gap))
+                bad.append("页 %d %s = %g：%s比%s早 %dms（抢话）"
+                           % (idx, eid, v, how, refname, -gap))
             elif gap > TOL_STORY_LATE_MS:
-                bad.append("页 %d %s = %g：%s比念到它晚 %dms（>%dms）"
-                           % (idx, eid, v, how, gap, TOL_STORY_LATE_MS))
+                bad.append("页 %d %s = %g：%s比%s晚 %dms（>%dms）"
+                           % (idx, eid, v, how, refname, gap, TOL_STORY_LATE_MS))
     return [{"code": "V11.1", "ok": not bad and not unjudged,
-             "msg": "不抢话：讲哪个数就在念到它的词上开始（早 ≤%dms / 晚 ≤%dms）"
+             "msg": "该指的时候指：段内首个焦点对齐句首，句中换人对齐念到它的词"
+                    "（早 ≤%dms / 晚 ≤%dms）"
                     % (TOL_STORY_EARLY_MS, TOL_STORY_LATE_MS),
              "detail": bad + unjudged}]
 
@@ -924,7 +952,9 @@ def self_test():
                   and numbers_in("九百四十三") == [943.0],
                   [numbers_in("一百七十四秒"), numbers_in("二点七 GB")]))
 
-    # V11：注意力（焦点）在段开口就落在 174 上，而「一百七十四」1.5s 后才念到 —— 抢话
+    # V11：这一段讲的就是 174，段首就指它 —— 正确，哪怕「一百七十四」1.5s 后才念到。
+    # 这是口径改过的地方：旧版会把这条判成「抢话」，于是逼着编排等数字，
+    # 结果句首那一秒多画面全亮、不指任何人（s2-3 的原始症状）。
     d11 = {"pages": [{"index": 0, "durationMs": 6000, "segments": [
         {"id": "s0", "startMs": 200, "durationMs": 3000,
          "bind": [{"elementId": "bar", "offsetMs": 0}], "focus": "bar"}]}]}
@@ -936,13 +966,39 @@ def self_test():
             "offsetMs": 0, "settledMs": 700, "onsetMs": 240, "always": False,
             "preSegLevel": 0.0}]
     got11 = {x["code"]: x["ok"] for x in attention_findings(d11, w11, p11, e11)}
-    cases.append(("V11.1-early", got11.get("V11.1") is False, got11))
-    # 反向：焦点挪到念到它的那个词 → 绿（否则这条判据只是在惩罚「有焦点」）
+    cases.append(("V11.1-first", got11.get("V11.1") is True, got11))
+    # 反向：第一个焦点非要等到念到数字才切（晚 1300ms）→ 红。
+    # 这种编排放旧口径里是「标准答案」，而观众听到的正是「讲着它、却没指它」。
     d11b = json.loads(json.dumps(d11))
     d11b["pages"][0]["segments"][0].pop("focus")
     d11b["pages"][0]["segments"][0]["focusAt"] = [{"elementId": "bar", "atMs": 1500}]
     got11b = {x["code"]: x["ok"] for x in attention_findings(d11b, w11, p11, e11)}
-    cases.append(("V11.1-ok", got11b.get("V11.1") is True, got11b))
+    cases.append(("V11.1-late", got11b.get("V11.1") is False, got11b))
+    # 句中换人仍要卡数值：同段第二个焦点在句首就切，而它那个数 2.6s 后才念 —— 抢话。
+    d11c = {"pages": [{"index": 0, "durationMs": 9000, "segments": [
+        {"id": "s0", "startMs": 200, "durationMs": 6000,
+         "focusAt": [{"elementId": "bar", "atMs": 0},
+                     {"elementId": "bar2", "atMs": 200}]}]}]}
+    w11c = {"segments": {"s0": {"startMs": 200, "words": [
+        {"tMs": 0, "dMs": 300, "text": "时间"},
+        {"tMs": 1500, "dMs": 600, "text": "一百七十四"},
+        {"tMs": 3000, "dMs": 500, "text": "三百"}]}}}
+    e11c = [{"index": 0, "elements": [
+        {"id": "bar", "kind": "bar", "value": 174},
+        {"id": "bar2", "kind": "bar", "value": 300}]}]
+    p11c = [{"element": "bar", "page": 0, "pageStart": 0, "seg": "s0", "at": 200,
+             "offsetMs": 0, "settledMs": 700, "onsetMs": 240, "always": False,
+             "preSegLevel": 0.0},
+            {"element": "bar2", "page": 0, "pageStart": 0, "seg": "s0", "at": 200,
+             "offsetMs": 0, "settledMs": 700, "onsetMs": 240, "always": False,
+             "preSegLevel": 0.0}]
+    got11c = {x["code"]: x["ok"] for x in attention_findings(d11c, w11c, p11c, e11c)}
+    cases.append(("V11.1-second-early", got11c.get("V11.1") is False, got11c))
+    # 反向：第二个焦点落在它那个数上 → 绿（否则这条判据只是在惩罚「一句话讲两根」）
+    d11d = json.loads(json.dumps(d11c))
+    d11d["pages"][0]["segments"][0]["focusAt"][1]["atMs"] = 3000
+    got11d = {x["code"]: x["ok"] for x in attention_findings(d11d, w11c, p11c, e11c)}
+    cases.append(("V11.1-second-ok", got11d.get("V11.1") is True, got11d))
 
     # V12：a 在 3200ms 讲完，b 到 4000ms 才开讲 —— 中间 800ms 该放手
     d12 = {"pages": [{"index": 0, "durationMs": 5000, "segments": [

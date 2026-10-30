@@ -77,17 +77,17 @@ bash tmp/q7/run_all.sh
 #    → tmp/q7/film_C_narrated.mp4
 
 # 4) 一次跑完全部测量 + 26 项判据
-PPTS_SEG_DIR=tmp/q7/out-k python3 scripts/fidelity/verify.py \
-  --film tmp/q7/film_K_narrated.mp4 --segments tmp/q7/segments.json \
-  --elements tmp/q7/fid/elements.json --plan tmp/q7/job/plan.json \
-  --alignment tmp/q7/alignment-k.json --appearance tmp/q7/appearance-k.json \
-  --motion tmp/q7/motion-k.json --chart tmp/q7/chart-k.json --focus tmp/q7/focus-k.json \
-  --words tmp/q7/words.json --json tmp/q7/verify-k.json --rerun
-#    --rerun 会重跑六个测量脚本，再审计；报告一律按 -k 后缀分版，不要共用一个文件
+PPTS_SEG_DIR=tmp/q7/out-l python3 scripts/fidelity/verify.py \
+  --film tmp/q7/film_L_narrated.mp4 --segments tmp/q7/segments-l.json \
+  --elements tmp/q7/fid/elements.json --plan tmp/q7/job-l/plan.json \
+  --alignment tmp/q7/alignment-l.json --appearance tmp/q7/appearance-l.json \
+  --motion tmp/q7/motion-l.json --chart tmp/q7/chart-l.json --focus tmp/q7/focus-l.json \
+  --words tmp/q7/words.json --json tmp/q7/verify-l.json --rerun
+#    --rerun 会重跑六个测量脚本，再审计；报告一律按 -l 后缀分版，不要共用一个文件
 
 # 5) 人工评审
 python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html \
-  --film film_K_narrated.mp4 --port 8089
+  --film film_L_narrated.mp4 --port 8089
 ```
 
 ### 只改绑定、不改讲解词
@@ -119,6 +119,28 @@ python3 scripts/fidelity/sync_bind.py \
 零点用**实测的裁剪量**（两次时长相减），不是「第一个词的起点」：TTS 说第一个词起于
 96ms，实际音频 200ms 才越过 −45dB。差这 100ms，所有 `atText` 会整体偏晚，而偏晚在
 V11 里正好卡在「走神」的容差边上——每根柱子都差一点，其实是尺子错了。
+
+### 什么时候不该等那个词
+
+一句话讲**两根**柱子，切换点当然落在第二根的数上（s2-2「两核一百七十四秒，四核一百三十一秒」）。
+但一句话讲**一根**柱子时，整句都是它，句首就该指过去：
+
+```json
+{ "id": "s2-3", "text": "两核跑五分钟，九百四十三秒。", "focus": "p2-bar2" }
+```
+
+写成 `focusAt: [{elementId: "p2-bar2", atText: "九百四十三"}]` 的后果不是「晚一点」，
+是**前半句画面谁也没指**：旁白在说「两核跑五分钟」，四根柱子一样深（K 片页内
+4.7s、5.1s 的实测墨量是 1.00/1.00/1.00/1.00）。V11 因此分成两种参照：
+
+| 位置 | 参照 | 理由 |
+|---|---|---|
+| 段内第一个焦点 | 段开口 | 这一段讲的就是它，句首不指＝讲话了没反应 |
+| 段内其余焦点 | 念到它的那个数 | 一句话里换人，必然落在新那个数上 |
+| 没有焦点的元素 | 实测出场 vs 数值词 | 原逻辑，覆盖「只有出场」的编排 |
+
+前提是**一段一个主题**。若某段先总述再落到某根柱子（「先看时间，两核一百七十四秒」），
+第一个焦点按句首会被判早——目前的解法是把段拆细，不要在一段里先绕一句。
 
 ### 换产物目录时：`PPTS_SEG_DIR`
 
@@ -354,7 +376,7 @@ python3 scripts/fidelity/verify.py               # 只审计已有报告（快�
 | V8 连续性 | V8.1 | 讲着话时画面连续不变 ≤3.5s。**第二组只问画面**：元素都在，不代表还在动 |
 | V9 真实性 | V9.1 | 柱高与标注值成比例（≤1.08 倍）。**第一组问「内容和它的数据对不对得上」** |
 | V10 叙事 | V10.1 | 图上标了数的元素，整页讲解必须念到这个数。**第一组跨到旁白文本** |
-| V11 同拍 | V11.1 | 「讲它」的时刻（焦点，没焦点则出场）落在念到它的那个词上（早 ≤120ms／晚 ≤350ms）。**第一次问「是不是那一刻讲的」** |
+| V11 同拍 | V11.1 | 段内**第一个焦点对齐段开口**，其余焦点对齐念到它的那个词（早 ≤120ms／晚 ≤350ms）。**第一次问「该指它的时候指了没」** |
 | V12 放手 | V12.1 | 讲它的那一段结束、而下一段没紧接换人时，压暗必须有终点（空档 ≥500ms 却不给 `endMs` 就红）。**第一次问「讲完之后还指着谁」** |
 | V13 唯一 | V13.1 | 有人被压暗时，满墨的元素恰好一个（`check_focus.py` 逐采样点量框内墨量）。**第一次问「此刻亮着几个」** |
 
@@ -366,6 +388,9 @@ V11 让「开始讲」落在词上之后，**讲完之后没人放手**（→V12
 头 1.4 秒，画面还压着上一句讲的四核那根柱子。
 V12 给压暗补上终点时量出一个活了五版的 bug：`focusDim` 里 `out[focus[0]] = 0` 少了
 `i === 0`，从第 3 个焦点起第一个元素永远重新点亮，**页面上两根柱子同时满墨**（→V13）。
+V13 全过之后还剩一个**口径**问题：V11 一律拿「念到那个数」当参照，于是「整句都在讲它」
+的句子前半段全亮、谁也没指（K 片页内 4.7s 四根都是 1.00）。改成「段内第一个焦点对齐
+句首」之后消失（L 片同一时刻只剩 `.56/.57/.99/.56`）。
 
 前三次是「门禁全绿、人看着不对」，后两次反过来：**人也看不出来**。
 讲稿自己读着是通顺的，只有把图和讲稿并排数一遍才知道四根柱子只讲了两根；
@@ -374,7 +399,7 @@ V12 给压暗补上终点时量出一个活了五版的 bug：`focusDim` 里 `ou
 V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要数字（「两个 30 页长片」）
 不必逐个念，硬判会逼着讲稿变成报数。
 
-`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 35 项）。
+`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 37 项）。
 没有它，门禁本身会重演「看起来通过了」，而那正是 5.6 的教训。
 
 ### `check_appearance.py` 现在报三个数，别用错
