@@ -12,13 +12,13 @@
 
 worker MUST NOT 另建一条 ffmpeg 交叉淡化（`xfade`）路径：`xfade` 是重叠语义，会让成片变短，与本条的时间约定冲突，两套时序并存必然对不齐。片段缓存的键也因此把「前一页」纳入（`openspec/specs/render-plan/spec.md`）。
 
-整份导出不含任何元素级动画（`layers[*].clips` 全空）时 MUST NOT 提交渲染服务——此时转场也不产出，输出为硬切（已知限制，见 tasks 7.1）。
+转场不是独立通道：它没有自己的渲染提交路径，只随同一批片段由合成器绘制。因此渲染服务不可用时（`animation.backend = none` 或 `/healthz` 不可达），转场一并不产出，输出为硬切。这是 ADR-1 的已知代价，已接受（tasks 7.1 决策①）。
 
-#### Scenario: 只有页转场
+#### Scenario: 渲染服务不可用且有转场
 
-- **WHEN** 计划中所有页的 `layers` 均为空，仅有 `transition`
-- **THEN** worker 不发起任何 `/v1/render` 请求，输出为硬切（转场不产出）
-- **AND** 该限制 MUST 在 tasks 7.1 有明确记录，MUST NOT 让用户以为「转场已生效」
+- **WHEN** 时间轴里有页配置了 `transition`，而 `animation.backend = none` 或 `/healthz` 不可达
+- **THEN** 导出走静态拼接，页与页之间为硬切（转场不产出）
+- **AND** 导出选项 MUST 在用户可见处说明「静态版不含页间转场」，MUST NOT 让用户以为「转场已生效」
 
 #### Scenario: 有元素级动画
 

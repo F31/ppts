@@ -1399,3 +1399,22 @@ V16/V17、`dom-ssim.py`、`still-check.py`。V14/V15 有 Go 测试（`CountExter
 | `openspec validate --all` | 11 passed（一条长需求告警属已归档 `render-plan`） |
 | `verify.py --self-test` | 39/39 |
 | `web/animation-check.mjs` | 31/31 |
+
+#### 四、归档后补记：一条与实现相反、且没人守的 MUST
+
+归档（`c295c80`）之后复核 `renderer-image` 正文，发现「转场与元素动画共用一次合成」这条里
+还留着一句旧话：「整份导出不含任何元素级动画（`layers[*].clips` 全空）时 MUST NOT 提交渲染服务」。
+
+按「谁守着它」去查，没有守卫：
+
+- `internal/app/animation_pages.go` 的 `Build` 对**每一页**都产出 `AnimationPage`，不看该页 clips；
+- `tryAnimation` 的前置只有「页数对齐」，没有「全片 clip 总数为 0 就不提交」；
+- `hasAnimatedLayer` 只被 HTML 成品包路径用（`export_animation.go:59`），与 MP4 通道无关。
+
+也就是说，「只有转场」的页在渲染服务可用时照样会被画出来——**实现比那句 MUST 更合理**，
+但规格说的是反的。处置：删掉这条 MUST，改成可验证的事实（服务不可用 → 转场不产出 → 硬切），
+并把场景改成「渲染服务不可用且有转场」。没有为了让规格成立去改代码：那句 MUST 是成本设想，
+不是产品行为，而 7.1 的决策①本来就只针对「不可用」这一种情况。
+
+这是 §8.16 那套审计方法第二次抓到同类问题。区别是这次发生在**归档之后**——说明「归档前逐条
+对守卫」还不够，合并进 `openspec/specs/` 的那份正文也要按同样的标准再过一遍。
