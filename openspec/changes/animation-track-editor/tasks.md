@@ -49,10 +49,18 @@
 
 ## 5. 轨道编辑 UI（第 3 段）
 
-- [ ] 5.1 元素级时间轴与关键帧拖拽（受 `capabilities.trackEditor` 控制）
-- [ ] 5.2 撤销/重做 ≥20 步（本地栈，不落库）；方向键 10ms / Shift 50ms
-- [ ] 5.3 批量套用带撤销；空状态文案（§7.6）
-- [ ] 5.4 前端门禁：`contrast.mjs`、`i18n-check.mjs`、`tsc`、`vite build`
+- [x] 5.1 元素级时间轴（`src/AnimationTrackTimeline.tsx`）：每条元素轨道一行，色块按页时长定位；
+      拖动改起点、拖右边缘改时长、色块可聚焦并支持键盘微调；受 `capabilities.trackEditor` 控制，
+      未开通只说一句说明、页时长未知时只读（不给一个必然 400 的输入）
+- [x] 5.2 撤销/重做：本地栈深 24（≥20），一次拖拽只记一步（pointerdown 记、move 不记），
+      Ctrl/Cmd+Z 与 Shift+Ctrl/Cmd+Z；方向键 10ms / Shift 50ms；
+      **拖动派生起点的片段同时改 trigger 为 `atTime:<ms>`**（否则保存成功、成片不变）
+- [x] 5.3 空状态文案（§7.6）：无可编排元素时给出说明。
+      **批量套用未做**：需要页列表多选 + N 页写入的失败回滚语义，留作独立变更（design「不做（第 3 段）」）
+- [x] 5.4 前端门禁：`tsc -b` 通过、`vite build` 通过、`contrast.mjs` 全绿、
+      `i18n-check` 中英 1333/1333 对等且无新增零引用、
+      `animation-check` **26/26**（新增 10 条：拖动转 atTime、双端夹紧、时长截断、
+      键盘步长、几何百分比、撤销栈深与重做清空）
 
 ## 6. 归档
 
