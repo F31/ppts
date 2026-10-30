@@ -5,6 +5,7 @@ package usage
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -15,6 +16,65 @@ const KindGenSeconds Kind = "gen_seconds"
 
 // KindLLMTokens 计量 LLM 文案生成 token 消耗（prompt+completion，G2-5）。
 const KindLLMTokens Kind = "llm_tokens"
+
+// KindAnimationMinutes 计量动画渲染分钟数（M4 §7.5）。单位是**分钟**，与 gen_seconds
+// 的秒分开：两个口径混在一个 Kind 里，"还剩多少"就要先知道对方记的是秒还是分钟。
+const KindAnimationMinutes Kind = "animation_minutes"
+
+// PeriodSeparator 分隔计量种类与账期（"animation_minutes:2026-10"）。
+const PeriodSeparator = ":"
+
+// Period 返回限定到某个账期（YYYY-MM）的计量种类。
+//
+// 为什么把账期编进 Kind，而不是给额度表加"周期"字段：
+//   - 额度预占的原子性依赖 tenant_quotas 上的条件更新（reserved+consumed+Δ <= limit），
+//     一旦周期滚动需要先重置 consumed_units，"检查是否跨期"就成了事务外的读改写；
+//   - 用账期做 Kind，跨期天然是**新行**：上月行留在原处供对账，本月行从 0 开始，
+//     Reserve 的条件更新依旧在单行上原子完成（并发预占不会超卖）。
+//
+// 代价要写清楚：月度累计要按前缀聚合（见 Base），不能直接 `WHERE usage_kind='...'`。
+// 空账期返回原值，便于"不按月"的老口径继续被同一个函数表达。
+func (k Kind) Period(period string) Kind {
+	if period == "" {
+		return k
+	}
+	return Kind(string(k) + PeriodSeparator + period)
+}
+
+// Base 去掉账期后缀，返回基础计量种类。
+func (k Kind) Base() Kind {
+	s := string(k)
+	if i := strings.Index(s, PeriodSeparator); i >= 0 {
+		return Kind(s[:i])
+	}
+	return k
+}
+
+// Period 返回账期部分（"2026-10"）；没有账期时返回空串。
+func (k Kind) PeriodOf() string {
+	s := string(k)
+	if i := strings.Index(s, PeriodSeparator); i >= 0 {
+		return s[i+len(PeriodSeparator):]
+	}
+	return ""
+}
+
+// MonthPeriod 返回给定时刻所在账期（UTC，YYYY-MM）。
+//
+// 用 UTC 而不是本地时区：账期边界必须对所有部署实例是同一个瞬间，
+// 否则同一份额度在不同时区的节点上会在不同时间"重置"。
+func MonthPeriod(t time.Time) string {
+	return t.UTC().Format("2006-01")
+}
+
+// MonthReset 返回该账期的下一个瞬间（下月 1 日 00:00 UTC），即额度恢复时间。
+func MonthReset(period string) (time.Time, error) {
+	start, err := time.Parse("2006-01", period)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return start.AddDate(0, 1, 0), nil
+}
 
 // CharsPerSecond 是中文播报时长估算系数（用于生成前预估；实际以合成时长结算）。
 const CharsPerSecond = 5.0
