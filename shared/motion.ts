@@ -185,7 +185,19 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
     // 于是从第 3 个焦点起，`focus[0]` 被重新点成 0（全亮）后再也没人改回去，
     // 一页上出现两根柱子同时满墨（页 2 从 6.0s 起，bar0 与 bar2 都亮）。
     // 这个 bug 活了整整五版，因为没有任何判据问过「此刻亮着几个」。
-    out[focus[0].elementId] = 0;
+    //
+    // 但「只有它在亮」不等于「一帧之内只留它在亮」：页内**第一个**焦点同样要有
+    // 淡出。原来这里直接写 1/0，于是 tMs 一过 startMs，整页从全亮跳到压暗只用
+    // 一帧（50Hz 采样下也只有一个 20ms 窗口有变化），像有人啪一下把灯关了；
+    // 而后面每一次换人都有 240ms。同一个动作，两种手感，只因为它是第一个。
+    // 26 项判据全绿也查不到它——判据问的是「此刻亮着几个」，不问「怎么变过去的」。
+    const p0 = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.startMs) / fade));
+    out[cur.elementId] = 0;
+    if (p0 < 1) {
+      for (const f of focus) {
+        if (f.elementId !== cur.elementId) out[f.elementId] = p0;
+      }
+    }
   } else {
     const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.startMs) / fade));
     // 上一个焦点从亮到暗、当前焦点从暗到亮，两件事同时发生且互不重叠。

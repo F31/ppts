@@ -468,6 +468,26 @@ test('放手时刻也必须在关键帧里：否则「回到全亮」被插值�
   assert.equal(Number(relax.opacity), 1, `放手后不透明度应为 1，实际 ${relax.opacity}`);
 });
 
+test('页内第一个焦点也要淡出：不能一帧就把整页压暗', async () => {
+  // focusDim 的 i===0 分支原来直接写 1/0，于是 tMs 一过 startMs，整页从全亮
+  // 跳到压暗只用一帧——50Hz 采样下也只有一个 20ms 窗口有变化（L 片页 2 的
+  // 18.9s）。后面每次换人都有 240ms，唯独第一个没有。26 项判据都在问「此刻
+  // 亮着几个」，没有一条问「怎么变过去的」，所以全绿也查不到。
+  const { focusDim } = await import('../shared/motion.ts');
+  const focus = [
+    { startMs: 1000, elementId: 'bar0' },
+    { startMs: 3000, elementId: 'bar1' }
+  ];
+  assert.deepEqual(focusDim(focus, 999), {}, '焦点开始前应当是整页全亮');
+  const atStart = focusDim(focus, 1000);
+  assert.equal(atStart.bar0, 0, '主角在开始那一刻就应当满墨');
+  assert.equal(atStart.bar1, 0,
+    `开始那一刻其余元素还应当是全亮（0），实际 ${atStart.bar1}——直接给 1 就是一帧压暗`);
+  const mid = focusDim(focus, 1120);
+  assert.ok(mid.bar1 > 0.6 && mid.bar1 < 0.98, `120ms 时应处于过渡中，实际 ${mid.bar1}`);
+  assert.equal(focusDim(focus, 1240).bar1, 1, '240ms 后应当完全退后');
+});
+
 test('同一时刻只指一个：第 3 个焦点开始后，第 1 个元素必须已经退后', async () => {
   // 这条测的是 focusDim 的一个曾存在的 bug：`out[focus[0]] = 0` 少了 i===0 的条件，
   // 于是每帧都把第 1 个元素重新点成全亮，从第 3 个焦点起页面上有两根柱子同时满墨。

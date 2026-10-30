@@ -49,6 +49,22 @@ def ffmpeg_bin():
         return "ffmpeg"
 
 
+def block_max(d, bs=40):
+    """切成 40x40 的块，取块均值差的最大值。
+
+    全幅平均会稀释小面积变化：页 2 上压暗三根柱子时全幅 mean 只有 6.4，但被压的
+    那块差 48.8。V14 要判「切换是渐变还是硬跳」，必须看得见局部。
+    """
+    h, w = d.shape
+    best = 0.0
+    for y in range(0, h - bs + 1, bs):
+        for x in range(0, w - bs + 1, bs):
+            v = float(d[y:y + bs, x:x + bs].mean())
+            if v > best:
+                best = v
+    return best
+
+
 def frames(film):
     """流式解出缩略灰度帧，逐帧 yield (t_ms, ndarray)。"""
     cmd = [ffmpeg_bin(), "-v", "error", "-i", film,
@@ -94,13 +110,14 @@ def main():
     speech = speech_intervals(script)
 
     # 1) 逐帧差 → 标记「这一帧画面变了没有」
-    changed = []          # [(t_ms, diff)]
+    changed = []          # [(t_ms, diff, block)]
     prev = None
     for t, f in frames(film):
         if prev is None:
-            changed.append((t, 255.0))     # 第一帧视为「有变化」，不作为静默起点
+            changed.append((t, 255.0, 255.0))   # 第一帧视为「有变化」，不作为静默起点
         else:
-            changed.append((t, float(np.abs(f.astype(np.int16) - prev.astype(np.int16)).mean())))
+            d = np.abs(f.astype(np.int16) - prev.astype(np.int16))
+            changed.append((t, float(d.mean()), block_max(d)))
         prev = f
     if not changed:
         print("没有解出任何帧", file=sys.stderr)
@@ -109,7 +126,7 @@ def main():
     # 2) 合并连续静止帧为区间
     spans = []
     start = None
-    for t, d in changed:
+    for t, d, _b in changed:
         if d < SILENT_DIFF:
             if start is None:
                 start = t
@@ -130,8 +147,10 @@ def main():
     longest = max(talk_silent, key=lambda x: x["durMs"], default=None)
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    # block 序列给 V14 用：判「一次切换是跨了几帧，还是一帧跳完」。
     json.dump({"silentDiff": SILENT_DIFF, "sampleMs": FRAME_MS,
-               "spans": talk_silent, "longestMs": longest["durMs"] if longest else 0},
+               "spans": talk_silent, "longestMs": longest["durMs"] if longest else 0,
+               "steps": [{"tMs": t, "block": round(b, 3)} for t, _d, b in changed]},
               open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     print("画面静止且正在讲解：%d 段" % len(talk_silent))

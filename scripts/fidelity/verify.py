@@ -86,6 +86,16 @@ LAYOUT_HOLD_MS = 1500     # 半页状态持续多久算问题
 CHART_SPREAD_MAX = 1.08
 AHEAD_MS = 2000           # 容器的框比最后一件内容早多久算「空框悬挂」
 SILENT_MAX_MS = 3500      # 讲着话时画面连续多久不变算「静」——本片最长一句 3.24s
+# 焦点淡出的时长，与 shared/motion.ts 的 FOCUS_FADE_MS 一致。V14 用它划窗口：
+# 一次切换的过渡应当落在这个窗口里，而不是只占一帧。
+FOCUS_FADE_MS = 240
+# V14 判「这一帧是不是孤立尖峰」：峰值帧之后仍要有变化，且不低于峰值的 10%
+# （同时不低于绝对下限 0.5，免得 3.0 的小切换被 0.3 的编码残差糊过去）。
+# 为什么不用「数几帧超过峰值 30%」：easeOutCubic 前快后慢，240ms 的过渡里第二帧
+# 只剩峰值的 25%（L 片 p1-item1：5.45 → 1.38），30% 的门槛会把它误判成硬切。
+# 而真正的硬切，下一帧是 0.2%（13.29 → 0.028）——两者相差两个数量级。
+STEP_AFTER_RATIO = 0.10
+STEP_AFTER_MIN = 0.5
 
 
 def ffmpeg_bin():
@@ -401,6 +411,77 @@ def focus_release_findings(design, plan):
              "detail": bad}]
 
 
+def focus_transition_findings(design, motion):
+    """V14：切换不能一帧跳完——「此刻亮着几个」对了，不代表「怎么变过去的」对。
+
+    页 2 的**第一个**焦点原来只设值、不给过渡（`focusDim` 的 `i === 0` 分支直接
+    写 1/0），于是 tMs 一过 startMs，整页从全亮跳到压暗只用一帧：50Hz 采样下也
+    只有一个 20ms 窗口有变化（L 片 18.9s），像有人啪一下把灯关了。后面每次换人
+    都有 240ms，同一个动作两种手感，只因为它是第一个。
+
+    前面 26 项全绿也查不到：V13 问「此刻亮着几个」（一个，对），V11 问「什么时候
+    切」（对），V5/V7/V8 问「动没动、空不空、静不静」（都动）。**没有一条问过
+    「动得连不连续」**——判定的是状态，不是状态之间。
+
+    怎么量：只看像素，不看 focus.json 的比值。取焦点起点前后一个淡出窗口的逐帧
+    块差，找峰值帧；再看**峰值之后**还有没有像样的变化。硬切是孤立尖峰——下一帧
+    直接归零（L 片 13.29 → 0.028，0.2%）；有过渡则下一帧仍在动（5.45 → 1.38，25%）。
+    不用比值是因为深色柱压到 0.55、浅色卡片压到 0.75，比值判据自己要先分档。
+    """
+    if not motion:
+        return [{"code": "V14.1", "ok": True,
+                 "msg": "画面连续性未测（--motion），本项跳过", "detail": []}]
+    steps = motion.get("steps") or []
+    if not steps:
+        return [{"code": "V14.1", "ok": True,
+                 "msg": "逐帧差值未提供（旧版 motion.json 没有 steps），本项跳过",
+                 "detail": []}]
+
+    bad, checked, skipped = [], 0, 0
+    base = 0
+    for page in design.get("pages") or []:
+        idx = page.get("index")
+        pts = []
+        for seg in page.get("segments") or []:
+            s0 = seg.get("startMs", 0)
+            if seg.get("focus"):
+                pts.append((base + s0, seg["focus"]))
+            for fa in seg.get("focusAt") or []:
+                pts.append((base + s0 + fa.get("atMs", 0), fa["elementId"]))
+        pts.sort()
+        # 相邻两次切换挨得比一个淡出还近的，算同一次动作，别重复判。
+        merged = []
+        for p in pts:
+            if merged and p[0] - merged[-1][0] < FOCUS_FADE_MS:
+                continue
+            merged.append(p)
+
+        for t0, eid in merged:
+            lo, hi = t0 - 100, t0 + FOCUS_FADE_MS + 200
+            win = [s for s in steps if lo <= s["tMs"] <= hi]
+            if len(win) < 3:
+                continue
+            pk = max(win, key=lambda s: s["block"])
+            if pk["block"] < 3.0:
+                skipped += 1
+                continue      # 这次切换几乎没改变画面（元素太小，或本来就没有可压暗的）
+            after = [s["block"] for s in win if s["tMs"] > pk["tMs"]]
+            if not after:
+                skipped += 1
+                continue      # 峰值贴着窗口右边界，看不出后面还有没有
+            checked += 1
+            if max(after) < max(pk["block"] * STEP_AFTER_RATIO, STEP_AFTER_MIN):
+                bad.append("页 %d %s @%dms：峰值 %.1f 之后立刻归零（%.2f）——一帧跳完，没有过渡"
+                           % (idx, eid, t0, pk["block"], max(after)))
+        base += page.get("durationMs", 0)
+
+    msg = "切换有过程：每次焦点切换都不是孤立尖峰（共判 %d 处" % checked
+    if skipped:
+        msg += "，%d 处画面变化太小不判" % skipped
+    msg += "）"
+    return [{"code": "V14.1", "ok": not bad, "msg": msg, "detail": bad}]
+
+
 def _bound_of(design):
     """设计意图 → {元素: [(段号, 段内错落)]}，顺序保留，用来发现重复绑定。"""
     out = {}
@@ -586,6 +667,8 @@ def audit(design, align, appear, film, elems=None, plan=None):
     # ---- V13 只指一个：压暗是互斥的，看「此刻亮着几个」。要成片像素，不要计划
     if film.get("focus"):
         findings.extend(focus_unique_findings(film["focus"]))
+    # ---- V14 切换有没有过程：V13 管「亮着几个」，这一条管「从上一个到这个是怎么变的」
+    findings.extend(focus_transition_findings(design, film.get("motion")))
 
     return findings
 
@@ -1028,6 +1111,27 @@ def self_test():
     cases.append(("V13.1-two", got13.get("V13.1") is False, got13))
     got13b = {x["code"]: x["ok"] for x in focus_unique_findings({"pages": [{"index": 1, "violations": []}]})}
     cases.append(("V13.1-ok", got13b.get("V13.1") is True, got13b))
+
+    # V14：切换一帧跳完 —— focusDim 的 i===0 分支没给过渡，在成片里的样子
+    d14 = {"pages": [{"index": 0, "durationMs": 6000, "segments": [
+        {"id": "s0", "startMs": 200, "durationMs": 2500, "bind": [], "focus": "bar0"},
+        {"id": "s1", "startMs": 2800, "durationMs": 2500, "bind": [], "focus": "bar1"}]}]}
+
+    def _steps(peaks):
+        """peaks: {tMs: block}，其余帧一律 0.01（几乎不变）。"""
+        out = [{"tMs": t, "block": 0.01} for t in range(0, 6000, 100)]
+        for s in out:
+            if s["tMs"] in peaks:
+                s["block"] = peaks[s["tMs"]]
+        return {"steps": out}
+
+    hard = _steps({300: 48.0, 2900: 48.0})                       # 每次切换只动一帧
+    got14 = {x["code"]: x["ok"] for x in focus_transition_findings(d14, hard)}
+    cases.append(("V14.1-hard", got14.get("V14.1") is False, got14))
+    soft = _steps({300: 20.0, 400: 20.0, 500: 20.0,
+                   2900: 20.0, 3000: 20.0, 3100: 20.0})          # 跨三帧的过渡
+    got14b = {x["code"]: x["ok"] for x in focus_transition_findings(d14, soft)}
+    cases.append(("V14.1-soft", got14b.get("V14.1") is True, got14b))
 
 
     d7, p7, e7 = _layout_fixture(late_ms=4000)

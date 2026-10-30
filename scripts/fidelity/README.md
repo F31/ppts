@@ -76,18 +76,18 @@ go run ./scripts/fidelity/plan -in tmp/q7/fid -out tmp/q7/job \
 bash tmp/q7/run_all.sh
 #    → tmp/q7/film_C_narrated.mp4
 
-# 4) 一次跑完全部测量 + 26 项判据
-PPTS_SEG_DIR=tmp/q7/out-l python3 scripts/fidelity/verify.py \
-  --film tmp/q7/film_L_narrated.mp4 --segments tmp/q7/segments-l.json \
-  --elements tmp/q7/fid/elements.json --plan tmp/q7/job-l/plan.json \
-  --alignment tmp/q7/alignment-l.json --appearance tmp/q7/appearance-l.json \
-  --motion tmp/q7/motion-l.json --chart tmp/q7/chart-l.json --focus tmp/q7/focus-l.json \
-  --words tmp/q7/words.json --json tmp/q7/verify-l.json --rerun
-#    --rerun 会重跑六个测量脚本，再审计；报告一律按 -l 后缀分版，不要共用一个文件
+# 4) 一次跑完全部测量 + 27 项判据
+PPTS_SEG_DIR=tmp/q7/out-m python3 scripts/fidelity/verify.py \
+  --film tmp/q7/film_M_narrated.mp4 --segments tmp/q7/segments-l.json \
+  --elements tmp/q7/fid/elements.json --plan tmp/q7/job-m/plan.json \
+  --alignment tmp/q7/alignment-m.json --appearance tmp/q7/appearance-m.json \
+  --motion tmp/q7/motion-m.json --chart tmp/q7/chart-m.json --focus tmp/q7/focus-m.json \
+  --words tmp/q7/words.json --json tmp/q7/verify-m.json --rerun
+#    --rerun 会重跑六个测量脚本，再审计；报告一律按 -m 后缀分版，不要共用一个文件
 
 # 5) 人工评审
 python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html \
-  --film film_L_narrated.mp4 --port 8089
+  --film film_M_narrated.mp4 --port 8089
 ```
 
 ### 只改绑定、不改讲解词
@@ -362,7 +362,7 @@ python3 scripts/fidelity/verify.py               # 只审计已有报告（快�
 不足 1s —— 它不影响任何一刻的画面完整度，但等于没出现），并且打印每个时段的
 缺件清单，适合调排版时手跑。
 
-### 26 项检查
+### 27 项检查
 
 | 组 | 项 | 内容 |
 |---|---|---|
@@ -379,6 +379,7 @@ python3 scripts/fidelity/verify.py               # 只审计已有报告（快�
 | V11 同拍 | V11.1 | 段内**第一个焦点对齐段开口**，其余焦点对齐念到它的那个词（早 ≤120ms／晚 ≤350ms）。**第一次问「该指它的时候指了没」** |
 | V12 放手 | V12.1 | 讲它的那一段结束、而下一段没紧接换人时，压暗必须有终点（空档 ≥500ms 却不给 `endMs` 就红）。**第一次问「讲完之后还指着谁」** |
 | V13 唯一 | V13.1 | 有人被压暗时，满墨的元素恰好一个（`check_focus.py` 逐采样点量框内墨量）。**第一次问「此刻亮着几个」** |
+| V14 过渡 | V14.1 | 每次焦点切换在 `check_motion.py` 的逐帧块差里不能是孤立尖峰：峰值之后仍要有 ≥10% 峰值的变化。**第一次问「动得连不连续」** |
 
 六层盲区是逐个被片子逼出来的：V5 全过而人看着空（→V7），V7 全过而画面静（→V8），
 V7/V8 全过而图在说谎（→V9），V9 全过而讲稿漏讲了图上两根柱子（→V10），
@@ -391,6 +392,10 @@ V12 给压暗补上终点时量出一个活了五版的 bug：`focusDim` 里 `ou
 V13 全过之后还剩一个**口径**问题：V11 一律拿「念到那个数」当参照，于是「整句都在讲它」
 的句子前半段全亮、谁也没指（K 片页内 4.7s 四根都是 1.00）。改成「段内第一个焦点对齐
 句首」之后消失（L 片同一时刻只剩 `.56/.57/.99/.56`）。
+L 片全过之后还有一层：**状态对，过程不对**。页内**第一个**焦点在 `focusDim` 里走的是
+`i === 0` 分支，那里只设「谁亮、谁暗」，没算过渡——于是整页从全亮跳到压暗只用一帧
+（50Hz 采样下也只有一个 20ms 窗口有变化，L 片 18.9s 的块差是 48.8 → 0.001），
+而后面每次换人都有 240ms。同一个动作两种手感，只因为它是第一个（→V14）。
 
 前三次是「门禁全绿、人看着不对」，后两次反过来：**人也看不出来**。
 讲稿自己读着是通顺的，只有把图和讲稿并排数一遍才知道四根柱子只讲了两根；
@@ -399,7 +404,7 @@ V13 全过之后还剩一个**口径**问题：V11 一律拿「念到那个数�
 V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要数字（「两个 30 页长片」）
 不必逐个念，硬判会逼着讲稿变成报数。
 
-`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 37 项）。
+`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 39 项）。
 没有它，门禁本身会重演「看起来通过了」，而那正是 5.6 的教训。
 
 ### `check_appearance.py` 现在报三个数，别用错
