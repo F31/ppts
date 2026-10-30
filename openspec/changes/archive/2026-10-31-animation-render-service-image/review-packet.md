@@ -1385,9 +1385,11 @@ ffprobe 的帧数、关键帧位置逐项对齐（`tmp/q7/probe_enc`，每次渲
 上一轮盘点里我写「`web/animation-check.mjs` 的 30 条断言不在 CI」。**这是错的**：
 `web/package.json` 的 `build` 脚本串了 `contrast → api:check → route:check → core:test
 → polling:test → animation:test → tsc → vite build`，CI 的 `frontend` 作业跑的正是
-`npm run build`。真正只在本地跑的是需要 Chrome/成片的那三条：`bundle-gate.py` 的
-V16/V17、`dom-ssim.py`、`still-check.py`。V14/V15 有 Go 测试（`CountExternalRefs`、
-`BudgetBytes`、`BuildRejectsExternalResourceKeys`）在 `go test ./...` 里。
+`npm run build`。V14 比原来记的还多一层：`test` 作业里有一步
+`share-bundle external-ref scan`，真跑 `share-baseline` 造 zip 与目录、再交给
+`share-verify`（只是没带 `-budget`，所以 V15 由单测 `BudgetBytes` 守，不在这步过闸）。
+真正只在本地跑的只剩需要 Chrome/成片的三条：`bundle-gate.py` 的 V16/V17、
+`dom-ssim.py`、`still-check.py`。
 
 #### 归档前读数
 

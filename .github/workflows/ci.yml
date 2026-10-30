@@ -55,12 +55,15 @@ jobs:
       # 成品包门禁（tasks 7.2）：实际产出一个样例包（zip 与目录两种形态），
       # 用 share-verify 跑与单测同一套结构校验 + 外链扫描。任何"给播放器加 CDN
       # 字体/遥测脚本"的改动都会让这一步失败，而不是等到用户断网打不开才发现。
+      #
+      # `-budget` 不能省：不带它时体积超标只进报告、退出码仍是 0，V15 就成了一条
+      # 只警告不拦人的门禁——多存一份音频、层图忘压缩，CI 照样绿。
       - name: share bundle external-ref scan
         run: |
           rm -rf /tmp/bundle /tmp/bundle.zip
           go run ./cmd/share-baseline -pages 3 -page-secs 4 -zip /tmp/bundle.zip -out /tmp/bundle >/dev/null
-          go run ./cmd/share-verify /tmp/bundle.zip
-          go run ./cmd/share-verify /tmp/bundle
+          go run ./cmd/share-verify -budget /tmp/bundle.zip
+          go run ./cmd/share-verify -budget /tmp/bundle
 
   # 竞态检测（M1 tasks 6.2 / ADR-11）：开发机是 Windows + CGO_ENABLED=0 且无任何 C 工具链，
   # race detector 依赖 cgo，本地跑不了，只能在这里跑。范围限定在引入并发的三个包，
