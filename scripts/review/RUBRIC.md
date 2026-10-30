@@ -207,12 +207,13 @@ python3 scripts/fidelity/check_av_sync.py      # 音轨相对旁白原件偏了�
 状态记「待复核」，等一条「秒数 + 元素」。理由很实际：没有定位的「需返工」，会让人去返
 一个不存在的工。
 
-**状态（2026-10-30 更新）**：当前验收样片是 `tmp/q7f/film_F_narrated.mp4`（30.77s，带配音，
-13 段，元素按 `withSegment` 绑到讲解段落）。C→D→E→F 四版只改编排与版式，讲解词与音轨
-一字未动（音画 lag 恒为 0.000s）。机器侧 **22 项全过**：17 个绑定元素在段落开口前
-区域变化全为 0，扣除设计错落后最大起播延迟 53ms（1.6 帧）。复跑方法见
-`scripts/fidelity/README.md` 的「带配音的样片」一节，人工评审用
-`python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html --film film_F_narrated.mp4 --port 8089`
+**状态（2026-10-30 更新）**：当前验收样片是 `tmp/q7/film_H_narrated.mp4`（35.53s，带配音，
+15 段，元素按 `withSegment` 绑到讲解段落，页 2 的焦点按「念到那个数」的词定时刻）。
+D→E→F→G→H 五版：前四版只改编排与版式，H 版重打了一遍 TTS（同一份讲稿，时长逐段一致：
+35.530s → 35.530s）。机器侧 **24 项全过**：17 个绑定元素在段落开口前区域变化全为 0，
+扣除设计错落后最大起播延迟 53ms（1.6 帧），V11.1 四个数值元素的「讲它」与「念到它」
+同刻（时刻由词边界直接解析，不是手调；渲染端是否照做由 V5.2 的 53ms 那一侧管）。复跑方法见 `scripts/fidelity/README.md` 的「带配音的样片」一节，人工评审用
+`python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html --film film_H_narrated.mp4 --port 8089`
 （评审目录里放的是哪一版，就用哪一版的名字）。
 
 仍**未定**的是 Q7 第 1 件事：绑定从哪里来。这一版是手写 `q7-script.json`，证明的是
