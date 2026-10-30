@@ -1932,6 +1932,9 @@ export function ProjectEditor({
             language={scriptLanguage || 'zh-CN'}
             timelineKey={realManifest?.timelineKey}
             canEdit={canEditScript}
+            // 元素级轨道编辑按租户开通（capabilities.trackEditor）。拿不到导出选项时
+            // 一律当作未开通：宁可少显示一个入口，也不要给一个保存后才失败的控件。
+            trackEditor={exportAnimation?.capabilities?.trackEditor === true}
             onClose={() => setAnimationOpen(false)}
           />
         </div>

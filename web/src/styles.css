@@ -1295,3 +1295,22 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .animation-status.dirty { color: #ffd9a8; }
 .animation-preview { display: grid; gap: 6px; }
 .animation-preview video { width: 100%; border-radius: 10px; background: #05080f; border: 1px solid var(--border); }
+
+/* 元素级轨道时间轴（M4 第 3 段）。行 = [元素名 | 轨道]，轨道内色块按页时长定位。
+   色块左/上/下用 inset 而不是固定高度：行高变了不用同步改数字。 */
+.track-history-actions { display: flex; gap: 6px; }
+.track-history-actions button { height: 26px; padding: 0 10px; font-size: 12px; }
+.track-timeline { display: grid; gap: 6px; }
+.track-timeline-ruler { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+/* 刻度与轨道左对齐：第一列留空（与元素名同宽），第二列两端贴边。 */
+.track-timeline-scale { display: flex; justify-content: space-between; }
+.track-timeline-row { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px; align-items: center; }
+.track-timeline-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-body); font-size: 12.5px; }
+.track-timeline-lane { position: relative; height: 26px; border-radius: 6px; border: 1px solid var(--border-subtle); background: var(--bg-input); overflow: hidden; }
+.track-clip { position: absolute; top: 3px; bottom: 3px; min-width: 6px; border-radius: 4px; border: 1px solid var(--accent-border); background: var(--accent-soft); cursor: grab; touch-action: none; }
+.track-clip.derived { border-style: dashed; }
+.track-clip.dragging { cursor: grabbing; background: var(--accent-tint); }
+.track-clip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.track-clip[aria-disabled="true"] { opacity: .55; cursor: default; }
+.track-clip-handle { position: absolute; top: 0; bottom: 0; right: 0; width: 8px; cursor: ew-resize; background: linear-gradient(90deg, transparent, rgba(103, 232, 249, .35)); }
+.track-clip[aria-disabled="true"] .track-clip-handle { cursor: default; }

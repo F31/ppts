@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const m = await import('./src/animationState.ts');
+const track = await import('./src/animationTrack.ts');
 const {
   clampIntensity,
   editorStateOf,
@@ -297,5 +298,120 @@ test('没有 clip 的层不编译关键帧：静态元素不该占一条 animati
       reduceMotion: false
     }),
     null
+  );
+});
+
+// ─── 轨道编辑（M4 第 3 段）────────────────────────────────────────────────
+
+test('拖动入场片段会改成 atTime，否则渲染器仍按 trigger 算起点（界面上动了、成片里没动）', () => {
+  const spec = baseSpec();
+  const moved = track.moveClipTo(spec, 'title-1', 0, 1200, 8000);
+  const clip = moved.tracks[0].clips[0];
+  assert.equal(clip.startMs, 1200);
+  assert.equal(clip.trigger, 'atTime:1200', '派生起点必须显式化，否则拖动是假功能');
+  // 原对象不变：撤销依赖"每次编辑产生新快照"。
+  assert.equal(spec.tracks[0].clips[0].startMs, 0);
+  assert.equal(spec.tracks[0].clips[0].trigger, 'onEnter');
+});
+
+test('拖动 withSegment 片段同样转 atTime（分段对齐也是派生起点）', () => {
+  const spec = baseSpec();
+  const aligned = track.moveClipTo(spec, 'bullet-1', 0, 2000, 8000);
+  // bullet-1 的 c3 是 atTime:900，c2 是 onEnter；这里拖 c2。
+  assert.equal(aligned.tracks[1].clips[0].trigger, 'atTime:2000');
+  // 同一条轨道上的 atTime 片段不受影响。
+  assert.equal(aligned.tracks[1].clips[1].startMs, 900);
+  assert.equal(aligned.tracks[1].clips[1].trigger, 'atTime:900');
+});
+
+test('起点夹紧到 [0, 页时长-时长]，页时长未知时只夹下界', () => {
+  const spec = baseSpec();
+  const early = track.moveClipTo(spec, 'bullet-1', 0, -500, 8000);
+  assert.equal(early.tracks[1].clips[0].startMs, 0);
+  const late = track.moveClipTo(spec, 'bullet-1', 0, 99999, 8000);
+  // 600ms 的 clip 在 8000ms 的页上，最晚从 7400 开始。
+  assert.equal(late.tracks[1].clips[0].startMs, 7400);
+  const unknownPage = track.moveClipTo(spec, 'bullet-1', 0, 99999, 0);
+  assert.equal(unknownPage.tracks[1].clips[0].startMs, 99999, '没配音时不该假装知道页尾');
+});
+
+test('改时长夹在 [120, 3000]，且不把 trigger 转成 atTime', () => {
+  const spec = baseSpec();
+  const shorter = track.resizeClipTo(spec, 'title-1', 0, 10, 8000);
+  assert.equal(shorter.tracks[0].clips[0].durationMs, 120);
+  assert.equal(shorter.tracks[0].clips[0].trigger, 'onEnter', '只拉长/缩短不该脱离朗读对齐');
+  const longer = track.resizeClipTo(spec, 'title-1', 0, 99999, 8000);
+  assert.equal(longer.tracks[0].clips[0].durationMs, 3000);
+  // 页面尾部放不下时**截断时长**，起点不动：用户拖的是右边缘，
+  // 色块整体跳走会让人以为拖错了对象（第一版就是这么写的，这条用例守回来的路）。
+  const tight = track.resizeClipTo(track.moveClipTo(spec, 'title-1', 0, 7500, 8000), 'title-1', 0, 3000, 8000);
+  assert.equal(tight.tracks[0].clips[0].startMs, 7500, '改时长不该挪起点');
+  assert.equal(tight.tracks[0].clips[0].durationMs, 500, '只剩 500ms 空间就截到 500');
+  // 连最短时长都放不下时（只可能来自既有非法数据：时长 < 120 且贴着页尾）才回退到挪起点。
+  // 正常拖动走不到这里——moveClipTo 的夹紧一定给当前时长留够空间。
+  const invalid = baseSpec();
+  invalid.tracks[0].clips[0] = { ...invalid.tracks[0].clips[0], startMs: 7960, durationMs: 40 };
+  const cramped = track.resizeClipTo(invalid, 'title-1', 0, 3000, 8000);
+  assert.equal(cramped.tracks[0].clips[0].durationMs, 120);
+  assert.ok(cramped.tracks[0].clips[0].startMs + cramped.tracks[0].clips[0].durationMs <= 8000);
+});
+
+test('方向键 10ms / Shift 50ms，且两端都不越界', () => {
+  const spec = baseSpec();
+  assert.equal(track.nudgeClip(spec, 'bullet-1', 0, 1, false, 8000).tracks[1].clips[0].startMs, 10);
+  assert.equal(track.nudgeClip(spec, 'bullet-1', 0, 1, true, 8000).tracks[1].clips[0].startMs, 50);
+  assert.equal(track.nudgeClip(spec, 'bullet-1', 0, -1, false, 8000).tracks[1].clips[0].startMs, 0);
+});
+
+test('时间轴几何：位置与宽度都按页时长算，未知页时长给 0 宽度', () => {
+  const clip = { type: 'fadeIn', startMs: 2000, durationMs: 1000, easing: 'linear', trigger: 'atTime:2000' };
+  const geo = track.clipGeometry(clip, 8000);
+  assert.equal(geo.leftPct, 25);
+  assert.equal(geo.widthPct, 12.5);
+  assert.deepEqual(track.clipGeometry(clip, 0), { leftPct: 0, widthPct: 0 });
+  // 越界的 start 也不会画出超过 100% 的宽度（那会画到面板外面）。
+  const overflow = track.clipGeometry({ ...clip, startMs: 7900, durationMs: 3000 }, 8000);
+  assert.ok(overflow.leftPct + overflow.widthPct <= 100.0001);
+});
+
+test('撤销/重做：记录的是整份快照，栈深不超过 HISTORY_LIMIT', () => {
+  let history = track.emptyHistory();
+  const spec = baseSpec();
+  // 连按 30 次（比栈深多），每一"步"记一次快照。
+  for (let i = 0; i < 30; i++) history = track.recordHistory(history, { ...spec, revision: i });
+  assert.equal(history.past.length, track.HISTORY_LIMIT);
+  assert.ok(track.HISTORY_LIMIT >= 20, '设计要求撤销 ≥20 步');
+
+  const first = track.undoHistory(history, spec);
+  assert.ok(first);
+  assert.equal(first.spec.revision, 29);
+  assert.equal(first.history.future.length, 1);
+
+  const back = track.redoHistory(first.history, first.spec);
+  assert.ok(back);
+  assert.equal(back.spec, spec);
+});
+
+test('撤销栈为空时不返回结果（调用方据此禁用按钮，而不是静默无效）', () => {
+  assert.equal(track.undoHistory(track.emptyHistory(), baseSpec()), null);
+  assert.equal(track.redoHistory(track.emptyHistory(), baseSpec()), null);
+});
+
+test('一次编辑后重做栈被清空：新分支不该还能撤回到旧的未来', () => {
+  let history = track.recordHistory(track.emptyHistory(), baseSpec());
+  const undone = track.undoHistory(history, baseSpec());
+  assert.equal(undone.history.future.length, 1);
+  history = track.recordHistory(undone.history, undone.spec);
+  assert.equal(history.future.length, 0);
+});
+
+test('整页轨道不参与拖动（起点是页边界，没有可调空间）', () => {
+  const spec = {
+    ...baseSpec(),
+    tracks: [...baseSpec().tracks, { elementId: 'page-1', kind: 'page', clips: [{ id: 'p1', type: 'pageFade', startMs: 0, durationMs: 400, easing: 'linear', trigger: 'onEnter' }] }]
+  };
+  assert.deepEqual(
+    track.editableTracks(spec.tracks).map((item) => item.elementId),
+    ['title-1', 'bullet-1']
   );
 });

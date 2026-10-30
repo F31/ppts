@@ -29,6 +29,8 @@ import {
 } from './animationState';
 import { useDialogA11y } from './a11y';
 import { useI18n } from './i18n';
+import { AnimationTrackTimeline } from './AnimationTrackTimeline';
+import { emptyHistory, recordHistory, redoHistory, undoHistory, type TrackHistory } from './animationTrack';
 
 // 三级入口的第一级（tasks 3.2）：
 //
@@ -49,6 +51,7 @@ export function AnimationEditor({
   language,
   timelineKey,
   canEdit,
+  trackEditor,
   onClose
 }: {
   identity: ClientIdentity;
@@ -60,6 +63,8 @@ export function AnimationEditor({
   /** 预览用：时间轴键（页时长与分段偏移都来自它）。空 = 还没配音。 */
   timelineKey?: string;
   canEdit: boolean;
+  /** 元素级轨道编辑是否开通（capabilities.trackEditor）。未开通时只显示一句说明。 */
+  trackEditor: boolean;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -87,6 +92,8 @@ export function AnimationEditor({
   // 预设生成请求在途：连点两个预设会发出两个默认规格请求，后到的那个赢——
   // 结果是用户点了 A 却拿到 B。用序号丢弃过期响应。
   const generateSeq = useRef(0);
+  // 轨道编辑的撤销栈（只覆盖拖动/微调，不覆盖换预设与强度——那两件事用户自己能改回来）。
+  const [history, setHistory] = useState<TrackHistory>(emptyHistory);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -134,6 +141,44 @@ export function AnimationEditor({
 
   // 面板内所有可编辑控件共用一条禁用判据：锁定 / 无权限 / 正在保存。
   const disabled = state.editDisabled || saving;
+
+  // 一次编辑开始前压栈。拖拽只在 pointerdown 调一次——按像素记步会让撤销变成"一次撤 1ms"。
+  const beginEdit = useCallback(() => {
+    if (!draft || disabled) return;
+    setHistory((current) => recordHistory(current, draft));
+  }, [draft, disabled]);
+
+  const undo = useCallback(() => {
+    if (!draft || disabled) return;
+    const result = undoHistory(history, draft);
+    if (!result) return;
+    setHistory(result.history);
+    // 保留当前并发版本号：栈里的快照带的是"当时"的 revision，
+    // 直接还原会让下一次保存发出一个过期的 expectedRevision，变成必然 409。
+    setDraft({ ...result.spec, revision: draft.revision });
+  }, [draft, disabled, history]);
+
+  const redo = useCallback(() => {
+    if (!draft || disabled) return;
+    const result = redoHistory(history, draft);
+    if (!result) return;
+    setHistory(result.history);
+    setDraft({ ...result.spec, revision: draft.revision });
+  }, [draft, disabled, history]);
+
+  // Ctrl/Cmd+Z / Shift+Ctrl/Cmd+Z。只在开通轨道编辑时接管：没这个能力时
+  // 拦截撤销键会让人以为浏览器/输入框的撤销坏了。
+  useEffect(() => {
+    if (!trackEditor || disabled) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'z') return;
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [disabled, redo, trackEditor, undo]);
 
   const applyPreset = async (presetId: string) => {
     const seq = ++generateSeq.current;
@@ -361,6 +406,40 @@ export function AnimationEditor({
                   <p className="form-hint">
                     {t('editor.animationPageTrack', { count: pageTracks.reduce((n, track) => n + track.clips.length, 0) })}
                   </p>
+                )}
+              </section>
+
+              {/* 第三级：元素级轨道时间轴（受 capabilities.trackEditor 控制）。
+                  未开通时只说一句实话，不渲染一个点了没反应的占位控件。 */}
+              <section className="animation-block">
+                <div className="animation-block-head">
+                  <span className="eyebrow">{t('editor.animationTrackTimeline')}</span>
+                  {trackEditor && (
+                    <div className="track-history-actions">
+                      <button type="button" className="button-ghost" disabled={disabled || history.past.length === 0} onClick={undo}>
+                        {t('editor.animationUndo')}
+                      </button>
+                      <button type="button" className="button-ghost" disabled={disabled || history.future.length === 0} onClick={redo}>
+                        {t('editor.animationRedo')}
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {!trackEditor ? (
+                  <p className="form-hint">{t('editor.animationTrackLocked')}</p>
+                ) : anchors !== null && anchors.durationMs <= 0 ? (
+                  // 页时长未知时拖动没有参照系：允许拖就是一个必然被服务端拒绝的输入。
+                  <p className="form-hint">{t('editor.animationTrackNeedsVoice')}</p>
+                ) : (
+                  <AnimationTrackTimeline
+                    spec={draft}
+                    anchors={anchors}
+                    durationMs={anchors?.durationMs ?? 0}
+                    disabled={disabled}
+                    onBeforeEdit={beginEdit}
+                    onChange={setDraft}
+                    t={t}
+                  />
                 )}
               </section>
 
