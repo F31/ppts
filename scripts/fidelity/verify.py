@@ -21,6 +21,10 @@
     V4 盲区    有没有元素在 alignment 的 400ms 窗口**之前**就到位了——有则它的读数无效
     V5 判据    不提前 / 不滞后 / 有层次 / 不空转，逐条给数
     V6 新鲜度  报告比成片旧就作废（改了片子忘记重测，是最容易发生的假通过）
+    V7 观感    这一刻画面上有多少东西：内容覆盖不到一半持续多久、容器空框挂多久
+
+  V7 是后加的，也是唯一一组**不问元素、只问画面**的：前六组全过而人看着不对，
+  差异就在这里。元素各就各位，但每一刻只有半页内容。
 
 `--self-test` 是给这个门禁自己的：往合成数据里逐条注入六种故障，断言每种都能被红下来。
 没有它，门禁本身也会重演「看起来通过了」——这正是 5.6 的教训。
@@ -53,6 +57,9 @@ TOL_AV_S = 0.033          # 音画 lag（1 帧）
 TOL_DUR_MS = 400          # 成片与旁白原件的时长差
 MIN_MEAN_DB = -50.0       # 低于这个当静音轨
 MAX_SHARP = 0.7           # 互相关峰在 ±100ms 处高于此值 = 峰太宽，lag 不可信
+LAYOUT_COVER_MIN = 0.50   # 画面内容覆盖低于此值 = 观众看到半页
+LAYOUT_HOLD_MS = 1500     # 半页状态持续多久算问题
+AHEAD_MS = 2000           # 容器的框比最后一件内容早多久算「空框悬挂」
 
 
 def ffmpeg_bin():
@@ -102,7 +109,7 @@ def _bound_of(design):
     return out
 
 
-def audit(design, align, appear, film):
+def audit(design, align, appear, film, elems=None):
     """纯函数：只吃数据，不碰文件。返回 [(code, ok, msg, detail)]。
 
     拆出来的目的是 `--self-test` 能往合成数据里注入故障——门禁自己也得被验证。
@@ -215,7 +222,123 @@ def audit(design, align, appear, film):
                             % (e, r["settledMs"], floor))
     add("V5.4", not idle, "不空转：未提及的元素只在页末出现", idle)
 
+    # ---- V7 观感：元素都准时，不代表画面是完整的
+    if elems:
+        findings.extend(layout_findings(design, appear, elems))
+
     return findings
+
+
+def layout_findings(design, appear, elems):
+    """V7：**这一刻画面上有多少东西**。
+
+    前六组都在问「元素准时吗」，这一组问的是另一件事。5.5 / 5.6 两轮人工评分
+    都收不了口，而片子在前六组上全过 —— 差异就在这一层：元素各就各位，
+    但每一刻都只有半页内容。
+
+    两个数：
+
+    - 内容覆盖：已到位元素占本页内容面积的比例。**按面积、不按像素**——
+      像素法在页 1 上是瞎的（10.15s 时四条要点只出两条，卡片里空着三分之二，
+      但卡片底色已铺满，整页像素到位率 93%）。
+    - 空框悬挂：容器的框先出现、内容后填。观众看到的是「还没加载完」。
+
+    返回 [(code, ok, msg, detail)]，与 audit() 同形，便于合并。
+    """
+    out = []
+    app = {r["element"]: r for r in appear}
+    by_page = {e["index"]: e.get("elements") or [] for e in elems}
+    pages = design["pages"]
+    starts = {r["page"]: r["pageStart"] for r in appear}
+
+    for i, page in enumerate(pages):
+        idx = page["index"]
+        # 封面与谢幕不查：「从标题开始讲」本身就是版式，开头只有一行字不是缺陷。
+        if idx in (0, len(pages) - 1):
+            continue
+        els = by_page.get(idx) or []
+        if len(els) < 2:
+            continue
+        boxes = {e["id"]: e["box"] for e in els}
+        # 容器 = 完整包住至少一个别的元素的元素。它不计入分母：
+        # 卡片底板到位不等于内容到位，算进去会让「空盒子」看起来是满的。
+        containers = set()
+        for a, ba in boxes.items():
+            for b, bb in boxes.items():
+                if a != b and bb[0] >= ba[0] - 1 and bb[1] >= ba[1] - 1 \
+                        and bb[0] + bb[2] <= ba[0] + ba[2] + 1 \
+                        and bb[1] + bb[3] <= ba[1] + ba[3] + 1:
+                    containers.add(a)
+                    break
+        info = [e for e in els if e["id"] not in containers
+                and app.get(e["id"], {}).get("settledMs")]
+        if len(info) < 2:
+            continue
+
+        area = {e["id"]: float(e["box"][2] * e["box"][3]) for e in info}
+        total = sum(area.values()) or 1.0
+        t0 = starts.get(idx, 0)
+        nxt = starts.get(idx + 1)
+        t_end = nxt if nxt is not None else t0 + page["durationMs"]
+        times = sorted({app[e["id"]]["settledMs"] for e in info})
+        spans = []
+        for j, t in enumerate(times):
+            got = {e["id"] for e in info if app[e["id"]]["settledMs"] <= t}
+            end = times[j + 1] if j + 1 < len(times) else t_end
+            spans.append((t, end, sum(area[k] for k in got) / total, got))
+
+        best = (0.0, None, None, set())
+        run = None
+        for t0_, t1_, c, got in spans:
+            if c < LAYOUT_COVER_MIN:
+                if run is None:
+                    run = [t0_, t1_, got]
+                else:
+                    run[1], run[2] = t1_, got
+            elif run is not None:
+                if run[1] - run[0] > best[0]:
+                    best = (run[1] - run[0], run[0], run[1], run[2])
+                run = None
+        if run is not None and run[1] - run[0] > best[0]:
+            best = (run[1] - run[0], run[0], run[1], run[2])
+        dur, s0, s1, seen = best
+        ok = dur < LAYOUT_HOLD_MS
+        missing = [e["id"] for e in info if e["id"] not in seen]
+        out.append({
+            "code": "V7.1", "ok": ok,
+            "msg": ("第 %d 页无明显空窗（低覆盖最长 %.1fs）" % (idx, dur / 1000)) if ok
+                   else ("第 %d 页空窗 %.1fs" % (idx, dur / 1000)),
+            "detail": [] if ok else [
+                "%.2fs–%.2fs（%.1fs）画面上不到本页内容的 %d%%，缺：%s"
+                % (s0 / 1000, s1 / 1000, dur / 1000, int(LAYOUT_COVER_MIN * 100),
+                   "、".join(missing[:5]))],
+        })
+
+        # 空框悬挂：框开始出现 → 最后一件内容到位
+        for e in els:
+            if e["id"] not in containers:
+                continue
+            r = app.get(e["id"], {})
+            if not r.get("onsetMs"):
+                continue
+            inner = [app[k["id"]]["settledMs"] for k in els
+                     if k["id"] != e["id"] and app.get(k["id"], {}).get("settledMs")
+                     and k["box"][0] >= e["box"][0] - 1
+                     and k["box"][1] >= e["box"][1] - 1
+                     and k["box"][0] + k["box"][2] <= e["box"][0] + e["box"][2] + 1
+                     and k["box"][1] + k["box"][3] <= e["box"][1] + e["box"][3] + 1]
+            if not inner:
+                continue
+            gap = max(inner) - r["onsetMs"]
+            ok = gap <= AHEAD_MS
+            out.append({
+                "code": "V7.2", "ok": ok,
+                "msg": "%s 空框悬挂 %.1fs" % (e["id"], gap / 1000),
+                "detail": [] if ok else [
+                    "%s 的框 %.2fs 就开始出现，最后一件内容 %.2fs 才到位（空框挂了 %.1fs）"
+                    % (e["id"], r["onsetMs"] / 1000, max(inner) / 1000, gap / 1000)],
+            })
+    return out
 
 
 def summarize(design, align, appear):
@@ -244,6 +367,8 @@ def summarize(design, align, appear):
 
 def load_inputs(args):
     design = json.load(open(args.segments, encoding="utf-8"))
+    elems = (json.load(open(args.elements, encoding="utf-8"))
+             if args.elements and os.path.exists(args.elements) else None)
     align = json.load(open(args.alignment, encoding="utf-8"))
     appear = json.load(open(args.appearance, encoding="utf-8"))
     film = probe_film(args.film)
@@ -258,7 +383,7 @@ def load_inputs(args):
         s = check_av_sync.measure(args.film, args.ref_audio)
         film.update({"lag": s["lag"], "sharp": s["sharp"],
                      "refDurMs": round(s["durRef"] * 1000)})
-    return design, align, appear, film
+    return design, align, appear, film, elems
 
 
 def stale(design_paths, film_mtime):
@@ -319,12 +444,46 @@ def _fixture():
     ]
     film = {"hasAudio": True, "durMs": 6000, "refDurMs": 6010, "meanDb": -26.0,
             "lag": 0.0, "sharp": 0.44}
-    return design, align, appear, film
+    # elems 给空：只有一页，V7 会因「封面页不查」整组跳过。
+    # V7 的故障注入用单独的 _layout_fixture()，见 _fixture 之后。
+    return design, align, appear, film, []
+
+
+def _layout_fixture(late_ms):
+    """三页（封面/内容/谢幕），内容页有一个容器包着两件内容。
+
+    `late_ms` 是第二件内容比第一件晚多久到位 —— 它同时决定两件事：
+    覆盖不到一半持续多久（V7.1）和空框挂多久（V7.2）。
+    """
+    design = {"pages": [
+        {"index": 0, "durationMs": 2000, "segments": [
+            {"id": "s0", "startMs": 0, "durationMs": 2000, "bind": []}]},
+        {"index": 1, "durationMs": 8000, "segments": [
+            {"id": "s1", "startMs": 0, "durationMs": 8000, "bind": []}]},
+        {"index": 2, "durationMs": 2000, "segments": [
+            {"id": "s2", "startMs": 0, "durationMs": 2000, "bind": []}]},
+    ]}
+    appear = [
+        # 容器先出（onset 2400），内容 2600 / 2600+late_ms
+        {"element": "box", "page": 1, "pageStart": 2000, "settledMs": 2700,
+         "onsetMs": 2400, "always": False, "preSegDiff": None},
+        {"element": "x", "page": 1, "pageStart": 2000, "settledMs": 2600,
+         "onsetMs": 2500, "always": False, "preSegDiff": None},
+        {"element": "y", "page": 1, "pageStart": 2000, "settledMs": 2600 + late_ms,
+         "onsetMs": 2500 + late_ms, "always": False, "preSegDiff": None},
+    ]
+    # x 占内容面积 40%、y 占 60%：只在 x 到位时覆盖 40% < 50%，V7.1 会看见。
+    elems = [{"index": 1, "elements": [
+        {"id": "box", "kind": "shape", "box": [0, 0, 1000, 600]},
+        {"id": "x", "kind": "bullet", "box": [50, 50, 900, 66]},
+        {"id": "y", "kind": "bullet", "box": [50, 400, 900, 100]},
+    ]}]
+    return design, appear, elems
 
 
 def self_test():
     """往合成数据里逐条注入故障，断言门禁能红——门禁自己也要有回归。"""
-    design, align, appear, film = _fixture()
+    design, align, appear, film, elems = _fixture()
     cases = []
 
     def red(code, mutate):
@@ -333,11 +492,11 @@ def self_test():
         p = json.loads(json.dumps(appear))
         f = dict(film)
         mutate(d, a, p, f)
-        got = {x["code"]: x["ok"] for x in audit(d, a, p, f)}
+        got = {x["code"]: x["ok"] for x in audit(d, a, p, f, elems)}
         cases.append((code, got.get(code) is False, got.get(code)))
 
     # 0 基线：不许有任何一项红
-    base = audit(design, align, appear, film)
+    base = audit(design, align, appear, film, elems)
     bad = [x["code"] for x in base if not x["ok"]]
     cases.append(("baseline", not bad, bad))
 
@@ -361,6 +520,16 @@ def self_test():
     red("V5.3", lambda d, a, p, f: a[1].update(delayMs=240))
     red("V5.4", lambda d, a, p, f: p[3].update(always=True))
     red("V5.5", lambda d, a, p, f: p[0].update(settledMs=None))
+
+    # V7：内容页上第二件内容晚 4s 才到 —— 半页空了 4s，框也挂了 4s
+    d7, p7, e7 = _layout_fixture(late_ms=4000)
+    got7 = {x["code"]: x["ok"] for x in layout_findings(d7, p7, e7)}
+    cases.append(("V7.1", got7.get("V7.1") is False, got7.get("V7.1")))
+    cases.append(("V7.2", got7.get("V7.2") is False, got7.get("V7.2")))
+    # 反向：晚 600ms 到（正常的分步出现），两项都得绿
+    d7b, p7b, e7b = _layout_fixture(late_ms=600)
+    got7b = {x["code"]: x["ok"] for x in layout_findings(d7b, p7b, e7b)}
+    cases.append(("V7-normal", all(got7b.values()), got7b))
 
     # 新鲜度单独测：报告比成片旧
     with tempfile.TemporaryDirectory() as tmp:
@@ -410,12 +579,13 @@ def main():
             print("缺报告：%s（用 --rerun 生成）" % p)
             return 2
 
-    design, align, appear, film = load_inputs(args)
-    findings = audit(design, align, appear, film)
-    findings.append({"code": "V6.1", "ok": not stale([args.alignment, args.appearance],
-                                                     film["mtime"]),
+    design, align, appear, film, elems = load_inputs(args)
+    findings = audit(design, align, appear, film, elems)
+    # V7 依赖 elements.json：它改了但没重测，覆盖率的面积权重就对着旧版面算。
+    fresh_inputs = [args.alignment, args.appearance, args.elements]
+    findings.append({"code": "V6.1", "ok": not stale(fresh_inputs, film["mtime"]),
                      "msg": "报告不旧于成片",
-                     "detail": stale([args.alignment, args.appearance], film["mtime"])})
+                     "detail": stale(fresh_inputs, film["mtime"])})
 
     s = summarize(design, align, appear)
     print("成片 %s · %.3fs · 音轨 %s · mean %s dB" % (
