@@ -14,7 +14,14 @@ export function animationReasonText(reason: string | undefined, t: Translate): s
   switch (code) {
     case 'animation_not_available':
     case 'animation_disabled_by_deployment':
+    case 'animation_disabled_by_tenant':
+    case 'animation_not_in_rollout':
+      // 对用户是同一句话「这个功能没开通」：是没进灰度、被管理员关掉、还是部署没上，
+      // 都是他无法自行解决的事。运维侧的区分在 capabilities.source / reason 里仍然拿得到。
       return t('editor.exportAnimationNotEnabled');
+    case 'animation_policy_unreadable':
+      // 这一条刻意与「没开通」分开：它是服务侧故障，用户重试或找管理员处理的方式不同。
+      return t('editor.exportAnimationServiceDown');
     case 'renderer_not_configured':
       return t('editor.exportAnimationNotConfigured');
     case 'renderer_unavailable':

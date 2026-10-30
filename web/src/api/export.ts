@@ -59,10 +59,27 @@ export type AnimationExportPage = {
   revision: number;
 };
 
+// AnimationCapability 是租户级能力快照（M4）。
+//
+// enabled 是「有没有资格」，与 AnimationExportOptions.enabled（「此刻真的能出动画」，含渲染服务可达）
+// 是两件事：服务挂了时前者 true、后者 false，正好告诉前端「不是没开通，是服务不可用」。
+export type AnimationCapability = {
+  enabled: boolean;
+  trackEditor: boolean;
+  preview: boolean;
+  /** deploy / tenant / rollout / default / policy */
+  source: string;
+  /** 灰度桶 0–99；-1 表示未计算 */
+  bucket: number;
+  reason?: string;
+};
+
 export type AnimationExportOptions = {
   enabled: boolean;
-  /** 不可用原因码：animation_not_available / animation_disabled_by_deployment / renderer_not_configured / renderer_unavailable: ... */
+  /** 不可用原因码：animation_not_available / animation_disabled_by_deployment / animation_disabled_by_tenant /
+   *  animation_not_in_rollout / animation_policy_unreadable / renderer_not_configured / renderer_unavailable: ... */
   reason?: string;
+  capabilities?: AnimationCapability;
   pages?: AnimationExportPage[];
   hasTimeline?: boolean;
 };
