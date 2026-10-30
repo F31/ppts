@@ -81,6 +81,12 @@
    "disposition": "keep-both",
    "reason": "与 ExportService.GetArtifact 构成双写，但**前端零调用 RPC 侧**（用 GET /artifacts 与 /artifacts/{id}/manifest）。RPC 侧保留不删；DELETE /artifacts/{id} 是 owner 级且前端在用，迁移前不可下线。"
   },
+  "share-serve": {
+   "name": "成品分享页匿名访问（M6-3）",
+   "prefixes": ["/s/"],
+   "disposition": "keep",
+   "reason": "**匿名**读：GET /s/{token} 302 到 /s/{token}/，GET /s/{token}/{path...} 出静态包，POST /s/{token}/unlock 校验口令。Connect 所有方法都要求鉴权主体，没有匿名入口可收敛；且必须原生写响应头才能给每个响应打 CSP/nosniff/Referrer-Policy（design ADR-7）。仅在 artifacts 实现 ShareLinkStore 时整段挂载。M6-3 第 2 段新增时漏登记，本次补登。"
+  },
   "jobs": {
    "name": "任务查询",
    "prefixes": ["/jobs/"],
