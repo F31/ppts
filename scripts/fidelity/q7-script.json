@@ -1,0 +1,179 @@
+{
+ "note": "Q7 实验样片的讲解词与元素绑定。绑定是**手写的规则版**（元素 → 段落），不是模型生成；本文件就是 Q7 第 1 件事的候选方案 A 的输入形态。未出现在任何 bind 里的元素 = 讲解没提到它，plan 会给它一个页末 atTime 淡入，用于对照「不空转」判据。",
+ "voice": "zh-CN-YunxiNeural",
+ "rate": "+0%",
+ "leadMs": 220,
+ "gapMs": 150,
+ "tailMs": 700,
+ "minPageMs": 2500,
+ "pages": [
+  {
+   "index": 0,
+   "slideId": "slide-0",
+   "segments": [
+    {
+     "id": "s0-1",
+     "text": "智讲，PPT 渲染服务。",
+     "bind": [
+      {
+       "elementId": "p0-title",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s0-2",
+     "text": "从版式到视频，像素级一致。",
+     "bind": [
+      {
+       "elementId": "p0-sub",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 1,
+   "slideId": "slide-1",
+   "segments": [
+    {
+     "id": "s1-1",
+     "text": "本期四件事。",
+     "bind": [
+      {
+       "elementId": "p1-title",
+       "offsetMs": 0
+      },
+      {
+       "elementId": "p1-card",
+       "offsetMs": 140
+      }
+     ]
+    },
+    {
+     "id": "s1-2",
+     "text": "稳定出片，两次渲染逐字节相同。",
+     "bind": [
+      {
+       "elementId": "p1-item0",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s1-3",
+     "text": "资源可控，峰值二点七 GB。",
+     "bind": [
+      {
+       "elementId": "p1-item1",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s1-4",
+     "text": "字体可验，字集写进门禁。",
+     "bind": [
+      {
+       "elementId": "p1-item2",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s1-5",
+     "text": "可观测，失败能定位。",
+     "bind": [
+      {
+       "elementId": "p1-item3",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 2,
+   "slideId": "slide-2",
+   "segments": [
+    {
+     "id": "s2-1",
+     "text": "时间都花在哪。",
+     "bind": [
+      {
+       "elementId": "p2-title",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s2-2",
+     "text": "两核一百七十四秒，四核一百三十一秒。",
+     "bind": [
+      {
+       "elementId": "p2-chart",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 3,
+   "slideId": "slide-3",
+   "segments": [
+    {
+     "id": "s3-1",
+     "text": "五段流水线，每段都有独立的重试。",
+     "bind": [
+      {
+       "elementId": "p3-title",
+       "offsetMs": 0
+      },
+      {
+       "elementId": "p3-flow",
+       "offsetMs": 700
+      }
+     ]
+    },
+    {
+     "id": "s3-2",
+     "text": "右边是部署视图。",
+     "bind": [
+      {
+       "elementId": "p3-hero",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 4,
+   "slideId": "slide-4",
+   "segments": [
+    {
+     "id": "s4-1",
+     "text": "谢谢。",
+     "bind": [
+      {
+       "elementId": "p4-title",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s4-2",
+     "text": "数据都可以复现。",
+     "bind": [
+      {
+       "elementId": "p4-contact",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

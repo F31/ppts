@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Q7 · 动效是否跟着讲解走</title>
+<style>
+:root{
+  --bg:#f7f9fc; --card:#fff; --ink:#16202e; --muted:#5b6b80; --line:#dde5ef;
+  --accent:#2e6fb8; --accent2:#0f766e; --warn:#b45309;
+}
+*{box-sizing:border-box}
+body{margin:0;padding:24px;background:var(--bg);color:var(--ink);
+  font:15px/1.6 system-ui,"Microsoft YaHei",sans-serif}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:15px;margin:0 0 10px;color:var(--muted);font-weight:600;
+  letter-spacing:.02em;text-transform:none}
+.wrap{max-width:1240px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:16px 18px;margin-bottom:16px}
+.id{display:flex;flex-wrap:wrap;gap:18px;font-size:13px;color:var(--muted)}
+.id b{color:var(--ink);font-weight:600}
+.mono{font-family:ui-monospace,Consolas,monospace}
+.grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:16px}
+@media(max-width:960px){.grid{grid-template-columns:1fr}}
+video{width:100%;border-radius:8px;background:#000;display:block}
+.now{margin-top:10px;padding:10px 12px;background:#eef4fb;border-radius:8px;
+  font-size:13px;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.now .t{font-family:ui-monospace,Consolas,monospace;color:var(--accent);font-weight:600}
+.tl{position:relative;height:46px;margin-top:12px;background:#f0f4f9;
+  border-radius:6px;overflow:hidden}
+.seg{position:absolute;top:6px;height:34px;border:0;border-left:2px solid #fff;
+  background:#cfe0f2;color:#24405f;font-size:11px;cursor:pointer;overflow:hidden;
+  white-space:nowrap;text-align:left;padding:0 4px;border-radius:3px}
+.seg:hover{background:#b9d3ec}
+.seg.on{background:var(--accent);color:#fff}
+.seg.unbound{background:#e7ecf3}
+.tl .page{position:absolute;top:0;bottom:0;width:2px;background:#8ea6c2}
+.tl-cap{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);
+  margin-top:4px}
+ul.bind{margin:6px 0 0;padding-left:18px;font-size:13px}
+ul.bind li{margin:2px 0}
+.tag{display:inline-block;padding:1px 6px;border-radius:4px;background:#eef4fb;
+  color:#24405f;font-size:11px;margin-left:6px}
+.tag.off{background:#fdf1e3;color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.rate{display:flex;gap:6px}
+.rate label{border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer;
+  font-size:12px;color:var(--muted)}
+.rate input{display:none}
+.rate input:checked + span{color:#fff;background:var(--accent);border-radius:4px;
+  padding:0 6px;margin:-2px -6px}
+textarea{width:100%;min-height:64px;border:1px solid var(--line);border-radius:8px;
+  padding:8px;font:13px/1.5 inherit;resize:vertical}
+button.act{background:var(--accent);color:#fff;border:0;border-radius:8px;
+  padding:8px 14px;font-size:13px;cursor:pointer}
+button.act.ghost{background:#fff;color:var(--accent);border:1px solid var(--accent)}
+.hint{font-size:12px;color:var(--muted)}
+.pages{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.pages img{width:132px;border:1px solid var(--line);border-radius:6px;cursor:pointer}
+.pages img.on{outline:2px solid var(--accent)}
+pre.out{background:#0f172a;color:#dbe7f5;padding:12px;border-radius:8px;
+  font-size:12px;overflow:auto;white-space:pre-wrap;margin:10px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Q7 · 动效是否跟着讲解走</h1>
+  <p class="hint">这一版样片有配音。段落开口由 TTS 逐段实测，元素的起播点绑在段落上（<span class="mono">withSegment:&lt;id&gt;</span>），
+  不是按元素序号排的固定毫秒。评的是「讲到哪，画面跟到哪」。</p>
+
+  <section class="card">
+    <div class="id" id="identity"><span>读取成片信息…</span></div>
+  </section>
+
+  <div class="grid">
+    <section class="card">
+      <h2>成片（带音轨）</h2>
+      <video id="film" controls preload="metadata" src="/film_C_narrated.mp4"></video>
+      <div class="now">
+        <span class="t" id="nowT">0.00s</span>
+        <span id="nowText">—</span>
+      </div>
+      <div class="tl" id="tl"></div>
+      <div class="tl-cap"><span>0s</span><span id="tlEnd">—</span></div>
+      <p class="hint">点段落跳转。播放时蓝块是正在讲的段落；<b>元素应该在这一刻之后才出现</b>，而不是页首一起铺满。</p>
+    </section>
+
+    <section class="card">
+      <h2>这一段的预期</h2>
+      <div id="expect"><p class="hint">—</p></div>
+      <div id="unbound" class="hint"></div>
+      <h2 style="margin-top:14px">源页</h2>
+      <div class="pages" id="pages"></div>
+      <p class="hint" style="margin-top:8px">联系表：<a href="/film_C_storyboard.png" target="_blank">film_C_storyboard.png</a></p>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>打分 · 第 7 项「该动的时候才动」</h2>
+    <p class="hint">1–5 分，3 分 = 可用。只对能定位到「具体秒数 + 具体元素」的问题扣分；说不出位置的观感写进备注，不计分。
+    每条判据的锚点见 <span class="mono">scripts/review/RUBRIC.md §五</span>。</p>
+    <table id="sheet">
+      <thead><tr><th style="width:120px">判据</th><th>怎么判</th><th style="width:190px">分</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p style="margin:12px 0 6px"><b>扣分定位</b><span class="hint">（秒数 + 元素；没有就写「无」）</span></p>
+    <textarea id="locate" placeholder="例：第 2 页 4.50s，第二条要点比语音晚了约 4 帧"></textarea>
+    <p style="margin:12px 0 6px"><b>备注</b><span class="hint">（不计分）</span></p>
+    <textarea id="note"></textarea>
+    <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">
+      <button class="act" id="export">复制为 Markdown</button>
+      <button class="act ghost" id="save">存到本机</button>
+      <span class="hint" id="saveMsg" style="align-self:center"></span>
+    </div>
+    <pre class="out" id="out" hidden></pre>
+  </section>
+</div>
+
+<script>
+const CRITERIA = [
+  ["不提前", "元素不早于它所在段落的开口。早了就是剧透——话还没说，答案先摆出来。"],
+  ["不滞后", "段落开口后 3 帧（约 100ms）内开始出现。超过就是「讲到了还没出」。"],
+  ["有层次", "同一段里多个元素仍有先后（stagger），不是同时蹦出来。"],
+  ["不空转", "讲解没提到的元素不在页首铺满；本片把它们放到页末淡入，作为对照。"],
+];
+
+const state = { meta: null, segs: [], starts: [], cur: -2, scores: {} };
+
+function fmt(ms) { return (ms / 1000).toFixed(2) + "s"; }
+
+function el(tag, props = {}, kids = []) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "class") n.className = v;
+    else if (k === "text") n.textContent = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const k of kids) n.appendChild(k);
+  return n;
+}
+
+async function boot() {
+  const meta = await (await fetch("/meta.json")).json();
+  state.meta = meta;
+  const f = meta.film;
+  const id = document.getElementById("identity");
+  id.innerHTML = "";
+  if (!f) { id.appendChild(el("span", { text: "找不到成片 film_C_narrated.mp4" })); return; }
+  id.appendChild(el("span", {}, [el("b", { text: f.name })]));
+  id.appendChild(el("span", {}, [el("b", { text: "sha256 " }), el("span", { class: "mono", text: f.sha256.slice(0, 16) + "…" })]));
+  id.appendChild(el("span", {}, [el("b", { text: "大小 " }), el("span", { text: (f.bytes / 1048576).toFixed(2) + " MB" })]));
+
+  const s = meta.segments;
+  if (!s) { id.appendChild(el("span", { text: "缺少 segments.json，无法生成段落表" })); return; }
+  let cursor = 0;
+  for (const p of s.pages) {
+    state.starts.push(cursor);
+    for (const seg of p.segments) state.segs.push({ ...seg, page: p.index, pageStart: cursor });
+    cursor += p.durationMs;
+  }
+  id.appendChild(el("span", {}, [el("b", { text: "时长 " }), el("span", { text: (cursor / 1000).toFixed(2) + "s / " + state.segs.length + " 段 / " + s.pages.length + " 页" })]));
+  id.appendChild(el("span", {}, [el("b", { text: "配音 " }), el("span", { text: s.voice + "  " + s.rate })]));
+
+  document.getElementById("tlEnd").textContent = (cursor / 1000).toFixed(2) + "s";
+  renderTimeline(cursor);
+  renderPages(s.pages.length);
+  renderSheet();
+  const v = document.getElementById("film");
+  v.addEventListener("timeupdate", () => onTime(v.currentTime * 1000));
+  v.addEventListener("loadedmetadata", () => onTime(v.currentTime * 1000));
+  // ?t=7.2 直接定位：对表时要说「回看 7.2s」，能把链接发给另一位评审。
+  const t = new URLSearchParams(location.search).get("t");
+  if (t !== null && !Number.isNaN(parseFloat(t))) {
+    v.addEventListener("loadedmetadata", () => { v.currentTime = parseFloat(t); onTime(parseFloat(t) * 1000); });
+  }
+}
+
+function renderTimeline(total) {
+  const tl = document.getElementById("tl");
+  tl.innerHTML = "";
+  for (const p of state.meta.segments.pages) {
+    const left = (state.starts[p.index] / total) * 100;
+    tl.appendChild(el("div", { class: "page", style: "left:" + left + "%" }));
+  }
+  state.segs.forEach((seg, i) => {
+    const start = seg.pageStart + seg.startMs;
+    const left = (start / total) * 100;
+    const width = Math.max(1.2, (seg.durationMs / total) * 100);
+    const b = el("button", {
+      class: "seg" + (seg.bind && seg.bind.length ? "" : " unbound"),
+      style: "left:" + left + "%;width:" + width + "%",
+      title: seg.id + " · " + fmt(start) + " · " + seg.text,
+      text: seg.id.replace(/^s(\d)-/, "$1."),
+      onclick: () => { const v = document.getElementById("film"); v.currentTime = start / 1000 + 0.02; v.play(); },
+    });
+    b.dataset.i = i;
+    tl.appendChild(b);
+  });
+}
+
+function renderPages(n) {
+  const box = document.getElementById("pages");
+  box.innerHTML = "";
+  for (let i = 0; i < n; i++) {
+    const img = el("img", { src: "/fid/pages/p" + String(i).padStart(3, "0") + ".png", alt: "p" + i });
+    img.dataset.i = i;
+    box.appendChild(img);
+  }
+}
+
+function onTime(ms) {
+  document.getElementById("nowT").textContent = (ms / 1000).toFixed(2) + "s";
+  let idx = -1;
+  for (let i = 0; i < state.segs.length; i++) {
+    const start = state.segs[i].pageStart + state.segs[i].startMs;
+    if (ms >= start - 20) idx = i; else break;
+  }
+  if (idx === state.cur) return;
+  state.cur = idx;
+  document.querySelectorAll(".seg").forEach((b) => b.classList.toggle("on", Number(b.dataset.i) === idx));
+  showExpect(idx);
+}
+
+function showExpect(idx) {
+  const box = document.getElementById("expect");
+  const ub = document.getElementById("unbound");
+  box.innerHTML = ""; ub.textContent = "";
+  if (idx < 0) { box.appendChild(el("p", { class: "hint", text: "还没进入第一段。" })); return; }
+  const seg = state.segs[idx];
+  const start = seg.pageStart + seg.startMs;
+  document.getElementById("nowText").textContent = seg.text;
+  box.appendChild(el("p", {}, [
+    el("span", { class: "mono", text: seg.id }),
+    el("span", { class: "tag", text: fmt(start) + " – " + fmt(start + seg.durationMs) }),
+    el("span", { class: "tag", text: "第 " + (seg.page + 1) + " 页" }),
+  ]));
+  const ul = el("ul", { class: "bind" });
+  const bound = new Set();
+  for (const ref of seg.bind || []) {
+    bound.add(ref.elementId);
+    ul.appendChild(el("li", {}, [
+      el("span", { class: "mono", text: ref.elementId }),
+      ref.offsetMs ? el("span", { class: "tag off", text: "段内 +" + ref.offsetMs + "ms" }) : el("span", { class: "tag", text: "段开口即出" }),
+    ]));
+  }
+  if (!(seg.bind || []).length) ul.appendChild(el("li", { class: "hint", text: "这一段没有绑定元素。" }));
+  box.appendChild(el("p", { class: "hint", text: "预期在这一段开口后出现：" }));
+  box.appendChild(ul);
+  document.querySelectorAll(".pages img").forEach((im) => im.classList.toggle("on", Number(im.dataset.i) === seg.page));
+
+  const page = state.meta.segments.pages[seg.page];
+  const all = [];
+  for (const s2 of page.segments) for (const r of s2.bind || []) all.push(r.elementId);
+  const known = (state.meta.elements && state.meta.elements[seg.page]
+    ? state.meta.elements[seg.page].elements : []).map((e) => e.id);
+  const unbound = document.getElementById("unbound");
+  const missing = known.filter((id2) => !all.includes(id2));
+  if (missing.length) {
+    unbound.textContent = "本页讲解没提到：" + missing.join("、") +
+      "（页末才出现，作为「不空转」对照）";
+  }
+}
+
+function renderSheet() {
+  const tb = document.querySelector("#sheet tbody");
+  tb.innerHTML = "";
+  CRITERIA.forEach(([name, how], i) => {
+    const cells = el("div", { class: "rate" });
+    for (let s = 1; s <= 5; s++) {
+      const id = "c" + i + "_" + s;
+      const lab = el("label", { for: id }, [
+        el("input", { type: "radio", name: "c" + i, id, value: String(s), onchange: () => { state.scores[name] = s; } }),
+        el("span", { text: String(s) }),
+      ]);
+      cells.appendChild(lab);
+    }
+    tb.appendChild(el("tr", {}, [
+      el("td", {}, [el("b", { text: name })]),
+      el("td", { class: "hint", text: how }),
+      el("td", {}, [cells]),
+    ]));
+  });
+}
+
+function buildMarkdown() {
+  const m = state.meta || {};
+  const f = m.film || {};
+  const lines = [
+    "日期：" + new Date().toISOString().slice(0, 10),
+    "成片：" + (f.name || "?") + "（sha256 " + (f.sha256 || "").slice(0, 8) + "…）",
+    "口径：scripts/review/RUBRIC.md §五（第 7 项「该动的时候才动」）",
+    "",
+    "| 判据 | 分 |",
+    "|---|---|",
+  ];
+  for (const [name] of CRITERIA) lines.push("| " + name + " | " + (state.scores[name] ?? "-") + " |");
+  lines.push("");
+  lines.push("扣分定位：" + (document.getElementById("locate").value.trim() || "（无）"));
+  lines.push("备注（不计分）：" + (document.getElementById("note").value.trim() || "（无）"));
+  const all = CRITERIA.map(([n]) => state.scores[n]).filter((x) => x != null);
+  const verdict = all.length < CRITERIA.length ? "未定"
+    : Math.min(...all) >= 3 && all.reduce((a, b) => a + b, 0) / all.length >= 3.5 ? "可用" : "需返工";
+  lines.push("结论：" + verdict);
+  return lines.join("\n");
+}
+
+document.getElementById("export").addEventListener("click", async () => {
+  const text = buildMarkdown();
+  const out = document.getElementById("out");
+  out.hidden = false;
+  out.textContent = text;
+  try { await navigator.clipboard.writeText(text); out.textContent = text + "\n\n（已复制到剪贴板）"; } catch (e) {}
+});
+
+document.getElementById("save").addEventListener("click", () => {
+  const lines = state.meta ? state.meta.segments.pages : [];
+  // 无后端：落到 localStorage，界面上明确说是本机、不落库。
+  const key = "ppts.q7.score";
+  localStorage.setItem(key, JSON.stringify({ at: new Date().toISOString(), md: buildMarkdown() }));
+  document.getElementById("saveMsg").textContent = "已存到本机浏览器（localStorage），不会上传。";
+});
+
+boot();
+</script>
+</body>
+</html>

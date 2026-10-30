@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html
+import json
 import mimetypes
 import re
 import sys
@@ -48,34 +49,14 @@ def sha256_prefix(path: Path, n: int = 8) -> str:
     return h.hexdigest()[:n]
 
 
-def verify(root: Path) -> bool:
-    ok = True
-    for name, want in EXPECTED.items():
-        path = root / name
-        if not path.exists():
-            print(f"  ✗ 缺文件 {name}", file=sys.stderr)
-            ok = False
-            continue
-        got = sha256_prefix(path)
-        mark = "✓" if got == want else "✗"
-        if got != want:
-            ok = False
-        print(f"  {mark} {name}  sha256 {got}…（评审包登记 {want}…）")
-    if not ok:
-        print(
-            "  成片与评审包登记的不一致。用 --no-verify 强行继续只能用于调试——\n"
-            "  拿一份没登记过的片子打分，结论对不上 review-packet.md。",
-            file=sys.stderr,
-        )
-    return ok
-
-
 class Handler(BaseHTTPRequestHandler):
     server_version = "ppts-review/1.0"
     # HTTP/1.1：视频拖动会连开多条连接，1.0 每次都要重连、起播更慢。
     # 前提是所有响应都带准确的 Content-Length——这里每条路径都带了。
     protocol_version = "HTTP/1.1"
     root: Path = Path("tmp/5.5")
+    page: Path = REVIEW_PAGE
+    film: str = "film_B_tier_30s.mp4"
 
     def log_message(self, fmt: str, *args) -> None:  # 静音：评审时刷屏只会挡住真正的报错
         pass
@@ -93,6 +74,9 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._send_page(head_only)
             return
+        if path == "/meta.json":
+            self._send_meta(head_only)
+            return
         target = (self.root / path.lstrip("/")).resolve()
         try:
             target.relative_to(self.root.resolve())
@@ -104,13 +88,49 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_file(target, head_only)
 
+    def _send_meta(self, head_only: bool) -> None:
+        """页面靠它渲染身份与段落表：评分要对得上片子，就不能把 sha256 抄在 HTML 里。
+
+        HTML 里写死的哈希只会在换片子后继续显示旧值——那是比没有更糟的「看起来对」。
+        """
+        out = {"film": None, "segments": None, "elements": None}
+        film = self.root / self.film
+        if film.is_file():
+            out["film"] = {
+                "name": self.film,
+                "sha256": sha256_prefix(film, 64),
+                "bytes": film.stat().st_size,
+            }
+        seg = self.root / "segments.json"
+        if seg.is_file():
+            try:
+                out["segments"] = json.loads(seg.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                out["segmentsError"] = str(exc)
+        # 元素清单是「哪些元素被讲解提到」的补集算料：段落里只记了绑定的，
+        # 没绑定的那些要靠它推出来，否则页面没法指出「这个元素讲解没提到」。
+        elems = self.root / "fid" / "elements.json"
+        if elems.is_file():
+            try:
+                out["elements"] = json.loads(elems.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                pass
+        body = json.dumps(out, ensure_ascii=False).encode("utf-8")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
     # ---- 评审页 ----
 
     def _send_page(self, head_only: bool) -> None:
-        if not REVIEW_PAGE.exists():
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "review.html missing")
+        if not self.page.exists():
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "review page missing")
             return
-        body = REVIEW_PAGE.read_bytes()
+        body = self.page.read_bytes()
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -180,8 +200,10 @@ def main() -> int:
     except AttributeError:
         pass
 
-    ap = argparse.ArgumentParser(description="5.5 观感盲评本地服务")
+    ap = argparse.ArgumentParser(description="观感盲评本地服务")
     ap.add_argument("--root", default="tmp/5.5", help="评审素材目录（默认 tmp/5.5）")
+    ap.add_argument("--page", default=str(REVIEW_PAGE), help="评审页 HTML（默认 review.html）")
+    ap.add_argument("--film", default="film_B_tier_30s.mp4", help="评审对象文件名")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8088)
     ap.add_argument("--no-verify", action="store_true", help="跳过成片 sha256 校验")
@@ -193,17 +215,37 @@ def main() -> int:
         return 2
 
     print("成片身份：")
-    verified = verify(root)
+    film = root / args.film
+    if not film.is_file():
+        print(f"  ✗ 缺成片 {args.film}", file=sys.stderr)
+        if not args.no_verify:
+            return 3
+        verified = True
+    else:
+        got = sha256_prefix(film)
+        want = EXPECTED.get(args.film)
+        if want is None:
+            # 没登记过的片子照样能起服务，但必须把实际值打出来——
+            # 这一行就是评审记录里要写的那一行，抄错等于分对不上账。
+            print(f"  ? {args.film}  sha256 {got}…（未在评审包登记，请把此值写进记录）")
+            verified = True
+        else:
+            mark = "✓" if got == want else "✗"
+            print(f"  {mark} {args.film}  sha256 {got}…（评审包登记 {want}…）")
+            verified = got == want
     if not verified and not args.no_verify:
         print("\n校验未通过，不启动。确认片子无误后再用 --no-verify。", file=sys.stderr)
         return 3
 
     Handler.root = root
+    Handler.page = Path(args.page).resolve()
+    Handler.film = args.film
     httpd = ThreadingHTTPServer((args.host, args.port), Handler)
     url = f"http://{args.host}:{args.port}/"
     pages = len(list((root / "fid" / "pages").glob("*.png")))
+    board = root / (Path(args.film).stem + "_storyboard.png")
     print(f"\n素材目录：{root}")
-    print(f"源页：{pages} 张；联系表：{'有' if (root / 'film_B_storyboard.png').exists() else '无'}")
+    print(f"源页：{pages} 张；联系表：{'有' if board.exists() else '无'}")
     print(f"评审页：{html.escape(url)}")
     print("Ctrl+C 结束。\n")
     try:
