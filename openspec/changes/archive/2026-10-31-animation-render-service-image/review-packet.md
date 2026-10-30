@@ -1347,3 +1347,55 @@ ffprobe 的帧数、关键帧位置逐项对齐（`tmp/q7/probe_enc`，每次渲
 - worker 侧 ffmpeg 静态降级片段不在契约内（见上表第三行）。
 - 需求 2、5 的镜像侧（Chrome 版本固定、非 root、只读 rootfs、限额）仍只有配置与
   文档。要真验证得跑容器，而容器重建这条路目前还不通。
+
+### 8.18 归档前的三处收口（2026-10-31 早）
+
+#### 一、7.1 选了「接受」：把代价变成一句能被断言的话
+
+`backend = none` 时转场一并失效，是 ADR-1「转场与元素动画共用一次合成」的直接代价。
+三条出路里选了 ①（接受），理由不是省事，而是另外两条都要改已经验证过的语义：
+
+- ②「只含转场也起渲染服务」：这类导出本来零 Chromium 成本，改完等于用一台机器的
+  常驻内存换一个 300ms 的淡入；
+- ③ 真做 `xfade`：重叠语义会缩短每页时长，音频时间轴、逐页时长校验、`-c copy` 拼接
+  三处跟着改——把「转场不改时长」这个已经写进 `render-plan` 的约定推翻。
+
+接受不等于不处理。落点三处，缺一条这句话就会在半年后消失：
+
+| 落点 | 内容 |
+|---|---|
+| `web/src/i18n/{zh,en}.json` | `editor.exportAnimationNotConfigured` 补一句「静态版不含转场，页与页之间为硬切」 |
+| `renderer-image` 规格 | 新增场景「用户以为转场还在」：动画选项旁 MUST 出现该说明 |
+| `web/animation-check.mjs` | 新增断言：中英文案必须提到转场（30 → 31 项） |
+
+断言只要求「说了转场这回事」，不锁句子——文案可以改，但不能把这条承诺改没。
+
+#### 二、5.9 按已知限制关闭，但没有把它从规格里删掉
+
+5.9（部分重叠的兄弟元素互相带出）此前一直挂着未勾，容易被后来的人当成「待修 bug」。
+本轮把它变成一条**独立的 REQUIREMENT**：「部分重叠的兄弟元素必须可被告知」——
+诊断必须产出、5% 以下不报、质量门禁不得把它记为回归。规格里同时写明这是模型限制，
+根除需上游按元素分别出图。
+
+这样处理后，「未勾」变成「已声明」：缺陷仍在，但它有名字、有触发器、有豁免口径，
+不再是一个每次盘点都要重新判断一次的未知项。
+
+#### 三、更正 §8.17 之后我说错的一句话
+
+上一轮盘点里我写「`web/animation-check.mjs` 的 30 条断言不在 CI」。**这是错的**：
+`web/package.json` 的 `build` 脚本串了 `contrast → api:check → route:check → core:test
+→ polling:test → animation:test → tsc → vite build`，CI 的 `frontend` 作业跑的正是
+`npm run build`。真正只在本地跑的是需要 Chrome/成片的那三条：`bundle-gate.py` 的
+V16/V17、`dom-ssim.py`、`still-check.py`。V14/V15 有 Go 测试（`CountExternalRefs`、
+`BudgetBytes`、`BuildRejectsExternalResourceKeys`）在 `go test ./...` 里。
+
+#### 归档前读数
+
+| 项 | 结果 |
+|---|---|
+| `go build ./...` / `go vet ./...` | 通过 |
+| `go test ./...` | 42 包无失败 |
+| `openspec validate animation-render-service-image --strict` | valid |
+| `openspec validate --all` | 11 passed（一条长需求告警属已归档 `render-plan`） |
+| `verify.py --self-test` | 39/39 |
+| `web/animation-check.mjs` | 31/31 |

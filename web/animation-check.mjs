@@ -9,6 +9,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 const m = await import('./src/animationState.ts');
 const track = await import('./src/animationTrack.ts');
@@ -199,6 +200,18 @@ test('原因码按前缀归一，详情串不进 UI', () => {
   );
   assert.equal(animationReasonText('something_new', fakeT), 'editor.exportAnimationUnavailable');
   assert.equal(animationReasonText(undefined, fakeT), 'editor.exportAnimationUnavailable');
+});
+
+test('没有渲染服务时，文案必须说明静态版没有转场（tasks 7.1）', async () => {
+  // 转场与元素动画共用同一次合成（ADR-1），所以 backend=none 时转场一并失效。
+  // 这件事只发生在用户看不见的后端，唯一能让用户不把它当 bug 的地方就是这句文案；
+  // 而文案最容易在改措辞时被删掉。断言只要求「说了转场这回事」，不锁句子。
+  const read = async (name) =>
+    JSON.parse(await readFile(new URL(`./src/i18n/${name}`, import.meta.url), 'utf8'));
+  const zh = await read('zh.json');
+  const en = await read('en.json');
+  assert.match(zh['editor.exportAnimationNotConfigured'], /转场/, '中文文案必须点明转场失效');
+  assert.match(en['editor.exportAnimationNotConfigured'], /transition/i, 'English copy must name the transition loss');
 });
 
 test('降级提示必须同时带上原因与任务号', () => {

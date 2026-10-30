@@ -770,7 +770,7 @@
   "editor.exportAnimationChecking": "Checking the animation service…",
   "editor.exportAnimationUnavailable": "Animation availability is unknown right now; the export will be a static video.",
   "editor.exportAnimationNotEnabled": "Animation export is not enabled on this deployment.",
-  "editor.exportAnimationNotConfigured": "No animation renderer is configured on this deployment; the export will be a static video.",
+  "editor.exportAnimationNotConfigured": "No animation renderer is configured on this deployment; the export will be a static video. Page transitions share the same composite pass as element animation, so the static export has hard cuts between pages.",
   "editor.exportAnimationServiceDown": "The animation service is unavailable right now. Retry later, or export a static video.",
   "editor.exportAnimationNone": "No page has animation yet, so the export will be a static video. Add animation in the editor first.",
   "editor.exportAnimationPages": "{animated} of {total} pages have animation; the rest render as static frames.",
