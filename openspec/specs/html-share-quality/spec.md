@@ -18,7 +18,7 @@
 
 #### Scenario: 门禁扫描产物
 
-- **WHEN** 对一个已知自包含的包运行 `bundle-gate.py --scan`
+- **WHEN** 对一个已知自包含的包运行 `bundle-gate.py --skip-browser`（只跑 V14/V15）
 - **THEN** 外部引用数 MUST 为 0；若被人为往 `index.html` 里插入一个 CDN `<script src>`，扫描 MUST 报出该条
 
 #### Scenario: 协议相对 URL 也算外链
@@ -31,6 +31,10 @@
 门禁 MUST 用无头浏览器加载成品包并验证：播放器挂载成功、清单引用的每个页图/层图/音频/字幕资源都能取到（无 404、无解码失败）、音频时长与清单 `artifact.durationUs` 之差 ≤ 0.25 秒、seek 到末尾后 `play()` 能触发 `ended`、全程无 console error 与资源加载失败。
 
 验证 MUST NOT 修改被验的包；需要注入探针时 MUST 在临时副本上进行，并在前后比对原包哈希。
+
+门禁 MUST 在每次 push 与 PR 的 CI 中执行。浏览器 MUST 由门禁自行解析（`PPT_CHROME` 优先，其次平台常见路径，最后才是渲染镜像），MUST NOT 要求先构建渲染镜像才能运行。环境里确实没有可用浏览器时，门禁 MUST 以退出码 2 失败并说明缺什么，MUST NOT 静默跳过、MUST NOT 记为通过——「没跑」与「跑了通过」在报告里必须是两件事。
+
+用于 V16/V17 的样例包 MUST 含真实图层（`layers[*].clips` 非空）：四条降级判据全部落在 `.ppts-layer` 上，没有图层的包既验不出降级，也可能被误当成通过。
 
 #### Scenario: 正常包通过
 
@@ -46,6 +50,18 @@
 
 - **WHEN** 需要注入检测脚本
 - **THEN** MUST 以同目录外部 `.js` 文件引入（产物 CSP 为 `script-src 'self' file:`，内联会被拒绝）
+
+#### Scenario: 环境里没有浏览器
+
+- **WHEN** 运行环境既没有 Chrome，也没有可用的渲染镜像
+- **THEN** 门禁 MUST 以退出码 2 结束，并说明「设置 `PPT_CHROME` 或提供镜像」
+- **AND** MUST NOT 输出「PASS」——没有执行过的判据不得计为通过
+
+#### Scenario: 样例包不带图层
+
+- **WHEN** 用一份所有页都 `layers` 为空的包跑门禁
+- **THEN** 「默认态存在位移」「无 WAAPI 时层为终态可见」「reduced-motion 时长不变」等判据 MUST 失败
+- **AND** 报告 MUST NOT 因为「本来就没有层」而把这些判据判为通过
 
 ### Requirement: 降级矩阵逐条可执行
 
@@ -83,3 +99,12 @@
 
 - **WHEN** 包内没有内嵌字体（当前实现的常态）
 - **THEN** 「字体子集覆盖率」MUST 标注为 `not_applicable`，MUST NOT 记为 `pass`
+
+### Requirement: 门禁报告的引擎可追溯
+
+门禁输出（人类可读与 `--json` 两种）MUST 记录本次判定所用的引擎（`native` / `docker`）与浏览器路径或镜像名。同一份包在不同浏览器上判出的结果不同时，读报告的人 MUST 能立刻看出是哪一次、哪个浏览器判的。
+
+#### Scenario: 两条引擎路径
+
+- **WHEN** 同一份包分别用本机 Chrome 与渲染镜像跑门禁
+- **THEN** 两次报告 MUST 各自写明引擎与浏览器版本/镜像名，判据条目与阈值 MUST 完全一致

@@ -18,18 +18,21 @@
     python3 scripts/review/bundle-gate.py --pkg tmp/m64/pkg
     python3 scripts/review/bundle-gate.py --pkg tmp/m64/pkg --skip-browser   # 只跑 V14/V15
 
-退出码：0 全过；1 有阻断失败；2 环境缺失（docker/镜像/ws 不可用）。
-依赖：go、docker（含 chrome-headless-shell 与 ws 的渲染镜像）。
+退出码：0 全过；1 有阻断失败；2 环境缺失（既没有本地 Chrome，也没有可用的渲染镜像）。
+依赖：go；浏览器侧二选一——本机 Node ≥22 + Chrome（`--engine native`，自动探测），
+或者带 chrome-headless-shell 的渲染镜像（`--engine docker`）。`--engine auto` 先试本机。
 """
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 
 DEFAULT_IMAGE = "ppts/renderer:dev"
 REVIEW_DIR = os.path.dirname(os.path.abspath(__file__))
+PROBE = os.path.join(REVIEW_DIR, "bundle-probe.mjs")
 
 
 # ---- WSL 路径与命令封装（与 dom-ssim.py 同一套做法，Windows 上 docker 只在 WSL 里）----
@@ -86,16 +89,49 @@ def run_share_verify(pkg):
         raise RuntimeError(f"share-verify did not emit JSON: {proc.stdout[:300]}") from exc
 
 
-def run_probe(pkg, mode, image):
-    """在容器里跑一次 CDP 探针，返回解析后的报告。"""
-    cmd = [
-        "docker", "run", "--rm", "--entrypoint", "sh",
-        "-v", f"{to_posix(REVIEW_DIR)}:/cdp:ro",
-        "-v", f"{to_posix(pkg)}:/pkg:ro",
-        image, "-c",
-        f"node /cdp/bundle-probe.mjs --pkg /pkg --mode {mode}",
-    ]
-    proc = subprocess.run(wsl_wrap(cmd), capture_output=True, text=True)
+def native_chrome():
+    """问探针自己解析到了哪个浏览器——候选表只写在 bundle-probe.mjs 一处。
+
+    两处各写一份候选路径，就会出现「门禁说找不到 Chrome，探针其实找得到」这种
+    谁也解释不清的分歧。
+    """
+    node = os.environ.get("PPT_NODE") or shutil.which("node")
+    if not node:
+        return None, "PATH 里没有 node（原生引擎需要 Node ≥22）"
+    proc = subprocess.run([node, PROBE, "--print-chrome"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None, (proc.stderr or proc.stdout).strip() or "探针没有解析出浏览器"
+    return (proc.stdout or "").strip(), ""
+
+
+def docker_ready():
+    try:
+        if os.name == "nt":
+            subprocess.run(["wsl", "-e", "bash", "-lc", "command -v docker"],
+                           check=True, capture_output=True, text=True)
+        else:
+            subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+                           check=True, capture_output=True, text=True)
+        return True
+    except (OSError, subprocess.CalledProcessError):
+        return False
+
+
+def run_probe(pkg, mode, engine, image):
+    """跑一次 CDP 探针，返回解析后的报告。"""
+    if engine == "native":
+        node = os.environ.get("PPT_NODE") or shutil.which("node")
+        cmd = [node, PROBE, "--pkg", os.path.abspath(pkg), "--mode", mode]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+    else:
+        cmd = [
+            "docker", "run", "--rm", "--entrypoint", "sh",
+            "-v", f"{to_posix(REVIEW_DIR)}:/cdp:ro",
+            "-v", f"{to_posix(pkg)}:/pkg:ro",
+            image, "-c",
+            f"node /cdp/bundle-probe.mjs --pkg /pkg --mode {mode}",
+        ]
+        proc = subprocess.run(wsl_wrap(cmd), capture_output=True, text=True)
     for line in proc.stdout.splitlines():
         if line.startswith("PROBE_JSON "):
             return json.loads(line[len("PROBE_JSON "):])
@@ -214,7 +250,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pkg", required=True, help="成品包目录（含 index.html）")
     ap.add_argument("--image", default=DEFAULT_IMAGE, help="含 chrome 与 ws 的渲染镜像")
-    ap.add_argument("--skip-browser", action="store_true", help="只跑 V14/V15（无 docker 时）")
+    ap.add_argument("--engine", choices=["auto", "native", "docker"], default="auto",
+                    help="浏览器从哪来：本机 Chrome（native）还是渲染镜像（docker）；auto 先试本机")
+    ap.add_argument("--skip-browser", action="store_true", help="只跑 V14/V15（无浏览器时）")
     ap.add_argument("--json", action="store_true", help="输出 JSON 报告")
     args = ap.parse_args()
 
@@ -255,13 +293,28 @@ def main():
 
     reports = {}
     env_error = None
+    engine = args.engine
+    chrome = ""
     if not args.skip_browser:
-        try:
-            reports["play"] = run_probe(args.pkg, "play", args.image)
-            for mode in ("nojs", "default", "reduced", "nowaapi", "lowmem"):
-                reports[mode] = run_probe(args.pkg, mode, args.image)
-        except (RuntimeError, FileNotFoundError) as exc:
-            env_error = str(exc)
+        if engine == "auto":
+            found, why = native_chrome()
+            if found:
+                engine, chrome = "native", found
+            elif docker_ready():
+                engine = "docker"
+            else:
+                env_error = f"没有可用的浏览器：{why}；docker 也不可用"
+        elif engine == "native":
+            chrome, why = native_chrome()
+            if not chrome:
+                env_error = why
+        if not env_error:
+            try:
+                reports["play"] = run_probe(args.pkg, "play", engine, args.image)
+                for mode in ("nojs", "default", "reduced", "nowaapi", "lowmem"):
+                    reports[mode] = run_probe(args.pkg, mode, engine, args.image)
+            except (RuntimeError, FileNotFoundError) as exc:
+                env_error = str(exc)
 
     if env_error:
         checks.append(Check("V16", "浏览器探针可执行", False, env_error))
@@ -273,13 +326,18 @@ def main():
     if args.json:
         print(json.dumps({
             "package": args.pkg,
+            "engine": engine if not args.skip_browser else "skipped",
+            "chrome": chrome,
             "checks": [{"code": c.code, "name": c.name, "status": c.status, "detail": c.detail} for c in checks],
             "measure": measure,
         }, ensure_ascii=False, indent=2))
     else:
         print(f"成品包：{args.pkg}")
         print(f"清单：{verify.get('slides')} 页，{verify.get('durationUs', 0) / 1e6:.1f} 秒，"
-              f"体积 {total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB\n")
+              f"体积 {total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB")
+        if not args.skip_browser:
+            print(f"浏览器：{engine} · {chrome or args.image}")
+        print()
         print("| 项 | 判据 | 结果 | 实测 |")
         print("| --- | --- | --- | --- |")
         for c in checks:

@@ -65,6 +65,53 @@ jobs:
           go run ./cmd/share-verify -budget /tmp/bundle.zip
           go run ./cmd/share-verify -budget /tmp/bundle
 
+  # 成品包的浏览器门禁（V16 可播放性 / V17 降级矩阵）。
+  #
+  # 这两项此前只在本地跑得起来：探针把 Chrome 钉在镜像里的 /opt/chrome、
+  # 把 ws 钉在 /app/node_modules，想跑就得先构建渲染镜像。于是「包在真实浏览器里
+  # 能不能播」在合并前从没有人验过——而它恰好是唯一一类读代码看不出来的问题
+  # （删掉一张清单引用的层图，页面照样"看起来正常"，只是那一层没了）。
+  #
+  # 现在探针自己探测浏览器、用 Node 22 自带的 WebSocket，不再依赖镜像。
+  share-browser:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      # 必须是 22+：探针用的是全局 WebSocket（undici），Node 20 上会退回 require('ws')，
+      # 而这条路径上没有装 ws 的步骤。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 解析浏览器
+        run: |
+          set -euo pipefail
+          chrome=""
+          if command -v google-chrome >/dev/null; then
+            chrome=$(command -v google-chrome)
+          elif [ -x /opt/google/chrome/chrome ]; then
+            chrome=/opt/google/chrome/chrome
+          else
+            # 兜底：runner 镜像某天不再预装 Chrome 时，按需拉一份 headless shell
+            # ——正是渲染镜像里跑的那一个二进制，判据不会因此改变。
+            npx --yes @puppeteer/browsers install chrome-headless-shell@stable --path "$RUNNER_TEMP/chrome" >/dev/null
+            chrome=$(find "$RUNNER_TEMP/chrome" -type f -name chrome-headless-shell | head -1)
+          fi
+          echo "PPT_CHROME=$chrome" >> "$GITHUB_ENV"
+          "$chrome" --version || true
+      # -layers 2 不是装饰：V17 的判据全落在 `.ppts-layer` 上，不带图层的包会让
+      # 四项判据直接红（默认态无位移、reduced 无 opacity、时长集合为空、无 WAAPI 无层）。
+      # 也就是说「把 V17 放进 CI」和「基线能造出真图层」是同一件事。
+      - name: 造一个带图层的样例包
+        run: |
+          rm -rf /tmp/pkg /tmp/pkg.zip
+          go run ./cmd/share-baseline -pages 3 -page-secs 4 -layers 2 -zip /tmp/pkg.zip -out /tmp/pkg >/dev/null
+      - name: 浏览器门禁（V14–V17）
+        run: python3 scripts/review/bundle-gate.py --pkg /tmp/pkg --engine native
+
   # 竞态检测（M1 tasks 6.2 / ADR-11）：开发机是 Windows + CGO_ENABLED=0 且无任何 C 工具链，
   # race detector 依赖 cgo，本地跑不了，只能在这里跑。范围限定在引入并发的三个包，
   # 不做全仓 -race（相对耗时远大于收益）。首次跑绿后才可以勾掉 tasks 6.2。

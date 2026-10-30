@@ -25,11 +25,13 @@ import (
 	"log"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/share"
 )
@@ -41,6 +43,7 @@ func main() {
 		width    = flag.Int("width", 1920, "画布宽")
 		height   = flag.Int("height", 1080, "画布高")
 		pagesDir = flag.String("pages-dir", "", "可选：用该目录下的 PNG 作为页图（按文件名排序）")
+		layers   = flag.Int("layers", 0, "每页合成的动画层数；>0 时产带 clips 的分层素材（浏览器门禁 V17 需要真图层）")
 		outDir   = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath  = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
 		asJSON   = flag.Bool("json", false, "以 JSON 输出")
@@ -85,11 +88,24 @@ func main() {
 	reader.objects["subs/cues.vtt"] = []byte("WEBVTT\n\n00:00:00.000 --> 00:00:10.000\n体积基线样本\n")
 	reader.objects["subs/cues.srt"] = []byte("1\r\n00:00:00,000 --> 00:00:10,000\r\n体积基线样本\r\n")
 
+	// -layers 存在的原因不是体积，是**可测对象**：V17 的判据都落在 `.ppts-layer` 上
+	// （默认态有位移、reduced-motion 只去位移、无 WAAPI 停终态、低内存不建层）。
+	// 实测过：拿不带图层的包跑门禁，这四项会红——所以「把 V17 放进 CI」和
+	// 「基线能产出真图层」是同一件事，不能只做前一半。
+	var animPages []share.PageAnimation
+	if *layers > 0 {
+		animPages = make([]share.PageAnimation, len(timeline.Slides))
+		for i := range timeline.Slides {
+			animPages[i] = syntheticAnimation(*width, *height, i, *layers)
+		}
+	}
+
 	var buf bytes.Buffer
 	start := time.Now()
 	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), share.BundleInput{
 		Timeline:     timeline,
 		PagePNGKeys:  keys,
+		Pages:        animPages,
 		VTTKey:       "subs/cues.vtt",
 		SRTKey:       "subs/cues.srt",
 		Width:        *width,
@@ -119,7 +135,7 @@ func main() {
 
 	if *outDir != "" {
 		if _, err := share.BuildLocalToDir(context.Background(), share.LocalBundle{Root: writeStagingDir(pagePNGs, timeline, *width, *height), Input: share.BundleInput{
-			Timeline: timeline, PagePNGKeys: keys, VTTKey: "subs/cues.vtt", SRTKey: "subs/cues.srt",
+			Timeline: timeline, PagePNGKeys: keys, Pages: animPages, VTTKey: "subs/cues.vtt", SRTKey: "subs/cues.srt",
 			Width: *width, Height: *height, FPS: 30, Title: "体积基线样本",
 		}}, *outDir); err != nil {
 			log.Fatalf("share-baseline: write dir: %v", err)
@@ -157,7 +173,8 @@ type report struct {
 
 func summarize(source string, m *share.Manifest, files map[string][]byte, zipBytes, pages, pageSecs int, elapsed time.Duration) report {
 	buckets := map[string]*bucket{
-		"底图（slides/*.jpg）":       {Name: "底图（slides/*.jpg）"},
+		"底图（slides/NNN.*）":       {Name: "底图（slides/NNN.*）"},
+		"层图（slides/*-layer-*）":   {Name: "层图（slides/*-layer-*）"},
 		"逐段音频（audio/NNN.wav）":    {Name: "逐段音频（audio/NNN.wav）"},
 		"混音轨（audio/mix.wav）":     {Name: "混音轨（audio/mix.wav）"},
 		"播放器（app.js/app.css）":    {Name: "播放器（app.js/app.css）"},
@@ -165,15 +182,19 @@ func summarize(source string, m *share.Manifest, files map[string][]byte, zipByt
 		"其他（index/manifest/时间轴）": {Name: "其他（index/manifest/时间轴）"},
 	}
 	order := []string{
-		"底图（slides/*.jpg）", "逐段音频（audio/NNN.wav）", "混音轨（audio/mix.wav）",
+		"底图（slides/NNN.*）", "层图（slides/*-layer-*）", "逐段音频（audio/NNN.wav）", "混音轨（audio/mix.wav）",
 		"播放器（app.js/app.css）", "字幕（subtitles.*）", "其他（index/manifest/时间轴）",
 	}
 	var total int64
 	for name, data := range files {
 		key := "其他（index/manifest/时间轴）"
 		switch {
+		case strings.HasPrefix(name, "slides/") && strings.Contains(path.Base(name), "-layer-"):
+			// 层图与底图同在 slides/ 下：不分开数，就看不见「层图占了八成体积」
+			// 这个真实现象（M6-4 实测），体积超标时也就无从判断该改哪一头。
+			key = "层图（slides/*-layer-*）"
 		case strings.HasPrefix(name, "slides/"):
-			key = "底图（slides/*.jpg）"
+			key = "底图（slides/NNN.*）"
 		case name == share.FileAudioMix:
 			key = "混音轨（audio/mix.wav）"
 		case strings.HasPrefix(name, "audio/"):
@@ -283,6 +304,54 @@ func syntheticPage(w, h, index int) []byte {
 
 func fillRect(img *image.RGBA, x, y, w, h int, c color.RGBA) {
 	draw.Draw(img, image.Rect(x, y, x+w, y+h), &image.Uniform{C: c}, image.Point{}, draw.Src)
+}
+
+// syntheticAnimation 造一页「底板 + N 个图层」的素材：每层是一块实色矩形，
+// 依次在页首 0/120/240… ms 淡入并上移 24px（与 catalog 里 fadeIn + slideUp 同形）。
+//
+// 时长 900ms 而不是 520ms：门禁在页首 +400ms 取样，探针实际落在 500–700ms 之间
+// （seek 之后还要等一帧）。520ms 的动画在那里已经收尾，位移只剩 0.0005px——
+// 判据靠一个像素的千分之一成立，等于没测到东西。
+//
+// 刻意不做挖空：浏览器门禁判的是「层有没有被创建、动没动、降级时停在哪」，
+// 不判像素；挖空的取色偏差归 M6-4 的样片与 V13 SSIM，两者职责不同。
+func syntheticAnimation(w, h, index, count int) share.PageAnimation {
+	boxW, boxH := w/4, h/12
+	assets := make([]share.LayerAsset, 0, count)
+	for k := 0; k < count; k++ {
+		start := int64(k * 120)
+		ease := animation.EasingCurves[animation.DefaultEasing]
+		assets = append(assets, share.LayerAsset{
+			ElementID: fmt.Sprintf("p%d-layer%d", index, k),
+			Kind:      "card",
+			Box:       share.SlideBox{X: w / 10, Y: h/2 + k*(boxH+h/40), W: boxW, H: boxH},
+			PNG:       solidPNG(boxW, boxH, []color.RGBA{{92, 148, 255, 255}, {190, 120, 255, 255}, {90, 220, 170, 255}}[(index+k)%3]),
+			Origin:    "center",
+			Clips: []share.Clip{
+				{Effect: "fadeIn", StartMs: start, DurationMs: 900, Easing: ease,
+					Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
+				{Effect: "slideUp", StartMs: start, DurationMs: 900, Easing: ease,
+					Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 24, To: 0}}},
+			},
+		})
+	}
+	// 转场用 fade 360ms：它和图层动画走同一个播放器分支，CI 顺带覆盖
+	// 「转场面板在真实浏览器里能不能被画出来」。
+	return share.PageAnimation{
+		PlatePNG:   syntheticPage(w, h, index),
+		Layers:     assets,
+		Transition: share.SlideTransition{Type: "fade", DurationMs: 360},
+	}
+}
+
+func solidPNG(w, h int, c color.RGBA) []byte {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(img, img.Bounds(), &image.Uniform{C: c}, image.Point{}, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // synthWAV 生成 24kHz 单声道 PCM16 语音状波形（带包络的正弦，避免纯静音让压缩失真）。

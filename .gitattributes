@@ -34,3 +34,9 @@ internal/render/testdata/*.golden.json text eol=lf
 #    而 CRLF 让每一行都不一样。这不是格式问题，是检出侧的问题；但不管它，`gofmt -l` 的
 #    输出就会常年有内容，于是没人再当它是门禁（2026-10-31 复核时 30 多个文件挂着）。
 *.go text eol=lf
+
+# 8. 脚本与文档：node 直接执行的 .mjs（浏览器门禁的探针）不吞 CRLF 也不报错，
+#    但会留下「LF will be replaced by CRLF」这类 checkout 警告。警告本身无害，
+#    留久了就会训练人忽略它们——真出问题时那句也可能被略过。
+*.mjs text eol=lf
+*.md text eol=lf

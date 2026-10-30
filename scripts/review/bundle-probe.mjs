@@ -11,20 +11,60 @@
 //     往 index.html 里塞内联 <script> 会被直接拒绝）。
 //
 // 用法：node bundle-probe.mjs --pkg /pkg --mode play|nojs|nowaapi|reduced|lowmem
+//       node bundle-probe.mjs --print-chrome        # 只打印解析到的浏览器路径，供门禁选引擎
 // 输出：单行 `PROBE_JSON {...}`，由 bundle-gate.py 解析判定。
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
-import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 
-// ws 装在渲染镜像的 /app/node_modules 下。ESM 的模块解析以脚本自身位置为基准，
-// 脚本挂在只读目录时 import 'ws' 会 ERR_MODULE_NOT_FOUND，所以把基准钉到 /app。
-const require = createRequire('/app/package.json');
-const WebSocket = require('ws');
+// 探针原先只在渲染镜像里跑（Chrome 在 /opt/chrome，ws 在 /app/node_modules），
+// 于是「能不能验成品包」被绑在「镜像能不能构建」上。现在改成两条路都能走：
+// 镜像内照旧；镜像外只要有 Chrome，用 Node 22 自带的 WebSocket 即可，不必装 ws。
+const CHROME_CANDIDATES = [
+  '/opt/chrome/chrome-headless-shell-linux64/chrome-headless-shell',
+  '/usr/bin/google-chrome',
+  '/usr/bin/google-chrome-stable',
+  '/opt/google/chrome/chrome',
+  '/usr/bin/chromium',
+  '/usr/bin/chromium-browser',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+];
 
-const CHROME = process.env.PPT_CHROME || '/opt/chrome/chrome-headless-shell-linux64/chrome-headless-shell';
+function resolveChrome() {
+  // 显式指定优先：写错了要报错，而不是悄悄退到下一个候选——
+  // 「我明明设了 PPT_CHROME 却没生效」比「找不到 Chrome」难查得多。
+  if (process.env.PPT_CHROME) {
+    if (!fs.existsSync(process.env.PPT_CHROME)) {
+      throw new Error(`PPT_CHROME 指向的文件不存在：${process.env.PPT_CHROME}`);
+    }
+    return process.env.PPT_CHROME;
+  }
+  const hit = CHROME_CANDIDATES.find((p) => fs.existsSync(p));
+  if (!hit) throw new Error('no chrome binary: 设置 PPT_CHROME 指向 chrome/chrome-headless-shell');
+  return hit;
+}
+
+if (process.argv.includes('--print-chrome')) {
+  try {
+    process.stdout.write(resolveChrome() + '\n');
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(String(err.message) + '\n');
+    process.exit(2);
+  }
+}
+
+const CHROME = resolveChrome();
 const DEFAULT_PKG = '/pkg';
 const PORT_BASE = 9300;
+const HEADLESS_SHELL = /headless/i.test(path.basename(CHROME));
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -205,13 +245,56 @@ const LAYER_EXPR = `(async () => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// CDP 通道：Node 22 自带 WebSocket（undici）足够用；旧 Node 才退回镜像里的 ws。
+// 两条路都收成同一组方法，调用处不必知道用的是哪个。
+async function openSocket(url) {
+  if (typeof globalThis.WebSocket === 'function') {
+    const ws = new WebSocket(url);
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', () => reject(new Error('websocket 握手失败')), { once: true });
+    });
+    return {
+      send: (text) => ws.send(text),
+      onMessage: (fn) => ws.addEventListener('message', (ev) => fn(typeof ev.data === 'string' ? ev.data : String(ev.data))),
+      close: () => { try { ws.close(); } catch { /* 已关闭 */ } }
+    };
+  }
+  const { createRequire } = await import('node:module');
+  const require = createRequire(path.join(process.env.PPT_WS_ROOT || '/app', 'package.json'));
+  const Ws = require('ws');
+  const ws = new Ws(url, { perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
+  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+  return {
+    send: (text) => ws.send(text),
+    onMessage: (fn) => ws.on('message', (raw) => fn(raw.toString())),
+    close: () => { try { ws.close(); } catch { /* 已关闭 */ } }
+  };
+}
+
+// 失败路径也要收摊：探针被门禁调用时，留下一个 Chrome 进程会让下一次运行抢不到端口。
+let cleanupAll = () => {};
+
 async function main() {
-  const chrome = spawn(CHROME, [
-    '--no-sandbox', '--disable-gpu', '--mute-audio', '--autoplay-policy=no-user-gesture-required',
+  // 独立的用户数据目录：不指定时，若本机已有 Chrome 在跑，新起的进程会把参数交给
+  // 既有实例后立刻退出，`--remote-debugging-port` 于是不生效——报错只剩
+  // 「chrome did not expose a debugging endpoint」，看不出真正原因。
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ppts-probe-'));
+  const args = [
+    '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--mute-audio',
+    '--autoplay-policy=no-user-gesture-required',
+    `--user-data-dir=${profile}`,
     `--remote-debugging-port=${port}`, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ];
+  // chrome-headless-shell 本身就是无头，多给 --headless 反而不认；完整版 Chrome 必须给。
+  if (!HEADLESS_SHELL) args.unshift('--headless=new');
+  const chrome = spawn(CHROME, args, { stdio: ['ignore', 'ignore', 'pipe'] });
   chrome.stderr.on('data', () => {});
-  const killChrome = () => { try { chrome.kill('SIGKILL'); } catch { /* 已退出 */ } };
+  const cleanup = () => {
+    try { chrome.kill('SIGKILL'); } catch { /* 已退出 */ }
+    try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 交给系统 */ }
+  };
+  cleanupAll = cleanup;
 
   const get = (p) => new Promise((resolve, reject) => {
     const req = http.get({ host: '127.0.0.1', port, path: p }, (res) => {
@@ -229,14 +312,13 @@ async function main() {
   }
   if (!version) throw new Error('chrome did not expose a debugging endpoint');
 
-  const ws = new WebSocket(version.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
-  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
+  const ws = await openSocket(version.webSocketDebuggerUrl);
 
   let seq = 0;
   const pending = new Map();
   const events = [];
-  ws.on('message', (raw) => {
-    const msg = JSON.parse(raw.toString());
+  ws.onMessage((raw) => {
+    const msg = JSON.parse(raw);
     if (msg.id && pending.has(msg.id)) {
       const { resolve, reject } = pending.get(msg.id);
       pending.delete(msg.id);
@@ -275,7 +357,11 @@ async function main() {
     });
   }
 
-  const url = `file://${path.posix.join(pkgDir, 'index.html')}`;
+  // file:// 不能用 path.posix.join 拼：Windows 上会得到 file://C:\...\index.html，
+  // Chrome 直接拒收（net::ERR_INVALID_URL）。pathToFileURL 会带上盘符与编码。
+  const indexFile = path.resolve(pkgDir, 'index.html');
+  if (!fs.existsSync(indexFile)) throw new Error(`包里没有 index.html：${indexFile}`);
+  const url = pathToFileURL(indexFile).href;
   await S('Page.navigate', { url });
   // 等首屏与首次 rAF：播放器在 DOMContentLoaded 里建 DOM，动画层在首帧渲染时创建。
   // 固定等待比轮询稳定——轮询会在层还没建出来时读到 0，然后误判成"低内存生效了"。
@@ -298,19 +384,20 @@ async function main() {
     .map((e) => e.params.entry.text);
 
   process.stdout.write('PROBE_JSON ' + JSON.stringify({
-    mode, url, ok: true,
+    mode, url, chrome: CHROME, ok: true,
     result: evaluated.result?.value ?? null,
     consoleErrors, logErrors
   }) + '\n');
 
   ws.close();
-  killChrome();
+  cleanup();
 }
 
 main().then(
   () => process.exit(0),
   (err) => {
-    process.stdout.write('PROBE_JSON ' + JSON.stringify({ mode, ok: false, error: String(err && err.message || err) }) + '\n');
+    cleanupAll();
+    process.stdout.write('PROBE_JSON ' + JSON.stringify({ mode, chrome: CHROME, ok: false, error: String(err && err.message || err) }) + '\n');
     process.exit(1);
   }
 );
