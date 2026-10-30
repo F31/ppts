@@ -68,3 +68,7 @@ testdata/validation/replay-report.json
 
 # 渲染器产物（章节样片、调试帧）
 /renderer/out/
+
+# 方案文档与演示素材：已按 tasks 6.4 移出仓库，归档时并入 openspec/specs/。
+# 不写这条的话 `git status` 永远挂一条 `?? docs/`，久了就没人再看未跟踪清单了。
+/docs/
