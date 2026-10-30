@@ -135,25 +135,48 @@ python3 scripts/fidelity/bind_elements.py --show-matrix --out tmp/q7/bind-report
 python3 scripts/fidelity/bind_elements.py \
   --segments scripts/fidelity/q7-script-colloquial.json \
   --out tmp/q7/bind-report-colloquial.json
+
+# 3) 只看字面匹配（第一轮的算法），用来对照 v2 加了多少
+python3 scripts/fidelity/bind_elements.py --rules base --out tmp/q7/bind-report-base.json
+
+# 4) 第二个样本：真实讲义 5 页（带表格/卡片/页码/装饰形状），元素从 pptx 抽
+python3 scripts/fidelity/extract_pptx_elements.py \
+  --slides 1,2,4,8,10 --out tmp/q8/fid/elements.json
+python3 scripts/fidelity/bind_elements.py --rules base \
+  --segments scripts/fidelity/q8-script.json \
+  --elements tmp/q8/fid/elements.json --golden scripts/fidelity/q8-script.json \
+  --out tmp/q8/bind-report-base.json
+python3 scripts/fidelity/bind_elements.py --rules v2 \
+  --segments scripts/fidelity/q8-script.json \
+  --elements tmp/q8/fid/elements.json --golden scripts/fidelity/q8-script.json \
+  --out tmp/q8/bind-report-v2.json
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，
-不要凭结果反推参数。
+不要凭结果反推参数。`--rules base|v2` 是同一个脚本的两档：`base` 只有字面匹配，
+`v2` 再加辅助白名单、数量词、序数、方位、同块带出五条规则（`--no-siblings` 可单独关掉
+同块带出）。**报数必须说明用的是哪一档**，否则两组数字不可比。
 
-### 两条不要改坏的性质
+### 三条不要改坏的性质
 
 - **单调对齐**（DP）而不是逐个取最大：后者会把四行条目全绑到第一段，且允许「倒退」，
   而讲解是线性的。
-- **三种绑定来源分开记账**：文本匹配 / 标题先验 / 结构推断。混在一起会把「容器按位置
-  挂上去」算成「文本匹配成功」，召回率会虚高 5–10 个点。
+- **绑定来源全部分开记账**：字面 / 计数 / 序数 / 方位 / 同块 / 标题先验 / 结构推断。
+  混在一起会把「容器按位置挂上去」算成「文本匹配成功」，召回率会虚高 5–10 个点。
+- **golden 可以标 `role: "decor"`**：图标、圆形底座这类伴随装饰绑不上时，不该算成
+  内容召回失败。报告里内容召回与总召回分列。
 
-### 实测（2026-10-30，19 元素 / 15 个要求出现）
+### 实测（2026-10-30）
 
-| 讲稿 | 召回 | 精确 | 文本匹配贡献 |
-|---|---|---|---|
-| 复述式 | 0.800 | 0.923 | 11 / 12 |
-| 口语式 | 0.400 | 1.000 | **0 / 6** |
+| 样本 | 讲稿 | 规则 | 召回（全部） | 召回（内容） | 精确 |
+|---|---|---|---|---|---|
+| 合成 5 页 / 19 元素 | 复述式 | base | 0.800 | 0.800 | 0.923 |
+| 合成 5 页 | 口语式 | base | 0.400 | 0.400 | 1.000 |
+| 合成 5 页 | 复述式 | v2 | 0.933 | 0.933 | 1.000 |
+| 合成 5 页 | 口语式 | v2 | 0.533 | 0.533 | 1.000 |
+| 真实 5 页 / 71 元素 | 自然讲法 | base | 0.404 | 0.500 | 0.955 |
+| 真实 5 页 | 自然讲法 | v2 | **0.981** | **0.972** | 0.962 |
 
-口语式那 6 个正确全部来自标题先验与结构推断。**字面匹配在自然讲稿上的贡献是零。**
-精确率 1.0 说明阈值让算法「知道自己不知道」——漏绑而不是瞎绑。这个性质比召回重要：
-漏了用户会补，错绑用户看不出来。
+两个数字最值得记住：**真实讲义上 0.97，合成样本的口语版上 0.53**。同一套规则、
+同一档参数，差在版面有没有把讲解顺序编码出来（编号、卡片、方位）。引用「0.97」
+必须带上这半句，否则会变成「规则够用了」的错误结论。
