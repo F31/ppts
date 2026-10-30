@@ -116,3 +116,44 @@ python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html \
   「`withSegment` 这条路通、渲染端按时出画」，不证明「绑定能自动生成」。后者是 Q7 第 1 件事。
 - 4 个元素刻意不绑定（`p0-eyebrow`、`p0-meta`、`p3-caption`、`p4-note`），放在页末淡入，
   作为「不空转」的对照组。
+
+## 元素→段落的绑定实验（Q7 第 1 件事）
+
+上一节证明了「绑上去之后，元素确实跟着讲解出现」。这一节问的是**绑定本身从哪来**。
+结论写在 `openspec/changes/animation-render-service-image/q7-bind-experiment.md`，
+这里只记怎么复跑。
+
+```bash
+# 0) 元素文本：render.Element 只有 ID/Kind/Bounds，文本在 PageElements 换算时被丢掉。
+#    从 gen_pages.py 的源头补回（底图一个字节不动）
+python3 scripts/fidelity/enrich_elements.py tmp/q7/fid/elements.json
+
+# 1) 复述式讲稿（照元素文字写，字面重合被抬高）
+python3 scripts/fidelity/bind_elements.py --show-matrix --out tmp/q7/bind-report.json
+
+# 2) 口语式讲稿（正常讲法：不复述标题、用指代、口语数量）—— 消融对照
+python3 scripts/fidelity/bind_elements.py \
+  --segments scripts/fidelity/q7-script-colloquial.json \
+  --out tmp/q7/bind-report-colloquial.json
+```
+
+`--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，
+不要凭结果反推参数。
+
+### 两条不要改坏的性质
+
+- **单调对齐**（DP）而不是逐个取最大：后者会把四行条目全绑到第一段，且允许「倒退」，
+  而讲解是线性的。
+- **三种绑定来源分开记账**：文本匹配 / 标题先验 / 结构推断。混在一起会把「容器按位置
+  挂上去」算成「文本匹配成功」，召回率会虚高 5–10 个点。
+
+### 实测（2026-10-30，19 元素 / 15 个要求出现）
+
+| 讲稿 | 召回 | 精确 | 文本匹配贡献 |
+|---|---|---|---|
+| 复述式 | 0.800 | 0.923 | 11 / 12 |
+| 口语式 | 0.400 | 1.000 | **0 / 6** |
+
+口语式那 6 个正确全部来自标题先验与结构推断。**字面匹配在自然讲稿上的贡献是零。**
+精确率 1.0 说明阈值让算法「知道自己不知道」——漏绑而不是瞎绑。这个性质比召回重要：
+漏了用户会补，错绑用户看不出来。

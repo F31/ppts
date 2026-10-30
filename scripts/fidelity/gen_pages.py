@@ -69,11 +69,14 @@ def main():
         d.text((120, 690), "覆盖：并发压测、字体字集、超时推导、容器限额", font=f(reg, 32), fill=MUTED)
         d.rectangle([1500, 780, 1800, 900], fill=(0xDC, 0xE6, 0xF4))
         d.text((1524, 812), "PPTX → MP4", font=f(bld, 30), fill=ACCENT)
+        # 第 4 项是形状里的文字。真实链路里它来自 pptx 解析（project.Shape.Text），
+        # 这里必须一并导出——元素级绑定靠它做匹配，丢了文本就只能靠人工挂。
         return img, [
-            ("p0-eyebrow", "bullet", (120, 200, 900, 60)),
-            ("p0-title", "title", (116, 288, 1320, 130)),
-            ("p0-sub", "bullet", (120, 440, 1500, 70)),
-            ("p0-meta", "bullet", (120, 608, 1200, 110)),
+            ("p0-eyebrow", "bullet", (120, 200, 900, 60), "2026 年度技术规划 · 内部资料"),
+            ("p0-title", "title", (116, 288, 1320, 130), "智讲 PPT 渲染服务"),
+            ("p0-sub", "bullet", (120, 440, 1500, 70), "从版式到视频：像素级一致性的工程实现"),
+            ("p0-meta", "bullet", (120, 608, 1200, 110),
+             "汇报人：李喆 · 2026-10-29 覆盖：并发压测、字体字集、超时推导、容器限额"),
         ]
 
     def page1():
@@ -96,10 +99,11 @@ def main():
             d.text((196, y + 28), str(i + 1), font=f(bld, 30), fill=(0xFF, 0xFF, 0xFF))
             d.text((276, y + 10), head, font=f(bld, 40), fill=INK)
             d.text((276, y + 66), sub, font=f(reg, 30), fill=MUTED)
-            boxes.append((f"p1-item{i}", "bullet", (160, y, 1600, 110)))
+            boxes.append((f"p1-item{i}", "bullet", (160, y, 1600, 110), f"{head}　{sub}"))
         # 顺序刻意「父在前」：卡片是 item 的父层。把它挪后就是 ADR-17 的复现用例。
-        return img, [("p1-title", "title", (116, 84, 900, 90)),
-                     ("p1-card", "shape", (120, 270, 1680, 630))] + boxes
+        # 卡片本身没有文字（纯容器）—— 这是文本匹配的一个真实盲点，实验里要单独算。
+        return img, [("p1-title", "title", (116, 84, 900, 90), "本期四件事"),
+                     ("p1-card", "shape", (120, 270, 1680, 630), "")] + boxes
 
     def page2():
         img = Image.new("RGB", (W, H), (0xFF, 0xFF, 0xFF))
@@ -121,8 +125,9 @@ def main():
         d.line([180, base_y + 4, 1740, base_y + 4], fill=(0xC8, 0xD2, 0xDE), width=2)
         d.text((180, 900), "注：并发用例为两条 5 分钟长片同时提交，统计到最后一个任务收敛",
                font=f(reg, 26), fill=MUTED)
-        return img, [("p2-title", "title", (116, 84, 1000, 84)),
-                     ("p2-chart", "chart", (120, 260, 1680, 670))]
+        return img, [("p2-title", "title", (116, 84, 1000, 84), "压测数据：时间都花在哪"),
+                     ("p2-chart", "chart", (120, 260, 1680, 670),
+                      "2 核 / 50s 片 174s 4 核 / 50s 片 131s 2 核 / 300s 片 943s 2×300s 并发 948s")]
 
     def page3():
         img = Image.new("RGB", (W, H), (0xFF, 0xFF, 0xFF))
@@ -145,10 +150,12 @@ def main():
         d.text((1000, 700), "渲染即服务", font=f(bld, 44), fill=(0xFF, 0xFF, 0xFF))
         d.text((120, 900), "图：从解析到封装的五段流水线；每一段都有独立的重试与超时语义",
                font=f(reg, 28), fill=MUTED)
-        return img, [("p3-title", "title", (116, 84, 700, 84)),
-                     ("p3-flow", "shape", (120, 240, 640, 600)),
-                     ("p3-hero", "image", (860, 240, 940, 600)),
-                     ("p3-caption", "bullet", (120, 890, 1600, 50))]
+        return img, [("p3-title", "title", (116, 84, 700, 84), "架构要点"),
+                     ("p3-flow", "shape", (120, 240, 640, 600),
+                      "1. PPTX 解析 2. 版式编译 3. IR 计划 4. Chrome 合成 5. MP4 封装"),
+                     ("p3-hero", "image", (860, 240, 940, 600), "渲染即服务"),
+                     ("p3-caption", "bullet", (120, 890, 1600, 50),
+                      "图：从解析到封装的五段流水线；每一段都有独立的重试与超时语义")]
 
     def page4():
         img = Image.new("RGB", (W, H))
@@ -162,9 +169,12 @@ def main():
         d.text((124, 620), "符号：← → ⇒ α β π ￥ € ① ② 《》【】——“引号”……",
                font=f(reg, 32), fill=(0xE6, 0xEE, 0xF8))
         d.text((124, 760), "联系：li.zhe@example.com　·　分机 8021", font=f(reg, 30), fill=(0xA9, 0xBC, 0xD4))
-        return img, [("p4-title", "title", (116, 228, 700, 140)),
-                     ("p4-note", "bullet", (120, 548, 1500, 120)),
-                     ("p4-contact", "bullet", (120, 748, 1200, 60))]
+        return img, [("p4-title", "title", (116, 228, 700, 140), "谢谢"),
+                     ("p4-note", "bullet", (120, 548, 1500, 120),
+                      "生僻字与符号样张：喆 堃 犇 垚 玥 珺 赟 燚 弢 韡 祎 "
+                      "符号：← → ⇒ α β π ￥ € ① ② 《》【】——“引号”……"),
+                     ("p4-contact", "bullet", (120, 748, 1200, 60),
+                      "联系：li.zhe@example.com · 分机 8021")]
 
     os.makedirs(os.path.join(args.out, "pages"), exist_ok=True)
     meta = []
@@ -173,7 +183,8 @@ def main():
         rel = f"pages/p{i:03d}.png"
         img.save(os.path.join(args.out, rel))
         meta.append({"index": i, "slideId": f"slide-{i}", "baseImage": rel,
-                     "elements": [{"id": e[0], "kind": e[1], "box": e[2]} for e in elems]})
+                     "elements": [{"id": e[0], "kind": e[1], "box": e[2], "text": e[3]}
+                                  for e in elems]})
     with open(os.path.join(args.out, "elements.json"), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, ensure_ascii=False, indent=1)
     print(f"pages={len(meta)} out={args.out}")

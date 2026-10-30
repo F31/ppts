@@ -1,0 +1,180 @@
+{
+ "note": "Q7 绑定实验的**口语版讲稿**（消融对照）。绑定与 q7-script.json 完全相同，只把讲解词改成不复述元素文字的自然说法。时长字段沿用原版：本实验只测文本匹配，不重渲染，所以时长不影响结论。",
+ "voice": "zh-CN-YunxiNeural",
+ "rate": "+0%",
+ "leadMs": 220,
+ "gapMs": 150,
+ "tailMs": 700,
+ "minPageMs": 2500,
+ "pages": [
+  {
+   "index": 0,
+   "slideId": "slide-0",
+   "segments": [
+    {
+     "id": "s0-1",
+     "text": "大家好，今天讲一套出片工具。",
+     "bind": [
+      {
+       "elementId": "p0-title",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s0-2",
+     "text": "从排版文件直接出成片子，画面跟原稿一模一样。",
+     "bind": [
+      {
+       "elementId": "p0-sub",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 1,
+   "slideId": "slide-1",
+   "segments": [
+    {
+     "id": "s1-1",
+     "text": "今天讲四个方面。",
+     "bind": [
+      {
+       "elementId": "p1-title",
+       "offsetMs": 0
+      },
+      {
+       "elementId": "p1-card",
+       "offsetMs": 140
+      }
+     ]
+    },
+    {
+     "id": "s1-2",
+     "text": "第一，同样的输入跑两遍，产物完全一样。",
+     "bind": [
+      {
+       "elementId": "p1-item0",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s1-3",
+     "text": "第二，内存峰值控制得比较低。",
+     "bind": [
+      {
+       "elementId": "p1-item1",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s1-4",
+     "text": "第三，缺字在构建阶段就被拦住。",
+     "bind": [
+      {
+       "elementId": "p1-item2",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s1-5",
+     "text": "第四，出错能说清是哪一页、为什么。",
+     "bind": [
+      {
+       "elementId": "p1-item3",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 2,
+   "slideId": "slide-2",
+   "segments": [
+    {
+     "id": "s2-1",
+     "text": "先看耗时分布。",
+     "bind": [
+      {
+       "elementId": "p2-title",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s2-2",
+     "text": "双核要将近三分钟，四核能省四十多秒。",
+     "bind": [
+      {
+       "elementId": "p2-chart",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 3,
+   "slideId": "slide-3",
+   "segments": [
+    {
+     "id": "s3-1",
+     "text": "整条链路分五步，每一步都能单独重试。",
+     "bind": [
+      {
+       "elementId": "p3-title",
+       "offsetMs": 0
+      },
+      {
+       "elementId": "p3-flow",
+       "offsetMs": 700
+      }
+     ]
+    },
+    {
+     "id": "s3-2",
+     "text": "右侧那张图是部署形态。",
+     "bind": [
+      {
+       "elementId": "p3-hero",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "index": 4,
+   "slideId": "slide-4",
+   "segments": [
+    {
+     "id": "s4-1",
+     "text": "就到这里。",
+     "bind": [
+      {
+       "elementId": "p4-title",
+       "offsetMs": 0
+      }
+     ]
+    },
+    {
+     "id": "s4-2",
+     "text": "所有数字都能复现。",
+     "bind": [
+      {
+       "elementId": "p4-contact",
+       "offsetMs": 0
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "derivedFrom": "q7-script.json"
+}
