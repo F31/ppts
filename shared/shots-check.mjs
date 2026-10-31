@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { shotAt, cameraTransform } from './shots.ts';
+import { evaluateLayer, cubicBezier } from './motion.ts';
 
 function shot(index, startMs, durationMs, crossFadeMs = 0, image = `shot-${index}.png`) {
   return { index, image, startMs, durationMs, crossFadeMs };
@@ -167,4 +168,44 @@ test('cameraTransform 覆盖不变量：越界输入下变换后图仍盖住舞�
         `scale=${sc} ms=${ms}: transform exposes stage edges (left=${left} right=${right} top=${top} bottom=${bottom})`);
     }
   }
+});
+
+// ---- 跨页延续的单一求值器（与 Go render 同语义）----
+// 延续段用负起点平移求值，页缝处 cubic-bezier 缓动连续。这里守的是 shared/motion.ts 的
+// evaluateLayer：播放器与渲染器共用同一份，任何一端漂移到页缝跳变都会被这条用例抓住。
+const easeC = { x1: 0.22, y1: 1, x2: 0.36, y2: 1 };
+
+test('跨页延续段在页缝处与原 clip 末态连续', () => {
+  const source = { clips: [
+    { effect: 'fadeIn', startMs: 7000, durationMs: 8000, easing: easeC,
+      props: [{ name: 'opacity', from: 0, to: 1 }] }
+  ] };
+  const cont = { clips: [
+    { effect: 'fadeIn', startMs: -3000, durationMs: 8000, easing: easeC,
+      isContinuation: true, continuationOffsetMs: 3000,
+      props: [{ name: 'opacity', from: 0, to: 1 }] }
+  ] };
+  // 页 i 末态（localMs=10000）→ 进度 0.375；次页首态（localMs=0）→ 进度 0.375。
+  const seamN = evaluateLayer(source, 10000).opacity;
+  const seamN1 = evaluateLayer(cont, 0).opacity;
+  assert.ok(Math.abs(seamN - seamN1) < 1e-9, `页缝不连续：${seamN} vs ${seamN1}`);
+  // 与解析缓动一致。
+  const want = cubicBezier(easeC, 0.375);
+  assert.ok(Math.abs(seamN - want) < 1e-9, `末态与缓动不一致：${seamN} vs ${want}`);
+  // 缝后：次页 localMs=2000 → 进度 0.625，必须等于原 clip 在 g=12000 处。
+  assert.ok(
+    Math.abs(evaluateLayer(source, 12000).opacity - evaluateLayer(cont, 2000).opacity) < 1e-9,
+    '缝后 opacity 不连续'
+  );
+});
+
+test('延续段负起点被 evaluateLayer 正确吸收（不抛、不露白）', () => {
+  const cont = { clips: [
+    { effect: 'fadeIn', startMs: -3000, durationMs: 8000, easing: easeC,
+      isContinuation: true, continuationOffsetMs: 3000,
+      props: [{ name: 'opacity', from: 0, to: 1 }] }
+  ] };
+  const s0 = evaluateLayer(cont, 0).opacity;
+  assert.ok(Number.isFinite(s0) && s0 > 0 && s0 <= 1, `次页首帧应可见，实得 ${s0}`);
+  assert.equal(evaluateLayer(cont, 5000).opacity, 1, '结束后保持终态');
 });

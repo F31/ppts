@@ -116,6 +116,20 @@ func main() {
 		}
 	}
 
+	// 跨页延续夹具（G8-③.6）：在相邻两页之间注入一条真正的延续元素——页 i 的源层溢出页尾，
+	// 页 i+1 落下延续段（负起点平移），与 render.Compiler 输出同构。于是 -layers 产出的包含
+	// continuation 段，覆盖编译拆分与浏览器门禁（V17/V18 页缝连续）。页太短不足以溢出时跳过。
+	if *layers > 0 && len(animPages) >= 2 {
+		pageMs := (timeline.Slides[0].EndUS - timeline.Slides[0].StartUS) / 1000
+		if pageMs > 4000 {
+			for i := 0; i+1 < len(animPages); i++ {
+				tag := fmt.Sprintf("cont-%d", i)
+				animPages[i].Layers = append(animPages[i].Layers, syntheticContinuationSource(*width, *height, pageMs, tag))
+				animPages[i+1].Layers = append(animPages[i+1].Layers, syntheticContinuationSeg(*width, *height, pageMs, tag))
+			}
+		}
+	}
+
 	var buf bytes.Buffer
 	start := time.Now()
 	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), share.BundleInput{
@@ -472,6 +486,58 @@ func syntheticAnimation(w, h, index, count int) share.PageAnimation {
 		Transition: share.SlideTransition{Type: "fade", DurationMs: 360},
 	}
 }
+
+// syntheticContinuationSource 造一个会跨页溢出的源层（本页段，完整 clip，不截断）。
+//
+// 它是 G8 跨页延续的夹具：在页 i 放一条 continues 溢出的 clip，余量本应由编译器注入次页段；
+// 这里直接按编译器同构输出，在页 i+1 放下延续段（见 syntheticContinuationSeg），于是 -layers
+// 产出的包就含一条真正的跨页延续元素，浏览器门禁（V17/V18）能覆盖「页缝处连续」。
+func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.LayerAsset {
+	start := pageMs - 3000
+	ease := animation.EasingCurves[animation.DefaultEasing]
+	x, y, bw, bh := layerBox(w, h, 0)
+	return share.LayerAsset{
+		ElementID: tag,
+		Kind:      "card",
+		Box:       share.SlideBox{X: x, Y: y, W: bw, H: bh},
+		PNG:       solidPNG(bw, bh, continuationColor),
+		Origin:    "center",
+		Clips: []share.Clip{
+			{Effect: "fadeIn", StartMs: start, DurationMs: 8000, Easing: ease,
+				Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
+			{Effect: "slideUp", StartMs: start, DurationMs: 8000, Easing: ease,
+				Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 40, To: 0}}},
+		},
+	}
+}
+
+// syntheticContinuationSeg 造次页延续段（负起点平移，与 render.Compiler 输出同构）。
+//
+// StartMs = -ContinuationOffsetMs 把本段求值时间平移回原 clip 时间轴，使页缝处 cubic-bezier
+// 缓动连续；ElementID 与源层一致，供播放器把次页层与本页同元素层关联。
+func syntheticContinuationSeg(w, h int, pageMs int64, tag string) share.LayerAsset {
+	offset := int64(3000)
+	ease := animation.EasingCurves[animation.DefaultEasing]
+	x, y, bw, bh := layerBox(w, h, 0)
+	return share.LayerAsset{
+		ElementID: tag,
+		Kind:      "card",
+		Box:       share.SlideBox{X: x, Y: y, W: bw, H: bh},
+		PNG:       solidPNG(bw, bh, continuationColor),
+		Origin:    "center",
+		Clips: []share.Clip{
+			{Effect: "fadeIn", StartMs: -offset, DurationMs: 8000, Easing: ease,
+				IsContinuation: true, ContinuationOffsetMs: offset,
+				Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
+			{Effect: "slideUp", StartMs: -offset, DurationMs: 8000, Easing: ease,
+				IsContinuation: true, ContinuationOffsetMs: offset,
+				Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 40, To: 0}}},
+		},
+	}
+}
+
+// continuationColor 是延续夹具层的标识色（橙），与常规层区分，便于门禁核对。
+var continuationColor = color.RGBA{0xff, 0x80, 0x00, 0xff}
 
 func solidPNG(w, h int, c color.RGBA) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))

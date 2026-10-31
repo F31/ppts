@@ -460,6 +460,9 @@ func bundleClips(clips []render.Motion) []share.Clip {
 			ClipID: c.ClipID, Effect: c.Effect,
 			StartMs: c.StartMs, DurationMs: c.DurationMs,
 			Easing: c.Easing, Props: c.Props,
+			IsContinuation:       c.IsContinuation,
+			ContinuationOffsetMs: c.ContinuationOffsetMs,
+			ElementID:            c.ElementID,
 		})
 	}
 	return out

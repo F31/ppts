@@ -142,6 +142,11 @@ type SlideBox struct {
 //
 // 叶类型（缓动四点、属性 from/to）直接用 animation 包的定义，不在这里重抄一遍：
 // 重抄就意味着「清单里的 easing 字段名」与「渲染器读的 easing 字段名」有两处来源。
+//
+// 跨页延续（G8）在该结构里只新增三个 omitempty 字段：非延续 clip 序列化字节不变。
+// IsContinuation=true 的 clip 用负 StartMs（= -ContinuationOffsetMs）把求值时间平移回
+// 原 clip 时间轴，使页缝处 cubic-bezier 缓动连续（见 animation-cross-scene-continuation
+// design §2）。ElementID 仅延续段设置，供播放器/渲染器把次页层与本页同元素层关联。
 type Clip struct {
 	ClipID     string                 `json:"clipId,omitempty"`
 	Effect     string                 `json:"effect"`
@@ -149,6 +154,10 @@ type Clip struct {
 	DurationMs int64                  `json:"durationMs"`
 	Easing     animation.CubicBezier  `json:"easing"`
 	Props      []animation.MotionProp `json:"props"`
+	// 以下三个字段为 G8 跨页延续新增；omitempty 保证既有非延续 clip 序列化字节不变。
+	IsContinuation       bool   `json:"isContinuation,omitempty"`
+	ContinuationOffsetMs int64  `json:"continuationOffsetMs,omitempty"`
+	ElementID            string `json:"elementId,omitempty"`
 }
 
 type AudioEntry struct {
@@ -446,6 +455,15 @@ func validateSlideAnimation(index int, slide SlideEntry, files map[string]struct
 			}
 			if clip.Effect == "" {
 				return fmt.Errorf("share: slide %d layer %d clip %d has no effect tag", index, k, c)
+			}
+			// 跨页延续（G8）：延续段允许负起点（负起点平移求值，见设计 §2），但其
+			// ContinuationOffsetMs MUST 非负——编译器保证 offset = 页长-起点 ≥ 0；
+			// 非延续 clip 不允许负起点（那是非法规格）。
+			if !clip.IsContinuation && clip.StartMs < 0 {
+				return fmt.Errorf("share: slide %d layer %d clip %d has negative start without continuation", index, k, c)
+			}
+			if clip.IsContinuation && clip.ContinuationOffsetMs < 0 {
+				return fmt.Errorf("share: slide %d layer %d continuation clip %d has negative offset", index, k, c)
 			}
 		}
 	}

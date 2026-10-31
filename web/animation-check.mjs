@@ -562,3 +562,70 @@ test('同一时刻只指一个：第 3 个焦点开始后，第 1 个元素必�
   const gap = focusDim([{ startMs: 0, elementId: 'a', endMs: 400 }, { startMs: 900, elementId: 'b' }], 700);
   assert.deepEqual(gap, {}, '空档里不应有任何压暗');
 });
+
+// ── G8 跨页延续（播放器续播 / 单一求值器）──
+// 延续段用「负起点平移求值」：次页段 StartMs = -offset，与原 clip 在「页缝 + localMs」处进度一致，
+// cubic-bezier 缓动天然连续（见 design §2）。以下用例与 Go 侧 TestCompileContinuationSplitsAcrossPages
+// 同语义，守住「页缝不跳变」。
+const { evaluateLayer, cubicBezier } = await import('../shared/motion.ts');
+const contEase = { x1: 0.22, y1: 1, x2: 0.36, y2: 1 };
+const contProps = (from, to) => [
+  { name: 'opacity', from, to },
+  { name: 'translateY', from: 40, to: 0 }
+];
+
+test('跨页延续段用负起点时，compileKeyframes 不产出负 offset 关键帧', async () => {
+  const clips = [
+    { clipId: 'c1', effect: 'fadeIn', startMs: -3000, durationMs: 8000,
+      easing: contEase, isContinuation: true, continuationOffsetMs: 3000,
+      props: contProps(0, 1) }
+  ];
+  const frames = compileKeyframes(clips, { fps: 30, pageDurationMs: 10000, reduceMotion: false }, 'cont-0');
+  assert.ok(frames && frames.length >= 2, '延续段应编译出关键帧');
+  for (const f of frames) {
+    assert.ok(f.offset >= 0 && f.offset <= 1, `offset 必须在 [0,1]，实得 ${f.offset}`);
+  }
+});
+
+test('页缝处 continuation 段与原 clip 末态连续（evaluateLayer）', async () => {
+  // 原 clip：页 i 从 7000ms 起、时长 8000ms（页长 10000ms → 溢出、offset=3000）。
+  const source = { clips: [
+    { clipId: 'c1', effect: 'fadeIn', startMs: 7000, durationMs: 8000, easing: contEase, props: contProps(0, 1) }
+  ] };
+  // 次页段：负起点 -3000，沿用完整 from→to。
+  const cont = { clips: [
+    { clipId: 'c1', effect: 'fadeIn', startMs: -3000, durationMs: 8000, easing: contEase,
+      isContinuation: true, continuationOffsetMs: 3000, props: contProps(0, 1) }
+  ] };
+
+  // 页缝：页 i 末态（localMs=10000）→ 进度 (10000-7000)/8000 = 0.375；
+  // 次页首态（localMs=0）→ 进度 (0+3000)/8000 = 0.375。必须相等。
+  const seamN = evaluateLayer(source, 10000).opacity;
+  const seamN1 = evaluateLayer(cont, 0).opacity;
+  assert.ok(Math.abs(seamN - seamN1) < 1e-9, `页缝 opacity 不连续：${seamN} vs ${seamN1}`);
+
+  // 缝后任意点也连续：次页 localMs=2000 对应原 clip 的 g=12000（页 i 末态 + 2000），
+  // 即原 clip 在 (12000-7000)/8000 = 0.625 处；延续段 (2000+3000)/8000 = 0.625。
+  const origAt = evaluateLayer(source, 12000).opacity;
+  const contAt = evaluateLayer(cont, 2000).opacity;
+  assert.ok(Math.abs(origAt - contAt) < 1e-9, `缝后 opacity 不连续：${origAt} vs ${contAt}`);
+
+  // 与解析缓动一致：opacity = from + (to-from)*cubicBezier(ease, 0.625)。
+  const want = 0 + (1 - 0) * cubicBezier(contEase, 0.625);
+  assert.ok(Math.abs(contAt - want) < 1e-9, `opacity 与缓动不一致：${contAt} vs ${want}`);
+});
+
+test('旧播放器忽略 isContinuation 时次页段仍可见、不露白', async () => {
+  // 旧播放器不识别 isContinuation：次页段退化普通层，但负起点求值仍给出可见终态，不崩不露白。
+  const cont = { clips: [
+    { clipId: 'c1', effect: 'fadeIn', startMs: -3000, durationMs: 8000, easing: contEase,
+      isContinuation: true, continuationOffsetMs: 3000, props: contProps(0, 1) }
+  ] };
+  const atStart = evaluateLayer(cont, 0);
+  assert.ok(
+    Number.isFinite(atStart.opacity) && atStart.opacity > 0 && atStart.opacity <= 1,
+    `次页首帧应可见，实得 opacity=${atStart.opacity}`
+  );
+  // 延续段结束后（localMs=5000）保持终态 opacity=1，不回跳为 0（不露白）。
+  assert.equal(evaluateLayer(cont, 5000).opacity, 1, '延续段结束后应保持终态可见');
+});
