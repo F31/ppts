@@ -9,9 +9,18 @@
 // 播放器自己有个 seek 滑杆（0–1000‰），点它比等它更准。所以这里是
 // 「seek → 等图解码完 → 截图」，落点可读回、可断言。
 //
+// 舞台与视口的关系（--stage）：
+//   播放器把卡片宽度钉在 1280（`max-width:1280px`），舞台跟着卡片走。于是 1920 的
+//   页在浏览器里只会以 1280 画出，而 MP4 是 1920——两者比 SSIM 时掺进来的重采样误差
+//   分不清「画错了」和「只是缩放了」（实测 0.969 vs 0.99995）。
+//   卡片的宽度上限是**网页嵌用**的策略，不是画面本身的性质：层的位置全按画布百分比
+//   落位（animation.ts 的 pct()），去掉上限只会让同一页按原生尺寸画一遍。
+//   所以 --stage WxH 做两件事：把视口按「舞台 + 边距」定好，再去掉那道上限，
+//   最后**校验实测舞台就是 W×H**——不是「大致对」，是等号。
+//
 // 用法：
 //   node scripts/review/dom-shot.mjs --pkg tmp/pkg --times 0,1200,3700 --out tmp/shots
-//   node scripts/review/dom-shot.mjs --pkg tmp/pkg --times 3700 --out tmp/shots --width 1920 --height 1080
+//   node scripts/review/dom-shot.mjs --pkg tmp/pkg --times 3700 --out tmp/shots --stage 1920x1080
 // 输出：单行 `SHOT_JSON {...}`，由 dom-ssim.py 解析。
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,8 +37,14 @@ function arg(name, fallback) {
 
 const pkgDir = arg('pkg', '');
 const outDir = arg('out', '');
-const width = Number(arg('width', '1920'));
-const height = Number(arg('height', '1080'));
+const stageArg = String(arg('stage', '')).trim();
+const stageWanted = /^\d+x\d+$/.test(stageArg)
+  ? stageArg.split('x').map(Number)
+  : null;
+// body 的左右内边距各 24（见 player.css），上下留出控制条与卡片阴影的余量：
+// 视口比舞台高 160，卡片才不会被 flex 居中顶出画面。
+const width = stageWanted ? stageWanted[0] + 48 : Number(arg('width', '1920'));
+const height = stageWanted ? stageWanted[1] + 160 : Number(arg('height', '1080'));
 const times = String(arg('times', ''))
   .split(',')
   .map((s) => s.trim())
@@ -122,6 +137,35 @@ async function main() {
       if (!mounted) await sleep(100);
     }
     if (!mounted) throw new Error('播放器没有挂载：找不到 .ppts-seek 或 __PPT_MANIFEST__');
+
+    // 去掉卡片宽度上限，让舞台按原生尺寸画。不给 --stage 时不动它——那是
+    // 「用户双击打开看到的样子」，V16/V17 验的正是那个形态。
+    if (stageWanted) {
+      const r = await b.S('Runtime.evaluate', {
+        expression: `(() => {
+          const card = document.querySelector('.ppts-share');
+          if (!card) return { ok: false, why: 'no-card' };
+          card.style.maxWidth = 'none';
+          const st = document.querySelector('.ppts-stage');
+          if (!st) return { ok: false, why: 'no-stage' };
+          const box = st.getBoundingClientRect();
+          return { ok: true, w: box.width, h: box.height, y: box.y, vh: window.innerHeight };
+        })()`,
+        returnByValue: true,
+      });
+      const got = r.result?.value || {};
+      if (!got.ok) throw new Error(`无法确定舞台尺寸：${got.why}`);
+      const [wantW, wantH] = stageWanted;
+      // 用原始浮点数比，不用四舍五入：差 0.4px 也是没对上，而它会被 round 吞掉。
+      if (Math.abs(got.w - wantW) >= 0.5 || Math.abs(got.h - wantH) >= 0.5) {
+        throw new Error(
+          `舞台实测 ${got.w.toFixed(2)}×${got.h.toFixed(2)}，要的是 ${wantW}×${wantH}（视口 ${width}×${height}）`
+        );
+      }
+      if (got.y < 0 || got.y + got.h > got.vh) {
+        throw new Error(`舞台超出视口：y=${got.y} h=${got.h.toFixed(1)} 视口高=${got.vh}`);
+      }
+    }
 
     const viewport = await b.S('Runtime.evaluate', {
       expression: '[window.innerWidth, window.innerHeight, window.devicePixelRatio]',

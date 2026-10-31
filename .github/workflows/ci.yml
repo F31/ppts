@@ -123,6 +123,22 @@ jobs:
             -layers 2 -pages-out /tmp/fixture/pages -out /tmp/fixture/pkg >/dev/null
           python3 scripts/review/settled-gate.py --pkg /tmp/fixture/pkg --pages /tmp/fixture/pages
 
+      # V13（包端 vs 成片）以前只能对着真实作业跑：MP4 要渲染镜像，而镜像只在
+      # WSL 的 docker 里。夹具把成片也做成可复现的——按 30fps 逐帧截包自己的 DOM、
+      # 裁剪到舞台再编码成分段。所以这一步验的是「截图落点 / 抽帧 / 解码 / 阈值」
+      # 这条管线本身；「包 vs 真实渲染」仍然只能靠真成片，判据一字未改。
+      - name: 造分段夹具（V13 用）
+        run: |
+          command -v ffmpeg >/dev/null || {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ffmpeg
+          }
+          node scripts/review/make-fixture.mjs --out /tmp/v13 --pages 2 --page-secs 2
+      - name: 同帧 SSIM 门禁（V13）
+        run: |
+          python3 scripts/review/dom-ssim.py --plan /tmp/v13/plan.json --pkg /tmp/v13/pkg \
+            --segments /tmp/v13 --out /tmp/v13/gate
+
   # 竞态检测（M1 tasks 6.2 / ADR-11）：开发机是 Windows + CGO_ENABLED=0 且无任何 C 工具链，
   # race detector 依赖 cgo，本地跑不了，只能在这里跑。范围限定在引入并发的三个包，
   # 不做全仓 -race（相对耗时远大于收益）。首次跑绿后才可以勾掉 tasks 6.2。

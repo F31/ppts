@@ -15,10 +15,12 @@
   3. 逐页 SSIM ≥ 阈值（默认 0.99），且平均差、结构性差异像素占比都在阈值内。
 
 为什么要求 1:1：
-  舞台宽度被播放器上限（1280）决定，1920 宽的页图必然要被重采样。实测同一份包
-  在 1280 与 1920 下比对，SSIM 分别是 0.99995 与 0.969——差别全来自重采样与抗锯齿，
-  不是画面错了。把阈值放宽到 0.96 会把「真的错了」和「只是缩放了」混为一谈，
-  而这种混同正是门禁最该避免的。所以：包按页图尺寸生成，1:1 比。
+  一旦掺入重采样，「画错了」和「只是缩放了」就分不开——实测同一份正确包在
+  1280 与 1920 下比对，SSIM 分别是 0.99995 与 0.969。把阈值放宽到 0.96 会把
+  这两种情况混为一谈，而这种混同正是门禁最该避免的。所以本脚本把舞台定成
+  **源页自己的尺寸**（dom-shot 的 --stage 去掉播放器 1280 的卡片上限，层位置
+  本来就按画布百分比落位，去掉上限只是按原生尺寸再画一遍）。实测 1920 页在
+  1920 舞台下与源页的 meanDiff 是 0.0007。
 
 用法：
     python3 scripts/review/settled-gate.py --pkg tmp/pkg --pages tmp/pages
@@ -31,7 +33,6 @@
 import argparse
 import json
 import os
-import subprocess
 import sys
 
 import numpy as np
@@ -39,6 +40,7 @@ from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+from domshot import run_dom_shot  # noqa: E402
 from ssim import ssim_map  # noqa: E402
 
 # 结尾取样点：页尾前 250ms。入场动画通常在前 1s 内结束，页尾前这段时间
@@ -53,36 +55,12 @@ MAX_MEAN_DIFF = 0.5
 MAX_OUTLIER_RATIO = 0.0005  # 差 >32 的像素占比
 
 
-def run_dom_shot(pkg, times, out_dir, width, height):
-    """调 dom-shot.mjs 取帧，返回 {requestedMs: shot}。"""
-    node = os.environ.get("NODE", "node")
-    script = os.path.join(HERE, "dom-shot.mjs")
-    cmd = [
-        node, script,
-        "--pkg", os.path.abspath(pkg),
-        "--out", os.path.abspath(out_dir),
-        "--width", str(width), "--height", str(height),
-        "--times", ",".join(str(t) for t in times),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    for line in proc.stdout.splitlines():
-        if line.startswith("SHOT_JSON "):
-            report = json.loads(line[len("SHOT_JSON "):])
-            if not report.get("ok"):
-                raise EnvironmentError(f"截图失败：{report.get('error')}")
-            return report
-    detail = (proc.stderr or proc.stdout or "")[:400]
-    raise EnvironmentError(f"dom-shot 没有输出结果（exit {proc.returncode}）：{detail}")
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pkg", required=True, help="成品包目录（含 index.html 与 manifest.json）")
     ap.add_argument("--pages", required=True, help="源页图目录（p000.png …），与清单按序号对齐")
     ap.add_argument("--out", default="", help="截图与报告输出目录（默认 pkg 同级 settled-gate）")
     ap.add_argument("--min-ssim", type=float, default=MIN_SSIM)
-    ap.add_argument("--width", type=int, default=1920, help="视口宽（只影响舞台能有多大）")
-    ap.add_argument("--height", type=int, default=1080, help="视口高")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -107,6 +85,28 @@ def main():
     out_dir = args.out or os.path.join(os.path.dirname(os.path.abspath(args.pkg)), "settled-gate")
     os.makedirs(out_dir, exist_ok=True)
 
+    # 舞台尺寸取自源页本身，而不是命令行：判据要比的就是「这一页」，舞台跟着页走，
+    # 就不存在「参数写错了一直比不过」这种自己给自己设的坑。
+    with Image.open(pages[0]) as first:
+        stage = (first.width, first.height)
+    for i, name in enumerate(pages):
+        with Image.open(name) as im:
+            if (im.width, im.height) != stage:
+                print(f"[V13b] 源页尺寸不一致：p{i:03d} 是 {im.width}×{im.height}，"
+                      f"p000 是 {stage[0]}×{stage[1]}——没法定一套舞台", file=sys.stderr)
+                return 2
+
+    # 包的画布必须与页图同尺寸。舞台可以按任意尺寸画（--stage 会去掉卡片上限），
+    # 但「包是 1920、页图是 1280」时它只能把 1920 缩到 1280——那一层重采样正是
+    # 这条判据最该拒绝的东西，所以在这里挡住，而不是让它悄悄比过去。
+    video = manifest.get("video") or {}
+    pack = (int(video.get("width", 0)), int(video.get("height", 0)))
+    if pack != stage:
+        print(f"[V13b] 包与页图不是同一尺寸：包 {pack[0]}×{pack[1]}，"
+              f"页图 {stage[0]}×{stage[1]}——缩放会把「画错了」和「只是缩放了」混为一谈",
+              file=sys.stderr)
+        return 2
+
     # 每页取一个点：页尾前 250ms；页面太短时退到页中点，避免落到上一页。
     cases = []
     for i, slide in enumerate(slides):
@@ -117,7 +117,7 @@ def main():
         cases.append((i, int(round(at))))
 
     try:
-        report = run_dom_shot(args.pkg, [c[1] for c in cases], out_dir, args.width, args.height)
+        report = run_dom_shot(args.pkg, [c[1] for c in cases], out_dir, stage=stage)
     except (EnvironmentError, FileNotFoundError) as exc:
         print(f"[V13b] 无法执行浏览器截图：{exc}", file=sys.stderr)
         return 2
@@ -143,26 +143,26 @@ def main():
                            "detail": "页面里还有未解码完的图（层图可能是空白）"})
             continue
 
-        stage = shot.get("stage")
-        if not stage:
+        stage_box = shot.get("stage")
+        if not stage_box:
             checks.append({"code": "V13b", "page": index, "status": "fail", "detail": "没有舞台元素"})
             continue
 
         page = Image.open(pages[index]).convert("RGB")
-        if (page.width, page.height) != (stage["w"], stage["h"]):
-            # 这不是「包画错了」，是「拿错了参照物」或「包与页图不同尺寸」——
-            # 门禁无从判断谁对谁错，只能拒绝判。按输入问题退出（2），
-            # 而不是报一条不合格：后者会让人去查渲染，而问题在参数上。
+        if (page.width, page.height) != (stage_box["w"], stage_box["h"]):
+            # 走到这里说明 dom-shot 的 --stage 没兑现。这不是「包画错了」，
+            # 是截图管线的问题，按输入问题退出（2），不报一条不合格——
+            # 后者会让人去查渲染，而问题根本不在画面上。
             print(
-                f"[V13b] page {index}: 舞台 {stage['w']}×{stage['h']} 与源页 "
-                f"{page.width}×{page.height} 不一致：包与页图不是同一尺寸，"
-                "比对会掺入重采样误差（按页图尺寸生成包，例如 -width/-height 与页图相同）",
+                f"[V13b] page {index}: 舞台 {stage_box['w']}×{stage_box['h']} 与源页 "
+                f"{page.width}×{page.height} 不一致：--stage 没有按源页尺寸生效",
                 file=sys.stderr,
             )
             return 2
 
         shot_img = Image.open(os.path.join(out_dir, f"t{at_ms}.png")).convert("RGB")
-        crop = shot_img.crop((stage["x"], stage["y"], stage["x"] + stage["w"], stage["y"] + stage["h"]))
+        crop = shot_img.crop((stage_box["x"], stage_box["y"],
+                              stage_box["x"] + stage_box["w"], stage_box["y"] + stage_box["h"]))
         a = np.asarray(crop.convert("L"), dtype=np.float64)
         b = np.asarray(page.convert("L"), dtype=np.float64)
         diff = np.abs(np.asarray(crop, dtype=np.int16) - np.asarray(page, dtype=np.int16)).max(axis=2)
