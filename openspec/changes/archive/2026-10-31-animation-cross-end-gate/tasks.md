@@ -23,7 +23,7 @@
 ## 4. CI
 
 - [x] 4.1 `share-browser` 作业加两步：造夹具（含 ffmpeg 兜底安装）、跑 V13
-- [ ] 4.2 首跑结果（本机没有 runner，等下一次 push 的流水线）
+- [x] 4.2 首跑结果：CI #216（`4b617f4`）全绿。`share-browser` 的五个步骤依次 success——解析浏览器 3s、样例包 33s、V14–V17 21s、V13b 7s、**造分段夹具 34s**、**V13 3s**；ubuntu 自带 ffmpeg，兜底分支未触发
 
 ## 5. 验证
 
