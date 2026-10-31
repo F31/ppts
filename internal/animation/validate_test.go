@@ -51,6 +51,29 @@ func TestValidateAcceptsLegalSpec(t *testing.T) {
 	}
 }
 
+// G8：跨页延续的 clip 允许超出页尾，保存期（V3 时间上界）不被拒绝。
+func TestValidateContinuesOverflowAccepted(t *testing.T) {
+	rev := validRevision()
+	rev.Tracks[0].Clips[0].Continues = true
+	rev.Tracks[0].Clips[0].StartMs = 5500 // 600ms clip -> ends 6100 > 6000 页时长
+	rev.Tracks[0].Clips[0].Trigger = "atTime:5500"
+	if err := rev.Validate(validPageContext()); err != nil {
+		t.Fatalf("continues clip exceeding page end rejected: %v", err)
+	}
+}
+
+// G8：continues 只放宽"超出页尾"；起点为负仍 MUST 被 V3 拒绝。
+func TestValidateContinuesNegativeStartRejected(t *testing.T) {
+	rev := validRevision()
+	rev.Tracks[0].Clips[0].Continues = true
+	rev.Tracks[0].Clips[0].StartMs = -1
+	err := rev.Validate(validPageContext())
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Rule != RuleTime {
+		t.Fatalf("continues negative start: want RuleTime, got %v", err)
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -803,6 +803,8 @@
   "editor.animationClipRange": "{start}s – {end}s",
   "editor.animationClipDerived": "跟随朗读时机",
   "editor.animationClipFixed": "固定时间",
+  "editor.animationClipContinuesOff": "允许跨页延续",
+  "editor.animationClipContinuesOn": "延续到下一页",
   "editor.animationConflictTitle": "这一页的动效已被别处修改",
   "editor.animationConflictBody": "你正在编辑第 {local} 版，服务器上已经是第 {latest} 版。保留哪一份由你决定。",
   "editor.animationConflictOverwrite": "用我的版本覆盖",

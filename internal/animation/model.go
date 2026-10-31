@@ -152,6 +152,11 @@ type Clip struct {
 	Easing     string `json:"easing"` // linear|easeOut|easeInOut|spring
 	Params     Params `json:"params,omitempty"`
 	Trigger    string `json:"trigger"` // onEnter | withSegment:<id> | atTime:<ms>
+	// Continues 表示本 clip 允许跨页延续到下一页（G8 跨场景元素延续）。为 true 时，
+	// 编译期在页边界拆分（见 render-plan），保存期允许 startMs+durationMs 超出页时长；
+	// 为 false（缺省）时行为不变。跨页身份复用 Track.ElementID。omitempty 保证缺省值
+	// 不进序列化，避免改变既有规格的字节/哈希。
+	Continues bool `json:"continues,omitempty"`
 }
 
 // Params 是动效参数。字段名与 JSON key 一一对应；未登记的 key 一律拒收，

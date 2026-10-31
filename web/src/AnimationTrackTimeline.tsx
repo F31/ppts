@@ -12,7 +12,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 
 import { anchorLabel } from './animationState';
 import type { AnimationAnchors, AnimationSpec } from './animationState';
-import { clipGeometry, editableTracks, moveClipTo, nudgeClip, resizeClipTo, startIsDerived } from './animationTrack';
+import { clipGeometry, editableTracks, moveClipTo, nudgeClip, resizeClipTo, setClipContinues, startIsDerived } from './animationTrack';
 
 type Translate = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -119,21 +119,22 @@ export function AnimationTrackTimeline({
               const startText = (clip.startMs / 1000).toFixed(2);
               const endText = ((clip.startMs + clip.durationMs) / 1000).toFixed(2);
               const derived = startIsDerived(clip);
+              const continues = clip.continues === true;
               const label = t('editor.animationClipRange', { start: startText, end: endText });
               return (
                 <div
                   key={clip.id ?? `${track.elementId}-${index}`}
-                  className={`track-clip${derived ? ' derived' : ''}${drag?.elementId === track.elementId && drag.clipIndex === index ? ' dragging' : ''}`}
+                  className={`track-clip${derived ? ' derived' : ''}${continues ? ' continues' : ''}${drag?.elementId === track.elementId && drag.clipIndex === index ? ' dragging' : ''}`}
                   style={{ left: `${geo.leftPct}%`, width: `${geo.widthPct}%` }}
                   role="slider"
                   tabIndex={canDrag ? 0 : -1}
                   aria-label={label}
                   aria-valuemin={0}
-                  aria-valuemax={Math.max(0, durationMs - clip.durationMs)}
+                  aria-valuemax={continues ? Math.max(0, durationMs) : Math.max(0, durationMs - clip.durationMs)}
                   aria-valuenow={clip.startMs}
                   aria-valuetext={label}
                   aria-disabled={!canDrag}
-                  title={`${label} · ${derived ? t('editor.animationClipDerived') : t('editor.animationClipFixed')}`}
+                  title={`${label} · ${derived ? t('editor.animationClipDerived') : t('editor.animationClipFixed')}${continues ? ' · ' + t('editor.animationClipContinuesOn') : ''}`}
                   onPointerDown={(event) => beginDrag(event, track.elementId, index, 'move')}
                   onPointerMove={moveDrag}
                   onPointerUp={endDrag}
@@ -152,6 +153,20 @@ export function AnimationTrackTimeline({
                     aria-hidden="true"
                     onPointerDown={(event) => beginDrag(event, track.elementId, index, 'resize')}
                   />
+                  <button
+                    type="button"
+                    className={`track-clip-continue${continues ? ' on' : ''}`}
+                    aria-pressed={continues}
+                    title={continues ? t('editor.animationClipContinuesOn') : t('editor.animationClipContinuesOff')}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onBeforeEdit();
+                      onChange(setClipContinues(spec, track.elementId, index, !continues));
+                    }}
+                  >
+                    {continues ? '↳' : '→'}
+                  </button>
                 </div>
               );
             })}

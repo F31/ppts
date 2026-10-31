@@ -19,6 +19,8 @@ export type AnimationClip = {
   params?: Record<string, unknown>;
   /** onEnter | withSegment:<id> | atTime:<ms> */
   trigger: string;
+  /** 跨页延续（G8）：true 时允许 startMs+durationMs 超出本页时长，由编译期在页边界拆分。 */
+  continues?: boolean;
 };
 
 export type AnimationTrack = {
@@ -183,6 +185,7 @@ export function specFingerprint(spec: AnimationSpec): string {
         durationMs: clip.durationMs,
         easing: clip.easing,
         trigger: clip.trigger,
+        continues: clip.continues ?? false,
         params: clip.params ?? {}
       }))
     }))
@@ -216,6 +219,7 @@ export function savePayloadOf(draft: AnimationSpec): AnimationSavePayload {
         durationMs: clip.durationMs,
         easing: clip.easing,
         trigger: clip.trigger,
+        continues: clip.continues ?? false,
         params: clip.params
       }))
     }))

@@ -803,6 +803,8 @@
   "editor.animationClipRange": "{start}s – {end}s",
   "editor.animationClipDerived": "follows narration",
   "editor.animationClipFixed": "fixed time",
+  "editor.animationClipContinuesOff": "Allow continuation to next slide",
+  "editor.animationClipContinuesOn": "Continues to next slide",
   "editor.animationConflictTitle": "This slide's motion changed elsewhere",
   "editor.animationConflictBody": "You are editing revision {local}, but the server is already at revision {latest}. Choose which one to keep.",
   "editor.animationConflictOverwrite": "Overwrite with mine",

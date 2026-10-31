@@ -235,7 +235,12 @@ func (r *Revision) Validate(pc PageContext) error {
 				if c == nil {
 					continue
 				}
-				spans = append(spans, span{start: c.StartMs, end: c.StartMs + c.DurationMs})
+				end := c.StartMs + c.DurationMs
+				// 跨页延续（G8）：溢出页尾的部分属于下一页，不计入本页时间预算。
+				if c.Continues && end > pc.DurationMS {
+					end = pc.DurationMS
+				}
+				spans = append(spans, span{start: c.StartMs, end: end})
 			}
 		}
 		if used := unionLength(spans); used > pc.DurationMS+tolerance {
@@ -285,12 +290,16 @@ func validateClipTiming(c *Clip, eff *Effect, pc PageContext, tolerance int64, f
 		return nil
 	}
 	limit := pc.DurationMS + tolerance
-	if end := c.StartMs + c.DurationMs; end > limit {
-		return &ValidationError{
-			Rule: RuleTime, Field: field + ".durationMs",
-			Message: fmt.Sprintf("ends at %dms, page limit %dms", end, limit),
-			Hint:    fmt.Sprintf("startMs+durationMs ≤ %d", limit),
-			Status:  400,
+	// 跨页延续（G8）：continues 的 clip 允许超出页尾，由编译期在页边界拆分，
+	// 故此处不对其做"end ≤ 页时长"的拒绝；非延续 clip 仍 MUST 遵守。
+	if !c.Continues {
+		if end := c.StartMs + c.DurationMs; end > limit {
+			return &ValidationError{
+				Rule: RuleTime, Field: field + ".durationMs",
+				Message: fmt.Sprintf("ends at %dms, page limit %dms", end, limit),
+				Hint:    fmt.Sprintf("startMs+durationMs ≤ %d", limit),
+				Status:  400,
+			}
 		}
 	}
 	return nil
@@ -322,7 +331,8 @@ func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, 
 		if err != nil || ms < 0 {
 			return invalid(RuleStructure, field+".trigger", "atTime requires a non-negative millisecond", 400)
 		}
-		if pc.DurationMS > 0 && ms > pc.DurationMS+tolerance {
+		// 跨页延续（G8）：continues 的 clip 起点可能落在下一页，atTime 允许超过本页时长。
+		if pc.DurationMS > 0 && !c.Continues && ms > pc.DurationMS+tolerance {
 			return &ValidationError{
 				Rule: RuleTime, Field: field + ".trigger",
 				Message: fmt.Sprintf("atTime %dms exceeds page %dms", ms, pc.DurationMS),

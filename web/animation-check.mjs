@@ -387,6 +387,48 @@ test('时间轴几何：位置与宽度都按页时长算，未知页时长给 0
   assert.ok(overflow.leftPct + overflow.widthPct <= 100.0001);
 });
 
+// ── G8 跨页延续（编辑层）──
+test('continues 的 clip 不被夹到「页时长-时长」起点上界', () => {
+  const spec = baseSpec();
+  // bullet-1 第一条 c2 是 onEnter（600ms）；标记 continues 后拖到 7900 不应被拉回 7400。
+  let s = track.setClipContinues(spec, 'bullet-1', 0, true);
+  s = track.moveClipTo(s, 'bullet-1', 0, 7900, 8000);
+  const clip = s.tracks[1].clips[0];
+  assert.equal(clip.continues, true);
+  assert.equal(clip.startMs, 7900, 'continues 起点可越过页尾，不被夹回');
+  // 非 continues 仍被夹到 7400。
+  const nonCont = track.moveClipTo(spec, 'bullet-1', 0, 7900, 8000);
+  assert.equal(nonCont.tracks[1].clips[0].startMs, 7400);
+});
+
+test('continues 的 clip 拉长不被页尾空间截断', () => {
+  const spec = baseSpec();
+  const s = track.setClipContinues(spec, 'title-1', 0, true);
+  // title-1 在 8000ms 页上，从 7500 开始拉长到 3000：非 continues 会截到 500；continues 应保持 3000。
+  const moved = track.moveClipTo(s, 'title-1', 0, 7500, 8000);
+  const grown = track.resizeClipTo(moved, 'title-1', 0, 3000, 8000);
+  const clip = grown.tracks[0].clips[0];
+  assert.equal(clip.durationMs, 3000, 'continues 时长不截断');
+  assert.ok(clip.startMs + clip.durationMs > 8000, '延续部分越过页尾');
+});
+
+test('setClipContinues 只改布尔标记，不动其它字段', () => {
+  const spec = baseSpec();
+  const s = track.setClipContinues(spec, 'bullet-1', 1, true);
+  const clip = s.tracks[1].clips[1];
+  assert.equal(clip.continues, true);
+  assert.equal(clip.trigger, 'atTime:900');
+  assert.equal(spec.tracks[1].clips[1].continues, undefined, '原对象不变');
+});
+
+test('specFingerprint 与保存载荷把 continues 计入', () => {
+  const spec = baseSpec();
+  const on = track.setClipContinues(baseSpec(), 'bullet-1', 0, true);
+  assert.equal(isDirty(on, spec), true, '切换 continues 应算脏');
+  const payload = savePayloadOf(on);
+  assert.equal(payload.tracks[1].clips[0].continues, true, '保存载荷含 continues');
+});
+
 test('撤销/重做：记录的是整份快照，栈深不超过 HISTORY_LIMIT', () => {
   let history = track.emptyHistory();
   const spec = baseSpec();

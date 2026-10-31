@@ -56,7 +56,11 @@ export function clipEnd(clip: AnimationClip): number {
  */
 export function clampClip(clip: AnimationClip, pageDurationMs: number): AnimationClip {
   const durationMs = Math.round(Math.min(MAX_CLIP_MS, Math.max(MIN_CLIP_MS, clip.durationMs)));
-  const maxStart = pageDurationMs > 0 ? Math.max(0, pageDurationMs - durationMs) : Number.MAX_SAFE_INTEGER;
+  // 跨页延续（G8）：continues 的 clip 允许起点越过页尾（活动区间延续到下一页），
+  // 故不以前页时长-时长作为起点上界；非延续 clip 仍夹紧到 [0, 页时长-时长]。
+  const maxStart = pageDurationMs > 0 && !clip.continues
+    ? Math.max(0, pageDurationMs - durationMs)
+    : Number.MAX_SAFE_INTEGER;
   const startMs = Math.round(Math.min(maxStart, Math.max(0, clip.startMs)));
   return { ...clip, startMs, durationMs };
 }
@@ -106,6 +110,10 @@ export function resizeClipTo(
   return mapClip(spec, elementId, clipIndex, (clip) => {
     const want = Math.round(Math.min(MAX_CLIP_MS, Math.max(MIN_CLIP_MS, durationMs)));
     if (pageDurationMs > 0) {
+      // 跨页延续（G8）：拖右边缘拉长时允许超出页尾，不被截断；其溢出部分由编译期拆分。
+      if (clip.continues) {
+        return { ...clip, durationMs: want };
+      }
       const room = pageDurationMs - clip.startMs;
       if (room >= MIN_CLIP_MS) {
         return { ...clip, durationMs: Math.min(want, room) };
@@ -116,6 +124,19 @@ export function resizeClipTo(
     }
     return clampClip({ ...clip, durationMs: want }, pageDurationMs);
   });
+}
+
+/**
+ * setClipContinues 切换某条 clip 的跨页延续标记（G8）。
+ * 仅改布尔标记，不动其它字段；continues 变为 true 后，clampClip/resizeClipTo 会放行越过页尾。
+ */
+export function setClipContinues(
+  spec: AnimationSpec,
+  elementId: string,
+  clipIndex: number,
+  continues: boolean
+): AnimationSpec {
+  return mapClip(spec, elementId, clipIndex, (clip) => ({ ...clip, continues }));
 }
 
 /**
