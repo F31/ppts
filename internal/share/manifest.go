@@ -70,7 +70,29 @@ type SlideEntry struct {
 	// Focus 是页级焦点序列，与 IR 的 page.focus 同语义：此刻讲的是谁，
 	// 其余层由 shared/motion.ts 的 focusDim 推导出压暗量。播放器与 MP4 共用同一份求值。
 	Focus []SlideFocus `json:"focus,omitempty"`
+	// Shots 把一页切成若干镜头切片（IR 的 page.shots 原样透传）。
+	// 为空时 Image 是唯一画面来源，与 M6-2 的清单逐字节一致。
+	Shots []SlideShot `json:"shots,omitempty"`
 }
+
+// SlideShot 是一段页内镜头：一张铺满舞台的图，以及它取自原页的哪一块。
+//
+// 时间与 IR 同语义：CrossFadeMs 占本镜头开头，混合期内两张图同时可见，
+// 因此任何取样判据都要避开 [startMs, startMs+crossFadeMs)。
+type SlideShot struct {
+	Index int `json:"index"`
+	// Image 铺满舞台（整页图，或裁切放大后的特写图）。
+	Image string `json:"image"`
+	// Crop 是 Image 取自原页的区域；nil 表示整页。
+	Crop        *SlideBox `json:"crop,omitempty"`
+	StartMs     int64     `json:"startMs"`
+	DurationMs  int64     `json:"durationMs"`
+	CrossFadeMs int       `json:"crossFadeMs"`
+}
+
+// maxShotsPerSlide 与 render.MaxShotsPerPage 同值。share 不依赖 render（依赖纪律），
+// 所以这里是字面量；manifest_test.go 里有一条断言守两者相等，改一边就红。
+const maxShotsPerSlide = 4
 
 // SlideFocus 是一段焦点区间：从 StartMs 起焦点落在 ElementID 上；EndMs 非零时
 // 到那一刻放手（整页回到全亮），否则保持到下一段开始。
@@ -213,6 +235,9 @@ func (m *Manifest) Validate(files map[string]struct{}) error {
 		if err := validateSlideAnimation(i, slide, files); err != nil {
 			return err
 		}
+		if err := validateSlideShots(i, slide, m.Video, files); err != nil {
+			return err
+		}
 		if files != nil {
 			if _, ok := files[slide.Image]; !ok {
 				return fmt.Errorf("share: slide %d image %q is missing from bundle", i, slide.Image)
@@ -269,6 +294,72 @@ func (m *Manifest) Validate(files map[string]struct{}) error {
 //     入场动画期间能看到重影。这种画面不报错，只会被当成「渲染有点糊」。
 //   - 层图尺寸与 box 不一致：浏览器会缩放插值，文字边缘发虚，而两端 SSIM 会莫名偏低。
 //   - 转场类型拼错：播放器不认识就退化成直接切换，看起来「转场没了」却不报错。
+// validateSlideShots 校验页内镜头切片。
+//
+// 与 IR 的 validateShots 有一处刻意的重复：门禁对的是**产物**（人可能手改清单），
+// 所以产物侧必须自己再判一次，不能假设清单一定由本仓的编译器生成。
+func validateSlideShots(index int, slide SlideEntry, video VideoInfo, files map[string]struct{}) error {
+	if len(slide.Shots) == 0 {
+		return nil
+	}
+	if len(slide.Shots) > maxShotsPerSlide {
+		return fmt.Errorf("share: slide %d has %d shots, limit %d", index, len(slide.Shots), maxShotsPerSlide)
+	}
+	// 首镜必须就是页级图：旧播放器只认 Image，两者不一致时同一份包在不同播放器上
+	// 会给出两个画面——而这类分歧不会被任何截图发现。
+	if slide.Shots[0].Image != slide.Image {
+		return fmt.Errorf("share: slide %d first shot image %q must equal slide image %q",
+			index, slide.Shots[0].Image, slide.Image)
+	}
+	pageMS := (slide.EndUS - slide.StartUS) / 1000
+	frameMS := int64(33)
+	if video.FPS > 0 {
+		frameMS = int64(1000 / video.FPS)
+	}
+	var cursor int64
+	for si, shot := range slide.Shots {
+		if shot.Index != si {
+			return fmt.Errorf("share: slide %d shot %d has index %d (order must match index)",
+				index, si, shot.Index)
+		}
+		if err := checkBundlePath(shot.Image); err != nil {
+			return fmt.Errorf("share: slide %d shot %d image: %w", index, si, err)
+		}
+		if files != nil {
+			if _, ok := files[shot.Image]; !ok {
+				return fmt.Errorf("share: slide %d shot %d image %q is missing from bundle",
+					index, si, shot.Image)
+			}
+		}
+		if shot.StartMs != cursor {
+			return fmt.Errorf("share: slide %d shot %d starts at %dms, want %dms (gaps/overlaps are not allowed)",
+				index, si, shot.StartMs, cursor)
+		}
+		if shot.DurationMs <= 0 {
+			return fmt.Errorf("share: slide %d shot %d has non-positive duration", index, si)
+		}
+		if shot.CrossFadeMs < 0 || int64(shot.CrossFadeMs) >= shot.DurationMs {
+			return fmt.Errorf("share: slide %d shot %d crossFade %dms must be in [0,%d)",
+				index, si, shot.CrossFadeMs, shot.DurationMs)
+		}
+		if shot.Crop != nil {
+			c := *shot.Crop
+			if c.W <= 0 || c.H <= 0 {
+				return fmt.Errorf("share: slide %d shot %d crop %dx%d must be positive", index, si, c.W, c.H)
+			}
+			if c.X < 0 || c.Y < 0 || c.X+c.W > video.Width || c.Y+c.H > video.Height {
+				return fmt.Errorf("share: slide %d shot %d crop (%d,%d %dx%d) outside page %dx%d",
+					index, si, c.X, c.Y, c.W, c.H, video.Width, video.Height)
+			}
+		}
+		cursor += shot.DurationMs
+	}
+	if cursor < pageMS-frameMS || cursor > pageMS+frameMS {
+		return fmt.Errorf("share: slide %d shots cover %dms, page is %dms", index, cursor, pageMS)
+	}
+	return nil
+}
+
 func validateSlideAnimation(index int, slide SlideEntry, files map[string]struct{}) error {
 	if slide.Transition != nil {
 		switch slide.Transition.Type {

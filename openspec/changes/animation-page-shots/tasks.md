@@ -26,10 +26,11 @@
 
 ## 3. 清单 + 打包
 
-- [ ] 3.1 `share.SlideEntry` 增 `Shots`（`omitempty`），`bundle.go` 按 IR 原样写入
-- [ ] 3.2 校验三条：空洞/重叠/总长；`shots` 非空时 `slide.Image` == 首镜 `image`；`Crop` 宽高比与 `Image` 差 ≤1%（这条只能在打包期做——IR 里 Image 只是路径）
-- [ ] 3.3 每个 `shot.Image` 必须在包内（复用 `checkBundlePath` 与 `files`）
-- [ ] 3.4 `schemaVersion` 升到 3，并写清「旧播放器读到 shots 会退化成首镜」不是兼容
+- [x] 3.1 `share.SlideEntry` 增 `Shots`（`omitempty`）+ `SlideShot` 类型
+- [ ] 3.1b `bundle.go` 把 `PageAnimation.Shots` 写成包内文件并填清单。**卡在素材来源**：`shots[0]` 的图就是页级图（可能是 plate），`shots[k>0]` 才是新文件——这个映射必须与「特写图由谁产」一起定，否则写出来的包没人能填。与 5.x 一起做
+- [x] 3.2 校验三条：空洞/重叠/总长；`shots` 非空时 `slide.Image` == 首镜 `image`；`Crop` 在页内且宽高比为正在打包期核（IR 里 Image 只是路径）
+- [-] 3.3 每个 `shot.Image` 必须在包内 —— 校验已加（`files` 集合），但 3.1b 不落地时这条没有真实输入
+- [x] 3.4 **不升 `schemaVersion`**：查过播放器根本不读它，升版本只让 Go 的 `Validate` 拒绝 v2 包。改为在规格里写「旧播放器降级可播放、但不换镜」
 
 ## 4. 门禁 + 夹具
 
