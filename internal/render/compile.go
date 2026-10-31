@@ -497,14 +497,17 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 	overflowed := start+clip.DurationMs > in.DurationMs+frameMS
 	duration := clip.DurationMs
 	if overflowed {
-		// 跨页延续：本页段截断到页尾，余量交 Compile 注入次页段（不再记截断诊断）。
-		// 非延续 clip 保持既有截断/丢弃行为。
-		duration = in.DurationMs - start
-		if !clip.Continues && duration < 1 {
-			diags = append(diags, Diagnostic{Code: DiagClipTruncated, Page: in.Index,
-				ElementID: layer.ElementID, ClipID: clip.ID,
-				Message: "clip 无法放进页尾，已跳过"})
-			return m, diags, false
+		// 跨页延续（clip.Continues）：本页段保留完整 clip（duration=原长），余量由
+		// Compile 在次页注入 continuation 段（见 continuationSegFor），不截断、不记诊断。
+		// 非延续 clip 维持既有「截断贴合页尾」行为。
+		if !clip.Continues {
+			duration = in.DurationMs - start
+			if duration < 1 {
+				diags = append(diags, Diagnostic{Code: DiagClipTruncated, Page: in.Index,
+					ElementID: layer.ElementID, ClipID: clip.ID,
+					Message: "clip 无法放进页尾，已跳过"})
+				return m, diags, false
+			}
 		}
 	}
 
@@ -520,18 +523,12 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 	m.DurationMs = duration
 	m.Easing = plan.Curve
 	m.Props = c.motionProps(plan)
-
-	// 跨页延续：本页段覆盖原 clip 的 [0, f] 区间（f = 本页段时长 / 原 clip 时长），
-	// 余量交次页段（见 continuationSegFor）。两段在 mid 处衔接，页缝视觉连续（设计 §2）。
-	// 非溢出（clip 完全落在页内）的 continues clip 不拆分，按完整 from→to 单次播放。
+	// 跨页延续的本页段（源段）沿用完整 from→to，不改 duration、不拆分属性：页缝处的精确衔接
+	// 由次页 continuation 段用负起点（StartMs=-offset）平移求值实现（design §2）。
+	// 源段会故意延伸到页尾之外（余量在次页延续段渲染），标记 ContinuationSource 以豁免
+	// plan 校验的「超页时长」检查（非延续 clip 溢出已被上面截断，故只有它会出现超页）。
 	if clip.Continues {
-		m.ElementID = elementID
-		if overflowed && clip.DurationMs > 0 {
-			f := float64(duration) / float64(clip.DurationMs)
-			for i := range m.Props {
-				m.Props[i].To = lerpProp(m.Props[i].From, m.Props[i].To, f)
-			}
-		}
+		m.ContinuationSource = true
 	}
 
 	if !clip.Continues && duration != clip.DurationMs {
@@ -572,8 +569,10 @@ type continuationSeg struct {
 // 返回 (nil, nil) 表示该 clip 无需延续（完全落在页内、起点已超页尾、或余量≤0）。
 // 若起点已超本页尾等无法推断次页起点的情况，返回 (nil, diag) 供调用方降级处理。
 //
-// 余量段覆盖原 clip 的 [f, 1] 区间（f = 本页段时长 / 原 clip 时长），Props 为 [mid, to]，
-// 与本页段 [from, mid] 在 mid 处衔接——这是页缝处视觉连续（clipTime 连续）的前提（设计 §2）。
+// 余量段沿用完整 from→to 属性，并用负起点（StartMs = -offset）把本段「平移」回原 clip 时间轴，
+// 其中 offset = 本页时长 - 本页段起点。在页 N+1 的 localMs 处，evaluateLayer 求得的进度是
+// (localMs + offset)/D，与原 clip 在「页缝 + localMs」处的进度完全一致——cubic-bezier 缓动在页缝处
+// 天然连续，避免了「两段预拆分 Props 再各自施加缓动」导致的二次缓动跳变（设计 §2）。
 func (c *Compiler) continuationSegFor(in PageInput, track *animation.Track, clip *animation.Clip,
 	intensity float64) (*Motion, *Diagnostic) {
 	anchor, ok, _ := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
@@ -606,21 +605,17 @@ func (c *Compiler) continuationSegFor(in PageInput, track *animation.Track, clip
 		return nil, &Diagnostic{Code: "plan_motion_failed", Page: in.Index,
 			ElementID: track.ElementID, ClipID: clip.ID, Message: err.Error()}
 	}
-	full := c.motionProps(plan)
-	f := float64(offset) / float64(clip.DurationMs)
-	props := make([]animation.MotionProp, 0, len(full))
-	for _, p := range full {
-		props = append(props, animation.MotionProp{
-			Name: p.Name, From: lerpProp(p.From, p.To, f), To: p.To,
-		})
-	}
+	// 次页段沿用完整 from→to 属性，并用负起点把本段「平移」回原 clip 时间轴：
+	// 在页 N+1 的 localMs 处，evaluateLayer 求得的进度是 (localMs + offset)/D，
+	// 与原 clip 在「页缝 + localMs」处的进度完全一致——cubic-bezier 缓动在页缝处
+	// 连续，无二次施加导致的跳变（design §2）。offset 仅作审计/对齐用。
 	m := Motion{
 		ClipID:               clip.ID,
 		Effect:               clip.Type,
-		StartMs:              0,
-		DurationMs:           residue,
+		StartMs:              -offset,
+		DurationMs:           clip.DurationMs,
 		Easing:               plan.Curve,
-		Props:                props,
+		Props:                c.motionProps(plan),
 		IsContinuation:       true,
 		ContinuationOffsetMs: offset,
 		ElementID:            track.ElementID,

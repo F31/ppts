@@ -313,13 +313,18 @@ func validateFocus(p *Page, base string) error {
 
 func validateMotion(m *Motion, pageMS, frameMS int64, field string) error {
 	if m.StartMs < 0 {
-		return planErr(field+".startMs", CodeInvalidPlan, "negative start %d", m.StartMs)
+		// 延续段（次页余量）用负起点把求值时间平移回原 clip 时间轴，合法。
+		if !m.IsContinuation {
+			return planErr(field+".startMs", CodeInvalidPlan, "negative start %d", m.StartMs)
+		}
 	}
 	if m.DurationMs < 1 {
 		return planErr(field+".durationMs", CodeInvalidPlan, "duration must be ≥1ms (got %d)", m.DurationMs)
 	}
 	// 与 V3 同口径：允许 1 帧容差，但渲染阶段不再负责裁剪（裁剪意味着画面与规格不一致）。
-	if m.StartMs+m.DurationMs > pageMS+frameMS {
+	// 跨页延续的「本页段（源段）」会故意延伸到页尾之外（余量在次页延续段渲染），此处豁免；
+	// 次页延续段（负起点）的有效活动窗口 = StartMs+DurationMs = residue，仍须落在页内（下方保留检查）。
+	if !m.ContinuationSource && m.StartMs+m.DurationMs > pageMS+frameMS {
 		return planErr(field, CodeInvalidPlan,
 			"clip [%d,%d) exceeds page duration %d", m.StartMs, m.StartMs+m.DurationMs, pageMS)
 	}

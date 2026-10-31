@@ -625,7 +625,7 @@ func makeContinuationPages(p0clip *animation.Clip) []PageInput {
 
 func TestCompileContinuationSplitsAcrossPages(t *testing.T) {
 	c := newTestCompiler(t)
-	// 页 0 时长 6000，clip 从 0 起、时长 8000 → 溢出 2000 到页 1（f = 6000/8000 = 0.75）。
+	// 页 0 时长 6000，clip 从 0 起、时长 8000 → 溢出 2000 到页 1（offset = 6000）。
 	pages := makeContinuationPages(&animation.Clip{
 		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
 		Easing: "easeOut", Trigger: "onEnter", Continues: true,
@@ -646,11 +646,13 @@ func TestCompileContinuationSplitsAcrossPages(t *testing.T) {
 	if n0.IsContinuation {
 		t.Fatalf("页 0 段不应是 continuation")
 	}
-	if n0.StartMs != 0 || n0.DurationMs != 6000 {
-		t.Fatalf("页 0 段 start/dur = %d/%d，want 0/6000", n0.StartMs, n0.DurationMs)
+	// 本页段保留完整 clip：起点 0、时长=原长 8000（不截断到页尾）。
+	if n0.StartMs != 0 || n0.DurationMs != 8000 {
+		t.Fatalf("页 0 段 start/dur = %d/%d，want 0/8000", n0.StartMs, n0.DurationMs)
 	}
-	if n0.ElementID != "shape-1" {
-		t.Fatalf("页 0 段 ElementID = %q", n0.ElementID)
+	// 本页段是「源」，不携带跨页身份键（仅延续段携带）。
+	if n0.ElementID != "" {
+		t.Fatalf("页 0 段不应携带 ElementID，got %q", n0.ElementID)
 	}
 
 	p1 := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
@@ -661,8 +663,11 @@ func TestCompileContinuationSplitsAcrossPages(t *testing.T) {
 	if cont == nil {
 		t.Fatalf("页 1 缺 continuation 段，clips=%d", len(p1.Clips))
 	}
-	if cont.StartMs != 0 || cont.DurationMs != 2000 {
-		t.Fatalf("页 1 段 start/dur = %d/%d，want 0/2000", cont.StartMs, cont.DurationMs)
+	// 次页段用负起点把求值时间平移回原 clip 时间轴：offset=6000 → StartMs=-6000，
+	// DurationMs=原长 8000。于是页 1 localMs=0 时原 clip 进度 = (0+6000)/8000 = 0.75，
+	// 与页 0 末态（页 0 t=6000 时 (6000-0)/8000=0.75）完全一致 → 页缝视觉连续。
+	if cont.StartMs != -6000 || cont.DurationMs != 8000 {
+		t.Fatalf("页 1 段 start/dur = %d/%d，want -6000/8000", cont.StartMs, cont.DurationMs)
 	}
 	if cont.ContinuationOffsetMs != 6000 {
 		t.Fatalf("ContinuationOffsetMs = %d，want 6000", cont.ContinuationOffsetMs)
@@ -671,18 +676,23 @@ func TestCompileContinuationSplitsAcrossPages(t *testing.T) {
 		t.Fatalf("页 1 段 ElementID = %q", cont.ElementID)
 	}
 
-	// 视觉连续：两段在 mid 处衔接（页 0 段 To == 页 1 段 From，按相同属性名逐对）。
+	// 视觉连续：两段属性完全一致（都是完整 from→to），仅起点平移。
 	if len(n0.Props) != len(cont.Props) {
 		t.Fatalf("两段 Props 数不等: %d vs %d", len(n0.Props), len(cont.Props))
 	}
 	for i := range n0.Props {
-		if n0.Props[i].Name != cont.Props[i].Name {
-			t.Fatalf("两段 Props 名不一致: %s vs %s", n0.Props[i].Name, cont.Props[i].Name)
+		if n0.Props[i].Name != cont.Props[i].Name ||
+			n0.Props[i].From != cont.Props[i].From ||
+			n0.Props[i].To != cont.Props[i].To {
+			t.Fatalf("两段 Props 不一致: 页0 %+v vs 页1 %+v", n0.Props[i], cont.Props[i])
 		}
-		if n0.Props[i].To != cont.Props[i].From {
-			t.Fatalf("页缝不连续: 页0段 %s.To=%v != 页1段 %s.From=%v",
-				n0.Props[i].Name, n0.Props[i].To, cont.Props[i].Name, cont.Props[i].From)
-		}
+	}
+	// 数学不变量：次页段起点 = -offset，且两段时间轴同源（同 DurationMs）。
+	if cont.StartMs != -cont.ContinuationOffsetMs {
+		t.Fatalf("次页段起点 %d != -ContinuationOffsetMs(%d)，页缝不连续", cont.StartMs, cont.ContinuationOffsetMs)
+	}
+	if n0.DurationMs != cont.DurationMs {
+		t.Fatalf("两段时长不一致: %d vs %d", n0.DurationMs, cont.DurationMs)
 	}
 }
 

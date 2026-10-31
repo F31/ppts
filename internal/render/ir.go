@@ -227,6 +227,10 @@ type Motion struct {
 	// ElementID 是跨页身份键，复用 Track.ElementID（project.Shape.ID）。仅延续段设置，
 	// 供次页同 elementId 层链接，未设置的 Motion 省略该字段。
 	ElementID string `json:"elementId,omitempty"`
+	// ContinuationSource 标记本段是「跨页延续的源段」（本页段）。源段故意延伸到页尾之外，
+	// 余量在次页的 IsContinuation 段渲染，因此 plan 校验豁免其「超页时长」检查。仅内部使用，
+	// 不进 manifest（bundleClips 不复制它），omitempty 保证非延续 Motion 字节不变。
+	ContinuationSource bool `json:"continuationSource,omitempty"`
 }
 
 // Transition 是页间转场。挂在后一页：它描述"如何进入这一页"。
