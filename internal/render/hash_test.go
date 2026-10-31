@@ -73,6 +73,53 @@ func TestHashIgnoresLayerImage(t *testing.T) {
 	}
 }
 
+func TestHashIgnoresShotPathPrefix(t *testing.T) {
+	// 镜头图与 baseImage 同类：同一份规格换个租户前缀不该变成另一份计划。
+	a := shotPlan(
+		Shot{Index: 0, Image: "tenants/t1/p0.png", StartMs: 0, DurationMs: 6000},
+	)
+	b := shotPlan(
+		Shot{Index: 0, Image: "tenants/t2/p0.png", StartMs: 0, DurationMs: 6000},
+	)
+	ha, _ := a.Hash(HashOptions{})
+	hb, _ := b.Hash(HashOptions{})
+	if ha != hb {
+		t.Fatal("镜头图的路径前缀不应影响 hash")
+	}
+}
+
+func TestHashChangesWithShotImage(t *testing.T) {
+	// 与 Layer.Image 相反：镜头图是**内容**，换一张画面就变了，必须换 hash，
+	// 否则缓存会拿旧片段顶替新画面。
+	a := shotPlan(
+		Shot{Index: 0, Image: "pages/p0.png", StartMs: 0, DurationMs: 3000},
+		Shot{Index: 1, Image: "pages/zoomA.png", StartMs: 3000, DurationMs: 3000},
+	)
+	b := shotPlan(
+		Shot{Index: 0, Image: "pages/p0.png", StartMs: 0, DurationMs: 3000},
+		Shot{Index: 1, Image: "pages/zoomB.png", StartMs: 3000, DurationMs: 3000},
+	)
+	ha, _ := a.Hash(HashOptions{})
+	hb, _ := b.Hash(HashOptions{})
+	if ha == hb {
+		t.Fatal("换镜头图必须改变 hash，否则会命中旧片段")
+	}
+}
+
+func TestCanonicalJSONDoesNotMutateShots(t *testing.T) {
+	// CanonicalJSON 会把 Image 归一为 basename。若 Shots 是浅拷贝，
+	// 这一步会改到调用方的计划——下一次 PathPrefix 判断就失效了。
+	plan := shotPlan(
+		Shot{Index: 0, Image: "tenants/t1/p0.png", StartMs: 0, DurationMs: 6000},
+	)
+	if _, err := plan.CanonicalJSON(); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan.Pages[0].Shots[0].Image; got != "tenants/t1/p0.png" {
+		t.Fatalf("CanonicalJSON 改到了原计划：%q", got)
+	}
+}
+
 func TestHashIgnoresWarnings(t *testing.T) {
 	a := validPlan()
 	b := validPlan()

@@ -141,8 +141,81 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 			}
 		}
 	}
+	if err := validateShots(p, base, frameMS, t.Width, t.Height); err != nil {
+		return err
+	}
 	if err := validateFocus(p, base); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateShots 校验页内镜头切片（见 ir.go 的 Shot）。
+//
+// 这里只做「渲染器能否安全执行」这一层：时间轴是否连续、叠化是否短于镜头、
+// 裁切框是否在页面内。**宽高比不在这里**——IR 里 Image 只是一个路径，量不出
+// 像素尺寸；那条在打包期做（图已经落盘）。
+func validateShots(p *Page, base string, frameMS int64, width, height int) error {
+	if len(p.Shots) == 0 {
+		return nil
+	}
+	if len(p.Shots) > MaxShotsPerPage {
+		return planErr(base+".shots", CodeInvalidPlan,
+			"%d shots exceeds limit %d", len(p.Shots), MaxShotsPerPage)
+	}
+	// 首镜必须就是页级底图：否则「这一页长什么样」有两个说法，而播放器
+	// 在没有 shots 的旧版本里只认 baseImage——同一份包在新旧播放器上会不一样。
+	if p.Shots[0].Image != p.BaseImage {
+		return planErr(base+".shots[0].image", CodeInvalidPlan,
+			"first shot image %q must equal baseImage %q", p.Shots[0].Image, p.BaseImage)
+	}
+
+	var cursor int64
+	for i := range p.Shots {
+		s := &p.Shots[i]
+		sb := fmt.Sprintf("%s.shots[%d]", base, i)
+		if s.Index != i {
+			return planErr(sb+".index", CodeInvalidPlan,
+				"index %d does not match position %d (order must match index)", s.Index, i)
+		}
+		if err := SafeAssetPath(s.Image); err != nil {
+			return planErr(sb+".image", CodeUnsafePath, "%s", err)
+		}
+		if s.StartMs != cursor {
+			return planErr(sb+".startMs", CodeInvalidPlan,
+				"shot starts at %d, previous ends at %d (gaps and overlaps are not allowed)",
+				s.StartMs, cursor)
+		}
+		if s.DurationMs <= 0 {
+			return planErr(sb+".durationMs", CodeInvalidPlan, "duration must be positive (got %d)", s.DurationMs)
+		}
+		if s.CrossFadeMs < 0 || s.CrossFadeMs > animation.MaxTransitionMS {
+			return planErr(sb+".crossFadeMs", CodeInvalidPlan,
+				"crossFade %d outside [0,%d]", s.CrossFadeMs, animation.MaxTransitionMS)
+		}
+		// 叠化必须短于本镜，否则这一镜还没淡完就结束了——画面会停在半混合态
+		// 直接切到下一镜，而这件事在任何截图里都看不出来。
+		if int64(s.CrossFadeMs) >= s.DurationMs {
+			return planErr(sb+".crossFadeMs", CodeInvalidPlan,
+				"crossFade %d must be shorter than shot %dms", s.CrossFadeMs, s.DurationMs)
+		}
+		if s.Crop != nil {
+			c := *s.Crop
+			if c.W <= 0 || c.H <= 0 {
+				return planErr(sb+".crop", CodeInvalidPlan, "crop %dx%d must be positive", c.W, c.H)
+			}
+			if c.X < 0 || c.Y < 0 || c.X+c.W > width || c.Y+c.H > height {
+				return planErr(sb+".crop", CodeInvalidPlan,
+					"crop (%d,%d %dx%d) outside page %dx%d", c.X, c.Y, c.W, c.H, width, height)
+			}
+		}
+		cursor += s.DurationMs
+	}
+	// 与页长对不上时，多出来的时间没有图（画面停在最后一镜），少掉的时间
+	// 会让页尾空白——两种都不报错，只会在某个时刻「画面不动了」。
+	if cursor < p.DurationMs-frameMS || cursor > p.DurationMs+frameMS {
+		return planErr(base+".shots", CodeInvalidPlan,
+			"shots cover %dms, page is %dms", cursor, p.DurationMs)
 	}
 	return nil
 }

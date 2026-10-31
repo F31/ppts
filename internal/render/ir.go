@@ -31,6 +31,10 @@ const (
 	// MaxFocusFadeMS 是焦点切换的过渡上限。超过一秒的「渐隐渐显」会被看成
 	// 画面在发灰，而不是注意力转移。
 	MaxFocusFadeMS = 1000
+
+	// MaxShotsPerPage 是一页里镜头切片的上限。超过这个数就不是「切镜」，
+	// 是把一整段剪贴进一页：观众跟不上，片段缓存也失去意义（一页仍是一段）。
+	MaxShotsPerPage = 4
 )
 
 // 资产模式（设计方案 §6.2）。首版只支持前两种：底图来自整页渲染的 PNG。
@@ -89,6 +93,39 @@ type Page struct {
 	// 页级序列只描述「此刻焦点是谁」，由求值器推导其余元素的压暗量，
 	// 因此天然不会出现「两个元素同时被压暗一半」这类矛盾状态。
 	Focus []FocusSpan `json:"focus,omitempty"`
+	// Shots 把一页切成若干镜头切片：每个切片有自己的底图，按页内相对时间切换。
+	// 为空表示整页一张图（今天的行为），产物里也不会出现该字段。
+	//
+	// 为什么不是 Scene 模型：一页内**多次元素运动**今天已经能表达（Layers × Clips，
+	// 时间页内相对），真正做不出来的只有「页内换底图」。引入 Scene 会同时解耦
+	// 内容单元、时间单元（DurationMs）、渲染单元（一个分段）与交互单元
+	// （页变即重建层），牵动片段缓存、清单游标校验与 V13/V13b 的按页取样。
+	Shots []Shot `json:"shots,omitempty"`
+}
+
+// Shot 是一段页内镜头：一张铺满舞台的图，以及它取自原页的哪一块。
+//
+// 时间语义与页间转场一致：CrossFadeMs 占**本镜头开头**。所以第 2 镜
+// {startMs:2000, crossFadeMs:120} 表示 2000–2120ms 期间前一张淡出、这一张淡入，
+// 2120ms 之后画面才是纯的这一张。任何取样判据都必须避开这段混合帧。
+type Shot struct {
+	Index int `json:"index"`
+	// Image 铺满舞台。整页镜头用页图；特写镜头用裁切放大后的图（可任意尺寸，
+	// 浏览器/合成器按舞台缩放）。
+	Image string `json:"image"`
+	// Crop 是 Image 取自原页的区域（原页像素坐标）。nil 表示整页。
+	//
+	// 两个用途：打包期核验裁切比例（IR 里拿不到像素尺寸，量不了）；
+	// 以及决定这一镜里层要不要显示——层的 Box 是整页坐标，特写把局部放大后
+	// 同一套坐标必然错位，而错位不会报错，只会看起来「元素飘了」。
+	Crop *Box `json:"crop,omitempty"`
+	// StartMs 是页内相对起点，必须等于上一镜的终点。
+	StartMs int64 `json:"startMs"`
+	// DurationMs 是本镜时长。所有镜头加起来必须等于页时长（±1 帧）。
+	DurationMs int64 `json:"durationMs"`
+	// CrossFadeMs 是本镜开头的叠化时长，0 = 硬切。编排侧默认写 120。
+	// 它是显式的：JSON 里「没写」与「写 0」是同一个字节，隐式默认无法区分。
+	CrossFadeMs int `json:"crossFadeMs"`
 }
 
 // FocusSpan 是一段焦点区间：从 StartMs 起，焦点落在 ElementID 上。

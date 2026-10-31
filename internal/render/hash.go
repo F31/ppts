@@ -53,6 +53,17 @@ func (t *Timeline) CanonicalJSON() ([]byte, error) {
 		if len(p.Layers) == 0 {
 			p.Layers = nil
 		}
+		// Shots 的 Image 是**内容**，不是派生：换一张镜头图，画面就变了，
+		// 因此它必须留在 hash 里（不同于 PlateImage / Layer.Image 被清空）。
+		// 但要像 BaseImage 一样归一为 basename——同一份规格换个工作目录
+		// 不该变成另一份计划。深拷贝是必须的：浅拷贝会改到调用方的计划。
+		p.Shots = append([]Shot{}, t.Pages[i].Shots...)
+		for si := range p.Shots {
+			p.Shots[si].Image = path.Base(p.Shots[si].Image)
+		}
+		if len(p.Shots) == 0 {
+			p.Shots = nil
+		}
 		c.Pages[i] = p
 	}
 	if len(c.Fonts) == 0 {
