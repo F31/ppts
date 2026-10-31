@@ -439,16 +439,6 @@ func minInt(a, b int) int {
 	return b
 }
 
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 // distributeByAnchors 以锚点为界把 runes 切成子区间。每个块的导通时序用"音节核"在真实音频上
 // 定位（distributeBlock），停顿区间保留在锚点处（前区结束于 pause.s，后区开始于 pause.e）。
 // 注意：块对音节的"归属窗口"用**停顿中点**（而非停顿端点）划分——停顿端点的帧量化会把
