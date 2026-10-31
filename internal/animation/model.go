@@ -100,7 +100,27 @@ type Revision struct {
 	Intensity        float64 // 统一缩放幅度/时长，[MinIntensity, MaxIntensity]
 	Tracks           []*Track
 	RenderedRevision int64 // 最近一次成功渲染对应的 Revision；< Revision 表示过期
+	Shots            []ShotSpec `json:"shots,omitempty"` // 页内镜头切片（见 render.PageShotInput）
 	UpdatedAt        time.Time
+}
+
+// ShotBox 是镜头裁切框（源页 EMU 坐标）。nil 表示整页（首镜）。
+type ShotBox struct {
+	X      int64 `json:"x"`
+	Y      int64 `json:"y"`
+	Width  int64 `json:"width"`
+	Height int64 `json:"height"`
+}
+
+// ShotSpec 是一段页内镜头：时序 + 取自原页的裁切框（EMU）。
+//
+// 坐标与 Track 的元素几何同宗（都是源页 EMU），由 render.Compiler 统一换算成画布像素。
+// 首镜（index 0）就是整页，Crop 留空；CrossFadeMs 缺省由编排侧补 120。
+type ShotSpec struct {
+	StartMs     int64    `json:"startMs"`
+	DurationMs  int64    `json:"durationMs"`
+	CrossFadeMs int64    `json:"crossFadeMs,omitempty"`
+	Crop        *ShotBox `json:"crop,omitempty"`
 }
 
 // Track 是一个可视元素上的动效集合。ElementID 为空表示整页轨道（Kind 必须为 page）。

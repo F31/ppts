@@ -5,11 +5,15 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/draw"
 	"image/png"
+	"log/slog"
+	"math"
 
 	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/render"
+	sliderenderer "github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/share"
 )
 
@@ -36,36 +40,58 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 		inputs = append(inputs, render.PageInput{
 			Index: i, SlideID: p.SlideID, DurationMs: p.DurationMs,
 			BaseImage: p.BaseImage, Elements: p.Elements, Revision: p.Revision,
-			SegmentOffsets: p.SegmentOffsets,
+			SegmentOffsets: p.SegmentOffsets, Shots: p.Shots,
 		})
 	}
 	return compiler.Compile(inputs)
 }
 
-// bundleAnimations 把 IR 与原始页图变成成品包的分层素材。
+// bundleAnimations 把 IR 与原始页图变成成品包的分层 + 镜头素材。
 //
 // 顺序是关键：**挖空与出层图必须在原始 PNG 上做**。BuildPlate 的填充色取自元素
 // 外环的中位数，若先转成 JPEG（或先降采样到长边 1600），取到的颜色会偏，
 // 底板与层图之间就会出现一道看不见的接缝——它不是错误，只是「画面有点脏」，
 // 而且要逐像素比对才能发现。
 //
-// 返回与 plan.Pages 同序；某项为空值表示该页没有元素级动画（走原来的整页 JPEG）。
-func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte) ([]share.PageAnimation, error) {
+// 镜头切片（Shot）与分层动画互相独立：没有分层动画的页一样可以切镜头
+// （"先全图、后特写" 是最常见用法）。两段分别构建，任一降级都不拖累另一段——
+// 镜头裁切失败只丢特写，分层挖空失败只丢层，绝不让整包失败。
+//
+// 返回与 plan.Pages 同序；某项为空值表示该页没有元素级动画也没有镜头。
+func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Logger) ([]share.PageAnimation, error) {
 	if plan == nil {
 		return nil, nil
 	}
 	out := make([]share.PageAnimation, len(plan.Pages))
 	for i, page := range plan.Pages {
+		// 镜头切片先单独产出（不依赖分层挖空）。降级时镜头缺失，但本页其余内容仍可正常产出。
+		var shots []share.ShotAsset
+		if len(page.Shots) > 0 {
+			if s, ok := buildShotAssets(page, i, pagePNGs, plan.Width, plan.Height, logger); ok {
+				shots = s
+			}
+		}
+
 		if !hasAnimatedLayer(page.Layers) {
+			// 无分层动画的页：只有当本页有镜头切片时才落一条（仅 Shots）。
+			if len(shots) == 0 {
+				continue
+			}
+			out[i] = share.PageAnimation{Shots: shots}
 			continue
 		}
 		if i >= len(pagePNGs) || len(pagePNGs[i]) == 0 {
-			// 页图缺失时不能出分层：底板无从生成，层图也无从裁切。
-			// 交给 writeSlides 的缺图降级路径（沿用/占位），不要在这里造半个包。
+			// 页图缺失：分层无从出，但镜头切片仍可尝试（不依赖分层挖空）。
+			if len(shots) > 0 {
+				out[i] = share.PageAnimation{Shots: shots}
+			}
 			continue
 		}
 		base, err := png.Decode(bytes.NewReader(pagePNGs[i]))
 		if err != nil {
+			if len(shots) > 0 {
+				out[i] = share.PageAnimation{Shots: shots}
+			}
 			continue
 		}
 
@@ -82,38 +108,168 @@ func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte) ([]share.PageAni
 			// 挖空不可用（元素几乎占满整页、取不到外环色）：退回整页图 + 无层。
 			// 这一页会「不动的入场」——但至少画面是对的，不会出现纯色疤。
 			out[i] = share.PageAnimation{Transition: anim.Transition, Focus: anim.Focus}
-			continue
-		}
-
-		platePNG, err := encodePNG(plateImg)
-		if err != nil {
-			return nil, fmt.Errorf("animation: encode plate for page %d: %w", i, err)
-		}
-		anim.PlatePNG = platePNG
-
-		layers := make([]share.LayerAsset, 0, len(assets))
-		for _, a := range assets {
-			if a.Index < 0 || a.Index >= len(page.Layers) {
-				continue
-			}
-			layer := page.Layers[a.Index]
-			layerPNG, err := encodePNG(a.Image)
+		} else {
+			platePNG, err := encodePNG(plateImg)
 			if err != nil {
-				return nil, fmt.Errorf("animation: encode layer %s on page %d: %w", a.ElementID, i, err)
+				return nil, fmt.Errorf("animation: encode plate for page %d: %w", i, err)
 			}
-			layers = append(layers, share.LayerAsset{
-				ElementID: layer.ElementID,
-				Kind:      layer.Kind,
-				Box:       share.SlideBox{X: layer.Box.X, Y: layer.Box.Y, W: layer.Box.W, H: layer.Box.H},
-				PNG:       layerPNG,
-				Origin:    layer.Origin,
-				Clips:     bundleClips(layer.Clips),
-			})
+			anim.PlatePNG = platePNG
+
+			layers := make([]share.LayerAsset, 0, len(assets))
+			for _, a := range assets {
+				if a.Index < 0 || a.Index >= len(page.Layers) {
+					continue
+				}
+				layer := page.Layers[a.Index]
+				layerPNG, err := encodePNG(a.Image)
+				if err != nil {
+					return nil, fmt.Errorf("animation: encode layer %s on page %d: %w", a.ElementID, i, err)
+				}
+				layers = append(layers, share.LayerAsset{
+					ElementID: layer.ElementID,
+					Kind:      layer.Kind,
+					Box:       share.SlideBox{X: layer.Box.X, Y: layer.Box.Y, W: layer.Box.W, H: layer.Box.H},
+					PNG:       layerPNG,
+					Origin:    layer.Origin,
+					Clips:     bundleClips(layer.Clips),
+				})
+			}
+			anim.Layers = layers
+			out[i] = anim
 		}
-		anim.Layers = layers
-		out[i] = anim
+
+		// 分层页上的镜头切片：并入同一份条目。
+		if len(shots) > 0 {
+			merged := out[i]
+			merged.Shots = shots
+			out[i] = merged
+		}
 	}
 	return out, nil
+}
+
+// buildShotAssets 为一页产出镜头素材。
+//
+// 首镜（index 0）就是整页，PNG 留空——打包期会复用已写进包的页级图（有分层时是底板）。
+// 其余镜头按 Crop 从原始页图裁出特写；任何一步失败返回 (nil, false) 降级：
+// 这一页的镜头切片整体缺失，但不拖累整包（镜头是增强层）。
+//
+// crop 在 page.Shots 里是**画布像素**坐标（编译器用 c.scale 统一换算），而落盘字节是
+// **源图**分辨率；两者差一个 sx/sy 倍率，裁切前必须映射回源像素坐标，
+// 否则裁出来的区域会与画面错位（错位不会报错，只会特写"对不上"）。
+func buildShotAssets(page render.Page, i int, pagePNGs [][]byte, canvasW, canvasH int, logger *slog.Logger) ([]share.ShotAsset, bool) {
+	if canvasW <= 0 || canvasH <= 0 {
+		return nil, false
+	}
+	out := make([]share.ShotAsset, 0, len(page.Shots))
+	for k, shot := range page.Shots {
+		if k == 0 {
+			// 首镜复用页级图：PNG 留空，Crop 也留空（整页）。
+			out = append(out, share.ShotAsset{
+				StartMs:     shot.StartMs,
+				DurationMs:  shot.DurationMs,
+				CrossFadeMs: shot.CrossFadeMs,
+			})
+			continue
+		}
+		if shot.Crop == nil {
+			// 非首镜却无裁切框：规格语义错误，整页镜头降级。
+			if logger != nil {
+				logger.Warn("animation: non-first shot without crop; dropping page shots",
+					"page", i, "shot", k)
+			}
+			return nil, false
+		}
+		if i >= len(pagePNGs) || len(pagePNGs[i]) == 0 {
+			if logger != nil {
+				logger.Warn("animation: page image missing; cannot crop shot",
+					"page", i, "shot", k)
+			}
+			return nil, false
+		}
+		src, err := png.Decode(bytes.NewReader(pagePNGs[i]))
+		if err != nil {
+			if logger != nil {
+				logger.Warn("animation: decode page png for shot failed",
+					"page", i, "shot", k, "error", err)
+			}
+			return nil, false
+		}
+		pngBytes, err := cropShot(src, *shot.Crop, canvasW, canvasH)
+		if err != nil {
+			if logger != nil {
+				logger.Warn("animation: crop shot failed; dropping page shots",
+					"page", i, "shot", k, "error", err)
+			}
+			return nil, false
+		}
+		// Crop 字段按源像素坐标落清单：说明这张特写取自原页的哪一块
+		// （播放器据此画高亮框 / 计算比例）。与裁出的 PNG 比例必然一致。
+		srcW := src.Bounds().Dx()
+		srcH := src.Bounds().Dy()
+		sx := float64(srcW) / float64(canvasW)
+		sy := float64(srcH) / float64(canvasH)
+		srcCrop := share.SlideBox{
+			X: int(math.Round(float64(shot.Crop.X) * sx)),
+			Y: int(math.Round(float64(shot.Crop.Y) * sy)),
+			W: int(math.Round(float64(shot.Crop.W) * sx)),
+			H: int(math.Round(float64(shot.Crop.H) * sy)),
+		}
+		out = append(out, share.ShotAsset{
+			PNG:         pngBytes,
+			Crop:        &srcCrop,
+			StartMs:     shot.StartMs,
+			DurationMs:  shot.DurationMs,
+			CrossFadeMs: shot.CrossFadeMs,
+		})
+	}
+	return out, true
+}
+
+// cropShot 从源页图按画布坐标裁切框裁出一张特写 PNG（原生分辨率，不放大）。
+//
+// 不引入 golang.org/x/image：裁切是像素对齐的整数矩形，用标准库 image/draw 转 RGBA
+// 后取子矩形即可，无需重采样。放大由播放器按舞台缩放完成——源是 150 DPI 则浏览器
+// 放大（已知模糊代价），源是 300 DPI 则零重采样清晰（见 #25 重渲注入）。
+func cropShot(src image.Image, crop render.Box, canvasW, canvasH int) ([]byte, error) {
+	if canvasW <= 0 || canvasH <= 0 {
+		return nil, fmt.Errorf("invalid canvas dimensions %dx%d", canvasW, canvasH)
+	}
+	if crop.W <= 0 || crop.H <= 0 {
+		return nil, fmt.Errorf("crop has non-positive size %dx%d", crop.W, crop.H)
+	}
+	srcW := src.Bounds().Dx()
+	srcH := src.Bounds().Dy()
+	if srcW <= 0 || srcH <= 0 {
+		return nil, fmt.Errorf("source image has zero dimension")
+	}
+	// 画布像素坐标 → 源像素坐标。
+	sx := float64(srcW) / float64(canvasW)
+	sy := float64(srcH) / float64(canvasH)
+	min := src.Bounds().Min
+	x := min.X + int(math.Round(float64(crop.X)*sx))
+	y := min.Y + int(math.Round(float64(crop.Y)*sy))
+	w := int(math.Round(float64(crop.W) * sx))
+	h := int(math.Round(float64(crop.H) * sy))
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("cropped region has non-positive size %dx%d", w, h)
+	}
+	// 钳制到源图范围内（裁切框换算后可能略越界）。
+	r := image.Rect(x, y, x+w, y+h)
+	if !r.In(src.Bounds()) {
+		r = r.Intersect(src.Bounds())
+		if r.Empty() {
+			return nil, fmt.Errorf("cropped region outside source image")
+		}
+	}
+	// 只把裁切区拷进一张恰好大小的 RGBA（顺便统一色彩空间），避免 SubImage 偏移陷阱。
+	dst := image.NewRGBA(r)
+	draw.Draw(dst, r, src, r.Min, draw.Src)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, dst); err != nil {
+		return nil, fmt.Errorf("encode cropped shot: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // readPagePNGs 按 key 顺序读页图，返回与 keys 等长的切片。
@@ -190,7 +346,79 @@ func (h *ExportHandler) htmlBundleAnimations(ctx context.Context, job *pipeline.
 	if err != nil {
 		return nil, err
 	}
-	return bundleAnimations(plan, pagePNGs)
+	// 对带 Crop 的页做 300 DPI 重渲并替换源图，使特写清晰（graceful 降级，见函数）。
+	h.rerenderHiResPages(ctx, job, plan, bundle, pagePNGs)
+	return bundleAnimations(plan, pagePNGs, h.logger)
+}
+
+// rerenderHiResPages 对带 Crop 的页做 300 DPI 重渲，并替换 pagePNGs 中对应页的字节。
+//
+// 设计 §5：特写清晰与否取决于源图分辨率——150 DPI 源裁切后浏览器放大（模糊），
+// 300 DPI 源裁切区恰好等于画布尺寸（零重采样清晰）。整篇只渲一次 300 DPI，
+// 仅裁切页替换源图，其余页保持 150 DPI（省体积与渲染时间）。
+//
+// 渲染器 / 源版本任一不可用，或重渲失败：降级为 150 DPI 模糊路径（镜头仍是增强层，
+// 缺失清晰特写不拖累整包）。
+func (h *ExportHandler) rerenderHiResPages(ctx context.Context, job *pipeline.Job, plan *render.Timeline, bundle *TimelineAsset, pagePNGs [][]byte) {
+	if h.slideRenderer == nil {
+		return
+	}
+	// 找出哪些页需要高清源图（有 k>0 且带 Crop 的镜头）。
+	cropPages := make([]int, 0)
+	for i, page := range plan.Pages {
+		if pageHasCrop(page) {
+			cropPages = append(cropPages, i)
+		}
+	}
+	if len(cropPages) == 0 {
+		return
+	}
+	if h.sourceRevisions == nil {
+		if h.logger != nil {
+			h.logger.Warn("export: 300dpi re-render skipped: no source revision lookup")
+		}
+		return
+	}
+	rev, err := h.sourceRevisions.GetSourceRevision(ctx, job.TenantID, job.ProjectID, bundle.Timeline.SourceRevisionNo)
+	if err != nil || rev == nil || rev.ObjectKey == "" {
+		if h.logger != nil {
+			h.logger.Warn("export: 300dpi re-render skipped: cannot locate source pptx", "error", err)
+		}
+		return
+	}
+	src, err := h.readTenantObject(ctx, job.TenantID, rev.ObjectKey)
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("export: 300dpi re-render skipped: read source pptx failed", "error", err)
+		}
+		return
+	}
+	result, err := h.slideRenderer.Render(ctx, bytes.NewReader(src), int64(len(src)), sliderenderer.RenderOptions{DPI: 300})
+	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("export: 300dpi re-render failed; falling back to 150dpi shots", "error", err)
+		}
+		return
+	}
+	for _, i := range cropPages {
+		if i < len(result.Pages) {
+			pagePNGs[i] = result.Pages[i].PNG
+		}
+	}
+	if h.logger != nil {
+		h.logger.Info("export: 300dpi re-render applied to cropped pages",
+			"pages", cropPages, "source_dpi", result.Report.DPI)
+	}
+}
+
+// pageHasCrop 报告一页是否含「非首镜且带裁切框」的镜头（即需要高清源图做特写）。
+func pageHasCrop(page render.Page) bool {
+	for _, s := range page.Shots {
+		if s.Index > 0 && s.Crop != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // hasAnimatedLayer 判断一页是否有元素级动画。

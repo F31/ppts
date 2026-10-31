@@ -33,6 +33,9 @@ type AnimationPage struct {
 	// Revision 为 nil 表示该页没有动画规格：照样渲一段静态画面。
 	// 这是常态（用户只给部分页配了动效），不是降级。
 	Revision *animation.Revision
+	// Shots 是页内镜头切片（EMU 坐标）。与 Revision 同序来源于规格，可以独立于
+	// 分层动画存在（"先全图、后特写" 不需要元素动效）。
+	Shots []render.PageShotInput
 	// SegmentOffsets 是分段 id → 相对本页起点的毫秒偏移，供 withSegment 触发器解析。
 	SegmentOffsets map[string]int64
 }

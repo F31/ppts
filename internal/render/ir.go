@@ -128,6 +128,17 @@ type Shot struct {
 	CrossFadeMs int `json:"crossFadeMs"`
 }
 
+// PageShotInput 是单页镜头切片的编译输入（EMU 坐标）。
+//
+// 与 Layer 的元素几何同宗：crop 是源页 EMU，由编译器统一换算成画布像素（见 CompilePage）。
+// 首镜（index 0）就是整页，crop 留空。
+type PageShotInput struct {
+	StartMs     int64
+	DurationMs  int64
+	CrossFadeMs int64
+	Crop        *EMUBox // 取自原页的裁切框（EMU）；nil = 整页（首镜）
+}
+
 // FocusSpan 是一段焦点区间：从 StartMs 起，焦点落在 ElementID 上。
 //
 // 这段区间**可以没有终点**（EndMs=0），此时焦点一直保持到下一段开始——那是

@@ -20,6 +20,7 @@ import (
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/integrations"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	sliderenderer "github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/render"
@@ -124,6 +125,10 @@ type ExportHandler struct {
 	// renderer 是动画渲染服务客户端（nil = 未启用动画，导出保持纯静态路径）。
 	// 它与 encoder 是两条互不替代的通道：encoder 出静态版，renderer 出逐页动画片段。
 	renderer *render.Client
+	// slideRenderer 是本地 LibreOffice 渲染器（nil = 未启用，导出保持 150 DPI 模糊特写路径）。
+	// 仅用于带 Crop 的镜头页做 300 DPI 重渲，使特写清晰；其余页仍用 150 DPI。
+	// 与 renderer（动画服务客户端）无关——一个出清晰静态裁切，一个出逐页动画片段。
+	slideRenderer sliderenderer.SlideRenderer
 	// animationTimeout 是整片动画渲染的等待上限（0 = 不限，由作业上下文控制）。
 	animationTimeout time.Duration
 	// animationPages 组装逐页动画输入（底图路径、元素几何、规格）。nil = 无法组装：
@@ -157,6 +162,15 @@ func (h *ExportHandler) WithNarrationWriter(w integrations.NarrationWriter) *Exp
 // WithSourceRevisions 注入源版本查询能力（带音频 PPTX 需要原始源文件）。
 func (h *ExportHandler) WithSourceRevisions(s SourceRevisionLookup) *ExportHandler {
 	h.sourceRevisions = s
+	return h
+}
+
+// WithSlideRenderer 注入本地 LibreOffice 渲染器（graceful）。
+//
+// 仅用于带 Crop 的镜头页做 300 DPI 重渲，使特写清晰。未注入（LibreOffice 不可用）
+// 时保持 nil，导出退回 150 DPI 模糊特写路径——镜头是增强层，缺失清晰特写不拖累整包。
+func (h *ExportHandler) WithSlideRenderer(r sliderenderer.SlideRenderer) *ExportHandler {
+	h.slideRenderer = r
 	return h
 }
 

@@ -126,14 +126,15 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		// 先定规格再取几何：版本不符的页按「没有动画」处理，此时几何读进来也会被丢掉。
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
-		req.Pages = append(req.Pages, AnimationPage{
-			SlideID:        slide.SlideID,
-			DurationMs:     durationMS,
-			BaseImage:      rel,
-			Elements:       a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision),
-			Revision:       rev,
-			SegmentOffsets: segmentOffsets(slide),
-		})
+	req.Pages = append(req.Pages, AnimationPage{
+		SlideID:        slide.SlideID,
+		DurationMs:     durationMS,
+		BaseImage:      rel,
+		Elements:       a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision),
+		Revision:       rev,
+		Shots:          revShots(rev),
+		SegmentOffsets: segmentOffsets(slide),
+	})
 	}
 	return req, nil
 }
@@ -273,6 +274,27 @@ func firstPositive(v, fallback int) int {
 		return v
 	}
 	return fallback
+}
+
+// revShots 把规格里的镜头切片搬到渲染输入（EMU 坐标原样透传，像素换算留给编译器）。
+// rev 为 nil（这页没配动画/规格取不到）时返回 nil：镜头是增强层，缺失不报错。
+func revShots(rev *animation.Revision) []render.PageShotInput {
+	if rev == nil || len(rev.Shots) == 0 {
+		return nil
+	}
+	out := make([]render.PageShotInput, 0, len(rev.Shots))
+	for _, s := range rev.Shots {
+		shot := render.PageShotInput{
+			StartMs:     s.StartMs,
+			DurationMs:  s.DurationMs,
+			CrossFadeMs: s.CrossFadeMs,
+		}
+		if s.Crop != nil {
+			shot.Crop = &render.EMUBox{X: s.Crop.X, Y: s.Crop.Y, Width: s.Crop.Width, Height: s.Crop.Height}
+		}
+		out = append(out, shot)
+	}
+	return out
 }
 
 // defaultAnimationFPS 与静态编码的缺省值一致，避免两条路径出片帧率不同。

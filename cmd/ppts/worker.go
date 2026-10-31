@@ -154,6 +154,13 @@ func runWorker() error {
 		// 只有这里知道哪几页降级成了静态段。
 		WithUsage(usageStore).
 		WithLogger(logger)
+	// 本地 LibreOffice 渲染器（graceful）：用于带 Crop 镜头页的 300 DPI 重渲，使特写清晰。
+	// 不可用（未安装）时保持 nil，导出退回 150 DPI 模糊特写路径，不影响整包。
+	if sr, serr := render.NewSofficeRenderer(); serr != nil {
+		logger.Info("slide renderer unavailable; close-up shots fall back to 150dpi blur path", "error", serr)
+	} else {
+		exportHandler = exportHandler.WithSlideRenderer(sr)
+	}
 	// 动画通道（ADR-21）：默认关闭，且要求「开关 + 服务地址」同时具备才接入。
 	// 渲染服务是可选依赖——没有它，导出必须照常成功，所以关闭态不建客户端、不探测。
 	// 与 api 同一份判定（见 animationEnabled）：以前这里只认 env，

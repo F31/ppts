@@ -52,6 +52,8 @@ type PageInput struct {
 	// Focus 是页级焦点序列（见 Page.Focus）。这里只透传：焦点不是动效，
 	// 由画布求值器推导非焦点元素的压暗量，编译器不参与。
 	Focus []FocusSpan
+	// Shots 是页内镜头切片（见 Page.Shots）。EMU 坐标，编译器换算成画布像素。
+	Shots []PageShotInput
 }
 
 // Options 是编译器的环境参数。
@@ -227,7 +229,47 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 			})
 		}
 	}
+	// 镜头切片与分层动画互相独立：没有分层动画的页一样可以切镜头
+	// （"先全图、后特写" 是最常见用法）。EMU 坐标在此换算成画布像素。
+	page.Shots = c.compileShots(in, &page)
 	return page, diags, nil
+}
+
+// compileShots 把 EMU 坐标的镜头切片换算成画布像素坐标（与 Layer.Box 同一套缩放
+// c.scale）。首镜就是整页，image 取 displayBase；其余镜头按 crop 裁切，
+// image 先填一个与打包期同形的安全占位名（打包期会重写为真实文件名），IR 校验
+// 只要求它是合法资源路径。
+//
+// 编译器此刻还拿不到底板（底板由打包期/渲染服务按 base 挖空生成），displayBase
+// 在 PlateImage 为空时回退为 BaseImage，与打包期一致。
+func (c *Compiler) compileShots(in PageInput, page *Page) []Shot {
+	if len(in.Shots) == 0 {
+		return nil
+	}
+	out := make([]Shot, 0, len(in.Shots))
+	for i, s := range in.Shots {
+		image := fmt.Sprintf("slides/%03d-shot-%02d.png", in.Index+1, i)
+		if i == 0 {
+			image = displayBase(page)
+		}
+		shot := Shot{
+			Index:       i,
+			Image:       image,
+			StartMs:     s.StartMs,
+			DurationMs:  s.DurationMs,
+			CrossFadeMs: int(s.CrossFadeMs),
+		}
+		if i > 0 && s.Crop != nil {
+			shot.Crop = &Box{
+				X: int(math.Round(float64(s.Crop.X) * c.scale)),
+				Y: int(math.Round(float64(s.Crop.Y) * c.scale)),
+				W: int(math.Round(float64(s.Crop.Width) * c.scale)),
+				H: int(math.Round(float64(s.Crop.Height) * c.scale)),
+			}
+		}
+		out = append(out, shot)
+	}
+	return out
 }
 
 // transitionFor 解析本页的入场转场。
