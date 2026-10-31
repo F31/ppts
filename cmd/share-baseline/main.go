@@ -376,7 +376,7 @@ func syntheticShots(w, h int, pagePNG []byte, pageMs int64, count int) []share.S
 		if k > 0 {
 			box := cropBox(w, h, k)
 			shot.Crop = &share.SlideBox{X: box.Min.X, Y: box.Min.Y, W: box.Dx(), H: box.Dy()}
-			shot.PNG = upscaleCrop(src, box, w, h)
+			shot.PNG = nativeCrop(src, box)
 			// 120ms 叠化：与 design §3 定的那个数一致，门禁取点也按它避让。
 			shot.CrossFadeMs = 120
 		}
@@ -403,21 +403,19 @@ func cropBox(w, h, k int) image.Rectangle {
 	return image.Rect(x, y, x+bw, y+bh)
 }
 
-// upscaleCrop 裁一块并放大到 w×h（最近邻）。
+// nativeCrop 取 box 区域（源像素坐标）的子图，**不做任何缩放**——与生产线
+// export_animation.go 的 cropShot 同手法（img→RGBA→SubImage）。播放器用
+// object-fit:fill 把它铺满舞台，这里只产出「原始分辨率的裁片」。
 //
-// 最近邻而不是双线性：夹具要的是「这一帧是不是这张图」，插值方式不影响这个判断，
-// 而最近邻是确定的——同一份输入在任何机器上给出同一串字节。
-func upscaleCrop(src image.Image, box image.Rectangle, w, h int) []byte {
-	dst := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		sy := box.Min.Y + y*box.Dy()/h
-		for x := 0; x < w; x++ {
-			sx := box.Min.X + x*box.Dx()/w
-			dst.Set(x, y, src.At(sx, sy))
-		}
-	}
+// 不缩放是关键：缩放会改动 PNG 的像素比例，而与 Crop 框的比例不再对得上，
+// 打包期的 checkCropAspect 就会红。夹具一旦自己就拉伸过，门禁就分不清
+// 「故意放大」与「裁切算错了」。
+func nativeCrop(src image.Image, box image.Rectangle) []byte {
+	rgba := image.NewRGBA(src.Bounds())
+	draw.Draw(rgba, src.Bounds(), src, src.Bounds().Min, draw.Src)
+	sub := rgba.SubImage(box).(*image.RGBA)
 	var buf bytes.Buffer
-	if err := png.Encode(&buf, dst); err != nil {
+	if err := png.Encode(&buf, sub); err != nil {
 		return nil
 	}
 	return buf.Bytes()
