@@ -217,6 +217,16 @@ type Motion struct {
 	DurationMs int64                  `json:"durationMs"`
 	Easing     animation.CubicBezier  `json:"easing"`
 	Props      []animation.MotionProp `json:"props"`
+	// 以下三个字段为 G8 跨场景元素延续引入，全部 omitempty：非延续 Motion 序列化字节
+	// 与引入前逐字节一致，planHash 不受影响。
+	// IsContinuation 标记本段是「次页余量段」（本页段为 false）。
+	IsContinuation bool `json:"isContinuation,omitempty"`
+	// ContinuationOffsetMs 是次页段 localMs=0 对应的 clip 时间（= 本页段末尾 clip 时间）。
+	// 播放器/渲染器评估次页段用 clipTime = localMs + ContinuationOffsetMs，页缝处视觉连续。
+	ContinuationOffsetMs int64 `json:"continuationOffsetMs,omitempty"`
+	// ElementID 是跨页身份键，复用 Track.ElementID（project.Shape.ID）。仅延续段设置，
+	// 供次页同 elementId 层链接，未设置的 Motion 省略该字段。
+	ElementID string `json:"elementId,omitempty"`
 }
 
 // Transition 是页间转场。挂在后一页：它描述"如何进入这一页"。
@@ -233,6 +243,7 @@ const (
 	DiagDurationTierConflict  = "duration_tier_conflict"
 	DiagGeometryInferred      = "geometry_inferred"
 	DiagClipTruncated         = "clip_truncated"
+	DiagContinuationTargetMissing = "continuation_target_missing"
 	DiagTransitionDefaulted   = "transition_defaulted"
 	DiagSiblingOverlapPartial = "sibling_overlap_partial"
 	DiagCameraInvalid         = "camera_invalid"

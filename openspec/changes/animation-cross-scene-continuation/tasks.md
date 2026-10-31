@@ -23,11 +23,11 @@
 - [x] 1.8 测试：`validate_test.go` 加延续溢出被接受 / 负值起点仍拒；`animation-check.mjs` 加延续夹紧放松与脏判据用例
 - [x] 1.9 全量验证：`go build/vet/test ./...` 全绿、`tsc -b`、`npm run build`（含 i18n-check/animation-check/vite）通过
 
-## 2. G8-②：编译拆分（render-plan）
-- [ ] 2.1 `render/ir.go` 的 `Motion` 增 `IsContinuation bool`、`ContinuationOffsetMs int64`、`ElementID string`
-- [ ] 2.2 `compile.go` 的 `compileClip`：识别 `continues` + 溢出 → 拆成本页段 + 次页段（带 offset、is_continuation）；次页 `ElementID` 缺失记 `DiagContinuationTargetMissing`；把 `Track.ElementID` 透传到每段 `Motion.ElementID`
-- [ ] 2.3 `render-plan/spec.md` MODIFY「时间在编译期解析为页内绝对毫秒」+ ADDED「跨页延续在编译期拆分」要求与场景
-- [ ] 2.4 `compile_test.go` 增单测：continues 拆分（本页段 + 次页段 offset 正确）、非 continues 仍截断、次页缺失诊断、S≥0 假设
+## 2. G8-②：编译拆分（render-plan）✅ 已完成
+- [x] 2.1 `render/ir.go` 的 `Motion` 增 `IsContinuation bool`、`ContinuationOffsetMs int64`、`ElementID string`（均 omitempty，非延续计划哈希不变）
+- [x] 2.2 `compile.go`：识别 `continues` + 溢出 → 拆成本页段（`[from,mid]`，`IsContinuation=false`）+ 次页段（`[mid,to]`，`IsContinuation=true`、`ContinuationOffsetMs=页长-start`）；两段在 mid 衔接保证页缝连续；次页 `ElementID` 缺失/末页记 `DiagContinuationTargetMissing` 并退化为本页截断；`Track.ElementID` 透传到每段 `Motion.ElementID`
+- [x] 2.3 `render-plan/spec.md` MODIFY「时间在编译期解析为页内绝对毫秒」+ ADDED「跨页延续在编译期拆分」要求与场景（骨架阶段已写入）
+- [x] 2.4 `compile_test.go` 增 5 个单测：continues 拆分（本页段+次页段 offset 正确、页缝 To==From 连续）、非 continues 仍截断且不带 continuation、次页缺失诊断、末页诊断、未溢出不拆分
 
 ## 3. G8-③：播放器续播 + 清单 + 渲染器（html-share-bundle + renderer-image）
 - [ ] 3.1 `share` 清单 `Motion`/SlideLayer 序列化 `elementId` + `isContinuation` + `continuationOffsetMs`（`manifest.go` / `bundle.go` 透传）；校验延续段 offset 非负

@@ -30,6 +30,12 @@ export type Motion = {
   durationMs: number;
   easing: CubicBezier;
   props: MotionProp[];
+  /** 次页延续段标记：true 表示本段是「次页余量段」。播放器/渲染器评估时用 clipTime = localMs + continuationOffsetMs。 */
+  isContinuation?: boolean;
+  /** 本段 localMs=0 对应的 clip 时间（= 本页段末尾 clip 时间），保证页缝处视觉连续。 */
+  continuationOffsetMs?: number;
+  /** 跨页身份键，复用 Track.elementId（project.Shape.ID）。仅延续段设置。 */
+  elementId?: string;
 };
 
 export type Box = {

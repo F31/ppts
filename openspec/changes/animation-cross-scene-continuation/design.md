@@ -35,25 +35,31 @@ type Motion struct {
 
 ## 2. 编译期页边界拆分（核心数学）
 
-`compileClip`（compile.go:410-475）当前对超页尾 clip 记 `DiagClipTruncated` 并截断。改为：仅当
+`compileClip`（compile.go）当前对超页尾 clip 记 `DiagClipTruncated` 并截断。改为：仅当
 `!clip.Continues` 时保持旧的截断/丢弃行为；当 `clip.Continues == true` 且 `S + D > D_N`（S=StartMs,
-D=DurationMs, D_N=本页时长）时，**拆分**为两段：
+D=DurationMs, D_N=本页时长）时，**拆分**为两段，且**两段 Props 在边界处预拆分**保证视觉连续：
 
-- **本页段（page N）**：local 区间 `[max(S,0), D_N]`，duration_N = `D_N - max(S,0)`；
-  `IsContinuation=false`，`ContinuationOffsetMs=0`。
-- **次页段（page N+1）**：local 区间 `[0, S + D - D_N]`；这是 clip 的余量。
-  - `IsContinuation=true`。
-  - `ContinuationOffsetMs = D_N - max(S,0)`（本页段末尾对应的 clip 时间；MVP 假设 `S ≥ 0`）。
-  - 播放器/渲染器评估该段时计算 `clipTime = localMs + ContinuationOffsetMs`：
-    - localMs=0 → clipTime=offset=页边界处的 clip 时间 → 等于本页段末态；
-    - localMs=S+D-D_N → clipTime=D=clip 结束。**clipTime 在页缝处连续 → 视觉连续。**
+- 边界分数 `f = (D_N - S) / D`（本页段占原 clip 的比例）。
+- **本页段（page N）**：`StartMs = S`，`DurationMs = D_N - S`；`IsContinuation=false`，`ElementID`
+  透传 `Track.ElementID`；`Props = [from, mid]`，其中 `mid = lerp(from, to, f)`。本页段只演到
+  clip 时间 `D_N - S` 处的中态。
+- **次页段（page N+1）**：`StartMs = 0`，`DurationMs = S + D - D_N`（余量）；`IsContinuation=true`，
+  `ElementID` 透传 `Track.ElementID`；`Props = [mid, to]`；`ContinuationOffsetMs = D_N - S`
+  （本页段末态在原 clip 中的时间，仅作全局时间对齐/审计用，非插值连续的必要条件）。
 
-若次页（`plan.Pages[N+1]`）不存在，或次页找不到与 `ElementID` 同名的层/shape，编译器记
+**为什么必须预拆分 Props**：若两段都携带完整 `[from, to]`，次页段在 localMs=0 会回到 `from` 重播，
+页缝处从「本页段末态」跳回「起点」——视觉断裂。预拆分使两段在 `mid` 精确衔接：本页段末态
+（`To=mid`）== 次页段初态（`From=mid`）。播放器只需按各自 `StartMs/DurationMs` 正常插值即得连续结果，
+`ContinuationOffsetMs` 退化为可选的审计/对齐字段（见 §3）。
+
+若次页（`plan.Pages[N+1]`）不存在（已是末页），或次页找不到与 `ElementID` 同名的层/shape，编译器记
 `DiagContinuationTargetMissing`（warning 级，不阻断整页），该延续 clip 退化为本页段截断（与旧行为一致，
 不崩）。
 
 `S ≥ 0` 假设：MVP 只允许在「起始页」为 clip 标 `continues`，故作者侧 `StartMs ≥ 0` 恒成立；次页段本身
-不携带 `continues`（它已是余量）。链式多页（>2）留后续：次页段若其 Track 又标 `continues` 则递归再拆。
+不携带 `continues`（它已是余量）。此实现对任意 `S ≥ 0` 均成立（预拆分 Props 不依赖 §3 所述单分母
+`clipTime` 公式）；编辑器 UI 实际仅暴露「本页首帧起、跨到下一页」的 `S=0` 用法。链式多页（>2）留后续：
+次页段若其 Track 又标 `continues` 则递归再拆（本实现未做，余量段 `Continues=false`）。
 
 ## 3. 播放器续播（HTML 播放器，`internal/share/assets` 的 main.ts）
 

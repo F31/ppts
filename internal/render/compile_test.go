@@ -585,3 +585,239 @@ func TestCompilePageReportsPartialSiblingOverlap(t *testing.T) {
 		}
 	})
 }
+
+// ---- G8-② 跨页延续编译拆分测试 ----
+
+func findLayerByElementID(layers []Layer, elementID string) *Layer {
+	for i := range layers {
+		if layers[i].ElementID == elementID {
+			return &layers[i]
+		}
+	}
+	return nil
+}
+
+func findMotionByContinuation(ms []Motion, cont bool) *Motion {
+	for i := range ms {
+		if ms[i].IsContinuation == cont {
+			return &ms[i]
+		}
+	}
+	return nil
+}
+
+// makeContinuationPages 构造相邻两页，shape-1 在两页都存在；p0clip 为页 0 的待测 clip。
+func makeContinuationPages(p0clip *animation.Clip) []PageInput {
+	return []PageInput{
+		{Index: 0, SlideID: "s1", DurationMs: 6000, BaseImage: "pages/p0.png",
+			Elements: []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "shape-1", Kind: animation.KindTitle, Clips: []*animation.Clip{p0clip},
+			})},
+		{Index: 1, SlideID: "s2", DurationMs: 5000, BaseImage: "pages/p1.png",
+			Elements: []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "shape-1", Kind: animation.KindTitle,
+				Clips:     []*animation.Clip{clipOf("c2", "slideIn", 0, 500, "onEnter")},
+			})},
+	}
+}
+
+func TestCompileContinuationSplitsAcrossPages(t *testing.T) {
+	c := newTestCompiler(t)
+	// 页 0 时长 6000，clip 从 0 起、时长 8000 → 溢出 2000 到页 1（f = 6000/8000 = 0.75）。
+	pages := makeContinuationPages(&animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	})
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Pages) != 2 {
+		t.Fatalf("页数 = %d", len(plan.Pages))
+	}
+
+	p0 := findLayerByElementID(plan.Pages[0].Layers, "shape-1")
+	if p0 == nil || len(p0.Clips) != 1 {
+		t.Fatalf("页 0 缺 shape-1 层或段数不对: %+v", p0)
+	}
+	n0 := p0.Clips[0]
+	if n0.IsContinuation {
+		t.Fatalf("页 0 段不应是 continuation")
+	}
+	if n0.StartMs != 0 || n0.DurationMs != 6000 {
+		t.Fatalf("页 0 段 start/dur = %d/%d，want 0/6000", n0.StartMs, n0.DurationMs)
+	}
+	if n0.ElementID != "shape-1" {
+		t.Fatalf("页 0 段 ElementID = %q", n0.ElementID)
+	}
+
+	p1 := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
+	if p1 == nil {
+		t.Fatalf("页 1 缺 shape-1 层")
+	}
+	cont := findMotionByContinuation(p1.Clips, true)
+	if cont == nil {
+		t.Fatalf("页 1 缺 continuation 段，clips=%d", len(p1.Clips))
+	}
+	if cont.StartMs != 0 || cont.DurationMs != 2000 {
+		t.Fatalf("页 1 段 start/dur = %d/%d，want 0/2000", cont.StartMs, cont.DurationMs)
+	}
+	if cont.ContinuationOffsetMs != 6000 {
+		t.Fatalf("ContinuationOffsetMs = %d，want 6000", cont.ContinuationOffsetMs)
+	}
+	if cont.ElementID != "shape-1" {
+		t.Fatalf("页 1 段 ElementID = %q", cont.ElementID)
+	}
+
+	// 视觉连续：两段在 mid 处衔接（页 0 段 To == 页 1 段 From，按相同属性名逐对）。
+	if len(n0.Props) != len(cont.Props) {
+		t.Fatalf("两段 Props 数不等: %d vs %d", len(n0.Props), len(cont.Props))
+	}
+	for i := range n0.Props {
+		if n0.Props[i].Name != cont.Props[i].Name {
+			t.Fatalf("两段 Props 名不一致: %s vs %s", n0.Props[i].Name, cont.Props[i].Name)
+		}
+		if n0.Props[i].To != cont.Props[i].From {
+			t.Fatalf("页缝不连续: 页0段 %s.To=%v != 页1段 %s.From=%v",
+				n0.Props[i].Name, n0.Props[i].To, cont.Props[i].Name, cont.Props[i].From)
+		}
+	}
+}
+
+func TestCompileContinuationNonContinuesTruncates(t *testing.T) {
+	c := newTestCompiler(t)
+	pages := makeContinuationPages(&animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+		Easing: "easeOut", Trigger: "onEnter", // 无 Continues
+	})
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundTrunc := false
+	for _, d := range plan.Warnings {
+		if d.Code == DiagClipTruncated {
+			foundTrunc = true
+		}
+	}
+	if !foundTrunc {
+		t.Fatalf("非延续溢出必须记 clip_truncated，got %+v", plan.Warnings)
+	}
+	// 页 1 不应有 continuation 段
+	p1 := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
+	if p1 != nil {
+		for _, m := range p1.Clips {
+			if m.IsContinuation {
+				t.Fatalf("非延续 clip 不应产生 continuation 段")
+			}
+		}
+	}
+	// 页 0 段必须是完整 from→to（截断而非拆分），且不应携带 ElementID
+	p0 := findLayerByElementID(plan.Pages[0].Layers, "shape-1")
+	if p0 == nil || len(p0.Clips) != 1 {
+		t.Fatalf("页 0 段异常: %+v", p0)
+	}
+	if p0.Clips[0].ElementID != "" {
+		t.Fatalf("非延续段不应带 ElementID，got %q", p0.Clips[0].ElementID)
+	}
+}
+
+func TestCompileContinuationMissingTarget(t *testing.T) {
+	c := newTestCompiler(t)
+	// 页 1 存在，但 shape-1 在页 1 无对应层（页 1 只有另一个元素 other）。
+	pages := []PageInput{
+		{Index: 0, SlideID: "s1", DurationMs: 6000, BaseImage: "pages/p0.png",
+			Elements: []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "shape-1", Kind: animation.KindTitle,
+				Clips: []*animation.Clip{{ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+					Easing: "easeOut", Trigger: "onEnter", Continues: true}},
+			})},
+		{Index: 1, SlideID: "s2", DurationMs: 5000, BaseImage: "pages/p1.png",
+			Elements: []Element{{ID: "other", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "other", Kind: animation.KindTitle,
+				Clips: []*animation.Clip{{ID: "c2", Type: "slideIn", StartMs: 0, DurationMs: 500,
+					Easing: "easeOut", Trigger: "onEnter"}},
+			})},
+	}
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMissing := false
+	for _, d := range plan.Warnings {
+		if d.Code == DiagContinuationTargetMissing {
+			foundMissing = true
+		}
+	}
+	if !foundMissing {
+		t.Fatalf("次页无承接元素必须记 continuation_target_missing，got %+v", plan.Warnings)
+	}
+	// 不应向页 1 注入任何 continuation 段
+	p1other := findLayerByElementID(plan.Pages[1].Layers, "other")
+	if p1other != nil {
+		for _, m := range p1other.Clips {
+			if m.IsContinuation {
+				t.Fatalf("次页缺失目标时不应注入 continuation 段")
+			}
+		}
+	}
+}
+
+func TestCompileContinuationLastPage(t *testing.T) {
+	c := newTestCompiler(t)
+	// 只有一页（最后一页），continues 溢出 → 必须记 continuation_target_missing 且不崩。
+	pages := []PageInput{
+		{Index: 0, SlideID: "s1", DurationMs: 6000, BaseImage: "pages/p0.png",
+			Elements: []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "shape-1", Kind: animation.KindTitle,
+				Clips: []*animation.Clip{{ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+					Easing: "easeOut", Trigger: "onEnter", Continues: true}},
+			})},
+	}
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundMissing := false
+	for _, d := range plan.Warnings {
+		if d.Code == DiagContinuationTargetMissing {
+			foundMissing = true
+		}
+	}
+	if !foundMissing {
+		t.Fatalf("最后一页 continues 溢出必须记 continuation_target_missing，got %+v", plan.Warnings)
+	}
+}
+
+func TestCompileContinuationFitsNoSplit(t *testing.T) {
+	c := newTestCompiler(t)
+	// continues=true 但 clip 完全落在页内（无溢出）→ 不拆分，单段完整播放。
+	pages := makeContinuationPages(&animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 3000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	})
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p0 := findLayerByElementID(plan.Pages[0].Layers, "shape-1")
+	if p0 == nil || len(p0.Clips) != 1 {
+		t.Fatalf("页 0 应只有 1 段，got %+v", p0)
+	}
+	if p0.Clips[0].DurationMs != 3000 {
+		t.Fatalf("页 0 段时长应为完整 3000，got %d", p0.Clips[0].DurationMs)
+	}
+	p1 := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
+	if p1 != nil {
+		for _, m := range p1.Clips {
+			if m.IsContinuation {
+				t.Fatalf("未溢出不应产生 continuation 段")
+			}
+		}
+	}
+}

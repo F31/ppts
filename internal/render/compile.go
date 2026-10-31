@@ -150,10 +150,70 @@ func (c *Compiler) Compile(pages []PageInput) (*Timeline, error) {
 		out.Pages = append(out.Pages, page)
 		out.Warnings = append(out.Warnings, diags...)
 	}
+
+	// 跨页延续拆分（G8-②）：把每页 continues 溢出 clip 的余量段注入次页同 elementId 层。
+	// 必须在 out.Validate 之前完成，使注入后的产物整体自洽。诊断不阻断整片。
+	c.injectContinuations(pages, out)
+
 	if err := out.Validate(); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// injectContinuations 遍历每页的 continues clip，把溢出余量段写入次页的对应层。
+// 次页缺失或次页无同 elementId 层时记 continuation_target_missing 诊断并退化为本页截断
+// （本页段已由 compileClip 正常产出，不崩、不改变非延续语义）。
+func (c *Compiler) injectContinuations(pages []PageInput, out *Timeline) {
+	for i := range out.Pages {
+		in := pages[i]
+		if in.Revision == nil {
+			continue
+		}
+		intensity := in.Revision.Intensity
+		if intensity <= 0 {
+			intensity = 1
+		}
+		for ti := range in.Revision.Tracks {
+			track := in.Revision.Tracks[ti]
+			if track.ElementID == "" {
+				continue // 整页轨道无跨页身份，不参与延续
+			}
+			for ci := range track.Clips {
+				clip := track.Clips[ci]
+				if !clip.Continues {
+					continue
+				}
+				seg, diag := c.continuationSegFor(in, track, clip, intensity)
+				if diag != nil {
+					out.Warnings = append(out.Warnings, *diag)
+					continue
+				}
+				if seg == nil {
+					continue
+				}
+				if i+1 >= len(out.Pages) {
+					out.Warnings = append(out.Warnings, Diagnostic{
+						Code: DiagContinuationTargetMissing, Page: in.Index,
+						ElementID: track.ElementID, ClipID: clip.ID,
+						Message: "这是最后一页，无次页承接延续 clip，已退化为本页截断",
+					})
+					continue
+				}
+				next := &out.Pages[i+1]
+				li := indexOfLayerByElementID(next.Layers, track.ElementID)
+				if li < 0 {
+					out.Warnings = append(out.Warnings, Diagnostic{
+						Code: DiagContinuationTargetMissing, Page: in.Index,
+						ElementID: track.ElementID, ClipID: clip.ID,
+						Message: "次页无同 elementId 层承接延续 clip，已退化为本页截断",
+					})
+					continue
+				}
+				next.Layers[li].Clips = append(next.Layers[li].Clips, *seg)
+			}
+		}
+	}
 }
 
 // CompilePage 编译单页。诊断随页返回：它们不阻断渲染，但必须能被告知。
@@ -367,7 +427,7 @@ func (c *Compiler) compileTrack(in PageInput, track *animation.Track, elems map[
 
 	frame := frameMS(c.opt.FPS)
 	for _, clip := range track.Clips {
-		m, cd, ok := c.compileClip(in, clip, layer, intensity, frame)
+		m, cd, ok := c.compileClip(in, clip, layer, intensity, frame, track.ElementID)
 		diags = append(diags, cd...)
 		if ok {
 			layer.Clips = append(layer.Clips, m)
@@ -408,7 +468,7 @@ func originFor(clips []Motion) string {
 }
 
 func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
-	intensity float64, frameMS int64) (Motion, []Diagnostic, bool) {
+	intensity float64, frameMS int64, elementID string) (Motion, []Diagnostic, bool) {
 	m := Motion{ClipID: clip.ID, Effect: clip.Type}
 	var diags []Diagnostic
 
@@ -434,10 +494,13 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 		return m, diags, false
 	}
 
+	overflowed := start+clip.DurationMs > in.DurationMs+frameMS
 	duration := clip.DurationMs
-	if start+duration > in.DurationMs+frameMS {
+	if overflowed {
+		// 跨页延续：本页段截断到页尾，余量交 Compile 注入次页段（不再记截断诊断）。
+		// 非延续 clip 保持既有截断/丢弃行为。
 		duration = in.DurationMs - start
-		if duration < 1 {
+		if !clip.Continues && duration < 1 {
 			diags = append(diags, Diagnostic{Code: DiagClipTruncated, Page: in.Index,
 				ElementID: layer.ElementID, ClipID: clip.ID,
 				Message: "clip 无法放进页尾，已跳过"})
@@ -456,22 +519,123 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 	m.StartMs = start
 	m.DurationMs = duration
 	m.Easing = plan.Curve
-	m.Props = make([]animation.MotionProp, 0, len(plan.Props))
-	for _, p := range plan.Props {
-		// catalog 的位移量以 1080p 为基准，按画布高度等比换算；opacity/scale 无量纲不动。
-		if p.Name == animation.PropTranslateX || p.Name == animation.PropTranslateY {
-			p.From = math.Round(p.From*c.baselineK*10) / 10
-			p.To = math.Round(p.To*c.baselineK*10) / 10
+	m.Props = c.motionProps(plan)
+
+	// 跨页延续：本页段覆盖原 clip 的 [0, f] 区间（f = 本页段时长 / 原 clip 时长），
+	// 余量交次页段（见 continuationSegFor）。两段在 mid 处衔接，页缝视觉连续（设计 §2）。
+	// 非溢出（clip 完全落在页内）的 continues clip 不拆分，按完整 from→to 单次播放。
+	if clip.Continues {
+		m.ElementID = elementID
+		if overflowed && clip.DurationMs > 0 {
+			f := float64(duration) / float64(clip.DurationMs)
+			for i := range m.Props {
+				m.Props[i].To = lerpProp(m.Props[i].From, m.Props[i].To, f)
+			}
 		}
-		m.Props = append(m.Props, p)
 	}
 
-	if duration != clip.DurationMs {
+	if !clip.Continues && duration != clip.DurationMs {
 		diags = append(diags, Diagnostic{Code: DiagClipTruncated, Page: in.Index,
 			ElementID: layer.ElementID, ClipID: clip.ID,
 			Message: fmt.Sprintf("时长由 %dms 截断为 %dms 以贴合页尾", clip.DurationMs, duration)})
 	}
 	return m, diags, true
+}
+
+// motionProps 把 plan 的 Props 转成 IR 形式，并对位移类属性按画布高度做基线换算
+// （catalog 位移量以 1080p 为基准）。集中在此避免 compileClip 与 continuationSegFor 重复实现。
+func (c *Compiler) motionProps(plan animation.MotionPlan) []animation.MotionProp {
+	props := make([]animation.MotionProp, 0, len(plan.Props))
+	for _, p := range plan.Props {
+		if p.Name == animation.PropTranslateX || p.Name == animation.PropTranslateY {
+			p.From = math.Round(p.From*c.baselineK*10) / 10
+			p.To = math.Round(p.To*c.baselineK*10) / 10
+		}
+		props = append(props, p)
+	}
+	return props
+}
+
+// lerpProp 在属性 from→to 之间按分数 f∈[0,1] 线性插值。
+func lerpProp(from, to, f float64) float64 {
+	return from + (to-from)*f
+}
+
+// continuationSeg 是 continues clip 溢出到次页的余量段（已编译完成，仅待注入）。
+type continuationSeg struct {
+	elementID string
+	motion    Motion
+}
+
+// continuationSegFor 计算一个 continues clip 溢出到次页的余量 Motion（不修改入参）。
+// 返回的 Motion 携带 IsContinuation=true / ContinuationOffsetMs / ElementID，可直接注入次页同元素层。
+// 返回 (nil, nil) 表示该 clip 无需延续（完全落在页内、起点已超页尾、或余量≤0）。
+// 若起点已超本页尾等无法推断次页起点的情况，返回 (nil, diag) 供调用方降级处理。
+//
+// 余量段覆盖原 clip 的 [f, 1] 区间（f = 本页段时长 / 原 clip 时长），Props 为 [mid, to]，
+// 与本页段 [from, mid] 在 mid 处衔接——这是页缝处视觉连续（clipTime 连续）的前提（设计 §2）。
+func (c *Compiler) continuationSegFor(in PageInput, track *animation.Track, clip *animation.Clip,
+	intensity float64) (*Motion, *Diagnostic) {
+	anchor, ok, _ := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
+	if !ok {
+		return nil, nil
+	}
+	start := anchor + clip.StartMs
+	if start < 0 {
+		start = 0
+	}
+	if start >= in.DurationMs {
+		// MVP 不支持「起点落在次页」的延续：次页段起点固定为 0，无法对齐。
+		return nil, &Diagnostic{Code: DiagContinuationTargetMissing, Page: in.Index,
+			ElementID: track.ElementID, ClipID: clip.ID,
+			Message: "continues clip 起点超出本页尾，无本页段且无法推断次页起点，已跳过"}
+	}
+	residue := start + clip.DurationMs - in.DurationMs
+	if residue <= 0 {
+		return nil, nil
+	}
+	offset := in.DurationMs - start
+	if clip.DurationMs <= 0 {
+		return nil, &Diagnostic{Code: DiagContinuationTargetMissing, Page: in.Index,
+			ElementID: track.ElementID, ClipID: clip.ID,
+			Message: "continues clip 时长为 0，无法跨页拆分，已退化为本页截断"}
+	}
+
+	plan, err := animation.PlanMotion(clip.Type, clip.Params, clip.Easing, intensity)
+	if err != nil {
+		return nil, &Diagnostic{Code: "plan_motion_failed", Page: in.Index,
+			ElementID: track.ElementID, ClipID: clip.ID, Message: err.Error()}
+	}
+	full := c.motionProps(plan)
+	f := float64(offset) / float64(clip.DurationMs)
+	props := make([]animation.MotionProp, 0, len(full))
+	for _, p := range full {
+		props = append(props, animation.MotionProp{
+			Name: p.Name, From: lerpProp(p.From, p.To, f), To: p.To,
+		})
+	}
+	m := Motion{
+		ClipID:               clip.ID,
+		Effect:               clip.Type,
+		StartMs:              0,
+		DurationMs:           residue,
+		Easing:               plan.Curve,
+		Props:                props,
+		IsContinuation:       true,
+		ContinuationOffsetMs: offset,
+		ElementID:            track.ElementID,
+	}
+	return &m, nil
+}
+
+// indexOfLayerByElementID 返回同一 elementId 的层下标，找不到返回 -1。
+func indexOfLayerByElementID(layers []Layer, elementID string) int {
+	for i, l := range layers {
+		if l.ElementID == elementID {
+			return i
+		}
+	}
+	return -1
 }
 
 // tierTolerance 是速度分层比较的相对容差。
