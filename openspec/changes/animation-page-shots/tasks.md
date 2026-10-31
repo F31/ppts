@@ -50,6 +50,6 @@
 
 ## 6. 文档
 
-- [ ] 6.1 `render-plan` 规格补 Shot 语义、三条校验与「crop 镜头内层不显示」
-- [ ] 6.2 `html-share-bundle` 规格补清单字段、schemaVersion 3 与「源页」口径
-- [ ] 6.3 路线图补一行，写明它与 G7/G8 的边界
+- [x] 6.1 `render-plan` 规格补 Shot 语义、校验与「crop 镜头内层不显示」（增量见 `specs/render-plan/`）
+- [x] 6.2 `html-share-bundle` 规格补清单字段与「首镜复用页级图」；**改掉原计划里的 schemaVersion 3**，并单列一条 Requirement 说明为什么不升（增量见 `specs/html-share-bundle/`）
+- [x] 6.3 路线图补一行，写明它与 G7/G8 的边界
