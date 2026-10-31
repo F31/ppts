@@ -40,3 +40,8 @@ internal/render/testdata/*.golden.json text eol=lf
 #    留久了就会训练人忽略它们——真出问题时那句也可能被略过。
 *.mjs text eol=lf
 *.md text eol=lf
+
+# 9. 播放器产物（go:embed 的那两份）：由 `npm run build:share` 生成，CI 会重新生成后
+#    逐字节比对。仓库里存的是 LF，Windows 检出成 CRLF 的话，本机重建一次就是整文件
+#    改动——真差异（比如少了一次 rebuild）会被这层噪音盖住。
+internal/share/assets/* text eol=lf

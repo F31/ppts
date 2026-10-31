@@ -31,6 +31,15 @@ body.ppts-share-page {
   min-height: 100%;
 }
 
+/* 打包器在 body 与 .ppts-share 之间插了一层 #ppts-share-root。body 是 flex 容器，
+   于是这层容器成了弹性项，宽度按内容收缩——1920 宽的窗口里实测只有 492，
+   下面 .ppts-share 的 width:100% 跟着等于 492。表现是「双击打开只有一个小卡片」，
+   而谁都说不清小是从哪儿来的：样式表里写的是 1280。
+   display:contents 让这层不参与布局，卡片按原意铺满（上限仍为 1280）。 */
+#ppts-share-root {
+  display: contents;
+}
+
 body.ppts-share-page {
   display: flex;
   align-items: center;
