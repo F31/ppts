@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"image/color"
 	"image/png"
 	"testing"
 )
@@ -64,6 +65,37 @@ func TestSyntheticAnimation(t *testing.T) {
 		}
 		if !opacity || !translateY {
 			t.Fatalf("第 %d 层缺 opacity 或 translateY 轨道：%+v", i, layer.Clips)
+		}
+	}
+}
+
+// 终态帧门禁（V13b）比的是「层图叠回底板 == 源页」。这条判据的前提是夹具本身满足
+// 该等式，否则门禁会拿夹具自身的不一致当产品缺陷去追。守两件事：
+//   - 页图在该层 Box 内画的颜色，与层图颜色相同（层图就是页图在这一块上的裁片）；
+//   - 底板在同一位置**没有**画这个框（框由层图提供，底板画了就会出现「渐显的层
+//     下面还压着一块不动的框」，终态虽然仍相等，动画中是残影）。
+func TestSyntheticFixtureComposesToPage(t *testing.T) {
+	const w, h, count = 1280, 720, 2
+	page, err := png.Decode(bytes.NewReader(syntheticPage(w, h, 3, count)))
+	if err != nil {
+		t.Fatalf("页图不是合法 PNG: %v", err)
+	}
+	plate, err := png.Decode(bytes.NewReader(syntheticAnimation(w, h, 3, count).PlatePNG))
+	if err != nil {
+		t.Fatalf("底板不是合法 PNG: %v", err)
+	}
+	rgba := func(img interface{ At(int, int) color.Color }, x, y int) color.RGBA {
+		r, g, b, a := img.At(x, y).RGBA()
+		return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
+	}
+	for k := 0; k < count; k++ {
+		x, y, bw, bh := layerBox(w, h, k)
+		want := layerColor(3, k)
+		if got := rgba(page, x+bw/2, y+bh/2); got != want {
+			t.Fatalf("第 %d 层：页图在框中心是 %v，期望层色 %v —— 层图不是页图的裁片", k, got, want)
+		}
+		if got := rgba(plate, x+bw/2, y+bh/2); got == want {
+			t.Fatalf("第 %d 层：底板在框中心也是 %v —— 框被画进了底板，动画中会留下残影", k, got)
 		}
 	}
 }

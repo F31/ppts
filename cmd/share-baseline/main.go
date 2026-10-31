@@ -43,6 +43,7 @@ func main() {
 		width    = flag.Int("width", 1920, "画布宽")
 		height   = flag.Int("height", 1080, "画布高")
 		pagesDir = flag.String("pages-dir", "", "可选：用该目录下的 PNG 作为页图（按文件名排序）")
+		pagesOut = flag.String("pages-out", "", "可选：把本次用的页图（合成或读入）写成 DIR/pNNN.png，供终态帧比对")
 		layers   = flag.Int("layers", 0, "每页合成的动画层数；>0 时产带 clips 的分层素材（浏览器门禁 V17 需要真图层）")
 		outDir   = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath  = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
@@ -74,13 +75,19 @@ func main() {
 	timeline := buildTimeline(*pages, *pageSecs)
 	reader := &memReader{pages: map[string][]byte{}, objects: map[string][]byte{}}
 	keys := make([]string, 0, *pages)
+	// 页图只生成一次，zip 形态、目录形态、-pages-out 三处共用同一份字节。
+	// 原先 zip 与目录各生成一次合成页：两条路径一旦参数不一致（例如 -layers 只
+	// 传给其中一条），同一个命令产出的 zip 和目录就不是同一个包——这种分叉只有
+	// 逐字节比对才看得见。
+	pageBytes := make([][]byte, 0, *pages)
 	for i := range timeline.Slides {
 		key := fmt.Sprintf("pages/%03d.png", i+1)
 		if pagePNGs != nil {
-			reader.pages[key] = pagePNGs[i]
+			pageBytes = append(pageBytes, pagePNGs[i])
 		} else {
-			reader.pages[key] = syntheticPage(*width, *height, i)
+			pageBytes = append(pageBytes, syntheticPage(*width, *height, i, *layers))
 		}
+		reader.pages[key] = pageBytes[i]
 		keys = append(keys, key)
 		audioKey := timeline.Slides[i].Segments[0].AudioKey
 		reader.objects[audioKey] = synthWAV(int(timeline.Slides[i].Segments[0].EndUS-timeline.Slides[i].Segments[0].StartUS)/1000, i)
@@ -134,13 +141,25 @@ func main() {
 	}
 
 	if *outDir != "" {
-		if _, err := share.BuildLocalToDir(context.Background(), share.LocalBundle{Root: writeStagingDir(pagePNGs, timeline, *width, *height), Input: share.BundleInput{
+		if _, err := share.BuildLocalToDir(context.Background(), share.LocalBundle{Root: writeStagingDir(pageBytes, timeline), Input: share.BundleInput{
 			Timeline: timeline, PagePNGKeys: keys, Pages: animPages, VTTKey: "subs/cues.vtt", SRTKey: "subs/cues.srt",
 			Width: *width, Height: *height, FPS: 30, Title: "体积基线样本",
 		}}, *outDir); err != nil {
 			log.Fatalf("share-baseline: write dir: %v", err)
 		}
 		report.OutputDir = *outDir
+	}
+
+	if *pagesOut != "" {
+		if err := os.MkdirAll(*pagesOut, 0o755); err != nil {
+			log.Fatalf("share-baseline: pages-out: %v", err)
+		}
+		for i, data := range pageBytes {
+			name := filepath.Join(*pagesOut, fmt.Sprintf("p%03d.png", i))
+			if err := os.WriteFile(name, data, 0o644); err != nil {
+				log.Fatalf("share-baseline: pages-out: %v", err)
+			}
+		}
 	}
 
 	if *asJSON {
@@ -270,7 +289,12 @@ func buildTimeline(pages, pageSecs int) *media.Timeline {
 
 // syntheticPage 画一页"看起来像 PPT"的图：深色底 + 标题条 + 若干正文块。
 // 刻意用大色块而非噪点——噪点会把 JPEG 体积推到不真实的高度。
-func syntheticPage(w, h, index int) []byte {
+//
+// layers > 0 时把图层所在的框**画进页图**：层图是从页图上按同一批框裁下来的，
+// 于是「层图 + 底板」合成回去必须等于原页。这不是为了好看，是为了让
+// 「终态帧应与源页逐像素一致」这条判据有真对象可判——若页图里没有这些框，
+// 合成结果与页图的差异就来自 fixture 自身，判据只能靠放宽阈值糊过去。
+func syntheticPage(w, h, index, layers int) []byte {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	base := []color.RGBA{
 		{R: 18, G: 28, B: 48, A: 255},
@@ -294,6 +318,12 @@ func syntheticPage(w, h, index int) []byte {
 	}
 	// 右下角图形，避免整页过于均匀
 	fillRect(img, w*3/4, h*2/3, w/8, h/6, color.RGBA{R: accent.R / 2, G: accent.G / 2, B: accent.B / 2, A: 255})
+	// 动画层所在的框：与 syntheticAnimation 用同一个 layerBox / layerColor，
+	// 两处各算一遍迟早会差一个像素，而差一个像素的表现就是「终态帧对不上页图」。
+	for k := 0; k < layers; k++ {
+		x, y, bw, bh := layerBox(w, h, k)
+		fillRect(img, x, y, bw, bh, layerColor(index, k))
+	}
 
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -306,6 +336,16 @@ func fillRect(img *image.RGBA, x, y, w, h int, c color.RGBA) {
 	draw.Draw(img, image.Rect(x, y, x+w, y+h), &image.Uniform{C: c}, image.Point{}, draw.Src)
 }
 
+// layerBox 是第 k 个动画层的框（页图坐标）。页图与层图共用这一份，
+// 保证「层图就是页图在该框里的裁片」。
+func layerBox(w, h, k int) (x, y, bw, bh int) {
+	return w / 10, h/2 + k*(h/12+h/40), w / 4, h / 12
+}
+
+func layerColor(index, k int) color.RGBA {
+	return []color.RGBA{{92, 148, 255, 255}, {190, 120, 255, 255}, {90, 220, 170, 255}}[(index+k)%3]
+}
+
 // syntheticAnimation 造一页「底板 + N 个图层」的素材：每层是一块实色矩形，
 // 依次在页首 0/120/240… ms 淡入并上移 24px（与 catalog 里 fadeIn + slideUp 同形）。
 //
@@ -316,16 +356,16 @@ func fillRect(img *image.RGBA, x, y, w, h int, c color.RGBA) {
 // 刻意不做挖空：浏览器门禁判的是「层有没有被创建、动没动、降级时停在哪」，
 // 不判像素；挖空的取色偏差归 M6-4 的样片与 V13 SSIM，两者职责不同。
 func syntheticAnimation(w, h, index, count int) share.PageAnimation {
-	boxW, boxH := w/4, h/12
 	assets := make([]share.LayerAsset, 0, count)
 	for k := 0; k < count; k++ {
 		start := int64(k * 120)
+		x, y, bw, bh := layerBox(w, h, k)
 		ease := animation.EasingCurves[animation.DefaultEasing]
 		assets = append(assets, share.LayerAsset{
 			ElementID: fmt.Sprintf("p%d-layer%d", index, k),
 			Kind:      "card",
-			Box:       share.SlideBox{X: w / 10, Y: h/2 + k*(boxH+h/40), W: boxW, H: boxH},
-			PNG:       solidPNG(boxW, boxH, []color.RGBA{{92, 148, 255, 255}, {190, 120, 255, 255}, {90, 220, 170, 255}}[(index+k)%3]),
+			Box:       share.SlideBox{X: x, Y: y, W: bw, H: bh},
+			PNG:       solidPNG(bw, bh, layerColor(index, k)),
 			Origin:    "center",
 			Clips: []share.Clip{
 				{Effect: "fadeIn", StartMs: start, DurationMs: 900, Easing: ease,
@@ -335,10 +375,13 @@ func syntheticAnimation(w, h, index, count int) share.PageAnimation {
 			},
 		})
 	}
-	// 转场用 fade 360ms：它和图层动画走同一个播放器分支，CI 顺带覆盖
+	// 底板不画图层框（layers=0）：框由层图提供。这样终态时「底板 + 层图」
+	// 才恰好等于源页，而动画中框是**渐显**的——不会留下一块不动的框在层下面。
+	//
+	// 转场用 fade 360ms：它和图层动画走同一个播放器分支，门禁顺带覆盖
 	// 「转场面板在真实浏览器里能不能被画出来」。
 	return share.PageAnimation{
-		PlatePNG:   syntheticPage(w, h, index),
+		PlatePNG:   syntheticPage(w, h, index, 0),
 		Layers:     assets,
 		Transition: share.SlideTransition{Type: "fade", DurationMs: 360},
 	}
@@ -413,7 +456,7 @@ func loadPages(dir string) ([][]byte, error) {
 
 // writeStagingDir 只在 -out 时使用：把素材落到临时目录，走与隐私模式完全相同的
 // BuildLocalToDir 路径，顺便验证"目录产物可用"。
-func writeStagingDir(pages [][]byte, timeline *media.Timeline, width, height int) string {
+func writeStagingDir(pages [][]byte, timeline *media.Timeline) string {
 	root, err := os.MkdirTemp("", "share-baseline-*")
 	if err != nil {
 		log.Fatalf("share-baseline: temp dir: %v", err)
@@ -428,11 +471,7 @@ func writeStagingDir(pages [][]byte, timeline *media.Timeline, width, height int
 		}
 	}
 	for i, slide := range timeline.Slides {
-		if pages != nil {
-			write(fmt.Sprintf("pages/%03d.png", i+1), pages[i])
-		} else {
-			write(fmt.Sprintf("pages/%03d.png", i+1), syntheticPage(width, height, i))
-		}
+		write(fmt.Sprintf("pages/%03d.png", i+1), pages[i])
 		write(slide.Segments[0].AudioKey, synthWAV(int(slide.Segments[0].EndUS-slide.Segments[0].StartUS)/1000, i))
 	}
 	write("subs/cues.vtt", []byte("WEBVTT\n\n00:00:00.000 --> 00:00:10.000\n体积基线样本\n"))

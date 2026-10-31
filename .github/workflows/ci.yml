@@ -111,6 +111,17 @@ jobs:
           go run ./cmd/share-baseline -pages 3 -page-secs 4 -layers 2 -zip /tmp/pkg.zip -out /tmp/pkg >/dev/null
       - name: 浏览器门禁（V14–V17）
         run: python3 scripts/review/bundle-gate.py --pkg /tmp/pkg --engine native
+      # 终态帧门禁（V13b）：每页结尾那一帧必须等于源页。参照物是页图，不是成片，
+      # 所以不需要渲染镜像——这是 V13（DOM vs MP4）第一次有了不依赖镜像的那一半。
+      # 尺寸必须 1:1：舞台宽度受播放器上限约束（1280），拿 1920 的页图去比会掺入
+      # 重采样误差（实测 SSIM 0.969），那个数字分不清「画错了」和「只是缩放了」。
+      - name: 终态帧门禁（V13b）
+        run: |
+          python3 -m pip install --quiet numpy pillow
+          rm -rf /tmp/fixture
+          go run ./cmd/share-baseline -pages 2 -page-secs 4 -width 1280 -height 720 \
+            -layers 2 -pages-out /tmp/fixture/pages -out /tmp/fixture/pkg >/dev/null
+          python3 scripts/review/settled-gate.py --pkg /tmp/fixture/pkg --pages /tmp/fixture/pages
 
   # 竞态检测（M1 tasks 6.2 / ADR-11）：开发机是 Windows + CGO_ENABLED=0 且无任何 C 工具链，
   # race detector 依赖 cgo，本地跑不了，只能在这里跑。范围限定在引入并发的三个包，

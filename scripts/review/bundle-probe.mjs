@@ -13,43 +13,13 @@
 // 用法：node bundle-probe.mjs --pkg /pkg --mode play|nojs|nowaapi|reduced|lowmem
 //       node bundle-probe.mjs --print-chrome        # 只打印解析到的浏览器路径，供门禁选引擎
 // 输出：单行 `PROBE_JSON {...}`，由 bundle-gate.py 解析判定。
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import http from 'node:http';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-// 探针原先只在渲染镜像里跑（Chrome 在 /opt/chrome，ws 在 /app/node_modules），
-// 于是「能不能验成品包」被绑在「镜像能不能构建」上。现在改成两条路都能走：
-// 镜像内照旧；镜像外只要有 Chrome，用 Node 22 自带的 WebSocket 即可，不必装 ws。
-const CHROME_CANDIDATES = [
-  '/opt/chrome/chrome-headless-shell-linux64/chrome-headless-shell',
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/opt/google/chrome/chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/Applications/Chromium.app/Contents/MacOS/Chromium',
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-];
-
-function resolveChrome() {
-  // 显式指定优先：写错了要报错，而不是悄悄退到下一个候选——
-  // 「我明明设了 PPT_CHROME 却没生效」比「找不到 Chrome」难查得多。
-  if (process.env.PPT_CHROME) {
-    if (!fs.existsSync(process.env.PPT_CHROME)) {
-      throw new Error(`PPT_CHROME 指向的文件不存在：${process.env.PPT_CHROME}`);
-    }
-    return process.env.PPT_CHROME;
-  }
-  const hit = CHROME_CANDIDATES.find((p) => fs.existsSync(p));
-  if (!hit) throw new Error('no chrome binary: 设置 PPT_CHROME 指向 chrome/chrome-headless-shell');
-  return hit;
-}
+// 浏览器解析与 CDP 连接都在 cdp.mjs：探针、截图（dom-shot.mjs）各写一份候选表，
+// 迟早会出现「同一个包一条门禁能跑、另一条找不到浏览器」。
+import { resolveChrome, launchBrowser } from './cdp.mjs';
 
 if (process.argv.includes('--print-chrome')) {
   try {
@@ -63,8 +33,6 @@ if (process.argv.includes('--print-chrome')) {
 
 const CHROME = resolveChrome();
 const DEFAULT_PKG = '/pkg';
-const PORT_BASE = 9300;
-const HEADLESS_SHELL = /headless/i.test(path.basename(CHROME));
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -73,7 +41,6 @@ function arg(name, fallback) {
 
 const pkgDir = arg('pkg', DEFAULT_PKG);
 const mode = arg('mode', 'play');
-const port = Number(arg('port', String(PORT_BASE + Math.floor(Math.random() * 400))));
 
 const HOOK = `
 window.__probe = { errors: [], media: [] };
@@ -245,98 +212,13 @@ const LAYER_EXPR = `(async () => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// CDP 通道：Node 22 自带 WebSocket（undici）足够用；旧 Node 才退回镜像里的 ws。
-// 两条路都收成同一组方法，调用处不必知道用的是哪个。
-async function openSocket(url) {
-  if (typeof globalThis.WebSocket === 'function') {
-    const ws = new WebSocket(url);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true });
-      ws.addEventListener('error', () => reject(new Error('websocket 握手失败')), { once: true });
-    });
-    return {
-      send: (text) => ws.send(text),
-      onMessage: (fn) => ws.addEventListener('message', (ev) => fn(typeof ev.data === 'string' ? ev.data : String(ev.data))),
-      close: () => { try { ws.close(); } catch { /* 已关闭 */ } }
-    };
-  }
-  const { createRequire } = await import('node:module');
-  const require = createRequire(path.join(process.env.PPT_WS_ROOT || '/app', 'package.json'));
-  const Ws = require('ws');
-  const ws = new Ws(url, { perMessageDeflate: false, maxPayload: 256 * 1024 * 1024 });
-  await new Promise((resolve, reject) => { ws.on('open', resolve); ws.on('error', reject); });
-  return {
-    send: (text) => ws.send(text),
-    onMessage: (fn) => ws.on('message', (raw) => fn(raw.toString())),
-    close: () => { try { ws.close(); } catch { /* 已关闭 */ } }
-  };
-}
-
 // 失败路径也要收摊：探针被门禁调用时，留下一个 Chrome 进程会让下一次运行抢不到端口。
-let cleanupAll = () => {};
+let closeBrowser = () => {};
 
 async function main() {
-  // 独立的用户数据目录：不指定时，若本机已有 Chrome 在跑，新起的进程会把参数交给
-  // 既有实例后立刻退出，`--remote-debugging-port` 于是不生效——报错只剩
-  // 「chrome did not expose a debugging endpoint」，看不出真正原因。
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ppts-probe-'));
-  const args = [
-    '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--mute-audio',
-    '--autoplay-policy=no-user-gesture-required',
-    `--user-data-dir=${profile}`,
-    `--remote-debugging-port=${port}`, 'about:blank'
-  ];
-  // chrome-headless-shell 本身就是无头，多给 --headless 反而不认；完整版 Chrome 必须给。
-  if (!HEADLESS_SHELL) args.unshift('--headless=new');
-  const chrome = spawn(CHROME, args, { stdio: ['ignore', 'ignore', 'pipe'] });
-  chrome.stderr.on('data', () => {});
-  const cleanup = () => {
-    try { chrome.kill('SIGKILL'); } catch { /* 已退出 */ }
-    try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* 交给系统 */ }
-  };
-  cleanupAll = cleanup;
-
-  const get = (p) => new Promise((resolve, reject) => {
-    const req = http.get({ host: '127.0.0.1', port, path: p }, (res) => {
-      let body = '';
-      res.on('data', (c) => (body += c));
-      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
-    });
-    req.on('error', reject);
-    req.setTimeout(1000, () => req.destroy(new Error('timeout')));
-  });
-
-  let version = null;
-  for (let i = 0; i < 80 && !version; i++) {
-    try { version = await get('/json/version'); } catch { await sleep(150); }
-  }
-  if (!version) throw new Error('chrome did not expose a debugging endpoint');
-
-  const ws = await openSocket(version.webSocketDebuggerUrl);
-
-  let seq = 0;
-  const pending = new Map();
-  const events = [];
-  ws.onMessage((raw) => {
-    const msg = JSON.parse(raw);
-    if (msg.id && pending.has(msg.id)) {
-      const { resolve, reject } = pending.get(msg.id);
-      pending.delete(msg.id);
-      if (msg.error) reject(new Error(`${msg.error.message || 'cdp error'} (${msg.error.code})`));
-      else resolve(msg.result);
-    } else if (msg.method) {
-      events.push(msg);
-    }
-  });
-  const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
-    const id = ++seq;
-    pending.set(id, { resolve, reject });
-    ws.send(JSON.stringify({ id, method, params, sessionId }));
-  });
-
-  const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
-  const { sessionId } = await send('Target.attachToTarget', { targetId, flatten: true });
-  const S = (method, params) => send(method, params, sessionId);
+  const browser = await launchBrowser({ width: 800, height: 600 });
+  closeBrowser = browser.close;
+  const { S, events } = browser;
 
   await S('Runtime.enable');
   await S('Log.enable');
@@ -389,14 +271,13 @@ async function main() {
     consoleErrors, logErrors
   }) + '\n');
 
-  ws.close();
-  cleanup();
+  browser.close();
 }
 
 main().then(
   () => process.exit(0),
   (err) => {
-    cleanupAll();
+    closeBrowser();
     process.stdout.write('PROBE_JSON ' + JSON.stringify({ mode, chrome: CHROME, ok: false, error: String(err && err.message || err) }) + '\n');
     process.exit(1);
   }
