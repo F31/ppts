@@ -8,7 +8,7 @@
 // 这里刻意不引入 zod 之类的运行时校验：校验的权威在 Go 侧（Validate 已在提交前跑过），
 // Node 端重复校验只会得到两套规则。
 
-import type { FocusSpan, Layer, Transition } from '../../shared/types';
+import type { FocusSpan, Layer, Shot, Transition } from '../../shared/types';
 
 export type {
   Box,
@@ -17,6 +17,7 @@ export type {
   Layer,
   Motion,
   MotionProp,
+  Shot,
   Transition
 } from '../../shared/types';
 
@@ -46,6 +47,8 @@ export type Page = {
   plateImage?: string;
   layers?: Layer[];
   transition: Transition;
+  /** 页内镜头切片；缺省表示整页一张图。 */
+  shots?: Shot[];
   /** 页级焦点序列：此刻讲的是谁（见 shared/motion.ts 的 focusDim）。 */
   focus?: FocusSpan[];
 };

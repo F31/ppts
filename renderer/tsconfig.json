@@ -14,7 +14,11 @@
     "noEmit": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    // shared/ 下的模块要被三种运行时消费：Node 直接跑（--experimental-strip-types，
+    // 必须写扩展名）、web 的 tsc（已开这个开关）、渲染端 tsc。少这一行，
+    // 共享模块之间的 import 就只能在「Node 能跑」和「渲染端能编译」之间二选一。
+    "allowImportingTsExtensions": true
   },
   "include": [
     "src",

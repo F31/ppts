@@ -45,6 +45,7 @@ func main() {
 		pagesDir = flag.String("pages-dir", "", "可选：用该目录下的 PNG 作为页图（按文件名排序）")
 		pagesOut = flag.String("pages-out", "", "可选：把本次用的页图（合成或读入）写成 DIR/pNNN.png，供终态帧比对")
 		layers   = flag.Int("layers", 0, "每页合成的动画层数；>0 时产带 clips 的分层素材（浏览器门禁 V17 需要真图层）")
+		shots    = flag.Int("shots", 0, "每页的镜头数；>1 时第 0 镜为整页、其余为该页的局部放大（120ms 叠化），用于验证页内换图")
 		outDir   = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath  = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
 		asJSON   = flag.Bool("json", false, "以 JSON 输出")
@@ -100,10 +101,18 @@ func main() {
 	// 实测过：拿不带图层的包跑门禁，这四项会红——所以「把 V17 放进 CI」和
 	// 「基线能产出真图层」是同一件事，不能只做前一半。
 	var animPages []share.PageAnimation
-	if *layers > 0 {
+	if *layers > 0 || *shots > 1 {
 		animPages = make([]share.PageAnimation, len(timeline.Slides))
 		for i := range timeline.Slides {
-			animPages[i] = syntheticAnimation(*width, *height, i, *layers)
+			if *layers > 0 {
+				animPages[i] = syntheticAnimation(*width, *height, i, *layers)
+			}
+			if *shots > 1 {
+				// 裁切源用**页图本身**（含元素），不是底板：特写要看的是元素，
+				// 而底板把元素挖空了，裁出来是一块填色。
+				pageMs := (timeline.Slides[i].EndUS - timeline.Slides[i].StartUS) / 1000
+				animPages[i].Shots = syntheticShots(*width, *height, pageBytes[i], pageMs, *shots)
+			}
 		}
 	}
 
@@ -344,6 +353,74 @@ func layerBox(w, h, k int) (x, y, bw, bh int) {
 
 func layerColor(index, k int) color.RGBA {
 	return []color.RGBA{{92, 148, 255, 255}, {190, 120, 255, 255}, {90, 220, 170, 255}}[(index+k)%3]
+}
+
+// syntheticShots 把一页切成 count 个镜头：第 0 镜是整页，其余是该页的局部放大。
+//
+// 首镜的 PNG 留空是有意的：打包器会复用页级图那一份字节（见 PageAnimation.Shots）。
+func syntheticShots(w, h int, pagePNG []byte, pageMs int64, count int) []share.ShotAsset {
+	src, err := png.Decode(bytes.NewReader(pagePNG))
+	if err != nil {
+		return nil
+	}
+	out := make([]share.ShotAsset, 0, count)
+	seg := pageMs / int64(count)
+	start := int64(0)
+	for k := 0; k < count; k++ {
+		dur := seg
+		if k == count-1 {
+			// 末镜吃掉整除余数：镜头总长必须严格等于页时长，差 1ms 也会被门禁判红。
+			dur = pageMs - start
+		}
+		shot := share.ShotAsset{StartMs: start, DurationMs: dur}
+		if k > 0 {
+			box := cropBox(w, h, k)
+			shot.Crop = &share.SlideBox{X: box.Min.X, Y: box.Min.Y, W: box.Dx(), H: box.Dy()}
+			shot.PNG = upscaleCrop(src, box, w, h)
+			// 120ms 叠化：与 design §3 定的那个数一致，门禁取点也按它避让。
+			shot.CrossFadeMs = 120
+		}
+		out = append(out, shot)
+		start += dur
+	}
+	return out
+}
+
+// cropBox 取一块与画布**同比例**的局部。
+//
+// 比例必须一致：打包期会核对「图的比例」与「裁切框的比例」，而铺满舞台时比例
+// 不符的图会被拉伸。夹具一旦自己就拉伸过，门禁就分不清「故意放大」与「裁切算错了」。
+func cropBox(w, h, k int) image.Rectangle {
+	bw, bh := w/2, h/2
+	x := (k - 1) * w / 6
+	if x+bw > w {
+		x = w - bw
+	}
+	y := (k - 1) * h / 6
+	if y+bh > h {
+		y = h - bh
+	}
+	return image.Rect(x, y, x+bw, y+bh)
+}
+
+// upscaleCrop 裁一块并放大到 w×h（最近邻）。
+//
+// 最近邻而不是双线性：夹具要的是「这一帧是不是这张图」，插值方式不影响这个判断，
+// 而最近邻是确定的——同一份输入在任何机器上给出同一串字节。
+func upscaleCrop(src image.Image, box image.Rectangle, w, h int) []byte {
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		sy := box.Min.Y + y*box.Dy()/h
+		for x := 0; x < w; x++ {
+			sx := box.Min.X + x*box.Dx()/w
+			dst.Set(x, y, src.At(sx, sy))
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, dst); err != nil {
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // syntheticAnimation 造一页「底板 + N 个图层」的素材：每层是一块实色矩形，

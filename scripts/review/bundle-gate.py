@@ -165,8 +165,13 @@ def check_playable(report, manifest):
             diff = abs(audio.get("durationSec", 0) - audio.get("manifestSec", 0))
             checks.append(Check("V16", "音频时长与清单一致", diff <= 0.25,
                                 f"{audio.get('src')} duration={audio.get('durationSec')}s 清单={audio.get('manifestSec')}s"))
-            checks.append(Check("V16", "播放到结尾触发 ended", res.get("ended") == "ended",
-                                f"ended={res.get('ended')} t={res.get('finalTimeSec')}"))
+            # 两条路都算「播到了结尾」：媒体元素触发 ended，或播放器自己的 tick
+            # 先到 us >= durationUs 并 finish()——后者会把音频暂停，于是 ended
+            # 永远不来。探针那边已经按 OR 算了（bundle-probe.mjs 的注释），这里
+            # 只认 ended 就会让同一份包随机红一半；而间歇性红最终会被人关掉。
+            state = res.get("ended")
+            checks.append(Check("V16", "播放到结尾触发 ended", state in ("ended", "reached-end"),
+                                f"ended={state} t={res.get('finalTimeSec')}"))
     else:
         checks.append(Check("V16", "音频可用", True, "包内无音频（静音片），跳过音频判据"))
 

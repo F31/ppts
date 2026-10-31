@@ -17,8 +17,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -42,6 +44,9 @@ const (
 	// layerEntryPattern 用「页号-layer-层序」，层序与清单 layers 下标一致：
 	// 排查时能直接从文件名定位到清单第几项，不必反查。
 	layerEntryPattern = "slides/%03d-layer-%02d.png"
+	// shotEntryPattern 只用于**第 2 镜起**：首镜就是页级图，复用同一个文件，
+	// 不另存一份。
+	shotEntryPattern  = "slides/%03d-shot-%02d.png"
 	audioEntryPattern = "audio/%03d.wav"
 )
 
@@ -96,8 +101,24 @@ type PageAnimation struct {
 	Transition SlideTransition
 	// Layers 按绘制顺序（父在前、子在后），与 IR 同序。
 	Layers []LayerAsset
+	// Shots 是页内镜头切片，按时间顺序。首镜的 PNG 留空即可——它就是要写进
+	// 清单的页级图（有分层时是底板），打包器复用已写进包的那一份字节。
+	Shots []ShotAsset
 	// Focus 是页级焦点序列，原样透传到清单。
 	Focus []SlideFocus
+}
+
+// ShotAsset 是一镜的画面素材。
+type ShotAsset struct {
+	// PNG 是本镜的位图；**首镜可以留空**（等于页级图，不另存）。
+	PNG []byte
+	// Crop 是这张图取自原页的哪一块（原页像素坐标）；nil 表示整页。
+	// 打包期会拿它核对「图的比例」与「框的比例」——比例算错时画面会被拉伸，
+	// 而拉伸后的画面「看着还挺正常」，只能在这里拦。
+	Crop        *SlideBox
+	StartMs     int64
+	DurationMs  int64
+	CrossFadeMs int
 }
 
 // LayerAsset 是一个元素层的独立位图：已按 Box 裁切，且不含其它动画元素的像素。
@@ -284,6 +305,70 @@ func (b *BundleBuilder) buildInto(
 	return manifest, files, nil
 }
 
+// writeShots 把一页的镜头写成包内文件与清单条目。
+//
+// 首镜复用页级图：它在 IR 里已被校验为「这一页画出来是什么样」的那张图（有分层
+// 时是底板），再存一份只会让同一张画面在包里出现两次，且两份可能不同步。
+func (b *BundleBuilder) writeShots(
+	write func(string, []byte) error,
+	page int,
+	pageName string,
+	shots []ShotAsset,
+) ([]SlideShot, error) {
+	if len(shots) == 0 {
+		return nil, nil
+	}
+	out := make([]SlideShot, 0, len(shots))
+	for k, shot := range shots {
+		image := pageName
+		if k > 0 {
+			if len(shot.PNG) == 0 {
+				return nil, fmt.Errorf("share: slide %d shot %d has no image bytes", page, k)
+			}
+			image = fmt.Sprintf(shotEntryPattern, page+1, k)
+			if err := write(image, shot.PNG); err != nil {
+				return nil, err
+			}
+		}
+		if shot.Crop != nil {
+			if err := checkCropAspect(*shot.Crop, shot.PNG); err != nil {
+				return nil, fmt.Errorf("share: slide %d shot %d: %w", page, k, err)
+			}
+		}
+		out = append(out, SlideShot{
+			Index: k, Image: image, Crop: shot.Crop,
+			StartMs: shot.StartMs, DurationMs: shot.DurationMs, CrossFadeMs: shot.CrossFadeMs,
+		})
+	}
+	return out, nil
+}
+
+// checkCropAspect 核对「图的比例」与「裁切框的比例」。
+//
+// 差得多了说明裁切算错了（例如按元素外接矩形裁、却把整页拉伸进舞台）。这类错误
+// 不会报错也不会崩：播放器把图铺满舞台，拉伸后的画面「看着还挺正常」，只有把
+// 特写和原页并排时才看得出元素变形了。IR 里 Image 只是路径、量不出像素，
+// 所以这条只能在图落盘之后做。
+func checkCropAspect(crop SlideBox, raw []byte) error {
+	if crop.W <= 0 || crop.H <= 0 {
+		return fmt.Errorf("crop %dx%d must be positive", crop.W, crop.H)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("read image size for crop %dx%d: %w", crop.W, crop.H, err)
+	}
+	if cfg.Height == 0 {
+		return fmt.Errorf("image has zero height")
+	}
+	want := float64(crop.W) / float64(crop.H)
+	got := float64(cfg.Width) / float64(cfg.Height)
+	if math.Abs(got-want) > 0.01*want {
+		return fmt.Errorf("image %dx%d (ratio %.4f) does not match crop %dx%d (ratio %.4f) within 1%%",
+			cfg.Width, cfg.Height, got, crop.W, crop.H, want)
+	}
+	return nil
+}
+
 // writeSlides 逐页转码并写 entry，返回清单条目。
 //
 // 降级语义与 MP4 路径逐条对齐：缺键/读失败 → 沿用上一页（复用同一文件名，
@@ -325,9 +410,13 @@ func (b *BundleBuilder) writeSlides(
 				})
 			}
 			transition := anim.Transition
+			shots, err := b.writeShots(write, i, name, anim.Shots)
+			if err != nil {
+				return nil, err
+			}
 			entries = append(entries, SlideEntry{
 				SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
-				Plate: true, Transition: &transition, Layers: layers, Focus: anim.Focus,
+				Plate: true, Transition: &transition, Layers: layers, Shots: shots, Focus: anim.Focus,
 			})
 			previousName, previousPlate = name, true
 			continue
@@ -378,8 +467,13 @@ func (b *BundleBuilder) writeSlides(
 			}
 		}
 		previousName, previousPlate = name, false
+		shots, err := b.writeShots(write, i, name, anim.Shots)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, SlideEntry{
 			SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
+			Shots: shots,
 		})
 	}
 	return entries, nil

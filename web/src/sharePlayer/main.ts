@@ -8,7 +8,9 @@
 //   - 权威时钟是 <audio>.currentTime；rAF 只负责把时钟读出来画到 DOM，绝不自己累加时间。
 import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } from '../playerClock';
 import type { SlideCue, SubtitleCue, Timeline } from '../types';
-import type { FocusSpan } from '../../../shared/types';
+import { easeOutCubic } from '../../../shared/motion.ts';
+import { shotAt } from '../../../shared/shots.ts';
+import type { FocusSpan, Shot } from '../../../shared/types';
 import { buildLayerNodes, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import './player.css';
@@ -22,6 +24,8 @@ type ShareSlide = SlideCue & {
   plate?: boolean;
   transition?: { type: string; durationMs?: number };
   layers?: ManifestLayer[];
+  /** 页内镜头切片。缺省表示整页一张图（旧包与不切镜的页都是这种）。 */
+  shots?: Shot[];
   /** 页级焦点序列：此刻讲的是谁（与 MP4 同一份求值）。 */
   focus?: FocusSpan[];
 };
@@ -72,9 +76,6 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-/** 与 renderer/src/Timeline.tsx 同一条曲线：转场进度不是线性的，线性会"起步发木"。 */
-const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
-
 function mount(): void {
   const manifest = window.__PPT_MANIFEST__;
   const host = document.getElementById('ppts-share-root');
@@ -109,19 +110,37 @@ function mount(): void {
   stage.style.aspectRatio = `${manifest.video.width} / ${manifest.video.height}`;
   // 两个面板：当前页与「上一页的末帧」。转场时两者叠加，与渲染器的 PageEntry
   // 同结构（前一页取末帧 + 当前页交叉），否则页首那一帧两端必然对不上。
-  const makePanel = (): { panel: HTMLElement; img: HTMLImageElement; layers: HTMLElement } => {
+  //
+  // 每个面板里是**两张**叠放的图：`img` 是底层（当前镜头），`imgTop` 只在页内
+  // 换镜的叠化窗口里出现（后一镜）。层在两张图之上，换镜时不重建——层的 clips
+  // 是页内相对毫秒，重建会让已经入场的元素重新入场一次（design §4）。
+  const makePanel = (): {
+    panel: HTMLElement;
+    img: HTMLImageElement;
+    imgTop: HTMLImageElement;
+    layers: HTMLElement;
+  } => {
     const panel = el('div', 'ppts-panel');
     const img = el('img', 'ppts-slide');
     img.alt = title;
     img.decoding = 'async';
+    const imgTop = el('img', 'ppts-slide');
+    // 叠化时它盖在 img 上；不需要时 hidden。CSS 里有 `.ppts-slide[hidden]` 兜底，
+    // 否则作者样式的 display:block 会盖掉 UA 的 [hidden]——图会一直显示。
+    imgTop.alt = '';
+    imgTop.decoding = 'async';
+    imgTop.hidden = true;
     const layers = el('div', 'ppts-layers');
-    panel.append(img, layers);
-    return { panel, img, layers };
+    panel.append(img, imgTop, layers);
+    return { panel, img, imgTop, layers };
   };
   const prev = makePanel();
   const cur = makePanel();
   const layersBox = cur.layers;
   const image = cur.img;
+  // 首屏先放第一张图，避免等第一次 render 才出画面（rAF 之前是空白）。
+  // dataset.shot 一并写上：syncShot 靠它去重，漏写会让首帧白解码一次。
+  image.dataset.shot = manifest.slides[0].image;
   image.src = manifest.slides[0].image;
   prev.panel.hidden = true;
 
@@ -281,11 +300,112 @@ function mount(): void {
     for (const layer of activeLayers) seekLayer(layer, localMs);
   };
 
+  // ---- 页内镜头（换底图）----
+  //
+  // 与切页是两件不同的事：切页换面板、重建层；换镜只换图，层继续跑。
+  // 这里不碰任何 WAAPI，所以「无 WAAPI / reduced-motion / 低电量」三种降级下
+  // 镜头照样切——降级的是动画，不是画面（tasks 2.4）。
+  //
+  // 两张图各自记住自己当前的 src（dataset.shot）。逐帧比对再赋值，而不是
+  // 每帧无条件写 src：重复赋值同一个 URL 会让浏览器重新解码，30fps 下就是
+  // 满屏的掉帧——而掉帧看起来像"动画卡了"，不像"代码写错了"。
+  let shotOnStage = false;
+  let preloaded: HTMLImageElement[] = [];
+
+  const setShotSrc = (img: HTMLImageElement, path: string): void => {
+    if (img.dataset.shot === path) return;
+    img.dataset.shot = path;
+    img.src = path;
+  };
+
+  const showTop = (path: string, opacity: number): void => {
+    setShotSrc(cur.imgTop, path);
+    cur.imgTop.hidden = false;
+    cur.imgTop.style.opacity = String(opacity);
+  };
+
+  const hideTop = (): void => {
+    if (cur.imgTop.hidden && !cur.imgTop.getAttribute('src')) return;
+    cur.imgTop.hidden = true;
+    cur.imgTop.style.opacity = '0';
+    // 连 src 一起清掉：留着的话它会一直出现在「当前画面上有哪些图」的读数里
+    // （截图探针读到两张，判据就分不清哪张才是画出来的那张）。清掉是安全的——
+    // 重新显示总是从叠化的 opacity 0 开始，解码那几毫秒本就看不见。
+    cur.imgTop.removeAttribute('src');
+    delete cur.imgTop.dataset.shot;
+  };
+
+  /**
+   * 把「这一页此刻该显示哪张图」落到 DOM。`localMs` 是页内相对毫秒。
+   *
+   * 没有镜头的页走第一条分支：底图仍是页级 `image`，叠化层清空，层的可见性复原。
+   * 画面与引入镜头之前一致——DOM 上多了一个空的 `<img>`（每个面板一个，无 src、
+   * `hidden`），但它不参与绘制。
+   */
+  const syncShot = (slide: ShareSlide, localMs: number): void => {
+    const shots = slide.shots ?? [];
+    const has = shots.length > 0;
+    if (has !== shotOnStage) {
+      shotOnStage = has;
+      // 有镜头的页里 image 必须铺满舞台（design §4）：特写图的宽高比通常与原页
+      // 不同，contain 会留黑边，「特写」就成了「中间一小块」。
+      for (const node of [cur.img, cur.imgTop]) node.classList.toggle('ppts-shot', has);
+    }
+
+    const frame = shotAt(shots, localMs);
+    if (!frame) {
+      setShotSrc(cur.img, slide.image);
+      hideTop();
+      layersBox.style.visibility = '';
+      return;
+    }
+
+    const fading = frame.from !== undefined && frame.progress < 1;
+    if (fading && frame.from) {
+      // 叠化：底层留旧镜，顶层是新镜并按进度淡入。进度走到 1 时两图相同，
+      // 所以此刻换底层不会有可看见的跳变。
+      setShotSrc(cur.img, frame.from.image);
+      showTop(frame.shot.image, frame.progress);
+    } else {
+      setShotSrc(cur.img, frame.shot.image);
+      hideTop();
+    }
+
+    // Crop 非空的镜头里层 MUST NOT 显示：层的 box 是整页坐标，特写把局部放大后
+    // 同一套坐标必然错位，而错位不会报错，只会看起来「元素飘了」（design §4）。
+    // 用 visibility 而不是 display：层还在跑自己的动画，切回全图时不该从零重建。
+    layersBox.style.visibility = frame.shot.crop ? 'hidden' : '';
+  };
+
+  /** 切页时预取这一页的镜头图。不预取的话，叠化的第一帧拍到的是还没解码的空白。 */
+  const preloadShots = (slide: ShareSlide): void => {
+    preloaded = [];
+    for (const shot of slide.shots ?? []) {
+      if (!shot.image) continue;
+      const img = new Image();
+      img.src = shot.image;
+      // 持有引用：丢掉的对象可能在请求完成前被回收，缓存里就什么也没有。
+      preloaded.push(img);
+    }
+  };
+
+  /** 一页「停在最后一帧」时显示的是哪张图——切页转场要拿它垫底。 */
+  const lastShotImage = (slide: ShareSlide): string => {
+    const shots = slide.shots ?? [];
+    return shots.length > 0 ? shots[shots.length - 1].image : slide.image;
+  };
+
+  const lastShotIsCrop = (slide: ShareSlide): boolean => {
+    const shots = slide.shots ?? [];
+    return shots.length > 0 && Boolean(shots[shots.length - 1].crop);
+  };
+
   const clearPrev = (): void => {
     releaseLayers(prevLayers);
     prev.panel.hidden = true;
     prev.panel.style.opacity = '1';
     prev.panel.style.transform = 'none';
+    prev.layers.style.visibility = '';
     transitionKind = 'none';
     transitionMs = 0;
   };
@@ -296,13 +416,19 @@ function mount(): void {
     const kind = slide.transition?.type ?? 'none';
     const ms = slide.transition?.durationMs ?? 0;
     if (!before || kind === 'none' || ms <= 0) return;
-    prev.img.src = before.image;
+    // 前一页的「末帧」是它最后一个镜头的图，不是页级 image：切到特写的页，
+    // 页尾停在特写上，拿整页图去垫底，交叉的第一帧就与成片差一整张画面。
+    setShotSrc(prev.img, lastShotImage(before));
+    prev.img.classList.toggle('ppts-shot', (before.shots?.length ?? 0) > 0);
     prev.panel.hidden = false;
     cur.panel.style.opacity = '1';
     cur.panel.style.transform = 'none';
     transitionKind = kind;
     transitionMs = ms;
     const layers = before.layers ?? [];
+    // 前一页停在特写镜头上时它的层本来就不显示，交叉时也不能冒出来
+    // （否则页首 360ms 会看到整页的层叠在放大后的局部图上）。
+    prev.layers.style.visibility = lastShotIsCrop(before) ? 'hidden' : '';
     // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
     if (layers.length === 0 || lowPower) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
@@ -388,9 +514,9 @@ function mount(): void {
     const slide = slideAt(timeline, us) as ShareSlide;
     if (slide.slideId !== lastSlideID) {
       const index = manifest.slides.findIndex((item) => item.slideId === slide.slideId);
-      image.src = slide.image;
       image.alt = title;
       lastSlideID = slide.slideId;
+      preloadShots(slide);
       rebuildLayers(slide);
       // 前一页取 index-1 而不是"上一次渲染的页"：拖动进度条跳页时，上一帧
       // 停在哪与时间轴上的前驱无关，按前驱算才对得上成片。
@@ -399,6 +525,11 @@ function mount(): void {
       prevBtn.disabled = index <= 0;
       nextBtn.disabled = index < 0 || index >= manifest.slides.length - 1;
     }
+    // 镜头每帧求值（内部按 src 去重）：页内换镜不经过上面那条分支，
+    // 只在切页时换图的话，「一页多镜」就只是一层没人看得见的数据。
+    // 除以 1000 不能省：us 与 slide.startUs 都是微秒，而镜头的 startMs 是毫秒。
+    // 漏除的后果不是报错，而是每一帧都超出末镜——画面永远停在最后一镜。
+    syncShot(slide, (us - slide.startUs) / 1000);
     applyTransition(slide, us);
     const ratio = progress(us, durationUs);
     const fill = Math.round(ratio * 1000);

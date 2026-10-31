@@ -150,6 +150,19 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 	return nil
 }
 
+// displayBase 是这一页「画出来是什么样」的底图。
+//
+// 有底板时是底板（参与动画的元素已被挖空，由 layers 盖回去），否则是原页。
+// 页内镜头的首镜必须等于它——不是 BaseImage。这个区别只有在「有分层动画的页
+// 又切镜头」时才会显形：比成 BaseImage 的话，首镜会把元素连图一起显示，
+// 层再从透明淡入一次，画面出现一层重影，而两边都没有报错。
+func displayBase(p *Page) string {
+	if p.PlateImage != "" {
+		return p.PlateImage
+	}
+	return p.BaseImage
+}
+
 // validateShots 校验页内镜头切片（见 ir.go 的 Shot）。
 //
 // 这里只做「渲染器能否安全执行」这一层：时间轴是否连续、叠化是否短于镜头、
@@ -163,11 +176,14 @@ func validateShots(p *Page, base string, frameMS int64, width, height int) error
 		return planErr(base+".shots", CodeInvalidPlan,
 			"%d shots exceeds limit %d", len(p.Shots), MaxShotsPerPage)
 	}
-	// 首镜必须就是页级底图：否则「这一页长什么样」有两个说法，而播放器
-	// 在没有 shots 的旧版本里只认 baseImage——同一份包在新旧播放器上会不一样。
-	if p.Shots[0].Image != p.BaseImage {
+	// 首镜必须就是这一页「画出来是什么样」的那张图：有底板时是底板（元素已被
+	// 挖空、由 layers 盖回去），否则是原页。比错了的后果不是报错，而是**残影**——
+	// 元素本来就是图里的一部分，再从零淡入一次，观众看到的是重影。
+	//
+	// 也不能拿 BaseImage 当基准：有分层动画的页里，页级图是底板，两者路径不同。
+	if want := displayBase(p); p.Shots[0].Image != want {
 		return planErr(base+".shots[0].image", CodeInvalidPlan,
-			"first shot image %q must equal baseImage %q", p.Shots[0].Image, p.BaseImage)
+			"first shot image %q must equal the page's display base %q", p.Shots[0].Image, want)
 	}
 
 	var cursor int64
@@ -200,6 +216,12 @@ func validateShots(p *Page, base string, frameMS int64, width, height int) error
 				"crossFade %d must be shorter than shot %dms", s.CrossFadeMs, s.DurationMs)
 		}
 		if s.Crop != nil {
+			// 首镜就是整页，再声明一个裁切框等于说「这张整页图是从某个局部裁出来的」。
+			// 允许它只会让「这一页长什么样」有两个说法，而打包期还要为它找原图量比例。
+			if i == 0 {
+				return planErr(sb+".crop", CodeInvalidPlan,
+					"first shot is the whole page and must not declare a crop")
+			}
 			c := *s.Crop
 			if c.W <= 0 || c.H <= 0 {
 				return planErr(sb+".crop", CodeInvalidPlan, "crop %dx%d must be positive", c.W, c.H)

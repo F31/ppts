@@ -70,11 +70,33 @@ body.ppts-share-page {
 }
 
 .ppts-slide {
+  /* 绝对定位不是修饰：面板里现在有**两张**图（当前镜 + 叠化中的下一镜），
+     块级元素会竖着排，第二张被排到面板下方、被舞台的 overflow 裁掉——
+     表现是「叠化没生效」，而 DOM 里两张图都好好的、src 也对。
+     面板本身是 inset:0 的绝对定位盒，所以这一改不改变任何一张图的落位。 */
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
   background: #000;
+}
+
+/* 隐藏必须在这里再说一遍：UA 样式表里的 `[hidden] { display: none }` 会被上面
+   那条 display:block 盖掉（作者样式优先于 UA 样式，与选择器权重无关）。
+   不写这条，叠化用的第二张图会一直显示，两块图叠在一起——看起来只是「这张图有点怪」，
+   而没有任何报错。 */
+.ppts-slide[hidden] {
+  display: none;
+}
+
+/* 有页内镜头的页：图必须铺满舞台（design §4「Image 总是铺满舞台」）。
+   特写图是原页的一块放大，宽高比通常与原页不同，contain 会留黑边，
+   「特写」就变成「中间一小块」。没有镜头的页仍然走 contain——那里图的宽高比
+   本来就等于舞台，两者没有可见差别，不动它。 */
+.ppts-slide.ppts-shot {
+  object-fit: fill;
 }
 
 .ppts-cover {

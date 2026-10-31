@@ -294,6 +294,7 @@ func (m *Manifest) Validate(files map[string]struct{}) error {
 //     入场动画期间能看到重影。这种画面不报错，只会被当成「渲染有点糊」。
 //   - 层图尺寸与 box 不一致：浏览器会缩放插值，文字边缘发虚，而两端 SSIM 会莫名偏低。
 //   - 转场类型拼错：播放器不认识就退化成直接切换，看起来「转场没了」却不报错。
+//
 // validateSlideShots 校验页内镜头切片。
 //
 // 与 IR 的 validateShots 有一处刻意的重复：门禁对的是**产物**（人可能手改清单），
@@ -343,6 +344,10 @@ func validateSlideShots(index int, slide SlideEntry, video VideoInfo, files map[
 				index, si, shot.CrossFadeMs, shot.DurationMs)
 		}
 		if shot.Crop != nil {
+			// 首镜就是页级图（整页），声明裁切框等于说这张整页图是从局部裁出来的。
+			if si == 0 {
+				return fmt.Errorf("share: slide %d first shot is the whole page and must not declare a crop", index)
+			}
 			c := *shot.Crop
 			if c.W <= 0 || c.H <= 0 {
 				return fmt.Errorf("share: slide %d shot %d crop %dx%d must be positive", index, si, c.W, c.H)

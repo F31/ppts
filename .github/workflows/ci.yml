@@ -212,7 +212,11 @@ jobs:
       # 语义一旦变化，DOM 端与帧端会以**不同方式**错，且单条 clip 的页看不出来。
       # 这条必须跑在 renderer degrade check 之前——后者依赖同一份 motion.ts。
       - name: shared motion semantics
-        run: node --experimental-strip-types --test shared/motion-check.mjs
+        run: |
+          node --experimental-strip-types --test shared/motion-check.mjs
+          # 页内镜头的求值矩阵。与 motion 同一类理由：区间端点差一帧时，
+          # 两端会在同一时刻给出两张不同的图，而单端截图看不出来。
+          node --experimental-strip-types --test shared/shots-check.mjs
       # 单页降级（tasks 3.7）是纯函数 + 一条对 motion.ts 的语义依赖，
       # 不需要 npm ci 也不需要 Chrome：它只 import 仓库内的 .mjs/.ts。
       # 真渲染路径靠容器内的故障注入验收，这条守的是「冻结一页」的语义不被改坏。

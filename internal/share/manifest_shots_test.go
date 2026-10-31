@@ -25,7 +25,7 @@ func TestSlideShotsValid(t *testing.T) {
 	m := shotsManifest(
 		SlideShot{Index: 0, Image: "pages/page_01.png", StartMs: 0, DurationMs: 3000, CrossFadeMs: 0},
 		SlideShot{Index: 1, Image: "pages/page_01_zoom.png",
-			Crop: &SlideBox{X: 200, Y: 150, W: 800, H: 450},
+			Crop:    &SlideBox{X: 200, Y: 150, W: 800, H: 450},
 			StartMs: 3000, DurationMs: 3000, CrossFadeMs: 120},
 	)
 	if err := m.Validate(nil); err != nil {

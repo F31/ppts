@@ -13,23 +13,25 @@
 ## 1. IR + 校验 + golden
 
 - [x] 1.1 `render.Page` 增 `Shots []Shot`；`Shot{Index, Image, Crop, StartMs, DurationMs, CrossFadeMs}`
-- [x] 1.2 校验：首尾相接 / 总长 == 页时长（±1 帧）/ `Crop` 在原页范围内 / 每页 ≤4 镜 / `CrossFadeMs` < 镜头时长 / 首镜 `image` == `baseImage` / `index` == 位置（宽高比那条挪到打包期，IR 里 Image 只是路径、量不了）
+- [x] 1.2 校验：首尾相接 / 总长 == 页时长（±1 帧）/ `Crop` 在原页范围内 / 每页 ≤4 镜 / `CrossFadeMs` < 镜头时长 / 首镜 `image` == 该页的呈现底图（有底板时为底板）/ 首镜不得声明 `crop` / `index` == 位置（宽高比那条挪到打包期，IR 里 Image 只是路径、量不了）
 - [x] 1.3 无 `shots` 时输出与今天字节级一致（golden 守，不靠人看）
 
 ## 2. 播放器 + 渲染端
 
-- [ ] 2.1 `main.ts` 页内按 `us` 选当前镜头，底图 `src` 在镜头边界切换
-- [ ] 2.2 叠化：双 `<img>` 叠放，占后一镜开头 `crossFadeMs`，`easeOutCubic`——与页间 `fade` 同一套，不新写插值
-- [ ] 2.3 层不重建（clips 是页内相对）；`Crop` 非空的镜头内层不显示。两条都要写成注释，否则下一个人会顺手重建或让层错位
-- [ ] 2.4 降级路径（无 WAAPI / reduced-motion / 低电量）下，镜头仍要切——降级的是动画，不是画面
-- [ ] 2.5 `Timeline.tsx` 同一页内按 `tMs` 选图 + 叠化
+- [x] 2.1 `main.ts` 页内按 `us` 选当前镜头，底图 `src` 在镜头边界切换（`syncShot` 每帧求值，按 `dataset.shot` 去重，不做无条件赋值）
+- [x] 2.2 叠化：双 `<img>` 叠放，占后一镜开头 `crossFadeMs`，`easeOutCubic`（曲线提到 `shared/motion.ts` 导出，页间转场/焦点/叠化共用一份）
+- [x] 2.3 层不重建（clips 是页内相对）；`Crop` 非空的镜头内层不显示（`visibility`，不摘节点）。两条都写了注释
+- [x] 2.4 降级路径（无 WAAPI / reduced-motion / 低电量）下镜头仍切——结构上就不依赖：`syncShot` 只碰 `src` 与 `visibility`，不进 WAAPI、不看 `lowPower`
+- [x] 2.5 `Timeline.tsx` 同一页内按 `tMs` 选图 + 叠化（与播放器共用 `shared/shots.ts` 的求值）
+
+> 实测（本机，2 页 × 4s 夹具，120ms 叠化）：播放器 1500ms→整页、2064ms→两张图同时在场、2400ms→纯特写，与源图逐像素 meanDiff ≤0.002；渲染端 `still.mjs` 1000ms→整页、2067ms→混合、2500ms→特写，同量级。两处各自踩到同一个坑（两张图会竖向排列、第二张跑出画框），已在两边分别修正并留注释。
 
 ## 3. 清单 + 打包
 
 - [x] 3.1 `share.SlideEntry` 增 `Shots`（`omitempty`）+ `SlideShot` 类型
-- [ ] 3.1b `bundle.go` 把 `PageAnimation.Shots` 写成包内文件并填清单。**卡在素材来源**：`shots[0]` 的图就是页级图（可能是 plate），`shots[k>0]` 才是新文件——这个映射必须与「特写图由谁产」一起定，否则写出来的包没人能填。与 5.x 一起做
-- [x] 3.2 校验三条：空洞/重叠/总长；`shots` 非空时 `slide.Image` == 首镜 `image`；`Crop` 在页内且宽高比为正在打包期核（IR 里 Image 只是路径）
-- [-] 3.3 每个 `shot.Image` 必须在包内 —— 校验已加（`files` 集合），但 3.1b 不落地时这条没有真实输入
+- [x] 3.1b `bundle.go` 把 `PageAnimation.Shots` 写成包内文件并填清单。首镜复用页级图（同字节同文件名），第 2 镜起写 `slides/NNN-shot-0K.png`；打包期补上 IR 算不了的那条：`Crop` 宽高比与图相差 >1% 即失败
+- [x] 3.2 校验三条：空洞/重叠/总长；`shots` 非空时 `slide.Image` == 首镜 `image`；`Crop` 在页内且宽高比在打包期核（IR 里 Image 只是路径）
+- [x] 3.3 每个 `shot.Image` 必须在包内（`files` 集合）——3.1b 落地后这条有了真实输入
 - [x] 3.4 **不升 `schemaVersion`**：查过播放器根本不读它，升版本只让 Go 的 `Validate` 拒绝 v2 包。改为在规格里写「旧播放器降级可播放、但不换镜」
 
 ## 4. 门禁 + 夹具

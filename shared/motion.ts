@@ -139,7 +139,12 @@ export const FOCUS_FADE_MS = 240;
  */
 export const FOCUS_DIM_OPACITY = 0.55;
 
-const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
+/**
+ * 转场进度曲线。页间转场、焦点过渡、页内镜头叠化都用这一条：
+ * 线性淡入在起点"发木"，而三条路径各写一份曲线，迟早会在某一端差一点——
+ * 那种差别单看不出来，只在两个版本并排播放时才露。
+ */
+export const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
 
 /**
  * focusDim 把页级焦点序列换算成「每一层此刻该退后多少」（0 = 焦点，1 = 完全退后）。

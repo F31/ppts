@@ -111,13 +111,31 @@ func TestShotsRejectCropOutsidePage(t *testing.T) {
 }
 
 func TestShotsFirstImageMustMatchBase(t *testing.T) {
-	// 首镜换了张图：旧播放器只认 baseImage，同一份包在新旧播放器上会不一样。
+	// 首镜换了张图：页级 image 与首镜给了两个说法，播放器与合成器会各取一个。
 	plan := shotPlan(
 		Shot{Index: 0, Image: "pages/other.png", StartMs: 0, DurationMs: 6000},
 	)
 	err := plan.Validate()
-	if err == nil || !strings.Contains(err.Error(), "must equal baseImage") {
+	if err == nil || !strings.Contains(err.Error(), "must equal the page's display base") {
 		t.Fatalf("want first-shot/base mismatch, got %v", err)
+	}
+}
+
+func TestShotsFirstImageIsPlateWhenPageHasOne(t *testing.T) {
+	// 有分层动画的页，页级图是**底板**（元素被挖空、由 layers 盖回去）。
+	// 首镜若仍写 baseImage，元素会既在图里、又从零淡入一次——重影，且两边都不报错。
+	plan := shotPlan(
+		Shot{Index: 0, Image: "pages/p0.png", StartMs: 0, DurationMs: 6000},
+	)
+	plan.Pages[0].PlateImage = "pages/p0-plate.png"
+	if err := plan.Validate(); err == nil {
+		t.Fatal("first shot pointing at baseImage on a plated page must be rejected")
+	}
+
+	// 指到底板就对了。
+	plan.Pages[0].Shots[0].Image = "pages/p0-plate.png"
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("first shot pointing at the plate must pass: %v", err)
 	}
 }
 

@@ -78,3 +78,26 @@ export type FocusSpan = {
   /** 切换过渡时长，缺省 240ms。 */
   fadeMs?: number;
 };
+
+/**
+ * 页内镜头：一页里按时间换一次底图（全图 → 特写）。
+ *
+ * 它只换**图**，不换时间轴：`layers` 的 clips 仍是页内相对毫秒，跨镜头不重建层
+ * （重建会让元素重新入场）。`crop` 非空的镜头里层不显示——层的 box 是整页坐标，
+ * 局部放大后同一套坐标必然错位，而错位不会报错，只会看起来"元素飘了"。
+ *
+ * 字段与 `internal/render/ir.go` 的 Shot、`internal/share/manifest.go` 的
+ * SlideShot 逐一对齐。
+ */
+export type Shot = {
+  index: number;
+  /** 铺满舞台的图：整页图，或裁切放大后的特写图。 */
+  image: string;
+  /** 该图取自原页的哪一块（原页像素坐标）；缺省表示整页。 */
+  crop?: Box;
+  /** 页内相对起点，必须等于上一镜的终点。 */
+  startMs: number;
+  durationMs: number;
+  /** 本镜开头的叠化时长；0 = 硬切。叠化占**本镜**的开头，与页间转场同语义。 */
+  crossFadeMs: number;
+};

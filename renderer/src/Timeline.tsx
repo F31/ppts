@@ -7,10 +7,9 @@
 
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
-import { evaluateLayer, focusDim, focusOpacity, framesForDuration, originCss } from '../../shared/motion';
+import { easeOutCubic, evaluateLayer, focusDim, focusOpacity, framesForDuration, originCss } from '../../shared/motion';
+import { shotAt } from '../../shared/shots';
 import type { Layer, Page, Timeline } from './types';
-
-const easeOutCubic = (p: number): number => 1 - Math.pow(1 - p, 3);
 
 /** 一页在静态时刻的画面：底板 + 各元素图层。 */
 const PageView: React.FC<{
@@ -20,13 +19,43 @@ const PageView: React.FC<{
   tMs: number;
 }> = ({ page, width, height, tMs }) => {
   const plate = staticFile(page.plateImage ?? page.baseImage);
+  // 页内镜头：这一毫秒该显示哪一镜。没有 shots 时返回 null，走与引入镜头之前
+  // 完全相同的路径（页级 plate/base），所以旧计划逐像素不变。
+  const frame = shotAt(page.shots, tMs);
+  // 叠化：底层是上一镜，顶层是新镜按进度淡入。进度到 1 时两图相同，
+  // 因此「底层此刻换成新镜」不会有可见跳变。
+  const fading = frame !== null && frame.from !== undefined && frame.progress < 1;
+  const bottom = frame ? (fading && frame.from ? frame.from.image : frame.shot.image) : '';
+  const top = fading ? frame?.shot.image : '';
+  // 特写镜头里不画层：层的 box 是整页坐标，局部放大后同一套坐标必然错位，
+  // 而错位不会报错，只会看起来「元素飘了」（design §4）。
+  const layers = frame?.shot.crop ? [] : page.layers ?? [];
   // 页级焦点：非焦点元素整体退后。位置不动，只降不透明度——
   // 版面是烘焙的底图，改布局不是合成器的事。
   const dims = focusDim(page.focus, tMs);
   return (
     <AbsoluteFill>
-      <Img src={plate} style={{ width, height, objectFit: 'fill' }} />
-      {(page.layers ?? []).map((layer: Layer, i: number) => {
+      {frame ? (
+        <>
+          {/* 两张图各自套一层 AbsoluteFill：AbsoluteFill 是 flex 列容器，
+              两张 <Img> 直接放进去会**竖着排**，第二张被排到画框外——
+              表现是「叠化没生效」，而 props 与图片路径全都对。
+              播放器那边是同一个坑，靠 .ppts-slide 的 position:absolute 解决。 */}
+          <AbsoluteFill>
+            <Img src={staticFile(bottom)} style={{ width, height, objectFit: 'fill' }} />
+          </AbsoluteFill>
+          {top ? (
+            <AbsoluteFill style={{ opacity: frame?.progress ?? 1 }}>
+              <Img src={staticFile(top)} style={{ width, height, objectFit: 'fill' }} />
+            </AbsoluteFill>
+          ) : null}
+        </>
+      ) : (
+        <AbsoluteFill>
+          <Img src={plate} style={{ width, height, objectFit: 'fill' }} />
+        </AbsoluteFill>
+      )}
+      {layers.map((layer: Layer, i: number) => {
         const state = evaluateLayer(layer, tMs);
         const dim = layer.elementId ? dims[layer.elementId] ?? 0 : 0;
         return (

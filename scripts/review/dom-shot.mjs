@@ -94,6 +94,19 @@ const SEEK_FN = `async (ms) => {
     slides: [].slice.call(document.querySelectorAll('.ppts-slide'))
       .map((im) => ((im.getAttribute('src') || '').split('/').pop())).filter(Boolean),
     layers: document.querySelectorAll('.ppts-layer').length,
+    // 层是不是可见。特写镜头里层必须不显示（层的 box 是整页坐标，局部放大后
+    // 必然错位），实现用的是 visibility——所以数节点数看不出来，得读样式。
+    //
+    // 必须读**当前页那一块**：舞台上有两个面板（上一页的末帧 + 当前页），
+    // 各自都有一个 .ppts-layers。读第一个读到的是上一页的，于是「特写里层藏没藏」
+    // 会答成上一页的状态——而那个答案看起来完全合理，最难发现。
+    layersVisible: (() => {
+      const panels = [].slice.call(document.querySelectorAll('.ppts-panel')).filter((p) => !p.hidden);
+      const panel = panels[panels.length - 1];
+      if (!panel) return false;
+      const box = panel.querySelector('.ppts-layers');
+      return box ? getComputedStyle(box).visibility !== 'hidden' : false;
+    })(),
     // 舞台在页面里的位置与大小：它是与页图比对的那块区域。
     // 播放器不是全屏铺满（有边框、圆角、控制条），所以不能假定「截图就是画面」。
     stage: (() => {
