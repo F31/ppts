@@ -65,3 +65,17 @@
 `tsc -b` / `vite build`（含 `internal/share/assets/app.css` 同步重建）、`npm run build:share` 重建
 `app.js`、播放器续播纯函数单测（与 Go 同语义）、`share-verify` / `shots-check.mjs` 含延续 fixture。
 一个里程碑 = 一次 commit + push + 全量验证。
+
+## 实施结果（归档补记，2026-11-01）
+
+本文是提案当时的口径，有两处与最终实现不一致，以此补记为准：
+
+1. **拆分数学**：「目标（路线 B）」写的「本页发 `[起点,页尾]`、次页发 `[0,余量]`」**已被取代**。
+   预拆分把本页段截断在页尾、次页段从 0 起播，看似在 `mid` 衔接，但 `evaluateLayer` 会对每段再次施加
+   cubic-bezier 缓动——`mid = lerp(from,to,f)` 是线性分数处的值，与非线性缓动的实际态不一致，页缝可见跳变。
+   最终实现为**负起点平移求值**：本页段保留完整 `[from,to]`（不截断），次页段
+   `startMs = -continuationOffsetMs`、`durationMs` 与原长相同、Props 与源段完全一致。详见 `design.md` §2。
+2. **质量门禁**：本文写的「页取样门禁新增 fixture/case」落地为**成品包清单 + 共享求值器**的 V19
+   （`scripts/review/seam-gate.mjs`），并明确延续元素 **MUST NOT** 进入 V13b 的末帧比对——它在页尾本就是
+   中途态。夹具也从「默认挂在 `-layers`」改为显式 `-continuation`。见变更
+   `animation-continuation-seam-gate`。

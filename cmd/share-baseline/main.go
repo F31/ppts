@@ -46,6 +46,10 @@ func main() {
 		pagesOut = flag.String("pages-out", "", "可选：把本次用的页图（合成或读入）写成 DIR/pNNN.png，供终态帧比对")
 		layers   = flag.Int("layers", 0, "每页合成的动画层数；>0 时产带 clips 的分层素材（浏览器门禁 V17 需要真图层）")
 		shots    = flag.Int("shots", 0, "每页的镜头数；>1 时第 0 镜为整页、其余为该页的局部放大（120ms 叠化），用于验证页内换图")
+		// 跨页延续是**显式** opt-in，不挂在 -layers 上：延续元素在页尾必然处于中途态，
+		// 而终态帧门禁（V13b）的判据是「页末帧 == 参照页图（终态）」。若默认注入，
+		// 任何用 -layers 取末帧的用例都会因为这条元素而误红。要验延续，单独造包走 V19。
+		continuation = flag.Bool("continuation", false, "注入一条跨相邻两页的延续元素（G8）；需 -layers>0 且 -pages>=2，并配合 seam-gate 使用")
 		outDir   = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath  = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
 		asJSON   = flag.Bool("json", false, "以 JSON 输出")
@@ -116,17 +120,26 @@ func main() {
 		}
 	}
 
-	// 跨页延续夹具（G8-③.6）：在相邻两页之间注入一条真正的延续元素——页 i 的源层溢出页尾，
-	// 页 i+1 落下延续段（负起点平移），与 render.Compiler 输出同构。于是 -layers 产出的包含
-	// continuation 段，覆盖编译拆分与浏览器门禁（V17/V18 页缝连续）。页太短不足以溢出时跳过。
-	if *layers > 0 && len(animPages) >= 2 {
+	// 跨页延续夹具（G8-③.6）：显式 -continuation 才注入。在相邻两页之间放一条真正的
+	// 延续元素——页 i 的源层溢出页尾，页 i+1 落下负起点延续段，与 render.Compiler 输出同构。
+	// 覆盖编译拆分的**数据形态**与页缝门禁 V19（seam-gate 直接读成品包清单并求值）。
+	// 它不参与 V13b/V17：延续元素在页尾本就不是终态，混进末帧比对会得到假红。
+	if *continuation {
+		if *layers <= 0 {
+			log.Fatal("share-baseline: -continuation 需要 -layers>0（延续元素挂在分层素材上）")
+		}
+		if len(animPages) < 2 {
+			log.Fatal("share-baseline: -continuation 需要 -pages>=2（延续至少跨两页）")
+		}
 		pageMs := (timeline.Slides[0].EndUS - timeline.Slides[0].StartUS) / 1000
-		if pageMs > 4000 {
-			for i := 0; i+1 < len(animPages); i++ {
-				tag := fmt.Sprintf("cont-%d", i)
-				animPages[i].Layers = append(animPages[i].Layers, syntheticContinuationSource(*width, *height, pageMs, tag))
-				animPages[i+1].Layers = append(animPages[i+1].Layers, syntheticContinuationSeg(*width, *height, pageMs, tag))
-			}
+		if pageMs <= continuationOffsetMs {
+			log.Fatalf("share-baseline: -continuation 需要每页时长 > %dms（当前 %dms，页太短无法溢出）",
+				continuationOffsetMs, pageMs)
+		}
+		for i := 0; i+1 < len(animPages); i++ {
+			tag := fmt.Sprintf("cont-%d", i)
+			animPages[i].Layers = append(animPages[i].Layers, syntheticContinuationSource(*width, *height, pageMs, tag))
+			animPages[i+1].Layers = append(animPages[i+1].Layers, syntheticContinuationSeg(*width, *height, tag))
 		}
 	}
 
@@ -487,13 +500,21 @@ func syntheticAnimation(w, h, index, count int) share.PageAnimation {
 	}
 }
 
+// 延续夹具的时间参数。offset 是「本页段末尾在原 clip 里的时间」，也就是次页段的平移量：
+// 次页 localMs=0 对应 clip 时间 offset，故 startMs=-offset。duration 远大于 offset，保证
+// 延续段在次页里仍处于可见的中途态——否则一进次页就到终态，看不出页缝是否连续。
+const (
+	continuationOffsetMs   int64 = 3000
+	continuationDurationMs int64 = 8000
+)
+
 // syntheticContinuationSource 造一个会跨页溢出的源层（本页段，完整 clip，不截断）。
 //
-// 它是 G8 跨页延续的夹具：在页 i 放一条 continues 溢出的 clip，余量本应由编译器注入次页段；
-// 这里直接按编译器同构输出，在页 i+1 放下延续段（见 syntheticContinuationSeg），于是 -layers
-// 产出的包就含一条真正的跨页延续元素，浏览器门禁（V17/V18）能覆盖「页缝处连续」。
+// 它是 G8 跨页延续的夹具：在页 i 放一条溢出页尾的 clip（起点 = 页尾 - offset），余量本应由
+// 编译器注入次页段；这里直接按编译器同构输出，在页 i+1 放下延续段（见 syntheticContinuationSeg）。
+// 判据在 seam-gate（V19）：它读成品包清单，核对链接字段与页缝处的求值连续性。
 func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.LayerAsset {
-	start := pageMs - 3000
+	start := pageMs - continuationOffsetMs
 	ease := animation.EasingCurves[animation.DefaultEasing]
 	x, y, bw, bh := layerBox(w, h, 0)
 	return share.LayerAsset{
@@ -503,9 +524,9 @@ func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.Layer
 		PNG:       solidPNG(bw, bh, continuationColor),
 		Origin:    "center",
 		Clips: []share.Clip{
-			{Effect: "fadeIn", StartMs: start, DurationMs: 8000, Easing: ease,
+			{Effect: "fadeIn", StartMs: start, DurationMs: continuationDurationMs, Easing: ease,
 				Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
-			{Effect: "slideUp", StartMs: start, DurationMs: 8000, Easing: ease,
+			{Effect: "slideUp", StartMs: start, DurationMs: continuationDurationMs, Easing: ease,
 				Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 40, To: 0}}},
 		},
 	}
@@ -514,9 +535,10 @@ func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.Layer
 // syntheticContinuationSeg 造次页延续段（负起点平移，与 render.Compiler 输出同构）。
 //
 // StartMs = -ContinuationOffsetMs 把本段求值时间平移回原 clip 时间轴，使页缝处 cubic-bezier
-// 缓动连续；ElementID 与源层一致，供播放器把次页层与本页同元素层关联。
-func syntheticContinuationSeg(w, h int, pageMs int64, tag string) share.LayerAsset {
-	offset := int64(3000)
+// 缓动连续；ElementID 与源层一致，供播放器把次页层与本页同元素层关联。Props 与源段**完全一致**
+// （不预拆分）——这是「负起点平移」与「预拆分」两条路线在数据上的唯一区别。
+func syntheticContinuationSeg(w, h int, tag string) share.LayerAsset {
+	offset := continuationOffsetMs
 	ease := animation.EasingCurves[animation.DefaultEasing]
 	x, y, bw, bh := layerBox(w, h, 0)
 	return share.LayerAsset{
@@ -526,11 +548,13 @@ func syntheticContinuationSeg(w, h int, pageMs int64, tag string) share.LayerAss
 		PNG:       solidPNG(bw, bh, continuationColor),
 		Origin:    "center",
 		Clips: []share.Clip{
-			{Effect: "fadeIn", StartMs: -offset, DurationMs: 8000, Easing: ease,
-				IsContinuation: true, ContinuationOffsetMs: offset,
+			// clip 级 ElementID 必须设：编译器把 Track.elementId 写进每个延续 Motion，
+			// bundleClips 原样透传。只给 layer 级会让清单里缺少链接键（V19.1 会红）。
+			{Effect: "fadeIn", StartMs: -offset, DurationMs: continuationDurationMs, Easing: ease,
+				IsContinuation: true, ContinuationOffsetMs: offset, ElementID: tag,
 				Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
-			{Effect: "slideUp", StartMs: -offset, DurationMs: 8000, Easing: ease,
-				IsContinuation: true, ContinuationOffsetMs: offset,
+			{Effect: "slideUp", StartMs: -offset, DurationMs: continuationDurationMs, Easing: ease,
+				IsContinuation: true, ContinuationOffsetMs: offset, ElementID: tag,
 				Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 40, To: 0}}},
 		},
 	}

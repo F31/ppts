@@ -111,6 +111,17 @@ jobs:
           go run ./cmd/share-baseline -pages 3 -page-secs 4 -layers 2 -zip /tmp/pkg.zip -out /tmp/pkg >/dev/null
       - name: 浏览器门禁（V14–V17）
         run: python3 scripts/review/bundle-gate.py --pkg /tmp/pkg --engine native
+      # 跨页延续（G8）：夹具必须显式 -continuation（默认注入会让 V13b 的末帧比对假红，
+      # 因为延续元素在页尾本就是中途态），且页长要大于 offset（6s > 3s）才溢得出去。
+      # 判据在 seam-gate（V19）：读成品包清单 + shared/motion.ts 在页缝两侧求值，
+      # 断言链接字段（elementId/offset/负起点）、源段配对与数值连续。0 条延续段也算红，
+      # 否则夹具一坏，这条门禁就会静默空绿——那比没有门禁更危险。
+      - name: 造一个含跨页延续的样例包
+        run: |
+          rm -rf /tmp/pkg-cont
+          go run ./cmd/share-baseline -pages 3 -page-secs 6 -layers 2 -continuation -out /tmp/pkg-cont >/dev/null
+      - name: 页缝延续门禁（V19）
+        run: node --experimental-strip-types scripts/review/seam-gate.mjs --pkg /tmp/pkg-cont
       # 终态帧门禁（V13b）：每页结尾那一帧必须等于参照图，参照物不是成片，
       # 所以不需要渲染镜像——这是 V13（DOM vs MP4）第一次有了不依赖镜像的那一半。
       # 尺寸必须 1:1：`--stage` 去掉播放器卡片的 1280 上限后，舞台按源页尺寸画，

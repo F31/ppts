@@ -41,7 +41,9 @@
 - [x] 3.9 `npm run build:share` 重建 `app.js`（含续播逻辑；本次播放器源码无需改动，产物无漂移）
 
 ## 4. G8-④：收尾归档
-- [ ] 4.1 路线图补一行，写明 G8 与 G9 边界（链式多页 / 渲染器续播 / 跨页位置插值均独立）
-- [ ] 4.2 `go build/vet/test` + `tsc -b` + `vite build`（同步 `internal/share/assets/app.css`）
-- [ ] 4.3 `openspec validate animation-cross-scene-continuation` 通过
-- [ ] 4.4 `openspec archive animation-cross-scene-continuation -y` + CI 不受影响确认 + 提交推送
+- [x] 4.1 路线图补一行，写明 G8 与 G9 边界（链式多页 / 渲染器续播 / 跨页位置插值均独立）
+- [x] 4.2 `go build/vet/test` + `tsc -b` + `vite build`（同步 `internal/share/assets/app.css`）
+- [x] 4.3 `openspec validate animation-cross-scene-continuation` 通过
+- [x] 4.4 `openspec archive animation-cross-scene-continuation -y` + 提交推送
+  （**归档补记**：当时判定的「CI 不受影响」不成立——延续夹具挂在 `-layers` 上，页长足够溢出时会让 V13b 的末帧比对假红；
+  且 CI 用 `-page-secs 4` 恰好跳过夹具，等于从未覆盖。已由 `animation-continuation-seam-gate` 改为显式 `-continuation` + V19 门禁。）
