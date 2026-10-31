@@ -358,6 +358,10 @@ func layerColor(index, k int) color.RGBA {
 // syntheticShots 把一页切成 count 个镜头：第 0 镜是整页，其余是该页的局部放大。
 //
 // 首镜的 PNG 留空是有意的：打包器会复用页级图那一份字节（见 PageAnimation.Shots）。
+//
+// 第 k==2（若存在）的特写镜头额外挂一段相机平移，把 G7 的相机路径也纳入体积基线与门禁覆盖：
+// 该特写是半幅裁切（2x 放大），相机 scale=2 时安全区间为 [0.25,0.75]，这里在 [0.3,0.7] 内
+// 平移（X 从 0.3 走到 0.7），两端都在区间内，校验与运行时 clamp 都不会动它。
 func syntheticShots(w, h int, pagePNG []byte, pageMs int64, count int) []share.ShotAsset {
 	src, err := png.Decode(bytes.NewReader(pagePNG))
 	if err != nil {
@@ -379,6 +383,13 @@ func syntheticShots(w, h int, pagePNG []byte, pageMs int64, count int) []share.S
 			shot.PNG = nativeCrop(src, box)
 			// 120ms 叠化：与 design §3 定的那个数一致，门禁取点也按它避让。
 			shot.CrossFadeMs = 120
+			if k == 2 {
+				// 相机平移：起点 (0.3,0.5) → 终点 (0.7,0.5)，scale=2（安全区间 [0.25,0.75]）。
+				shot.Camera = []share.CameraKeyframe{
+					{AtMs: 0, X: 0.3, Y: 0.5, Scale: 2},
+					{AtMs: dur, X: 0.7, Y: 0.5, Scale: 2},
+				}
+			}
 		}
 		out = append(out, shot)
 		start += dur

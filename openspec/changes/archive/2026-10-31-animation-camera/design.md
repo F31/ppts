@@ -11,7 +11,7 @@
 // render/camera.go（新增）
 type CameraKeyframe struct {
     AtMs  int64   `json:"atMs"`  // 镜内相对毫秒，MUST 升序
-    X     float64 `json:"x"`     // 视口中心 X，归一化到镜头图 [0,1]，0.5 = 中心
+    X     float64 `json:"x"`     // 视口中心 X（归一化到镜头图，0.5=中心）；合法值 MUST 落在覆盖安全区间 [0.5/scale,1-0.5/scale]
     Y     float64 `json:"y"`     // 视口中心 Y，同上
     Scale float64 `json:"scale"` // 相对「图覆盖舞台」的缩放；MUST ≥ 1
 }
@@ -44,12 +44,16 @@ ty = (0.5 - Y) * videoH * scale
 transform: translate(calc(tx px * var(--ppts-k,1)), calc(ty px * var(--ppts-k,1))) scale(scale)
 ```
 
-**覆盖不变量（校验核心）**：当 `scale ≥ 1` 且 `X,Y ∈ [0,1]` 时，镜头图缩放后尺寸为
-`videoW*scale × videoH*scale`，居中后再平移最多 `0.5*videoW*scale` / `0.5*videoH*scale`，
-其左/上边缘恰落在舞台边缘或之外、右/下边缘恰落在舞台边缘或之外——**舞台始终被图覆盖**，
-`overflow:hidden` 只裁掉图的多余部分，不会露白。
+**覆盖不变量（校验核心，初版曾写错）**：图以 `transform-origin: center` 居中后尺寸为
+`videoW*scale × videoH*scale`，再平移 `tx=(0.5-X)*videoW*scale`、`ty=(0.5-Y)*videoH*scale`。
+左边缘在屏幕上的位置 = `videoW*(0.5 - X*scale)`。要不露白，需左边缘 ≤ 0 且右边缘 ≥ videoW，
+即 `X ∈ [0.5/scale, 1-0.5/scale]`，Y 同理。**单纯 `X,Y ∈ [0,1]` 不足以保证不露白**——
+例：`scale=2, X=0` 时左半边舞台会露白（左边缘 = `videoW*0.5 > 0`）。故合法中心 MUST 落在
+`[0.5/scale, 1-0.5/scale]`（scale=1 退化为单点 0.5，此时不能平移），**该区间才是校验项，
+`[0,1]` 只是归一化存储范围**。校验拒绝区间外关键帧，`CameraTransform` 再钳制一次作防御兜底。
 
-反例：若 `scale < 1`，图缩放后小于舞台，必在边缘露白。`scale ≥ 1` 因此成为 MUST 校验项。
+反例：若 `scale < 1`，图本就小于舞台，必露白；若 `scale ≥ 1` 但中心越界（如 `scale=2, X=0`），
+同样露白。两者都是 MUST 校验项（见 §6）。
 
 与现有转场一致：平移量乘 `var(--ppts-k,1)`（见 `main.ts:466` 的 `translateX(... * var(--ppts-k))`），
 保证响应式缩放下相机位移比例正确。

@@ -109,7 +109,8 @@ type PageAnimation struct {
 }
 
 // CameraKeyframe 是镜头图局部的归一化相机关键帧（与 render.CameraKeyframe 同构）。
-// 详见 render.CameraKeyframe 注释：x/y ∈ [0,1] 视口中心，scale ≥ 1 相对「图覆盖舞台」。
+// 详见 render.CameraKeyframe 注释：x/y 视口中心（归一化到镜头图）；合法值 MUST 落在覆盖安全
+// 区间 [0.5/scale,1-0.5/scale]（由校验与运行时 clamp 保证），scale ≥ 1 相对「图覆盖舞台」。
 type CameraKeyframe struct {
 	AtMs  int64   `json:"atMs"`
 	X     float64 `json:"x"`

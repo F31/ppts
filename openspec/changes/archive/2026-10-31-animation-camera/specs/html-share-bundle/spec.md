@@ -9,7 +9,8 @@ IR 的 `render.CameraKeyframe` 同构，字段为 `atMs`、`x`、`y`、`scale`�
 缺省时产物 MUST 与引入它之前逐字节一致。
 
 `camera` 非空时，其所属镜头 MUST 同时声明 `crop`（相机在特写图内部运动）。打包 MUST 校验
-`scale ≥ 1` 与 `x,y ∈ [0,1]`、关键帧按 `atMs` 升序；任一违例 MUST 记录诊断并拒绝该镜头。
+`scale ≥ 1` 与中心落在覆盖安全区间 `[0.5/scale, 1-0.5/scale]`、关键帧按 `atMs` 升序；任一违例
+MUST 记录诊断并拒绝该镜头。（注：`[0,1]` 只是归一化存储范围，并非安全区间。）
 
 `schemaVersion` MUST NOT 因为引入 `camera` 而升高：旧播放器忽略 `camera` 字段，停在首镜图
 （`slides[i].shots[0].image` 已由校验绑死为 `slides[i].image`），真实表现为「降级可播放、但不运

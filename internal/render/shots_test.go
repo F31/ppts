@@ -150,3 +150,41 @@ func TestShotsIndexMustMatchPosition(t *testing.T) {
 		t.Fatalf("want index/position error, got %v", err)
 	}
 }
+
+// hasDiag 已在 compile_test.go 中定义，这里直接复用。
+
+func TestCompileShotsCameraValid(t *testing.T) {
+	// 合法相机（scale=2，中心在 [0.25,0.75] 内）不应产生 DiagCameraInvalid。
+	c := newTestCompiler(t)
+	page := &Page{Index: 0, SlideID: "s", DurationMs: 6000, BaseImage: "pages/p0.png"}
+	shots := []PageShotInput{
+		{StartMs: 0, DurationMs: 3000},
+		{StartMs: 3000, DurationMs: 3000, Crop: emuBox(200, 150, 800, 450),
+			Camera: []CameraKeyframe{{AtMs: 0, X: 0.5, Y: 0.5, Scale: 2}}},
+	}
+	_, diags := c.compileShots(PageInput{Index: 0, SlideID: "s", DurationMs: 6000,
+		BaseImage: "pages/p0.png", Shots: shots}, page)
+	if hasDiag(diags, DiagCameraInvalid) {
+		t.Fatalf("valid camera must not emit DiagCameraInvalid, got %v", diags)
+	}
+}
+
+func TestCompileShotsCameraDiagnostics(t *testing.T) {
+	// 越界相机（scale=2，X=0 落在安全区间 [0.25,0.75] 之外）→ 诊断。
+	// IR 侧只留痕（诊断），硬拒绝在 manifest（产物）层；两端规则一致。
+	c := newTestCompiler(t)
+	page := &Page{Index: 0, SlideID: "s", DurationMs: 6000, BaseImage: "pages/p0.png"}
+	shots := []PageShotInput{
+		{StartMs: 0, DurationMs: 3000},
+		{StartMs: 3000, DurationMs: 3000, Crop: emuBox(200, 150, 800, 450),
+			Camera: []CameraKeyframe{{AtMs: 0, X: 0, Y: 0.5, Scale: 2}}},
+	}
+	out, diags := c.compileShots(PageInput{Index: 0, SlideID: "s", DurationMs: 6000,
+		BaseImage: "pages/p0.png", Shots: shots}, page)
+	if len(out) != 2 {
+		t.Fatalf("want 2 shots, got %d", len(out))
+	}
+	if !hasDiag(diags, DiagCameraInvalid) {
+		t.Fatalf("want DiagCameraInvalid for out-of-range camera, got %v", diags)
+	}
+}

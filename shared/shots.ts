@@ -54,29 +54,42 @@ export function shotAt(shots: Shot[] | undefined | null, localMs: number): ShotF
 /**
  * 在镜内相对时间 `shotLocalMs` 处插值相机变换，返回视口中心 (x, y) 与 scale。
  *
- * 与 Go 侧 render.CameraTransform 同语义：关键帧按 atMs 升序，早于首帧钳制到首帧、
- * 晚于末帧钳制到末帧，scale 取 max(1, ·) 兜底（scale < 1 会让镜头图盖不住舞台、边缘露白）。
- * 浏览器与合成器共用这一份，保证两端画面一致。
+ * 与 Go 侧 render.CameraTransform 逐字节同语义：关键帧按 atMs 升序，早于首帧钳制到首帧、
+ * 晚于末帧钳制到末帧；scale 取 max(1, ·) 兜底（scale < 1 会让镜头图盖不住舞台、边缘露白）；
+ * x/y 经 clampCenter 钳制到覆盖安全区间 [0.5/scale, 1-0.5/scale]，保证变换后镜头图永远盖住
+ * 舞台（即便输入越界，也只裁掉越界部分而非露出空白）。浏览器与合成器共用这一份，两端画面
+ * 必须一致——所以这里与 Go 侧都做 clampCenter，不能只在某一端钳制。
  */
 export function cameraTransform(kfs: CameraKeyframe[] | undefined | null, shotLocalMs: number): { x: number; y: number; scale: number } {
   if (!kfs || kfs.length === 0) return { x: 0.5, y: 0.5, scale: 1 };
   const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
   const clampScale = (v: number): number => (v < 1 || Number.isNaN(v) ? 1 : v);
+  // 覆盖安全区间钳制（与 Go 侧 clampCenter 同推导）：scale≥1 时只有视口中心落在
+  // [0.5/scale, 1-0.5/scale]，缩放后的镜头图才盖得住舞台，否则边缘露白。
+  const clampCenter = (x: number, y: number, scale: number): { x: number; y: number; scale: number } => {
+    const s = scale <= 0 ? 1 : scale;
+    const lo = 0.5 / s;
+    const hi = 1 - lo;
+    // v != v 是 NaN 判据：NaN 既不小于 lo 也不大于 hi，会原样返回 NaN 从而污染 transform。
+    // 与 Go 侧 clampF 一致，把 NaN 当越界钳到 lo，保证输出永远有限。
+    const clamp = (v: number): number => (v < lo || Number.isNaN(v) ? lo : v > hi ? hi : v);
+    return { x: clamp(x), y: clamp(y), scale: s };
+  };
   if (shotLocalMs <= kfs[0].atMs) {
     const k = kfs[0];
-    return { x: k.x, y: k.y, scale: clampScale(k.scale) };
+    return clampCenter(k.x, k.y, clampScale(k.scale));
   }
   const last = kfs[kfs.length - 1];
   if (shotLocalMs >= last.atMs) {
-    return { x: last.x, y: last.y, scale: clampScale(last.scale) };
+    return clampCenter(last.x, last.y, clampScale(last.scale));
   }
   for (let i = 1; i < kfs.length; i++) {
     if (shotLocalMs <= kfs[i].atMs) {
       const a = kfs[i - 1];
       const b = kfs[i];
       const t = (shotLocalMs - a.atMs) / (b.atMs - a.atMs);
-      return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), scale: clampScale(lerp(a.scale, b.scale, t)) };
+      return clampCenter(lerp(a.x, b.x, t), lerp(a.y, b.y, t), clampScale(lerp(a.scale, b.scale, t)));
     }
   }
-  return { x: last.x, y: last.y, scale: clampScale(last.scale) };
+  return clampCenter(last.x, last.y, clampScale(last.scale));
 }

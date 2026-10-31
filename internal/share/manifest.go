@@ -3,6 +3,7 @@ package share
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -378,11 +379,21 @@ func validateSlideShots(index int, slide SlideEntry, video VideoInfo, files map[
 					return fmt.Errorf("share: slide %d shot %d camera keyframes must be ascending by atMs", index, si)
 				}
 				prevAt = kf.AtMs
+				// NaN 坐标会让运行时 transform 写出 NaN、舞台崩；校验阶段就拒绝。
+				if math.IsNaN(kf.Scale) || math.IsNaN(kf.X) || math.IsNaN(kf.Y) {
+					return fmt.Errorf("share: slide %d shot %d camera keyframe %d has NaN coordinate (scale=%v x=%v y=%v)", index, si, ci, kf.Scale, kf.X, kf.Y)
+				}
 				if kf.Scale < 1 {
 					return fmt.Errorf("share: slide %d shot %d camera keyframe %d scale %v < 1 would expose stage edges", index, si, ci, kf.Scale)
 				}
-				if kf.X < 0 || kf.X > 1 || kf.Y < 0 || kf.Y > 1 {
-					return fmt.Errorf("share: slide %d shot %d camera keyframe %d center (%v,%v) outside [0,1]", index, si, ci, kf.X, kf.Y)
+				// 覆盖安全区间 [0.5/scale, 1-0.5/scale]：scale≥1 时只有中心落在该区间内，缩放后的
+				// 镜头图才盖得住舞台（推导见 render.CameraTransform 的 clampCenter）。越界会让边缘露白。
+				safe := kf.Scale
+				if safe < 1 {
+					safe = 1
+				}
+				if kf.X < 0.5/safe || kf.X > 1-0.5/safe || kf.Y < 0.5/safe || kf.Y > 1-0.5/safe {
+					return fmt.Errorf("share: slide %d shot %d camera keyframe %d center (%v,%v) outside coverage-safe range [0.5/scale,1-0.5/scale] for scale %v (would expose stage edges)", index, si, ci, kf.X, kf.Y, kf.Scale)
 				}
 			}
 		}

@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { shotAt } from './shots.ts';
+import { shotAt, cameraTransform } from './shots.ts';
 
 function shot(index, startMs, durationMs, crossFadeMs = 0, image = `shot-${index}.png`) {
   return { index, image, startMs, durationMs, crossFadeMs };
@@ -88,4 +88,83 @@ test('三镜时每一段都能被选中（不是只认前两镜）', () => {
   assert.equal(shotAt(three, 2500).shot.image, 'c.png');
   // 第二处切换同样从上一镜叠过来（不是每次都从第一镜）
   assert.equal(shotAt(three, 2000).from?.image, 'b.png');
+});
+
+// ---- cameraTransform：与 Go 侧 render.CameraTransform 逐字节同语义 ----
+// 覆盖不变量（G7 相机 V 项）的浏览器侧保证：输出中心 MUST 落在 [0.5/scale, 1-0.5/scale]，
+// 保证变换后镜头图不露白。两端若有一处不钳制，就会在越界输入下给出两张不同的图。
+
+test('cameraTransform 无关键帧返回默认静止', () => {
+  assert.deepEqual(cameraTransform(undefined, 0), { x: 0.5, y: 0.5, scale: 1 });
+  assert.deepEqual(cameraTransform([], 1000), { x: 0.5, y: 0.5, scale: 1 });
+});
+
+test('cameraTransform 端点钳制（早于首帧 / 晚于末帧）', () => {
+  const kfs = [
+    { atMs: 0, x: 0.5, y: 0.5, scale: 1 },
+    { atMs: 1000, x: 0.5, y: 0.5, scale: 2 },
+  ];
+  assert.deepEqual(cameraTransform(kfs, -100), { x: 0.5, y: 0.5, scale: 1 });
+  assert.deepEqual(cameraTransform(kfs, 99999), { x: 0.5, y: 0.5, scale: 2 });
+});
+
+test('cameraTransform 线性插值中点', () => {
+  const kfs = [
+    { atMs: 0, x: 0.3, y: 0.4, scale: 2 },
+    { atMs: 1000, x: 0.7, y: 0.6, scale: 2 },
+  ];
+  assert.deepEqual(cameraTransform(kfs, 500), { x: 0.5, y: 0.5, scale: 2 });
+});
+
+test('cameraTransform scale<1 兜底为 1', () => {
+  const kfs = [{ atMs: 0, x: 0.5, y: 0.5, scale: 0.5 }];
+  assert.deepEqual(cameraTransform(kfs, 0), { x: 0.5, y: 0.5, scale: 1 });
+});
+
+test('cameraTransform clampCenter 覆盖安全区间（与 Go 同语义）', () => {
+  // scale=2 安全区间 [0.25,0.75]：越界中心被钳到边界。
+  const kfs = [{ atMs: 0, x: 0, y: 1, scale: 2 }];
+  assert.deepEqual(cameraTransform(kfs, 0), { x: 0.25, y: 0.75, scale: 2 });
+  // scale=1 退化为单点 0.5：任何非零平移都被钳回中心。
+  const flat = [{ atMs: 0, x: 0.3, y: 0.8, scale: 1 }];
+  assert.deepEqual(cameraTransform(flat, 0), { x: 0.5, y: 0.5, scale: 1 });
+  // 合法区间内的中心不钳制。
+  const ok = [{ atMs: 0, x: 0.5, y: 0.6, scale: 2 }];
+  assert.deepEqual(cameraTransform(ok, 0), { x: 0.5, y: 0.6, scale: 2 });
+});
+
+test('cameraTransform NaN 安全（不污染 transform）', () => {
+  const nanScale = [{ atMs: 0, x: 0.5, y: 0.5, scale: NaN }];
+  const r1 = cameraTransform(nanScale, 0);
+  assert.equal(Number.isNaN(r1.scale), false);
+  assert.equal(r1.scale, 1);
+  // NaN 坐标钳到 lo（scale=2 → lo=0.25）。
+  const nanXY = [{ atMs: 0, x: NaN, y: NaN, scale: 2 }];
+  const r2 = cameraTransform(nanXY, 0);
+  assert.equal(Number.isNaN(r2.x), false);
+  assert.equal(Number.isNaN(r2.y), false);
+  assert.deepEqual(r2, { x: 0.25, y: 0.25, scale: 2 });
+});
+
+test('cameraTransform 覆盖不变量：越界输入下变换后图仍盖住舞台', () => {
+  // 对应 Go 侧 TestCameraCoverageInvariant。
+  const vW = 1920, vH = 1080;
+  for (const sc of [1, 1.5, 2, 3, 4]) {
+    const kfs = [
+      { atMs: 0, x: 0, y: 0, scale: sc },
+      { atMs: 1000, x: 1, y: 1, scale: sc },
+    ];
+    for (let ms = 0; ms <= 1000; ms += 25) {
+      const { x, y, scale } = cameraTransform(kfs, ms);
+      assert.equal(Number.isNaN(x), false);
+      assert.equal(Number.isNaN(y), false);
+      assert.equal(Number.isNaN(scale), false);
+      const left = vW * (0.5 - x * scale);
+      const right = vW * (0.5 + scale * (1 - x));
+      const top = vH * (0.5 - y * scale);
+      const bottom = vH * (0.5 + scale * (1 - y));
+      assert.ok(left <= 1e-6 && right >= vW - 1e-6 && top <= 1e-6 && bottom >= vH - 1e-6,
+        `scale=${sc} ms=${ms}: transform exposes stage edges (left=${left} right=${right} top=${top} bottom=${bottom})`);
+    }
+  }
 });

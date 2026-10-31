@@ -104,8 +104,9 @@ export type Shot = {
   camera?: CameraKeyframe[];
 };
 
-/** 镜头图局部的归一化相机关键帧：x/y ∈ [0,1] 视口中心，scale ≥ 1 相对「图覆盖舞台」。
- *  与 Go 侧 render.CameraKeyframe / CameraTransform 同语义（IR 只含可插值数值）。 */
+/** 镜头图局部的归一化相机关键帧：x/y 为视口中心（归一化到镜头图，0.5=中心）；合法值 MUST
+ *  落在覆盖安全区间 [0.5/scale, 1-0.5/scale]（由校验+运行时 clamp 保证不露白）。scale ≥ 1
+ *  相对「图覆盖舞台」。与 Go 侧 render.CameraKeyframe / CameraTransform 同语义。 */
 export type CameraKeyframe = {
   atMs: number;
   x: number;

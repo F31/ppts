@@ -272,7 +272,8 @@ func (c *Compiler) compileShots(in PageInput, page *Page) ([]Shot, []Diagnostic)
 			}
 		}
 		// 相机校验（与 manifest.validateSlideShots 同规则，IR 侧也留痕）：
-		// 首镜就是整页、MUST 无相机；相机镜头 MUST 带 crop；关键帧 scale≥1、中心∈[0,1]、atMs 升序。
+		// 首镜就是整页、MUST 无相机；相机镜头 MUST 带 crop；关键帧 scale≥1、中心落在覆盖
+		// 安全区间 [0.5/scale,1-0.5/scale]、atMs 升序（推导见 render.CameraTransform）。
 		if len(s.Camera) > 0 {
 			if i == 0 {
 				diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
@@ -289,13 +290,17 @@ func (c *Compiler) compileShots(in PageInput, page *Page) ([]Shot, []Diagnostic)
 						Message: fmt.Sprintf("shot %d camera keyframe %d must be ascending by atMs", i, ci)})
 				}
 				prevAt = kf.AtMs
+				if math.IsNaN(kf.Scale) || math.IsNaN(kf.X) || math.IsNaN(kf.Y) {
+					diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
+						Message: fmt.Sprintf("shot %d camera keyframe %d has NaN coordinate (scale=%v x=%v y=%v)", i, ci, kf.Scale, kf.X, kf.Y)})
+				}
 				if kf.Scale < 1 {
 					diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
 						Message: fmt.Sprintf("shot %d camera keyframe %d scale %v < 1 would expose stage edges", i, ci, kf.Scale)})
 				}
-				if kf.X < 0 || kf.X > 1 || kf.Y < 0 || kf.Y > 1 {
+				if s := math.Max(kf.Scale, 1); kf.X < 0.5/s || kf.X > 1-0.5/s || kf.Y < 0.5/s || kf.Y > 1-0.5/s {
 					diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
-						Message: fmt.Sprintf("shot %d camera keyframe %d center (%v,%v) outside [0,1]", i, ci, kf.X, kf.Y)})
+						Message: fmt.Sprintf("shot %d camera keyframe %d center (%v,%v) outside coverage-safe range [0.5/scale,1-0.5/scale] for scale %v (would expose stage edges)", i, ci, kf.X, kf.Y, kf.Scale)})
 				}
 			}
 		}
