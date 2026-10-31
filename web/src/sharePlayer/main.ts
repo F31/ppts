@@ -9,7 +9,7 @@
 import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } from '../playerClock';
 import type { SlideCue, SubtitleCue, Timeline } from '../types';
 import { easeOutCubic } from '../../../shared/motion.ts';
-import { shotAt } from '../../../shared/shots.ts';
+import { shotAt, cameraTransform } from '../../../shared/shots.ts';
 import type { FocusSpan, Shot } from '../../../shared/types';
 import { buildLayerNodes, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
@@ -345,6 +345,24 @@ function mount(): void {
    * 画面与引入镜头之前一致——DOM 上多了一个空的 `<img>`（每个面板一个，无 src、
    * `hidden`），但它不参与绘制。
    */
+  /**
+   * 把相机变换应用到一张镜头图上：在镜内相对时间插值出视口中心与缩放，写 `transform`。
+   * 舞台已 overflow:hidden，scale≥1 时图始终盖住舞台、不会露白。无相机时清掉 transform
+   * （否则上一镜的缩放会残留在这一镜上）。
+   */
+  const applyCamera = (img: HTMLImageElement, shot: Shot, localMs: number): void => {
+    const cam = shot.camera;
+    if (!cam || cam.length === 0) {
+      img.style.transform = '';
+      return;
+    }
+    const { x, y, scale } = cameraTransform(cam, localMs - shot.startMs);
+    const tx = (0.5 - x) * videoW * scale;
+    const ty = (0.5 - y) * videoH * scale;
+    img.style.transform =
+      `translate(calc(${tx}px * var(--ppts-k, 1)), calc(${ty}px * var(--ppts-k, 1))) scale(${scale})`;
+  };
+
   const syncShot = (slide: ShareSlide, localMs: number): void => {
     const shots = slide.shots ?? [];
     const has = shots.length > 0;
@@ -358,6 +376,7 @@ function mount(): void {
     const frame = shotAt(shots, localMs);
     if (!frame) {
       setShotSrc(cur.img, slide.image);
+      cur.img.style.transform = '';
       hideTop();
       layersBox.style.visibility = '';
       return;
@@ -373,6 +392,10 @@ function mount(): void {
       setShotSrc(cur.img, frame.shot.image);
       hideTop();
     }
+
+    // 相机运动：镜内相对时间插值，写到底层与（叠化中的）顶层。无相机时 applyCamera 清 transform。
+    applyCamera(cur.img, frame.from ?? frame.shot, localMs);
+    if (fading && frame.from) applyCamera(cur.imgTop, frame.shot, localMs);
 
     // Crop 非空的镜头里层 MUST NOT 显示：层的 box 是整页坐标，特写把局部放大后
     // 同一套坐标必然错位，而错位不会报错，只会看起来「元素飘了」（design §4）。
@@ -408,6 +431,7 @@ function mount(): void {
     prev.panel.hidden = true;
     prev.panel.style.opacity = '1';
     prev.panel.style.transform = 'none';
+    prev.img.style.transform = '';
     prev.layers.style.visibility = '';
     transitionKind = 'none';
     transitionMs = 0;
@@ -423,6 +447,9 @@ function mount(): void {
     // 页尾停在特写上，拿整页图去垫底，交叉的第一帧就与成片差一整张画面。
     setShotSrc(prev.img, lastShotImage(before));
     prev.img.classList.toggle('ppts-shot', (before.shots?.length ?? 0) > 0);
+    // 末镜若带相机，转场垫底也按镜末帧的相机取景（否则交叉第一帧未对齐）。
+    const lastShot = before.shots?.[before.shots.length - 1];
+    if (lastShot) applyCamera(prev.img, lastShot, lastShot.durationMs);
     prev.panel.hidden = false;
     cur.panel.style.opacity = '1';
     cur.panel.style.transform = 'none';

@@ -6,7 +6,7 @@
 // 于是同一时刻 DOM 与 MP4 各给一张图——看起来像"闪一下"，且无法从任何单端截图发现。
 
 import { easeOutCubic } from './motion.ts';
-import type { Shot } from './types.ts';
+import type { CameraKeyframe, Shot } from './types.ts';
 
 export type ShotFrame = {
   /** 当前镜头在数组里的位置（不是 shot.index，坏数据也按位置算）。 */
@@ -49,4 +49,34 @@ export function shotAt(shots: Shot[] | undefined | null, localMs: number): ShotF
     };
   }
   return { index, shot, progress: 1 };
+}
+
+/**
+ * 在镜内相对时间 `shotLocalMs` 处插值相机变换，返回视口中心 (x, y) 与 scale。
+ *
+ * 与 Go 侧 render.CameraTransform 同语义：关键帧按 atMs 升序，早于首帧钳制到首帧、
+ * 晚于末帧钳制到末帧，scale 取 max(1, ·) 兜底（scale < 1 会让镜头图盖不住舞台、边缘露白）。
+ * 浏览器与合成器共用这一份，保证两端画面一致。
+ */
+export function cameraTransform(kfs: CameraKeyframe[] | undefined | null, shotLocalMs: number): { x: number; y: number; scale: number } {
+  if (!kfs || kfs.length === 0) return { x: 0.5, y: 0.5, scale: 1 };
+  const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
+  const clampScale = (v: number): number => (v < 1 || Number.isNaN(v) ? 1 : v);
+  if (shotLocalMs <= kfs[0].atMs) {
+    const k = kfs[0];
+    return { x: k.x, y: k.y, scale: clampScale(k.scale) };
+  }
+  const last = kfs[kfs.length - 1];
+  if (shotLocalMs >= last.atMs) {
+    return { x: last.x, y: last.y, scale: clampScale(last.scale) };
+  }
+  for (let i = 1; i < kfs.length; i++) {
+    if (shotLocalMs <= kfs[i].atMs) {
+      const a = kfs[i - 1];
+      const b = kfs[i];
+      const t = (shotLocalMs - a.atMs) / (b.atMs - a.atMs);
+      return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), scale: clampScale(lerp(a.scale, b.scale, t)) };
+    }
+  }
+  return { x: last.x, y: last.y, scale: clampScale(last.scale) };
 }

@@ -100,4 +100,15 @@ export type Shot = {
   durationMs: number;
   /** 本镜开头的叠化时长；0 = 硬切。叠化占**本镜**的开头，与页间转场同语义。 */
   crossFadeMs: number;
+  /** 镜头内的相机运动关键帧（归一化坐标）；缺省表示静态特写。仅用于带 crop 的特写。 */
+  camera?: CameraKeyframe[];
+};
+
+/** 镜头图局部的归一化相机关键帧：x/y ∈ [0,1] 视口中心，scale ≥ 1 相对「图覆盖舞台」。
+ *  与 Go 侧 render.CameraKeyframe / CameraTransform 同语义（IR 只含可插值数值）。 */
+export type CameraKeyframe = {
+  atMs: number;
+  x: number;
+  y: number;
+  scale: number;
 };
