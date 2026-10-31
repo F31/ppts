@@ -4,6 +4,8 @@
 为什么要这个脚本，而不是"打开看一眼"：
   * 只看末帧能轻松过 0.99——那时动画早已结束，两端都是静态页，这条门禁什么都没验。
     所以取样点必须包含**动画进行中**的时刻（第一段 clip 的中点）。
+  * 页内有镜头切片时，还必须取**切点之后**的时刻：两端最容易分叉的地方正是
+    「这一页什么时候换图」，而它只在切点附近的一两帧上表现出来。
   * 只看全片平均会掩盖单页的失败：20 页里一页崩了，均值仍然很好看。
     所以判定用**逐页最差帧**。
   * 两端比较必须解码 MP4。编码本身有损，所以先要确认天花板够高
@@ -55,14 +57,20 @@ def page_starts(pages):
     return starts
 
 
-def sample_points(page):
-    """一页的三个取样时刻（页内毫秒）：首帧、第一段 clip 的中点、末帧前一帧。
+def sample_points(page, fps):
+    """一页的取样时刻（页内毫秒）：首帧、第一段 clip 的中点、每个切点之后、末帧前一帧。
 
     中点取「第一条带 props 的 clip」而不是「最长的那条」：第一条 clip 通常是
     标题入场，它是每页最早开始运动的元素，也是最容易被做错的一处
     （位置或透明度算错时，这里最明显）。
+
+    切点取「startMs + crossFadeMs + 1 帧」而不是切点本身：混合窗口只有 120ms，
+    两端时钟差 20ms 就会让同一时刻的颜色不同——那个差会被记成「两端不一致」，
+    其实只是取样时刻不同。混合**期间**的一致性由 V18 单独验（两侧各取一帧），
+    这里只验「切完之后两端画的是不是同一张」。
     """
     duration = int(page.get("durationMs", 0))
+    frame = max(1, int(round(1000.0 / max(int(fps or 30), 1))))
     points = [("first", 0)]
     first_clip = None
     for layer in page.get("layers") or []:
@@ -75,9 +83,24 @@ def sample_points(page):
         mid = int(first_clip.get("startMs", 0)) + int(first_clip.get("durationMs", 0)) // 2
         if 0 < mid < duration:
             points.append(("clip-mid", mid))
+    for shot in page.get("shots") or []:
+        k = int(shot.get("index", 0))
+        if k == 0:
+            continue
+        at = int(shot.get("startMs", 0)) + int(shot.get("crossFadeMs", 0)) + frame
+        if 0 < at < duration:
+            points.append((f"shot{k}", at))
     if duration > 40:
         points.append(("last", duration - 34))  # 末帧前一帧，避免落到下一页
-    return points
+
+    # 同一毫秒只取一次：首帧与某个切点重合时，两次截图会写同一个文件、算两遍。
+    seen, unique = set(), []
+    for label, ms in points:
+        if ms in seen:
+            continue
+        seen.add(ms)
+        unique.append((label, ms))
+    return unique
 
 
 def grab_mp4_frame(segment, local_ms, dst):
@@ -148,9 +171,10 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     starts = page_starts(pages)
 
+    fps = int(plan.get("fps") or 30)
     cases = []
     for i, page in enumerate(pages):
-        for label, local_ms in sample_points(page):
+        for label, local_ms in sample_points(page, fps):
             cases.append((i, label, local_ms, starts[i] + local_ms))
 
     # 先把材料点齐再开浏览器：缺一段成片是几句话就能说清的输入问题，

@@ -9,10 +9,22 @@
     底板有没有把该露的地方露出来、画面有没有被缩放/裁切」只有包端单独会错。
   * 这两件事互补：V13 管「一致」，V13b 管「对不对」。一个包可以两端都一致地错。
 
-判据（逐页取结尾前 250ms 的一帧，此时动画已收尾，画面就是该页的终态）：
+判据（逐页取一帧，此时动画已收尾，画面就是该页的终态）：
   1. 落点准确：实际定位与请求相差 ≤ 50ms（滑杆是千分比，量化误差远小于此）。
   2. 舞台比例与页图一致，且尺寸 1:1 —— 见下面「为什么要求 1:1」。
-  3. 逐页 SSIM ≥ 阈值（默认 0.99），且平均差、结构性差异像素占比都在阈值内。
+  3. 逐页 SSIM ≥ 阈值（默认 0.995），且平均差、结构性差异像素占比都在阈值内。
+
+取样点与参照物（有页内镜头时与无镜头时不同）：
+  * 无 shots：页尾前 250ms，参照物是源页图。层叠在元素位置上，所以源页图
+    就是这一页该有的样子。
+  * 有 shots：取**最后一个镜头**内、避开叠化窗口、尽可能靠近页尾的一点。
+    参照物按「这一帧画的到底是哪张图」选：
+      - 末镜 crop 为空 → 源页图。此刻层仍然可见，而镜头图只是底板（有分层
+        动画的页，页级图被挖空过），拿底板当参照物必然判错。
+      - 末镜 crop 非空 → 包内那张镜头图。此刻层被隐藏，画面就是这张图。
+    为什么不一律用「末镜中点」：末镜可能比 250ms 还短，页尾前 250ms 会落到
+    上一镜里；而中点又可能落在叠化窗口内（120ms 叠化 + 100ms 镜头）。
+    所以取两端谁更靠后，并夹在末镜之内。
 
 为什么要求 1:1：
   一旦掺入重采样，「画错了」和「只是缩放了」就分不开——实测同一份正确包在
@@ -53,6 +65,63 @@ SEEK_TOLERANCE_MS = 50
 MIN_SSIM = 0.995
 MAX_MEAN_DIFF = 0.5
 MAX_OUTLIER_RATIO = 0.0005  # 差 >32 的像素占比
+
+# 30fps 一帧。只用来避开叠化窗口的边界，不需要与真实 fps 精确一致——
+# 差 1ms 落在窗口内才是问题，而这里留的是一整帧。
+FRAME_MS = 33
+# 参照图与舞台尺寸不同（特写图是原页的一块，宽高比通常与画布不同）时，参照图
+# 必须先缩放到舞台才能比，而缩放本身会带来几个千分点的差。单独一组阈值，并要求
+# 报告里写明 resampled——否则「阈值换了一套」会被误读成「判据松了」。
+#
+# 实测（640×360 特写图 → 1280×720 舞台，参照图用 BICUBIC 放大）：
+#   正例 SSIM 0.9972 / 平均差 0.49 / 结构差异 0.0002%
+#   右移 40px → 0.9497 / 3.66 / 4.65%
+#   拿整页图当参照 → 0.6900 / 51.7 / 33.3%
+#   亮度 +10 → 0.9618 / 9.73 / 0.000%
+# 三档都拉得开，所以 0.99 / 1.0 / 0.05% 不是随手放宽，而是仍在错位与错图之下。
+# 用 BICUBIC 而非 LANCZOS：判据要贴近浏览器放大时的观感，而不是「最锐利的重采样」
+# ——LANCZOS 放大正例只有 0.9909，等于把重采样算法的选择记到了被测对象头上。
+RESAMPLED_MIN_SSIM = 0.99
+RESAMPLED_MAX_MEAN_DIFF = 1.0
+
+
+def pick_sample(slide, page_png, pkg):
+    """一页的取样时刻、参照图与一句说明。见文件头「取样点与参照物」。"""
+    start = int(slide["startUs"]) / 1000
+    end = int(slide["endUs"]) / 1000
+    shots = slide.get("shots") or []
+    if not shots:
+        at = end - SETTLE_BACK_MS
+        if at <= start:
+            at = (start + end) / 2
+        return int(round(at)), page_png, "页尾前 250ms，参照源页", None
+
+    last = shots[-1]
+    s_start = start + int(last.get("startMs", 0))
+    s_end = s_start + int(last.get("durationMs", 0))
+    fade = int(last.get("crossFadeMs", 0))
+    # 两个下界取更靠后的：末镜长时贴页尾（远离任何过渡），末镜短时贴叠化之后。
+    at = max(s_start + fade + FRAME_MS, s_end - SETTLE_BACK_MS)
+    if at >= s_end:
+        at = s_end - FRAME_MS
+    if at <= s_start:
+        at = (s_start + s_end) / 2
+
+    when = f"@{int(round(at))}ms"
+    if last.get("crop"):
+        # 特写镜：层被隐藏，画面就是这张图本身。
+        return int(round(at)), os.path.join(pkg, last["image"]), f"末镜（特写）{when}，参照镜头图", None
+    if not slide.get("layers"):
+        # 无层：镜头图铺满舞台就是画面。末镜换图时它是新图，与源页无关。
+        return int(round(at)), os.path.join(pkg, last["image"]), f"末镜（整页、无层）{when}，参照镜头图", None
+    if last.get("image") == slide.get("image"):
+        # 末镜就是页级图（有分层动画时是底板），层叠回去才是画面——源页图正好是它。
+        return int(round(at)), page_png, f"末镜（页级图 + 层）{when}，参照源页", None
+    # 末镜换了整页图、这一页又带元素动画：画面 = 新图 + 层，而层只存在于播放器
+    # 运行时，包里没有一张「新图 + 层」的现成参照图。报 skip 而不是拿残图去比，
+    # 也不假装通过——后者会把「没验」记成「验过」。
+    return int(round(at)), os.path.join(pkg, last["image"]), f"末镜（换图 + 层）{when}", \
+        "末镜换了整页图且该页有元素动画：画面 = 镜头图 + 层，包里没有可比的无层参照图"
 
 
 def main():
@@ -110,11 +179,11 @@ def main():
     # 每页取一个点：页尾前 250ms；页面太短时退到页中点，避免落到上一页。
     cases = []
     for i, slide in enumerate(slides):
-        start, end = int(slide["startUs"]) / 1000, int(slide["endUs"]) / 1000
-        at = end - SETTLE_BACK_MS
-        if at <= start:
-            at = (start + end) / 2
-        cases.append((i, int(round(at))))
+        at, ref, note, skip = pick_sample(slide, pages[i], args.pkg)
+        if not skip and not os.path.exists(ref):
+            print(f"[V13b] page {i}: 参照图不存在：{ref}", file=sys.stderr)
+            return 2
+        cases.append((i, at, ref, note, skip))
 
     try:
         report = run_dom_shot(args.pkg, [c[1] for c in cases], out_dir, stage=stage)
@@ -125,7 +194,11 @@ def main():
     shots = {s["requestedMs"]: s for s in report.get("shots", [])}
     checks = []
     rows = []
-    for index, at_ms in cases:
+    for index, at_ms, ref_path, note, skip in cases:
+        if skip:
+            checks.append({"code": "V13b", "page": index, "status": "skip", "detail": skip,
+                           "atMs": at_ms, "sample": note})
+            continue
         shot = shots.get(at_ms)
         if shot is None:
             checks.append({"code": "V13b", "page": index, "status": "fail", "detail": "没有取到这一帧"})
@@ -148,14 +221,13 @@ def main():
             checks.append({"code": "V13b", "page": index, "status": "fail", "detail": "没有舞台元素"})
             continue
 
-        page = Image.open(pages[index]).convert("RGB")
-        if (page.width, page.height) != (stage_box["w"], stage_box["h"]):
+        if (stage_box["w"], stage_box["h"]) != stage:
             # 走到这里说明 dom-shot 的 --stage 没兑现。这不是「包画错了」，
             # 是截图管线的问题，按输入问题退出（2），不报一条不合格——
             # 后者会让人去查渲染，而问题根本不在画面上。
             print(
                 f"[V13b] page {index}: 舞台 {stage_box['w']}×{stage_box['h']} 与源页 "
-                f"{page.width}×{page.height} 不一致：--stage 没有按源页尺寸生效",
+                f"{stage[0]}×{stage[1]} 不一致：--stage 没有按源页尺寸生效",
                 file=sys.stderr,
             )
             return 2
@@ -163,29 +235,42 @@ def main():
         shot_img = Image.open(os.path.join(out_dir, f"t{at_ms}.png")).convert("RGB")
         crop = shot_img.crop((stage_box["x"], stage_box["y"],
                               stage_box["x"] + stage_box["w"], stage_box["y"] + stage_box["h"]))
+        ref_img = Image.open(ref_path).convert("RGB")
+        # 特写图的宽高比与画布通常不同（它是原页的一块），所以参照图要先缩放到
+        # 舞台——包也是这样把它铺满舞台的。缩放会带来几个千分点的差，因此换一条
+        # 阈值，并在报告里标出来，不假装它和 1:1 是同一种比较。
+        resampled = ref_img.size != crop.size
+        if resampled:
+            ref_img = ref_img.resize(crop.size, Image.BICUBIC)
+        limit = RESAMPLED_MIN_SSIM if resampled else args.min_ssim
+        max_mean = RESAMPLED_MAX_MEAN_DIFF if resampled else MAX_MEAN_DIFF
+
         a = np.asarray(crop.convert("L"), dtype=np.float64)
-        b = np.asarray(page.convert("L"), dtype=np.float64)
-        diff = np.abs(np.asarray(crop, dtype=np.int16) - np.asarray(page, dtype=np.int16)).max(axis=2)
+        b = np.asarray(ref_img.convert("L"), dtype=np.float64)
+        diff = np.abs(np.asarray(crop, dtype=np.int16) - np.asarray(ref_img, dtype=np.int16)).max(axis=2)
         score = float(ssim_map(a, b).mean())
         mean_diff = float(diff.mean())
         outliers = float((diff > 32).mean())
 
-        rows.append((index, at_ms, score, mean_diff, outliers))
+        rows.append((index, at_ms, score, mean_diff, outliers, resampled))
         bad = []
-        if score < args.min_ssim:
-            bad.append(f"SSIM {score:.5f} < {args.min_ssim}")
-        if mean_diff > MAX_MEAN_DIFF:
-            bad.append(f"平均差 {mean_diff:.3f} > {MAX_MEAN_DIFF}")
+        if score < limit:
+            bad.append(f"SSIM {score:.5f} < {limit}")
+        if mean_diff > max_mean:
+            bad.append(f"平均差 {mean_diff:.3f} > {max_mean}")
         if outliers > MAX_OUTLIER_RATIO:
             bad.append(f"差 >32 的像素 {outliers * 100:.3f}% > {MAX_OUTLIER_RATIO * 100:.3f}%")
         checks.append({
             "code": "V13b", "page": index, "status": "fail" if bad else "pass",
             "detail": "；".join(bad) if bad else f"SSIM {score:.5f}，平均差 {mean_diff:.3f}",
             "ssim": round(score, 6), "meanDiff": round(mean_diff, 4),
-            "outliers": round(outliers, 6), "atMs": at_ms,
+            "outliers": round(outliers, 6), "atMs": at_ms, "resampled": resampled,
+            "sample": note,
         })
 
-    failed = [c for c in checks if c["status"] != "pass"]
+    # skip 不算失败，但必须在报告里露出来：静默通过的页会让人以为它被验过。
+    failed = [c for c in checks if c["status"] == "fail"]
+    skipped = [c for c in checks if c["status"] == "skip"]
     if args.json:
         print(json.dumps({"package": args.pkg, "browser": report.get("chrome"),
                           "checks": checks}, ensure_ascii=False, indent=2))
@@ -195,16 +280,23 @@ def main():
         print(f"舞台：{report['shots'][0]['stage']['w']}×{report['shots'][0]['stage']['h']}"
               if report.get("shots") else "")
         print()
-        print(f"{'page':<6}{'atMs':>8}{'ssim':>11}{'meanDiff':>11}{'outlier%':>11}")
-        for index, at_ms, score, mean_diff, outliers in rows:
-            print(f"{index:<6}{at_ms:>8}{score:>11.5f}{mean_diff:>11.4f}{outliers * 100:>10.3f}%")
+        print(f"{'page':<6}{'atMs':>8}{'ssim':>11}{'meanDiff':>11}{'outlier%':>11}  sample")
+        for index, at_ms, score, mean_diff, outliers, resampled in rows:
+            tag = "（参照图缩放）" if resampled else ""
+            print(f"{index:<6}{at_ms:>8}{score:>11.5f}{mean_diff:>11.4f}"
+                  f"{outliers * 100:>10.3f}%  {cases[index][3]}{tag}")
         print()
+        for c in skipped:
+            print(f"SKIP [V13b] page {c.get('page')}: {c['detail']}")
         if failed:
             for c in failed:
                 print(f"FAIL [V13b] page {c.get('page')}: {c['detail']}")
-        else:
+        elif rows:
             worst = min(r[2] for r in rows)
-            print(f"PASS: {len(rows)} 页终态帧与源页一致（最差 SSIM {worst:.5f}）")
+            print(f"PASS: {len(rows)} 页终态帧与参照图一致（最差 SSIM {worst:.5f}）"
+                  + (f"，{len(skipped)} 页跳过" if skipped else ""))
+        else:
+            print(f"SKIP: 没有可比对的页（{len(skipped)} 页无法比对）")
     return 1 if failed else 0
 
 

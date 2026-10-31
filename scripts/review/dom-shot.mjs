@@ -66,8 +66,16 @@ const SEEK_FN = `async (ms) => {
   if (pause) pause.click();
   // 滑杆是 0–1000 的千分比，不是毫秒：直接塞毫秒会全部落在 0，
   // 而截图仍然"成功"——只是每一张都在片头。
-  bar.value = String(Math.round((ms / totalMs) * 1000));
-  bar.dispatchEvent(new Event('input', { bubbles: true }));
+  //
+  // 千分比的量化步长 = 总时长/1000，长作业上一步就是几秒，而门禁要取
+  // 「切点前后一帧」（33ms）。所以播放器暴露了微秒级定位，有它就用它；
+  // 没有时退回滑杆，并把量化误差如实报回去（由判据决定要不要接受）。
+  const precise = typeof window.__PPT_SEEK_US__ === 'function';
+  if (precise) window.__PPT_SEEK_US__(ms * 1000);
+  else {
+    bar.value = String(Math.round((ms / totalMs) * 1000));
+    bar.dispatchEvent(new Event('input', { bubbles: true }));
+  }
   const deadline = Date.now() + 4000;
   const ready = () => {
     const imgs = [].slice.call(document.querySelectorAll('.ppts-slide, .ppts-layer-image'));
@@ -87,26 +95,57 @@ const SEEK_FN = `async (ms) => {
     if (node) node.remove();
   }
   await new Promise((r) => requestAnimationFrame(r));
+  // 当前面板的结构化状态。V18（切图判据）要回答三件事：此刻显示的是哪张图、
+  // 叠化时两张各可见多少、层有没有被重建——三件都只能从**当前面板**读。
+  // 舞台上有两个面板（上一页末帧 + 当前页），读错一个会得到看似合理的答案。
+  const probePanel = (() => {
+    const panels = [].slice.call(document.querySelectorAll('.ppts-panel')).filter((p) => !p.hidden);
+    const panel = panels[panels.length - 1];
+    if (!panel) return null;
+    const imgs = [].slice.call(panel.querySelectorAll('.ppts-slide'));
+    const box = panel.querySelector('.ppts-layers');
+    window.__ppsProbeSeq = window.__ppsProbeSeq || 0;
+    return {
+      // 按 DOM 顺序：底层是当前镜，顶层只在叠化窗口内出现。
+      images: imgs.map((im) => {
+        const raw = im.style.opacity;
+        return {
+          src: (im.getAttribute('src') || '').split('/').pop(),
+          hidden: !!im.hidden,
+          opacity: raw ? Number(raw) : Number(getComputedStyle(im).opacity),
+        };
+      }),
+      layers: panel.querySelectorAll('.ppts-layer').length,
+      // 层节点的身份。页内切镜 MUST 不重建层（重建会让元素重新入场，clips 的
+      // 页内相对时间也会跟着错位）。只看层数分辨不出重建——重建前后都是 2 个，
+      // 所以给每个节点打一个只打一次的标记：重建出的新节点没有标记，会拿到新号。
+      layerIds: box
+        ? [].slice.call(box.children).map((node) => {
+            if (!node.dataset.ppsProbe) node.dataset.ppsProbe = String(++window.__ppsProbeSeq);
+            return node.dataset.ppsProbe;
+          }).join(',')
+        : '',
+      layersVisible: box ? getComputedStyle(box).visibility !== 'hidden' : false,
+    };
+  })();
   return {
     ok: ready(),
     paused: !!pause,
-    actualMs: Math.round((Number(bar.value) / 1000) * totalMs),
+    // 这次定位是靠微秒钩子还是靠千分比滑杆。报告里带出来——两者的落点精度
+    // 差两个数量级，混在一起看会让人误以为滑杆也够用。
+    precise,
+    // 精确钩子在读的时候不受千分比量化影响；没有钩子时只能读滑杆。
+    actualMs: Math.round(
+      precise && typeof window.__PPT_POSITION_US__ === 'function'
+        ? window.__PPT_POSITION_US__() / 1000
+        : (Number(bar.value) / 1000) * totalMs
+    ),
     slides: [].slice.call(document.querySelectorAll('.ppts-slide'))
       .map((im) => ((im.getAttribute('src') || '').split('/').pop())).filter(Boolean),
     layers: document.querySelectorAll('.ppts-layer').length,
-    // 层是不是可见。特写镜头里层必须不显示（层的 box 是整页坐标，局部放大后
-    // 必然错位），实现用的是 visibility——所以数节点数看不出来，得读样式。
-    //
-    // 必须读**当前页那一块**：舞台上有两个面板（上一页的末帧 + 当前页），
-    // 各自都有一个 .ppts-layers。读第一个读到的是上一页的，于是「特写里层藏没藏」
-    // 会答成上一页的状态——而那个答案看起来完全合理，最难发现。
-    layersVisible: (() => {
-      const panels = [].slice.call(document.querySelectorAll('.ppts-panel')).filter((p) => !p.hidden);
-      const panel = panels[panels.length - 1];
-      if (!panel) return false;
-      const box = panel.querySelector('.ppts-layers');
-      return box ? getComputedStyle(box).visibility !== 'hidden' : false;
-    })(),
+    panel: probePanel,
+    // 兼容旧调用方：层可见性单独给一份，语义与 probePanel.layersVisible 相同。
+    layersVisible: !!probePanel && probePanel.layersVisible,
     // 舞台在页面里的位置与大小：它是与页图比对的那块区域。
     // 播放器不是全屏铺满（有边框、圆角、控制条），所以不能假定「截图就是画面」。
     stage: (() => {

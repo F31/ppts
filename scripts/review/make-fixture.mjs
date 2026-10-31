@@ -43,6 +43,9 @@ const pageCount = Number(arg('pages', '3'));
 const pageSecs = Number(arg('page-secs', '2'));
 const width = Number(arg('width', '1280'));
 const height = Number(arg('height', '720'));
+// 每页的镜头数：>1 时第 0 镜整页、其余为该页局部放大。用于让 V13/V13b/V18
+// 在**带页内切镜**的包上跑一遍——没有这种夹具，切镜这条链在 CI 里就没有样本。
+const shotsPerPage = Number(arg('shots', '0'));
 
 // ---- ffmpeg 的两种存在方式（Windows 上通常只在 WSL 里）----
 let ffmpegVia = 'native';
@@ -114,11 +117,13 @@ async function main() {
 
   // 1) 成品包：走真实打包器，不手搓清单——夹具一旦和产物不是同一条路径，
   //    它守的东西就与线上无关了。
-  console.log(`[fixture] 打包 ${pageCount} 页 × ${pageSecs}s @ ${width}×${height}`);
+  console.log(`[fixture] 打包 ${pageCount} 页 × ${pageSecs}s @ ${width}×${height}`
+    + (shotsPerPage > 1 ? `，每页 ${shotsPerPage} 镜` : ''));
   try {
     sh('go', ['run', './cmd/share-baseline',
       '-pages', String(pageCount), '-page-secs', String(pageSecs),
-      '-layers', '2', '-width', String(width), '-height', String(height),
+      '-layers', '2', '-shots', String(shotsPerPage),
+      '-width', String(width), '-height', String(height),
       '-pages-out', path.join(outDir, 'pages'), '-out', path.join(outDir, 'pkg')],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (err) {
@@ -146,6 +151,12 @@ async function main() {
         clips: (l.clips || []).map((c) => ({
           startMs: c.startMs, durationMs: c.durationMs, props: c.props || [],
         })),
+      })),
+      // 切点要进 plan：V13 的取样点「每个镜头切点后一帧」只能从这里读。
+      // 字段名与 IR/manifest 一致，不再另起一套。
+      shots: (s.shots || []).map((sh) => ({
+        index: sh.index, startMs: sh.startMs, durationMs: sh.durationMs,
+        crossFadeMs: sh.crossFadeMs || 0,
       })),
     })),
   };
@@ -209,6 +220,7 @@ async function main() {
     stage: { w: stage.w, h: stage.h },
     pages: pageCount,
     pageSecs,
+    shotsPerPage,
     frames: totalFrames,
   }, null, 2) + '\n');
 

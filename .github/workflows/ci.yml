@@ -111,17 +111,30 @@ jobs:
           go run ./cmd/share-baseline -pages 3 -page-secs 4 -layers 2 -zip /tmp/pkg.zip -out /tmp/pkg >/dev/null
       - name: 浏览器门禁（V14–V17）
         run: python3 scripts/review/bundle-gate.py --pkg /tmp/pkg --engine native
-      # 终态帧门禁（V13b）：每页结尾那一帧必须等于源页。参照物是页图，不是成片，
+      # 终态帧门禁（V13b）：每页结尾那一帧必须等于参照图，参照物不是成片，
       # 所以不需要渲染镜像——这是 V13（DOM vs MP4）第一次有了不依赖镜像的那一半。
-      # 尺寸必须 1:1：舞台宽度受播放器上限约束（1280），拿 1920 的页图去比会掺入
-      # 重采样误差（实测 SSIM 0.969），那个数字分不清「画错了」和「只是缩放了」。
+      # 尺寸必须 1:1：`--stage` 去掉播放器卡片的 1280 上限后，舞台按源页尺寸画，
+      # 因此比对里不掺重采样（实测 1920 页的 meanDiff 0.0007）。
+      # 两条包：一条没有页内镜头（回归，读数应与引入镜头之前同量级），
+      # 一条有（末帧是特写，参照物换成镜头图）。只跑后者会看不见回归，
+      # 只跑前者则「末帧是特写」这条路径从没被验过。
       - name: 终态帧门禁（V13b）
         run: |
           python3 -m pip install --quiet numpy pillow
-          rm -rf /tmp/fixture
+          rm -rf /tmp/fixture /tmp/fixture-shots
           go run ./cmd/share-baseline -pages 2 -page-secs 4 -width 1280 -height 720 \
             -layers 2 -pages-out /tmp/fixture/pages -out /tmp/fixture/pkg >/dev/null
+          go run ./cmd/share-baseline -pages 2 -page-secs 4 -width 1280 -height 720 \
+            -layers 2 -shots 2 -pages-out /tmp/fixture-shots/pages -out /tmp/fixture-shots/pkg >/dev/null
+          echo '--- 无页内镜头 ---'
           python3 scripts/review/settled-gate.py --pkg /tmp/fixture/pkg --pages /tmp/fixture/pages
+          echo '--- 有页内镜头（末帧是特写）---'
+          python3 scripts/review/settled-gate.py --pkg /tmp/fixture-shots/pkg \
+            --pages /tmp/fixture-shots/pages --out /tmp/fixture-shots/settled
+      # V18：V13b 只看末帧，把「切镜」整个删掉它照样过。这条专门验中间那次切换：
+      # 切点前后的主图、叠化窗口、层节点没被重建、特写镜内层不显示。
+      - name: 切图门禁（V18）
+        run: python3 scripts/review/shot-gate.py --pkg /tmp/fixture-shots/pkg
 
       # V13（包端 vs 成片）以前只能对着真实作业跑：MP4 要渲染镜像，而镜像只在
       # WSL 的 docker 里。夹具把成片也做成可复现的——按 30fps 逐帧截包自己的 DOM、
@@ -133,7 +146,9 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq ffmpeg
           }
-          node scripts/review/make-fixture.mjs --out /tmp/v13 --pages 2 --page-secs 2
+          # --shots 2：夹具里带上页内切镜，V13 才会取「每个切点之后」的样本。
+          # 没有它，两端在切图上分叉时这条门禁看不见。
+          node scripts/review/make-fixture.mjs --out /tmp/v13 --pages 2 --page-secs 2 --shots 2
       - name: 同帧 SSIM 门禁（V13）
         run: |
           python3 scripts/review/dom-ssim.py --plan /tmp/v13/plan.json --pkg /tmp/v13/pkg \

@@ -54,6 +54,9 @@ declare global {
   interface Window {
     __PPT_MANIFEST__?: ShareManifest;
     __PPT_SUBTITLES__?: SubtitleCue[];
+    /** 精确定位（微秒）与精确读数。仅供截图探针，见赋值处的说明。 */
+    __PPT_SEEK_US__?: (us: number) => void;
+    __PPT_POSITION_US__?: () => number;
   }
 }
 
@@ -661,6 +664,13 @@ function mount(): void {
     ended = false;
     render(target);
   };
+
+  // 截图探针用的精确定位入口。滑杆是 0–1000 的千分比：40 分钟的作业上一步
+  // 就是 2.4 秒，而门禁要取的「切点前后一帧」只有 33ms——靠滑杆根本定位不到，
+  // 而定位不到时截图仍然"成功"，只是取错了时刻（错得看不出来）。
+  // 只暴露定位与读数两个函数，不改变任何播放行为：没有它们，探针退回用滑杆。
+  window.__PPT_SEEK_US__ = seek;
+  window.__PPT_POSITION_US__ = positionUs;
 
   const stepSlide = (delta: number): void => {
     const current = slideAt(timeline, positionUs());
