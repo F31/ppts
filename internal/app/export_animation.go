@@ -164,11 +164,12 @@ func buildShotAssets(page render.Page, i int, pagePNGs [][]byte, canvasW, canvas
 	out := make([]share.ShotAsset, 0, len(page.Shots))
 	for k, shot := range page.Shots {
 		if k == 0 {
-			// 首镜复用页级图：PNG 留空，Crop 也留空（整页）。
+			// 首镜复用页级图：PNG 留空，Crop 也留空（整页）。相机镜头首镜 MUST 为空。
 			out = append(out, share.ShotAsset{
 				StartMs:     shot.StartMs,
 				DurationMs:  shot.DurationMs,
 				CrossFadeMs: shot.CrossFadeMs,
+				Camera:      toShareCamera(shot.Camera),
 			})
 			continue
 		}
@@ -218,12 +219,26 @@ func buildShotAssets(page render.Page, i int, pagePNGs [][]byte, canvasW, canvas
 		out = append(out, share.ShotAsset{
 			PNG:         pngBytes,
 			Crop:        &srcCrop,
+			Camera:      toShareCamera(shot.Camera),
 			StartMs:     shot.StartMs,
 			DurationMs:  shot.DurationMs,
 			CrossFadeMs: shot.CrossFadeMs,
 		})
 	}
 	return out, true
+}
+
+// toShareCamera 把渲染层的相机关键帧转成打包层的同构类型（见 animation-camera design.md：
+// 相机坐标已是归一化、后端无关，无需换算，仅做跨包类型对齐）。
+func toShareCamera(kfs []render.CameraKeyframe) []share.CameraKeyframe {
+	if len(kfs) == 0 {
+		return nil
+	}
+	out := make([]share.CameraKeyframe, len(kfs))
+	for i, k := range kfs {
+		out[i] = share.CameraKeyframe{AtMs: k.AtMs, X: k.X, Y: k.Y, Scale: k.Scale}
+	}
+	return out
 }
 
 // cropShot 从源页图按画布坐标裁切框裁出一张特写 PNG（原生分辨率，不放大）。

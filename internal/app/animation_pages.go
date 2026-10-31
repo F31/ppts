@@ -292,6 +292,12 @@ func revShots(rev *animation.Revision) []render.PageShotInput {
 		if s.Crop != nil {
 			shot.Crop = &render.EMUBox{X: s.Crop.X, Y: s.Crop.Y, Width: s.Crop.Width, Height: s.Crop.Height}
 		}
+		if len(s.Camera) > 0 {
+			shot.Camera = make([]render.CameraKeyframe, len(s.Camera))
+			for i, k := range s.Camera {
+				shot.Camera[i] = render.CameraKeyframe{AtMs: k.AtMs, X: k.X, Y: k.Y, Scale: k.Scale}
+			}
+		}
 		out = append(out, shot)
 	}
 	return out

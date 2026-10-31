@@ -231,7 +231,9 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 	}
 	// 镜头切片与分层动画互相独立：没有分层动画的页一样可以切镜头
 	// （"先全图、后特写" 是最常见用法）。EMU 坐标在此换算成画布像素。
-	page.Shots = c.compileShots(in, &page)
+	shots, shotDiags := c.compileShots(in, &page)
+	page.Shots = shots
+	diags = append(diags, shotDiags...)
 	return page, diags, nil
 }
 
@@ -242,10 +244,11 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 //
 // 编译器此刻还拿不到底板（底板由打包期/渲染服务按 base 挖空生成），displayBase
 // 在 PlateImage 为空时回退为 BaseImage，与打包期一致。
-func (c *Compiler) compileShots(in PageInput, page *Page) []Shot {
+func (c *Compiler) compileShots(in PageInput, page *Page) ([]Shot, []Diagnostic) {
 	if len(in.Shots) == 0 {
-		return nil
+		return nil, nil
 	}
+	var diags []Diagnostic
 	out := make([]Shot, 0, len(in.Shots))
 	for i, s := range in.Shots {
 		image := fmt.Sprintf("slides/%03d-shot-%02d.png", in.Index+1, i)
@@ -258,6 +261,7 @@ func (c *Compiler) compileShots(in PageInput, page *Page) []Shot {
 			StartMs:     s.StartMs,
 			DurationMs:  s.DurationMs,
 			CrossFadeMs: int(s.CrossFadeMs),
+			Camera:      s.Camera,
 		}
 		if i > 0 && s.Crop != nil {
 			shot.Crop = &Box{
@@ -267,9 +271,37 @@ func (c *Compiler) compileShots(in PageInput, page *Page) []Shot {
 				H: int(math.Round(float64(s.Crop.Height) * c.scale)),
 			}
 		}
+		// 相机校验（与 manifest.validateSlideShots 同规则，IR 侧也留痕）：
+		// 首镜就是整页、MUST 无相机；相机镜头 MUST 带 crop；关键帧 scale≥1、中心∈[0,1]、atMs 升序。
+		if len(s.Camera) > 0 {
+			if i == 0 {
+				diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
+					Message: fmt.Sprintf("shot %d is the whole page and must not declare a camera", i)})
+			}
+			if s.Crop == nil {
+				diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
+					Message: fmt.Sprintf("shot %d has camera but no crop; camera requires a close-up", i)})
+			}
+			var prevAt int64
+			for ci, kf := range s.Camera {
+				if ci > 0 && kf.AtMs <= prevAt {
+					diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
+						Message: fmt.Sprintf("shot %d camera keyframe %d must be ascending by atMs", i, ci)})
+				}
+				prevAt = kf.AtMs
+				if kf.Scale < 1 {
+					diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
+						Message: fmt.Sprintf("shot %d camera keyframe %d scale %v < 1 would expose stage edges", i, ci, kf.Scale)})
+				}
+				if kf.X < 0 || kf.X > 1 || kf.Y < 0 || kf.Y > 1 {
+					diags = append(diags, Diagnostic{Code: DiagCameraInvalid, Page: in.Index,
+						Message: fmt.Sprintf("shot %d camera keyframe %d center (%v,%v) outside [0,1]", i, ci, kf.X, kf.Y)})
+				}
+			}
+		}
 		out = append(out, shot)
 	}
-	return out
+	return out, diags
 }
 
 // transitionFor 解析本页的入场转场。

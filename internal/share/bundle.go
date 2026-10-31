@@ -108,6 +108,15 @@ type PageAnimation struct {
 	Focus []SlideFocus
 }
 
+// CameraKeyframe 是镜头图局部的归一化相机关键帧（与 render.CameraKeyframe 同构）。
+// 详见 render.CameraKeyframe 注释：x/y ∈ [0,1] 视口中心，scale ≥ 1 相对「图覆盖舞台」。
+type CameraKeyframe struct {
+	AtMs  int64   `json:"atMs"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Scale float64 `json:"scale"`
+}
+
 // ShotAsset 是一镜的画面素材。
 type ShotAsset struct {
 	// PNG 是本镜的位图；**首镜可以留空**（等于页级图，不另存）。
@@ -115,7 +124,10 @@ type ShotAsset struct {
 	// Crop 是这张图取自原页的哪一块（原页像素坐标）；nil 表示整页。
 	// 打包期会拿它核对「图的比例」与「框的比例」——比例算错时画面会被拉伸，
 	// 而拉伸后的画面「看着还挺正常」，只能在这里拦。
-	Crop        *SlideBox
+	Crop *SlideBox
+	// Camera 是镜头内的相机运动关键帧（归一化坐标）；nil 表示静态特写。
+	// 仅用于带 Crop 的特写镜头；首镜（整页）MUST 为空。
+	Camera      []CameraKeyframe
 	StartMs     int64
 	DurationMs  int64
 	CrossFadeMs int
@@ -336,7 +348,7 @@ func (b *BundleBuilder) writeShots(
 			}
 		}
 		out = append(out, SlideShot{
-			Index: k, Image: image, Crop: shot.Crop,
+			Index: k, Image: image, Crop: shot.Crop, Camera: shot.Camera,
 			StartMs: shot.StartMs, DurationMs: shot.DurationMs, CrossFadeMs: shot.CrossFadeMs,
 		})
 	}

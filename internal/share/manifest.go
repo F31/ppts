@@ -84,10 +84,13 @@ type SlideShot struct {
 	// Image 铺满舞台（整页图，或裁切放大后的特写图）。
 	Image string `json:"image"`
 	// Crop 是 Image 取自原页的区域；nil 表示整页。
-	Crop        *SlideBox `json:"crop,omitempty"`
-	StartMs     int64     `json:"startMs"`
-	DurationMs  int64     `json:"durationMs"`
-	CrossFadeMs int       `json:"crossFadeMs"`
+	Crop *SlideBox `json:"crop,omitempty"`
+	// Camera 是镜头内的相机运动关键帧（归一化坐标）；nil 表示静态特写。
+	// 仅用于带 Crop 的特写镜头；首镜（整页）MUST 为空。见 animation-camera。
+	Camera      []CameraKeyframe `json:"camera,omitempty"`
+	StartMs     int64            `json:"startMs"`
+	DurationMs  int64            `json:"durationMs"`
+	CrossFadeMs int              `json:"crossFadeMs"`
 }
 
 // maxShotsPerSlide 与 render.MaxShotsPerPage 同值。share 不依赖 render（依赖纪律），
@@ -355,6 +358,32 @@ func validateSlideShots(index int, slide SlideEntry, video VideoInfo, files map[
 			if c.X < 0 || c.Y < 0 || c.X+c.W > video.Width || c.Y+c.H > video.Height {
 				return fmt.Errorf("share: slide %d shot %d crop (%d,%d %dx%d) outside page %dx%d",
 					index, si, c.X, c.Y, c.W, c.H, video.Width, video.Height)
+			}
+		}
+		// 相机镜头 MUST 同时带 Crop：相机在特写图内部运动（见 animation-camera design.md）。
+		// 整页镜头上的相机需要层随底图变换（层是独立 DOM），留给后续 change。
+		if len(shot.Camera) > 0 {
+			if si == 0 {
+				return fmt.Errorf("share: slide %d first shot is the whole page and must not declare a camera", index)
+			}
+			if shot.Crop == nil {
+				return fmt.Errorf("share: slide %d shot %d has camera but no crop; camera requires a close-up", index, si)
+			}
+			var prevAt int64
+			for ci, kf := range shot.Camera {
+				if kf.AtMs < 0 {
+					return fmt.Errorf("share: slide %d shot %d camera keyframe %d has negative atMs", index, si, ci)
+				}
+				if ci > 0 && kf.AtMs <= prevAt {
+					return fmt.Errorf("share: slide %d shot %d camera keyframes must be ascending by atMs", index, si)
+				}
+				prevAt = kf.AtMs
+				if kf.Scale < 1 {
+					return fmt.Errorf("share: slide %d shot %d camera keyframe %d scale %v < 1 would expose stage edges", index, si, ci, kf.Scale)
+				}
+				if kf.X < 0 || kf.X > 1 || kf.Y < 0 || kf.Y > 1 {
+					return fmt.Errorf("share: slide %d shot %d camera keyframe %d center (%v,%v) outside [0,1]", index, si, ci, kf.X, kf.Y)
+				}
 			}
 		}
 		cursor += shot.DurationMs

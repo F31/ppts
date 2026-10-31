@@ -121,6 +121,18 @@ type ShotSpec struct {
 	DurationMs  int64    `json:"durationMs"`
 	CrossFadeMs int64    `json:"crossFadeMs,omitempty"`
 	Crop        *ShotBox `json:"crop,omitempty"`
+	// Camera 是镜头内的相机运动关键帧（归一化坐标）。仅用于带 crop 的特写；首镜 MUST 为空。
+	// 与 render.CameraKeyframe 同构，revShots 原样搬到渲染输入。
+	Camera []CameraKeyframe `json:"camera,omitempty"`
+}
+
+// CameraKeyframe 是镜头图局部的归一化相机关键帧（作者层坐标，与 render 同语义）。
+// 详见 render.CameraKeyframe 的注释：x/y ∈ [0,1] 视口中心，scale ≥ 1 相对「图覆盖舞台」。
+type CameraKeyframe struct {
+	AtMs  int64   `json:"atMs"`
+	X     float64 `json:"x"`
+	Y     float64 `json:"y"`
+	Scale float64 `json:"scale"`
 }
 
 // Track 是一个可视元素上的动效集合。ElementID 为空表示整页轨道（Kind 必须为 page）。

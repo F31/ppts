@@ -126,6 +126,9 @@ type Shot struct {
 	// CrossFadeMs 是本镜开头的叠化时长，0 = 硬切。编排侧默认写 120。
 	// 它是显式的：JSON 里「没写」与「写 0」是同一个字节，隐式默认无法区分。
 	CrossFadeMs int `json:"crossFadeMs"`
+	// Camera 是镜头内的相机运动关键帧（归一化坐标）。为空表示静态特写。
+	// 仅用于带 crop 的特写镜头（见 animation-camera）；首镜（整页）MUST 为空。
+	Camera []CameraKeyframe `json:"camera,omitempty"`
 }
 
 // PageShotInput 是单页镜头切片的编译输入（EMU 坐标）。
@@ -137,6 +140,8 @@ type PageShotInput struct {
 	DurationMs  int64
 	CrossFadeMs int64
 	Crop        *EMUBox // 取自原页的裁切框（EMU）；nil = 整页（首镜）
+	// Camera 是镜头内的相机运动关键帧（归一化坐标）。见 Shot.Camera。
+	Camera []CameraKeyframe
 }
 
 // FocusSpan 是一段焦点区间：从 StartMs 起，焦点落在 ElementID 上。
@@ -230,6 +235,7 @@ const (
 	DiagClipTruncated         = "clip_truncated"
 	DiagTransitionDefaulted   = "transition_defaulted"
 	DiagSiblingOverlapPartial = "sibling_overlap_partial"
+	DiagCameraInvalid         = "camera_invalid"
 )
 
 // Diagnostic 是一条编译诊断。
