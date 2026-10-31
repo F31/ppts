@@ -14,7 +14,9 @@
   flex-direction: column;
   width: 100%;
   max-width: 1280px;
-  margin: 0 auto;
+  /* 自由空间内双向居中（替代 body 上的 align/justify center，避免矮窗口裁顶）；
+     卡片比视口高时 margin:auto 退化为 0，卡片顶端对齐且可由 body 滚动查看。 */
+  margin: auto;
   background: var(--ppts-bg);
   color: var(--ppts-text);
   border-radius: 12px;
@@ -24,11 +26,16 @@
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 }
 
+/* 垂直居中的前提是 html/body 有「确定的」视口高度：之前写 min-height:100%，
+   而 html 高度是 auto——min-height 的百分比解析不出视口高度，body 因此没撑满一屏，
+   flex 的 align-items:center 只是把卡片在「内容高度」里居中，结果是卡片贴在顶部。
+   改成 height:100%（相对视口），body 才真正等于一屏高，下面的居中才有意义。
+   3712e62 当时因矮窗口裁顶风险没做垂直居中，这里一并补上。 */
 html.ppts-share-page,
 body.ppts-share-page {
   margin: 0;
+  height: 100%;
   background: #0b0d12;
-  min-height: 100%;
 }
 
 /* 打包器在 body 与 .ppts-share 之间插了一层 #ppts-share-root。body 是 flex 容器，
@@ -42,10 +49,13 @@ body.ppts-share-page {
 
 body.ppts-share-page {
   display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 24px;
   box-sizing: border-box;
+  /* 卡片高于视口（如 1366×768 这类矮窗口）时，flex 居中会把卡片上下都溢出、
+     顶部被裁且滚不回去。overflow:auto 让 body 可滚动；再配合 .ppts-share 的
+     margin:auto，空间不足时 auto margin 解析为 0，卡片退化为顶端对齐、可由滚动查看，
+     顶部不丢（这正是 3712e62 当时没做垂直居中的顾虑）。 */
+  overflow: auto;
 }
 
 .ppts-stage {
