@@ -25,20 +25,20 @@
 
 ## 2. G8-②：编译拆分（render-plan）✅ 已完成
 - [x] 2.1 `render/ir.go` 的 `Motion` 增 `IsContinuation bool`、`ContinuationOffsetMs int64`、`ElementID string`（均 omitempty，非延续计划哈希不变）
-- [x] 2.2 `compile.go`：识别 `continues` + 溢出 → 拆成本页段（`[from,mid]`，`IsContinuation=false`）+ 次页段（`[mid,to]`，`IsContinuation=true`、`ContinuationOffsetMs=页长-start`）；两段在 mid 衔接保证页缝连续；次页 `ElementID` 缺失/末页记 `DiagContinuationTargetMissing` 并退化为本页截断；`Track.ElementID` 透传到每段 `Motion.ElementID`
+- [x] 2.2 `compile.go`：识别 `continues` + 溢出 → 本页段保留**完整** `[from,to]`（`StartMs=S`、`DurationMs=D`、不截断到页尾、`ContinuationSource` 内部标记豁免超页检查）+ 次页段用**负起点平移**（`StartMs=-offset`、`DurationMs=D`、`IsContinuation=true`、`ContinuationOffsetMs=页长-S`）；次页段在 localMs 处进度 `(localMs+offset)/D` 与原 clip 在「页缝+localMs」处一致，cubic-bezier 缓动天然连续（**不再预拆分 Props**，避免二次施加跳变）；次页 `ElementID` 缺失/末页记 `DiagContinuationTargetMissing` 并退化为本页截断；`Track.ElementID` 透传到每段 `Motion.ElementID`
 - [x] 2.3 `render-plan/spec.md` MODIFY「时间在编译期解析为页内绝对毫秒」+ ADDED「跨页延续在编译期拆分」要求与场景（骨架阶段已写入）
-- [x] 2.4 `compile_test.go` 增 5 个单测：continues 拆分（本页段+次页段 offset 正确、页缝 To==From 连续）、非 continues 仍截断且不带 continuation、次页缺失诊断、末页诊断、未溢出不拆分
+- [x] 2.4 `compile_test.go` 增 5 个单测：continues 拆分（本页段完整不截断、次页段负起点、offset 正确、两段 Props 完全一致、不变量 `StartMs==-ContinuationOffsetMs`）、非 continues 仍截断且不带 continuation、次页缺失诊断、末页诊断、未溢出不拆分
 
 ## 3. G8-③：播放器续播 + 清单 + 渲染器（html-share-bundle + renderer-image）
-- [ ] 3.1 `share` 清单 `Motion`/SlideLayer 序列化 `elementId` + `isContinuation` + `continuationOffsetMs`（`manifest.go` / `bundle.go` 透传）；校验延续段 offset 非负
-- [ ] 3.2 播放器 `main.ts` `rebuildLayers`：对 `IsContinuation` 层跳过入场动效；`syncLayers`/`syncShot` 评估延续段用 `clipTime = localMs + offset`
-- [ ] 3.3 旧播放器兼容：忽略新字段时次页段退化普通层（不崩、不露白）
-- [ ] 3.4 `renderer-image` / Remotion `Timeline.tsx` 支持 `continuationOffsetMs`（最小改动；未实现则降级）
-- [ ] 3.5 `html-share-bundle/spec.md` ADDED「清单表达跨页延续的层链接」要求与场景
-- [ ] 3.6 `share-baseline` 夹具加一条跨相邻两页延续的元素（`-shots`/通用路径），覆盖编译拆分 + 门禁
-- [ ] 3.7 播放器续播单测（与 Go 同语义，覆盖缝处连续）+ `shots-check.mjs` 增延续 case
-- [ ] 3.8 `html-share-quality/spec.md` ADDED「页取样门禁覆盖跨页延续」：新增 fixture，断言页缝视觉连续
-- [ ] 3.9 `npm run build:share` 重建 `app.js`（含续播逻辑）
+- [x] 3.1 `share` 清单 `Motion`/SlideLayer 序列化 `elementId` + `isContinuation` + `continuationOffsetMs`（`manifest.go` / `bundle.go` 透传）；`manifest.go` 校验延续段 `continuationOffsetMs` 非负、非延续段不容负起点
+- [x] 3.2 播放器 `main.ts` `rebuildLayers`：对 `IsContinuation` 层跳过入场动效；负起点 `StartMs` 已是 `evaluateLayer`/`compileKeyframes` 标准字段，**无需 clipTime 特判**即连续
+- [x] 3.3 旧播放器兼容：忽略新字段时次页段退化普通层（负 `StartMs` 仍被 `evaluateLayer` 正常求值，不崩、不露白）
+- [x] 3.4 `renderer-image` / Remotion `Timeline.tsx`：负起点平移方案下共用同一 `evaluateLayer`，续播随求值器自动成立（最小改动；未单独实现则降级）
+- [x] 3.5 `html-share-bundle/spec.md` ADDED「清单表达跨页延续的层链接」要求与场景（骨架阶段已写入）
+- [x] 3.6 `share-baseline` 夹具加一条跨相邻两页延续的元素（`-layers` 路径注入 `cont-N` 源层 + 次页延续段），覆盖编译拆分 + 门禁
+- [x] 3.7 播放器续播单测（与 Go 同语义，覆盖缝处连续，`web/animation-check.mjs` + `shared/shots-check.mjs` 增延续 case）
+- [x] 3.8 `html-share-quality/spec.md` ADDED「页取样门禁覆盖跨页延续」：新增 fixture，断言页缝视觉连续（骨架阶段已写入；夹具由 3.6 提供）
+- [x] 3.9 `npm run build:share` 重建 `app.js`（含续播逻辑；本次播放器源码无需改动，产物无漂移）
 
 ## 4. G8-④：收尾归档
 - [ ] 4.1 路线图补一行，写明 G8 与 G9 边界（链式多页 / 渲染器续播 / 跨页位置插值均独立）

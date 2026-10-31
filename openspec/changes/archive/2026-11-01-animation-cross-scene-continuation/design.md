@@ -37,29 +37,37 @@ type Motion struct {
 
 `compileClip`（compile.go）当前对超页尾 clip 记 `DiagClipTruncated` 并截断。改为：仅当
 `!clip.Continues` 时保持旧的截断/丢弃行为；当 `clip.Continues == true` 且 `S + D > D_N`（S=StartMs,
-D=DurationMs, D_N=本页时长）时，**拆分**为两段，且**两段 Props 在边界处预拆分**保证视觉连续：
+D=DurationMs, D_N=本页时长）时，把余量作为**次页延续段**注入次页同 `ElementID` 层。
 
-- 边界分数 `f = (D_N - S) / D`（本页段占原 clip 的比例）。
-- **本页段（page N）**：`StartMs = S`，`DurationMs = D_N - S`；`IsContinuation=false`，`ElementID`
-  透传 `Track.ElementID`；`Props = [from, mid]`，其中 `mid = lerp(from, to, f)`。本页段只演到
-  clip 时间 `D_N - S` 处的中态。
-- **次页段（page N+1）**：`StartMs = 0`，`DurationMs = S + D - D_N`（余量）；`IsContinuation=true`，
-  `ElementID` 透传 `Track.ElementID`；`Props = [mid, to]`；`ContinuationOffsetMs = D_N - S`
-  （本页段末态在原 clip 中的时间，仅作全局时间对齐/审计用，非插值连续的必要条件）。
+两段都沿用**完整** `[from, to]` 属性，不做预拆分；连续靠「次页段负起点平移求值」实现：
 
-**为什么必须预拆分 Props**：若两段都携带完整 `[from, to]`，次页段在 localMs=0 会回到 `from` 重播，
-页缝处从「本页段末态」跳回「起点」——视觉断裂。预拆分使两段在 `mid` 精确衔接：本页段末态
-（`To=mid`）== 次页段初态（`From=mid`）。播放器只需按各自 `StartMs/DurationMs` 正常插值即得连续结果，
-`ContinuationOffsetMs` 退化为可选的审计/对齐字段（见 §3）。
+- **本页段（page N，源段）**：`StartMs = S`，`DurationMs = D`（完整原长，不截断到页尾）；
+  `IsContinuation=false`；不携带 `ElementID`（`ContinuationSource` 为编译器内部标记，仅用于豁免
+  plan 校验的「超页时长」检查，不进清单）。本页段会故意延伸到页尾之外（余量在次页段渲染）。
+- **次页段（page N+1）**：`StartMs = -offset`，`DurationMs = D`（完整原长）；`IsContinuation=true`，
+  `ContinuationOffsetMs = offset = D_N - S`（本页段末态在原 clip 时间轴上的位置，审计/对齐用），
+  `ElementID` 透传 `Track.ElementID`。
+
+**为什么用负起点平移、而非预拆分 Props**：若两段各自携带完整 `[from,to]`，且播放器用
+`evaluateLayer`（单次 cubic-bezier 缓动）对每段独立求值，则——
+
+- 预拆分方案（`[from,mid]`/`[mid,to]`）会在 `mid` 处再次施加缓动：`mid = lerp(from,to,f)` 是**线性**
+  分数 `f` 处的值，而次页段实际播放的是缓动后的值，二者在非线性缓动（默认 `easeOut`）下不相等
+  → 页缝处可见跳变。
+- 负起点方案让次页段在 localMs 处的进度恰好是 `(localMs + offset)/D`。代入 `offset = D_N - S`，
+  页 N+1 的 `localMs=0` 时进度 `= (D_N - S)/D` = 本页段在页尾（`localMs = D_N - S`）处的进度，
+  **与原 clip 在同一时刻的进度完全一致** → cubic-bezier 在页缝处天然连续，无二次施加跳变。
+
+`ContinuationOffsetMs` 仍保留：播放器/渲染器可据此把次页层与本页同元素层关联（链路身份），
+并作为全局时间对齐的审计字段；求值连续本身已由负起点保证，不依赖该字段。
 
 若次页（`plan.Pages[N+1]`）不存在（已是末页），或次页找不到与 `ElementID` 同名的层/shape，编译器记
 `DiagContinuationTargetMissing`（warning 级，不阻断整页），该延续 clip 退化为本页段截断（与旧行为一致，
 不崩）。
 
 `S ≥ 0` 假设：MVP 只允许在「起始页」为 clip 标 `continues`，故作者侧 `StartMs ≥ 0` 恒成立；次页段本身
-不携带 `continues`（它已是余量）。此实现对任意 `S ≥ 0` 均成立（预拆分 Props 不依赖 §3 所述单分母
-`clipTime` 公式）；编辑器 UI 实际仅暴露「本页首帧起、跨到下一页」的 `S=0` 用法。链式多页（>2）留后续：
-次页段若其 Track 又标 `continues` 则递归再拆（本实现未做，余量段 `Continues=false`）。
+不携带 `continues`（它已是余量）。链式多页（>2）留后续：次页段若其 Track 又标 `continues` 则递归再拆
+（本实现未做，余量段 `Continues=false`）。
 
 ## 3. 播放器续播（HTML 播放器，`internal/share/assets` 的 main.ts）
 
@@ -69,14 +77,17 @@ D=DurationMs, D_N=本页时长）时，**拆分**为两段，且**两段 Props �
 延续所需的最小改动：
 1. **延续段不重放入场**：`rebuildLayers` 对 `Motion.IsContinuation == true` 的层，**跳过入场动效**，
    直接以「当前静态视觉」就位（不 fade/scale-in）。
-2. **视觉连续由数学保证**：延续段的 `Motion` 评估 `clipTime = localMs + offset`，在 localMs=0 时等于
-   本页段末态；只要次页同 `element_id` 层的**静态视觉（形状/位置/样式）与本页一致**（作者责任，MVP
-   约定），页缝处视觉即连续。播放器无需额外「搬运状态」逻辑——状态连续是插值函数的连续自变量带来的。
+2. **视觉连续由负起点平移自动保证**：次页段 `StartMs = -offset` 已是标准字段，播放器的
+   `evaluateLayer`/`compileKeyframes`/`seekLayer` **无需任何特判**——`compileKeyframes` 把负采样时刻
+   钳到 0 后在 `evaluateLayer` 中按 `(localMs + offset)/D` 求值，恰好等于原 clip 在页缝处进度；
+   页缝处 cubic-bezier 缓动天然连续。**本方案不改变播放器求值代码**，仅需上面第 1 点的「跳过入场」。
+   只要次页同 `element_id` 层的**静态视觉（形状/位置/样式）与本页一致**（作者责任，MVP 约定），页缝处
+   视觉即连续。状态连续是插值函数的连续自变量带来的，无需「搬运状态」逻辑。
 3. **转场无缝**：现有转场把「前一页末帧」垫在新页下交叉（main.ts:441-474）。前一页末帧已含元素于缝态，
    新页首帧（延续段 localMs=0）亦为同态 → 交叉淡入无缝。无需改转场。
 
-旧播放器兼容：`is_continuation` / `continuation_offset_ms` 为可选字段，旧播放器忽略 → 次页段退化成普通层
-（localMs 直接当 clipTime），最坏情况是缝处轻微回跳，**不崩、不露白**。
+旧播放器兼容：`is_continuation` / `continuation_offset_ms` 为可选字段，旧播放器忽略 → 次页段退化成普通层；
+负 `StartMs` 仍被 `evaluateLayer` 正常求值（localMs=0 即缝态），最坏情况是缝后轻微回跳，**不崩、不露白**。
 
 ## 4. 合成器（MP4 / renderer-image）最小改动
 
