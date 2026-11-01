@@ -182,6 +182,10 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 基线是用「不带模型」的规则跑出来的，所以它的 Fallback 必然是 no_model。
+	// 那不是这一页的结论，只是这次调用的参数——写进响应会让每一页都显示
+	// 「还没有配置模型」，包括那些本来就不该问模型的结构化页。清掉。
+	base.Model.Fallback = ""
 	dto.Prefill = prefillDTO(base, &report)
 	if bind.RouteOf(base.Band, base.BandReason) != bind.RouteModel {
 		// 规则档不问模型：structured 上规则 0.972 vs 模型 0.772，layout/both 上

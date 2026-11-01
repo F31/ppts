@@ -71,6 +71,52 @@ export async function getDefaultAnimationSpec(
   return getJSON<AnimationSpec>(identity, `${basePath(scope)}${queryOf(scope, defaultSpecQuery(presetId, prefill))}`);
 }
 
+/**
+ * 预填的异步状态。四个取值各自对应界面要做的下一件事：
+ *
+ *   succeeded  有结果了，按 spec 渲染
+ *   pending    先用响应里带的那份规则规格，继续轮询同一个 jobId
+ *   stale      页面内容变了，这次结果对不上当前页面——重新发起一次
+ *   failed / canceled  模型没成功，手里的规则规格就是最终结果
+ */
+export type AnimationPrefillStatus = 'succeeded' | 'pending' | 'stale' | 'failed' | 'canceled';
+
+export type AnimationPrefillResponse = {
+  status: AnimationPrefillStatus;
+  jobId?: string;
+  /** 失败/过期的原因（任务的错误码或 result_missing 等），仅用于提示，不参与判断。 */
+  reason?: string;
+  spec?: AnimationSpec;
+};
+
+/**
+ * startAnimationPrefill 发起一次预填。
+ *
+ * 为什么是 POST 而不是继续用 `GET ?prefill=true`：只有 script 档会问模型，
+ * 而那一步要十几秒。同步请求会让「打开编辑器」变成一个可能挂住的长请求，
+ * 超时上限还得跟着调——而用户想要的只是「先给我一版」。
+ *
+ * 服务端的契约是：**总会返回一份可用的 spec**（规则算的）。pending 时这份 spec 是底稿，
+ * 模型结果好了再由 getAnimationPrefillResult 换上去。所以这里拿到的 spec 永远可以直接渲染。
+ */
+export async function startAnimationPrefill(
+  identity: ClientIdentity,
+  scope: AnimationScope,
+  presetId: string
+): Promise<AnimationPrefillResponse> {
+  const query = presetId ? { preset: presetId } : undefined;
+  return postJSON<AnimationPrefillResponse>(identity, `${basePath(scope)}/prefill${queryOf(scope, query)}`, {});
+}
+
+/** getAnimationPrefillResult 按 jobId 取异步预填的结果（pending 时返回 status=pending）。 */
+export async function getAnimationPrefillResult(
+  identity: ClientIdentity,
+  scope: AnimationScope,
+  jobId: string
+): Promise<AnimationPrefillResponse> {
+  return getJSON<AnimationPrefillResponse>(identity, `${basePath(scope)}/prefill${queryOf(scope, { jobId })}`);
+}
+
 // AnimationConflictError 是 409 的语义化版本：本地草案已经过期。
 //
 // 带 latest 是因为"冲突了"本身不是可行动的信息——用户需要看到服务器那份是什么样，

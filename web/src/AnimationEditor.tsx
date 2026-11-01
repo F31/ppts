@@ -3,10 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AnimationConflictError,
   getAnimationAnchors,
+  getAnimationPrefillResult,
   getAnimationSpec,
   getDefaultAnimationSpec,
   previewAnimation,
   saveAnimationSpec,
+  startAnimationPrefill,
   type AnimationScope,
   type ClientIdentity
 } from './api';
@@ -33,6 +35,7 @@ import {
   filterBySource,
   prefillBindings,
   prefillLowConfidenceKey,
+  prefillModelFallbackKey,
   prefillSignalKey,
   prefillSourceKey,
   reviewOrder,
@@ -42,6 +45,7 @@ import {
 } from './animationPrefill';
 import { useDialogA11y } from './a11y';
 import { useI18n } from './i18n';
+import { usePolling } from './hooks/usePolling';
 import { AnimationTrackTimeline } from './AnimationTrackTimeline';
 import { emptyHistory, recordHistory, redoHistory, undoHistory, type TrackHistory } from './animationTrack';
 
@@ -115,6 +119,20 @@ export function AnimationEditor({
   const [prefillTracks, setPrefillTracks] = useState<number | null>(null);
   const [prefillFilter, setPrefillFilter] = useState('');
   const [prefilling, setPrefilling] = useState(false);
+  // 异步预填的任务 id（只在 script 档出现）。非空即代表「模型还在跑」。
+  const [prefillJobId, setPrefillJobId] = useState<string | null>(null);
+  // 模型结果到了但用户已经开始改：不能直接覆盖，先存着等他点。
+  //
+  // 这不是过度谨慎：底稿是同步返回的，用户看到画面就会开始调强度、拖轨道，
+  // 而模型结果要十几秒后才到。此时整份替换等于把这段时间的手工调整静默扔掉——
+  // 用户点的是「按讲稿绑定」，得到的却是「我的改动不见了」。
+  const [prefillPending, setPrefillPending] = useState<{ spec: AnimationSpec; info: AnimationPrefill | null } | null>(null);
+  // 底稿引用：轮询回来时用它判断「草案被改过没有」（React 里每次 setDraft 都是新对象，
+  // 引用相等即未变）。用引用而不是深比较，是因为任何一次编辑都会产生新对象，
+  // 而深比较会把「只拖动了一像素」判成未变。
+  const draftRef = useRef<AnimationSpec | null>(null);
+  const prefillBaselineRef = useRef<AnimationSpec | null>(null);
+  draftRef.current = draft;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -129,6 +147,15 @@ export function AnimationEditor({
     setPrefillInfo(null);
     setPrefillTracks(null);
     setPrefillFilter('');
+    // 换页时必须同时丢掉进行中的预填：轮询还在跑，结果回来会把**上一页**的绑定
+    // 落到这一页的草案上——元素 id 对不上时表现为「一半轨道消失」，
+    // 对得上时更糟：那是悄悄绑到了一页根本不相干的元素上。
+    setPrefillJobId(null);
+    setPrefillPending(null);
+    // 按钮的「进行中」也必须复位：否则换页后按钮永远停在「正在按讲稿绑定…」，
+    // 而那个任务已经不会被轮询了。
+    setPrefilling(false);
+    prefillBaselineRef.current = null;
     setPreviewURL((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return '';
@@ -228,24 +255,81 @@ export function AnimationEditor({
   //
   // 只在还没有已保存规格时可用：它产出的是「这一页的起点」，不是对现有绑定的合并。
   // 对已有规格跑一遍会整体替换人工确认过的绑定，而规格里的「人工权威」不允许。
+  //
+  // M1b：入口改走异步。服务端的契约是「总会返回一份可用的规格」——规则档当场算完
+  // （200），script 档先给规则底稿再在后台问模型（202 + jobId）。所以这里拿到的 spec
+  // 永远可以直接上屏，模型结果只是一个更好的版本，晚一点到。
   const runPrefill = async () => {
     const seq = ++generateSeq.current;
     setSaveError('');
+    setPrefillPending(null);
     setPrefilling(true);
+    let pendingJob: string | null = null;
     try {
-      const generated = await getDefaultAnimationSpec(identity, scope, draft?.presetId ?? '', true);
+      const res = await startAnimationPrefill(identity, scope, draft?.presetId ?? '');
       if (seq !== generateSeq.current) return;
-      const next = draftOf(generated);
-      setDraft({ ...next, revision: saved?.revision ?? 0 });
-      setPrefillInfo(generated.prefill ?? null);
+      if (!res.spec) {
+        // 契约被破坏了：没有 spec 就没有可选的东西。明说，不要留一屏空白
+        // 让人以为「点了自动绑定但页面本来就没动效」。
+        setSaveError(t('editor.animationPrefillEmptyResult'));
+        return;
+      }
+      const next = { ...draftOf(res.spec), revision: saved?.revision ?? 0 };
+      setDraft(next);
+      prefillBaselineRef.current = next;
+      setPrefillInfo(res.spec.prefill ?? null);
       setPrefillTracks(prefillBindings(next).length);
       setPrefillFilter('');
+      pendingJob = res.status === 'pending' ? res.jobId ?? null : null;
+      setPrefillJobId(pendingJob);
     } catch (err) {
       if (seq !== generateSeq.current) return;
       setSaveError(errorText(err, t));
     } finally {
-      if (seq === generateSeq.current) setPrefilling(false);
+      // 还有任务在跑时按钮保持「进行中」：模型确实还没回来，
+      // 提前把按钮恢复成可点状态，用户会以为已经绑完了。
+      if (seq === generateSeq.current && pendingJob === null) setPrefilling(false);
     }
+  };
+
+  // 模型结果轮询。只在拿到 jobId 时持有定时器；到终态立刻停。
+  usePolling(
+    async () => {
+      if (!prefillJobId) return;
+      const res = await getAnimationPrefillResult(identity, scope, prefillJobId);
+      if (res.status === 'pending') return;
+      setPrefillJobId(null);
+      setPrefilling(false);
+      if (res.status === 'succeeded' && res.spec) {
+        const incoming = { ...draftOf(res.spec), revision: saved?.revision ?? 0 };
+        if (draftRef.current === prefillBaselineRef.current) {
+          setDraft(incoming);
+          prefillBaselineRef.current = incoming;
+          setPrefillInfo(res.spec.prefill ?? null);
+          setPrefillTracks(prefillBindings(incoming).length);
+          setPrefillFilter('');
+        } else {
+          // 用户已经开始改了：存着，等他决定。静默替换会把他这十几秒的手工调整扔掉。
+          setPrefillPending({ spec: incoming, info: res.spec.prefill ?? null });
+        }
+        return;
+      }
+      // failed / canceled / stale：手里的规则结果就是最终结果。
+      // 但要说清「为什么没用上模型」——不说的话，用户无法判断该重试、该充值还是该改讲稿。
+      const reason = res.reason || res.status;
+      setPrefillInfo((prev) => (prev ? { ...prev, modelFallback: prev.modelFallback || reason } : prev));
+    },
+    { enabled: prefillJobId !== null, intervalMs: 1500, immediate: false }
+  );
+
+  const adoptPendingPrefill = () => {
+    if (!prefillPending) return;
+    setDraft(prefillPending.spec);
+    prefillBaselineRef.current = prefillPending.spec;
+    setPrefillInfo(prefillPending.info);
+    setPrefillTracks(prefillBindings(prefillPending.spec).length);
+    setPrefillFilter('');
+    setPrefillPending(null);
   };
 
   const save = useCallback(async (): Promise<AnimationSpec | null> => {
@@ -449,6 +533,17 @@ export function AnimationEditor({
               </button>
             </div>
             {saved !== null && <p className="form-hint">{t('editor.animationPrefillNeedsFresh')}</p>}
+            {/* 模型结果到了但草案已经被改过：让用户自己决定。
+                自动替换会静默扔掉他这十几秒的手工调整，而不替换又不告诉他，
+                他会一直等一个永远不会自动生效的结果——两种都不行。 */}
+            {prefillPending && (
+              <div className="animation-prefill-deferred">
+                <p className="form-hint">{t('editor.animationPrefillDeferred')}</p>
+                <button type="button" className="button-ghost" disabled={disabled} onClick={adoptPendingPrefill}>
+                  {t('editor.animationPrefillApplyModel')}
+                </button>
+              </div>
+            )}
           </section>
 
           {draft && (
@@ -541,6 +636,19 @@ export function AnimationEditor({
                       （这一页没有讲稿分段），再叠一句只是把同一句话说两遍。 */}
                   {lowConfidence && prefillInfo?.bandReason !== 'no-script' && (
                     <p className="prefill-warn">{t(prefillLowConfidenceKey(prefillInfo?.bandReason))}</p>
+                  )}
+
+                  {/* 这一页本该问模型却没问成：必须说清原因。
+                      不说的话，「规则结果」和「模型结果」在界面上完全一样，
+                      用户既不知道该重试、该充值，还是该改讲稿。 */}
+                  {prefillInfo?.applied && prefillInfo.route === 'rule' && prefillInfo.modelFallback && (
+                    <p className="form-hint">
+                      {t('editor.animationPrefillModelSkipped', {
+                        reason: prefillModelFallbackKey(prefillInfo.modelFallback)
+                          ? t(prefillModelFallbackKey(prefillInfo.modelFallback))
+                          : prefillInfo.modelFallback
+                      })}
+                    </p>
                   )}
 
                   {prefillInfo?.band === 'structured' && (prefillInfo.signals?.length ?? 0) > 0 && (

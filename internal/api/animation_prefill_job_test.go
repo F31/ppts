@@ -155,6 +155,11 @@ func TestPrefillPostCreatesJobOnlyForModelBand(t *testing.T) {
 			if route, _ := info["route"].(string); route != c.wantRoute {
 				t.Fatalf("route = %q，期望 %q", route, c.wantRoute)
 			}
+			// 基线是「不带模型」跑出来的，它的 no_model 只说明这次调用的参数，
+			// 不是这一页的结论。透出它会让结构化页也显示「还没有配置模型」——假话。
+			if fb, _ := info["modelFallback"].(string); fb != "" {
+				t.Fatalf("modelFallback = %q，基线不该带模型回退原因", fb)
+			}
 			if c.wantJob {
 				if h.jobs.creates != 1 {
 					t.Fatalf("建任务次数 = %d，期望 1", h.jobs.creates)

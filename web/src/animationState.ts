@@ -83,6 +83,14 @@ export type AnimationPrefill = {
   signals?: string[];
   bound: number;
   static: number;
+  /**
+   * 这份结果是规则算的还是模型出的（rule / model）。
+   * 不显示出来，「模型没配所以走了规则」和「模型参与并被采纳」在界面上没有区别，
+   * 而这两件事该被怀疑的地方完全不同。
+   */
+  route?: string;
+  /** Route=rule 且这一页本该问模型时，说明模型为什么没用上（timeout/quota/...）。 */
+  modelFallback?: string;
 };
 
 export type AnimationAnchor = {

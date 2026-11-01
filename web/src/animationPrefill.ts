@@ -20,13 +20,17 @@ import type { AnimationClip, AnimationSpec } from './animationState.ts';
 /** 复核顺序：无字面依据、或一次会带出一片的规则排前面。理由见 reviewOrder。 */
 const REVIEW_ORDER: Record<string, number> = {
   sibling: 0,
-  prior: 1,
+  // 模型给的绑定排在很前面：它是唯一一条「证据来自模型自述」的来源，
+  // 而实测在 script 档上也只有 0.833——比规则的结构化页（0.972）低，
+  // 且模型看不见容器（四步流程页实测漏 9/18），漏绑比错绑更不容易被发现。
+  model: 1,
+  prior: 2,
   structural: 2,
-  count: 3,
-  ordinal: 4,
-  spatial: 5,
-  text: 6,
-  manual: 7
+  count: 4,
+  ordinal: 5,
+  spatial: 6,
+  text: 7,
+  manual: 8
 };
 
 /** 来源的文案 key。未登记的来源返回空串，调用方回落到原始 id。 */
@@ -38,6 +42,7 @@ const SOURCE_KEYS: Record<string, string> = {
   sibling: 'editor.animationSourceSibling',
   prior: 'editor.animationSourcePrior',
   structural: 'editor.animationSourceStructural',
+  model: 'editor.animationSourceModel',
   manual: 'editor.animationSourceManual'
 };
 
@@ -135,6 +140,28 @@ function rankOf(source: string): number {
 export function filterBySource(bindings: PrefillBinding[], source: string): PrefillBinding[] {
   if (!source) return bindings;
   return bindings.filter((item) => item.source === source);
+}
+
+/**
+ * 「为什么没用上模型」的文案 key。
+ *
+ * 这几个原因对用户意味着完全不同的下一步：timeout/error 值得重试，quota 要去充值，
+ * no_model 要找管理员配模型，stale 只需要重新点一次。合成一句「模型不可用」
+ * 会让人反复点同一个不会成功的按钮。
+ */
+const MODEL_FALLBACK_KEYS: Record<string, string> = {
+  timeout: 'editor.animationPrefillReasonTimeout',
+  quota: 'editor.animationPrefillReasonQuota',
+  error: 'editor.animationPrefillReasonError',
+  invalid_json: 'editor.animationPrefillReasonInvalidJson',
+  no_valid_bindings: 'editor.animationPrefillReasonNoBindings',
+  no_model: 'editor.animationPrefillReasonNoModel',
+  stale: 'editor.animationPrefillReasonStale'
+};
+
+export function prefillModelFallbackKey(reason?: string): string {
+  if (!reason) return '';
+  return MODEL_FALLBACK_KEYS[reason] ?? '';
 }
 
 export function prefillSourceKey(source: string): string {

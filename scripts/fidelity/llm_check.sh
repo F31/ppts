@@ -58,6 +58,9 @@ echo "== 4/5 产品侧模型通道对账（不花钱，走 bind.RunRouted）=="
 # 尤其是结构收尾：Python 侧 fill_structure 补 4 个底板，Go 侧必须补同样 4 个，
 # 差一条就说明两边的「模型召回」量的不是同一件事。
 go test ./internal/animation/bind/ -run 'TestRoute|TestModel|TestValidate|TestSystemPrompt' || exit 1
+# 异步通道：降级三条（超时/网关错误/额度不足）、token 按真实用量结算、快照指纹随内容变化。
+# 这几条是「预填不会因为模型而失败」与「预填不许偷偷烧额度」的唯一证据。
+go test ./internal/app/ -run 'TestPrefill' || exit 1
 
 echo
 if [ -z "${PPTS_LLM_API_KEY:-}" ]; then

@@ -1370,5 +1370,17 @@
   "folders.deleteBlocked": "该分组下还有项目，不能删除（请先将项目移走）",
   "folders.renamed": "已重命名分组为 \"{name}\"",
   "gateway.visionHint": "填写即启用「视觉锚点」：按页截图提取关键事实用于溯源核对；须为多模态模型，留空则关闭。",
-  "editor.rewriteNotAllowed": "暂无改写权限"
+  "editor.rewriteNotAllowed": "暂无改写权限",
+  "editor.animationSourceModel": "模型",
+  "editor.animationPrefillModelSkipped": "这一页本该交给模型补绑定，但没有采用模型结果：{reason}。上面这份是规则算出来的。",
+  "editor.animationPrefillReasonTimeout": "模型超时，可以直接重试",
+  "editor.animationPrefillReasonQuota": "模型额度不足",
+  "editor.animationPrefillReasonError": "模型调用失败",
+  "editor.animationPrefillReasonInvalidJson": "模型输出无法解析",
+  "editor.animationPrefillReasonNoBindings": "模型没有给出可用绑定",
+  "editor.animationPrefillReasonNoModel": "还没有配置模型",
+  "editor.animationPrefillReasonStale": "等待期间页面内容被修改，请重新绑定",
+  "editor.animationPrefillDeferred": "模型结果已就绪，但你已经开始手工调整，所以没有替换当前绑定。",
+  "editor.animationPrefillApplyModel": "采用模型结果",
+  "editor.animationPrefillEmptyResult": "服务端没有返回可用的默认规格，请重试或选一个风格。"
 }

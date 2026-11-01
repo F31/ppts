@@ -25,7 +25,8 @@ const {
   defaultSpecQuery,
   prefillSourceKey,
   prefillSignalKey,
-  prefillLowConfidenceKey
+  prefillLowConfidenceKey,
+  prefillModelFallbackKey
 } = prefill;
 const {
   clampIntensity,
@@ -851,4 +852,32 @@ test('讲稿侧信号有文案，未登记信号不硬套', () => {
   assert.equal(prefillSignalKey('script-flat'), 'editor.animationSignalScriptFlat');
   assert.equal(prefillSignalKey('script-absent'), 'editor.animationSignalScriptAbsent');
   assert.equal(prefillSignalKey('script-v2'), '');
+});
+
+test('模型来源：有文案 key，且复核顺序紧跟同块带出', () => {
+  // 模型绑定是唯一「证据来自模型自述」的来源，实测在 script 档 0.833——比结构化页的
+  // 规则（0.972）低，且模型看不见容器（四步流程页实测漏 9/18）。漏绑比错绑更难发现，
+  // 所以它必须排在只靠几何推断的规则之前。
+  assert.equal(prefillSourceKey('model'), 'editor.animationSourceModel');
+  const spec = prefillSpec();
+  const modelTrack = spec.tracks.find((item) => item.elementId === 'bullet-2');
+  modelTrack.clips[0].triggerSource = 'model';
+  modelTrack.clips[0].confidence = 0.42;
+  const order = reviewOrder(prefillBindings(spec)).map((item) => `${item.source}:${item.elementId}`);
+  assert.deepEqual(order, ['sibling:card-1', 'model:bullet-2', 'prior:title-1', 'text:bullet-1']);
+  // 模型自报的把握要如实带出来：它是复核排序与面板显示的唯一依据。
+  const model = prefillBindings(spec).find((item) => item.source === 'model');
+  assert.equal(model.hasConfidence, true);
+  assert.equal(model.confidence, 0.42);
+});
+
+test('模型没用上的原因各自有文案，未登记的原因不硬套', () => {
+  assert.equal(prefillModelFallbackKey('timeout'), 'editor.animationPrefillReasonTimeout');
+  assert.equal(prefillModelFallbackKey('quota'), 'editor.animationPrefillReasonQuota');
+  assert.equal(prefillModelFallbackKey('no_valid_bindings'), 'editor.animationPrefillReasonNoBindings');
+  // 没有原因（模型正常产出或这一页本就不该问模型）就不该有任何提示。
+  assert.equal(prefillModelFallbackKey(''), '');
+  assert.equal(prefillModelFallbackKey(undefined), '');
+  // 服务端新增原因时显示原文，不要错配成 timeout 这类会误导下一步动作的文案。
+  assert.equal(prefillModelFallbackKey('rate_limited'), '');
 });

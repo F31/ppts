@@ -1300,6 +1300,9 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
    面板自身带底色与边框，是为了让「这批是机器猜的」在视觉上就与上面的常规列表分开——
    低置信时整块换成警示色，而不是只加一个小图标（图标签容易被当成装饰忽略掉）。 */
 .animation-prefill-action { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 模型结果就绪但草案已被改过：给一条明确的「要不要采用」，而不是静默替换。 */
+.animation-prefill-deferred { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.animation-prefill-deferred .form-hint { margin: 0; }
 .animation-prefill { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated); }
 .animation-prefill.low-confidence { border-color: rgba(252, 211, 77, .45); background: rgba(252, 211, 77, .07); }
 .prefill-warn { margin: 0; color: #fcd34d; font-size: 12px; line-height: 1.5; }

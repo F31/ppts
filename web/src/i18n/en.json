@@ -1370,5 +1370,17 @@
   "projects.tagRemoved": "Tag removed",
   "folders.renamed": "Renamed folder to \"{name}\"",
   "gateway.visionHint": "Fill to enable visual anchors (per-page screenshot facts for provenance); must be a multimodal model. Leave empty to disable.",
-  "editor.rewriteNotAllowed": "Rewrite requires editor access"
+  "editor.rewriteNotAllowed": "Rewrite requires editor access",
+  "editor.animationSourceModel": "Model",
+  "editor.animationPrefillModelSkipped": "This slide should have gone to the model, but the model result was not used: {reason}. What you see was produced by the rules.",
+  "editor.animationPrefillReasonTimeout": "the model timed out, retrying may work",
+  "editor.animationPrefillReasonQuota": "out of model quota",
+  "editor.animationPrefillReasonError": "the model call failed",
+  "editor.animationPrefillReasonInvalidJson": "the model output could not be parsed",
+  "editor.animationPrefillReasonNoBindings": "the model produced no usable bindings",
+  "editor.animationPrefillReasonNoModel": "no model is configured",
+  "editor.animationPrefillReasonStale": "the slide changed while waiting, bind again",
+  "editor.animationPrefillDeferred": "The model result is ready, but you have already started editing, so your bindings were left untouched.",
+  "editor.animationPrefillApplyModel": "Use model result",
+  "editor.animationPrefillEmptyResult": "The server returned no usable default spec. Retry, or pick a style."
 }
