@@ -42,7 +42,7 @@ PROJECT=$(read_json projectId)
 SLIDE=$(read_json slideId)
 SLIDE_INDEX=$(read_json slideIndex)
 
-log "0/5 复用现场：项目 $PROJECT / 幻灯片 $SLIDE"
+log "0/4 复用现场：项目 $PROJECT / 幻灯片 $SLIDE"
 
 # 二进制里嵌的是 web/dist。若改了前端却没重建，这里点的是旧界面——
 # 断言全绿也证明不了什么。宁可停下来说清楚，也不要跑一份过期的产物。
@@ -62,7 +62,7 @@ trap cleanup EXIT
 
 set -a; . "$WORK/env.sh"; set +a
 
-log "1/5 起假模型（延时 ${MODEL_DELAY_MS}ms）与 server/worker"
+log "1/4 起假模型（延时 ${MODEL_DELAY_MS}ms）与 server/worker"
 FAKE_LLM_DELAY_MS=$MODEL_DELAY_MS $PY scripts/e2e/fake_llm.py "$LLM_PORT" "$WORK/fake-llm.jsonl" &
 PIDS+=($!)
 
@@ -83,55 +83,10 @@ done
 PIDS+=($!)
 sleep 2
 
-log "2/5 改一个字，让内容指纹变掉"
-# 不改内容的话，上一轮的成功结果会被缓存直接命中（200），走不到异步通道，
-# 也就看不到"底稿先上屏"。改一个字是最小的、能真实触发重算的改动。
-$PY - "$PPTS_PORT" "$PROJECT" "$SLIDE" <<'PYEOF'
-import json, sys, urllib.request
+# 改内容指纹这一步搬进了 prefill_click.mjs：两个场景各自要一次新的内容，
+# 放在这里只能改一次，第二个场景会撞上第一个场景的缓存。
 
-port, project, slide = sys.argv[1], sys.argv[2], sys.argv[3]
-
-def post(path, body):
-    req = urllib.request.Request(
-        f"http://127.0.0.1:{port}{path}",
-        data=json.dumps(body, ensure_ascii=False).encode(),
-        headers={"Content-Type": "application/json", "X-PPTS-Source-Revision": "1"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req) as r:
-        return json.loads(r.read())
-
-cur = post("/ppts.v1.ScriptService/Get", {"projectId": project, "slideId": slide})
-segs = cur.get("segments") or []
-if not segs:
-    print("FAIL: 这一页没有讲稿分段，预填会被跳过", file=sys.stderr)
-    sys.exit(1)
-# 让内容指纹变掉。要点是"每次都不一样"：用两态来回切（加句号／去句号）会撞上
-# 之前跑出来的缓存，直接命中 200 同步通道，异步窗口根本不会出现——这一条踩过。
-#
-# 末尾递增一个零宽空格：内容逐次唯一，渲染上看不出差别，也不会让正文越跑越长。
-marker = "\u200b"
-display = segs[0]["displayText"]
-spoken = segs[0]["spokenText"]
-k = max(len(display) - len(display.rstrip(marker)), len(spoken) - len(spoken.rstrip(marker)))
-segs[0]["displayText"] = display.rstrip(marker) + marker * (k + 1)
-segs[0]["spokenText"] = spoken.rstrip(marker) + marker * (k + 1)
-out = post(
-    "/ppts.v1.ScriptService/Update",
-    {
-        "projectId": project,
-        "slideId": slide,
-        "expectedRevision": str(cur["revision"]),
-        "segments": segs,
-    },
-)
-if out.get("conflict"):
-    print("FAIL: 讲稿更新冲突", file=sys.stderr)
-    sys.exit(1)
-print(f"讲稿 revision {cur['revision']} -> {out['revision']['revision']}")
-PYEOF
-
-log "3/5 起无头浏览器"
+log "2/4 起无头浏览器"
 CHROME=${CHROME:-}
 if [ -z "$CHROME" ]; then
   for p in \
@@ -167,7 +122,7 @@ done
 curl -s --noproxy '*' -m 2 -o /dev/null "http://127.0.0.1:$CDP_PORT/json/version" \
   || { tail -20 "$WORK/chrome.log"; fail "无头浏览器没起来"; }
 
-log "4/5 点下去，看界面"
+log "3/4 点下去，看界面"
 node scripts/e2e/prefill_click.mjs \
   --base="http://127.0.0.1:$PPTS_PORT" \
   --project="$PROJECT" --slide="$SLIDE" --slide-index="$SLIDE_INDEX" \
@@ -180,4 +135,4 @@ if [ "${KEEP:-0}" = "1" ]; then
   wait
 fi
 
-log "5/5 通过"
+log "4/4 通过"
