@@ -76,7 +76,7 @@ func TestPageBindElementsMatchesExperiment(t *testing.T) {
 			t.Fatalf("样本只有 %d 页，取不到第 %d 页", len(doc.Pages), slideIdx)
 		}
 		got := PageBindElements(doc.Pages[slideIdx], 12192000, 6858000)
-		byID := make(map[string]string, len(got))   // shape-12 → kind
+		byID := make(map[string]string, len(got)) // shape-12 → kind
 		boxByID := make(map[string][4]float64, len(got))
 		for _, e := range got {
 			byID[e.ID] = e.Kind

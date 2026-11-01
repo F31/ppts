@@ -146,7 +146,7 @@ type Revision struct {
 	PresetID         string  // 页面级预设；空串表示自定义（不套预设）
 	Intensity        float64 // 统一缩放幅度/时长，[MinIntensity, MaxIntensity]
 	Tracks           []*Track
-	RenderedRevision int64 // 最近一次成功渲染对应的 Revision；< Revision 表示过期
+	RenderedRevision int64      // 最近一次成功渲染对应的 Revision；< Revision 表示过期
 	Shots            []ShotSpec `json:"shots,omitempty"` // 页内镜头切片（见 render.PageShotInput）
 	UpdatedAt        time.Time
 }

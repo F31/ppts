@@ -246,16 +246,16 @@ type Transition struct {
 
 // 诊断码。诊断不阻断渲染，但必须留痕：静默修正比报错更难排查。
 const (
-	DiagAnchorMissing         = "anchor_missing"
-	DiagBoxClamped            = "box_clamped"
-	DiagSegmentUnresolved     = "segment_unresolved"
-	DiagDurationTierConflict  = "duration_tier_conflict"
-	DiagGeometryInferred      = "geometry_inferred"
-	DiagClipTruncated         = "clip_truncated"
+	DiagAnchorMissing             = "anchor_missing"
+	DiagBoxClamped                = "box_clamped"
+	DiagSegmentUnresolved         = "segment_unresolved"
+	DiagDurationTierConflict      = "duration_tier_conflict"
+	DiagGeometryInferred          = "geometry_inferred"
+	DiagClipTruncated             = "clip_truncated"
 	DiagContinuationTargetMissing = "continuation_target_missing"
-	DiagTransitionDefaulted   = "transition_defaulted"
-	DiagSiblingOverlapPartial = "sibling_overlap_partial"
-	DiagCameraInvalid         = "camera_invalid"
+	DiagTransitionDefaulted       = "transition_defaulted"
+	DiagSiblingOverlapPartial     = "sibling_overlap_partial"
+	DiagCameraInvalid             = "camera_invalid"
 )
 
 // Diagnostic 是一条编译诊断。

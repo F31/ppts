@@ -11,9 +11,9 @@ import (
 	"math"
 
 	"github.com/F31/ppts/internal/design"
+	sliderenderer "github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/render"
-	sliderenderer "github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/share"
 )
 

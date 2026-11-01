@@ -51,9 +51,9 @@ func main() {
 		// 而终态帧门禁（V13b）的判据是「页末帧 == 参照页图（终态）」。若默认注入，
 		// 任何用 -layers 取末帧的用例都会因为这条元素而误红。要验延续，单独造包走 V19。
 		continuation = flag.Bool("continuation", false, "注入一条跨相邻两页的延续元素（G8）；需 -layers>0 且 -pages>=2，并配合 seam-gate 使用")
-		outDir   = flag.String("out", "", "可选：把包写成目录，便于人工核对")
-		zipPath  = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
-		asJSON   = flag.Bool("json", false, "以 JSON 输出")
+		outDir       = flag.String("out", "", "可选：把包写成目录，便于人工核对")
+		zipPath      = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
+		asJSON       = flag.Bool("json", false, "以 JSON 输出")
 	)
 	flag.Parse()
 

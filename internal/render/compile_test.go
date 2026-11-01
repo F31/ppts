@@ -743,7 +743,7 @@ func makeContinuationPages(p0clip *animation.Clip) []PageInput {
 			Elements: []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
 			Revision: revisionOf("business-calm", 1, &animation.Track{
 				ElementID: "shape-1", Kind: animation.KindTitle,
-				Clips:     []*animation.Clip{clipOf("c2", "slideIn", 0, 500, "onEnter")},
+				Clips: []*animation.Clip{clipOf("c2", "slideIn", 0, 500, "onEnter")},
 			})},
 	}
 }

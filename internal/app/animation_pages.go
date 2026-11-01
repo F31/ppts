@@ -126,15 +126,15 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		// 先定规格再取几何：版本不符的页按「没有动画」处理，此时几何读进来也会被丢掉。
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
-	req.Pages = append(req.Pages, AnimationPage{
-		SlideID:        slide.SlideID,
-		DurationMs:     durationMS,
-		BaseImage:      rel,
-		Elements:       a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision),
-		Revision:       rev,
-		Shots:          revShots(rev),
-		SegmentOffsets: segmentOffsets(slide),
-	})
+		req.Pages = append(req.Pages, AnimationPage{
+			SlideID:        slide.SlideID,
+			DurationMs:     durationMS,
+			BaseImage:      rel,
+			Elements:       a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision),
+			Revision:       rev,
+			Shots:          revShots(rev),
+			SegmentOffsets: segmentOffsets(slide),
+		})
 	}
 	return req, nil
 }

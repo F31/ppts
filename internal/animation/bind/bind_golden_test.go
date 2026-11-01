@@ -22,10 +22,10 @@ type fixturePage struct {
 }
 
 type fixtureElem struct {
-	ID   string  `json:"id"`
-	Kind string  `json:"kind"`
+	ID   string     `json:"id"`
+	Kind string     `json:"kind"`
 	Box  [4]float64 `json:"box"`
-	Text string  `json:"text"`
+	Text string     `json:"text"`
 }
 
 type fixtureSeg struct {

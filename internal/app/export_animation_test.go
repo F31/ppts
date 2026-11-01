@@ -385,4 +385,3 @@ func TestShotCropPreservesEdgeEnergy(t *testing.T) {
 		t.Fatalf("shot edge energy ratio = %.3f, want >= 0.95 (cropShot must not resample)", ratio)
 	}
 }
-

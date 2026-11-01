@@ -20,10 +20,10 @@ func bindingsByElement(r Result) map[string]Binding {
 func TestNormalizeAndCn2Num(t *testing.T) {
 	nums := []struct{ in, want string }{
 		{"一百七十四", "174"}, // 两位以上带单位 → 改写
-		{"三十", "30"},      // 同上
-		{"一致", "一致"},      // 单字不动
-		{"一部分", "一部分"},    // 单字不动
-		{"三点五", "3.5"},     // 小数
+		{"三十", "30"},     // 同上
+		{"一致", "一致"},     // 单字不动
+		{"一部分", "一部分"},   // 单字不动
+		{"三点五", "3.5"},   // 小数
 	}
 	for _, c := range nums {
 		if got := cn2num(c.in); got != c.want {
