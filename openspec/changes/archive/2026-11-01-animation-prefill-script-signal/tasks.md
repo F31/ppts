@@ -41,4 +41,5 @@
 
 - [x] 4.1 fidelity README「结构词消融」一节：缺陷状态改为已修，写清判据与「数量词走
       detectCount」的口径坑
-- [ ] 4.2 `openspec/specs/animation-track-editing/spec.md` 分档条目随归档更新
+- [x] 4.2 `openspec/specs/animation-track-editing/spec.md` 分档条目随归档更新
+      （`openspec archive` 合并：+0 / ~1 / -0；原 4 个场景全保留，新增 2 个）
