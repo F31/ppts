@@ -17,7 +17,8 @@
 #   bash scripts/e2e/prefill_live.sh
 #   PPTS_PORT=38081 LLM_PORT=38190 bash scripts/e2e/prefill_live.sh
 #
-# 不做的事：不跑前端、不点按钮。像素与交互由 web 的构建期检查与 animation-check 覆盖；
+# 不做的事：不跑前端、不点按钮。界面归 scripts/e2e/prefill_click.sh（它接在本脚本后面，
+# 复用这里留下的 run.json）；像素与纯函数归 web 的 animation-check。
 # 这里只保证「后端到模型到落盘再读回」这条路是真的。
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -307,4 +308,27 @@ PYEOF
 [ "$LEDGER" -ge 1 ] || fail "额度账本里没有 prefill 的 token 记账（预填绕开了额度）"
 echo "额度账本里有 $LEDGER 条 prefill token 记账"
 
+# 把现场留给点击级联调（prefill_click.sh）。它要重启 server/worker，但 DB、对象、
+# 讲稿都在 $WORK 里；不写这份清单，它就得自己再上传一遍 deck。
+$PY - "$WORK" "$PPTS_PORT" "$LLM_PORT" "$METRICS_PORT" "$METRICS_TOKEN" "$PID" "$SLIDE_ID" "$SLIDE_INDEX" <<'PYEOF'
+import json, os, sys
+work, http, llm, metrics, token, project, slide, index = sys.argv[1:9]
+with open(os.path.join(work, "run.json"), "w", encoding="utf-8") as f:
+    json.dump(
+        {
+            "httpPort": int(http),
+            "llmPort": int(llm),
+            "metricsPort": int(metrics),
+            "metricsToken": token,
+            "projectId": project,
+            "slideId": slide,
+            "slideIndex": int(index),
+        },
+        f,
+        ensure_ascii=False,
+        indent=2,
+    )
+PYEOF
+
 printf '\n全部通过。原始产物在 %s/\n' "$WORK"
+printf '接着验界面：bash scripts/e2e/prefill_click.sh\n'

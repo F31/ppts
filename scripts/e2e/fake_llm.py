@@ -10,6 +10,7 @@ json_object、temperature/top_p、usage 解析）真的跑一遍——进程内�
 """
 
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,10 @@ BINDINGS = [
 ]
 
 LOG_PATH = ""
+# 响应延时（毫秒）。默认 0：真机脚本要的是"多久能算完"，拖着没意义。
+# 点击级联调要的是相反的东西——它得在模型回来之前看清编辑器手里有什么，
+# 所以那边会显式设成几秒，把异步窗口撑开。
+DELAY_MS = int(os.environ.get("FAKE_LLM_DELAY_MS") or 0)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -39,6 +44,9 @@ class Handler(BaseHTTPRequestHandler):
         if LOG_PATH:
             with open(LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"path": self.path, "body": req}, ensure_ascii=False) + "\n")
+
+        if DELAY_MS > 0:
+            time.sleep(DELAY_MS / 1000.0)
 
         chars = sum(len(str(m.get("content") or "")) for m in (req.get("messages") or []))
         prompt_tokens = max(1, chars // 4)
