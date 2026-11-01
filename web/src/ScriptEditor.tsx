@@ -3,6 +3,7 @@ import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as Reac
 import { useI18n } from './i18n';
 import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import type { RewriteAction } from './api';
+import { segmentReviewReason, summarizeAnchors } from './sourceAnchors';
 import {
   canRedo as historyCanRedo,
   canUndo as historyCanUndo,
@@ -649,7 +650,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   };
 
   const anchors = script.segments.flatMap((segment) => segment.sourceAnchors ?? []);
-  const visualCount = anchors.filter((anchor) => anchor.kind.startsWith('visual_')).length;
+  // 来源条不再只说「有几个视觉锚点」，而是说「有几个需要你核对」——前者是内部实现细节，
+  // 后者才是用户能采取行动的信息（G2-1）。
+  const anchorSummary = summarizeAnchors(anchors);
   // 来源锚点只展示类型（备注/标题/内容/表格…），不展示具体内容。
   const anchorTypeLabel = (kind: string): string => {
     if (kind.startsWith('visual_')) return t('script.anchorType.image');
@@ -817,6 +820,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       <div className="segment-list">
         {script.segments.map((segment, index) => {
           const segRewrite = rewritingSegs.has(segment.segmentId);
+          const reviewReason = segmentReviewReason(segment);
           return (
             <article key={segment.segmentId} className={`segment-card ${selected.has(segment.segmentId) ? 'selected' : ''} ${segRewrite ? 'regenerating' : ''}`}>
               <label className="segment-head">
@@ -828,6 +832,11 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 />
                 <span className="segment-index">{index + 1}</span>
                 {segRewrite && <span className="seg-badge regen">{t('editor.rewriting')}</span>}
+                {reviewReason && (
+                  <span className="anchor-review-badge" title={t(`script.reviewReason.${reviewReason}`)}>
+                    {t('script.anchorNeedsReview')}
+                  </span>
+                )}
               </label>
               <SegmentRichTextEditor
                 ref={(el) => {
@@ -942,9 +951,15 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       </footer>
 
       {anchors.length > 0 && (
-        <div className="anchor-strip" aria-label={t('script.currentSlide')}>
+        <div className="anchor-strip" aria-label={t('script.anchorsAria')}>
           <strong>{t('script.anchors', { count: anchors.length })}</strong>
-          <span>{visualCount > 0 ? t('script.visualAnchors', { count: visualCount }) : t('script.structuralAnchors')}</span>
+          {anchorSummary.needsReview > 0 ? (
+            <span className="anchor-review-note" title={t('script.anchorsReviewHint')}>
+              {t('script.anchorsNeedsReview', { count: anchorSummary.needsReview })}
+            </span>
+          ) : (
+            <span>{t('script.structuralAnchors')}</span>
+          )}
           {anchorTypes.map((label) => (
             <em key={label}>{label}</em>
           ))}

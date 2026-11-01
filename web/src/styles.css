@@ -117,6 +117,9 @@ button, textarea, input { font: inherit; }
 .anchor-strip[open] summary::before { transform: rotate(90deg); }
 .anchor-strip strong, .anchor-strip span, .anchor-strip em { border: 1px solid rgba(255,255,255,.1); border-radius: 999px; padding: 6px 8px; background: rgba(255,255,255,.05); font-style: normal; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .anchor-strip strong { color: var(--link); }
+/* 「待核对」不能和普通类型标签长得一样：它是要用户动手的信号，不是分类信息。 */
+.anchor-strip span.anchor-review-note { color: var(--warn); border-color: var(--warn-border); background: var(--warn-bg-soft); cursor: help; }
+.segment-head .anchor-review-badge { font-size: 11px; border-radius: 999px; padding: 3px 9px; color: var(--warn); border: 1px solid var(--warn-border); background: var(--warn-bg-soft); cursor: help; }
 
 /* M3 ② 段落工具栏 */
 .paragraph-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 4px; }
