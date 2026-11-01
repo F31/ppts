@@ -1,0 +1,1151 @@
+{
+ "note": "夹具来源：tmp/q8/fid/elements.json（extract_pptx_elements.py 产出）+ scripts/fidelity/q8-script.json（人工金标）。生成后不再依赖 tmp。",
+ "pages": [
+  {
+   "index": 0,
+   "elements": [
+    {
+     "id": "p1-s2",
+     "kind": "shape",
+     "box": [
+      0,
+      0,
+      1920,
+      1080
+     ],
+     "text": ""
+    },
+    {
+     "id": "p1-s3",
+     "kind": "shape",
+     "box": [
+      1397,
+      -317,
+      936,
+      936
+     ],
+     "text": ""
+    },
+    {
+     "id": "p1-s4",
+     "kind": "shape",
+     "box": [
+      1627,
+      662,
+      518,
+      518
+     ],
+     "text": ""
+    },
+    {
+     "id": "p1-s5",
+     "kind": "bullet",
+     "box": [
+      130,
+      367,
+      1512,
+      72
+     ],
+     "text": "AI 智能讲解引擎"
+    },
+    {
+     "id": "p1-s6",
+     "kind": "title",
+     "box": [
+      122,
+      425,
+      1512,
+      187
+     ],
+     "text": "智讲 PPT"
+    },
+    {
+     "id": "p1-s7",
+     "kind": "bullet",
+     "box": [
+      130,
+      598,
+      1411,
+      101
+     ],
+     "text": "一次上传，多端讲解 —— 让每一份 PPT 都能被精准、可信、随时随地地讲述出来"
+    },
+    {
+     "id": "p1-s8",
+     "kind": "note",
+     "box": [
+      130,
+      943,
+      864,
+      58
+     ],
+     "text": "客户方案讲解  ｜  2026"
+    }
+   ],
+   "segments": [
+    {
+     "id": "s0-1",
+     "text": "这套东西叫智讲，做的事情一句话说完：把一份 PPT 直接讲成能播的片子。"
+    },
+    {
+     "id": "s0-2",
+     "text": "用户只管上传，讲稿、配音、画面适配和导出都在后面跑完，手机、电脑、网页看到的是一样的东西。"
+    }
+   ],
+   "golden": [
+    {
+     "elementId": "p1-s6",
+     "segmentId": "s0-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p1-s7",
+     "segmentId": "s0-2",
+     "role": "content"
+    }
+   ]
+  },
+  {
+   "index": 1,
+   "elements": [
+    {
+     "id": "p2-s2",
+     "kind": "eyebrow",
+     "box": [
+      86,
+      60,
+      1152,
+      50
+     ],
+     "text": "AGENDA"
+    },
+    {
+     "id": "p2-s3",
+     "kind": "title",
+     "box": [
+      86,
+      108,
+      1656,
+      130
+     ],
+     "text": "今天我们将谈到"
+    },
+    {
+     "id": "p2-s4",
+     "kind": "marker",
+     "box": [
+      101,
+      295,
+      144,
+      101
+     ],
+     "text": "01"
+    },
+    {
+     "id": "p2-s6",
+     "kind": "bullet",
+     "box": [
+      274,
+      295,
+      1152,
+      101
+     ],
+     "text": "市场趋势与同类产品全景"
+    },
+    {
+     "id": "p2-s7",
+     "kind": "marker",
+     "box": [
+      101,
+      432,
+      144,
+      101
+     ],
+     "text": "02"
+    },
+    {
+     "id": "p2-s9",
+     "kind": "bullet",
+     "box": [
+      274,
+      432,
+      1152,
+      101
+     ],
+     "text": "产品定位与应用场景"
+    },
+    {
+     "id": "p2-s10",
+     "kind": "marker",
+     "box": [
+      101,
+      569,
+      144,
+      101
+     ],
+     "text": "03"
+    },
+    {
+     "id": "p2-s12",
+     "kind": "bullet",
+     "box": [
+      274,
+      569,
+      1152,
+      101
+     ],
+     "text": "核心功能与用户体验"
+    },
+    {
+     "id": "p2-s13",
+     "kind": "marker",
+     "box": [
+      101,
+      706,
+      144,
+      101
+     ],
+     "text": "04"
+    },
+    {
+     "id": "p2-s15",
+     "kind": "bullet",
+     "box": [
+      274,
+      706,
+      1152,
+      101
+     ],
+     "text": "核心技术与架构优势"
+    },
+    {
+     "id": "p2-s16",
+     "kind": "marker",
+     "box": [
+      101,
+      842,
+      144,
+      101
+     ],
+     "text": "05"
+    },
+    {
+     "id": "p2-s18",
+     "kind": "bullet",
+     "box": [
+      274,
+      842,
+      1152,
+      101
+     ],
+     "text": "安全合规、成本与路线图"
+    },
+    {
+     "id": "p2-s19",
+     "kind": "page_number",
+     "box": [
+      1800,
+      1015,
+      86,
+      43
+     ],
+     "text": "02"
+    }
+   ],
+   "segments": [
+    {
+     "id": "s1-1",
+     "text": "今天分五个部分，从市场一直讲到合规怎么落地。"
+    }
+   ],
+   "golden": [
+    {
+     "elementId": "p2-s3",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s4",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s6",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s7",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s9",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s10",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s12",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s13",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s15",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s16",
+     "segmentId": "s1-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p2-s18",
+     "segmentId": "s1-1",
+     "role": "content"
+    }
+   ]
+  },
+  {
+   "index": 2,
+   "elements": [
+    {
+     "id": "p3-s2",
+     "kind": "eyebrow",
+     "box": [
+      86,
+      60,
+      1152,
+      50
+     ],
+     "text": "COMPETITIVE LANDSCAPE"
+    },
+    {
+     "id": "p3-s3",
+     "kind": "title",
+     "box": [
+      86,
+      108,
+      1656,
+      130
+     ],
+     "text": "同类产品全景对比"
+    },
+    {
+     "id": "p3-s5",
+     "kind": "table",
+     "box": [
+      86,
+      252,
+      1742,
+      518
+     ],
+     "text": ""
+    },
+    {
+     "id": "p3-s4",
+     "kind": "bullet",
+     "box": [
+      86,
+      814,
+      1742,
+      130
+     ],
+     "text": "共性观察：现有产品普遍聚焦「配音/数字人生成」本身，对内容准确性保障、多端一致体验、企业级隔离与合规着墨较少。"
+    },
+    {
+     "id": "p3-s6",
+     "kind": "page_number",
+     "box": [
+      1800,
+      1015,
+      86,
+      43
+     ],
+     "text": "04"
+    }
+   ],
+   "segments": [
+    {
+     "id": "s2-1",
+     "text": "先看竞争格局，这张表把市面上几家摆在一起。"
+    },
+    {
+     "id": "s2-2",
+     "text": "共性很清楚：大家都在做配音和数字人，对准确性、多端一致、企业级隔离讲得很少。"
+    }
+   ],
+   "golden": [
+    {
+     "elementId": "p3-s3",
+     "segmentId": "s2-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p3-s5",
+     "segmentId": "s2-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p3-s4",
+     "segmentId": "s2-2",
+     "role": "content"
+    }
+   ]
+  },
+  {
+   "index": 3,
+   "elements": [
+    {
+     "id": "p4-s2",
+     "kind": "eyebrow",
+     "box": [
+      86,
+      60,
+      1152,
+      50
+     ],
+     "text": "USER JOURNEY"
+    },
+    {
+     "id": "p4-s3",
+     "kind": "title",
+     "box": [
+      86,
+      108,
+      1656,
+      130
+     ],
+     "text": "四步完成，专业能力渐进展开"
+    },
+    {
+     "id": "p4-s4",
+     "kind": "bullet",
+     "box": [
+      86,
+      230,
+      1584,
+      58
+     ],
+     "text": "普通用户不需要选择模型、编解码器或队列参数，专业编辑能力按需展开"
+    },
+    {
+     "id": "p4-s5",
+     "kind": "shape",
+     "box": [
+      108,
+      410,
+      166,
+      166
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s6",
+     "kind": "image",
+     "box": [
+      151,
+      446,
+      79,
+      79
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s7",
+     "kind": "bullet",
+     "box": [
+      29,
+      598,
+      324,
+      65
+     ],
+     "text": "上传文件"
+    },
+    {
+     "id": "p4-s8",
+     "kind": "bullet",
+     "box": [
+      29,
+      662,
+      324,
+      115
+     ],
+     "text": "自动识别页面、备注与异常提示"
+    },
+    {
+     "id": "p4-s9",
+     "kind": "shape",
+     "box": [
+      288,
+      485,
+      223,
+      9
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s10",
+     "kind": "shape",
+     "box": [
+      526,
+      410,
+      166,
+      166
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s11",
+     "kind": "image",
+     "box": [
+      569,
+      446,
+      79,
+      79
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s12",
+     "kind": "bullet",
+     "box": [
+      446,
+      598,
+      324,
+      65
+     ],
+     "text": "选择方式"
+    },
+    {
+     "id": "p4-s13",
+     "kind": "bullet",
+     "box": [
+      446,
+      662,
+      324,
+      115
+     ],
+     "text": "讲解方式、音色与目标时长"
+    },
+    {
+     "id": "p4-s14",
+     "kind": "shape",
+     "box": [
+      706,
+      485,
+      223,
+      9
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s15",
+     "kind": "shape",
+     "box": [
+      943,
+      410,
+      166,
+      166
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s16",
+     "kind": "image",
+     "box": [
+      986,
+      446,
+      79,
+      79
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s17",
+     "kind": "bullet",
+     "box": [
+      864,
+      598,
+      324,
+      65
+     ],
+     "text": "试听确认"
+    },
+    {
+     "id": "p4-s18",
+     "kind": "bullet",
+     "box": [
+      864,
+      662,
+      324,
+      115
+     ],
+     "text": "逐句核对，锁定已审核内容"
+    },
+    {
+     "id": "p4-s19",
+     "kind": "shape",
+     "box": [
+      1123,
+      485,
+      223,
+      9
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s20",
+     "kind": "shape",
+     "box": [
+      1361,
+      410,
+      166,
+      166
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s21",
+     "kind": "image",
+     "box": [
+      1404,
+      446,
+      79,
+      79
+     ],
+     "text": ""
+    },
+    {
+     "id": "p4-s22",
+     "kind": "bullet",
+     "box": [
+      1282,
+      598,
+      324,
+      65
+     ],
+     "text": "播放导出"
+    },
+    {
+     "id": "p4-s23",
+     "kind": "bullet",
+     "box": [
+      1282,
+      662,
+      324,
+      115
+     ],
+     "text": "在线播放或导出多种成品格式"
+    },
+    {
+     "id": "p4-s24",
+     "kind": "page_number",
+     "box": [
+      1800,
+      1015,
+      86,
+      43
+     ],
+     "text": "08"
+    }
+   ],
+   "segments": [
+    {
+     "id": "s3-1",
+     "text": "普通用户其实只需要四步，专业参数都收在后面。"
+    },
+    {
+     "id": "s3-2",
+     "text": "第一步，把文件拖进来。"
+    },
+    {
+     "id": "s3-3",
+     "text": "第二步，选讲解方式和音色。"
+    },
+    {
+     "id": "s3-4",
+     "text": "第三步，先听一遍，确认没问题。"
+    },
+    {
+     "id": "s3-5",
+     "text": "第四步，导出，或者直接发个链接。"
+    }
+   ],
+   "golden": [
+    {
+     "elementId": "p4-s3",
+     "segmentId": "s3-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s4",
+     "segmentId": "s3-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s7",
+     "segmentId": "s3-2",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s8",
+     "segmentId": "s3-2",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s5",
+     "segmentId": "s3-2",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s6",
+     "segmentId": "s3-2",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s12",
+     "segmentId": "s3-3",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s13",
+     "segmentId": "s3-3",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s10",
+     "segmentId": "s3-3",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s11",
+     "segmentId": "s3-3",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s17",
+     "segmentId": "s3-4",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s18",
+     "segmentId": "s3-4",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s15",
+     "segmentId": "s3-4",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s16",
+     "segmentId": "s3-4",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s22",
+     "segmentId": "s3-5",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s23",
+     "segmentId": "s3-5",
+     "role": "content"
+    },
+    {
+     "elementId": "p4-s20",
+     "segmentId": "s3-5",
+     "role": "decor"
+    },
+    {
+     "elementId": "p4-s21",
+     "segmentId": "s3-5",
+     "role": "decor"
+    }
+   ]
+  },
+  {
+   "index": 4,
+   "elements": [
+    {
+     "id": "p5-s2",
+     "kind": "eyebrow",
+     "box": [
+      86,
+      60,
+      1152,
+      50
+     ],
+     "text": "TRUSTWORTHY AI"
+    },
+    {
+     "id": "p5-s3",
+     "kind": "title",
+     "box": [
+      86,
+      108,
+      1656,
+      130
+     ],
+     "text": "内容可信度：AI 不能凭空编造事实"
+    },
+    {
+     "id": "p5-s4",
+     "kind": "bullet",
+     "box": [
+      86,
+      238,
+      1742,
+      86
+     ],
+     "text": "示例：页面包含「64 GB、PCIe 5.0 x16」，讲稿可以增加释义说明，但不能凭空补充带宽或推导倍数。"
+    },
+    {
+     "id": "p5-s5",
+     "kind": "shape",
+     "box": [
+      86,
+      367,
+      410,
+      518
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s6",
+     "kind": "marker",
+     "box": [
+      122,
+      403,
+      288,
+      79
+     ],
+     "text": "01"
+    },
+    {
+     "id": "p5-s7",
+     "kind": "bullet",
+     "box": [
+      122,
+      497,
+      338,
+      101
+     ],
+     "text": "双通道理解"
+    },
+    {
+     "id": "p5-s8",
+     "kind": "bullet",
+     "box": [
+      122,
+      598,
+      338,
+      266
+     ],
+     "text": "结构文本 + 页面视觉截图联合理解，不只是OCR文本拼接"
+    },
+    {
+     "id": "p5-s9",
+     "kind": "shape",
+     "box": [
+      500,
+      619,
+      19,
+      6
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s10",
+     "kind": "shape",
+     "box": [
+      537,
+      367,
+      410,
+      518
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s11",
+     "kind": "marker",
+     "box": [
+      573,
+      403,
+      288,
+      79
+     ],
+     "text": "02"
+    },
+    {
+     "id": "p5-s12",
+     "kind": "bullet",
+     "box": [
+      573,
+      497,
+      338,
+      101
+     ],
+     "text": "事实块留痕"
+    },
+    {
+     "id": "p5-s13",
+     "kind": "bullet",
+     "box": [
+      573,
+      598,
+      338,
+      266
+     ],
+     "text": "每条关键事实记录来源页码、形状ID、原始值与置信度"
+    },
+    {
+     "id": "p5-s14",
+     "kind": "shape",
+     "box": [
+      950,
+      619,
+      19,
+      6
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s15",
+     "kind": "shape",
+     "box": [
+      988,
+      367,
+      410,
+      518
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s16",
+     "kind": "marker",
+     "box": [
+      1024,
+      403,
+      288,
+      79
+     ],
+     "text": "03"
+    },
+    {
+     "id": "p5-s17",
+     "kind": "bullet",
+     "box": [
+      1024,
+      497,
+      338,
+      101
+     ],
+     "text": "确定性校验"
+    },
+    {
+     "id": "p5-s18",
+     "kind": "bullet",
+     "box": [
+      1024,
+      598,
+      338,
+      266
+     ],
+     "text": "数字、型号、单位、日期通过确定性检查器再次比对"
+    },
+    {
+     "id": "p5-s19",
+     "kind": "shape",
+     "box": [
+      1401,
+      619,
+      19,
+      6
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s20",
+     "kind": "shape",
+     "box": [
+      1439,
+      367,
+      410,
+      518
+     ],
+     "text": ""
+    },
+    {
+     "id": "p5-s21",
+     "kind": "marker",
+     "box": [
+      1475,
+      403,
+      288,
+      79
+     ],
+     "text": "04"
+    },
+    {
+     "id": "p5-s22",
+     "kind": "bullet",
+     "box": [
+      1475,
+      497,
+      338,
+      101
+     ],
+     "text": "定向修正"
+    },
+    {
+     "id": "p5-s23",
+     "kind": "bullet",
+     "box": [
+      1475,
+      598,
+      338,
+      266
+     ],
+     "text": "仅对校验失败项定向修正，仍不满足则交由用户人工审核"
+    },
+    {
+     "id": "p5-s24",
+     "kind": "page_number",
+     "box": [
+      1800,
+      1015,
+      86,
+      43
+     ],
+     "text": "10"
+    }
+   ],
+   "segments": [
+    {
+     "id": "s4-1",
+     "text": "内容可信这一条是整套东西的底线。比如页面上写着 64 GB、PCIe 5.0，讲稿可以解释这是什么，但不能自己算出带宽。"
+    },
+    {
+     "id": "s4-2",
+     "text": "第一条，图和文字一起看，不是只认 OCR。"
+    },
+    {
+     "id": "s4-3",
+     "text": "第二条，每个关键事实都留痕，能追到是哪一页、哪个形状。"
+    },
+    {
+     "id": "s4-4",
+     "text": "第三条，数字和型号再过一遍确定性校验。"
+    },
+    {
+     "id": "s4-5",
+     "text": "第四条，只修校验没过的那几项，还不行就交给人。"
+    }
+   ],
+   "golden": [
+    {
+     "elementId": "p5-s3",
+     "segmentId": "s4-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s4",
+     "segmentId": "s4-1",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s5",
+     "segmentId": "s4-2",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s6",
+     "segmentId": "s4-2",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s7",
+     "segmentId": "s4-2",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s8",
+     "segmentId": "s4-2",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s10",
+     "segmentId": "s4-3",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s11",
+     "segmentId": "s4-3",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s12",
+     "segmentId": "s4-3",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s13",
+     "segmentId": "s4-3",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s15",
+     "segmentId": "s4-4",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s16",
+     "segmentId": "s4-4",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s17",
+     "segmentId": "s4-4",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s18",
+     "segmentId": "s4-4",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s20",
+     "segmentId": "s4-5",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s21",
+     "segmentId": "s4-5",
+     "role": "decor"
+    },
+    {
+     "elementId": "p5-s22",
+     "segmentId": "s4-5",
+     "role": "content"
+    },
+    {
+     "elementId": "p5-s23",
+     "segmentId": "s4-5",
+     "role": "content"
+    }
+   ]
+  }
+ ]
+}

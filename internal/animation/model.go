@@ -68,6 +68,53 @@ const (
 	TriggerAtTimePrefix  = "atTime:"
 )
 
+// 绑定来源标注（Q7 决策 4：每条机器绑定 MUST 带来源）。
+//
+// 七个规则来源与 `scripts/fidelity/bind_elements.py` 的报告口径一一对应——移植时不合并
+// 任何两类：实验里「同块带出」的错是成块的（一列四件一起错），按来源一筛就能发现；
+// 字面匹配的错是零散的，只能逐条看。合并来源等于把复核成本从 O(最可疑的一类) 抬回 O(全部)。
+//
+// manual 表示人改过。它存在的意义是**否定**：一条 clip 一旦标成 manual，就不能再被
+// 预填逻辑当作「机器结论」批量撤销或覆盖。
+const (
+	TriggerSourceText       = "text"       // 段落 ↔ 元素字面相似度（单调 DP）
+	TriggerSourceCount      = "count"      // 数量词 → 编号组（「五个部分」）
+	TriggerSourceOrdinal    = "ordinal"    // 序数 → 第 N 个编号块（「第二条」）
+	TriggerSourceSpatial    = "spatial"    // 方位指代 → 包围盒位置（「右边那张图」）
+	TriggerSourceSibling    = "sibling"    // 同块带出（与已绑元素同卡片/紧邻）
+	TriggerSourcePrior      = "prior"      // 标题先验（页内首个标题 → 第一段）
+	TriggerSourceStructural = "structural" // 结构推断（容器跟着装着的内容走）
+	TriggerSourceManual     = "manual"     // 人工编辑/确认
+)
+
+// triggerSources 是白名单的**顺序**声明：错误信息里按这个顺序列出允许取值，
+// 顺序即「越靠前越可信」的排序，编辑器的默认呈现顺序也用它。
+var triggerSources = []string{
+	TriggerSourceText, TriggerSourceCount, TriggerSourceOrdinal,
+	TriggerSourceSpatial, TriggerSourceSibling, TriggerSourcePrior,
+	TriggerSourceStructural, TriggerSourceManual,
+}
+
+// TriggerSources 返回全部允许的来源标注（拷贝，调用方可随意修改）。
+func TriggerSources() []string {
+	out := make([]string, len(triggerSources))
+	copy(out, triggerSources)
+	return out
+}
+
+// ValidTriggerSource 报告 s 是否为合法来源标注。空串表示「无标注」，是合法缺省值。
+func ValidTriggerSource(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, v := range triggerSources {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
 // 允许的缓动曲线。
 var validEasings = map[string]struct{}{
 	"linear":    {},
@@ -157,6 +204,11 @@ type Clip struct {
 	// 为 false（缺省）时行为不变。跨页身份复用 Track.ElementID。omitempty 保证缺省值
 	// 不进序列化，避免改变既有规格的字节/哈希。
 	Continues bool `json:"continues,omitempty"`
+	// TriggerSource 标注这条 clip 是怎么来的（规则名 / manual）。空串 = 无标注，
+	// 表示「不是预填产物」（手写规格、旧客户端保存的规格都落在这一档）。
+	//
+	// omitempty 是字节不变的前提：既有规格的序列化与 planHash 不因为多了一个字段而变。
+	TriggerSource string `json:"triggerSource,omitempty"`
 }
 
 // Params 是动效参数。字段名与 JSON key 一一对应；未登记的 key 一律拒收，

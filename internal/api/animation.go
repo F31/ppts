@@ -327,6 +327,11 @@ func (h *AnimationHandler) put(w http.ResponseWriter, r *http.Request) {
 		writeAnimationError(w, err)
 		return
 	}
+	// 来源降级（tasks 1.3）：整份 PUT 让服务端看不出「这条 trigger 是人改的」，
+	// 只能和上一版逐条比对。比对放在校验之后——body 本身非法时不必多读一次库。
+	if prev, gerr := h.store.Get(r.Context(), key); gerr == nil && prev != nil {
+		animation.ReconcileTriggerSources(prev, rev)
+	}
 	saved, err := h.store.Put(r.Context(), rev, *req.ExpectedRevision)
 	if err != nil {
 		writeAnimationError(w, err)

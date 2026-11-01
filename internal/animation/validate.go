@@ -188,6 +188,9 @@ func (r *Revision) Validate(pc PageContext) error {
 			if err := validateClipTrigger(c, segments, pc, tolerance, cf); err != nil {
 				return err
 			}
+			if err := validateClipTriggerSource(c, cf); err != nil {
+				return err
+			}
 			if err := validateClipParams(c, eff, cf); err != nil {
 				return err
 			}
@@ -303,6 +306,22 @@ func validateClipTiming(c *Clip, eff *Effect, pc PageContext, tolerance int64, f
 		}
 	}
 	return nil
+}
+
+// validateClipTriggerSource 校验来源标注白名单。
+//
+// 未知值一律 400 而不是「忽略」：来源标注是给人复核用的，一个前端口误写出的 "siblingBind"
+// 若被静默接受，编辑器按来源筛选时这一条就会从所有分类里消失——用户以为删干净了，其实还在。
+func validateClipTriggerSource(c *Clip, field string) error {
+	if ValidTriggerSource(c.TriggerSource) {
+		return nil
+	}
+	return &ValidationError{
+		Rule: RuleStructure, Field: field + ".triggerSource",
+		Message: fmt.Sprintf("unknown trigger source %q", c.TriggerSource),
+		Hint:    strings.Join(TriggerSources(), ", "),
+		Status:  400,
+	}
 }
 
 func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, tolerance int64, field string) error {
