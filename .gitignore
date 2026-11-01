@@ -69,6 +69,11 @@ testdata/validation/replay-report.json
 # 渲染器产物（章节样片、调试帧）
 /renderer/out/
 
-# 方案文档与演示素材：已按 tasks 6.4 移出仓库，归档时并入 openspec/specs/。
+# 方案文档与演示素材：已按 tasks 6.4 移出仓库，留在本地 docs/ 目录，不随代码分发。
 # 不写这条的话 `git status` 永远挂一条 `?? docs/`，久了就没人再看未跟踪清单了。
-/docs/
+#
+# 例外：docs/adr/ 随代码走。代码注释里有四十多处 ADR 编号引用，编号脱离记录
+# 就等于没有决策——后来者只知道"当初这么定过"，不知道定了什么、为什么。
+# 这里必须是 `/docs/*` 而不是 `/docs/`：目录整体被排除时，子目录无法再用 `!` 纳入。
+/docs/*
+!/docs/adr/

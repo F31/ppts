@@ -469,18 +469,30 @@ Gate meanings: `contrast` = contrast contract, `api:check` = single request egre
 
 ## Documentation
 
-> Note: the documents below live in the local `docs/` directory and are **not** distributed on GitHub.
-> Clone the repository to read them; the paths are relative to the repo root.
+> Note: most design documents live in the local `docs/` directory and are **not** tracked in git
+> (see `.gitignore`); clone-adjacent copies are not shipped with the repository. The exception is
+> `docs/adr/`: ADR numbers are cited throughout the code, so the records travel with the code.
 
-| Document | Contents |
+| Document | Where | Contents |
+|---|---|---|
+| `docs/adr/` | **in git** | Architecture decision records — index shows which decisions exist only as a V4.0 summary row |
+| `docs/PPT自动讲解工具-技术方案-V4.0.md` | local only | Current technical baseline design (V3.6 kept for history) |
+| `docs/动画视频扩展-设计方案-V1.0.md` | local only | Animation/video extension design (G5 family) |
+| `docs/PPT自动讲解工具-开发计划-V1.0.md` | local only | Milestones, gates and their current status |
+| `docs/runbooks/SLO与告警.md` | local only | Alert rules and degradation handling |
+| `docs/审计覆盖矩阵.md` | generated | `go run ./scripts/audit_coverage -out docs/审计覆盖矩阵.md` — do not edit by hand |
+
+### Documents referenced but not yet written
+
+These are cited elsewhere in the repo. They are listed here so nobody hunts for a file
+that does not exist yet; nothing links to them as if complete.
+
+| Document | Status |
 |---|---|
-| `docs/PPTS功能与API说明书.md` | Features and API reference |
-| `docs/PPT自动讲解工具-技术方案-V4.0.md` | Current technical baseline design |
-| `docs/SQLite单租户部署.md` | SQLite mode capability boundaries and configuration |
-| `docs/runbooks/SLO与告警.md` | Alert rules and degradation handling |
-| `docs/审计覆盖矩阵.md` | Script-generated coverage matrix of high-risk operations |
-| `docs/adr/` | Architecture decision records |
-| `docs/PPT智能语音讲解平台-控制台产品优化实施计划-V1.0.md` | Console evolution plan |
+| `docs/PPTS功能与API说明书.md` | Not written. `proto/` and `README.md` are the current reference |
+| `docs/SQLite单租户部署.md` | Not written. Behaviour lives in `cmd/ppts`, `internal/config` and the SQLite migrations |
+| `docs/PPT智能语音讲解平台-控制台产品优化实施计划-V1.0.md` | Not written |
+
 
 ---
 
