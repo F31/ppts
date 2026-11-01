@@ -203,13 +203,17 @@ type animationSpecDTO struct {
 // 为什么要把 Applied 与原因回给前端：预填最坏的结果不是绑错几条（那看得见），
 // 而是静默地一条都没绑上——编辑器打开是空的，用户以为功能坏了或以为页面本来就没动效。
 // 说清楚「做了/跳过了、绑了几条、几条变静态」，用户才知道下一步该点哪里。
+//
+// 字段含义：Reason 在 applied=false 时说明跳过原因（目前只有 no_segments）；
+// Band 是版面分档（structured / low-confidence）；Bound/Static 只算「这套预设能动的元素」，
+// 不含本来就不挂动效的容器。
 type animationPrefillDTO struct {
-	Applied bool   `json:"applied"`
-	Reason  string `json:"reason,omitempty"` // applied=false 时说明原因（no_segments）
-	Band    string `json:"band,omitempty"`   // structured / low-confidence
+	Applied bool     `json:"applied"`
+	Reason  string   `json:"reason,omitempty"`
+	Band    string   `json:"band,omitempty"`
 	Signals []string `json:"signals,omitempty"`
-	Bound   int    `json:"bound"`  // 被绑上、产出了轨道的元素数
-	Static  int    `json:"static"` // 因未绑定而保持静态的元素数
+	Bound   int      `json:"bound"`
+	Static  int      `json:"static"`
 }
 
 func animationDTO(rev *animation.Revision, needsRecheck bool) animationSpecDTO {
