@@ -37,8 +37,10 @@ func TestClipJSONCarriesTriggerSource(t *testing.T) {
 
 func TestTriggerSourceWhitelist(t *testing.T) {
 	sources := TriggerSources()
-	if len(sources) != 8 {
-		t.Fatalf("白名单有 %d 个值，期望 8：%v", len(sources), sources)
+	// 7 条规则 + model + manual。model 单列的理由见 model.go 的常量注释：
+	// 它漏容器的方式和字面匹配不一样，并进 text 就筛不出来了。
+	if len(sources) != 9 {
+		t.Fatalf("白名单有 %d 个值，期望 9：%v", len(sources), sources)
 	}
 	for _, s := range sources {
 		if !ValidTriggerSource(s) {

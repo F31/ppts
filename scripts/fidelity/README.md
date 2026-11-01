@@ -806,6 +806,30 @@ q8 真实讲稿锚点 0.972 / 0.667 与 q7 0.353 一条没动。
 - **q7 口语样本没做多轮采样**：单轮 0.353 / 精确 0.400，与规则同分。它回答的是
   「版面本身没结构时模型能不能救」——不能。这条不依赖方差就能定，但严格说也是单轮。
 
+### 产品侧实现（M1 第一段，2026-11-01）
+
+路由与模型通道已经进了产品代码，但**还没接到 API/worker**——这一段是「通道本身可复现」，
+不是「编辑器已经用上」：
+
+| 实验里的东西 | 产品代码 | 保证它的用例 |
+|---|---|---|
+| `SYSTEM_PROMPT` | `bind.modelSystemPrompt` | `TestSystemPromptMatchesPythonHarness` 逐字节比对脚本 |
+| `build_page_input` | `modelPromptFor` | `TestModelPromptShape`（行式、120/400 截断、换行压平） |
+| `validate` 的八类拒绝 | `validateModelOutput` | `TestValidateRejectsEachKind`（含分母与 rule_locked） |
+| `route_of`（只把 script 送模型） | `RouteOf` | `TestRouteOfOnlyScriptUsesModel` + 三条「不该问模型」的用例 |
+| `fill_structure` | `finishModelRoute` 里的 `titlePrior`+`structuralBind` | `TestModelStructFillMatchesPythonHarness`：Python 补 4 个底板 / 共 18 条，Go 逐条相同 |
+| `cache_key` | `modelCacheKey` | `TestModelCacheKeyCoversEveryInput`（少任一项就红，采样序号单独钉） |
+| 模型自报 confidence | `bind.Binding.Confidence` → `Clip.Confidence` | `TestBindingConfidenceKeepsModelSelfReport` |
+
+三条**永不因为模型而失败**的降级路径也各有用例：超时、网关错误、输出不是 JSON / 一条都不该收。
+降级后返回的是规则结果，原因写进 `ModelRun.Fallback`（`timeout`/`error`/`invalid_json`/
+`no_valid_bindings`/`no_model`）——「没问模型」和「问了但退回规则」在产物上看起来一样，
+报告上必须分得开。
+
+还没做：`animation_prefill` 任务种类、结果落地与编辑器的读写端。它需要先把
+`api.animationResolver` 提到 `app`（worker 也要解析页与分段），是一次结构性搬动，
+单独一段做。
+
 ### 复现
 
 ```bash

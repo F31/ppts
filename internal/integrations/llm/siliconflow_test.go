@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/F31/ppts/internal/animation/bind"
 )
 
 func TestSiliconFlowRewriteSuccess(t *testing.T) {
@@ -149,5 +151,69 @@ func TestRewriteReasoningContentFallback(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "测试讲解文本") {
 		t.Fatalf("expected reasoning_content fallback, got text=%q", result.Text)
+	}
+}
+
+// 绑定通道的请求形态不能漂：temperature=0 / top_p=1 / json_object 三条一起决定
+// 「尽量确定」这个前提。少了 response_format，模型会裹 markdown；少了 top_p=1，
+// temperature=0 也可能带采样噪声。
+func TestSiliconFlowCompleteUsesDeterministicJSONMode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		var req chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Temperature != 0 || req.TopP != 1 {
+			t.Fatalf("采样参数 = temperature %v / top_p %v，期望 0 / 1", req.Temperature, req.TopP)
+		}
+		if req.ResponseFormat == nil || req.ResponseFormat.Type != "json_object" {
+			t.Fatalf("response_format = %+v，期望 json_object", req.ResponseFormat)
+		}
+		if req.MaxTokens != 1024 {
+			t.Fatalf("max_tokens = %d，期望 1024", req.MaxTokens)
+		}
+		if len(req.Messages) != 2 || req.Messages[0].Role != "system" || !strings.Contains(req.Messages[1].Content.(string), "E e1") {
+			t.Fatalf("messages = %+v", req.Messages)
+		}
+		_, _ = w.Write([]byte(`{"id":"req-b1","model":"model-1","choices":[{"message":{"role":"assistant","content":"{\"bindings\":[]}"}}],"usage":{"prompt_tokens":40,"completion_tokens":8}}`))
+	}))
+	defer server.Close()
+	provider, err := NewSiliconFlowProvider(SiliconFlowConfig{BaseURL: server.URL, APIKey: "test-key", Model: "model-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := provider.Complete(context.Background(), bind.ModelPrompt{
+		System: "sys",
+		User:   "SLIDE 1\nE e1 | bullet | 背景\nSEG\nS s1 | 讲背景",
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got.Text != `{"bindings":[]}` {
+		t.Fatalf("text = %q，期望原样回传（剥代码块由校验侧统一做）", got.Text)
+	}
+	if provider.ModelName() != "model-1" {
+		t.Fatalf("ModelName = %q", provider.ModelName())
+	}
+}
+
+// 用户给的 base 末尾带 /v1 时不能再拼一次，否则请求打到 /v1/v1/chat/completions（404）。
+func TestSiliconFlowCompleteBaseURLWithV1Suffix(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("path = %s（base 带 /v1 时被拼了两次）", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"id":"r","model":"m","choices":[{"message":{"role":"assistant","content":"{}"}}]}`))
+	}))
+	defer server.Close()
+	provider, err := NewSiliconFlowProvider(SiliconFlowConfig{BaseURL: server.URL + "/v1", APIKey: "k", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Complete(context.Background(), bind.ModelPrompt{System: "s", User: "u"}); err != nil {
+		t.Fatalf("Complete: %v", err)
 	}
 }

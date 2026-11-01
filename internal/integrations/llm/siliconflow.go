@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/F31/ppts/internal/animation/bind"
 )
 
 const (
@@ -113,31 +115,9 @@ func (p *SiliconFlowProvider) Rewrite(ctx context.Context, req RewriteRequest) (
 	if err != nil {
 		return RewriteResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	out, err := p.doChat(ctx, body)
 	if err != nil {
 		return RewriteResult{}, err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := p.client.Do(httpReq)
-	if err != nil {
-		return RewriteResult{}, &RetryableError{Err: fmt.Errorf("llm: request failed: %w", err)}
-	}
-	defer resp.Body.Close()
-	data, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return RewriteResult{}, readErr
-	}
-	if resp.StatusCode != http.StatusOK {
-		err := providerHTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			return RewriteResult{}, &RetryableError{Err: err, RetryAfter: retryAfter(resp.Header.Get("Retry-After"))}
-		}
-		return RewriteResult{}, err
-	}
-	var out chatResponse
-	if err := json.Unmarshal(data, &out); err != nil {
-		return RewriteResult{}, fmt.Errorf("llm: decode response: %w", err)
 	}
 	if len(out.Choices) == 0 {
 		return RewriteResult{}, errors.New("llm: empty choices")
@@ -153,6 +133,98 @@ func (p *SiliconFlowProvider) Rewrite(ctx context.Context, req RewriteRequest) (
 		Text: text, ProviderRequestID: out.ID, Model: out.Model,
 		PromptTokens: int64(out.Usage.PromptTokens), CompletionTokens: int64(out.Usage.CompletionTokens),
 	}, nil
+}
+
+// Complete 实现 bind.ModelCompleter：把一段提示词发出去，原样带回模型输出。
+//
+// 与 Rewrite 的关键差别：
+//   - temperature=0、top_p=1、response_format=json_object：绑定要的是「同一输入尽量同一输出」；
+//     虽然实测 temperature=0 仍不确定（三次 6/11/7 条），但至少不主动加随机性，
+//     确定性靠调用方的缓存拿。
+//   - 不做 TrimSpace 以外的任何修剪：剥 markdown 代码块属于校验侧的统一口径，
+//     适配器各剥一次会让「格式合法率」说不清是谁在兜底。
+func (p *SiliconFlowProvider) Complete(ctx context.Context, req bind.ModelPrompt) (bind.ModelCompletion, error) {
+	if strings.TrimSpace(req.System) == "" || strings.TrimSpace(req.User) == "" {
+		return bind.ModelCompletion{}, errors.New("llm: binding prompt is empty")
+	}
+	payload := chatRequest{
+		Model: p.model,
+		Messages: []chatMessage{
+			{Role: "system", Content: req.System},
+			{Role: "user", Content: req.User},
+		},
+		Temperature:    0,
+		TopP:           1,
+		MaxTokens:      1024,
+		ResponseFormat: &chatResponseFormat{Type: "json_object"},
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return bind.ModelCompletion{}, err
+	}
+	out, err := p.doChat(ctx, body)
+	if err != nil {
+		return bind.ModelCompletion{}, err
+	}
+	if len(out.Choices) == 0 {
+		return bind.ModelCompletion{}, errors.New("llm: empty choices")
+	}
+	text := strings.TrimSpace(contentString(out.Choices[0].Message.Content))
+	if text == "" && out.Choices[0].Message.ReasoningContent != "" {
+		text = strings.TrimSpace(out.Choices[0].Message.ReasoningContent)
+	}
+	if text == "" {
+		return bind.ModelCompletion{}, errors.New("llm: empty content")
+	}
+	return bind.ModelCompletion{
+		Text: text, Model: out.Model, ProviderRequestID: out.ID,
+		PromptTokens: int64(out.Usage.PromptTokens), CompletionTokens: int64(out.Usage.CompletionTokens),
+	}, nil
+}
+
+// ModelName 供调用方拼缓存键：缓存键里的模型名必须与实际发出去的模型一致，
+// 否则换了模型仍会命中旧缓存。
+func (p *SiliconFlowProvider) ModelName() string { return p.model }
+
+// chatURL 拼 chat/completions。base 末尾已经有 /v1 时不再拼一次——
+// 用户给的 `https://host/v1` 直接拼会变成 `/v1/v1/chat/completions`，报 404。
+func (p *SiliconFlowProvider) chatURL() string {
+	if strings.HasSuffix(p.baseURL, "/v1") {
+		return p.baseURL + "/chat/completions"
+	}
+	return p.baseURL + "/v1/chat/completions"
+}
+
+// doChat 是所有文本通道共用的传输层：鉴权、状态码分类、重试标记、响应解码。
+// 各方法只负责构造 payload 与解释结果。
+func (p *SiliconFlowProvider) doChat(ctx context.Context, body []byte) (chatResponse, error) {
+	var out chatResponse
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.chatURL(), bytes.NewReader(body))
+	if err != nil {
+		return out, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := p.client.Do(httpReq)
+	if err != nil {
+		return out, &RetryableError{Err: fmt.Errorf("llm: request failed: %w", err)}
+	}
+	defer resp.Body.Close()
+	data, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return out, readErr
+	}
+	if resp.StatusCode != http.StatusOK {
+		err := providerHTTPError{status: resp.StatusCode, body: strings.TrimSpace(string(data))}
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+			return out, &RetryableError{Err: err, RetryAfter: retryAfter(resp.Header.Get("Retry-After"))}
+		}
+		return out, err
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, fmt.Errorf("llm: decode response: %w", err)
+	}
+	return out, nil
 }
 
 func (p *SiliconFlowProvider) ExtractVisual(ctx context.Context, req VisualExtractRequest) ([]VisualAnchor, error) {
@@ -225,7 +297,15 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float64       `json:"temperature"`
-	MaxTokens   int           `json:"max_tokens"`
+	// TopP 与 ResponseFormat 只在绑定通道用；omitempty 保证既有的讲稿/视觉请求
+	// 序列化字节不变（它们的 golden 还钉着请求体）。
+	TopP           float64             `json:"top_p,omitempty"`
+	MaxTokens      int                 `json:"max_tokens"`
+	ResponseFormat *chatResponseFormat `json:"response_format,omitempty"`
+}
+
+type chatResponseFormat struct {
+	Type string `json:"type"`
 }
 
 type chatMessage struct {

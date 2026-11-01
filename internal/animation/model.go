@@ -74,6 +74,9 @@ const (
 // 任何两类：实验里「同块带出」的错是成块的（一列四件一起错），按来源一筛就能发现；
 // 字面匹配的错是零散的，只能逐条看。合并来源等于把复核成本从 O(最可疑的一类) 抬回 O(全部)。
 //
+// model 是模型通道，单列一类：它漏东西的方式和字面匹配不同（整块容器、配图全漏），
+// 并进 text 就等于把「模型只看到一半」这个事实藏起来。
+//
 // manual 表示人改过。它存在的意义是**否定**：一条 clip 一旦标成 manual，就不能再被
 // 预填逻辑当作「机器结论」批量撤销或覆盖。
 const (
@@ -84,7 +87,12 @@ const (
 	TriggerSourceSibling    = "sibling"    // 同块带出（与已绑元素同卡片/紧邻）
 	TriggerSourcePrior      = "prior"      // 标题先验（页内首个标题 → 第一段）
 	TriggerSourceStructural = "structural" // 结构推断（容器跟着装着的内容走）
-	TriggerSourceManual     = "manual"     // 人工编辑/确认
+	// TriggerSourceModel 是模型通道给的绑定。它排在全部规则之后：模型看不见版面，
+	// 实测结构化页 0.772、规则 0.972，只在「讲稿没把结构念出来」那一档补位。
+	// 单独成一类而不是并进 text：模型错的方式和字面匹配不一样（成片漏容器、偶尔越界），
+	// 并进去就筛不出来了。
+	TriggerSourceModel  = "model"
+	TriggerSourceManual = "manual" // 人工编辑/确认
 )
 
 // triggerSources 是白名单的**顺序**声明：错误信息里按这个顺序列出允许取值，
@@ -92,7 +100,7 @@ const (
 var triggerSources = []string{
 	TriggerSourceText, TriggerSourceCount, TriggerSourceOrdinal,
 	TriggerSourceSpatial, TriggerSourceSibling, TriggerSourcePrior,
-	TriggerSourceStructural, TriggerSourceManual,
+	TriggerSourceStructural, TriggerSourceModel, TriggerSourceManual,
 }
 
 // TriggerSources 返回全部允许的来源标注（拷贝，调用方可随意修改）。

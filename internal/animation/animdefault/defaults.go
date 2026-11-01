@@ -210,7 +210,7 @@ func buildBoundTracks(preset *animation.Preset, elems []pageElement, opt Default
 				// 来源标注让编辑器能"先看同块带出的那 9 条"（tasks 4.1）；
 				// 置信度让它们能按可疑程度升序排（tasks 4.2）。
 				TriggerSource: b.Source,
-				Confidence:    b.Score,
+				Confidence:    bindingConfidence(b),
 			})
 		}
 		if len(track.Clips) > 0 {
@@ -462,4 +462,18 @@ func Anchors(page *project.Page) []animation.Anchor {
 		return nil
 	}
 	return anchorsOf(pageElements(page))
+}
+
+// bindingConfidence 决定一条 clip 落进规格时的置信度。
+//
+// 规则绑定的置信度就是字面相似度（Binding.Score），模型绑定则是模型自报的把握
+// （Binding.Confidence）。两者语义不同，不能互相顶替：字面相似度回答「这段话和这条文字
+// 像不像」，模型把握回答「模型自己有多确定」。编辑器按置信度升序排可疑项，
+// 用字面相似度给模型绑定打分会把「模型很确定但版面里本来就没有可匹配文字」的条目
+// 排到最前面，复核顺序就反了。
+func bindingConfidence(b bind.Binding) float64 {
+	if b.Confidence > 0 {
+		return b.Confidence
+	}
+	return b.Score
 }

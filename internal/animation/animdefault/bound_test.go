@@ -207,3 +207,28 @@ func TestBoundSpecPassesValidation(t *testing.T) {
 		t.Fatalf("绑定模式的规格不合法: %v", err)
 	}
 }
+
+// 模型绑定的置信度取模型自报把握，规则绑定取字面相似度。两者不能互相顶替：
+// 模型绑定的字面分恒为 0（它本来就没有字面依据），若照旧用 Score，
+// 所有模型条目会一起排到「最可疑」那一端，复核顺序就反了。
+func TestBindingConfidenceKeepsModelSelfReport(t *testing.T) {
+	rev, _, err := DefaultSpecReport(bindPage(), bindOptions([]bind.Binding{
+		{ElementID: "b-title", SegmentID: "seg-1", Source: animation.TriggerSourceModel, Confidence: 0.42},
+		{ElementID: "b-1", SegmentID: "seg-1", Source: animation.TriggerSourceText, Score: 0.9},
+	}))
+	if err != nil {
+		t.Fatalf("DefaultSpecReport: %v", err)
+	}
+	got := map[string]float64{}
+	for _, tr := range rev.Tracks {
+		for _, c := range tr.Clips {
+			got[tr.ElementID] = c.Confidence
+		}
+	}
+	if got["b-title"] != 0.42 {
+		t.Errorf("模型绑定置信度 = %v，期望 0.42（自报把握，不是 Score=0）", got["b-title"])
+	}
+	if got["b-1"] != 0.9 {
+		t.Errorf("规则绑定置信度 = %v，期望 0.9（字面相似度）", got["b-1"])
+	}
+}

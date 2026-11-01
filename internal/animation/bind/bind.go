@@ -43,6 +43,10 @@ type Binding struct {
 	// Score 是字面相似度（0..1）。非字面规则恒为 0——它们本来就没有字面依据，
 	// 硬塞一个数进去只会让人误以为可以拿来排序。
 	Score float64
+	// Confidence 是模型自报的把握（0..1），只用于复核排序，不进任何门槛。
+	// 规则绑定恒为 0：规则没有「自报把握」这回事，字面相似度已经在 Score 里，
+	// 硬把两者塞进同一个字段，报告上就分不清「模型不确定」和「字面不像」。
+	Confidence float64
 	// StaggerMS 是同段内的错落偏移，按元素阅读顺序 × StaggerMS。
 	StaggerMS int64
 }
@@ -126,6 +130,8 @@ type pair struct {
 	seg    int
 	score  float64
 	source string
+	// conf 是模型自报把握，规则侧恒为 0（见 Binding.Confidence）。
+	conf float64
 }
 
 // Run 是唯一入口：纯函数，同一输入必然同一输出。
@@ -175,15 +181,7 @@ func Run(elements []Element, segments []Segment, opt Options) Result {
 		Signals:  []string{},
 		// 空切片而非 nil：报告按来源逐项列出（含 0 条的「标题先验」），
 		// 少一个键和一个 0 在复核时是两回事——前者像「这类没跑」，后者是「跑了，一条没出」。
-		BySource: map[string][]string{
-			animation.TriggerSourceText:       {},
-			animation.TriggerSourceCount:      {},
-			animation.TriggerSourceOrdinal:    {},
-			animation.TriggerSourceSpatial:    {},
-			animation.TriggerSourceSibling:    {},
-			animation.TriggerSourcePrior:      {},
-			animation.TriggerSourceStructural: {},
-		},
+		BySource: emptyBySource(),
 	}
 	// 按**去重前**统计来源：七条规则各判断「有没有主」，理论上不会重复，但真重复了
 	// 也要看见——去重后的计数会把「同块带出多抢了一件」这类问题抹平。
@@ -230,6 +228,48 @@ func dedupeByElement(pairs []pair) []pair {
 	return out
 }
 
+// emptyBySource 给出一份按来源预置空列表的映射。
+//
+// 规则页与模型页共用它：模型路由下多一个 model 键——「这一页有没有问过模型」
+// 必须能从结果本身看出来，而不是靠调用方记得自己走过哪条分支。
+func emptyBySource() map[string][]string {
+	m := map[string][]string{
+		animation.TriggerSourceText:       {},
+		animation.TriggerSourceCount:      {},
+		animation.TriggerSourceOrdinal:    {},
+		animation.TriggerSourceSpatial:    {},
+		animation.TriggerSourceSibling:    {},
+		animation.TriggerSourcePrior:      {},
+		animation.TriggerSourceStructural: {},
+	}
+	return m
+}
+
+// bySourceOf 按绑定来源分组列出元素 id（入参需已按元素排序，列表顺序即阅读序）。
+func bySourceOf(elements []Element, pairs []pair, withModel bool) map[string][]string {
+	out := emptyBySource()
+	if withModel {
+		out[animation.TriggerSourceModel] = []string{}
+	}
+	for _, p := range pairs {
+		out[p.source] = append(out[p.source], elements[p.elem].ID)
+	}
+	return out
+}
+
+// sortPairsByElem 按元素阅读序升序排列；同元素时按段号。
+//
+// 段内错落（StaggerMS）是按遍历顺序赋的，只有先按元素排序，同一段里先出现的元素
+// 才拿到更小的偏移。模型输出的顺序不可信，这一步不能省。
+func sortPairsByElem(pairs []pair) {
+	sort.SliceStable(pairs, func(i, j int) bool {
+		if pairs[i].elem != pairs[j].elem {
+			return pairs[i].elem < pairs[j].elem
+		}
+		return pairs[i].seg < pairs[j].seg
+	})
+}
+
 // toBindings 转成输出：段内按阅读顺序错落 StaggerMS。
 //
 // 错落是**段内**序号，不是全局序号：同一段带出四件时是 0/140/280/420，下一段重新从 0
@@ -248,11 +288,12 @@ func toBindings(elements []Element, segments []Segment, pairs []pair) []Binding 
 	out := make([]Binding, 0, len(sorted))
 	for _, p := range sorted {
 		out = append(out, Binding{
-			ElementID: elements[p.elem].ID,
-			SegmentID: segments[p.seg].ID,
-			Source:    p.source,
-			Score:     p.score,
-			StaggerMS: int64(seenInSeg[p.seg]) * StaggerMS,
+			ElementID:  elements[p.elem].ID,
+			SegmentID:  segments[p.seg].ID,
+			Source:     p.source,
+			Score:      p.score,
+			Confidence: p.conf,
+			StaggerMS:  int64(seenInSeg[p.seg]) * StaggerMS,
 		})
 		seenInSeg[p.seg]++
 	}

@@ -23,15 +23,15 @@ if [ ! -f tmp/q8/fid/elements.json ] || [ ! -f tmp/q7/fid/elements.json ]; then
   exit 2
 fi
 
-echo "== 1/4 校验器与评测链路自测（不花钱）=="
+echo "== 1/5 校验器与评测链路自测（不花钱）=="
 $PY "$SCRIPT" --selftest || exit 1
 
 echo
-echo "== 2/4 规则基线锚点对账（不花钱）=="
+echo "== 2/5 规则基线锚点对账（不花钱）=="
 $PY "$SCRIPT" --rules-baseline --out-dir "$OUT" || exit 1
 
 echo
-echo "== 3/4 分档工具对账（不花钱，走产品代码）=="
+echo "== 3/5 分档工具对账（不花钱，走产品代码）=="
 # 分档只有一份实现（internal/animation/bind.classifyBand）。这里把它的输出与 Go 金标
 # 对一遍：5 页、53 条绑定、全部 structured。对不上说明分档或绑定漂了，
 # 后面的路由实验就是在错的输入上做的。
@@ -53,8 +53,15 @@ print("5 页全部 structured、绑定 53 条——与 Go 金标一致")
 PYEOF
 
 echo
+echo "== 4/5 产品侧模型通道对账（不花钱，走 bind.RunRouted）=="
+# 路由、六类拒绝、降级、结构收尾、系统提示词与离线脚本逐字一致，这几条都在单测里。
+# 尤其是结构收尾：Python 侧 fill_structure 补 4 个底板，Go 侧必须补同样 4 个，
+# 差一条就说明两边的「模型召回」量的不是同一件事。
+go test ./internal/animation/bind/ -run 'TestRoute|TestModel|TestValidate|TestSystemPrompt' || exit 1
+
+echo
 if [ -z "${PPTS_LLM_API_KEY:-}" ]; then
-  echo "== 4/4 跳过真实模型对照：没有 PPTS_LLM_API_KEY =="
+  echo "== 5/5 跳过真实模型对照：没有 PPTS_LLM_API_KEY =="
   echo "设置后重跑即可："
   echo "  PPTS_LLM_API_KEY=... $0"
   echo
@@ -77,7 +84,7 @@ print("混合讲稿：tmp/q8/mixed-script.json")
 PYEOF
 
 echo
-echo "== 4/4 真实模型对照（$REPEAT 轮采样）=="
+echo "== 5/5 真实模型对照（$REPEAT 轮采样）=="
 # 单轮不可信：同一 prompt 三次输出 6/11/7 条，召回能在 0.694 与 0.972 之间跳。
 status=0
 $PY "$SCRIPT" --mode model --variants baseline no-structure mixed \
