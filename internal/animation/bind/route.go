@@ -37,6 +37,10 @@ const (
 	ModelFallbackError       = "error"             // 网关/鉴权/连接错误
 	ModelFallbackInvalidJSON = "invalid_json"      // 输出不是「整段一个 JSON 对象」
 	ModelFallbackRejected    = "no_valid_bindings" // 能解析，但一条都不该收
+	// ModelFallbackQuota 表示额度不足，**压根没有发出请求**。
+	// 与 error 分开：一个是「发了但网关坏了」，一个是「没发，因为账上不够」。
+	// 前者要查网关，后者要充值或等下个账期——运维动作完全不同。
+	ModelFallbackQuota = "quota"
 )
 
 // defaultModelTimeout 单页模型调用上限。
@@ -70,21 +74,21 @@ type RoutedOptions struct {
 // ModelRun 是一次模型参与的记录。无论成败都填，报告与前端都靠它区分
 // 「没问模型」和「问了但退回了规则」——两者在产物上看起来一样，意义完全不同。
 type ModelRun struct {
-	Used      bool
-	CacheHit  bool
-	LatencyMS int64
+	Used      bool  `json:"used"`
+	CacheHit  bool  `json:"cacheHit"`
+	LatencyMS int64 `json:"latencyMs"`
 	// Fallback 只在模型没产出可用结果时有值。
-	Fallback string
+	Fallback string `json:"fallback,omitempty"`
 	// Accepted 是被接受的绑定条数；Rejected 按原因计数（八类全部预置为 0）。
-	Accepted int
-	Rejected map[string]int
+	Accepted int            `json:"accepted"`
+	Rejected map[string]int `json:"rejected,omitempty"`
 	// Prior / Structural 是规则收尾补上的条数，与 Accepted 分开计：
 	// 模型做了什么、规则补了什么，必须分得开。
-	Prior               int
-	Structural          int
-	MonotonicViolations int
+	Prior               int `json:"prior"`
+	Structural          int `json:"structural"`
+	MonotonicViolations int `json:"monotonicViolations"`
 	// PromptChars 是用户提示词的字符数，用于发现「提示词突然变长」这类回归。
-	PromptChars int
+	PromptChars int `json:"promptChars"`
 }
 
 // RoutedResult 是预填的最终结果。

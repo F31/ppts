@@ -87,6 +87,20 @@ func ScopeOf(kind JobKind, snapshot string) Scope {
 		// 解析面向整份源文件（全篇）。
 		out.Kind = "project"
 		out.InputRevision = snap.RevisionNo
+	case KindAnimationPrefill:
+		// 一页一次的预填：范围永远是单页，不受 segment 数量影响。
+		// 快照里的 elements/segments 只用来跑绑定，不参与范围推导——它们可能很长，
+		// 而范围列只需要回答「这一个任务动了哪一页」。
+		var snap struct {
+			SlideID          string `json:"slideId"`
+			SourceRevisionNo int64  `json:"sourceRevisionNo"`
+		}
+		if err := json.Unmarshal([]byte(snapshot), &snap); err != nil {
+			return out
+		}
+		out.Kind = "pages"
+		out.InputRevision = snap.SourceRevisionNo
+		tally.add(snap.SlideID)
 	case KindExport:
 		var snap struct {
 			Format      string   `json:"format"`

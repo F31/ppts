@@ -36,6 +36,10 @@ const (
 	KindScriptDraft JobKind = "script_draft"
 	KindNarration   JobKind = "narration"
 	KindExport      JobKind = "export"
+	// KindAnimationPrefill 是一页动画的讲稿预填（模型档）。
+	// 它存在的唯一理由是 script 档必须问模型（实测规则 0.667 / 模型 0.833），
+	// 而模型调用要十几秒——不能塞在「打开编辑器」的同步请求里。
+	KindAnimationPrefill JobKind = "animation_prefill"
 )
 
 // Job 是任务真相（源自数据库行）。

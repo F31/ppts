@@ -238,7 +238,9 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		DefaultPercent: rolloutPercentOrDefault(opt.AnimationRolloutPercent),
 		Salt:           opt.AnimationRolloutSalt,
 	})
-	NewAnimationHandlerWithGate(opt.Animation, animationPages, animationGate).Register(mux, auth)
+	NewAnimationHandlerWithGate(opt.Animation, animationPages, animationGate).
+		WithPrefill(jobs, objects).
+		Register(mux, auth)
 	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
 	NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages).
 		WithBudget(opt.AnimationPreviewBudget).

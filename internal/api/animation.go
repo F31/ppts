@@ -150,6 +150,20 @@ type AnimationHandler struct {
 	store animstore.Store
 	pages AnimationPageResolver
 	gate  AnimationGate
+	// jobs/objects 只在异步预填（script 档问模型）时用到。二者与 pages 同时具备才注册预填路由的
+	// 完整能力；缺任一时预填端点返回 feature_unavailable，而不是退化成一个同步的慢请求。
+	jobs    prefillJobs
+	objects objectstore.ObjectStore
+}
+
+// WithPrefill 注入异步预填所需的任务与对象存储。
+//
+// 不放进构造函数，是因为既有的构造签名被大量测试与两处装配调用（api/worker）；
+// 加参数会让「只是想读一个规格」的场景也被迫准备一套任务存储。
+func (h *AnimationHandler) WithPrefill(jobs prefillJobs, objects objectstore.ObjectStore) *AnimationHandler {
+	h.jobs = jobs
+	h.objects = objects
+	return h
 }
 
 // NewAnimationHandler 创建 handler。store 为 nil 时不注册任何路由（等价未上线）。
@@ -178,6 +192,11 @@ func (h *AnimationHandler) Register(mux *http.ServeMux, auth func(http.Handler) 
 	// 开关关闭时编辑器据此把"配置动效"整块说明清楚，而不是先渲染出一个空面板。
 	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation/anchors", auth(http.HandlerFunc(h.anchors)))
 	mux.Handle("PUT /api/projects/{projectId}/slides/{slideId}/animation", auth(http.HandlerFunc(h.put)))
+	// 讲稿预填的异步入口（M1b）：POST 受理，GET 按 jobId 取结果。
+	// 与读路径分开挂载而不是塞进 `?prefill=true`：只有 script 档会问模型，
+	// 那一步要十几秒，不能挂在「打开编辑器」的同步请求上。
+	mux.Handle("POST /api/projects/{projectId}/slides/{slideId}/animation/prefill", auth(http.HandlerFunc(h.prefillPost)))
+	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation/prefill", auth(http.HandlerFunc(h.prefillGet)))
 }
 
 type animationSpecDTO struct {
@@ -217,6 +236,13 @@ type animationPrefillDTO struct {
 	Signals    []string `json:"signals,omitempty"`
 	Bound      int      `json:"bound"`
 	Static     int      `json:"static"`
+	// Route 说明这份结果是规则算的还是模型出的（rule / model）。
+	// 不写的话，「模型没配所以走了规则」和「模型参与并被采纳」在响应里长得一模一样——
+	// 而这两件事的复核方式完全不同：前者该去看模型配置，后者该去看绑定对不对。
+	Route string `json:"route,omitempty"`
+	// ModelFallback 只在 Route=rule 且这一页本该问模型时有值（no_model/timeout/error/
+	// invalid_json/no_valid_bindings/quota）。它是「为什么没用上模型」的唯一解释。
+	ModelFallback string `json:"modelFallback,omitempty"`
 }
 
 func animationDTO(rev *animation.Revision, needsRecheck bool) animationSpecDTO {
@@ -316,11 +342,9 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rev, report, derr := animdefault.DefaultSpecReport(page, animdefault.DefaultOptions{
-		SlideID: key.SlideID, Language: key.Language, DurationMS: pc.DurationMS,
-		SegmentIDs: pc.SegmentIDs, PresetID: r.URL.Query().Get("preset"),
-		Bindings: bindings,
-	})
+	// 同步路径只跑规则：模型通道在 worker 里（异步预填），这里如实标 route=rule，
+	// 免得前端把「同步算出来的」误当成「模型也看过了」。
+	dto, report, derr := h.defaultSpecFor(page, pc, key, r.URL.Query().Get("preset"), bindings)
 	if derr != nil {
 		writeAnimationError(w, derr)
 		return
@@ -328,11 +352,10 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 	if prefillInfo != nil {
 		prefillInfo.Bound = report.Bound
 		prefillInfo.Static = report.Static
+		if prefillInfo.Applied {
+			prefillInfo.Route = string(bind.RouteRule)
+		}
 	}
-	rev.TenantID = key.TenantID
-	rev.ProjectID = key.ProjectID
-	rev.SourceRevisionNo = key.SourceRevisionNo
-	dto := animationDTO(rev, false)
 	dto.Prefill = prefillInfo
 	writeJSON(w, http.StatusOK, dto)
 }

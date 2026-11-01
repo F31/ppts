@@ -166,6 +166,7 @@
   "enum.jobKind.scriptDraft": "Script draft",
   "enum.jobKind.narration": "Narration",
   "enum.jobKind.export": "Export",
+  "enum.jobKind.animationPrefill": "Animation prefill",
   "enum.jobStepType.pages": "Parse & render pages",
   "enum.jobStepType.page": "Script page",
   "enum.jobStepType.ttsSegment": "Segment TTS",

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/F31/ppts/internal/animation/animstore"
+	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
@@ -136,7 +137,10 @@ func runWorker() error {
 		logger.Info("textnorm: enabling TTS text normalization engine")
 		narrationHandler = narrationHandler.WithTextPreparation(app.AdaptTextNorm(cachedAppTextNorm(appTextNorm{store: stores.pronunciation, contextRules: stores.contextRule, logger: logger})))
 	}
-	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider)
+	// 动画预填（M1b）：只有 script 档会真的调模型，结果按内容指纹写回对象存储。
+	// 与 script_draft 共用同一套 token 记账——预填不许绕开额度。
+	prefillHandler := app.NewAnimationPrefillHandler(objects).WithTokenAccounting(usageStore)
+	attachGateway(ctx, logger, stores, scriptDraftHandler, narrationHandler, polisher, ttsProvider, prefillHandler)
 	mp4Encoder, err := media.NewMP4Encoder()
 	if err != nil {
 		logger.Info("mp4 encoder unavailable", "error", err)
@@ -194,6 +198,8 @@ func runWorker() error {
 			return narrationHandler.Handle(ctx, job)
 		case pipeline.KindExport:
 			return exportHandler.Handle(ctx, job)
+		case pipeline.KindAnimationPrefill:
+			return prefillHandler.Handle(ctx, job)
 		default:
 			return fmt.Errorf("worker: unsupported job kind %q", job.Kind)
 		}
@@ -215,6 +221,10 @@ func runWorker() error {
 		case pipeline.KindExport:
 			// 只有带动画的导出才预占过；静态导出 Release 会返回 NotFound，属正常。
 			err = usageStore.Release(ctx, job.TenantID, job.IDempotencyKey, animationMinutesKind(job))
+		case pipeline.KindAnimationPrefill:
+			// 预填的预占发生在任务内部（见 app.AnimationPrefillHandler），逻辑操作 id 由
+			// app.PrefillOpID 单点定义：两处各拼一次字符串，改了一处就会把额度锁到账期结束。
+			err = usageStore.Release(ctx, job.TenantID, app.PrefillOpID(job.ID), usage.KindLLMTokens)
 		default:
 			return nil
 		}
@@ -486,10 +496,19 @@ func envBool(name string, fallback bool) bool {
 
 // attachGateway 接入模型网关（G3 可视化配置）：DB 有配置时优先，否则回退 env 供应商。
 // 加密密钥未配置或 DB 不可用时静默回退 env，不阻断 worker 启动。
-func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, draft *app.ScriptDraftHandler, narr *app.NarrationHandler, envPolisher llm.TextRewriter, envTTS tts.TTSProvider) {
+func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, draft *app.ScriptDraftHandler, narr *app.NarrationHandler, envPolisher llm.TextRewriter, envTTS tts.TTSProvider, prefill *app.AnimationPrefillHandler) {
 	cipher, err := gateway.CipherFromEnv()
 	if err != nil {
 		logger.Info("model gateway disabled (no AES key); using env providers")
+		// 网关不可用时预填仍可用：退到 env 供应商（如果有）。
+		// 留着这条是因为「没有密钥」不该等于「预填永远走规则」——本地与私有化部署
+		// 本来就只用环境变量配模型，那条路径必须一样能问模型。
+		prefill.WithCompleter(func(context.Context, string) (bind.ModelCompleter, error) {
+			if c, ok := envPolisher.(bind.ModelCompleter); ok && c != nil {
+				return c, nil
+			}
+			return nil, errors.New("worker: no LLM provider configured")
+		})
 		return
 	}
 	store := stores.gatewayStore(cipher)
@@ -534,6 +553,19 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 			return nil, errors.New("worker: no TTS provider configured (env or gateway)")
 		}
 		return envTTS, nil
+	})
+	// 预填与成稿共用同一套租户级 LLM 配置：用户在网关里换模型，
+	// 预填跟着换，不需要第二个开关。解析不到就退回 env 供应商。
+	prefill.WithCompleter(func(ctx context.Context, tenantID string) (bind.ModelCompleter, error) {
+		if cfg, err := store.Resolve(ctx, tenantID, gateway.KindLLM); err == nil {
+			if p, perr := providers.LLM(cfg); perr == nil && p != nil {
+				return p, nil
+			}
+		}
+		if c, ok := envPolisher.(bind.ModelCompleter); ok && c != nil {
+			return c, nil
+		}
+		return nil, errors.New("worker: no LLM provider configured (env or gateway)")
 	})
 	logger.Info("model gateway attached", "ttl", "30s")
 }

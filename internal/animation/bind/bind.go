@@ -8,8 +8,14 @@ import (
 
 // Box 是 1080p 画布坐标下的轴对齐矩形（px）。实验脚本与渲染侧共用同一套坐标系，
 // 方位判定（0.5 切线）与面积占比才有可比的量纲。
+//
+// 带 json 标签是因为它随 Snapshot 进任务快照并被持久化：字段名一旦改了就解析不出旧快照，
+// 所以这个形态属于**存储契约**，不能随手重命名。
 type Box struct {
-	X, Y, W, H float64
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
 }
 
 // Element 是参与绑定的一页元素。
@@ -22,33 +28,33 @@ type Box struct {
 // 这个类型存在的唯一理由：绑定器要**在编译之前**拿到文本。render.Element 只有
 // {ID, Kind, Bounds}，文本在 project.Shape 上，换算成 render.Element 时就丢了。
 type Element struct {
-	ID   string
-	Kind string
-	Box  Box
-	Text string
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+	Box  Box    `json:"box"`
+	Text string `json:"text,omitempty"`
 }
 
 // Segment 是一个讲解段落。ID 必须是讲稿里的稳定 id（预填只写 withSegment:<id>）。
 type Segment struct {
-	ID   string
-	Text string
+	ID   string `json:"id"`
+	Text string `json:"text"`
 }
 
 // Binding 是一条预填结果。
 type Binding struct {
-	ElementID string
-	SegmentID string
+	ElementID string `json:"elementId"`
+	SegmentID string `json:"segmentId"`
 	// Source 是 animation.TriggerSource* 之一，标明这条绑定出自哪条规则。
-	Source string
+	Source string `json:"source"`
 	// Score 是字面相似度（0..1）。非字面规则恒为 0——它们本来就没有字面依据，
 	// 硬塞一个数进去只会让人误以为可以拿来排序。
-	Score float64
+	Score float64 `json:"score"`
 	// Confidence 是模型自报的把握（0..1），只用于复核排序，不进任何门槛。
 	// 规则绑定恒为 0：规则没有「自报把握」这回事，字面相似度已经在 Score 里，
 	// 硬把两者塞进同一个字段，报告上就分不清「模型不确定」和「字面不像」。
-	Confidence float64
+	Confidence float64 `json:"confidence"`
 	// StaggerMS 是同段内的错落偏移，按元素阅读顺序 × StaggerMS。
-	StaggerMS int64
+	StaggerMS int64 `json:"staggerMs,omitempty"`
 }
 
 // Band 是版面分档：结构化页面值得预填，无信号页面只给低置信预填。

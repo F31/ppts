@@ -197,7 +197,10 @@ export const jobKindKey: Record<string, string> = {
   render: 'enum.jobKind.render',
   script_draft: 'enum.jobKind.scriptDraft',
   narration: 'enum.jobKind.narration',
-  export: 'enum.jobKind.export'
+  export: 'enum.jobKind.export',
+  // M1b：只有 script 档会建这个任务（版面有结构、讲稿没念出来才值得问模型）。
+  // 不登记的话，任务列表会把原始 kind 直接显示成 enum 键。
+  animation_prefill: 'enum.jobKind.animationPrefill'
 };
 
 // B4-M6a：任务步骤类型/状态与范围种类（原生端点 /jobs/{id}/detail、/jobs/summary 的取值）。

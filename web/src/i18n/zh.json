@@ -166,6 +166,7 @@
   "enum.jobKind.scriptDraft": "讲稿生成",
   "enum.jobKind.narration": "配音生成",
   "enum.jobKind.export": "导出",
+  "enum.jobKind.animationPrefill": "动效预填",
   "enum.jobStepType.pages": "页面解析与渲染",
   "enum.jobStepType.page": "讲稿页",
   "enum.jobStepType.ttsSegment": "分段配音",

@@ -20,6 +20,24 @@ func TestScopeOf(t *testing.T) {
 		wantFormat   string
 	}{
 		{
+			// 预填是一页一次的任务：即使快照里带着元素与分段，范围也只记这一页。
+			// 元素列表可能上百条，进了范围列只会让任务列表显示成「改了 57 页」。
+			name: "animation_prefill 恒为单页", kind: KindAnimationPrefill,
+			snapshot:     `{"slideId":"s7","language":"zh-CN","sourceRevisionNo":4,"elements":[{"id":"a"},{"id":"b"}],"segments":[{"id":"seg-1"}]}`,
+			wantKind:     "pages",
+			wantPages:    1,
+			wantRevision: 4,
+			wantPageIDs:  []string{"s7"},
+		},
+		{
+			// 快照坏了不能拖垮任务详情：范围显示「—」，而不是让整个接口失败。
+			name: "animation_prefill 快照不可解析", kind: KindAnimationPrefill,
+			snapshot:    `{bad json`,
+			wantKind:    "unknown",
+			wantPages:   0,
+			wantPageIDs: []string{},
+		},
+		{
 			name: "narration 按页生成", kind: KindNarration,
 			snapshot:     `{"slides":[{"slideId":"s1","scriptRevision":3},{"slideId":"s2","scriptRevision":4}],"segmentIds":[],"language":"zh"}`,
 			wantKind:     "pages",
