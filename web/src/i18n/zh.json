@@ -1387,5 +1387,8 @@
   "editor.undo": "撤销",
   "editor.redo": "重做",
   "editor.undoHint": "撤销上一步讲稿编辑（Ctrl+Z）",
-  "editor.redoHint": "重做（Ctrl+Shift+Z 或 Ctrl+Y）"
+  "editor.redoHint": "重做（Ctrl+Shift+Z 或 Ctrl+Y）",
+  "editor.includeHiddenPages": "纳入隐藏页（共 {count} 页）",
+  "editor.hiddenPagesSkipped": "有 {count} 页隐藏页有讲稿，但默认不参与成片；需要的话勾选上方「纳入隐藏页」。",
+  "editor.hiddenPageBadge": "隐藏"
 }

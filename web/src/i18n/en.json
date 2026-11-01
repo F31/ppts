@@ -1387,5 +1387,8 @@
   "editor.undo": "Undo",
   "editor.redo": "Redo",
   "editor.undoHint": "Undo the last script edit (Ctrl+Z)",
-  "editor.redoHint": "Redo (Ctrl+Shift+Z or Ctrl+Y)"
+  "editor.redoHint": "Redo (Ctrl+Shift+Z or Ctrl+Y)",
+  "editor.includeHiddenPages": "Include hidden slides ({count} total)",
+  "editor.hiddenPagesSkipped": "{count} hidden slide(s) have a script but are left out of exports by default. Tick \"Include hidden slides\" to add them.",
+  "editor.hiddenPageBadge": "Hidden"
 }

@@ -274,6 +274,14 @@ func isOpaqueKind(kind string) bool {
 // collectPageFeatures 汇总单页特性提示。
 func collectPageFeatures(pg *Page) []string {
 	var flags []string
+	// 隐藏页（p:sldId@show="0"）：放映、PDF 导出都会跳过它。以前这个事实只存在于
+	// Page.Hidden 里，接口不返回，界面上隐藏页与普通页长得一模一样——用户看不出
+	// 「为什么这页成片里没有」，也看不出自己正在给一页不会播出的内容写讲稿。
+	// 用既有的 featureFlags 通道带出去，避免为它单独改契约。
+	// 读取失败时 Page.Hidden 为 nil（无法确定），按可见处理，不加标记。
+	if pg.Hidden != nil && *pg.Hidden {
+		flags = append(flags, "hidden")
+	}
 	for _, sh := range pg.Shapes {
 		if sh.Opaque {
 			flags = append(flags, "opaque_shape:"+sh.Name)

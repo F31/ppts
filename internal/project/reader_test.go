@@ -1,9 +1,12 @@
 package project
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -97,5 +100,117 @@ func TestGoPPTXReaderTooLarge(t *testing.T) {
 	src := bytes.NewReader(make([]byte, 64))
 	if _, err := r.Inspect(context.Background(), src, 64); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("oversize should map to ErrTooLarge, got %v", err)
+	}
+}
+
+// hideSlide 把 pptx 里第 index 页标记为隐藏（p:sldIdLst 里加 show="0"）。
+// 直接改包而不是找一个隐藏页样本：样本一旦换掉，这条用例就不再验"隐藏"了，
+// 而 show="0" 是 PowerPoint 表达隐藏页的唯一方式，改一处就够。
+func hideSlide(t *testing.T, deck []byte, index int) *bytes.Reader {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(deck), int64(len(deck)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", f.Name, err)
+		}
+		body, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read %s: %v", f.Name, err)
+		}
+		if f.Name == "ppt/presentation.xml" {
+			marked, err := markHiddenSlide(body, index)
+			if err != nil {
+				t.Fatalf("mark hidden: %v", err)
+			}
+			body = marked
+		}
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatalf("create %s: %v", f.Name, err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("write %s: %v", f.Name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return bytes.NewReader(out.Bytes())
+}
+
+// markHiddenSlide 在 sldIdLst 的第 index 个 sldId 上补 show="0"。
+func markHiddenSlide(xmlBody []byte, index int) ([]byte, error) {
+	s := string(xmlBody)
+	const open = "<p:sldId "
+	pos := 0
+	for i := 0; i <= index; i++ {
+		next := strings.Index(s[pos:], open)
+		if next < 0 {
+			return nil, fmt.Errorf("sldId #%d not found", index)
+		}
+		pos += next
+		if i < index {
+			pos += len(open)
+		}
+	}
+	end := strings.Index(s[pos:], "/>")
+	if end < 0 {
+		return nil, fmt.Errorf("sldId #%d is not self-closing", index)
+	}
+	end += pos
+	return []byte(s[:end] + ` show="0"` + s[end:]), nil
+}
+
+func TestGoPPTXReaderMarksHiddenSlide(t *testing.T) {
+	src := buildTestDeck(t)
+	deck := make([]byte, src.Len())
+	if _, err := src.ReadAt(deck, 0); err != nil && err != io.EOF {
+		t.Fatalf("read deck: %v", err)
+	}
+	hidden := hideSlide(t, deck, 0)
+
+	r := NewGoPPTXReader(Limits{})
+	doc, err := r.Inspect(context.Background(), hidden, int64(hidden.Len()))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if len(doc.Pages) != 1 {
+		t.Fatalf("pages: %d", len(doc.Pages))
+	}
+	pg := doc.Pages[0]
+	if pg.Hidden == nil || !*pg.Hidden {
+		t.Fatalf("page should be hidden, got %v", pg.Hidden)
+	}
+	// 关键：隐藏这个事实必须出现在 featureFlags 里——接口只回传这一份，
+	// 不进 flags 等于界面上看不出这页是隐藏页。
+	var found bool
+	for _, f := range pg.FeatureFlags {
+		if f == "hidden" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("featureFlags should contain %q, got %v", "hidden", pg.FeatureFlags)
+	}
+}
+
+func TestGoPPTXReaderVisibleSlideHasNoHiddenFlag(t *testing.T) {
+	src := buildTestDeck(t)
+	r := NewGoPPTXReader(Limits{})
+	doc, err := r.Inspect(context.Background(), src, int64(src.Len()))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	for _, f := range doc.Pages[0].FeatureFlags {
+		if f == "hidden" {
+			t.Fatalf("visible page must not carry hidden flag: %v", doc.Pages[0].FeatureFlags)
+		}
 	}
 }

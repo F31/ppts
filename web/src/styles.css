@@ -1343,3 +1343,10 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .track-clip-continue.on { opacity: 1; background: var(--accent); color: var(--accent-contrast, #fff); border-color: var(--accent); }
 .track-clip-continue:hover { opacity: 1; }
 .track-clip.continues { background: var(--accent-tint, var(--accent-soft)); border-style: dashed; }
+
+/* 隐藏页相关：勾选框与缩略图上的角标。
+   角标必须与普通页有可见差别——隐藏页的缩略图与普通页逐像素同貌，
+   不标出来用户无法理解"这页为什么不在成片里"。 */
+.field-check { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; color: #c9d6ea; font-size: 13px; }
+.field-check input { accent-color: #67e8f9; }
+.hidden-badge { margin-left: 6px; border: 1px solid rgba(255,255,255,.18); border-radius: 999px; padding: 1px 6px; font-size: 11px; font-weight: 600; color: #9fb1cf; vertical-align: 1px; }

@@ -54,6 +54,7 @@ import { ExportDialog, type ExportFormat, type ExportOptions } from '../componen
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
@@ -172,6 +173,9 @@ export function ProjectEditor({
   const [voiceSaveError, setVoiceSaveError] = useState('');
   // 配音生成方式：incremental=只补未配音/讲稿已更新的页；full=全部重新生成并覆盖。
   const [voiceGenMode, setVoiceGenMode] = useState<'incremental' | 'full'>('incremental');
+  // 隐藏页默认不参与成片（放映与 PDF 导出都会跳过），因此“全部生成”默认也跳过它们；
+  // 勾上这个才纳入——把花钱的事交给显式选择，而不是默认替用户做。
+  const [includeHiddenPages, setIncludeHiddenPages] = useState(false);
   const [voiceStaleIds, setVoiceStaleIds] = useState<string[]>([]);
   const [voiceStaleLoading, setVoiceStaleLoading] = useState(false);
   const exportQueryHandledRef = useRef(false);
@@ -1331,13 +1335,23 @@ export function ProjectEditor({
   };
 
   // 全部已有讲稿的页（配音时间轴须完整覆盖，否则未提交的页会从播放器消失）。
-  const allScriptSlideIds = (): string[] => {
+  const allScriptSlideIds = (includeHidden = false): string[] => {
     // 闭包内 TS 不会沿用 isReady 的别名收窄，需就地判别可辨识联合。
     if (slidesState.mode !== 'real') return activeRealScript ? [activeSlideID] : [];
-    const ids = slidesState.slides.filter((slide) => realScripts[slide.slideId]).map((slide) => slide.slideId);
+    const slides = slidesState.slides;
+    const ids = slides.filter((slide) => realScripts[slide.slideId]).map((slide) => slide.slideId);
     if (ids.length === 0 && activeRealScript) return [activeSlideID];
-    return ids;
+    // 隐藏页默认排除：它既不会被放映、也不会进成片，给它配音是白花钱。
+    // 单个页面上的操作（如本页重新生成语音）显式传 includeHidden=true —— 那正是
+    // "用户选择纳入"的入口。
+    return scopeSlideIds(slides, ids, (slide) => slide.slideId, includeHidden);
   };
+
+  // 有讲稿的隐藏页数量：用来在配音面板说明"这几页被跳过了"，而不是让用户以为生成漏了页。
+  const hiddenScriptCount =
+    slidesState.mode === 'real'
+      ? slidesState.slides.filter((slide) => isHiddenPage(slide) && realScripts[slide.slideId]).length
+      : 0;
 
   // 核心配音流程：创建生成任务 → 轮询 narration → 构建播放清单。
   // 讲稿随时可编辑、自动保存，不再要求"确认/锁定"（lockConfirmedOnly=false，后端 narration.go:92/110
@@ -1455,7 +1469,7 @@ export function ProjectEditor({
     while (scriptEditorRef.current?.isDirty() && Date.now() < waitDeadline) {
       await sleep(200);
     }
-    const ids = allScriptSlideIds();
+    const ids = allScriptSlideIds(includeHiddenPages);
     if (ids.length === 0) {
       setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
       return;
@@ -1488,7 +1502,7 @@ export function ProjectEditor({
     while (scriptEditorRef.current?.isDirty() && Date.now() < deadline) {
       await sleep(200);
     }
-    await generateNarrationFor(allScriptSlideIds(), {}, true);
+    await generateNarrationFor(allScriptSlideIds(true), {}, true);
   };
 
   const runExport = async (format: ExportFormat, options: ExportOptions) => {
@@ -1685,7 +1699,12 @@ export function ProjectEditor({
                     )}
                   </span>
                   <span className="thumb-meta">
-                    <strong className="nowrap-ellipsis">{slide.title || slide.slideId}</strong>
+                    <strong className="nowrap-ellipsis">
+                      {slide.title || slide.slideId}
+                      {/* 隐藏页在放映/导出里会被跳过，与普通页逐像素同貌，必须显式标出，
+                          否则用户会以为"这页配了音却没出现在成片里"是缺陷。 */}
+                      {isHiddenPage(slide) && <span className="hidden-badge">{t('editor.hiddenPageBadge')}</span>}
+                    </strong>
                     <em className="nowrap-ellipsis">{slide.preview || (slide.hasNotes ? t('editor.hasNotes') : '')}</em>
                   </span>
                 </button>
@@ -2007,6 +2026,17 @@ export function ProjectEditor({
                 </select>
               </label>
 
+              {/* 隐藏页默认不参与成片：放映与 PDF 导出都会跳过它。默认不配音，
+                  要纳入得显式勾选——否则用户会在成品里发现"多了一段没人看的内容"。 */}
+              <label className="field-check">
+                <input
+                  type="checkbox"
+                  checked={includeHiddenPages}
+                  onChange={(e) => setIncludeHiddenPages(e.currentTarget.checked)}
+                />
+                {t('editor.includeHiddenPages', { count: hiddenCount(slidesState.mode === 'real' ? slidesState.slides : []) })}
+              </label>
+
               {probeErrors.voiceStale ? (
                 // 原实现失败即置空数组，这里会显示"语音全部最新"——与"确实无需更新"完全同貌（A26）。
                 <div className="load-failure" role="alert">
@@ -2022,6 +2052,11 @@ export function ProjectEditor({
                     : voiceGenMode === 'full'
                       ? t('editor.voiceFullHint', { total: scriptReadyCount })
                       : t('editor.voiceStaleHint', { stale: voiceStaleIds.length, total: scriptReadyCount })}
+                </p>
+              )}
+              {!includeHiddenPages && hiddenScriptCount > 0 && (
+                <p className="narration-note">
+                  {t('editor.hiddenPagesSkipped', { count: hiddenScriptCount })}
                 </p>
               )}
 
