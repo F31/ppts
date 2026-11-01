@@ -1010,3 +1010,84 @@ python3 scripts/fidelity/selfrecall.py --elements tmp/q9/fid/elements.json --ord
 ```
 
 修复后两者应当一致；不一致就说明 `readingOrder` 没生效，或者有人在调用链上又排了一次序。
+
+## 配音 PPTX 的客户端门禁（G0-8）
+
+结构校验只能证明「我们按规范写了」，不能证明**客户端认**。PowerPoint 判损的触发点很杂
+（关系指向、内容类型、计时树引用、媒体图标几何），任何一条不合它的意，它会弹「需要修复」
+然后悄悄丢掉一段。所以这一项单独立门禁，而不是靠 `Validate()` 通过就算数。
+
+```bash
+# 完整门禁（Windows + PowerPoint，约 40s）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/e2e/audio_pptx_gate.ps1
+
+# 只验包结构（任何平台，CI 可跑）：同上加 -SkipClient
+```
+
+三段，失败即停：
+
+1. **生成**（`scripts/e2e/audiogate`）走产品同一条写入路径
+   （`integrations.GoPPTXNarrationWriter`），源文件用仓库里的真实 deck（14 页、含图片与
+   多级文本），不是合成的最小页——修复提示多由复杂版面触发，最小页测出来的「能打开」
+   证明力很弱。每页音频是不同频率的合成音：可按频率区分「这页放的是不是自己那段」，
+   也不必依赖 TTS。
+2. **包结构**（`audiogate/verify`）：每页 `<p:transition advTm>` 与该页停留时长一致；
+   音频页有 `presetClass="mediacall"` + `playFrom(0.0)`（进页即播）；
+   `endCond evt="onStopAudio"`（离页即停，这是「不串音」的结构表述）；
+   没有 `numSld`（没有跨页播放声明）；每页的 audio 关系指向**自己的**部件，
+   且 WAV 头算出的时长等于该页计划时长；`[Content_Types].xml` 声明了 `audio/wav`。
+3. **客户端**（`pptx_client.ps1`）：PowerPoint 无窗口打开 → 逐页读回对象模型 → 另存 .pptx
+   → **重开另存后的文件**再读一遍。断言：媒体形状数（音频页 1、静默页 0）、
+   `MediaType=2`（ppMediaTypeSound）、`AdvanceOnTime` 与 `AdvanceTime`、
+   `MainSequence` 里恰好 1 个 `EffectType=83`（msoAnimEffectMediaPlay）且时长等于该页音频。
+   重开后上述全部不得变化——这一条就是「重开保存」。
+
+**修复提示怎么判**：需要修复时 PowerPoint 弹模态框并阻塞 `Open()`，于是脚本在超时窗口内
+回不来；编排脚本用 `Start-Job` + `Wait-Job -Timeout` 压住它，超时即判 `REPAIR_PROMPT`。
+这与 go-pptx L3 的判据是同一套。打不开（`CLIENT=FAIL ... could not open`）是另一条快速
+失败路径，同样判失败。
+
+### 实测（2026-11-01）
+
+| 项 | 结果 |
+|---|---|
+| 客户端 | PowerPoint **16.0**，14 页，打开 / 另存 / 重开均成功，无修复提示 |
+| 断言 | 结构 177 项、含客户端 329 项，**0 失败** |
+| 重开保存 | 各页媒体形状、自动切页、媒体效果时长与保存前逐项一致 |
+| 静默页 | 第 3 页无音频，仍有 `advTm="1500"`，客户端读到 `AdvanceOnTime=True / 1.5s` |
+| 留白页 | 第 6 页音频 2.4s、停留 3.1s：效果时长与停留时长分开，各自对得上 |
+
+### 有牙验证（各自恢复后变绿）
+
+| 破坏 | 结果 |
+|---|---|
+| 删掉 `slide1.xml` 的 `advTm` | `缺自动切页时长 advTm="2000"` |
+| 让第 2 页的 audio 关系指向第 1 页的 wav | `音频时长 2000ms，计划 2600ms` + `被 slide1、slide2 共用` |
+| 把某音频页的 `onStopAudio` 改成 `onStop` | `缺 onStopAudio 结束条件（切页可能串音）` |
+| 伪造客户端报告：`advanceOnTime=false` | `第 1 页：客户端认为没有自动切页` |
+| 伪造客户端报告：删掉媒体效果 | `第 1 页：媒体播放效果 0 个，期望 1 个` |
+| 伪造客户端报告：重开后丢自动切页 | `重开保存后第 1 页：自动切页丢了` |
+
+第三条第一次没打中：破坏打在了第 3 页，而那是静默页，本来就没有 `onStopAudio`——破坏样本
+本身无效，跑出来是绿的。换成第 4 页才真红。**验证「用例有牙」时，先确认破坏真的破坏了目标。**
+
+### 这个门禁不证明什么
+
+- **不证明「真的出声」**。COM 读得到媒体形状、播放效果与时长，读不到扬声器有没有响。
+  脚本通过后仍要人工按 F5 听一次（清单在脚本末尾打印）。这是唯一保留的人工项，不要把它
+  当成已自动化的部分。
+- **音频不是 TTS 结果**。这里验的是容器与计时；音轨拼接（`media.AssembleTimelineWAV`）
+  由导出链路的用例覆盖。
+- **没有覆盖 WPS**。WPS 与 PowerPoint 的故障模式不同（前者宽容、后者严格），要验得另跑
+  一遍 `Kwpp.Application`；本机没装，未做。
+
+### 写的时候踩到的（都留在代码里）
+
+- **ps1 必须纯 ASCII**：Windows PowerShell 5.1 把无 BOM 文件按 ANSI/GBK 解码，UTF-8 多字节
+  序列会吞掉后面一个 ASCII 字节（包括引号），报的是与真实原因无关的语法错误。
+- **PowerPoint 是单实例**：`New-Object -ComObject` 会附着到用户已打开的实例；只有本次新建的
+  才允许 `Quit()`，否则会关掉用户正在编辑的文档。残留实例只清理「本次新起的 PID」。
+- **`Stop-Job` 没有 `-Force`**（PS 5.1），写了会直接抛参数错误。
+- **`$null -ne 0` 为 True**：`PlayInBackground` 实测返回空值，若用它判「是否跨页播放」，
+  每个文件都会被报成后台播放。改用 XML 的 `numSld` / `onStopAudio`。
+- **PowerShell 的 `>` 默认写 UTF-16**：计划 JSON 由 Go 自己写文件，不经过重定向。
