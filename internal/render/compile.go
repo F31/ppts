@@ -161,9 +161,10 @@ func (c *Compiler) Compile(pages []PageInput) (*Timeline, error) {
 	return out, nil
 }
 
-// injectContinuations 遍历每页的 continues clip，把溢出余量段写入次页的对应层。
-// 次页缺失或次页无同 elementId 层时记 continuation_target_missing 诊断并退化为本页截断
-// （本页段已由 compileClip 正常产出，不崩、不改变非延续语义）。
+// injectContinuations 遍历每页的 continues clip，把溢出余量段写入后续页的对应层。
+// 单跳与链式同一条路径：每注入一页，若该段在本页内仍未演完，就把 offset 加上本页页长、
+// 重新以负起点平移注入下一页（G8 边界①）。次页缺失或后续页无同 elementId 层时记
+// continuation_target_missing 诊断并停止注入（已有段仍有效，不崩、不改变非延续语义）。
 func (c *Compiler) injectContinuations(pages []PageInput, out *Timeline) {
 	for i := range out.Pages {
 		in := pages[i]
@@ -200,17 +201,49 @@ func (c *Compiler) injectContinuations(pages []PageInput, out *Timeline) {
 					})
 					continue
 				}
-				next := &out.Pages[i+1]
-				li := indexOfLayerByElementID(next.Layers, track.ElementID)
-				if li < 0 {
-					out.Warnings = append(out.Warnings, Diagnostic{
-						Code: DiagContinuationTargetMissing, Page: in.Index,
-						ElementID: track.ElementID, ClipID: clip.ID,
-						Message: "次页无同 elementId 层承接延续 clip，已退化为本页截断",
-					})
-					continue
+
+				// 逐页注入，直到 clip 演完或没有下一页：G8 边界① 链式多页。
+				// 每一跳的 offset 是「上一跳 offset + 上一页页长」——它等于该段在页尾处的
+				// clip 时间；负起点（StartMs=-offset）因此始终把求值平移回同一条原 clip
+				// 时间轴，链上任意页缝两侧的进度都逐位相同（与单跳同一数学，只是重复 N 次）。
+				frame := frameMS(c.opt.FPS)
+				cur := *seg
+				for pageIdx := i + 1; ; pageIdx++ {
+					if pageIdx >= len(out.Pages) {
+						// 片长到此结束：余量被视频长度裁掉，不崩。留痕便于作者判断是否需要
+						// 补页——这与单跳「这是最后一页」是同一类信息，只是发生在链尾。
+						out.Warnings = append(out.Warnings, Diagnostic{
+							Code: DiagContinuationTargetMissing, Page: in.Index,
+							ElementID: track.ElementID, ClipID: clip.ID,
+							Message: fmt.Sprintf("链式延续到达末页仍有 %dms 余量，已被片长裁掉",
+								cur.DurationMs-cur.ContinuationOffsetMs),
+						})
+						break
+					}
+					page := &out.Pages[pageIdx]
+					li := indexOfLayerByElementID(page.Layers, track.ElementID)
+					if li < 0 {
+						msg := "次页无同 elementId 层承接延续 clip，已退化为本页截断"
+						if pageIdx > i+1 {
+							msg = fmt.Sprintf("第 %d 页无同 elementId 层承接延续 clip，链式延续在此中断（前面的段仍有效）",
+								pageIdx+1)
+						}
+						out.Warnings = append(out.Warnings, Diagnostic{
+							Code: DiagContinuationTargetMissing, Page: in.Index,
+							ElementID: track.ElementID, ClipID: clip.ID, Message: msg,
+						})
+						break
+					}
+					page.Layers[li].Clips = append(page.Layers[li].Clips, cur)
+
+					// 本页内（含 1 帧容差）能演完就收手；否则把剩余部分再平移到下一页。
+					if cur.ContinuationOffsetMs+page.DurationMs+frame >= cur.DurationMs {
+						break
+					}
+					nextOffset := cur.ContinuationOffsetMs + page.DurationMs
+					cur.StartMs = -nextOffset
+					cur.ContinuationOffsetMs = nextOffset
 				}
-				next.Layers[li].Clips = append(next.Layers[li].Clips, *seg)
 			}
 		}
 	}

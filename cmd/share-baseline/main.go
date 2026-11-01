@@ -141,6 +141,19 @@ func main() {
 			animPages[i].Layers = append(animPages[i].Layers, syntheticContinuationSource(*width, *height, pageMs, tag))
 			animPages[i+1].Layers = append(animPages[i+1].Layers, syntheticContinuationSeg(*width, *height, tag))
 		}
+		// 链式多页（G8 边界①）：页 0 的源段跨 3 页，第 2、3 页各落一次平移更远的延续段。
+		// duration = offset + 2 页 - 1s → 第 2 跳后正好在第 3 页内演完，末页不留余量。
+		// 这条用于验 seam-gate 的「上一跳也可以是配对段」分支——单跳夹具碰不到那个分支。
+		if len(animPages) >= 3 && pageMs > 1000 {
+			chainDur := continuationOffsetMs + 2*pageMs - 1000
+			tag := "chain-0"
+			animPages[0].Layers = append(animPages[0].Layers,
+				syntheticContinuationChainSource(*width, *height, pageMs, chainDur, tag))
+			animPages[1].Layers = append(animPages[1].Layers,
+				syntheticContinuationChainSeg(*width, *height, continuationOffsetMs, chainDur, tag))
+			animPages[2].Layers = append(animPages[2].Layers,
+				syntheticContinuationChainSeg(*width, *height, continuationOffsetMs+pageMs, chainDur, tag))
+		}
 	}
 
 	var buf bytes.Buffer
@@ -508,14 +521,31 @@ const (
 	continuationDurationMs int64 = 8000
 )
 
-// syntheticContinuationSource 造一个会跨页溢出的源层（本页段，完整 clip，不截断）。
-//
-// 它是 G8 跨页延续的夹具：在页 i 放一条溢出页尾的 clip（起点 = 页尾 - offset），余量本应由
-// 编译器注入次页段；这里直接按编译器同构输出，在页 i+1 放下延续段（见 syntheticContinuationSeg）。
-// 判据在 seam-gate（V19）：它读成品包清单，核对链接字段与页缝处的求值连续性。
-func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.LayerAsset {
-	start := pageMs - continuationOffsetMs
+// continuationClips 生成一条跨页 clip 的两种属性（opacity / translateY），
+// 起点与时长由调用方给：源段是 [start, start+duration)，延续段是负起点平移。
+func continuationClips(start, duration, offset int64, isCont bool, tag string) []share.Clip {
 	ease := animation.EasingCurves[animation.DefaultEasing]
+	mk := func(effect string, name string, from, to float64) share.Clip {
+		c := share.Clip{
+			Effect: effect, StartMs: start, DurationMs: duration, Easing: ease,
+			Props: []animation.MotionProp{{Name: name, From: from, To: to}},
+		}
+		if isCont {
+			// clip 级 ElementID 必须设：编译器把 Track.elementId 写进每个延续 Motion，
+			// bundleClips 原样透传。只给 layer 级会让清单里缺少链接键（V19.1 会红）。
+			c.IsContinuation = true
+			c.ContinuationOffsetMs = offset
+			c.ElementID = tag
+		}
+		return c
+	}
+	return []share.Clip{
+		mk("fadeIn", animation.PropOpacity, 0, 1),
+		mk("slideUp", animation.PropTranslateY, 40, 0),
+	}
+}
+
+func continuationLayer(w, h int, tag string, clips []share.Clip) share.LayerAsset {
 	x, y, bw, bh := layerBox(w, h, 0)
 	return share.LayerAsset{
 		ElementID: tag,
@@ -523,13 +553,19 @@ func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.Layer
 		Box:       share.SlideBox{X: x, Y: y, W: bw, H: bh},
 		PNG:       solidPNG(bw, bh, continuationColor),
 		Origin:    "center",
-		Clips: []share.Clip{
-			{Effect: "fadeIn", StartMs: start, DurationMs: continuationDurationMs, Easing: ease,
-				Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
-			{Effect: "slideUp", StartMs: start, DurationMs: continuationDurationMs, Easing: ease,
-				Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 40, To: 0}}},
-		},
+		Clips:     clips,
 	}
+}
+
+// syntheticContinuationSource 造一个会跨页溢出的源层（本页段，完整 clip，不截断）。
+//
+// 它是 G8 跨页延续的夹具：在页 i 放一条溢出页尾的 clip（起点 = 页尾 - offset），余量本应由
+// 编译器注入次页段；这里直接按编译器同构输出，在页 i+1 放下延续段（见 syntheticContinuationSeg）。
+// 判据在 seam-gate（V19）：它读成品包清单，核对链接字段与页缝处的求值连续性。
+func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.LayerAsset {
+	start := pageMs - continuationOffsetMs
+	return continuationLayer(w, h, tag,
+		continuationClips(start, continuationDurationMs, 0, false, tag))
 }
 
 // syntheticContinuationSeg 造次页延续段（负起点平移，与 render.Compiler 输出同构）。
@@ -538,26 +574,24 @@ func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.Layer
 // 缓动连续；ElementID 与源层一致，供播放器把次页层与本页同元素层关联。Props 与源段**完全一致**
 // （不预拆分）——这是「负起点平移」与「预拆分」两条路线在数据上的唯一区别。
 func syntheticContinuationSeg(w, h int, tag string) share.LayerAsset {
-	offset := continuationOffsetMs
-	ease := animation.EasingCurves[animation.DefaultEasing]
-	x, y, bw, bh := layerBox(w, h, 0)
-	return share.LayerAsset{
-		ElementID: tag,
-		Kind:      "card",
-		Box:       share.SlideBox{X: x, Y: y, W: bw, H: bh},
-		PNG:       solidPNG(bw, bh, continuationColor),
-		Origin:    "center",
-		Clips: []share.Clip{
-			// clip 级 ElementID 必须设：编译器把 Track.elementId 写进每个延续 Motion，
-			// bundleClips 原样透传。只给 layer 级会让清单里缺少链接键（V19.1 会红）。
-			{Effect: "fadeIn", StartMs: -offset, DurationMs: continuationDurationMs, Easing: ease,
-				IsContinuation: true, ContinuationOffsetMs: offset, ElementID: tag,
-				Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}},
-			{Effect: "slideUp", StartMs: -offset, DurationMs: continuationDurationMs, Easing: ease,
-				IsContinuation: true, ContinuationOffsetMs: offset, ElementID: tag,
-				Props: []animation.MotionProp{{Name: animation.PropTranslateY, From: 40, To: 0}}},
-		},
-	}
+	return continuationLayer(w, h, tag,
+		continuationClips(-continuationOffsetMs, continuationDurationMs, continuationOffsetMs, true, tag))
+}
+
+// syntheticContinuationChainSource 造一条**跨三页**的源段（G8 边界①：链式多页）。
+//
+// duration 取 offset + 2 页 - 1s：第 1 跳 offset=offset、第 2 跳 offset=offset+页长，
+// 且在第 3 页内演完——这样夹具正好覆盖「源段 + 两跳延续」，又不会在末页留下余量
+// （末页余量是另一条语义：被片长裁掉，由 Go 单测覆盖，不必进浏览器包）。
+func syntheticContinuationChainSource(w, h int, pageMs, duration int64, tag string) share.LayerAsset {
+	start := pageMs - continuationOffsetMs
+	return continuationLayer(w, h, tag, continuationClips(start, duration, 0, false, tag))
+}
+
+// syntheticContinuationChainSeg 造链上第 n 跳的延续段；offset 由调用方按
+// 「上一跳 offset + 上一页页长」推进（与 render.Compiler 的链式注入同一条规则）。
+func syntheticContinuationChainSeg(w, h int, offset, duration int64, tag string) share.LayerAsset {
+	return continuationLayer(w, h, tag, continuationClips(-offset, duration, offset, true, tag))
 }
 
 // continuationColor 是延续夹具层的标识色（橙），与常规层区分，便于门禁核对。

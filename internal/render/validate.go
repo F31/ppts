@@ -322,9 +322,11 @@ func validateMotion(m *Motion, pageMS, frameMS int64, field string) error {
 		return planErr(field+".durationMs", CodeInvalidPlan, "duration must be ≥1ms (got %d)", m.DurationMs)
 	}
 	// 与 V3 同口径：允许 1 帧容差，但渲染阶段不再负责裁剪（裁剪意味着画面与规格不一致）。
-	// 跨页延续的「本页段（源段）」会故意延伸到页尾之外（余量在次页延续段渲染），此处豁免；
-	// 次页延续段（负起点）的有效活动窗口 = StartMs+DurationMs = residue，仍须落在页内（下方保留检查）。
-	if !m.ContinuationSource && m.StartMs+m.DurationMs > pageMS+frameMS {
+	// 跨页延续的两类段都故意跨越页尾，此处豁免：
+	//   * 本页源段（ContinuationSource）：保留完整 [start, start+duration)，余量在次页渲染；
+	//   * 延续段（IsContinuation）：负起点把窗口平移回原 clip 时间轴，其「有效余量」
+	//     由下一跳（链式延续）或末页片长裁掉——超页是设计要求，不是规格错误。
+	if !m.ContinuationSource && !m.IsContinuation && m.StartMs+m.DurationMs > pageMS+frameMS {
 		return planErr(field, CodeInvalidPlan,
 			"clip [%d,%d) exceeds page duration %d", m.StartMs, m.StartMs+m.DurationMs, pageMS)
 	}

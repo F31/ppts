@@ -606,6 +606,129 @@ func findMotionByContinuation(ms []Motion, cont bool) *Motion {
 	return nil
 }
 
+// makeContinuationPagesN 构造 n 页，每页都有 shape-1 层；只有页 0 挂待测 clip。
+// 其余页挂一条短 slideIn，模拟「同元素在后续页继续存在」的真实编排。
+func makeContinuationPagesN(durations []int64, p0clip *animation.Clip) []PageInput {
+	pages := make([]PageInput, len(durations))
+	for i, d := range durations {
+		clips := []*animation.Clip{clipOf(fmt.Sprintf("c%d", i+2), "slideIn", 0, 500, "onEnter")}
+		if i == 0 {
+			clips = []*animation.Clip{p0clip}
+		}
+		pages[i] = PageInput{
+			Index: i, SlideID: fmt.Sprintf("s%d", i+1), DurationMs: d,
+			BaseImage: fmt.Sprintf("pages/p%d.png", i),
+			Elements:  []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "shape-1", Kind: animation.KindTitle, Clips: clips,
+			}),
+		}
+	}
+	return pages
+}
+
+// TestCompileContinuationChainsAcrossPages 验证 G8 边界①：一个 clip 可以跨 >2 页。
+// 页长 6000/5000/4000，clip 0→15000 → 页 1 offset 6000，页 2 offset 11000（=6000+5000）。
+func TestCompileContinuationChainsAcrossPages(t *testing.T) {
+	c := newTestCompiler(t)
+	plan, err := c.Compile(makeContinuationPagesN([]int64{6000, 5000, 4000}, &animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 15000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	src := findLayerByElementID(plan.Pages[0].Layers, "shape-1")
+	if src == nil || len(src.Clips) != 1 {
+		t.Fatalf("页 0 缺 shape-1 层或段数不对: %+v", src)
+	}
+	base := src.Clips[0]
+	if base.IsContinuation || base.StartMs != 0 || base.DurationMs != 15000 {
+		t.Fatalf("页 0 源段 = %+v，want 非延续 [0,15000)", base)
+	}
+
+	prevOffset := int64(0)
+	for hop, want := range []struct {
+		page   int
+		offset int64
+	}{{1, 6000}, {2, 11000}} {
+		layer := findLayerByElementID(plan.Pages[want.page].Layers, "shape-1")
+		if layer == nil {
+			t.Fatalf("页 %d 缺 shape-1 层", want.page)
+		}
+		cont := findMotionByContinuation(layer.Clips, true)
+		if cont == nil {
+			t.Fatalf("页 %d 缺延续段（第 %d 跳）", want.page, hop+1)
+		}
+		// 链上每一跳：offset = 上一跳 offset + 上一页页长；负起点与 offset 互为相反数。
+		if cont.ContinuationOffsetMs != want.offset || cont.StartMs != -want.offset {
+			t.Fatalf("页 %d 延续段 offset/start = %d/%d，want %d/%d",
+				want.page, cont.ContinuationOffsetMs, cont.StartMs, want.offset, -want.offset)
+		}
+		if hop > 0 {
+			prevPageMs := plan.Pages[want.page-1].DurationMs
+			if want.offset != prevOffset+prevPageMs {
+				t.Fatalf("第 %d 跳 offset=%d，want 上一跳 %d + 页长 %d", hop+1, want.offset, prevOffset, prevPageMs)
+			}
+		}
+		if cont.DurationMs != 15000 {
+			t.Fatalf("页 %d 延续段时长 = %d，want 原长 15000（链条不缩短）", want.page, cont.DurationMs)
+		}
+		if cont.ElementID != "shape-1" {
+			t.Fatalf("页 %d 延续段 ElementID = %q", want.page, cont.ElementID)
+		}
+		// 每一跳的属性都必须与源段一致：任一跳被预拆分，页缝就会跳一下。
+		if len(cont.Props) != len(base.Props) {
+			t.Fatalf("页 %d 属性数 = %d，want %d", want.page, len(cont.Props), len(base.Props))
+		}
+		for i := range base.Props {
+			if cont.Props[i] != base.Props[i] {
+				t.Fatalf("页 %d 属性 %d = %+v，want %+v（必须与源段一致）",
+					want.page, i, cont.Props[i], base.Props[i])
+			}
+		}
+		prevOffset = want.offset
+	}
+
+	for _, w := range plan.Warnings {
+		if w.Code == DiagContinuationTargetMissing {
+			t.Fatalf("三页足够承接，不应有 target_missing 诊断: %+v", w)
+		}
+	}
+}
+
+// TestCompileContinuationChainsStopsAtLastPage 验证链尾：后面没有页了，余量被片长裁掉并留痕。
+func TestCompileContinuationChainsStopsAtLastPage(t *testing.T) {
+	c := newTestCompiler(t)
+	plan, err := c.Compile(makeContinuationPagesN([]int64{6000, 5000}, &animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 30000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 两页之后仍有 30000-(6000+5000)=19000ms 余量：末页承载，不报错。
+	last := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
+	if last == nil {
+		t.Fatal("页 1 缺 shape-1 层")
+	}
+	cont := findMotionByContinuation(last.Clips, true)
+	if cont == nil {
+		t.Fatal("页 1 缺延续段")
+	}
+	found := false
+	for _, w := range plan.Warnings {
+		// Page 沿用其余延续诊断的口径：指向**源页**（in.Index），不是耗尽的那一页。
+		if w.Code == DiagContinuationTargetMissing && w.Page == 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("末页仍有余量时应留 target_missing 诊断，实际 warnings=%+v", plan.Warnings)
+	}
+}
+
 // makeContinuationPages 构造相邻两页，shape-1 在两页都存在；p0clip 为页 0 的待测 clip。
 func makeContinuationPages(p0clip *animation.Clip) []PageInput {
 	return []PageInput{

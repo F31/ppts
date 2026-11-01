@@ -138,34 +138,42 @@ for (let i = 0; i < slides.length; i++) {
       const prevLayers = prev && Array.isArray(prev.layers) ? prev.layers : [];
       const sameId = prevLayers.filter((l) => (l.elementId ?? '') === clipId && clipId !== '');
 
-      // 4) 前一页必须有同 elementId 的源层，且源段与延续段是「同一个 clip 的两截」：
-      //    同 effect、同 duration、同 Props，且源段起点 = 前一页页长 - offset。
-      const wantStart = prevMs - offset;
-      let srcLayer = null;
+      // 4) 前一页必须有同 elementId 的配对段，且与本段是「同一个 clip 的相邻两截」：
+      //    同 effect、同 duration、同 Props。配对段可以是**源段**，也可以是链式的**上一跳**：
+      //      * 源段：本段 offset = 前一页页长 - 源段起点；
+      //      * 上一跳延续段：本段 offset = 上一跳 offset + 前一页页长。
+      //    两式本质是同一件事——「本段 localMs=0 对应的 clip 时间 = 上一段在页尾处的
+      //    clip 时间」。链式（>2 页）因此不需要另一套语义。
+      let prevHop = null;
       let srcClip = null;
       for (const l of sameId) {
         for (const sc of layerClips(l)) {
-          if (sc.isContinuation) continue;
-          if (Number(sc.startMs) !== wantStart) continue;
+          const expectedOffset = sc.isContinuation
+            ? Number(sc.continuationOffsetMs) + prevMs
+            : prevMs - Number(sc.startMs);
+          if (expectedOffset !== offset) continue;
           if (Number(sc.durationMs) !== Number(clip.durationMs)) continue;
           if ((sc.effect ?? '') !== (clip.effect ?? '')) continue;
           if (propsKey(sc) !== propsKey(clip)) continue;
-          srcLayer = l;
+          prevHop = l;
           srcClip = sc;
           break;
         }
         if (srcClip) break;
       }
-      check('V19.4 前一页存在配对的源段（同 elementId / effect / duration / Props）',
+      check('V19.4 前一页存在配对的源段/上一跳（同 elementId / effect / duration / Props）',
         Boolean(srcClip),
         srcClip
-          ? `${where} ← 源段 startMs=${srcClip.startMs} durationMs=${srcClip.durationMs} effect=${srcClip.effect}`
-          : `${where} 未找到源段（期望 startMs=${wantStart} durationMs=${clip.durationMs}；前一页同 elementId 层 ${sameId.length} 个）`);
+          ? `${where} ← ${srcClip.isContinuation ? '上一跳' : '源段'} ` +
+            `startMs=${srcClip.startMs} offset=${srcClip.continuationOffsetMs ?? '-'} ` +
+            `durationMs=${srcClip.durationMs} effect=${srcClip.effect}`
+          : `${where} 未找到配对段（期望 offset=${offset}、durationMs=${clip.durationMs}；` +
+            `前一页同 elementId 层 ${sameId.length} 个）`);
 
       // 5) 页缝求值连续：前一页页尾 vs 次页 0 点，同一元素的合成态必须一致。
-      //    这是「不闪、不跳回起点」的数学定义；两侧 raw 进度同为 offset/duration。
+      //    这是「不闪、不跳回起点」的数学定义；链上每一跳都单独验一次，任一跳写错都会红。
       if (srcClip) {
-        const before = evaluateLayer(srcLayer, prevMs);
+        const before = evaluateLayer(prevHop, prevMs);
         const after = evaluateLayer(layer, 0);
         const d = stateDelta(before, after);
         check('V19.5 页缝处求值连续（opacity / 位移 / 缩放）',
