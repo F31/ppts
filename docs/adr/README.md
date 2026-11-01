@@ -10,11 +10,12 @@
 |---|---|---|---|
 | 001–013 | 模块化单体、PG 任务表、Connect RPC、Tauri、go-pptx 适配、动画清单、TTS 主链路、统一时间轴、RLS、AI 来源校验、sidecar IPC、移动 L1/L2、原生播放时钟 | 已采纳 | 仅 V4.0 §18 摘要行（决策 + 重估条件） |
 | 014 | `ObjectStore` 端口 + 按租户可配置多后端（含生命周期分层） | 已实现 | 摘要行；代码见 `internal/integrations/objectstore/`（`port.go`、`s3/`、`local/`） |
-| 015 | 桌面隐私模式作为独立开关，移动端不提供 | 未实现（G4 未启动） | 摘要行 |
+| 015 | 桌面隐私模式作为独立开关，移动端不提供 | 未实现（G4 顺延，见 [020](./ADR-020-native-client-timing.md)） | 摘要行 |
 | 016 | 向量检索按需引入，优先 pgvector | 未实现（按设计无需现在做） | 摘要行 |
 | 017 | 图解动画引擎（分镜 + SVG 组件库 + 代码渲染） | 属 go-pptx 仓库 | 本项目只引用，不在此登记 |
 | [018](./ADR-018-cross-tenant-scheduler.md) | worker 跨租户调度与租户公平 | 已实现 | 独立记录 |
 | [019](./ADR-019-migration-runtime-role-separation.md) | 迁移与运行角色分离（RLS 前提） | 已实现 | 独立记录 |
+| [020](./ADR-020-native-client-timing.md) | G4 原生客户端的启动时机与最小范围（触发制 + G4-lite） | 已采纳（G4 推迟） | 独立记录 |
 
 ## 为什么 001–016 没有独立文件
 
