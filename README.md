@@ -175,6 +175,36 @@ GOWORK=off go run ./cmd/ppts server
 
 Then open <http://localhost:8080>.
 
+### Option 2b: user-level instance inside WSL (no sudo)
+
+For a long-lived local instance in WSL (Ubuntu) that does not touch `/opt` or `postgres`, use this
+script. It installs into `$HOME`, uses SQLite, and runs under `systemd --user` so it survives WSL
+restarts. With the renderer present it uses real local rendering.
+
+```bash
+# Prerequisites: Go in WSL (user-level, no sudo) and the built frontend
+curl -sL https://mirrors.aliyun.com/golang/go1.27.3.linux-amd64.tar.gz | tar -C "$HOME/.local" -xz
+(cd web && npm ci && npm run build)
+
+bash scripts/deploy-wsl-local.sh            # defaults to :9000; pass --port to change
+```
+
+| Item | Location |
+|---|---|
+| Binary | `~/ppts-run/bin/ppts` |
+| Config | `~/ppts-run/config.env` (600; random `PPTS_OBJECT_SECRET` on first run) |
+| Data | `~/ppts-data/ppts.db` + `~/ppts-data/objects` |
+| Services | `systemctl --user status ppts-local ppts-worker-local` |
+| Logs | `journalctl --user -u ppts-local -f` |
+
+The script is idempotent: the binary is rebuilt every run, while `config.env` and unit files are kept
+when present (`--force-units` rewrites them). It defaults to `PPTS_TTS_PROVIDER=fake` (silent audio);
+after pointing `config.env` at a real provider, run
+`systemctl --user restart ppts-local ppts-worker-local`.
+
+> When running alongside the system-level install, mind the ports: `packaging/install.sh` uses
+> `:8080` and this script uses `:9000`. They do not conflict, but **only one process can own a port**.
+
 ### Option 3: PostgreSQL production mode
 
 ```bash

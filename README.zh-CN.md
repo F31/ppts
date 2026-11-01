@@ -167,6 +167,33 @@ GOWORK=off go run ./cmd/ppts server
 
 打开 <http://localhost:8080> 即可。
 
+### 方式二·补充：WSL 里的用户级实例（不需 sudo）
+
+在 WSL（Ubuntu）里想长期跑一套本地实例、又不想动 `/opt` 与 `postgres` 时，用这个脚本。
+它装到 `$HOME`、用 SQLite、由 `systemd --user` 托管（WSL 重启后自启），配置齐全时可直接用本地渲染。
+
+```bash
+# 前置：WSL 里要有 Go（用户目录即可，不需要 sudo）与前端产物
+curl -sL https://mirrors.aliyun.com/golang/go1.27.3.linux-amd64.tar.gz | tar -C "$HOME/.local" -xz
+(cd web && npm ci && npm run build)
+
+bash scripts/deploy-wsl-local.sh            # 默认 :9000，可 --port 指定
+```
+
+| 项 | 位置 |
+|---|---|
+| 二进制 | `~/ppts-run/bin/ppts` |
+| 配置 | `~/ppts-run/config.env`（600；首次生成时随机 `PPTS_OBJECT_SECRET`） |
+| 数据 | `~/ppts-data/ppts.db` + `~/ppts-data/objects` |
+| 服务 | `systemctl --user status ppts-local ppts-worker-local` |
+| 日志 | `journalctl --user -u ppts-local -f` |
+
+脚本幂等：二进制每次重建，`config.env` 与 unit 文件已存在时保留（`--force-units` 可重写）。
+默认 `PPTS_TTS_PROVIDER=fake`（静音音频），接真实供应商时改 `config.env` 后 `systemctl --user restart ppts-local ppts-worker-local`。
+
+> 与系统级部署共存时注意端口：`packaging/install.sh` 装的那套默认占 `:8080`，本脚本默认 `:9000`，
+> 两者不冲突，但**同一端口只能有一个**。切换前先停掉另一方。
+
 ### 方式三：PostgreSQL 生产模式
 
 ```bash
