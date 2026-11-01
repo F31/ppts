@@ -99,6 +99,20 @@ func (g *GoPPTXReader) extract(p *pptx.Presentation) (*Document, error) {
 		if notes, err := s.SpeakerNotesText(); err == nil {
 			pg.NotesText = notes
 		}
+		// 切页过渡与自动换页：两者都在 p:transition 上，但语义不同 ——
+		// 过渡是"怎么切"，自动换页是"多久切"。成片两者都不还原，
+		// 所以都要作为事实暴露，而不是笼统并进"有动画"。
+		if spec, err := s.Transition(); err == nil && spec.Type != "" && spec.Type != pptx.TransitionNone {
+			pg.Transition = string(spec.Type)
+		} else if err != nil && !errors.Is(err, pptx.ErrNotFound) {
+			doc.Diagnostics = append(doc.Diagnostics, "IR_TRANSITION_READ: "+err.Error())
+		}
+		if d, ok, err := s.AdvanceAfter(); err == nil && ok && d > 0 {
+			ms := d.Milliseconds()
+			pg.AutoAdvanceMS = &ms
+		} else if err != nil {
+			doc.Diagnostics = append(doc.Diagnostics, "IR_ADVANCE_READ: "+err.Error())
+		}
 		shapes, err := s.Shapes()
 		if err != nil {
 			doc.Diagnostics = append(doc.Diagnostics, "IR_SHAPES_READ: "+err.Error())
@@ -120,6 +134,12 @@ func (g *GoPPTXReader) extract(p *pptx.Presentation) (*Document, error) {
 		doc.Features.PageCount++
 		if pg.HasTiming {
 			doc.Features.SlidesWithTiming++
+		}
+		if pg.Transition != "" {
+			doc.Features.SlidesWithTransition++
+		}
+		if pg.AutoAdvanceMS != nil {
+			doc.Features.SlidesAutoAdvance++
 		}
 		if len(pg.NotesText) > 0 {
 			doc.Features.PagesWithNotes++
@@ -301,6 +321,14 @@ func collectPageFeatures(pg *Page) []string {
 	}
 	if pg.HasTiming {
 		flags = append(flags, "timing")
+	}
+	// 过渡与自动换页分开标记：前者是观感差异，后者是节奏差异。
+	// 都归进 timing 会让"这页有动画"与"这页 3 秒自动翻"混为一谈。
+	if pg.Transition != "" {
+		flags = append(flags, "transition")
+	}
+	if pg.AutoAdvanceMS != nil {
+		flags = append(flags, "auto_advance")
 	}
 	return dedupe(flags)
 }

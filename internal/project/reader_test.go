@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	pptx "github.com/F31/go-pptx/v2/pptx"
 )
@@ -212,5 +213,91 @@ func TestGoPPTXReaderVisibleSlideHasNoHiddenFlag(t *testing.T) {
 		if f == "hidden" {
 			t.Fatalf("visible page must not carry hidden flag: %v", doc.Pages[0].FeatureFlags)
 		}
+	}
+}
+
+// buildTransitionDeck 生成两页样本：第 1 页带 fade 过渡 + 3 秒自动换页，
+// 第 2 页什么都没有。两份页面放一起才能证明"标记是按页判定的"，
+// 而不是整份文档只要有一页有过渡就全标上。
+func buildTransitionDeck(t *testing.T) *bytes.Reader {
+	t.Helper()
+	p, err := pptx.New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer p.Close()
+	layouts, err := p.Layouts()
+	if err != nil || len(layouts) == 0 {
+		t.Fatalf("Layouts: %v (n=%d)", err, len(layouts))
+	}
+	for i := 0; i < 2; i++ {
+		s, err := p.AddSlide(layouts[0])
+		if err != nil {
+			t.Fatalf("AddSlide: %v", err)
+		}
+		if _, err := s.AddTextBox(pptx.TextBoxSpec{
+			X: 914400, Y: 914400, Width: 6000000, Height: 914400,
+			Text: fmt.Sprintf("page %d", i+1),
+		}); err != nil {
+			t.Fatalf("AddTextBox: %v", err)
+		}
+		if i == 0 {
+			if err := s.SetTransition(pptx.TransitionSpec{Type: pptx.TransitionFade}); err != nil {
+				t.Fatalf("SetTransition: %v", err)
+			}
+			if err := s.SetAdvanceAfter(3 * time.Second); err != nil {
+				t.Fatalf("SetAdvanceAfter: %v", err)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if _, err := p.Write(context.Background(), &buf); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	return bytes.NewReader(buf.Bytes())
+}
+
+func TestGoPPTXReaderReadsTransitionAndAutoAdvance(t *testing.T) {
+	src := buildTransitionDeck(t)
+	doc, err := NewGoPPTXReader(Limits{}).Inspect(context.Background(), src, int64(src.Len()))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if len(doc.Pages) != 2 {
+		t.Fatalf("pages: %d", len(doc.Pages))
+	}
+	first, second := doc.Pages[0], doc.Pages[1]
+	if first.Transition != "fade" {
+		t.Errorf("第 1 页过渡 = %q，期望 fade", first.Transition)
+	}
+	if first.AutoAdvanceMS == nil || *first.AutoAdvanceMS != 3000 {
+		t.Errorf("第 1 页自动换页 = %v，期望 3000ms", first.AutoAdvanceMS)
+	}
+	if second.Transition != "" {
+		t.Errorf("第 2 页不该有过渡，得到 %q", second.Transition)
+	}
+	if second.AutoAdvanceMS != nil {
+		t.Errorf("第 2 页不该有自动换页，得到 %v", *second.AutoAdvanceMS)
+	}
+	// 汇总计数必须按页累加，否则报告里的"多少页有过渡"会变成布尔值。
+	if doc.Features.SlidesWithTransition != 1 || doc.Features.SlidesAutoAdvance != 1 {
+		t.Errorf("features 过渡=%d 自动换页=%d，期望都是 1",
+			doc.Features.SlidesWithTransition, doc.Features.SlidesAutoAdvance)
+	}
+	hasFlag := func(pg *Page, want string) bool {
+		for _, f := range pg.FeatureFlags {
+			if f == want {
+				return true
+			}
+		}
+		return false
+	}
+	// 过渡与自动换页必须分开标记：合并成一个 flag 就看不出"这页只是有过渡"
+	// 还是"这页会自己翻走"——后者直接影响成片节奏。
+	if !hasFlag(first, "transition") || !hasFlag(first, "auto_advance") {
+		t.Errorf("第 1 页标记 = %v，期望含 transition 与 auto_advance", first.FeatureFlags)
+	}
+	if hasFlag(second, "transition") || hasFlag(second, "auto_advance") {
+		t.Errorf("第 2 页标记 = %v，不该含过渡相关项", second.FeatureFlags)
 	}
 }

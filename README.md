@@ -88,7 +88,7 @@ Upload PPTX ──▶ Parse slides/elements ──▶ Generate AI script ──�
 
 ### Import and explainability
 
-- **Import report**: per source revision, see what the deck was parsed into — page count, speaker-note coverage, hidden pages, unparsed shapes (SmartArt / OLE / equations), embedded media, animation, and per-page flags. Findings are ordered by what the final video loses, and are read from the parse done at import time rather than re-parsed on demand
+- **Import report**: per source revision, see what the deck was parsed into — page count, speaker-note coverage, hidden pages, unparsed shapes (SmartArt / OLE / equations), embedded media, animation, slide transitions and auto-advance, and per-page flags. Findings are ordered by what the final video loses, and are read from the parse done at import time rather than re-parsed on demand
 - **Page count write-back**: a successful parse writes the real page count back to the revision, so the deck list and the report tell the same story
 
 ### Narration and export

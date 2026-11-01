@@ -99,6 +99,8 @@ export function classifyReportError(code: string | undefined): ReportFailure {
 export type FlagKind =
   | 'hidden'
   | 'timing'
+  | 'transition'
+  | 'auto_advance'
   | 'picture'
   | 'audio'
   | 'video'
@@ -117,6 +119,8 @@ export function describeFlag(flag: string): { kind: FlagKind; detail: string } {
   switch (flag) {
     case 'hidden':
     case 'timing':
+    case 'transition':
+    case 'auto_advance':
     case 'picture':
     case 'audio':
     case 'video':

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 )
 
@@ -18,12 +19,37 @@ type corpusManifest struct {
 	Entries            []corpusEntry `json:"entries"`
 }
 
+// corpusMinEntries 是 V4.0 §15.3「至少 30 份组合语料」的份数门槛。
+// 只数本仓库自产的条目：外置金样能否检出取决于开发者机器，
+// 拿它凑数会让门槛在一台机器上成立、在 CI 上不成立。
+const corpusMinEntries = 30
+
+// sortedFlags 保证失败信息里的键序稳定，便于比对两次运行的差异。
+func sortedFlags(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 type corpusEntry struct {
 	ID           string `json:"id"`
 	Path         string `json:"path"`
 	ExternalPath string `json:"externalPath"`
 	Pages        int    `json:"pages"`
 	WithNotes    bool   `json:"withNotes"`
+	// HiddenPages 是期望的隐藏页数：0 表示"这份样本不含隐藏页"。
+	// 显式写出来才能区分"没隐藏页"与"漏读了隐藏页"。
+	HiddenPages int `json:"hiddenPages"`
+	// Features 是期望在读路径上出现的 featureFlag（table / chart / picture /
+	// audio / timing / transition / auto_advance / hidden）。
+	//
+	// 这一列是语料真正的护栏：只断言"文件能解析"的话，生成器写出十份表格
+	// 而读路径全认成 textbox，测试照样绿。登记期望后，"文件里有"与"读出来有"
+	// 才被绑在一起。
+	Features []string `json:"features"`
 }
 
 func loadCorpusManifest(t *testing.T) corpusManifest {
@@ -116,6 +142,36 @@ func TestCorpusReplayInspect(t *testing.T) {
 			if e.WithNotes && notesCount == 0 {
 				t.Fatalf("entry expects notes but none extracted")
 			}
+			if e.HiddenPages > 0 || e.ID == "s123" {
+				got := 0
+				for _, pg := range doc.Pages {
+					if pg.Hidden != nil && *pg.Hidden {
+						got++
+					}
+				}
+				if got != e.HiddenPages {
+					t.Fatalf("hidden pages: got %d want %d", got, e.HiddenPages)
+				}
+			}
+			if len(e.Features) > 0 {
+				seen := map[string]bool{}
+				for _, pg := range doc.Pages {
+					for _, f := range pg.FeatureFlags {
+						seen[f] = true
+					}
+				}
+				for _, want := range e.Features {
+					if !seen[want] {
+						t.Errorf("featureFlag %q missing; got %v", want, sortedFlags(seen))
+					}
+				}
+			}
+			// 自产语料都是合法 PPTX：解析器不该在上面留下任何诊断。
+			// 诊断会经导入报告变成"部分页面内容可能不完整"的 warn，
+			// 让用户为一份正常文件去排查——所以这里当硬失败，不当日志。
+			if e.Path != "" && len(doc.Diagnostics) > 0 {
+				t.Fatalf("解析器在合法样本上留下诊断：%v", doc.Diagnostics)
+			}
 			if doc.Features.PageCount != len(doc.Pages) {
 				t.Fatalf("features.PageCount %d != pages %d", doc.Features.PageCount, len(doc.Pages))
 			}
@@ -124,7 +180,18 @@ func TestCorpusReplayInspect(t *testing.T) {
 	if ran == 0 {
 		t.Fatalf("no corpus sources available (manifest entries absent)")
 	}
-	if ran < 5 {
-		t.Logf("corpus replay: ran=%d missing=%d (below target)", ran, missing)
+	// 份数门槛：V4.0 §15.3 要求至少 30 份。外置金样可能未检出，
+	// 因此只对"本仓库自产"的条目强制；外置缺席单独提示，不掩盖本地不足。
+	synthetic := 0
+	for _, e := range manifest.Entries {
+		if e.Path != "" {
+			synthetic++
+		}
+	}
+	if synthetic < corpusMinEntries {
+		t.Fatalf("synthetic corpus has %d entries, requires >= %d", synthetic, corpusMinEntries)
+	}
+	if ran < corpusMinEntries {
+		t.Logf("corpus replay: ran=%d missing=%d (external samples absent; synthetic=%d)", ran, missing, synthetic)
 	}
 }

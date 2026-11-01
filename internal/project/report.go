@@ -21,6 +21,12 @@ const (
 	FindingEmbeddedMedia = "embedded_media"
 	// FindingAnimations：含 p:timing 的页。静态讲解（S 级）不承诺还原动画。
 	FindingAnimations = "animations"
+	// FindingTransitions：含切页过渡的页。过渡只影响观感，不影响内容，
+	// 但它解释了"为什么成片看起来比原片朴素"——不写出来用户会当成缺陷。
+	FindingTransitions = "transitions"
+	// FindingAutoAdvance：源文件设了自动换页。成片按讲稿长度翻页，
+	// 与源文件节奏无关；这份差异必须显式说明，否则会被当成"节奏没做对"。
+	FindingAutoAdvance = "auto_advance"
 	// FindingHiddenPages：放映与 PDF 导出都会跳过的页。
 	FindingHiddenPages = "hidden_pages"
 	// FindingMissingNotes：没有演讲者备注、需要生成讲稿的页。
@@ -95,6 +101,8 @@ func BuildImportReport(doc *Document) *ImportReport {
 		opaquePages  []int
 		mediaPages   []int
 		timingPages  []int
+		transPages   []int
+		advancePages []int
 		hiddenPages  []int
 		noNotesPages []int
 		noTextPages  []int
@@ -146,6 +154,12 @@ func BuildImportReport(doc *Document) *ImportReport {
 		if pg.HasTiming {
 			timingPages = append(timingPages, pg.Index)
 		}
+		if pg.Transition != "" {
+			transPages = append(transPages, pg.Index)
+		}
+		if pg.AutoAdvanceMS != nil {
+			advancePages = append(advancePages, pg.Index)
+		}
 		if hidden {
 			hiddenPages = append(hiddenPages, pg.Index)
 			rep.HiddenPages++
@@ -182,6 +196,12 @@ func BuildImportReport(doc *Document) *ImportReport {
 	}
 	if len(timingPages) > 0 {
 		rep.Findings = append(rep.Findings, Finding{Code: FindingAnimations, Severity: SeverityInfo, Count: len(timingPages), Pages: timingPages})
+	}
+	if len(transPages) > 0 {
+		rep.Findings = append(rep.Findings, Finding{Code: FindingTransitions, Severity: SeverityInfo, Count: len(transPages), Pages: transPages})
+	}
+	if len(advancePages) > 0 {
+		rep.Findings = append(rep.Findings, Finding{Code: FindingAutoAdvance, Severity: SeverityInfo, Count: len(advancePages), Pages: advancePages})
 	}
 	if len(hiddenPages) > 0 {
 		rep.Findings = append(rep.Findings, Finding{Code: FindingHiddenPages, Severity: SeverityInfo, Count: len(hiddenPages), Pages: hiddenPages})

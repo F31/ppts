@@ -24,9 +24,15 @@ type Page struct {
 	NotesText string   `json:"notesText,omitempty"`
 	Shapes    []*Shape `json:"shapes,omitempty"`
 	HasTiming bool     `json:"hasTiming"` // 含 p:timing（动画/计时）
-	// 注：p:transition advTm（自动切页）检测受 go-pptx TransitionSpec 限制，
-	// 暂不可读，已登记 FEAT-003。
-	FeatureFlags []string `json:"featureFlags,omitempty"` // 本页特性提示（未识别的渲染/播放风险）
+	// Transition 是源文件的切页过渡类型（fade/push/wipe…），空 = 无过渡。
+	// 静态讲解与配音 PPTX 都不会还原过渡，这是"成片观感会变"的事实；
+	// 此前它只以 FEAT-003 的形式留在注释里，报告与界面都看不到。
+	Transition string `json:"transition,omitempty"`
+	// AutoAdvanceMS 是自动换页时长（p:transition@advTm），nil = 需点击翻页。
+	// 它直接决定源文件的节奏：源文件 3 秒一翻、成片按讲稿长度翻页，
+	// 两者不一致时用户需要知道差异从哪来。
+	AutoAdvanceMS *int64   `json:"autoAdvanceMs,omitempty"`
+	FeatureFlags  []string `json:"featureFlags,omitempty"` // 本页特性提示（未识别的渲染/播放风险）
 }
 
 // Shape 是页面形状的只读视图。Text 为形状内全部文本（按阅读顺序拼接的原始提取，
@@ -82,6 +88,10 @@ type Features struct {
 	TableShapes int `json:"tableShapes"`
 	// SlidesWithTiming 含 p:timing 的页数（动画/计时）。
 	SlidesWithTiming int `json:"slidesWithTiming"`
+	// SlidesWithTransition 含切页过渡的页数（不含 type=none）。
+	SlidesWithTransition int `json:"slidesWithTransition"`
+	// SlidesAutoAdvance 含自动换页（advTm）的页数。
+	SlidesAutoAdvance int `json:"slidesAutoAdvance"`
 	// PagesWithNotes 有备注的页数。
 	PagesWithNotes int `json:"pagesWithNotes"`
 	// PageCount 总页数（含隐藏）。

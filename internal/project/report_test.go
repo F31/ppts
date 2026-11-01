@@ -177,3 +177,55 @@ func TestBuildImportReport_NilPageSkipped(t *testing.T) {
 		t.Fatalf("nil 页应被跳过：%+v", rep.Pages)
 	}
 }
+
+// 过渡与自动换页是两份独立事实：前者影响观感，后者影响节奏。
+// 合成一个结论会让"这页只是切换带过渡"与"这页会自己翻走"看起来一样。
+func TestBuildImportReport_TransitionAndAutoAdvance(t *testing.T) {
+	doc := &Document{
+		SchemaVersion: "1.0",
+		ParserName:    "go-pptx",
+		ParserVersion: "v2.0.0",
+		Features:      &Features{PageCount: 3},
+		Pages: []*Page{
+			// 第 0 页：只有过渡，不自动换页。
+			reportPage(0, false, "有过渡。"),
+			// 第 1 页：过渡 + 自动换页。
+			reportPage(1, false, "有过渡且自动换页。"),
+			// 第 2 页：两者都没有。
+			reportPage(2, false, "普通页。"),
+		},
+	}
+	doc.Pages[0].Transition = "fade"
+	doc.Pages[1].Transition = "push"
+	ms := int64(3000)
+	doc.Pages[1].AutoAdvanceMS = &ms
+	doc.Pages[0].Shapes = []*Shape{textShape("a")}
+	doc.Pages[1].Shapes = []*Shape{textShape("b")}
+	doc.Pages[2].Shapes = []*Shape{textShape("c")}
+
+	rep := BuildImportReport(doc)
+	var trans, advance *Finding
+	for i := range rep.Findings {
+		switch rep.Findings[i].Code {
+		case FindingTransitions:
+			trans = &rep.Findings[i]
+		case FindingAutoAdvance:
+			advance = &rep.Findings[i]
+		}
+	}
+	if trans == nil {
+		t.Fatalf("缺少过渡结论：%+v", rep.Findings)
+	}
+	if trans.Count != 2 || len(trans.Pages) != 2 || trans.Pages[0] != 0 || trans.Pages[1] != 1 {
+		t.Errorf("过渡结论 = %+v，期望 2 页（0,1）", trans)
+	}
+	if trans.Severity != SeverityInfo {
+		t.Errorf("过渡的级别 = %s，期望 info（只影响观感）", trans.Severity)
+	}
+	if advance == nil {
+		t.Fatalf("缺少自动换页结论：%+v", rep.Findings)
+	}
+	if advance.Count != 1 || len(advance.Pages) != 1 || advance.Pages[0] != 1 {
+		t.Errorf("自动换页结论 = %+v，期望 1 页（1）", advance)
+	}
+}

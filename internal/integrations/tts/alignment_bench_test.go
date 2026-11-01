@@ -35,14 +35,29 @@ type synthUtterance struct {
 }
 
 // phrasePlan 描述每个短语的字符数、紧随其后的标点（0=其后无标点）与逐字时长抖动。
+//
+// Text 非空时按它逐字生成（用于中英混读与专业术语）；Chars 此时被忽略。
+// 空格按 30ms 静音处理——TTS 不读空格，但它确实占时间轴中的位置，
+// 忽略掉会让"PCIe 5.0 x16"这类短语的逐字真值整体左移。
 type phrasePlan struct {
 	chars   int
 	punct   rune
 	perChar float64
 	jitter  []float64
+	text    string
 }
 
 func synthFromPlan(t *testing.T, sampleRate int, plans []phrasePlan) synthUtterance {
+	t.Helper()
+	return synthFromPlanLead(t, sampleRate, plans, benchLeadMS)
+}
+
+// synthFromPlanLead 与 synthFromPlan 相同，但可以指定句首静音长度。
+//
+// 为什么需要：算法内部对 lead 有一个固定假设（200ms）。只有当真实 lead
+// 偏离这个假设时，"句首偏差"才真的被检验到；全部语料都用 200ms 生成，
+// 等于让被测代码在自己假设的值上自证。
+func synthFromPlanLead(t *testing.T, sampleRate int, plans []phrasePlan, leadMS float64) synthUtterance {
 	t.Helper()
 	const amp int16 = 12000
 	samples := make([]int16, 0, sampleRate*4)
@@ -79,21 +94,39 @@ func synthFromPlan(t *testing.T, sampleRate int, plans []phrasePlan) synthUttera
 		}
 	}
 
-	appendSilence(benchLeadMS)
+	appendSilence(leadMS)
 	var text []rune
 	var truth []int64
-	cursorMS := benchLeadMS
+	cursorMS := leadMS
 	poolIdx := 0
 	for pi, p := range plans {
-		for c := 0; c < p.chars; c++ {
-			r := benchPool[poolIdx%len(benchPool)]
-			poolIdx++
+		runes := []rune(p.text)
+		if p.text == "" {
+			runes = nil
+		}
+		n := p.chars
+		if runes != nil {
+			n = len(runes)
+		}
+		for c := 0; c < n; c++ {
+			var r rune
+			if runes != nil {
+				r = runes[c]
+			} else {
+				r = benchPool[poolIdx%len(benchPool)]
+				poolIdx++
+			}
 			text = append(text, r)
 			truth = append(truth, int64(cursorMS*1000))
 			// 每个字符的时长用确定性抖动，模拟真实语速变化。
 			cm := p.perChar
 			if len(p.jitter) > 0 {
 				cm *= p.jitter[c%len(p.jitter)]
+			}
+			if r == ' ' {
+				appendSilence(30)
+				cursorMS += 30
+				continue
 			}
 			appendVoiced(cm)
 			cursorMS += cm

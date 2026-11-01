@@ -76,5 +76,7 @@ test('错误归类覆盖服务端每个 code', () => {
 test('逐页标记：opaque_shape 带出形状名，未知标记原样保留', () => {
   assert.deepEqual(r.describeFlag('hidden'), { kind: 'hidden', detail: '' });
   assert.deepEqual(r.describeFlag('opaque_shape:图表 3'), { kind: 'opaqueShape', detail: '图表 3' });
+  assert.deepEqual(r.describeFlag('transition'), { kind: 'transition', detail: '' });
+  assert.deepEqual(r.describeFlag('auto_advance'), { kind: 'auto_advance', detail: '' });
   assert.deepEqual(r.describeFlag('morph_transition'), { kind: 'unknown', detail: 'morph_transition' });
 });
