@@ -127,7 +127,13 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	}
 	h.renderPages(ctx, job, key, data, doc, snap)
 	if h.projects != nil && doc.Features != nil && doc.Features.PageCount > 0 {
-		if err := h.projects.UpdateSourceRevisionPageCount(ctx, snap.TenantID, snap.ProjectID, snap.RevisionNo, doc.Features.PageCount); err != nil {
+		// 快照里的 tenant 为空时退回 job 上的 tenant：任务行本身一定是带租户的，
+		// 而 page_count 的更新条件含 tenant_id，空值会让更新静默影响 0 行。
+		tenantID := snap.TenantID
+		if tenantID == "" {
+			tenantID = job.TenantID
+		}
+		if err := h.projects.UpdateSourceRevisionPageCount(ctx, tenantID, snap.ProjectID, snap.RevisionNo, doc.Features.PageCount); err != nil {
 			// 写回失败不阻塞解析任务；后续重新解析或手动触发会补写。
 			return fmt.Errorf("parse: update page count: %w", err)
 		}

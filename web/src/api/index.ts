@@ -21,6 +21,8 @@ export type { UploadSession, CompletedUpload } from './upload';
 export { listAuditEvents, listAuditArchives, sha256Hex } from './audit';
 export { listGateways, createGateway, updateGateway, deleteGateway, setDefaultGateway, testGateway } from './gateway';
 export type { ModelGateway, GatewayTestResult, GatewayScope } from './gateway';
+export { getImportReport } from './report';
+export type { ImportReport, ImportReportPage, ImportReportRevision, ImportReportResponse, ImportFinding, ImportFeatures } from './report';
 export { getVoiceSettings, saveVoiceSettings, listVoiceModels, previewVoice } from './voice';
 export type { ProjectVoiceSettings, VoiceModel, VoicePreviewResult } from './voice';
 export { listJobs, listJobsPage, getJob, getJobDetail, getJobsSummary, getJobsPage, cancelJob, retryFailedJob, watchJobEvents } from './jobs';

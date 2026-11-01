@@ -10,6 +10,7 @@ import { Login } from './pages/Login';
 import { AccountRecovery } from './pages/AccountRecovery';
 import { Admin } from './pages/Admin';
 import { Library } from './pages/Library';
+import { ImportReportPage } from './pages/ImportReport';
 import { ProjectEditor } from './pages/ProjectEditor';
 import { Projects } from './pages/Projects';
 import { SettingsAudit } from './pages/SettingsAudit';
@@ -272,6 +273,17 @@ function AuthenticatedApp({ identity, parts, query }: { identity: ClientIdentity
     switch (section) {
       case 'projects': {
         const projectId = parts[1];
+        // 导入报告是只读事实页：任何能打开编辑器的成员都能看，不做角色门控
+        // （它不暴露讲稿正文，只暴露页数/备注覆盖/无法解析的形状）。
+        if (projectId && parts[2] === 'report') {
+          return (
+            <ImportReportPage
+              identity={identity}
+              projectId={projectId}
+              revisionNo={query.get('rev') ? Number(query.get('rev')) : undefined}
+            />
+          );
+        }
         // 成品列表端点要求 EDITOR（artifact.go:27），整页按 artifact.list 门控。
         // 项目级成品详情页（ProjectArtifacts）已移除，统一收敛到跨项目成品库（/library）。
         if (projectId && parts[2] === 'editor' || (projectId && !parts[2])) {

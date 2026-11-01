@@ -1357,3 +1357,21 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .voice-preview { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 8px 0 0; }
 .voice-preview audio { flex: 1 1 220px; min-width: 0; height: 32px; }
 .voice-preview .narration-note, .voice-preview .form-error { flex-basis: 100%; margin: 0; }
+
+/* 导入报告：结论区 + 逐页表。
+   报告页的读者在找"这份文件会不会害我翻车"，所以结论用色块区分注意/说明，
+   逐页表把隐藏页整行压暗——这两处都必须一眼可辨，不能只靠文字描述。 */
+.report-alert { margin: 0; padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(251, 191, 36, .45); background: rgba(251, 191, 36, .10); color: #ffd9a8; font-size: 13px; line-height: 1.6; }
+.report-findings { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.report-finding { display: flex; align-items: flex-start; gap: 10px; }
+.report-finding-badge { flex: 0 0 auto; border-radius: 999px; padding: 3px 9px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.report-finding.warn .report-finding-badge { color: #fbbf24; background: rgba(251, 191, 36, .12); }
+.report-finding.info .report-finding-badge { color: #9fb1cf; background: rgba(159, 177, 207, .12); }
+.report-finding-text { margin: 0; color: var(--text-body); font-size: 13px; line-height: 1.6; }
+.report-finding-pages { margin: 3px 0 0; color: var(--text-faint); font-size: 12px; }
+.report-flags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.report-flag { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 2px 6px; background: var(--bg-item); color: var(--text-muted); font-size: 11px; }
+.report-flag.hidden { color: #fbbf24; border-color: rgba(251, 191, 36, .4); }
+.report-flag.unknown { color: #fca5a5; border-color: rgba(252, 165, 165, .4); }
+.report-page-hidden td { opacity: .62; }
+.report-diagnostics { margin: 0; padding-left: 18px; color: var(--text-muted); font-size: 12px; line-height: 1.7; word-break: break-word; }

@@ -63,6 +63,11 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/revisions/{rev}/narration", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorRevisionNarration(w, r, jobs, objects, projects, members, recorder)
 	})))
+	// 导入报告：这份源文件被解析成了什么、哪些内容成片时会丢。读的是该次解析的产物，
+	// 不重新解析——用户看到的必须和当前讲稿/配音同源。
+	mux.Handle("GET /projects/{pid}/revisions/{rev}/import-report", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorImportReport(w, r, projects, objects, members, recorder)
+	})))
 }
 
 type projectVoiceSettingsPayload struct {

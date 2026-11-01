@@ -86,6 +86,11 @@ Upload PPTX ──▶ Parse slides/elements ──▶ Generate AI script ──�
 - **Optimistic concurrency**: saves carry `expected_revision`; on conflict the backend returns the latest version and the frontend loads it with a notice
 - **Source anchors**: a structural channel (`shape_*`, confidence 1.0) plus a visual channel (`visual_*`, low confidence, flagged for review)
 
+### Import and explainability
+
+- **Import report**: per source revision, see what the deck was parsed into — page count, speaker-note coverage, hidden pages, unparsed shapes (SmartArt / OLE / equations), embedded media, animation, and per-page flags. Findings are ordered by what the final video loses, and are read from the parse done at import time rather than re-parsed on demand
+- **Page count write-back**: a successful parse writes the real page count back to the revision, so the deck list and the report tell the same story
+
 ### Narration and export
 
 - **Production TTS provider**: SiliconFlow (CosyVoice2) by default over an OpenAI-compatible interface — swap providers with one env var

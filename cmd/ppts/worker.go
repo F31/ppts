@@ -85,7 +85,12 @@ func runWorker() error {
 
 	objects := stores.objects
 	auditStore := stores.audit
-	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{})).WithSteps(jobs)
+	// WithProjects 是**必需**的：解析 handler 用它在成功后把真实页数回写 source_revisions.page_count。
+	// 此前没接，解析一直"成功"、page_count 一直是 0——PPT 列表的"页数"列恒为 0，
+	// 而没有任何一处报错。导入报告按版本对账时把这个断点暴露了出来（回写 0 != 解析 14 页）。
+	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{})).
+		WithSteps(jobs).
+		WithProjects(stores.projects)
 	// 渲染器（LibreOffice + poppler）缺失时，解析仍会"成功"，但没有页面图
 	// → 编辑器无缩略图、播放无帧图、MP4 导出无素材，而用户侧原本零信号。
 	// 治理三件套：① 指标 ppts_render_pages_disabled ② Warn 日志 ③ PPTS_REQUIRE_RENDERER

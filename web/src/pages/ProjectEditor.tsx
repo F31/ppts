@@ -1671,6 +1671,17 @@ export function ProjectEditor({
           <button type="button" className="button-ghost" onClick={openVoiceDialog} title={t('editor.propertiesTitle')}>
             {t('editor.voiceButton')}
           </button>
+          {/* 导入报告：只读事实页。放在这里而不是版本下拉里，是因为用户最常问"这份 PPT 读成什么样"
+              的时刻就是刚进编辑器——此时版本下拉可能只有一个选项，没地方挂入口。 */}
+          <button
+            type="button"
+            className="button-ghost"
+            disabled={!isReady}
+            onClick={() => navigate(`/projects/${projectId}/report?rev=${currentRevNo || initRevisionNo || currentRevision}`)}
+            title={t('editor.importReportTitle')}
+          >
+            {t('editor.importReport')}
+          </button>
           {/* 逐页动效：需要真实页面（有 slideId 才谈得上"这一页的动效"）。 */}
           <button
             type="button"

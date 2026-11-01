@@ -768,6 +768,16 @@ export function Projects({
                   >
                     {t('projects.view')}
                   </button>
+                  {/* 导入报告按版本查看：同一份项目里新旧两版的"可讲解内容"可能差很多，
+                      挂到项目级会让人以为报告说的是最新版。 */}
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    onClick={() => navigate(`/projects/${project.id}/report?rev=${revision.revisionNo}`)}
+                    title={t('projects.reportTitle')}
+                  >
+                    {t('projects.report')}
+                  </button>
                   {canExportRevision ? (
                     <button
                       type="button"

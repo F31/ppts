@@ -109,7 +109,7 @@
    "name": "编辑器（页面/版本）",
    "prefixes": ["/projects/{pid}/slides", "/projects/{pid}/revisions", "/projects/archived", "/projects/{pid}/restore"],
    "disposition": "keep",
-   "reason": "体量最大的一组（16 条），含渲染图直出（/slides/render 返二进制 PNG）、版本 diff/下载/删除——Connect 侧无等价契约且不便承载文件流。"
+   "reason": "体量最大的一组（14 条），含渲染图直出（/slides/render 返二进制 PNG）、版本 diff/下载/删除、按版本读导入报告——Connect 侧无等价契约且不便承载文件流。"
   },
   "collab": {
    "name": "协作与分享",
