@@ -69,6 +69,7 @@ import，与规则实验逐字同口径。自己再写一遍指标，两边就�
 """
 import argparse
 import hashlib
+import http.client
 import json
 import re
 import statistics
@@ -76,7 +77,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -153,8 +154,16 @@ def build_page_input_with_rules(page, segments, pairs):
 # 校验器：纯函数，四条拒绝规则 + 两条统计
 # --------------------------------------------------------------------------
 
-REJECT_ORDER = ["not_object", "bad_element_id", "bad_segment_id", "duplicate",
-                "rule_locked", "aux_element", "no_text", "bad_confidence"]
+# 拒绝分两类，因为它们的含义完全不同：
+#   - 格式/契约错误：输出不可用（非 JSON、编造 id、重复、confidence 越界）。
+#     这一类的比例才该叫「输出合法率」，门槛也只卡它。
+#   - 语义越界：输出可用，但绑了不该绑的东西（图注、装饰块、规则已绑）。
+#     它掉的是召回与精确，不是格式；混进 invalid 会把「模型绑了个图注」和
+#     「模型吐了一堆非 JSON」算成一件事，真正的格式问题反而被掩盖。
+FORMAT_REJECT = ["not_object", "bad_element_id", "bad_segment_id", "duplicate",
+                 "bad_confidence"]
+SEMANTIC_REJECT = ["rule_locked", "aux_element", "no_text"]
+REJECT_ORDER = FORMAT_REJECT + SEMANTIC_REJECT
 
 
 def extract_json(raw):
@@ -257,8 +266,9 @@ def count_items(obj):
     return 1
 
 
-def validate_stats_total(stats):
-    return sum(v for k, v in stats.items() if k in REJECT_ORDER)
+def validate_stats_total(stats, kinds=None):
+    keys = kinds or REJECT_ORDER
+    return sum(v for k, v in stats.items() if k in keys)
 
 
 # --------------------------------------------------------------------------
@@ -271,6 +281,15 @@ def cache_key(model, prompt_version, system, user):
         h.update(part.encode("utf-8"))
         h.update(b"\x00")
     return h.hexdigest()[:32]
+
+
+def chat_url(base_url):
+    """拼 /chat/completions。base 末尾已经有 /v1 时不要再拼一次——
+    用户给的 `https://host/v1` 直接拼会变成 `/v1/v1/chat/completions`，报 404。"""
+    base = base_url.rstrip("/")
+    if base.endswith("/v1"):
+        return base + "/chat/completions"
+    return base + "/v1/chat/completions"
 
 
 def chat(base_url, api_key, model, system, user, timeout=120):
@@ -287,7 +306,7 @@ def chat(base_url, api_key, model, system, user, timeout=120):
         "stream": False,
     }
     req = urllib.request.Request(
-        base_url.rstrip("/") + "/v1/chat/completions",
+        chat_url(base_url),
         data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
         headers={
             "Content-Type": "application/json",
@@ -312,6 +331,32 @@ def chat(base_url, api_key, model, system, user, timeout=120):
         "completionTokens": usage.get("completion_tokens", 0),
         "model": payload.get("model") or model,
     }
+
+
+RETRYABLE_HTTP = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def chat_with_retry(base_url, api_key, model, system, user, timeout, attempts=3):
+    """网关会主动断连（实测 RemoteDisconnected）与偶发 5xx，必须重试。
+
+    只重试「重发可能成功」的错误；401/403/404 立刻抛——那是 key 或模型名的问题，
+    重试三次只会把错误信息埋在一堆等待里。
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            return chat(base_url, api_key, model, system, user, timeout)
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRYABLE_HTTP:
+                raise
+            last = "HTTP %d %s" % (e.code, e.reason)
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
+            last = "%s: %s" % (type(e).__name__, e)
+        if i < attempts - 1:
+            wait = 1.5 * (2 ** i)
+            sys.stderr.write("  [retry %d/%d] %s，%.1fs 后重试\n" % (i + 1, attempts - 1, last, wait))
+            time.sleep(wait)
+    raise SystemExit("模型请求连续 %d 次失败，最后一次：%s" % (attempts, last))
 
 
 def call_cached(cache_dir, key, fn):
@@ -469,7 +514,7 @@ def judge(variant_name, summary, reject_ratio=None, p95_ms=None, rule_summary=No
                     "pass": ok})
     if variant_name in GATES and reject_ratio is not None:
         ok = reject_ratio <= 0.05
-        out.append({"name": "输出合法率 ≥ 95%（invalid ≤ 5%）",
+        out.append({"name": "格式合法率 ≥ 95%（非 JSON / 编造 id / 重复 / 越界 confidence）",
                     "need": 0.05, "got": round(reject_ratio, 4), "pass": ok})
     if variant_name in GATES and p95_ms is not None:
         out.append({"name": "P95 延迟 ≤ 8000ms/页",
@@ -620,6 +665,41 @@ VARIANT_LABELS = {
 }
 
 
+def fill_structure(page, segments, pred):
+    """模型绑完之后，用规则的两条「收尾」规则补空位。
+
+    模型的输出只有 id 对，没有版面——它看不见「这个卡片容器里装着一个已绑的文字块」
+    这层关系，所以四步流程页上它只绑了文字块，容器与配图全漏（实测漏 9/18）。
+    规则侧本来就有这一步：`structural_bind` 让容器跟随它包住的内容块，
+    `title_prior` 补标题。这里照搬，语气也一样——铺底与边角碎块仍被 structural_bind 排除。
+
+    补偿的结果单独计数，不混进「模型召回」：模型做了什么、规则补了什么，必须分得开。
+    """
+    elements = page["elements"]
+    order = {e["id"]: i for i, e in enumerate(elements)}
+    seg_idx = {s["id"]: i for i, s in enumerate(segments)}
+
+    pairs = []
+    for sid, lst in pred.items():
+        if sid not in seg_idx:
+            continue
+        for eid, _ in lst:
+            if eid in order:
+                pairs.append((order[eid], seg_idx[sid], 1.0))
+
+    prior = rules.title_prior(elements, segments, pairs)
+    struct = rules.structural_bind(elements, segments, pairs + prior)
+    added = defaultdict(list)
+    for ei, si, _ in prior + struct:
+        added[segments[si]["id"]].append((elements[ei]["id"], 0))
+
+    out = {sid: list(lst) for sid, lst in pred.items()}
+    for sid, lst in added.items():
+        out.setdefault(sid, [])
+        out[sid] = out[sid] + lst
+    return out, len(prior), len(struct)
+
+
 def run_variant(name, pages, args, cache_dir):
     per_page = []
     reject_total = Counter()
@@ -627,6 +707,7 @@ def run_variant(name, pages, args, cache_dir):
     latencies = []
     requests = 0
     cache_hits = 0
+    fill_prior = fill_struct = 0
 
     for idx, page, segments, gold_page in pages:
         rp = rule_pairs(page, segments)  # 别叫 rule_pairs：同名局部变量会让函数本身不可见
@@ -643,7 +724,7 @@ def run_variant(name, pages, args, cache_dir):
             user = build_page_input(page, segments)
 
         key = cache_key(args.model, PROMPT_VERSION + "|" + args.mode, SYSTEM_PROMPT, user)
-        rec = call_cached(cache_dir, key, lambda: chat(
+        rec = call_cached(cache_dir, key, lambda: chat_with_retry(
             args.base_url, args.api_key, args.model, SYSTEM_PROMPT, user, args.timeout))
         requests += 1
         if rec.get("cached"):
@@ -666,6 +747,12 @@ def run_variant(name, pages, args, cache_dir):
                 merged[sid] = merged[sid] + lst
             pred = merged
 
+        page_prior = page_struct = 0
+        if args.struct_fill:
+            pred, page_prior, page_struct = fill_structure(page, segments, pred)
+            fill_prior += page_prior
+            fill_struct += page_struct
+
         rows, summary = score(page, segments, pred, gold_page)
         per_page.append({
             "index": idx,
@@ -675,6 +762,8 @@ def run_variant(name, pages, args, cache_dir):
             "completionTokens": rec.get("completionTokens"),
             "raw": rec.get("raw") if args.keep_raw else None,
             "rejected": dict(stats),
+            "filledPrior": page_prior,
+            "filledStruct": page_struct,
             "nonMonotonic": mono,
             "model": summary,
             "rules": rule_sum,
@@ -683,8 +772,10 @@ def run_variant(name, pages, args, cache_dir):
 
     total_model = merge_summaries([p["model"] for p in per_page])
     total_rule = merge_summaries([p["rules"] for p in per_page])
-    rej = validate_stats_total(reject_total)
-    reject_ratio = (rej / total_items) if total_items else 0.0
+    fmt_rej = validate_stats_total(reject_total, FORMAT_REJECT)
+    sem_rej = validate_stats_total(reject_total, SEMANTIC_REJECT)
+    format_ratio = (fmt_rej / total_items) if total_items else 0.0
+    semantic_ratio = (sem_rej / total_items) if total_items else 0.0
     p95 = int(statistics.quantiles(latencies, n=20)[-1]) if len(latencies) >= 2 else (
         latencies[0] if latencies else None)
 
@@ -695,11 +786,13 @@ def run_variant(name, pages, args, cache_dir):
         "model": total_model,
         "rules": total_rule,
         "rejected": dict(reject_total),
-        "rejectRatio": round(reject_ratio, 4),
+        "formatRejectRatio": round(format_ratio, 4),
+        "semanticRejectRatio": round(semantic_ratio, 4),
+        "fill": {"prior": fill_prior, "struct": fill_struct},
         "p95Ms": p95,
         "requests": requests,
         "cacheHits": cache_hits,
-        "gate": judge(name, total_model, reject_ratio, p95, total_rule),
+        "gate": judge(name, total_model, format_ratio, p95, total_rule),
     }
 
 
@@ -781,6 +874,14 @@ def selftest():
     t2 = build_page_input_with_rules(page, segments, [(1, 0, 0.9)])
     if "BOUND->p2-q1" not in t2 or "FREE" not in t2:
         fails.append("rule+model 输入没标出已绑/空位：\n%s" % t2)
+
+    # 端点拼接：base 已经带 /v1 时不能再拼一次（用户给的网关多为 https://host/v1）。
+    if chat_url("https://h/v1") != "https://h/v1/chat/completions":
+        fails.append("base 自带 /v1 时拼错了：%s" % chat_url("https://h/v1"))
+    if chat_url("https://h") != "https://h/v1/chat/completions":
+        fails.append("base 不带 /v1 时拼错了：%s" % chat_url("https://h"))
+    if chat_url("https://h/v1/") != "https://h/v1/chat/completions":
+        fails.append("base 带尾斜杠时拼错了：%s" % chat_url("https://h/v1/"))
 
     # 缓存 key：模型或 promptVersion 变化必须换 key，否则「换模型却读到旧结果」。
     k1 = cache_key("m1", "v1", "s", "u")
@@ -876,6 +977,9 @@ def main():
     ap.add_argument("--show-rows", action="store_true")
     ap.add_argument("--keep-raw", action="store_true")
     ap.add_argument("--no-cache", action="store_true")
+    ap.add_argument("--struct-fill", action=argparse.BooleanOptionalAction, default=True,
+                    help="模型绑完后用规则的 structural_bind / title_prior 补容器与标题"
+                         "（默认开；关掉才是纯模型的裸成绩）")
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--rules-baseline", action="store_true",
@@ -933,10 +1037,12 @@ def main():
         report["variants"].append(res)
         (out_dir / ("report-%s-%s.json" % (args.mode.replace("+", "-"), name))).write_text(
             json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
-        print("[%s] 模型 %s / 规则 %s / 拒绝 %d / P95 %sms / 缓存命中 %d/%d"
+        print("[%s] 模型 %s / 规则 %s / 格式错 %.1f%% / 语义越界 %d / 补位 %d+%d / P95 %sms / 缓存 %d/%d"
               % (name,
                  res["model"].get("recall_content"), res["rules"].get("recall_content"),
-                 validate_stats_total(Counter(res["rejected"])),
+                 res["formatRejectRatio"] * 100,
+                 validate_stats_total(Counter(res["rejected"]), SEMANTIC_REJECT),
+                 res["fill"]["prior"], res["fill"]["struct"],
                  res["p95Ms"], res["cacheHits"], res["requests"]))
         for g in res["gate"]:
             extra = ""
