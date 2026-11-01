@@ -441,3 +441,34 @@ V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要�
 
 一条局限：`p1-card` 这种**容器**的 `settledMs` 会被子元素污染（报 6.3s，实际 5.9s 就在了）。
 容器只看 `preSegLevel`，不要拿 `settledMs` 对段落。
+
+## 讲稿绑定预填的开口门禁（V20）
+
+上面那套是 Q7 的实验样片：绑定是**手写**的（`q7-script.json` 里一条条 `bind`）。
+产品侧的讲稿绑定预填（`animation/bind` + `animdefault`）需要自己的一条证据链，
+否则「规则算出来的绑定」是否守时，谁也不欠谁一个证明。
+
+```bash
+# 一条命令：预填 → 编译 → 渲染 → 拼接混音 → 逐段核对 → 负对照（约 4 分钟）
+FFMPEG=/path/to/full/ffmpeg PPTS_CHROME=/path/to/chrome \
+  bash scripts/fidelity/prefill_sample.sh
+```
+
+| 判据 | 含义 | 阈值 |
+|---|---|---|
+| V20.1 | 开口前 400ms 内包围盒无变化（`preMax`） | ≤ 2.0（灰度平均绝对差） |
+| V20.2 | 首次变化不早于开口 | ≥ −半帧 |
+| V20.3 | 首次变化不晚于开口 + 段内错落预算 | ≤ 900ms |
+| 空跑 | 峰值都没过阈值 = 框里什么都没发生 | 视为不过 |
+
+`check_speech_gate.py` 读 `plan -prefill` 写回的 `segments-prefill.json`（**实测**绑定），
+不是手写编排；每个元素只调一次 ffmpeg（整窗解码后内存里切帧），18 条约一分钟。
+
+### 两个坑，都只有像素法能发现
+
+1. **别绕过 staging 直接调 `renderer/render.mjs`**。底板（plate）由 Go 侧
+   （`RemotionBackend.stagePages`）生成；没有底板，淡入的层只是把整页底图又叠了一遍，
+   像素差恒为 0，门禁会读成「元素从没出现」。第一版就是这么错的：18 条里 11 条 `onset=None`。
+   样片必须走 `cmd/renderer`。
+2. **ffmpeg 要完整版**。Remotion 自带的那份裁掉了 `rawvideo` 输出，`check_alignment` /
+   `check_speech_gate` 的裁框灰度读取会直接失败。脚本开头有一段探测，会当场报错退出。

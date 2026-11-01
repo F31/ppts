@@ -48,12 +48,20 @@ type Report struct {
 	Static int // 有动效模板、但因未绑定而保持静态的元素数
 }
 
-// pageElement 是扁平化后的页内元素（用于默认生成）。
-type pageElement struct {
-	id   string
-	kind string
-	box  project.Box
+// Element 是默认生成看到的页内元素：id、动效类别、EMU 包围盒。
+//
+// 原先只有未导出的 pageElement，默认生成因此**只能**从 *project.Page 调用。
+// 保真样片（scripts/fidelity/plan）手里是一份 elements.json：几何、文本、类别都在，
+// 但没有 project.Page——它要验的恰恰是本包产出的轨道（讲稿绑定预填的第 5 组验收）。
+// 于是把「元素清单」提为入口，DefaultSpec 变成它的一个包装。
+type Element struct {
+	ID   string
+	Kind string
+	Box  project.Box
 }
+
+// pageElement 保留旧名，避免把本包十几处引用一起改掉。
+type pageElement = Element
 
 // DefaultSpec 从页与预设生成一份可直接落库的默认规格。
 //
@@ -70,6 +78,17 @@ func DefaultSpecReport(page *project.Page, opt DefaultOptions) (*animation.Revis
 	if page == nil {
 		return nil, Report{}, errors.New("animation: page is nil")
 	}
+	return SpecFromElements(pageElements(page), opt)
+}
+
+// SpecFromElements 用一份已扁平化的元素清单生成默认规格。
+//
+// DefaultSpecReport 是它的「从 project.Page 取元素」包装。分离出来的原因只有一个：
+// 讲稿绑定预填的验收要拿**同一份轨生成代码**去跑保真样片，而样片手里是 elements.json
+// （几何、类别、文本都在），没有 project.Page。为验收再造一份「差不多的」生成逻辑，
+// 验的就只是那份复制品。类别的语义与 pageElements 一致，由调用方负责（默认入口仍走
+// 阅读顺序归类）。
+func SpecFromElements(elems []Element, opt DefaultOptions) (*animation.Revision, Report, error) {
 	if opt.DurationMS <= 0 {
 		return nil, Report{}, errors.New("animation: page duration is required")
 	}
@@ -82,7 +101,6 @@ func DefaultSpecReport(page *project.Page, opt DefaultOptions) (*animation.Revis
 		return nil, Report{}, fmt.Errorf("animation: unknown preset %q", presetID)
 	}
 
-	elems := pageElements(page)
 	pc := animation.PageContext{
 		DurationMS: opt.DurationMS,
 		FPS:        opt.FPS,
@@ -147,7 +165,7 @@ func buildBoundTracks(preset *animation.Preset, elems []pageElement, opt Default
 	clipSeq := 0
 
 	for _, el := range elems {
-		templates := preset.Clips[el.kind]
+		templates := preset.Clips[el.Kind]
 		if len(templates) == 0 {
 			// 这套预设本来就不动这类元素：既不是"绑上了"，也不是"因为没绑所以静态"。
 			// 记进 Static 会把预设的能力边界说成预填的失职。
@@ -156,7 +174,7 @@ func buildBoundTracks(preset *animation.Preset, elems []pageElement, opt Default
 		if len(tracks) >= animation.MaxTracksPerSlide || clipSeq >= animation.MaxClipsPerSlide {
 			break
 		}
-		b, bound := byElem[el.id]
+		b, bound := byElem[el.ID]
 		if !bound {
 			report.Static++
 			continue
@@ -164,10 +182,10 @@ func buildBoundTracks(preset *animation.Preset, elems []pageElement, opt Default
 		if _, ok := segSet[b.SegmentID]; !ok {
 			return nil, Report{}, fmt.Errorf(
 				"animation: binding for element %q points at segment %q, which is not in this page's segment list",
-				el.id, b.SegmentID)
+				el.ID, b.SegmentID)
 		}
 
-		track := &animation.Track{ElementID: el.id, Kind: el.kind}
+		track := &animation.Track{ElementID: el.ID, Kind: el.Kind}
 		for _, tpl := range templates {
 			if clipSeq >= animation.MaxClipsPerSlide {
 				break
@@ -225,20 +243,20 @@ func buildSequencedTracks(preset *animation.Preset, elems []pageElement, opt Def
 		if len(tracks) >= animation.MaxTracksPerSlide || clipSeq >= animation.MaxClipsPerSlide {
 			break
 		}
-		templates := preset.Clips[el.kind]
+		templates := preset.Clips[el.Kind]
 		if len(templates) == 0 {
 			continue
 		}
-		track := &animation.Track{ElementID: el.id, Kind: el.kind}
+		track := &animation.Track{ElementID: el.ID, Kind: el.Kind}
 		start := int64(staggerSeq) * preset.StaggerMs
 		trigger := animation.TriggerEnter
 
-		if el.kind == animation.KindBullet && preset.SegmentAligned && bulletSeq < len(segments) {
+		if el.Kind == animation.KindBullet && preset.SegmentAligned && bulletSeq < len(segments) {
 			// 讲到哪条出现哪条：用相对锚定，配音重生成后无需改规格（§5.3）。
 			trigger = animation.TriggerSegmentPrefix + segments[bulletSeq]
 			start = 0
 		}
-		if el.kind == animation.KindBullet {
+		if el.Kind == animation.KindBullet {
 			bulletSeq++
 		}
 
@@ -308,7 +326,7 @@ func pageElements(page *project.Page) []pageElement {
 				continue
 			}
 			if kind, ok := classifyShape(sh); ok {
-				out = append(out, pageElement{id: sh.ID, kind: kind, box: *sh.Bounds})
+				out = append(out, Element{ID: sh.ID, Kind: kind, Box: *sh.Bounds})
 			}
 			if len(sh.Children) > 0 {
 				walk(sh.Children)
@@ -318,28 +336,28 @@ func pageElements(page *project.Page) []pageElement {
 	walk(page.Shapes)
 
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].box.Y != out[j].box.Y {
-			return out[i].box.Y < out[j].box.Y
+		if out[i].Box.Y != out[j].Box.Y {
+			return out[i].Box.Y < out[j].Box.Y
 		}
-		if out[i].box.X != out[j].box.X {
-			return out[i].box.X < out[j].box.X
+		if out[i].Box.X != out[j].Box.X {
+			return out[i].Box.X < out[j].Box.X
 		}
-		return out[i].id < out[j].id
+		return out[i].ID < out[j].ID
 	})
 
 	// 阅读顺序里第一个有文字的元素当标题，其余文字元素当要点。
 	// 没有字体信息可用，"第一个"是最稳的启发式：标题在版式上几乎总在最上。
 	titleAssigned := false
 	for i := range out {
-		if out[i].kind != animation.KindShape {
+		if out[i].Kind != animation.KindShape {
 			continue
 		}
 		if !titleAssigned {
-			out[i].kind = animation.KindTitle
+			out[i].Kind = animation.KindTitle
 			titleAssigned = true
 			continue
 		}
-		out[i].kind = animation.KindBullet
+		out[i].Kind = animation.KindBullet
 	}
 	return out
 }
@@ -425,7 +443,7 @@ func anchorKind(sh *project.Shape) string {
 func anchorsOf(elems []pageElement) []animation.Anchor {
 	out := make([]animation.Anchor, 0, len(elems))
 	for _, e := range elems {
-		out = append(out, animation.Anchor{ID: e.id, Kind: e.kind, HasBounds: true})
+		out = append(out, animation.Anchor{ID: e.ID, Kind: e.Kind, HasBounds: true})
 	}
 	return out
 }

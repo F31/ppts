@@ -233,3 +233,38 @@ func TestDefaultClipIDsAreUnique(t *testing.T) {
 		}
 	}
 }
+
+// TestSpecFromElementsMatchesDefaultSpec 钉住「两条入口是同一份生成逻辑」。
+//
+// SpecFromElements 是为验收加的第二个入口（保真样片手里没有 project.Page），
+// 一旦有人只改其中一条，样片上验到的就不再是产品会产出的东西——而两边都「跑得通」，
+// 没有报错，只有产物悄悄不同。这里逐字节比较。
+func TestSpecFromElementsMatchesDefaultSpec(t *testing.T) {
+	page := samplePage()
+	opt := defaultOptions("business-calm")
+
+	viaPage, rep1, err := DefaultSpecReport(page, opt)
+	if err != nil {
+		t.Fatalf("DefaultSpecReport: %v", err)
+	}
+	viaElems, rep2, err := SpecFromElements(pageElements(page), opt)
+	if err != nil {
+		t.Fatalf("SpecFromElements: %v", err)
+	}
+	if !reflect.DeepEqual(viaPage, viaElems) {
+		t.Fatalf("两条入口产出不同：\nDefaultSpec      = %+v\nSpecFromElements = %+v", viaPage, viaElems)
+	}
+	if rep1 != rep2 {
+		t.Fatalf("Report 不同：%+v vs %+v", rep1, rep2)
+	}
+}
+
+// TestSpecFromElementsRejectsMissingDuration 保证包装没有丢掉时长校验：
+// 「页时长未知」是渲染期的硬错误，不能因为换了入口就变成默认 0 秒。
+func TestSpecFromElementsRejectsMissingDuration(t *testing.T) {
+	opt := defaultOptions("business-calm")
+	opt.DurationMS = 0
+	if _, _, err := SpecFromElements(pageElements(samplePage()), opt); err == nil {
+		t.Fatal("没有页时长却生成成功了：时长必须由调用方给出")
+	}
+}

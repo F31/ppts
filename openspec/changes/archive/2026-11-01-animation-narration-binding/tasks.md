@@ -1,10 +1,10 @@
 # 任务：讲稿绑定预填
 
-> 状态：**第 1–4 组已落地**（来源标注 + 规则绑定器 Go 移植 + 金标复现 + 预填入口 + 编辑器复核）。
-> 规格里的三条 MUST（来源/置信度、分档呈现、按来源撤销）都已兑现。
-> 仍不归档：`design.md §7` 把「带配音 30s 样片」列为验收口径，5.1 未做（需要真实配音），
-> 6.x 两项是数据缺口。**归档前必须先把 5.1 的证据补上**——规格生效而验收没做，
-> 等于把"实现了"写成"验证过了"。
+> 状态：**第 1–5 组已全部落地**（来源标注 + 规则绑定器 Go 移植 + 金标复现 + 预填入口 +
+> 编辑器复核 + 带配音样片验收）。规格里的三条 MUST（来源/置信度、分档呈现、按来源撤销）
+> 都已兑现，5.1 的像素证据也已补上，本变更随本轮归档。
+> 6.x 两项是**数据缺口**（真人讲稿重测、模型通道对照），非代码缺口，不阻塞规格生效，
+> 已转入路线图作为后续跟进。
 
 ## 1. 来源标注
 
@@ -119,9 +119,24 @@
 > 2. `savePayloadOf` 不回传 `triggerSource`/`confidence`：用户改一下强度再保存，来源标注被
 >    静默抹掉（服务端只在 trigger 变化时补 `manual`，这条路径 trigger 没变）。现在原样带回。
 
-## 5. 验收（5.1 未完成）
+## 5. 验收
 
-- [ ] 5.1 带配音 30s 样片，逐段核对「讲到第 N 段时第 N 条才出现」（开口前 400ms 内区域变化为 0）
+- [x] 5.1 带配音 30s 样片，逐段核对「讲到第 N 段时第 N 条才出现」（开口前 400ms 内区域变化为 0）
+      —— 一条命令跑完：`bash scripts/fidelity/prefill_sample.sh`（配音复用 `tmp/q7` 的
+      edge-tts 产物，5 页 35.5s；从讲解词重打见 `narrate.py`）。
+      链路：`plan -prefill`（**产品代码**：`animation/bind` + `animdefault.SpecFromElements`）→
+      `cmd/renderer`（Remotion，服务端生成底板）→ 拼接混音 → `check_speech_gate.py`。
+      **实测 18 条绑定：preMax 全为 0.0（开口前 400ms 内区域变化为 0），
+      delay 13–467ms 全在 900ms 预算内，18 通过 / 0 不过**。逐条数字见
+      `tmp/prefill-sample/speech-gate.json`（产物不入库，脚本可重跑）。
+      负对照（把开口后移 400ms 再判）**16/18 判成提前，比例 0.89**——尺子量得出提前，
+      不是「宽到什么都过」。两条没被抓的是 500ms 级别的慢动画（图表容器淡入、柱子生长），
+      在假开口那一刻只走了 60–80%，灰度差还没越过 2.0；把阈值收紧到能抓它们，
+      正常判据就会开始误报，所以负对照的合格线定 80% 并列出漏网项。
+      不进 CI：要 TTS 网络、Chrome、**完整版 ffmpeg**（Remotion 自带的那份没有 rawvideo 输出）。
+      > **踩坑留痕**：直接调 `renderer/render.mjs` 渲这份计划，18 条里 11 条测不到出现——
+      > 底板（plate）是 Go 侧 staging 生成的，绕过它，淡入的层只是在整页底图上又叠了一遍
+      > 自己，像素差恒为 0。必须走 `cmd/renderer`。已写进 fidelity README。
 - [x] 5.2 `go build/vet/test` + `npm run build` + `build:share` 无漂移
       —— `go build ./...`、`go vet ./...`、`go test -p 1 ./...` 全绿；
       `npm run build`（contrast / api:check / route:check / core / polling / animation 51 用例 /

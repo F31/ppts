@@ -16,9 +16,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/animdefault"
+	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/design"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -34,6 +38,9 @@ type element struct {
 	ID   string `json:"id"`
 	Kind string `json:"kind"`
 	Box  [4]int `json:"box"`
+	// Text 是元素的文字内容。plan 编译用不到它，但讲稿绑定预填靠它与分段文本算相似度——
+	// 缺了它，预填在样片上只能靠结构规则，验出来的是「结构规则能对齐」，不是「预填能对齐」。
+	Text string `json:"text,omitempty"`
 	// Enter 覆盖按 kind 选的默认入场方式。目前只用于柱子：grow 让柱高从 0 长到终值，
 	// 锚点由编译期从 scaleY 推出来（见 render.originFor），这里不必声明。
 	Enter string `json:"enter,omitempty"`
@@ -339,6 +346,74 @@ func focusSpans(page scriptPage) []render.FocusSpan {
 	return spans
 }
 
+// prefillRevision 用**产品侧**的两段代码生成轨道：animation/bind 算绑定，
+// animdefault 把绑定翻成轨道。本文件自己不再拼一套「差不多的」编排。
+//
+// 为什么非要用产品代码：手写 bind 的样片只能证明「按段起播能对上开口」，
+// 那件事 Q7 已经证过了。这一版要证的是「**预填算出来的绑定**能对上开口」——
+// 中间多了一次规则推断和一次预设翻译，任何一处偏一点，元素就会早到或迟到。
+func prefillRevision(elems []element, sp scriptPage, pageMs int64) *animation.Revision {
+	bel := make([]bind.Element, 0, len(elems))
+	ael := make([]animdefault.Element, 0, len(elems))
+	for _, e := range elems {
+		bel = append(bel, bind.Element{
+			ID: e.ID, Kind: e.Kind, Text: e.Text,
+			Box: bind.Box{X: float64(e.Box[0]), Y: float64(e.Box[1]), W: float64(e.Box[2]), H: float64(e.Box[3])},
+		})
+		ael = append(ael, animdefault.Element{
+			ID: e.ID, Kind: e.Kind,
+			Box: project.Box{
+				X: int64(e.Box[0]) * emuPerPx, Y: int64(e.Box[1]) * emuPerPx,
+				Width: int64(e.Box[2]) * emuPerPx, Height: int64(e.Box[3]) * emuPerPx,
+			},
+		})
+	}
+	segs := make([]bind.Segment, 0, len(sp.Segments))
+	ids := make([]string, 0, len(sp.Segments))
+	for _, s := range sp.Segments {
+		segs = append(segs, bind.Segment{ID: s.ID, Text: s.Text})
+		ids = append(ids, s.ID)
+	}
+	res := bind.Run(bel, segs, bind.Options{})
+	rev, report, err := animdefault.SpecFromElements(ael, animdefault.DefaultOptions{
+		SlideID: sp.SlideID, Language: "zh-CN", DurationMS: pageMs, FPS: 30,
+		SegmentIDs: ids, Bindings: res.Bindings,
+	})
+	if err != nil {
+		log.Fatalf("页 %d：预填生成的规格不合法：%v", sp.Index, err)
+	}
+	log.Printf("页 %d：预填 %d 条绑定 → 轨道 %d 条、静态 %d 条（分档 %s %v）",
+		sp.Index, len(res.Bindings), report.Bound, report.Static, res.Band, res.Signals)
+	return rev
+}
+
+// prefillScriptPage 把实测绑定写回段落的 bind：像素测量的参照物必须与被测画面同源。
+//
+// check_alignment 是按 seg.bind 找「哪个元素属于这一段」的。若它读的仍是手写绑定，
+// 量到的就是「另一份编排在画面上表现如何」，与预填无关。
+func prefillScriptPage(sp scriptPage, rev *animation.Revision) scriptPage {
+	bySeg := make(map[string][]bindRef, len(sp.Segments))
+	for _, tr := range rev.Tracks {
+		for _, c := range tr.Clips {
+			if !strings.HasPrefix(c.Trigger, animation.TriggerSegmentPrefix) {
+				continue // 整页轨道与 atTime 不是预填产物
+			}
+			seg := strings.TrimPrefix(c.Trigger, animation.TriggerSegmentPrefix)
+			bySeg[seg] = append(bySeg[seg], bindRef{ElementID: tr.ElementID, OffsetMs: c.StartMs})
+			break // 同一元素的多条 clip 共用同一 trigger，只记一次
+		}
+	}
+	out := sp
+	out.Segments = make([]scriptSegment, len(sp.Segments))
+	for i, s := range sp.Segments {
+		// 空切片而不是 nil：null 会让读取方在 for ... range 上崩掉，
+		// 而「这一段没有绑定」是正常状态（讲解没提到任何元素）。
+		s.Bind = append([]bindRef{}, bySeg[s.ID]...)
+		out.Segments[i] = s
+	}
+	return out
+}
+
 func main() {
 	in := flag.String("in", "", "含 pages/ 与 elements.json 的目录（gen_pages.py 的输出）")
 	out := flag.String("out", "job", "job 目录：plan.json 与底图副本写在这里")
@@ -350,6 +425,9 @@ func main() {
 		"narrate.py 产出的 segments.json：用 withSegment 按讲解段落起播（页时长也取它的实测值）")
 	hardCut := flag.Bool("hard-cut", false,
 		"关闭页转场：转场 320ms 与页首段落的起播（220ms）重叠，像素法测不出元素是否准时")
+	prefill := flag.Bool("prefill", false,
+		"轨道改由产品侧的讲稿绑定预填生成（animation/bind + animdefault），"+
+			"而不是读 segments.json 里手写的 bind；需要同时给 -script（用它取分段文本与开口时刻）")
 	flag.Parse()
 	if *in == "" {
 		log.Fatal("-in 必填")
@@ -451,7 +529,17 @@ func main() {
 		if script != nil {
 			sp := script.Pages[i]
 			pageMs = sp.DurationMs
-			rev = scriptRevision(m.Elements, sp, *tierCompliant)
+			if *prefill {
+				// 验收要的是**产品产出的轨道**，不是这份实验脚本自己拼的轨道：
+				// 手写 bind 只能证明「按段起播能对齐」，证明不了「预填算出的绑定能对齐」。
+				rev = prefillRevision(m.Elements, sp, pageMs)
+				// 像素测量的输入换成实测绑定。check_alignment 读的就是 seg.bind，
+				// 让它继续读手写 bind 等于拿另一份编排去解释这段画面。
+				sp = prefillScriptPage(sp, rev)
+				script.Pages[i] = sp
+			} else {
+				rev = scriptRevision(m.Elements, sp, *tierCompliant)
+			}
 			focus = focusSpans(sp)
 			offsets = make(map[string]int64, len(sp.Segments))
 			for _, seg := range sp.Segments {
@@ -490,6 +578,16 @@ func main() {
 	}
 	if err := os.WriteFile(filepath.Join(*out, "plan.json"), body, 0o644); err != nil {
 		log.Fatal(err)
+	}
+	if *prefill && script != nil {
+		// 测量脚本读的是这份：bind 是**实测**绑定（产品预填的产物），不是手写编排。
+		sb, err := json.MarshalIndent(script, "", "  ")
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(*out, "segments-prefill.json"), sb, 0o644); err != nil {
+			log.Fatal(err)
+		}
 	}
 	h, err := plan.Hash(render.HashOptions{RendererVersion: "fidelity"})
 	if err != nil {
