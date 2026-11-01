@@ -431,7 +431,7 @@ func TestTextNormPauseNotSupportedWarning(t *testing.T) {
 	handler, _, steps, objects := newTextNormHandler(t, store, meta, true, nil)
 	provider := providerForTests()
 	provider.caps.SupportsPauses = false
-	handler.WithTenantProvider(func(context.Context, string) (tts.TTSProvider, error) { return provider, nil })
+	handler.WithTenantProvider(func(context.Context, string, string) (tts.TTSProvider, error) { return provider, nil })
 	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}
@@ -450,7 +450,7 @@ func TestTextNormPauseSupportedNoWarning(t *testing.T) {
 	handler, _, steps, objects := newTextNormHandler(t, store, meta, true, nil)
 	provider := providerForTests()
 	provider.caps.SupportsPauses = true
-	handler.WithTenantProvider(func(context.Context, string) (tts.TTSProvider, error) { return provider, nil })
+	handler.WithTenantProvider(func(context.Context, string, string) (tts.TTSProvider, error) { return provider, nil })
 	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
 		t.Fatalf("handle: %v", err)
 	}

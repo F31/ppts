@@ -972,6 +972,7 @@
   "editor.voicePreviewModel": "试听使用模型：{model}",
   "editor.voicePreviewDuration": "样音时长 {seconds} 秒",
   "editor.voicePreviewNoGateway": "未配置语音模型网关，无法试听。请先在「模型网关」中配置 TTS 并测试连通。",
+  "editor.voicePreviewModelMissing": "所选模型「{model}」当前不可用（可能已停用或改名）。请在上方重新选择模型；换回默认模型再试听也可以。",
   "editor.voicePreviewTimeout": "试听超时，请稍后重试。",
   "editor.voicePreviewTooLong": "试听文本过长，请缩短后再试。",
   "editor.voicePreviewFailed": "试听失败",

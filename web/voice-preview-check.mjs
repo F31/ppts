@@ -53,8 +53,10 @@ test('四次连续发起只有最后一次算数', () => {
   assert.deepEqual(alive, [false, false, false, true]);
 });
 
-test('错误码归类：四种情况对应四种可操作结论', () => {
+test('错误码归类：五种情况对应五种可操作结论', () => {
   assert.equal(m.classifyVoicePreviewError('tts_not_configured'), 'not_configured');
+  // 模型行被停用/删除：用户该做的是重选模型，而不是去查供应商。
+  assert.equal(m.classifyVoicePreviewError('model_not_configured'), 'model_missing');
   assert.equal(m.classifyVoicePreviewError('tts_timeout'), 'timeout');
   assert.equal(m.classifyVoicePreviewError('text_too_long'), 'too_long');
   assert.equal(m.classifyVoicePreviewError('tts_failed'), 'failed');

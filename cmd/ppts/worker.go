@@ -505,6 +505,17 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 	cipher, err := gateway.CipherFromEnv()
 	if err != nil {
 		logger.Info("model gateway disabled (no AES key); using env providers")
+		// 没有网关时仍然要接上这一层：任务点名了模型就必须失败，而不是用 env 供应商
+		// 合成完再报成功。否则「界面选了 A、实际是 B」在最常见的私有化部署里依然成立。
+		narr.WithTenantProvider(func(_ context.Context, _, model string) (tts.TTSProvider, error) {
+			if model != "" {
+				return nil, fmt.Errorf("worker: model gateway disabled (no gateway AES key), cannot honor requested model %q", model)
+			}
+			if envTTS == nil {
+				return nil, errors.New("worker: no TTS provider configured (env or gateway)")
+			}
+			return envTTS, nil
+		})
 		// 网关不可用时预填仍可用：退到 env 供应商（如果有）。
 		// 留着这条是因为「没有密钥」不该等于「预填永远走规则」——本地与私有化部署
 		// 本来就只用环境变量配模型，那条路径必须一样能问模型。
@@ -550,7 +561,17 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 		// SiliconFlowProvider 始终实现 VisionExtractor（多模态能力由所用模型决定）。
 		return p, nil
 	})
-	narr.WithTenantProvider(func(ctx context.Context, tenantID string) (tts.TTSProvider, error) {
+	narr.WithTenantProvider(func(ctx context.Context, tenantID, model string) (tts.TTSProvider, error) {
+		// 任务点名了模型：必须按名解析，解析不到直接让任务失败。
+		// 这里刻意不回退 env 供应商——那会让界面上的模型下拉成为装饰：
+		// 用户选了 A、听到的是 env 里的 B，而任务状态仍是成功。
+		if model != "" {
+			cfg, err := gateway.ResolveModel(ctx, store, tenantID, gateway.KindTTS, model)
+			if err != nil {
+				return nil, err
+			}
+			return providers.TTS(cfg), nil
+		}
 		if cfg, err := store.Resolve(ctx, tenantID, gateway.KindTTS); err == nil {
 			return providers.TTS(cfg), nil
 		}

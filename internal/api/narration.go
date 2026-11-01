@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"strings"
@@ -40,19 +41,56 @@ type QuotaManager interface {
 // NarrationGenerationService creates revision-bound narration jobs.
 type NarrationGenerationService struct {
 	pptsv1connect.UnimplementedNarrationServiceHandler
-	scripts  narration.Store
-	jobs     JobCreator
-	projects project.ProjectStore
-	objects  objectstore.ObjectStore
-	quota    QuotaManager
-	policy   TenantPolicyReader
-	members  membership.Reader
-	audit    audit.Recorder
+	scripts    narration.Store
+	jobs       JobCreator
+	projects   project.ProjectStore
+	objects    objectstore.ObjectStore
+	quota      QuotaManager
+	policy     TenantPolicyReader
+	members    membership.Reader
+	audit      audit.Recorder
+	voiceStore app.VoiceSettingsStore
 }
 
 // NewNarrationGenerationService creates a narration task service.
 func NewNarrationGenerationService(scripts narration.Store, jobs JobCreator, projects project.ProjectStore, objects objectstore.ObjectStore, quota QuotaManager, policy TenantPolicyReader, members membership.Reader, recorder audit.Recorder) *NarrationGenerationService {
 	return &NarrationGenerationService{scripts: scripts, jobs: jobs, projects: projects, objects: objects, quota: quota, policy: policy, members: members, audit: recorder}
+}
+
+// WithVoiceSettings 注入项目级语音属性读取能力。
+//
+// 注入后，请求未显式点名模型时按项目保存的设置解析——用户在界面上选了模型却没点生成、
+// 或第三方客户端只传 voice_id，都不会悄悄用回默认模型。未注入（测试/纯 API 部署）时
+// 保持旧的"租户默认"语义。
+func (s *NarrationGenerationService) WithVoiceSettings(store app.VoiceSettingsStore) *NarrationGenerationService {
+	s.voiceStore = store
+	return s
+}
+
+// ttsModelHeader 是「本次配音用哪个语音模型」的显式头。
+//
+// 为什么不加 proto 字段：本环境没有 buf/protoc，改 .proto 无法重新生成 pb.go（仓库里
+// 已有大量同类取舍，见 /projects/{pid}/voice-preview、artifact、collab 等原生端点）。
+// 走头的另一个好处是与 Idempotency-Key、X-PPTS-Bypass-Cache 同层，前端不必等协议升级。
+const ttsModelHeader = "X-PPTS-TTS-Model"
+
+// resolveNarrationModel 决定本次任务使用的模型名。
+//
+// 优先级：请求头 → 项目语音设置 → 空（租户默认）。
+// 读设置失败时直接报错而不回落默认：用户已经保存过某个模型，这时用默认模型合成，
+// 结果与"保存成功"的界面承诺相反，且从音频里看不出来。
+func (s *NarrationGenerationService) resolveNarrationModel(ctx context.Context, header httpHeader, tenantID, projectID string) (string, error) {
+	if model := strings.TrimSpace(header.Get(ttsModelHeader)); model != "" {
+		return model, nil
+	}
+	if s.voiceStore == nil {
+		return "", nil
+	}
+	settings, err := s.voiceStore.Get(ctx, tenantID, projectID)
+	if err != nil {
+		return "", connect.NewError(connect.CodeInternal, fmt.Errorf("read project voice settings: %w", err))
+	}
+	return strings.TrimSpace(settings.Model), nil
 }
 
 // validateSlidesInRevision 校验待配音的 slide 都属于指定源版本（revisionNo<=0 时回退当前版本）。
@@ -143,6 +181,11 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 		// 用户显式要求"重新生成"时跳过缓存、真实调用 TTS（否则内容哈希命中会让界面承诺落空）。
 		BypassCache: requestBypassCache(req.Header()),
 	}
+	model, merr := s.resolveNarrationModel(ctx, req.Header(), principal.TenantID, projectID)
+	if merr != nil {
+		return nil, merr
+	}
+	snapshot.Model = model
 	seen := make(map[string]struct{}, len(req.Msg.GetSlideIds()))
 	slideOrder := make([]string, 0, len(req.Msg.GetSlideIds()))
 	totalRunes := 0
@@ -260,6 +303,12 @@ func (s *NarrationGenerationService) RegenerateSegments(ctx context.Context, req
 		RevisionNo:    sourceRevision,
 		// 分段级重生成同样是显式"重新生成"意图，沿用同一标志。
 		BypassCache: requestBypassCache(req.Header()),
+	}
+	// 局部重生成也必须认同一个模型，否则"只重做这一段"会和整篇用不同的声音。
+	if model, merr := s.resolveNarrationModel(ctx, req.Header(), principal.TenantID, projectID); merr != nil {
+		return nil, merr
+	} else {
+		snapshot.Model = model
 	}
 	filter := make(map[string]struct{}, len(req.Msg.GetSegmentIds()))
 	for _, id := range req.Msg.GetSegmentIds() {

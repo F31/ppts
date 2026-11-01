@@ -214,7 +214,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	}
 	path, handler = pptsv1connect.NewScriptServiceHandler(NewScriptService(scripts, jobs, opt.Members, scriptSources), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members, opt.Audit), handlerOpts...)
+	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members, opt.Audit).WithVoiceSettings(opt.VoiceSettings), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members, opt.Audit), handlerOpts...)
 	mux.Handle(path, auth(handler))

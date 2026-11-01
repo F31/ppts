@@ -21,6 +21,54 @@ var ErrNotFound = errors.New("gateway: not found")
 // ErrExists 表示目标 (name, kind) 已存在同名的另一类网关，无法迁移类型。
 var ErrExists = errors.New("gateway: already exists")
 
+// ErrModelNotConfigured 表示调用方点名要求了某个模型，但本租户与平台行里都没有
+// 对应的启用网关。
+//
+// 它与 ErrNotFound 分开，是因为两者对用户的含义完全不同：ErrNotFound 是"没配过任何 TTS"，
+// ErrModelNotConfigured 是"配过，但没有你选的那一个"——后者必须指出是哪个模型名，
+// 否则用户只会看到一个笼统的失败，不知道该去补配置还是换选项。
+var ErrModelNotConfigured = errors.New("gateway: requested model is not configured")
+
+// ResolveModel 按模型名解析运行时配置；model 为空等价于 Resolve（租户默认 → 平台默认）。
+//
+// 匹配范围只有 enabled 行，先比 Model 字段、再比 Name，且**先在本租户找完再退平台**：
+// 租户自己配的同名模型优先于平台行，否则私有化部署里租户的网关永远被平台配置盖住。
+//
+// 找不到时返回 ErrModelNotConfigured，绝不静默回落到默认模型。界面上的"语音模型"
+// 下拉一旦选了 A 却用 B 合成，音频里看不出任何区别，用户会以为选项生效了——
+// 这种假成功比直接报错难查得多。
+func ResolveModel(ctx context.Context, store StoreResolver, tenantID string, kind Kind, model string) (*Config, error) {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return store.Resolve(ctx, tenantID, kind)
+	}
+	tenants := []string{tenantID}
+	if tenantID != PlatformTenantID {
+		tenants = append(tenants, PlatformTenantID)
+	}
+	for _, tid := range tenants {
+		gws, err := store.List(ctx, tid, kind)
+		if err != nil {
+			return nil, err
+		}
+		// 两轮扫描：Model 精确匹配优先于 Name。若混在一轮里，某行的 name 恰好等于
+		// 另一行的 model 时会按行序取到错误的那个。
+		for _, gw := range gws {
+			if gw == nil || !gw.Enabled || strings.TrimSpace(gw.Model) != model {
+				continue
+			}
+			return store.ResolveNamed(ctx, tid, gw.Name, kind)
+		}
+		for _, gw := range gws {
+			if gw == nil || !gw.Enabled || strings.TrimSpace(gw.Name) != model {
+				continue
+			}
+			return store.ResolveNamed(ctx, tid, gw.Name, kind)
+		}
+	}
+	return nil, fmt.Errorf("%w: %q", ErrModelNotConfigured, model)
+}
+
 // Kind 区分网关用途。
 type Kind string
 

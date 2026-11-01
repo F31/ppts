@@ -58,13 +58,13 @@ export type VoicePreviewResult = {
 export async function previewVoice(
   identity: ClientIdentity,
   projectId: string,
-  body: { voice: string; ratePercent: number; text?: string; language?: string }
+  body: { voice: string; ratePercent: number; model?: string; text?: string; language?: string }
 ): Promise<VoicePreviewResult> {
   const response = await requestRaw({
     method: 'POST',
     url: `/projects/${encodeURIComponent(projectId)}/voice-preview`,
     headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
-    body: { voice: body.voice, ratePercent: body.ratePercent, text: body.text, language: body.language },
+    body: { voice: body.voice, model: body.model, ratePercent: body.ratePercent, text: body.text, language: body.language },
     label: 'POST voice-preview',
     // 合成要等上游，且不能与普通读接口共用 10s 预算：后端自己 20s 超时，这里留出往返余量。
     timeoutMs: 30_000

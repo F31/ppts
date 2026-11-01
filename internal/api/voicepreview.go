@@ -35,7 +35,10 @@ const (
 )
 
 type voicePreviewBody struct {
-	Voice       string `json:"voice"`
+	Voice string `json:"voice"`
+	// Model 是用户在"语音模型"下拉里选的模型；为空表示用项目/租户默认。
+	// 试听与生成必须走同一条解析，否则试听听到的音色不代表生成结果。
+	Model       string `json:"model"`
 	RatePercent int    `json:"ratePercent"`
 	Text        string `json:"text"`
 	Language    string `json:"language"`
@@ -121,7 +124,7 @@ func voicePreview(w http.ResponseWriter, r *http.Request, deps voicePreviewDeps)
 		return
 	}
 
-	provider, model, status, code, msg := voicePreviewProvider(r.Context(), principal.TenantID, deps)
+	provider, model, status, code, msg := voicePreviewProvider(r.Context(), principal.TenantID, body.Model, deps)
 	if provider == nil {
 		observability.VoicePreview(code)
 		writeJSON(w, status, map[string]any{"code": code, "message": msg})
@@ -186,11 +189,17 @@ func voicePreview(w http.ResponseWriter, r *http.Request, deps voicePreviewDeps)
 
 // voicePreviewProvider 解析本次试听使用的供应商。
 // 返回 (nil, 空模型, 状态码, 错误码, 提示) 表示无法试听。
-func voicePreviewProvider(ctx context.Context, tenantID string, deps voicePreviewDeps) (tts.TTSProvider, string, int, string, string) {
+//
+// 与生成共用 gateway.ResolveModel：点名的模型不存在时直接拒绝，而不是用默认模型
+// 合成一段"听起来也没错"的样音——那段样音会让用户以为选项生效了。
+func voicePreviewProvider(ctx context.Context, tenantID, model string, deps voicePreviewDeps) (tts.TTSProvider, string, int, string, string) {
 	if deps.provider != nil {
 		return deps.provider, "", http.StatusOK, "", ""
 	}
-	cfg, err := deps.gateways.Resolve(ctx, tenantID, gateway.KindTTS)
+	cfg, err := gateway.ResolveModel(ctx, deps.gateways, tenantID, gateway.KindTTS, model)
+	if errors.Is(err, gateway.ErrModelNotConfigured) {
+		return nil, "", http.StatusBadRequest, "model_not_configured", err.Error()
+	}
 	if errors.Is(err, gateway.ErrNotFound) {
 		return nil, "", http.StatusServiceUnavailable, "tts_not_configured", "no TTS model gateway configured for this tenant"
 	}

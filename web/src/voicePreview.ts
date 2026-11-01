@@ -6,24 +6,31 @@
 export type VoicePreviewRequest = {
   voice: string;
   ratePercent: number;
+  // model 是"语音模型"下拉的当前值。必须进请求键：换模型但音色名相同时，
+  // 旧模型返回的样音与当前选择无关，落地就是串音。
+  model?: string;
   text?: string;
 };
 
 // voicePreviewKey 是"这次试听代表什么参数"的身份。
 // 文本去掉首尾空白：只有尾随空格变化不该让一次已完成的试听失效。
 export function voicePreviewKey(req: VoicePreviewRequest): string {
-  return [req.voice, String(req.ratePercent), (req.text ?? '').trim()].join('|');
+  return [req.model ?? '', req.voice, String(req.ratePercent), (req.text ?? '').trim()].join('|');
 }
 
-export type VoicePreviewFailure = 'not_configured' | 'timeout' | 'too_long' | 'failed';
+export type VoicePreviewFailure = 'not_configured' | 'model_missing' | 'timeout' | 'too_long' | 'failed';
 
-// classifyVoicePreviewError 把服务端的错误码折成四种可操作结论：
-// 去配模型 / 等会儿重试 / 改短文本 / 其它失败。
-// 不能全塞进"试听失败"——四种情况用户要做的事完全不同。
+// classifyVoicePreviewError 把服务端的错误码折成五种可操作结论：
+// 去配模型 / 改选模型 / 等会儿重试 / 改短文本 / 其它失败。
+// 不能全塞进"试听失败"——五种情况用户要做的事完全不同。
+// 特别是 model_missing：它说明模型清单里那一行已被停用或删掉，
+// 用户该做的是重新选一个，而不是去检查供应商是否挂了。
 export function classifyVoicePreviewError(code: string | undefined): VoicePreviewFailure {
   switch (code) {
     case 'tts_not_configured':
       return 'not_configured';
+    case 'model_not_configured':
+      return 'model_missing';
     case 'tts_timeout':
       return 'timeout';
     case 'text_too_long':

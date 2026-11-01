@@ -342,3 +342,91 @@ func TestVoicePreviewRequiresEditorRole(t *testing.T) {
 		t.Errorf("无权限请求仍调用了供应商")
 	}
 }
+
+// previewModelStore 造一个同时有两个模型行的网关存储：
+// 默认行是 model-a，另一行是 model-b。用于验证"请求点名哪个就用哪个"。
+func previewModelStore() *previewGatewayStore {
+	return &previewGatewayStore{
+		fakeGatewayStore: &fakeGatewayStore{rows: map[string]*gateway.Gateway{
+			gwKey("tenant-1", "gw-a", "tts"): {
+				TenantID: "tenant-1", Name: "gw-a", Kind: gateway.KindTTS,
+				Model: "model-a", Enabled: true, IsDefault: true,
+			},
+			gwKey("tenant-1", "gw-b", "tts"): {
+				TenantID: "tenant-1", Name: "gw-b", Kind: gateway.KindTTS,
+				Model: "model-b", Enabled: true,
+			},
+		}},
+		cfg: &gateway.Config{Name: "gw-a", Model: "model-a", APIKey: "k"},
+	}
+}
+
+// TestVoicePreviewUsesRequestedModel 守护试听与生成"听的是同一个模型"。
+//
+// 修复前试听只认默认网关：下拉里选了 model-b，听到的仍是 model-a 的样音，
+// 而界面标签写着 model-b。这种偏差用户无法从声音里判断（两个模型可能只是音色略有差异），
+// 但会直接导致"试听满意、成片不对"。
+func TestVoicePreviewUsesRequestedModel(t *testing.T) {
+	store := previewModelStore()
+	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1"}}}
+	var built *gateway.Config
+	deps := voicePreviewDeps{
+		gateways: store,
+		projects: projects,
+		buildProvider: func(cfg *gateway.Config) tts.TTSProvider {
+			built = cfg
+			return &fakePreviewTTS{result: tts.SynthesisResult{Audio: []byte("x"), Format: "audio/wav", RealDurationMS: 700}}
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/projects/project-1/voice-preview", strings.NewReader(`{"voice":"v","model":"model-b"}`))
+	req.SetPathValue("pid", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{TenantID: "tenant-1", UserID: "user-1"}))
+	rec := httptest.NewRecorder()
+	voicePreview(rec, req, deps)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if built == nil || built.Model != "model-b" {
+		t.Fatalf("构建供应商用的配置 = %+v，未使用请求点名的 model-b", built)
+	}
+	if got := rec.Header().Get("X-PPTS-Preview-Model"); got != "model-b" {
+		t.Errorf("模型头 = %q，期望回显本次实际使用的模型", got)
+	}
+}
+
+// TestVoicePreviewRejectsUnknownModel 守护"点名不存在的模型不许用默认的顶上"。
+// 若这里悄悄回落 model-a，用户听到的样音与所选选项无关，且响应里还会写 model-a——
+// 界面若照实显示，用户会以为下拉失效；若不显示，就是无声的假成功。
+func TestVoicePreviewRejectsUnknownModel(t *testing.T) {
+	store := previewModelStore()
+	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1"}}}
+	called := false
+	deps := voicePreviewDeps{
+		gateways: store,
+		projects: projects,
+		buildProvider: func(cfg *gateway.Config) tts.TTSProvider {
+			called = true
+			return &fakePreviewTTS{}
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/projects/project-1/voice-preview", strings.NewReader(`{"voice":"v","model":"model-missing"}`))
+	req.SetPathValue("pid", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{TenantID: "tenant-1", UserID: "user-1"}))
+	rec := httptest.NewRecorder()
+	voicePreview(rec, req, deps)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body = %s want 400", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode error payload: %v (body=%s)", err, rec.Body.String())
+	}
+	if payload["code"] != "model_not_configured" {
+		t.Errorf("code = %v want model_not_configured", payload["code"])
+	}
+	if called {
+		t.Errorf("模型不存在时不得构建供应商（会真的合成一段默认模型的样音）")
+	}
+}

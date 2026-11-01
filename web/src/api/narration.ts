@@ -14,14 +14,19 @@ export async function createGeneration(
   slideIds: string[],
   voiceId: string,
   idempotencyKey: string,
-  opts: { ratePercent?: number; lockConfirmedOnly?: boolean; bypassCache?: boolean } = {}
+  opts: { ratePercent?: number; lockConfirmedOnly?: boolean; bypassCache?: boolean; model?: string } = {}
 ): Promise<{ jobId: string; withinBudget: boolean }> {
   // D0-1：前端此前漏传 ratePercent / lockConfirmedOnly，导致后端 C-5 强制阻止未确认稿与
   // 配额预占比例从未生效。这里补全：ratePercent 默认 100（全速），lockConfirmedOnly 默认 false。
   // bypassCache：用户显式要求"重新生成"时置真，要求后端跳过内容哈希缓存、真实调用语音合成
   // （否则音色/讲稿未变时全部命中缓存，界面承诺的"重新生成并覆盖"实际什么都没合成）。
+  // model：语音模型下拉的当前值。proto 的 CreateGenerationRequest 没有 model 字段
+  // （本环境无 buf/protoc 无法重新生成 pb.go），沿用自定义头的既有做法。
+  // 不传时后端回退项目保存的设置——但那样"界面显示的模型"与"本次实际用的模型"
+  // 就有了两个真相源，所以这里始终显式传。
   const headers: Record<string, string> = { 'Idempotency-Key': idempotencyKey };
   if (opts.bypassCache) headers['X-PPTS-Bypass-Cache'] = 'true';
+  if (opts.model) headers['X-PPTS-TTS-Model'] = opts.model;
   return connectJSON<{ jobId: string; withinBudget: boolean }>(
     identity,
     '/ppts.v1.NarrationService/CreateGeneration',

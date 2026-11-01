@@ -57,6 +57,9 @@ type NarrationSnapshot struct {
 	TargetDurationMS int64                    `json:"targetDurationMs,omitempty"` // G2-5 目标总时长(ms)，0=不限
 	Language         string                   `json:"language"`
 	VoiceID          string                   `json:"voiceId"`
+	// Model 是本次任务点名的语音模型（网关的 Model 或 Name）；为空表示租户默认。
+	// 必须随快照固化：任务重放/幂等比对要能区分"同一音色的两个模型"。
+	Model            string                   `json:"model,omitempty"`
 	RequireConfirmed bool                     `json:"requireConfirmed"`
 	SpeechControl    tts.SpeechControl        `json:"speechControl"`
 	SampleRate       int                      `json:"sampleRate"`
@@ -129,7 +132,7 @@ type NarrationHandler struct {
 	metrics     TTSMetrics
 	dictLoader  DictionaryLoader
 	textNorm    TextPreparationFactory
-	providerFor func(ctx context.Context, tenantID string) (tts.TTSProvider, error)
+	providerFor func(ctx context.Context, tenantID, model string) (tts.TTSProvider, error)
 	// sourceRevisions 是记录时间轴来源所需的窄能力（见 WithSourceRevisions）；nil 时跳过来源记录。
 	sourceRevisions SourceRevisionLookup
 	// segmentConcurrency 是配音分段合成的有界并发上限（operator 覆盖）。
@@ -196,14 +199,17 @@ func (h *NarrationHandler) WithDictionary(dl DictionaryLoader) *NarrationHandler
 
 // WithTenantProvider 注入按租户解析的 TTS 供应商（模型网关）；
 // 设置后优先于 NewNarrationHandler 传入的固定 provider。
-func (h *NarrationHandler) WithTenantProvider(f func(ctx context.Context, tenantID string) (tts.TTSProvider, error)) *NarrationHandler {
+//
+// model 非空表示任务点名了模型：实现必须按名解析，解析不到就返回错误，
+// 不得回落到租户默认——否则用户在界面上换的模型会被静默忽略。
+func (h *NarrationHandler) WithTenantProvider(f func(ctx context.Context, tenantID, model string) (tts.TTSProvider, error)) *NarrationHandler {
 	h.providerFor = f
 	return h
 }
 
-func (h *NarrationHandler) providerForTenant(ctx context.Context, tenantID string) (tts.TTSProvider, error) {
+func (h *NarrationHandler) providerForTenant(ctx context.Context, tenantID, model string) (tts.TTSProvider, error) {
 	if h.providerFor != nil {
-		return h.providerFor(ctx, tenantID)
+		return h.providerFor(ctx, tenantID, model)
 	}
 	if h.provider == nil {
 		return nil, errors.New("narration job: no TTS provider configured")
@@ -430,7 +436,7 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		return errors.New("narration job: incomplete input snapshot")
 	}
 
-	provider, err := h.providerForTenant(ctx, job.TenantID)
+	provider, err := h.providerForTenant(ctx, job.TenantID, snapshot.Model)
 	if err != nil {
 		return err
 	}

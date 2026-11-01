@@ -972,6 +972,7 @@
   "editor.voicePreviewModel": "Preview uses model: {model}",
   "editor.voicePreviewDuration": "Sample length {seconds}s",
   "editor.voicePreviewNoGateway": "No TTS model gateway is configured, so preview is unavailable. Configure and test a TTS gateway first.",
+  "editor.voicePreviewModelMissing": "The selected model \"{model}\" is currently unavailable (it may have been disabled or renamed). Pick another model above, or switch back to the default one.",
   "editor.voicePreviewTimeout": "Preview timed out. Please try again later.",
   "editor.voicePreviewTooLong": "Preview text is too long. Shorten it and try again.",
   "editor.voicePreviewFailed": "Preview failed",

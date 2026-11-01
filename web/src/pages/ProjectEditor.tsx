@@ -1106,7 +1106,7 @@ export function ProjectEditor({
     setVoicePreviewModel('');
     setVoicePreviewDuration(0);
     setVoicePreviewLoading(false);
-  }, [voiceDraftVoice, voiceDraftRate, propsOpen]);
+  }, [voiceDraftModel, voiceDraftVoice, voiceDraftRate, propsOpen]);
 
   // Blob URL 必须在替换或卸载时释放，否则每试听一次就留下一个不可回收的音频对象。
   useEffect(() => {
@@ -1121,7 +1121,7 @@ export function ProjectEditor({
       setVoicePreviewError(t('editor.voiceModelEmpty'));
       return;
     }
-    const request = { voice: voiceDraftVoice, ratePercent: voiceDraftRate };
+    const request = { voice: voiceDraftVoice, ratePercent: voiceDraftRate, model: voiceDraftModel };
     const key = voicePreviewKey(request);
     const token = voicePreviewSeq.current.begin(key);
     setVoicePreviewLoading(true);
@@ -1139,6 +1139,11 @@ export function ProjectEditor({
         switch (classifyVoicePreviewError(error.code)) {
           case 'not_configured':
             setVoicePreviewError(t('editor.voicePreviewNoGateway'));
+            break;
+          case 'model_missing':
+            // 与"没配任何模型"分开：模型清单可能只是那一行被停用了，
+            // 提示用户重选即可，不必去查网关是否可用。
+            setVoicePreviewError(t('editor.voicePreviewModelMissing', { model: voiceDraftModel }));
             break;
           case 'timeout':
             setVoicePreviewError(t('editor.voicePreviewTimeout'));
@@ -1179,7 +1184,10 @@ export function ProjectEditor({
       // 生成在弹窗关闭后继续；进度显示在讲稿栏与顶部任务提示。
       void runVoiceGeneration(voiceGenMode, {
         voiceId: saved.voice || voiceDraftVoice,
-        ratePercent: saved.ratePercent || voiceDraftRate
+        ratePercent: saved.ratePercent || voiceDraftRate,
+        // 传刚保存的模型而不是 state：setVoiceModelName 是异步的，这一行紧随其后执行时
+        // state 还没更新，用 state 会让"刚选的模型"丢掉一次。
+        model: saved.model || voiceDraftModel
       });
     } catch (error) {
       setVoiceSaveError(error instanceof Error ? error.message : t('editor.voiceSaveFailed'));
@@ -1427,7 +1435,7 @@ export function ProjectEditor({
   // 仅在 RequireConfirmed 时才校验状态）。
   const generateNarrationFor = async (
     slideIds: string[],
-    override: { voiceId?: string; ratePercent?: number } = {},
+    override: { voiceId?: string; ratePercent?: number; model?: string } = {},
     // bypassCache：仅当用户显式要求"重新生成"时为 true。为 true 时后端跳过内容哈希缓存、
     // 每段真实调用语音合成（会产生真实计费）；为 false 时沿用缓存，避免无谓消耗额度。
     bypassCache = false
@@ -1443,6 +1451,9 @@ export function ProjectEditor({
       return;
     }
     const selectedRate = override.ratePercent ?? ratePercent;
+    // 模型与音色同理：弹窗路径传刚保存的值，其它入口用界面当前值。
+    // 两者都不为空时后端不再回退默认，避免"界面显示 A、实际合成 B"。
+    const selectedModel = override.model ?? voiceModelName;
     setNarrationStatus({ phase: 'generating', message: t('editor.narrationQueued') });
     try {
       try {
@@ -1460,7 +1471,8 @@ export function ProjectEditor({
       const generation = await createGeneration(identity, projectId, slideIds, selectedVoice, idempotencyKey, {
         ratePercent: selectedRate,
         lockConfirmedOnly: false,
-        bypassCache
+        bypassCache,
+        model: selectedModel
       });
       // B3-M5：生成任务已创建，立即刷新活跃任务，让顶部快照提示尽快出现。
       void refreshActiveGenJobs();
@@ -1531,7 +1543,7 @@ export function ProjectEditor({
   // 全部是用户显式要求重新生成，因此 bypassCache=true：跳过内容哈希缓存，真实重新合成并覆盖旧音频。
   const runVoiceGeneration = async (
     mode: 'incremental' | 'full',
-    override: { voiceId?: string; ratePercent?: number } = {}
+    override: { voiceId?: string; ratePercent?: number; model?: string } = {}
   ) => {
     scriptEditorRef.current?.flush();
     const waitDeadline = Date.now() + 5000;
