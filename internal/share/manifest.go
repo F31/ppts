@@ -158,6 +158,10 @@ type Clip struct {
 	IsContinuation       bool   `json:"isContinuation,omitempty"`
 	ContinuationOffsetMs int64  `json:"continuationOffsetMs,omitempty"`
 	ElementID            string `json:"elementId,omitempty"`
+	// Carry 标记编译器补的「静态盒补偿」（见 render.CarryProps）：跨页元素的盒在相邻页
+	// 不同时，用一段 translate/scale 把视觉矩形搬回上一页的盒。播放器/渲染器无需识别它
+	// （它只是普通属性轨道），但门禁要据此把它排除出「源段配对」，并单独判几何连续。
+	Carry bool `json:"carry,omitempty"`
 }
 
 type AudioEntry struct {

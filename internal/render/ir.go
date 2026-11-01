@@ -231,6 +231,11 @@ type Motion struct {
 	// 余量在次页的 IsContinuation 段渲染，因此 plan 校验豁免其「超页时长」检查。仅内部使用，
 	// 不进 manifest（bundleClips 不复制它），omitempty 保证非延续 Motion 字节不变。
 	ContinuationSource bool `json:"continuationSource,omitempty"`
+	// Carry 标记本段是编译器补的「静态盒补偿」：次页层与本页层的盒不同（作者挪了位置或
+	// 改了尺寸），仅靠动效连续仍会在页缝跳一格，故补一段 translate/scale 把视觉矩形从
+	// 上一页的盒线性搬回本页的盒。它不是作者写的动效，门禁（V19）需要把它与配对段区分开。
+	// omitempty 保证既有 Motion 序列化字节不变。
+	Carry bool `json:"carry,omitempty"`
 }
 
 // Transition 是页间转场。挂在后一页：它描述"如何进入这一页"。

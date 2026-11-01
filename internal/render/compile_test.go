@@ -3,6 +3,8 @@ package render
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/F31/ppts/internal/animation"
@@ -953,4 +955,247 @@ func TestCompileContinuationFitsNoSplit(t *testing.T) {
 			}
 		}
 	}
+}
+
+// findCarry 取第一个 carry 补偿段；没有则返回 nil。
+func findCarry(ms []Motion) *Motion {
+	for i := range ms {
+		if ms[i].Carry {
+			return &ms[i]
+		}
+	}
+	return nil
+}
+
+// makeContinuationPagesWithBoxes 同 makeContinuationPages，但两页给不同的包围盒。
+// 静态盒补偿（G8 边界③）只在盒不同时产生，所以需要能控制盒的夹具。
+func makeContinuationPagesWithBoxes(p0clip *animation.Clip, b0, b1 *EMUBox) []PageInput {
+	pages := makeContinuationPages(p0clip)
+	pages[0].Elements[0].Bounds = b0
+	pages[1].Elements[0].Bounds = b1
+	return pages
+}
+
+// TestCompileContinuationCarriesBoxDelta 验证 G8 边界③：相邻页的静态盒不同时，编译器给续播
+// 层补一段 carry，把视觉矩形从上一页的盒搬回本页的盒；且补偿量含锚点项 O·(1-s)。
+//
+// 手算（origin 缺省 center，prev=(96,54,960,540)，next=(150,80,800,450)）：
+//
+//	sx = 960/800 = 1.2，sy = 540/450 = 1.2
+//	ox = 800/2 = 400，oy = 450/2 = 225
+//	tx = (96-150) - 400·(1-1.2) = -54 + 80 = 26
+//	ty = (54-80)  - 225·(1-1.2) = -26 + 45 = 19
+//
+// 反代回 CSS 语义（视觉左上 = C + O·(1-s) + t）：
+//
+//	150 + 400·(-0.2) + 26 = 96 ✓    80 + 225·(-0.2) + 19 = 54 ✓
+//
+// 若漏掉锚点项（tx 直接写成 -54），页缝处会偏 80px——这正是本测试要钉住的回归。
+func TestCompileContinuationCarriesBoxDelta(t *testing.T) {
+	c := newTestCompiler(t)
+	pages := makeContinuationPagesWithBoxes(&animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	}, emuBox(96, 54, 960, 540), emuBox(150, 80, 800, 450))
+
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := plan.Pages[1].Layers[0].Box, (Box{X: 150, Y: 80, W: 800, H: 450}); got != want {
+		t.Fatalf("次页盒 = %+v，want %+v（夹具前提不成立）", got, want)
+	}
+
+	l1 := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
+	if l1 == nil {
+		t.Fatal("次页缺 shape-1 层")
+	}
+	carry := findCarry(l1.Clips)
+	if carry == nil {
+		t.Fatal("次页缺 carry 补偿段（盒不同时必须补）")
+	}
+	cont := findMotionByContinuation(l1.Clips, true)
+	if cont == nil {
+		t.Fatal("次页缺延续段")
+	}
+	if cont.Carry {
+		t.Fatal("延续段不应被标成 carry（否则 V19 的源段配对会跳过它）")
+	}
+
+	if carry.StartMs != 0 {
+		t.Fatalf("carry 起点 = %d，want 0（补偿只作用于本页）", carry.StartMs)
+	}
+	// clip 剩余 2000ms，页长 5000ms → 收敛窗口取上限 500ms。
+	if want := int64(500); carry.DurationMs != want {
+		t.Fatalf("carry 时长 = %d，want %d", carry.DurationMs, want)
+	}
+	if carry.ElementID != "shape-1" {
+		t.Fatalf("carry elementId = %q，want shape-1（便于审计）", carry.ElementID)
+	}
+
+	want := map[string][2]float64{
+		animation.PropScaleX:     {1.2, 1},
+		animation.PropScaleY:     {1.2, 1},
+		animation.PropTranslateX: {26, 0},
+		animation.PropTranslateY: {19, 0},
+	}
+	if len(carry.Props) != len(want) {
+		t.Fatalf("carry 属性数 = %d，want %d：%+v", len(carry.Props), len(want), carry.Props)
+	}
+	for _, p := range carry.Props {
+		w, ok := want[p.Name]
+		if !ok {
+			t.Fatalf("未预期的补偿属性 %q", p.Name)
+		}
+		if !almostEqual(p.From, w[0]) || !almostEqual(p.To, w[1]) {
+			t.Fatalf("%s = %v→%v，want %v→%v", p.Name, p.From, p.To, w[0], w[1])
+		}
+	}
+}
+
+// TestCompileContinuationSameBoxHasNoCarry 固定「作者没挪位置 → 清单不变」这条不变量：
+// 两页盒逐字段相同时不得产生任何 carry clip，否则所有既有产物的字节都会变。
+func TestCompileContinuationSameBoxHasNoCarry(t *testing.T) {
+	c := newTestCompiler(t)
+	pages := makeContinuationPages(&animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	})
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l1 := findLayerByElementID(plan.Pages[1].Layers, "shape-1")
+	if l1 == nil {
+		t.Fatal("次页缺 shape-1 层")
+	}
+	if m := findCarry(l1.Clips); m != nil {
+		t.Fatalf("同盒不应产生 carry，got %+v", m)
+	}
+	// 次页本来就有作者自己的 slideIn（1 段）+ 注入的延续段（1 段），不该多出第三段。
+	if len(l1.Clips) != 2 {
+		t.Fatalf("次页段数 = %d，want 2（作者段 + 延续段，无 carry）", len(l1.Clips))
+	}
+}
+
+// TestCompileContinuationChainCarriesEachHop 验证链式时**每一跳**都按「上一跳所在页的盒」
+// 单独补偿：第 2 跳的参照是页 1 的盒，不是源页的盒。若全用源页盒算，第 2 跳就会偏。
+func TestCompileContinuationChainCarriesEachHop(t *testing.T) {
+	c := newTestCompiler(t)
+	pages := makeContinuationPagesN([]int64{6000, 5000, 4000}, &animation.Clip{
+		ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 15000,
+		Easing: "easeOut", Trigger: "onEnter", Continues: true,
+	})
+	// 三页三个不同的盒：b1 与 b2 的差 ≠ b0 与 b1 的差，两种算法结果不同，能区分。
+	pages[0].Elements[0].Bounds = emuBox(96, 54, 960, 540)
+	pages[1].Elements[0].Bounds = emuBox(150, 80, 800, 450)
+	pages[2].Elements[0].Bounds = emuBox(60, 120, 1000, 600)
+
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hop1 := findCarry(plan.Pages[1].Layers[0].Clips)
+	hop2 := findCarry(plan.Pages[2].Layers[0].Clips)
+	if hop1 == nil || hop2 == nil {
+		t.Fatalf("链式每一跳都应补 carry：hop1=%v hop2=%v", hop1 != nil, hop2 != nil)
+	}
+	if propsKeyOf(hop1) == propsKeyOf(hop2) {
+		t.Fatalf("两跳的补偿量相同，说明第 2 跳误用了源页盒：%+v", hop1.Props)
+	}
+
+	// 第 2 跳必须以**页 1 的盒**为参照：手算 prev=(150,80,800,450)，next=(60,120,1000,600)。
+	//   sx = 800/1000 = 0.8，sy = 450/600 = 0.75
+	//   ox = 500，oy = 300
+	//   tx = (150-60) - 500·(1-0.8) = 90 - 100 = -10
+	//   ty = (80-120) - 300·(1-0.75) = -40 - 75 = -115
+	// 若误用源页盒 (96,54,960,540)：tx = 96-60 - 500·0.04 = 16，明显不同。
+	want2 := map[string][2]float64{
+		animation.PropScaleX:     {0.8, 1},
+		animation.PropScaleY:     {0.75, 1},
+		animation.PropTranslateX: {-10, 0},
+		animation.PropTranslateY: {-115, 0},
+	}
+	for _, p := range hop2.Props {
+		w, ok := want2[p.Name]
+		if !ok {
+			t.Fatalf("第 2 跳出现未预期属性 %q", p.Name)
+		}
+		if !almostEqual(p.From, w[0]) || !almostEqual(p.To, w[1]) {
+			t.Fatalf("第 2 跳 %s = %v→%v，want %v→%v（参照应是页 1 的盒）",
+				p.Name, p.From, p.To, w[0], w[1])
+		}
+	}
+}
+
+// TestCarryPropsOrigin 验证锚点项：同一个盒差，锚点在左上/上/左时补偿量不同。
+// 漏掉 O·(1-s) 的实现会把三种锚点算成同一个结果。
+func TestCarryPropsOrigin(t *testing.T) {
+	prev := Box{X: 0, Y: 0, W: 200, H: 100}
+	next := Box{X: 100, Y: 40, W: 100, H: 50}
+	// sx = sy = 2。tx 的锚点项是 -ox·(1-2) = +ox；ty 同理是 +oy。
+	cases := []struct {
+		origin string
+		tx, ty float64
+	}{
+		// center: ox=50, oy=25 → tx = -100+50 = -50，ty = -40+25 = -15
+		{"", -50, -15},
+		{OriginCenter, -50, -15},
+		// top: ox=50, oy=0 → tx = -50，ty = -40
+		{OriginTop, -50, -40},
+		// left: ox=0, oy=25 → tx = -100，ty = -15
+		{OriginLeft, -100, -15},
+		// right: ox=100, oy=25 → tx = -100+100 = 0，ty = -15
+		{OriginRight, 0, -15},
+		// bottom: ox=50, oy=50 → tx = -50，ty = -40+50 = 10
+		{OriginBottom, -50, 10},
+	}
+	for _, tc := range cases {
+		props := CarryProps(prev, next, tc.origin)
+		got := map[string]float64{}
+		for _, p := range props {
+			got[p.Name] = p.From
+		}
+		if !almostEqual(got[animation.PropTranslateX], tc.tx) || !almostEqual(got[animation.PropTranslateY], tc.ty) {
+			t.Fatalf("origin=%q: tx/ty = %v/%v，want %v/%v",
+				tc.origin, got[animation.PropTranslateX], got[animation.PropTranslateY], tc.tx, tc.ty)
+		}
+	}
+}
+
+// TestCarryPropsNoop 固定「同盒 → nil」与「零收敛窗口 → 0」两条边界。
+func TestCarryPropsNoop(t *testing.T) {
+	same := Box{X: 10, Y: 20, W: 100, H: 50}
+	if props := CarryProps(same, same, OriginCenter); props != nil {
+		t.Fatalf("同盒应返回 nil，got %+v", props)
+	}
+	if ms := CarryDuration(2000, 5000); ms != 500 {
+		t.Fatalf("CarryDuration(2000,5000) = %d，want 500", ms)
+	}
+	if ms := CarryDuration(120, 5000); ms != 120 {
+		t.Fatalf("剩余时间不足时应收敛到剩余：got %d，want 120", ms)
+	}
+	if ms := CarryDuration(2000, 300); ms != 300 {
+		t.Fatalf("页长不足时应收到页长：got %d，want 300", ms)
+	}
+	if ms := CarryDuration(-10, 5000); ms != 0 {
+		t.Fatalf("clip 已演完应返回 0，got %d", ms)
+	}
+}
+
+// almostEqual 吸收浮点乘加的结合顺序差异。
+func almostEqual(a, b float64) bool {
+	d := a - b
+	return d < 1e-9 && d > -1e-9
+}
+
+// propsKeyOf 把补偿属性归一成可比较的字符串（顺序无意义）。
+func propsKeyOf(m *Motion) string {
+	parts := make([]string, 0, len(m.Props))
+	for _, p := range m.Props {
+		parts = append(parts, fmt.Sprintf("%s:%g>%g", p.Name, p.From, p.To))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
 }

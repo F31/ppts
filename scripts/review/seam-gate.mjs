@@ -6,6 +6,10 @@
 // 结果就是「延续段的链接字段写错 / offset 写反 / 源段与延续段 Props 不一致」这三类回归，
 // 在既有门禁里全都看不见——它们在成片里表现为页缝处元素闪一下或跳回起点。
 //
+// 第四类回归是几何的：同一元素在相邻页的静态盒（位置/尺寸）不同，动效再连续，画面也会在
+// 页缝「跳一格」。这类问题 clip 状态完全正常，所以 V19 除了比合成态（V19.5），还比**视觉
+// 矩形**（V19.8）——矩形是把 box 与 transform 一起算出来的绝对几何。
+//
 // 判据取在**成品包清单 + 共享求值器**上，而不是像素：
 //   * 用的是真正打进包里的 manifest.json，编译/打包任何一环断了都会露出来；
 //   * 求值器与播放器、渲染器同一份（shared/motion.ts），不存在「门禁绿但两端错」的分歧；
@@ -92,6 +96,65 @@ function fmtDelta(d) {
     `sx=${d.sx.toExponential(2)} sy=${d.sy.toExponential(2)}`;
 }
 
+/** 锚点在层内的局部偏移，与 shared/motion.ts 的 originCss 一一对应。 */
+function originOffset(origin, w, h) {
+  switch (origin) {
+    case 'top':
+      return [w / 2, 0];
+    case 'bottom':
+      return [w / 2, h];
+    case 'left':
+      return [0, h / 2];
+    case 'right':
+      return [w, h / 2];
+    default:
+      return [w / 2, h / 2];
+  }
+}
+
+/**
+ * 层的**视觉矩形**：left/top/width/height 叠加 transform 之后的绝对位置与尺寸。
+ *
+ * 为什么需要它：V19.5 比的是 clip 合成态（tx/ty/sx/sy），它只反映**动效**是否连续。
+ * 同一元素在相邻页的静态盒（box.x/y/w/h）不同时，clip 状态可以完全连续，而画面上的
+ * 矩形仍然跳一格——这正是 G8 边界③ 要拦的回归，此前没有任何判据看得见。
+ *
+ * 语义与两端一致（CSS：transform: translate(t) scale(s)，transform-origin = O）：
+ *   视觉左上 = box + O·(1-s) + t      视觉尺寸 = (sx·w, sy·h)
+ * 这一项 O·(1-s) 就是「锚点不在左上角时，缩放会带着位置一起动」的部分。
+ */
+function visualRect(layer, tMs) {
+  const st = evaluateLayer(layer, tMs);
+  const box = layer.box ?? { x: 0, y: 0, w: 0, h: 0 };
+  const w = Number(box.w);
+  const h = Number(box.h);
+  const [ox, oy] = originOffset(layer.origin, w, h);
+  return {
+    x: Number(box.x) + ox * (1 - st.sx) + st.tx,
+    y: Number(box.y) + oy * (1 - st.sy) + st.ty,
+    w: w * st.sx,
+    h: h * st.sy,
+  };
+}
+
+function rectDelta(a, b) {
+  return {
+    x: Math.abs(a.x - b.x),
+    y: Math.abs(a.y - b.y),
+    w: Math.abs(a.w - b.w),
+    h: Math.abs(a.h - b.h),
+  };
+}
+
+function fmtRect(r) {
+  return `(${r.x.toFixed(2)},${r.y.toFixed(2)} ${r.w.toFixed(2)}×${r.h.toFixed(2)})`;
+}
+
+/** 去掉 carry 补偿段后的层：用于比较「作者写的动效」本身是否连续。 */
+function withoutCarry(layer) {
+  return { ...layer, clips: layerClips(layer).filter((c) => !c.carry) };
+}
+
 const args = parseArgs(process.argv.slice(2));
 const manifestPath = path.join(args.pkg, 'manifest.json');
 if (!fs.existsSync(manifestPath)) {
@@ -148,6 +211,9 @@ for (let i = 0; i < slides.length; i++) {
       let srcClip = null;
       for (const l of sameId) {
         for (const sc of layerClips(l)) {
+          // 补偿段不是「同一个 clip 的另一截」，它的 effect/Props 都与源段不同，
+          // 参与配对只会带来假阳性。
+          if (sc.carry) continue;
           const expectedOffset = sc.isContinuation
             ? Number(sc.continuationOffsetMs) + prevMs
             : prevMs - Number(sc.startMs);
@@ -170,19 +236,31 @@ for (let i = 0; i < slides.length; i++) {
           : `${where} 未找到配对段（期望 offset=${offset}、durationMs=${clip.durationMs}；` +
             `前一页同 elementId 层 ${sameId.length} 个）`);
 
-      // 5) 页缝求值连续：前一页页尾 vs 次页 0 点，同一元素的合成态必须一致。
-      //    这是「不闪、不跳回起点」的数学定义；链上每一跳都单独验一次，任一跳写错都会红。
+      // 5) 页缝求值连续：前一页页尾 vs 次页 0 点，**作者写的动效**必须一致。
+      //    比较时排除 carry：补偿段是刻意加上的几何项，它必须让两侧的 translate/scale 不同，
+      //    绝对几何的连续性由 V19.8 单独判——两者混在一起就都判不了。
       if (srcClip) {
-        const before = evaluateLayer(prevHop, prevMs);
-        const after = evaluateLayer(layer, 0);
+        const before = evaluateLayer(withoutCarry(prevHop), prevMs);
+        const after = evaluateLayer(withoutCarry(layer), 0);
         const d = stateDelta(before, after);
-        check('V19.5 页缝处求值连续（opacity / 位移 / 缩放）',
+        check('V19.5 页缝处动效求值连续（opacity / 位移 / 缩放，不含补偿）',
           maxDelta(d) <= TOL,
           `${where} Δ ${fmtDelta(d)}`);
         check('V19.6 页缝处元素处于中途态（不是已定格，也不是未开始）',
           // 若两侧都恰好是终态/初态，说明这条 clip 根本没跨过页缝，夹具形同虚设。
           clipProgressOf(clip, 0) > 0 && clipProgressOf(clip, 0) < 1,
           `${where} 次页 localMs=0 的进度=${clipProgressOf(clip, 0).toFixed(4)}`);
+
+        // V19.8：页缝处视觉矩形连续（**含** carry）——这是「不跳一格」的几何定义。
+        //    动效连续只保证进度连续；同一元素在相邻页的静态盒不同时，画面仍会平移/缩放跳变。
+        const rb = visualRect(prevHop, prevMs);
+        const ra = visualRect(layer, 0);
+        const gd = rectDelta(rb, ra);
+        check('V19.8 页缝处视觉矩形连续（x / y / w / h，含盒差补偿）',
+          Math.max(gd.x, gd.y, gd.w, gd.h) <= TOL,
+          `${where} 前一页 ${fmtRect(rb)} → 次页 ${fmtRect(ra)} ` +
+          `Δ x=${gd.x.toExponential(2)} y=${gd.y.toExponential(2)} ` +
+          `w=${gd.w.toExponential(2)} h=${gd.h.toExponential(2)}`);
       }
     }
   }
@@ -196,7 +274,35 @@ function clipProgressOf(clip, localMs) {
   return raw <= 0 ? 0 : raw >= 1 ? 1 : raw;
 }
 
-// 6) 空跑必须红：夹具没产出延续段时，上面所有判据都会「因为没东西可查」而全绿，
+// V19.9 / V19.10：补偿段（carry）自身的静态性质。
+//    终点必须回到恒等变换，否则元素会停在一个「被补偿过的」错位置上——页缝是连续的，
+//    整页却错位了，而且这种错位在页缝判据里看不出来。
+let carryCount = 0;
+const badCarry = [];
+for (const slide of slides) {
+  for (const layer of (Array.isArray(slide.layers) ? slide.layers : [])) {
+    for (const c of layerClips(layer)) {
+      if (!c.carry) continue;
+      carryCount++;
+      for (const p of c.props ?? []) {
+        // 恒等值：不透明度与缩放为 1，位移为 0。
+        const want = p.name === 'opacity' || String(p.name).startsWith('scale') ? 1 : 0;
+        if (Math.abs(Number(p.to) - want) > TOL) {
+          badCarry.push(`${layer.elementId || '?'}: ${p.name}.to=${p.to}（应 ${want}）`);
+        }
+      }
+    }
+  }
+}
+check('V19.9 补偿段终点回到恒等变换', badCarry.length === 0,
+  badCarry.length ? badCarry.slice(0, 4).join('; ') : `${carryCount} 条 carry`);
+
+// 8) 盒差样本必须存在：若夹具把相邻页的盒改成相同，V19.8 会因为「两侧盒本来就相等」而恒真，
+//    那就是与 V19.7 同一种「空跑绿」——门禁看着在守，其实什么都没守。
+check('V19.10 包里存在盒差补偿样本', carryCount > 0,
+  `${carryCount} 条 carry（延续夹具必须让相邻页的盒不同，否则 V19.8 恒真）`);
+
+// V19.7：空跑必须红。夹具没产出延续段时，上面所有判据都会「因为没东西可查」而全绿，
 //    那是门禁最危险的形态（看起来在守，其实什么都没守）。
 check('V19.7 包里确实存在延续段', continuationCount > 0, `${continuationCount} 条`);
 

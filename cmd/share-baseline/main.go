@@ -33,6 +33,7 @@ import (
 
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/share"
 )
 
@@ -138,21 +139,30 @@ func main() {
 		}
 		for i := 0; i+1 < len(animPages); i++ {
 			tag := fmt.Sprintf("cont-%d", i)
-			animPages[i].Layers = append(animPages[i].Layers, syntheticContinuationSource(*width, *height, pageMs, tag))
-			animPages[i+1].Layers = append(animPages[i+1].Layers, syntheticContinuationSeg(*width, *height, tag))
+			// 源段与次页段**用不同的盒**：这是 G8 边界③ 的样本，缺了它盒差补偿永远不被触发。
+			srcBox := continuationBox(*width, *height, 0)
+			segBox := continuationBox(*width, *height, 1)
+			animPages[i].Layers = append(animPages[i].Layers,
+				continuationSource(srcBox, pageMs-continuationOffsetMs, continuationDurationMs, tag))
+			animPages[i+1].Layers = append(animPages[i+1].Layers,
+				continuationSeg(srcBox, segBox, continuationOffsetMs, continuationDurationMs, pageMs, tag))
 		}
 		// 链式多页（G8 边界①）：页 0 的源段跨 3 页，第 2、3 页各落一次平移更远的延续段。
 		// duration = offset + 2 页 - 1s → 第 2 跳后正好在第 3 页内演完，末页不留余量。
 		// 这条用于验 seam-gate 的「上一跳也可以是配对段」分支——单跳夹具碰不到那个分支。
+		// 三页三个不同的盒，使第 2 跳的补偿量必然不同于第 1 跳（验「以上一跳的盒为参照」）。
 		if len(animPages) >= 3 && pageMs > 1000 {
 			chainDur := continuationOffsetMs + 2*pageMs - 1000
 			tag := "chain-0"
+			b0 := continuationBox(*width, *height, 0)
+			b1 := continuationBox(*width, *height, 2)
+			b2 := continuationBox(*width, *height, 3)
 			animPages[0].Layers = append(animPages[0].Layers,
-				syntheticContinuationChainSource(*width, *height, pageMs, chainDur, tag))
+				continuationSource(b0, pageMs-continuationOffsetMs, chainDur, tag))
 			animPages[1].Layers = append(animPages[1].Layers,
-				syntheticContinuationChainSeg(*width, *height, continuationOffsetMs, chainDur, tag))
+				continuationSeg(b0, b1, continuationOffsetMs, chainDur, pageMs, tag))
 			animPages[2].Layers = append(animPages[2].Layers,
-				syntheticContinuationChainSeg(*width, *height, continuationOffsetMs+pageMs, chainDur, tag))
+				continuationSeg(b1, b2, continuationOffsetMs+pageMs, chainDur, pageMs, tag))
 		}
 	}
 
@@ -545,53 +555,77 @@ func continuationClips(start, duration, offset int64, isCont bool, tag string) [
 	}
 }
 
-func continuationLayer(w, h int, tag string, clips []share.Clip) share.LayerAsset {
+// continuationBox 给延续夹具的层盒。k 不同 = 元素在那一页的布局不同。
+//
+// 为什么夹具必须让相邻页的盒**不同**：G8 边界③（静态盒补偿）只在盒不同时才产生 carry。
+// 若两页同盒，V19.8/V19.10 会因为「没有盒差可比」而恒真，等于没测。k=0 是源段/上一跳的盒，
+// k>=1 是后续页的盒：位置与尺寸都变，才能同时覆盖 translate 与 scale 两条补偿路径。
+func continuationBox(w, h, k int) share.SlideBox {
 	x, y, bw, bh := layerBox(w, h, 0)
+	switch k {
+	case 1:
+		return share.SlideBox{X: x + w/12, Y: y + h/24, W: bw * 5 / 6, H: bh * 5 / 6}
+	case 2:
+		return share.SlideBox{X: x - w/16, Y: y + h/12, W: bw * 11 / 10, H: bh * 11 / 10}
+	case 3:
+		return share.SlideBox{X: x + w/20, Y: y - h/16, W: bw, H: bh * 4 / 5}
+	default:
+		return share.SlideBox{X: x, Y: y, W: bw, H: bh}
+	}
+}
+
+// continuationCarryClips 造盒差补偿段，直接调用 render.CarryProps——与编译器同一份数学。
+//
+// 夹具若自己手写一份，两边会漂移：编译器补了锚点项、夹具没补，门禁就会对着一个错误的
+// 「同构样本」判绿，而那正是最该被拦住的回归。
+func continuationCarryClips(prev, next share.SlideBox, origin string, ms int64) []share.Clip {
+	if ms < 1 {
+		return nil
+	}
+	props := render.CarryProps(
+		render.Box{X: prev.X, Y: prev.Y, W: prev.W, H: prev.H},
+		render.Box{X: next.X, Y: next.Y, W: next.W, H: next.H},
+		origin)
+	if len(props) == 0 {
+		return nil
+	}
+	return []share.Clip{{
+		Effect: "carry", StartMs: 0, DurationMs: ms,
+		Easing: animation.EasingCurves[animation.DefaultEasing],
+		Props:  props,
+		Carry:  true,
+	}}
+}
+
+func continuationLayer(tag string, box share.SlideBox, clips []share.Clip) share.LayerAsset {
 	return share.LayerAsset{
 		ElementID: tag,
 		Kind:      "card",
-		Box:       share.SlideBox{X: x, Y: y, W: bw, H: bh},
-		PNG:       solidPNG(bw, bh, continuationColor),
+		Box:       box,
+		PNG:       solidPNG(box.W, box.H, continuationColor),
 		Origin:    "center",
 		Clips:     clips,
 	}
 }
 
-// syntheticContinuationSource 造一个会跨页溢出的源层（本页段，完整 clip，不截断）。
+// continuationSource 造一条会溢出页尾的源段（本页段，完整 clip，不截断）。
 //
 // 它是 G8 跨页延续的夹具：在页 i 放一条溢出页尾的 clip（起点 = 页尾 - offset），余量本应由
-// 编译器注入次页段；这里直接按编译器同构输出，在页 i+1 放下延续段（见 syntheticContinuationSeg）。
-// 判据在 seam-gate（V19）：它读成品包清单，核对链接字段与页缝处的求值连续性。
-func syntheticContinuationSource(w, h int, pageMs int64, tag string) share.LayerAsset {
-	start := pageMs - continuationOffsetMs
-	return continuationLayer(w, h, tag,
-		continuationClips(start, continuationDurationMs, 0, false, tag))
+// 编译器注入次页段；这里按编译器同构直接写进包，在页 i+1 放下延续段（见 continuationSeg）。
+// 判据在 seam-gate（V19）：它读成品包清单，核对链接字段、页缝求值与视觉矩形。
+func continuationSource(box share.SlideBox, start, duration int64, tag string) share.LayerAsset {
+	return continuationLayer(tag, box, continuationClips(start, duration, 0, false, tag))
 }
 
-// syntheticContinuationSeg 造次页延续段（负起点平移，与 render.Compiler 输出同构）。
+// continuationSeg 造次页延续段：负起点平移 + 静态盒补偿，与 render.Compiler 输出同构。
 //
-// StartMs = -ContinuationOffsetMs 把本段求值时间平移回原 clip 时间轴，使页缝处 cubic-bezier
-// 缓动连续；ElementID 与源层一致，供播放器把次页层与本页同元素层关联。Props 与源段**完全一致**
-// （不预拆分）——这是「负起点平移」与「预拆分」两条路线在数据上的唯一区别。
-func syntheticContinuationSeg(w, h int, tag string) share.LayerAsset {
-	return continuationLayer(w, h, tag,
-		continuationClips(-continuationOffsetMs, continuationDurationMs, continuationOffsetMs, true, tag))
-}
-
-// syntheticContinuationChainSource 造一条**跨三页**的源段（G8 边界①：链式多页）。
-//
-// duration 取 offset + 2 页 - 1s：第 1 跳 offset=offset、第 2 跳 offset=offset+页长，
-// 且在第 3 页内演完——这样夹具正好覆盖「源段 + 两跳延续」，又不会在末页留下余量
-// （末页余量是另一条语义：被片长裁掉，由 Go 单测覆盖，不必进浏览器包）。
-func syntheticContinuationChainSource(w, h int, pageMs, duration int64, tag string) share.LayerAsset {
-	start := pageMs - continuationOffsetMs
-	return continuationLayer(w, h, tag, continuationClips(start, duration, 0, false, tag))
-}
-
-// syntheticContinuationChainSeg 造链上第 n 跳的延续段；offset 由调用方按
-// 「上一跳 offset + 上一页页长」推进（与 render.Compiler 的链式注入同一条规则）。
-func syntheticContinuationChainSeg(w, h int, offset, duration int64, tag string) share.LayerAsset {
-	return continuationLayer(w, h, tag, continuationClips(-offset, duration, offset, true, tag))
+// StartMs = -offset 把求值时间平移回原 clip 时间轴，使页缝处 cubic-bezier 缓动连续；Props
+// 与源段**完全一致**（不预拆分）。carry 是一段独立的 translate/scale，起点把该层从上一页的
+// 盒搬过来，终点回到恒等变换——它只在两页盒不同时出现（CarryProps 返回 nil 表示无盒差）。
+func continuationSeg(prev, box share.SlideBox, offset, duration, pageMs int64, tag string) share.LayerAsset {
+	clips := continuationCarryClips(prev, box, "center", render.CarryDuration(duration-offset, pageMs))
+	clips = append(clips, continuationClips(-offset, duration, offset, true, tag)...)
+	return continuationLayer(tag, box, clips)
 }
 
 // continuationColor 是延续夹具层的标识色（橙），与常规层区分，便于门禁核对。

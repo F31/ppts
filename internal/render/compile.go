@@ -161,6 +161,41 @@ func (c *Compiler) Compile(pages []PageInput) (*Timeline, error) {
 	return out, nil
 }
 
+// injectCarry 给次页的续播层补一段「静态盒补偿」，把视觉矩形从上一页的盒线性搬回本页的盒。
+//
+// 为什么需要它：延续段的负起点只让**属性进度**在页缝处连续。元素在相邻页的静态盒（位置 +
+// 尺寸）若不同，页缝两侧的绝对几何就有一个跳变——成片里表现为元素「跳一格」，而所有既有
+// 判据（求值连续性、末帧比对）都看不见它，因为 clip 状态确实是连续的。
+//
+// 两个盒完全相同时不产生任何 clip（CarryProps 返回 nil），所以作者按老写法把元素放在同一
+// 位置时，清单与引入本能力前逐字节一致。
+func (c *Compiler) injectCarry(prevPage, page *Page, li int, elementID string, seg *Motion) {
+	pi := indexOfLayerByElementID(prevPage.Layers, elementID)
+	if pi < 0 {
+		// 源段只可能在「有同 elementId 层」的页上产出（compileClip 逐层展开），走到这里
+		// 说明计划本身不自洽。不加补偿好过加一段来路不明的补偿——几何不连续会由 V19 暴露。
+		return
+	}
+	props := CarryProps(prevPage.Layers[pi].Box, page.Layers[li].Box, page.Layers[li].Origin)
+	if len(props) == 0 {
+		return
+	}
+	ms := CarryDuration(seg.DurationMs-seg.ContinuationOffsetMs, page.DurationMs)
+	if ms < 1 {
+		return
+	}
+	page.Layers[li].Clips = append(page.Layers[li].Clips, Motion{
+		ClipID:     seg.ClipID + "@carry",
+		Effect:     "carry",
+		StartMs:    0,
+		DurationMs: ms,
+		Easing:     seg.Easing,
+		Props:      props,
+		Carry:      true,
+		ElementID:  elementID,
+	})
+}
+
 // injectContinuations 遍历每页的 continues clip，把溢出余量段写入后续页的对应层。
 // 单跳与链式同一条路径：每注入一页，若该段在本页内仍未演完，就把 offset 加上本页页长、
 // 重新以负起点平移注入下一页（G8 边界①）。次页缺失或后续页无同 elementId 层时记
@@ -234,6 +269,11 @@ func (c *Compiler) injectContinuations(pages []PageInput, out *Timeline) {
 						})
 						break
 					}
+					// 静态盒补偿（G8 边界③）：动效连续只保证「进度」连续，不保证「位置」连续。
+					// 作者在次页把同一元素挪了位置或改了尺寸时，页缝处会跳一格——那是静态几何
+					// 的差，不是动效的差。给续播层补一条 carry clip，把视觉矩形从上一页的盒搬回
+					// 本页的盒。上一页的盒取 pageIdx-1（链式时是上一跳所在页，不是源页）。
+					c.injectCarry(&out.Pages[pageIdx-1], page, li, track.ElementID, &cur)
 					page.Layers[li].Clips = append(page.Layers[li].Clips, cur)
 
 					// 本页内（含 1 帧容差）能演完就收手；否则把剩余部分再平移到下一页。

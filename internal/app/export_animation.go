@@ -463,6 +463,7 @@ func bundleClips(clips []render.Motion) []share.Clip {
 			IsContinuation:       c.IsContinuation,
 			ContinuationOffsetMs: c.ContinuationOffsetMs,
 			ElementID:            c.ElementID,
+			Carry:                c.Carry,
 		})
 	}
 	return out
