@@ -23,7 +23,9 @@ const {
   revokeBinding,
   carryBindings,
   defaultSpecQuery,
-  prefillSourceKey
+  prefillSourceKey,
+  prefillSignalKey,
+  prefillLowConfidenceKey
 } = prefill;
 const {
   clampIntensity,
@@ -811,4 +813,31 @@ test('未登记的来源不硬套文案', () => {
   assert.equal(prefillSourceKey('sibling'), 'editor.animationSourceSibling');
   assert.equal(prefillSourceKey('layout-v2'), '', '服务端加了新规则时宁可显示原始 id，也不要错配到别的文案');
   assert.deepEqual(filterBySource(prefillBindings(prefillSpec()), 'text').map((item) => item.elementId), ['bullet-1', 'bullet-2']);
+});
+
+test('低置信提示按「缺的是哪一侧」分叉', async () => {
+  assert.equal(prefillLowConfidenceKey('script'), 'editor.animationPrefillLowConfidenceScript');
+  assert.equal(prefillLowConfidenceKey('layout'), 'editor.animationPrefillLowConfidenceLayout');
+  assert.equal(prefillLowConfidenceKey('both'), 'editor.animationPrefillLowConfidenceBoth');
+  // 未登记的 reason 退回版面那句，不凭空造 key。
+  assert.equal(prefillLowConfidenceKey(undefined), 'editor.animationPrefillLowConfidenceLayout');
+  assert.equal(prefillLowConfidenceKey('layout-v3'), 'editor.animationPrefillLowConfidenceLayout');
+
+  // script 档的版面是有信号的：文案必须点名「讲稿」，否则用户会去重排 PPT。
+  const zh = JSON.parse(await readFile(new URL('./src/i18n/zh.json', import.meta.url), 'utf8'));
+  const en = JSON.parse(await readFile(new URL('./src/i18n/en.json', import.meta.url), 'utf8'));
+  const zhScript = zh[prefillLowConfidenceKey('script')];
+  const enScript = en[prefillLowConfidenceKey('script')];
+  assert.ok(zhScript.includes('讲稿'), `script 档文案没说清该改讲稿：${zhScript}`);
+  assert.ok(!zhScript.includes('没有检测到结构化版面信号'), '版面明明有信号，不能复用版面文案');
+  assert.ok(enScript.toLowerCase().includes('narration'), `英文 script 档文案未点名讲稿：${enScript}`);
+  // 三份文案必须各不相同：合成一句就等于不分档。
+  const texts = ['layout', 'script', 'both'].map((r) => zh[prefillLowConfidenceKey(r)]);
+  assert.equal(new Set(texts).size, 3, '低置信三种原因的文案重复了');
+});
+
+test('讲稿侧信号有文案，未登记信号不硬套', () => {
+  assert.equal(prefillSignalKey('script-structure'), 'editor.animationSignalScriptStructure');
+  assert.equal(prefillSignalKey('script-flat'), 'editor.animationSignalScriptFlat');
+  assert.equal(prefillSignalKey('script-v2'), '');
 });

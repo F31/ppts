@@ -125,6 +125,67 @@ func TestDefaultSpecPrefillBindsSegments(t *testing.T) {
 	}
 }
 
+// 分档要读讲稿：同一份版面，讲稿把结构念出来才判结构化。
+//
+// 这一格以前只看版面，结果「版面有编号/卡片、讲稿口语直讲」被判 structured 且不给低置信
+// 提示——而实测召回只有 0.667（结构化是 0.972）。见 changes/animation-prefill-script-signal。
+func TestPrefillBandReadsNarration(t *testing.T) {
+	cases := []struct {
+		name       string
+		segs       []animation.ScriptSegment
+		wantBand   string
+		wantReason string
+		wantSignal string
+	}{
+		{
+			name: "讲稿讲了结构",
+			segs: []animation.ScriptSegment{
+				{ID: "seg-1", Text: "第一部分看整体：收入增长 18%。"},
+				{ID: "seg-2", Text: "第二部分看毛利率，42%，比上季度高一个点。"},
+			},
+			wantBand:   "structured",
+			wantReason: "",
+			wantSignal: "script-structure",
+		},
+		{
+			name:       "讲稿口语直讲，没把结构念出来",
+			segs:       prefillSegments(),
+			wantBand:   "low-confidence",
+			wantReason: "script",
+			wantSignal: "script-flat",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ts, _, _ := newPrefillServer(t, prefillPC(c.segs...))
+			status, payload := doJSON(t, http.MethodGet, ts.URL+animationURL()+"?default=true&prefill=true", nil)
+			if status != http.StatusOK {
+				t.Fatalf("status = %d (%v)", status, payload)
+			}
+			info, _ := payload["prefill"].(map[string]any)
+			if info == nil {
+				t.Fatalf("没有 prefill 说明：%v", payload)
+			}
+			if got, _ := info["band"].(string); got != c.wantBand {
+				t.Fatalf("band = %q，期望 %q", got, c.wantBand)
+			}
+			if got, _ := info["bandReason"].(string); got != c.wantReason {
+				t.Fatalf("bandReason = %q，期望 %q（低置信必须说清缺的是哪一侧）", got, c.wantReason)
+			}
+			signals, _ := info["signals"].([]any)
+			found := false
+			for _, s := range signals {
+				if s == c.wantSignal {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("信号里没有 %q：%v", c.wantSignal, signals)
+			}
+		})
+	}
+}
+
 // 没有分段时跳过预填，并明确说明原因——而不是悄悄按 onEnter 猜一遍。
 func TestDefaultSpecPrefillSkippedWithoutSegments(t *testing.T) {
 	ts, _, _ := newPrefillServer(t, animation.PageContext{DurationMS: 6000, FPS: 30})

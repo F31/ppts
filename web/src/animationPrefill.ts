@@ -41,11 +41,13 @@ const SOURCE_KEYS: Record<string, string> = {
   manual: 'editor.animationSourceManual'
 };
 
-/** 结构信号的文案 key（与 internal/animation/bind/band.go 的常量同名）。 */
+/** 结构信号的文案 key（与 internal/animation/bind/bind.go 的常量同名）。 */
 const SIGNAL_KEYS: Record<string, string> = {
   markers: 'editor.animationSignalMarkers',
   clusters: 'editor.animationSignalClusters',
-  directions: 'editor.animationSignalDirections'
+  directions: 'editor.animationSignalDirections',
+  'script-structure': 'editor.animationSignalScriptStructure',
+  'script-flat': 'editor.animationSignalScriptFlat'
 };
 
 export type PrefillBinding = {
@@ -140,6 +142,20 @@ export function prefillSourceKey(source: string): string {
 
 export function prefillSignalKey(signal: string): string {
   return SIGNAL_KEYS[signal] ?? '';
+}
+
+/**
+ * 低置信提示的文案 key，按「缺的是哪一侧」分叉。
+ *
+ * 三种情况的实测召回不同（layout 0.533 / script 0.667 / both 0.533），补救动作也不同：
+ * script 该改写讲解词，layout 才该动版面。留一句通用文案，用户会照着去改错的地方。
+ * 未登记的 reason 退回 layout 那句——但不能是「没有检测到版面信号」以外的措辞，
+ * 因为 band=low-confidence 时版面确实没被判成结构化。
+ */
+export function prefillLowConfidenceKey(reason?: string): string {
+  if (reason === 'script') return 'editor.animationPrefillLowConfidenceScript';
+  if (reason === 'both') return 'editor.animationPrefillLowConfidenceBoth';
+  return 'editor.animationPrefillLowConfidenceLayout';
 }
 
 /**

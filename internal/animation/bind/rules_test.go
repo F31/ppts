@@ -219,20 +219,77 @@ func TestBand(t *testing.T) {
 		elem("m3", "marker", 100, 400, 80, 80, "03"),
 		elem("b1", "bullet", 200, 120, 600, 60, "市场趋势"),
 	}
-	band, signals, _ := classifyBand(markerPage)
-	if band != BandStructured {
-		t.Fatalf("有 3 个编号标记却是 %q", band)
+	// 讲稿把结构念了出来：结构化需要「版面有结构」+「讲稿讲了结构」两件。
+	scripted := []Segment{{ID: "s0", Text: "今天分三个部分，第一部分讲市场"}}
+	v := classifyBand(markerPage, scripted)
+	if v.Band != BandStructured {
+		t.Fatalf("有 3 个编号标记且讲稿含序数，却判成 %q（原因 %q）", v.Band, v.Reason)
 	}
-	if !hasSignal(signals, SignalMarkers) {
-		t.Fatalf("信号里没有 markers：%v", signals)
+	if v.Reason != "" {
+		t.Fatalf("结构化不该带低置信原因，实际 %q", v.Reason)
+	}
+	if !hasSignal(v.Signals, SignalMarkers) || !hasSignal(v.Signals, SignalScriptStructure) {
+		t.Fatalf("信号不对：%v", v.Signals)
+	}
+
+	// 版面有结构、讲稿口语直讲：实测召回 0.667（结构化是 0.972）。
+	// 这一格以前判 structured，低置信提示恰好在真实的高风险组合上沉默。
+	flat := []Segment{{ID: "s0", Text: "这套东西就是把一份幻灯片讲成能播的片子"}}
+	v = classifyBand(markerPage, flat)
+	if v.Band != BandLowConfidence || v.Reason != BandReasonScript {
+		t.Fatalf("版面有结构但讲稿没讲出来，应 low-confidence/script，实际 %q/%q", v.Band, v.Reason)
+	}
+	if !hasSignal(v.Signals, SignalScriptFlat) {
+		t.Fatalf("讲稿无结构词时应出 script-flat：%v", v.Signals)
 	}
 
 	// 单个居中文本框：没有编号、没有卡片簇。方向覆盖仍然是 2（左 + 上），
 	// 但它不编码讲解顺序，不能凭它判结构化——否则分档等于没有。
 	plainPage := []Element{elem("p", "bullet", 100, 100, 600, 60, "一段话")}
-	band, signals, cov := classifyBand(plainPage)
-	if band != BandLowConfidence {
-		t.Fatalf("纯文字页被判成 %q（方向覆盖 %d，信号 %v）", band, cov, signals)
+	v = classifyBand(plainPage, scripted)
+	if v.Band != BandLowConfidence {
+		t.Fatalf("纯文字页被判成 %q（方向覆盖 %d，信号 %v）", v.Band, v.Directions, v.Signals)
+	}
+	if v.Reason != BandReasonLayout {
+		t.Fatalf("版面缺信号、讲稿有结构词，原因应为 layout，实际 %q", v.Reason)
+	}
+
+	// 两侧都缺：原因必须合并成 both，不能报成 layout 或 script 之一。
+	v = classifyBand(plainPage, flat)
+	if v.Band != BandLowConfidence || v.Reason != BandReasonBoth {
+		t.Fatalf("两侧都缺应 low-confidence/both，实际 %q/%q", v.Band, v.Reason)
+	}
+}
+
+func TestScriptStructureKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{"序数", "第二部分讲落地", []string{ScriptOrdinal}},
+		{"精确数量", "今天分五个部分", []string{ScriptCount}},
+		{"空间指代", "右边那张图是关键", []string{ScriptSpatial}},
+		{"图表指代", "这张表把几家摆在一起", []string{ScriptSpatial}},
+		{"中间", "中间的流程是主线", []string{ScriptSpatial}},
+		// 序数形态不能被当成「两条」：`第` 开头的那一处结构只记一次。
+		{"第二条只算序数", "第二条是合规", []string{ScriptOrdinal}},
+		// 模糊数量不算信号：与规则同口径（消融里「几个」与整句不说同分）。
+		{"几个不算", "今天分几个部分", nil},
+		// 「一个X」不编码结构（版面不会有 1 项的列表），与 detectCount 的 2..12 同口径。
+		{"一个点不算", "毛利率比上季度高一个点", nil},
+		{"无关文本", "这套东西就是把幻灯片讲成片子", nil},
+	}
+	for _, c := range cases {
+		got := scriptStructureKinds([]Segment{{ID: "s", Text: c.text}})
+		if len(got) != len(c.want) {
+			t.Fatalf("%s: 命中 %v，期望 %v", c.name, got, c.want)
+		}
+		for i := range got {
+			if got[i] != c.want[i] {
+				t.Fatalf("%s: 命中 %v，期望 %v", c.name, got, c.want)
+			}
+		}
 	}
 }
 

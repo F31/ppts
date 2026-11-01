@@ -72,8 +72,14 @@ export type AnimationPrefill = {
   applied: boolean;
   /** applied=false 时说明跳过原因（目前只有 no_segments）。 */
   reason?: string;
-  /** 版面分档：structured / low-confidence。 */
+  /** 分档：structured / low-confidence。 */
   band?: string;
+  /**
+   * 低置信时缺的是哪一侧：layout（版面没信号）/ script（版面有结构、讲稿没讲出来）/ both。
+   * 三者实测召回与补救动作都不同，提示语必须分开——「版面有编号但讲稿口语直讲」这一格
+   * 召回是 0.667，说成「没有检测到版面信号」是假话。
+   */
+  bandReason?: string;
   signals?: string[];
   bound: number;
   static: number;

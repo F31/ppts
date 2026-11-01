@@ -32,6 +32,7 @@ import {
   carryBindings,
   filterBySource,
   prefillBindings,
+  prefillLowConfidenceKey,
   prefillSignalKey,
   prefillSourceKey,
   reviewOrder,
@@ -534,7 +535,11 @@ export function AnimationEditor({
                     <p className="prefill-warn">{t('editor.animationPrefillSkipped')}</p>
                   )}
 
-                  {lowConfidence && <p className="prefill-warn">{t('editor.animationPrefillLowConfidence')}</p>}
+                  {/* 低置信的原因必须分开说：script 档是讲稿没把结构讲出来（版面没问题），
+                      沿用「没有检测到结构化版面信号」等于对用户说假话，还会把他引去重排 PPT。 */}
+                  {lowConfidence && (
+                    <p className="prefill-warn">{t(prefillLowConfidenceKey(prefillInfo?.bandReason))}</p>
+                  )}
 
                   {prefillInfo?.band === 'structured' && (prefillInfo.signals?.length ?? 0) > 0 && (
                     <p className="form-hint">

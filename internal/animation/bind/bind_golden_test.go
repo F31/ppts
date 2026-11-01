@@ -98,6 +98,12 @@ func TestGoldenQ8(t *testing.T) {
 		}
 
 		res := Run(elements, segments, Options{})
+		// 金标讲稿每次都把结构念了出来（序数/数量/空间共 13 处），版面也有编号或卡片，
+		// 所以五页都该是结构化。分档改动把这里打下来 = 把一批可用页面误标成低置信。
+		if res.Band != BandStructured {
+			t.Fatalf("page %d 分档 = %q（原因 %q，信号 %v），金标讲稿与版面都该判结构化",
+				page.Index, res.Band, res.BandReason, res.Signals)
+		}
 		for src, ids := range res.BySource {
 			bySource[src] += len(ids)
 		}

@@ -6,10 +6,12 @@ package bind
 // 「大概能填一半」的均值，把「可用」与「不可用」的差别掩盖掉。分档不改绑定结果，
 // 只决定这批预填在编辑器里以什么形态呈现（低置信要换样式）。
 //
-// 三条信号的检测全部是几何 + 文本形态，不调模型、不读字号：
+// 四条信号的检测全部是几何 + 文本形态，不调模型、不读字号：
 //   - 编号标记：页内存在 ≥3 个 `01`–`99` 形态的短文本块；
 //   - 卡片簇：存在互相包含或上下紧邻（≤60px）且横向重合 ≥0.6 的元素对；
-//   - 方位覆盖：页内元素覆盖 ≥2 个方向半区。
+//   - 方位覆盖：页内元素覆盖 ≥2 个方向半区；
+//   - 讲稿结构词（script-structure / script-flat）：讲稿分段里有没有把版面结构念出来。
+//     前三条读版面，这一条读讲稿——它是判断「预填能不能跟上」的另一半。
 //
 // 判别力是**不均匀**的，这里如实记下，并据此定档：
 //
@@ -22,9 +24,16 @@ package bind
 //
 // 这个偏离写进了 changes/animation-narration-binding/design.md §2 的「实现修正」。
 //
-// classifyBand 返回分档、命中的信号（固定顺序）与方向覆盖数。
-func classifyBand(elements []Element) (Band, []string, int) {
-	signals := make([]string, 0, 3)
+// 第四条信号（script-*）读的是**讲稿**而不是版面，来自结构词消融：
+// 「版面有结构」只是结构化的一半前提，另一半是「讲稿把结构讲出来」。
+// 同一份有编号/卡片的讲义，讲稿含结构词时内容召回 0.972，删掉结构词后 0.667。
+// 只读版面会让「版面有编号、讲稿口语直讲」这么一格拿到结构化待遇——低置信提示
+// 恰好在真实的高风险组合上沉默。见 changes/animation-prefill-script-signal/design.md。
+//
+// classifyBand 返回分档、命中的信号（固定顺序）、方向覆盖数，以及低置信的原因。
+// Reason 为空表示判成结构化。
+func classifyBand(elements []Element, segments []Segment) bandVerdict {
+	signals := make([]string, 0, 5)
 
 	ms := 0
 	for _, e := range elements {
@@ -44,10 +53,40 @@ func classifyBand(elements []Element) (Band, []string, int) {
 		signals = append(signals, SignalDirections)
 	}
 
-	if ms >= 3 || clustered {
-		return BandStructured, signals, cov
+	layoutOK := ms >= 3 || clustered
+	scriptOK := hasScriptStructure(segments)
+	if scriptOK {
+		signals = append(signals, SignalScriptStructure)
+	} else {
+		signals = append(signals, SignalScriptFlat)
 	}
-	return BandLowConfidence, signals, cov
+
+	v := bandVerdict{Signals: signals, Directions: cov}
+	switch {
+	case layoutOK && scriptOK:
+		v.Band = BandStructured
+	case layoutOK:
+		// 版面没问题、讲稿没把结构念出来：实测 0.667。提示必须指向讲稿，
+		// 否则用户会去重排 PPT——而该改的是讲解词。
+		v.Band = BandLowConfidence
+		v.Reason = BandReasonScript
+	case scriptOK:
+		v.Band = BandLowConfidence
+		v.Reason = BandReasonLayout
+	default:
+		v.Band = BandLowConfidence
+		v.Reason = BandReasonBoth
+	}
+	return v
+}
+
+// bandVerdict 是一次分档的全部产出。
+type bandVerdict struct {
+	Band       Band
+	Signals    []string
+	Directions int
+	// Reason 只在低置信时有值：layout / script / both。
+	Reason string
 }
 
 // hasCluster 报告页内是否存在卡片簇。

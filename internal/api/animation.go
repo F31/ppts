@@ -205,15 +205,18 @@ type animationSpecDTO struct {
 // 说清楚「做了/跳过了、绑了几条、几条变静态」，用户才知道下一步该点哪里。
 //
 // 字段含义：Reason 在 applied=false 时说明跳过原因（目前只有 no_segments）；
-// Band 是版面分档（structured / low-confidence）；Bound/Static 只算「这套预设能动的元素」，
-// 不含本来就不挂动效的容器。
+// Band 是分档（structured / low-confidence）；BandReason 在低置信时说明缺的是哪一侧
+// （layout 版面没信号 / script 讲稿没把结构讲出来 / both 两者都缺）——三者的实测召回
+// 与补救动作都不同，合成一句提示会让用户改错地方。
+// Bound/Static 只算「这套预设能动的元素」，不含本来就不挂动效的容器。
 type animationPrefillDTO struct {
-	Applied bool     `json:"applied"`
-	Reason  string   `json:"reason,omitempty"`
-	Band    string   `json:"band,omitempty"`
-	Signals []string `json:"signals,omitempty"`
-	Bound   int      `json:"bound"`
-	Static  int      `json:"static"`
+	Applied    bool     `json:"applied"`
+	Reason     string   `json:"reason,omitempty"`
+	Band       string   `json:"band,omitempty"`
+	BandReason string   `json:"bandReason,omitempty"`
+	Signals    []string `json:"signals,omitempty"`
+	Bound      int      `json:"bound"`
+	Static     int      `json:"static"`
 }
 
 func animationDTO(rev *animation.Revision, needsRecheck bool) animationSpecDTO {
@@ -305,9 +308,10 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 			res := bind.Run(app.PageBindElements(page, 0, 0), segs, bind.Options{})
 			bindings = res.Bindings
 			prefillInfo = &animationPrefillDTO{
-				Applied: true,
-				Band:    string(res.Band),
-				Signals: res.Signals,
+				Applied:    true,
+				Band:       string(res.Band),
+				BandReason: res.BandReason,
+				Signals:    res.Signals,
 			}
 		}
 	}

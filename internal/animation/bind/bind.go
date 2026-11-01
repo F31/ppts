@@ -62,18 +62,33 @@ const (
 )
 
 // 结构信号名。报告与编辑器都按这些字面量筛选。
+//
+// 前三条读版面，最后两条读讲稿（互斥，永远只出一条）：版面有没有把顺序编码出来，
+// 与讲稿有没有把那个顺序念出来，是两件事，缺哪一件的补救动作也不同。
 const (
-	SignalMarkers    = "markers"    // 页内有 ≥3 个编号标记（01/02/03）
-	SignalClusters   = "clusters"   // 存在卡片簇（包含或上下紧邻 + 横向重合）
-	SignalDirections = "directions" // 页内元素覆盖 ≥2 个方向半区
+	SignalMarkers         = "markers"          // 页内有 ≥3 个编号标记（01/02/03）
+	SignalClusters        = "clusters"         // 存在卡片簇（包含或上下紧邻 + 横向重合）
+	SignalDirections      = "directions"       // 页内元素覆盖 ≥2 个方向半区
+	SignalScriptStructure = "script-structure" // 讲稿含序数/精确数量/空间指代
+	SignalScriptFlat      = "script-flat"      // 讲稿没有把结构讲出来
+)
+
+// 低置信的原因。三者预期准确率与补救动作都不同，不能合成一句提示。
+const (
+	BandReasonLayout = "layout" // 版面无结构信号（0.533）
+	BandReasonScript = "script" // 版面有结构、讲稿没讲出来（0.667）
+	BandReasonBoth   = "both"   // 两侧都缺（0.533）
 )
 
 // Result 是一次预填的全部产出。
 type Result struct {
 	Bindings []Binding
 	Band     Band
-	// Signals 是命中的结构信号，按固定顺序（markers/clusters/directions）排列。
+	// Signals 是命中的结构信号，按固定顺序（markers/clusters/directions/script-*）排列。
 	Signals []string
+	// BandReason 只在低置信时有值（layout / script / both）：说明缺的是版面还是讲稿。
+	// 结构化结果为空。
+	BandReason string
 	// DirectionCoverage 是四个方向半区里非空的个数（0..4）。分档判据用 ≥2，
 	// 同时把它透出来：真实讲义上这条信号判别力弱，编辑与报告可以自己收紧。
 	DirectionCoverage int
@@ -164,7 +179,11 @@ func Run(elements []Element, segments []Segment, opt Options) Result {
 	for _, p := range merged {
 		res.BySource[p.source] = append(res.BySource[p.source], elements[p.elem].ID)
 	}
-	res.Band, res.Signals, res.DirectionCoverage = classifyBand(elements)
+	verdict := classifyBand(elements, segments)
+	res.Band = verdict.Band
+	res.Signals = verdict.Signals
+	res.BandReason = verdict.Reason
+	res.DirectionCoverage = verdict.Directions
 	return res
 }
 
