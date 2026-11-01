@@ -25,8 +25,20 @@ import {
   withIntensity,
   withTrackTrigger,
   type AnimationAnchors,
+  type AnimationPrefill,
   type AnimationSpec
 } from './animationState';
+import {
+  carryBindings,
+  filterBySource,
+  prefillBindings,
+  prefillSignalKey,
+  prefillSourceKey,
+  reviewOrder,
+  revokeBinding,
+  revokeSource,
+  sourceGroups
+} from './animationPrefill';
 import { useDialogA11y } from './a11y';
 import { useI18n } from './i18n';
 import { AnimationTrackTimeline } from './AnimationTrackTimeline';
@@ -94,6 +106,14 @@ export function AnimationEditor({
   const generateSeq = useRef(0);
   // 轨道编辑的撤销栈（只覆盖拖动/微调，不覆盖换预设与强度——那两件事用户自己能改回来）。
   const [history, setHistory] = useState<TrackHistory>(emptyHistory);
+  // 这次会话里预填做了什么。规格里不留（保存后服务端不会回传 prefill），
+  // 所以面板必须自己记着，否则「低置信」这条最重要的提示保存一次就消失了。
+  const [prefillInfo, setPrefillInfo] = useState<AnimationPrefill | null>(null);
+  // 生成那一刻「产出了几条轨道」的快照。不能现场数：撤销之后现场数会归零，
+  // 于是「绑定 53 条，0 条产出轨道」这种假话会出现在用户刚撤完的那一刻。
+  const [prefillTracks, setPrefillTracks] = useState<number | null>(null);
+  const [prefillFilter, setPrefillFilter] = useState('');
+  const [prefilling, setPrefilling] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -105,6 +125,9 @@ export function AnimationEditor({
     setPreviewError('');
     setSavedAt(0);
     setPreviewLayers(0);
+    setPrefillInfo(null);
+    setPrefillTracks(null);
+    setPrefillFilter('');
     setPreviewURL((prev) => {
       if (prev) URL.revokeObjectURL(prev);
       return '';
@@ -187,11 +210,40 @@ export function AnimationEditor({
       const generated = await getDefaultAnimationSpec(identity, scope, presetId);
       if (seq !== generateSeq.current) return;
       // 保留当前并发版本号：默认规格是"未保存的草案"，它的 revision 取决于服务器上那份。
-      const next = { ...draftOf(generated), revision: saved?.revision ?? 0 };
+      // 再把入场时机搬过去：换风格只该换「怎么出现」，不该把复核过的绑定一起丢掉。
+      const next = { ...carryBindings(draft, draftOf(generated)), revision: saved?.revision ?? 0 };
       setDraft(next);
+      // 这一次生成没跑预填，旧的 prefill 说明（分档、条数）描述的是上一次生成，
+      // 留着它会让面板拿着过期数字说"绑定 53 条"。分档是生成事件的事实，不是规格字段。
+      setPrefillInfo(null);
+      setPrefillTracks(null);
     } catch (err) {
       if (seq !== generateSeq.current) return;
       setSaveError(errorText(err, t));
+    }
+  };
+
+  // runPrefill 按讲稿生成绑定（tasks 4.1 的入口）。
+  //
+  // 只在还没有已保存规格时可用：它产出的是「这一页的起点」，不是对现有绑定的合并。
+  // 对已有规格跑一遍会整体替换人工确认过的绑定，而规格里的「人工权威」不允许。
+  const runPrefill = async () => {
+    const seq = ++generateSeq.current;
+    setSaveError('');
+    setPrefilling(true);
+    try {
+      const generated = await getDefaultAnimationSpec(identity, scope, draft?.presetId ?? '', true);
+      if (seq !== generateSeq.current) return;
+      const next = draftOf(generated);
+      setDraft({ ...next, revision: saved?.revision ?? 0 });
+      setPrefillInfo(generated.prefill ?? null);
+      setPrefillTracks(prefillBindings(next).length);
+      setPrefillFilter('');
+    } catch (err) {
+      if (seq !== generateSeq.current) return;
+      setSaveError(errorText(err, t));
+    } finally {
+      if (seq === generateSeq.current) setPrefilling(false);
     }
   };
 
@@ -276,6 +328,39 @@ export function AnimationEditor({
   const elementTracks = draft?.tracks.filter((track) => track.kind !== 'page') ?? [];
   const pageTracks = draft?.tracks.filter((track) => track.kind === 'page') ?? [];
 
+  // 预填复核的来源判定与排序都在 animationPrefill（纯函数，node 用例钉住）。
+  const bindings = prefillBindings(draft);
+  const groups = sourceGroups(bindings);
+  const rows = reviewOrder(filterBySource(bindings, prefillFilter));
+  // 分档是**一次生成**的事实（band 不是规格字段），所以只认这次会话拿到的 DTO：
+  // 重开面板时只剩来源与置信度，不能再声称"低置信"或"结构化"。
+  const lowConfidence = prefillInfo?.band === 'low-confidence';
+  const sourceLabel = (source: string): string => {
+    const key = prefillSourceKey(source);
+    // 未登记的来源显示原始 id：服务端加了新规则时，宁可让人看到 "layout" 这样的标识，
+    // 也不要错配到另一条文案上（那会让人照着错的提示核对）。
+    return key ? t(key) : source;
+  };
+  const segmentIndexOf = (segmentId: string): number | null => {
+    const hit = anchors?.segments.find((item) => item.segmentId === segmentId);
+    return hit ? hit.index : null;
+  };
+  // 撤销是一次编辑：先压栈再改草案。撤销本身必须可撤销，否则"点错了"就只剩重跑预填。
+  const applyRevoked = (next: { spec: AnimationSpec; count: number }) => {
+    if (next.count === 0) return;
+    beginEdit();
+    setDraft(next.spec);
+  };
+  const revokeWholeSource = () => {
+    if (!draft) return;
+    const next = revokeSource(draft, prefillFilter);
+    if (next.count === 0) return;
+    applyRevoked(next);
+    // 这一组被撤空后筛选 chip 会消失；留在不存在的来源上会得到一片永远空白的列表。
+    const group = groups.find((item) => item.source === prefillFilter);
+    if (group && group.count === next.count) setPrefillFilter('');
+  };
+
   return (
     <aside
       className="properties-drawer animation-drawer"
@@ -340,6 +425,29 @@ export function AnimationEditor({
               })}
             </div>
             {!draft && <p className="form-hint">{t('editor.animationNoSpec')}</p>}
+          </section>
+
+          {/* 讲稿绑定预填的入口（tasks 4.1）。单独一段而不是塞在风格里：
+              它与"选风格"是两个决定（怎么出现 / 什么时候出现），混在一起会让人以为
+              选预设就等于按讲稿绑定。
+              只在还没有已保存规格时可用——它产出的是「这一页的起点」，不是合并。 */}
+          <section className="animation-block">
+            <span className="eyebrow">{t('editor.animationPrefillTitle')}</span>
+            <div className="animation-prefill-action">
+              <button
+                type="button"
+                className="button-ghost"
+                disabled={disabled || prefilling || saved !== null || (anchors !== null && anchors.durationMs <= 0)}
+                onClick={() => void runPrefill()}
+              >
+                {prefilling
+                  ? t('editor.animationPrefillRunning')
+                  : prefillInfo
+                    ? t('editor.animationPrefillRegenerate')
+                    : t('editor.animationPrefillAction')}
+              </button>
+            </div>
+            {saved !== null && <p className="form-hint">{t('editor.animationPrefillNeedsFresh')}</p>}
           </section>
 
           {draft && (
@@ -408,6 +516,129 @@ export function AnimationEditor({
                   </p>
                 )}
               </section>
+
+              {/* 预填复核（tasks 4.1–4.3）：机器猜的绑定按来源摊开，撤销以"组"为单位。
+                  没有来源标注的页面不该出现这一块——空表只会让人以为功能坏了。 */}
+              {(bindings.length > 0 || prefillInfo !== null) && (
+                <section className={`animation-block animation-prefill${lowConfidence ? ' low-confidence' : ''}`}>
+                  <div className="animation-block-head">
+                    <span className="eyebrow">{t('editor.animationPrefillReview')}</span>
+                    {bindings.length > 0 && (
+                      <span className="animation-summary">{t('editor.animationPrefillCount', { count: bindings.length })}</span>
+                    )}
+                  </div>
+
+                  {/* 预填被跳过的原因必须说出来：最坏的结果不是绑错几条（那看得见），
+                      而是点了按钮之后什么都没变，用户以为功能没做。 */}
+                  {prefillInfo !== null && !prefillInfo.applied && (
+                    <p className="prefill-warn">{t('editor.animationPrefillSkipped')}</p>
+                  )}
+
+                  {lowConfidence && <p className="prefill-warn">{t('editor.animationPrefillLowConfidence')}</p>}
+
+                  {prefillInfo?.band === 'structured' && (prefillInfo.signals?.length ?? 0) > 0 && (
+                    <p className="form-hint">
+                      {t('editor.animationPrefillSignals', {
+                        signals: (prefillInfo.signals ?? [])
+                          .map((signal) => {
+                            const key = prefillSignalKey(signal);
+                            return key ? t(key) : signal;
+                          })
+                          .join(' / ')
+                      })}
+                    </p>
+                  )}
+
+                  {/* 绑定数与轨道数的差额要说清楚：无文字容器（卡片底、分隔线）绑定成立，
+                      但预设没给这类元素挂动效——不然"绑定 53 条"会被当成"产物 53 条"。 */}
+                  {prefillInfo !== null && prefillInfo.applied && prefillTracks !== null && prefillInfo.bound !== prefillTracks && (
+                    <p className="form-hint">
+                      {t('editor.animationPrefillContainerGap', {
+                        bound: prefillInfo.bound,
+                        tracks: prefillTracks,
+                        gap: Math.abs(prefillInfo.bound - prefillTracks)
+                      })}
+                    </p>
+                  )}
+
+                  {bindings.length > 0 && (
+                    <>
+                      <div className="prefill-sources" role="group" aria-label={t('editor.animationPrefillFilter')}>
+                        <button
+                          type="button"
+                          className={`prefill-source${prefillFilter === '' ? ' active' : ''}`}
+                          aria-pressed={prefillFilter === ''}
+                          onClick={() => setPrefillFilter('')}
+                        >
+                          {t('editor.animationPrefillAll', { count: bindings.length })}
+                        </button>
+                        {groups.map((group) => (
+                          <button
+                            key={group.source}
+                            type="button"
+                            className={`prefill-source${prefillFilter === group.source ? ' active' : ''}`}
+                            aria-pressed={prefillFilter === group.source}
+                            onClick={() => setPrefillFilter(group.source)}
+                          >
+                            {sourceLabel(group.source)}
+                            <span className="prefill-source-count">{group.count}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <ul className="prefill-list">
+                        {rows.map((row) => {
+                          const index = segmentIndexOf(row.segmentId);
+                          const where = row.segmentId
+                            ? index === null
+                              ? row.segmentId
+                              : t('editor.animationTriggerSegment', { index })
+                            : t('editor.animationTriggerEnter');
+                          return (
+                            <li key={row.elementId} className="prefill-row">
+                              <span
+                                className={`prefill-score${row.hasConfidence ? '' : ' none'}`}
+                                title={row.hasConfidence ? t('editor.animationPrefillScoreTitle') : t('editor.animationPrefillNoScoreTitle')}
+                              >
+                                {row.hasConfidence ? row.confidence.toFixed(2) : '—'}
+                              </span>
+                              <span className="prefill-main">
+                                <span className="prefill-label" title={anchorLabel(anchors, row.elementId, row.elementId)}>
+                                  {anchorLabel(anchors, row.elementId, row.elementId)}
+                                </span>
+                                <span className="prefill-meta">
+                                  {sourceLabel(row.source)} · {where}
+                                </span>
+                              </span>
+                              <button
+                                type="button"
+                                className="button-ghost prefill-revoke"
+                                disabled={disabled}
+                                title={t('editor.animationPrefillRevokeOneHint')}
+                                onClick={() => applyRevoked(revokeBinding(draft, row.elementId))}
+                              >
+                                {t('editor.animationPrefillRevokeOne')}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+
+                      <div className="prefill-actions">
+                        {prefillFilter !== '' && (
+                          <button type="button" className="button-ghost" disabled={disabled} onClick={revokeWholeSource}>
+                            {t('editor.animationPrefillRevokeSource', {
+                              source: sourceLabel(prefillFilter),
+                              count: rows.length
+                            })}
+                          </button>
+                        )}
+                        <p className="form-hint">{t('editor.animationPrefillOrderHint')}</p>
+                      </div>
+                    </>
+                  )}
+                </section>
+              )}
 
               {/* 第三级：元素级轨道时间轴（受 capabilities.trackEditor 控制）。
                   未开通时只说一句实话，不渲染一个点了没反应的占位控件。 */}

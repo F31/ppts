@@ -81,3 +81,22 @@ func TestReconcileNilSafe(t *testing.T) {
 		t.Fatal("next 为 nil 时不该动")
 	}
 }
+
+// TestReconcileRevokedPrefillBecomesManual 钉住「编辑器撤销预填」这条跨层契约。
+//
+// 撤销在编辑器里是：trigger 改回 onEnter + 来源清空（web/src/animationPrefill.ts）。
+// 服务端看到的是一份「来源为空、trigger 变了」的规格——如果只看请求体，这条 clip 会
+// 落库成「无标注」，与旧客户端写的手写规格混在一起，之后再也分不出「人撤销过」与
+// 「从来没人绑过」。按上一版比对才能得出正确结论：旧来源是规则名，人改了 → manual。
+func TestReconcileRevokedPrefillBecomesManual(t *testing.T) {
+	prev := revWithClip("shape-1", "c1", "withSegment:seg-2", TriggerSourceSibling)
+	next := revWithClip("shape-1", "c1", "onEnter", "") // 撤销：来源已在客户端清空
+	next.Tracks[0].Clips[0].StartMs = 0
+
+	if n := ReconcileTriggerSources(prev, next); n != 1 {
+		t.Fatalf("降级 %d 条，期望 1", n)
+	}
+	if got := next.Tracks[0].Clips[0].TriggerSource; got != TriggerSourceManual {
+		t.Fatalf("撤销后来源 = %q，期望 manual（既不能留着 sibling，也不能落成空）", got)
+	}
+}

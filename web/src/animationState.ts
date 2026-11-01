@@ -21,6 +21,21 @@ export type AnimationClip = {
   trigger: string;
   /** 跨页延续（G8）：true 时允许 startMs+durationMs 超出本页时长，由编译期在页边界拆分。 */
   continues?: boolean;
+  /**
+   * 这条 clip 是怎么来的：7 条规则名之一（text/count/ordinal/spatial/sibling/prior/
+   * structural）或 manual。空/缺省 = 无标注（手写规格、旧客户端保存的规格）。
+   *
+   * **保存时必须原样带回**：服务端 PUT 是全量替换，不回传等于把来源抹掉；而
+   * ReconcileTriggerSources 只在 trigger 变化时才置 manual，改强度这种「trigger 没动」
+   * 的保存不会补一个回来——来源会静默消失，复核表跟着空掉。
+   */
+  triggerSource?: string;
+  /**
+   * 规则置信度（0..1）。**0/缺省不是「很可疑」，是「这条规则没有字面依据」**：
+   * bind.Binding.Score 记的是字面相似度，非字面规则恒为 0（刻意的，硬塞一个数会让人
+   * 误以为可以排序）。UI 必须把这两种含义分开呈现，见 animationPrefill.ts 的排序说明。
+   */
+  confidence?: number;
 };
 
 export type AnimationTrack = {
@@ -41,6 +56,27 @@ export type AnimationSpec = {
   tracks: AnimationTrack[];
   /** true 表示保存时页时长未知（还没配音），渲染前必须用真实时长重校验。 */
   needsDurationRecheck?: boolean;
+  /**
+   * 只在 `?default=true&prefill=true` 的响应里出现，说明这次生成里预填做了什么。
+   * 保存后不会再回来（它不是规格的一部分），所以面板必须自己留着这次的结果。
+   */
+  prefill?: AnimationPrefill;
+};
+
+// AnimationPrefill 是服务端 animationPrefillDTO 的同构镜像。
+//
+// Bound 与面板里数出来的绑定条数**不一定相等**：Bound 是「绑定成立且预设给它挂了动效」的
+// 元素数，而没有模板的容器（卡片底、分隔线）会被计数排除。差额要如实显示，
+// 否则「绑定 53 条」会被当成「产物 53 条」的证据。
+export type AnimationPrefill = {
+  applied: boolean;
+  /** applied=false 时说明跳过原因（目前只有 no_segments）。 */
+  reason?: string;
+  /** 版面分档：structured / low-confidence。 */
+  band?: string;
+  signals?: string[];
+  bound: number;
+  static: number;
 };
 
 export type AnimationAnchor = {
@@ -150,6 +186,10 @@ export function segmentOfTrigger(trigger: string): string {
 // 只改 entrance（默认就是全部 clips 里的 onEnter/withSegment 那一条）：
 // 强调与退场挂的是"第几段之后持续多久"，把它们的起点也重锚等于把整条时间轴改写，
 // 那不是用户在"改第 3 条要点的出现时机"时想要的结果。
+//
+// 人手改过之后**清掉来源标注**：这条结论不再是规则的产物了。服务端保存时也会按同一
+// 判据置 manual（ReconcileTriggerSources），这里先清是为了让复核表当场更新——
+// 否则用户改完段号，表里还写着"同块带出"，下一步就会照着错的来源去撤销。
 export function withTrackTrigger(draft: AnimationSpec, elementId: string, trigger: string): AnimationSpec {
   return {
     ...draft,
@@ -157,7 +197,14 @@ export function withTrackTrigger(draft: AnimationSpec, elementId: string, trigge
       if (track.elementId !== elementId) return track;
       return {
         ...track,
-        clips: track.clips.map((clip) => (isEntranceClip(clip) ? { ...clip, trigger } : clip))
+        clips: track.clips.map((clip) => {
+          if (!isEntranceClip(clip)) return clip;
+          if (clip.trigger === trigger) return clip;
+          const next: AnimationClip = { ...clip, trigger };
+          delete next.triggerSource;
+          delete next.confidence;
+          return next;
+        })
       };
     })
   };
@@ -171,6 +218,9 @@ function isEntranceClip(clip: AnimationClip): boolean {
 
 // 只比较影响产物的字段。needsDurationRecheck 是服务端算出来的提示，
 // 把它算进"脏"判据会让刚保存完的草案立刻又显示未保存。
+//
+// triggerSource/confidence 必须算进来：批量撤销改的就是这两项（tasks 4.3），
+// 漏掉它们会出现「点了撤销、界面没变化、保存按钮还是灰的」——撤销无声失败。
 export function specFingerprint(spec: AnimationSpec): string {
   return JSON.stringify({
     presetId: spec.presetId,
@@ -186,14 +236,22 @@ export function specFingerprint(spec: AnimationSpec): string {
         easing: clip.easing,
         trigger: clip.trigger,
         continues: clip.continues ?? false,
+        triggerSource: clip.triggerSource ?? '',
+        confidence: clip.confidence ?? 0,
         params: clip.params ?? {}
       }))
     }))
   });
 }
 
+// isDirty：草案与已保存版本是否不同。
+//
+// 没有已保存版本（新建页面的第一份规格）时**必须**算脏：否则「选了预设 → 保存按钮一直
+// 灰着」，用户的第一份规格根本存不下去；预览也一样静默失败（`runPreview` 里
+// `current = saved` 为 null 就直接 return，连提示都没有）。空 draft 不算脏——那不是编辑。
 export function isDirty(draft: AnimationSpec | null, saved: AnimationSpec | null): boolean {
-  if (!draft || !saved) return false;
+  if (!draft) return false;
+  if (!saved) return true;
   return specFingerprint(draft) !== specFingerprint(saved);
 }
 
@@ -220,6 +278,10 @@ export function savePayloadOf(draft: AnimationSpec): AnimationSavePayload {
         easing: clip.easing,
         trigger: clip.trigger,
         continues: clip.continues ?? false,
+        // 原样带回：服务端 PUT 是全量替换，不回传就是把来源静默抹掉（见 AnimationClip 注释）。
+        // 缺省时传 undefined 而不是空串——JSON.stringify 会丢掉它，服务端保持"无标注"。
+        triggerSource: clip.triggerSource,
+        confidence: clip.confidence,
         params: clip.params
       }))
     }))

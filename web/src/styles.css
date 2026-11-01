@@ -1296,6 +1296,28 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .animation-preview { display: grid; gap: 6px; }
 .animation-preview video { width: 100%; border-radius: 10px; background: #05080f; border: 1px solid var(--border); }
 
+/* 讲稿绑定预填：入口按钮 + 复核面板（tasks 4.1–4.3）。
+   面板自身带底色与边框，是为了让「这批是机器猜的」在视觉上就与上面的常规列表分开——
+   低置信时整块换成警示色，而不是只加一个小图标（图标签容易被当成装饰忽略掉）。 */
+.animation-prefill-action { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.animation-prefill { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated); }
+.animation-prefill.low-confidence { border-color: rgba(252, 211, 77, .45); background: rgba(252, 211, 77, .07); }
+.prefill-warn { margin: 0; color: #fcd34d; font-size: 12px; line-height: 1.5; }
+.prefill-sources { display: flex; flex-wrap: wrap; gap: 6px; }
+.prefill-source { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-body); font-size: 12px; cursor: pointer; }
+.prefill-source.active { border-color: var(--accent-border); background: var(--accent-soft); color: var(--text-strong); }
+.prefill-source-count { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.prefill-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.prefill-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 5px 0; border-top: 1px solid var(--border-subtle); }
+.prefill-row:first-child { border-top: 0; }
+.prefill-score { text-align: right; font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--text-body); }
+.prefill-score.none { color: var(--text-faint); }
+.prefill-main { display: grid; gap: 1px; min-width: 0; }
+.prefill-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-size: 12.5px; }
+.prefill-meta { color: var(--text-muted); font-size: 11.5px; }
+.prefill-revoke { height: 24px; padding: 0 8px; font-size: 11.5px; white-space: nowrap; }
+.prefill-actions { display: grid; gap: 6px; }
+
 /* 元素级轨道时间轴（M4 第 3 段）。行 = [元素名 | 轨道]，轨道内色块按页时长定位。
    色块左/上/下用 inset 而不是固定高度：行高变了不用同步改数字。 */
 .track-history-actions { display: flex; gap: 6px; }

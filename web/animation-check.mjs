@@ -13,6 +13,18 @@ import { readFile } from 'node:fs/promises';
 
 const m = await import('./src/animationState.ts');
 const track = await import('./src/animationTrack.ts');
+const prefill = await import('./src/animationPrefill.ts');
+const {
+  prefillBindings,
+  reviewOrder,
+  sourceGroups,
+  filterBySource,
+  revokeSource,
+  revokeBinding,
+  carryBindings,
+  defaultSpecQuery,
+  prefillSourceKey
+} = prefill;
 const {
   clampIntensity,
   editorStateOf,
@@ -628,4 +640,175 @@ test('旧播放器忽略 isContinuation 时次页段仍可见、不露白', asyn
   );
   // 延续段结束后（localMs=5000）保持终态 opacity=1，不回跳为 0（不露白）。
   assert.equal(evaluateLayer(cont, 5000).opacity, 1, '延续段结束后应保持终态可见');
+});
+
+// ─── 讲稿绑定预填的复核层（tasks 4.1–4.3） ─────────────────────────────────
+//
+// 这一组测的是「复核 + 撤销」的行为，不是服务端规则。判据都落在"用户能不能看出来"上：
+// 撤销了却仍然算脏、保存一次来源就丢、表里顺序每次都变——这些都是静默失败。
+
+const prefillSpec = () => ({
+  slideId: 'slide-1',
+  language: 'zh-CN',
+  sourceRevisionNo: 0,
+  revision: 5,
+  status: 'draft',
+  presetId: 'business-calm',
+  intensity: 1,
+  tracks: [
+    {
+      elementId: 'bullet-1',
+      kind: 'bullet',
+      clips: [{ id: 'c1', type: 'fadeIn', startMs: 0, durationMs: 400, easing: 'easeOut', trigger: 'withSegment:seg-2', triggerSource: 'text', confidence: 0.42 }]
+    },
+    {
+      elementId: 'card-1',
+      kind: 'shape',
+      clips: [{ id: 'c2', type: 'slideIn', startMs: 280, durationMs: 500, easing: 'easeOut', trigger: 'withSegment:seg-2', triggerSource: 'sibling' }]
+    },
+    {
+      elementId: 'title-1',
+      kind: 'title',
+      clips: [{ id: 'c3', type: 'fadeIn', startMs: 0, durationMs: 400, easing: 'easeOut', trigger: 'withSegment:seg-1', triggerSource: 'prior' }]
+    },
+    {
+      elementId: 'bullet-2',
+      kind: 'bullet',
+      clips: [
+        { id: 'c4', type: 'fadeIn', startMs: 0, durationMs: 400, easing: 'easeOut', trigger: 'withSegment:seg-3', triggerSource: 'text', confidence: 0.31 },
+        { id: 'c5', type: 'highlight', startMs: 900, durationMs: 600, easing: 'linear', trigger: 'atTime:900' }
+      ]
+    },
+    { elementId: '', kind: 'page', clips: [{ id: 'c6', type: 'fadeIn', startMs: 0, durationMs: 300, easing: 'linear', trigger: 'onEnter' }] }
+  ]
+});
+
+test('预填表只列带来源的入场 clip：整页轨道与人工强调都不算', () => {
+  const items = prefillBindings(prefillSpec());
+  assert.deepEqual(
+    items.map((item) => item.elementId),
+    ['bullet-1', 'card-1', 'title-1', 'bullet-2'],
+    '整页轨道不该出现（它没有可复核的绑定），强调 clip 也不该重复列同一元素'
+  );
+  const card = items.find((item) => item.elementId === 'card-1');
+  assert.equal(card.hasConfidence, false, 'sibling 没有字面依据：置信度必须是「不适用」，不是 0 分');
+  assert.equal(card.confidence, 0);
+  assert.equal(items.find((item) => item.elementId === 'bullet-1').segmentId, 'seg-2');
+});
+
+test('来源分组顺序固定：同块带出在标题先验与字面之前', () => {
+  const groups = sourceGroups(prefillBindings(prefillSpec()));
+  assert.deepEqual(groups, [
+    { source: 'sibling', count: 1 },
+    { source: 'prior', count: 1 },
+    { source: 'text', count: 2 }
+  ]);
+});
+
+test('复核排序：无字面依据的规则在前，字面规则按相似度升序', () => {
+  const order = reviewOrder(prefillBindings(prefillSpec())).map((item) => `${item.source}:${item.elementId}`);
+  assert.deepEqual(order, ['sibling:card-1', 'prior:title-1', 'text:bullet-2', 'text:bullet-1']);
+  // 确定性：同一份规格连排两次结果逐条相等（表跳动会让人点错行）。
+  const again = reviewOrder(prefillBindings(prefillSpec())).map((item) => item.elementId);
+  assert.deepEqual(again, reviewOrder(prefillBindings(prefillSpec())).map((item) => item.elementId));
+});
+
+test('撤销一个来源：改回页首、清掉标注，其它来源不动', () => {
+  const { spec, count } = revokeSource(prefillSpec(), 'sibling');
+  assert.equal(count, 1);
+  const card = spec.tracks.find((item) => item.elementId === 'card-1').clips[0];
+  assert.equal(card.trigger, 'onEnter');
+  assert.equal(card.startMs, 0, '起点必须归零：留 280 会让时间轴色块停在与实际不符的位置');
+  assert.equal('triggerSource' in card, false, '来源标注必须清掉，否则它还会被算进「同块带出」');
+  assert.equal('confidence' in card, false);
+  // 撤销的是绑定，不是动效：clip 还在，用户能再选段号。
+  assert.equal(spec.tracks.find((item) => item.elementId === 'card-1').clips.length, 1);
+  // 其它来源一条不动。
+  assert.equal(spec.tracks.find((item) => item.elementId === 'bullet-1').clips[0].trigger, 'withSegment:seg-2');
+  assert.equal(spec.tracks.find((item) => item.elementId === 'bullet-1').clips[0].triggerSource, 'text');
+});
+
+test('撤销单条只动那一条，且不动同轨道的强调 clip', () => {
+  const { spec, count } = revokeBinding(prefillSpec(), 'bullet-2');
+  assert.equal(count, 1);
+  const clips = spec.tracks.find((item) => item.elementId === 'bullet-2').clips;
+  assert.equal(clips[0].trigger, 'onEnter');
+  assert.equal('triggerSource' in clips[0], false);
+  assert.equal(clips[1].trigger, 'atTime:900', '强调 clip 不该被撤销波及');
+});
+
+test('撤销不存在的来源是空操作（不产生新对象）', () => {
+  const spec = prefillSpec();
+  const result = revokeSource(spec, 'structural');
+  assert.equal(result.count, 0);
+  assert.equal(result.spec, spec, '没改动就该返回原对象：否则会被当成一次编辑压进撤销栈');
+});
+
+test('撤销之后草案必须算脏（否则保存按钮还是灰的，撤销无声失败）', () => {
+  const spec = prefillSpec();
+  const { spec: revoked } = revokeSource(spec, 'sibling');
+  assert.equal(isDirty(revoked, spec), true, '撤销改了 trigger 与来源，必须能被脏判据看见');
+  assert.equal(isDirty(draftOf(revoked), revoked), false);
+});
+
+test('保存载荷带回来源与置信度（不回传等于保存一次就抹掉）', () => {
+  const payload = savePayloadOf(prefillSpec());
+  const bullet = payload.tracks.find((item) => item.elementId === 'bullet-1').clips[0];
+  assert.equal(bullet.triggerSource, 'text');
+  assert.equal(bullet.confidence, 0.42);
+  const card = payload.tracks.find((item) => item.elementId === 'card-1').clips[0];
+  assert.equal(card.triggerSource, 'sibling');
+  // undefined 而不是 0：JSON.stringify 会丢掉它，服务端保持「这条没有置信度」，
+  // 而不是收到一个"相似度 0 分"的结论。
+  assert.equal(card.confidence, undefined, '没有置信度就不要写一个 0 进载荷');
+});
+
+test('未保存的第一份规格算脏：新建页面必须存得下去', () => {
+  // 曾经 isDirty(draft, null) = false：选了预设 → 保存按钮一直是灰的，预览也静默什么都不做。
+  assert.equal(isDirty(prefillSpec(), null), true);
+  assert.equal(isDirty(null, null), false, '没有草案不是编辑');
+});
+
+test('换风格搬走入场时机与来源，但不搬 atTime', () => {
+  const generated = {
+    ...prefillSpec(),
+    presetId: 'tech-dynamic',
+    tracks: [
+      { elementId: 'bullet-1', kind: 'bullet', clips: [{ id: 'n1', type: 'slideIn', startMs: 0, durationMs: 600, easing: 'easeOut', trigger: 'onEnter', params: { direction: 'up' } }] },
+      { elementId: 'bullet-2', kind: 'bullet', clips: [{ id: 'n2', type: 'slideIn', startMs: 0, durationMs: 600, easing: 'easeOut', trigger: 'onEnter' }] },
+      { elementId: 'new-1', kind: 'bullet', clips: [{ id: 'n3', type: 'fadeIn', startMs: 0, durationMs: 400, easing: 'easeOut', trigger: 'onEnter' }] }
+    ]
+  };
+  const carried = carryBindings(prefillSpec(), generated);
+  const bullet = carried.tracks.find((item) => item.elementId === 'bullet-1').clips[0];
+  assert.equal(bullet.trigger, 'withSegment:seg-2', '换风格不该把复核过的绑定退回页首');
+  assert.equal(bullet.triggerSource, 'text');
+  assert.equal(bullet.confidence, 0.42);
+  assert.deepEqual(bullet.params, { direction: 'up' }, '动效本身必须用新预设的');
+  // 原规格里 bullet-2 的入场挂了 atTime 之外的强调；入场是 withSegment（搬），强调不是入场（不搬）。
+  const emphasis = carried.tracks.find((item) => item.elementId === 'bullet-2').clips.find((clip) => clip.type === 'highlight');
+  assert.equal(emphasis, undefined, '新预设没有这条强调 clip，不该无中生有');
+  // 新预设独有、旧草案没有的元素保持原样。
+  assert.equal(carried.tracks.find((item) => item.elementId === 'new-1').clips[0].trigger, 'onEnter');
+});
+
+test('默认规格查询：只有显式要求才带 prefill', () => {
+  assert.deepEqual(defaultSpecQuery('business-calm', false), { default: 'true', preset: 'business-calm' });
+  assert.deepEqual(defaultSpecQuery('business-calm', true), { default: 'true', preset: 'business-calm', prefill: 'true' });
+  // 预设为空时交给服务端默认，但 prefill 开关必须照发。
+  assert.deepEqual(defaultSpecQuery('', true), { default: 'true', prefill: 'true' });
+});
+
+test('人手改段号后清掉来源：复核表当场更新，而不是等保存后才变', () => {
+  const changed = withTrackTrigger(prefillSpec(), 'bullet-1', segmentTrigger('seg-4'));
+  const clip = changed.tracks.find((item) => item.elementId === 'bullet-1').clips[0];
+  assert.equal(clip.trigger, 'withSegment:seg-4');
+  assert.equal('triggerSource' in clip, false, '这条结论不再来自规则 text');
+  assert.equal(prefillBindings(changed).some((item) => item.elementId === 'bullet-1'), false);
+});
+
+test('未登记的来源不硬套文案', () => {
+  assert.equal(prefillSourceKey('sibling'), 'editor.animationSourceSibling');
+  assert.equal(prefillSourceKey('layout-v2'), '', '服务端加了新规则时宁可显示原始 id，也不要错配到别的文案');
+  assert.deepEqual(filterBySource(prefillBindings(prefillSpec()), 'text').map((item) => item.elementId), ['bullet-1', 'bullet-2']);
 });

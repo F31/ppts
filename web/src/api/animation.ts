@@ -9,6 +9,7 @@
 
 import { ConnectError, requestRaw } from '../core';
 import type { AnimationAnchors, AnimationSavePayload, AnimationSpec } from '../animationState';
+import { defaultSpecQuery } from '../animationPrefill';
 import { getJSON, postJSON, putJSON } from './http';
 import { identityHeaders, languageHeader, type ClientIdentity } from './identity';
 
@@ -58,12 +59,16 @@ export async function getAnimationSpec(identity: ClientIdentity, scope: Animatio
 //
 // 生成放在服务端而不是前端：预设定义（catalog.json）是唯一来源，前端再实现一遍
 // "标题用哪个动效、要点怎么隔段"就等于有了两个版本，改 catalog 时必然漏一处。
+//
+// prefill=true 时服务端还会跑一遍讲稿绑定预填（规则名 + 置信度写进每条 clip，
+// 响应里多一个 prefill 说明）。两个开关都不带时，响应与引入预填之前逐字节相同。
 export async function getDefaultAnimationSpec(
   identity: ClientIdentity,
   scope: AnimationScope,
-  presetId: string
+  presetId: string,
+  prefill = false
 ): Promise<AnimationSpec> {
-  return getJSON<AnimationSpec>(identity, `${basePath(scope)}${queryOf(scope, { default: 'true', preset: presetId })}`);
+  return getJSON<AnimationSpec>(identity, `${basePath(scope)}${queryOf(scope, defaultSpecQuery(presetId, prefill))}`);
 }
 
 // AnimationConflictError 是 409 的语义化版本：本地草案已经过期。
