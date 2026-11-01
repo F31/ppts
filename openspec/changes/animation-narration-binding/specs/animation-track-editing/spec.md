@@ -34,5 +34,8 @@
 
 #### Scenario: 分段失效时跳过预填
 
-- **WHEN** 讲稿分段无法解析（分段缺失或修订失配）
-- **THEN** 系统 MUST 跳过该页预填并给出提示，MUST NOT 以 `onEnter` 或 `atTime` 兜底猜测
+- **WHEN** 讲稿分段无法解析（分段清单为空或修订失配）
+- **THEN** 系统 MUST 跳过该页预填（不产出任何 `withSegment:` 绑定），MUST 在响应里说明跳过原因，
+  且这些结果 MUST NOT 被标注为预填产物（`triggerSource` 为空）
+- **AND** 该页 MAY 退回既有的预设默认规格（顺序错落 + `onEnter`）——那是「没有绑定信息时的
+  默认编排」，不是预填的猜测；两者以响应里的预填说明（`applied=false`）区分

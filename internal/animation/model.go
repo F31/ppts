@@ -209,6 +209,12 @@ type Clip struct {
 	//
 	// omitempty 是字节不变的前提：既有规格的序列化与 planHash 不因为多了一个字段而变。
 	TriggerSource string `json:"triggerSource,omitempty"`
+	// Confidence 是预填给这条绑定的连续置信度（0..1），编辑器按升序呈现，让用户先看最可疑的。
+	//
+	// 0 有两个含义，都表示「没有可用的置信度」：非预填产物（手写/旧规格）与
+	// 非字面规则（数量词、序数、方位、同块、先验、结构）——后者本来就没有字面依据，
+	// 硬塞一个数进去只会让人误以为可以互相排序。
+	Confidence float64 `json:"confidence,omitempty"`
 }
 
 // Params 是动效参数。字段名与 JSON key 一一对应；未登记的 key 一律拒收，
@@ -270,6 +276,18 @@ type PageContext struct {
 	FPS        int      // 用于 1 帧容差；<=0 时按 30 处理
 	Elements   []Anchor // 页内可挂载元素（含 Children 递归）
 	SegmentIDs []string // 当前讲稿修订的分段 id（V7）
+	// Segments 是分段 id + 文本，与 SegmentIDs 同序。可空（还没写讲稿）。
+	//
+	// 校验只要 id，文本只有「讲稿绑定预填」用得上：预填靠段落文本与元素文本的
+	// 相似度决定顺序，没有文本就只剩几何规则。把它放在这里，是因为解析页上下文时
+	// 讲稿已经在手上——再单开一次读取，只会让预填与校验看到两份可能不同的分段。
+	Segments []ScriptSegment
+}
+
+// ScriptSegment 是讲稿分段在页上下文里的最小视图。ID 必须与 SegmentIDs 一致。
+type ScriptSegment struct {
+	ID   string
+	Text string
 }
 
 // FrameMS 返回一帧的毫秒数（向上取整），用于 V3 的 1 帧容差。

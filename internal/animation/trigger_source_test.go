@@ -82,6 +82,43 @@ func TestTriggerSourcesReturnsCopy(t *testing.T) {
 	}
 }
 
+// 置信度同样要保证「缺省不进字节」：上面那条 TestClipJSONUnchangedWithoutTriggerSource
+// 钉的就是同一串字节，这里再显式断一次 confidence，免得将来把 omitempty 删了却没人发现。
+func TestClipJSONOmitsZeroConfidence(t *testing.T) {
+	c := Clip{ID: "c1", Type: "fadeIn", DurationMs: 400, Easing: "easeOut", Trigger: "onEnter"}
+	b, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "confidence") {
+		t.Fatalf("0 置信度进了序列化: %s", b)
+	}
+
+	c.Confidence = 0.31
+	b, _ = json.Marshal(c)
+	if !strings.Contains(string(b), `"confidence":0.31`) {
+		t.Fatalf("置信度没有进序列化: %s", b)
+	}
+}
+
+func TestConfidenceOutOfRangeRejected(t *testing.T) {
+	for _, v := range []float64{-0.01, 1.01, 42} {
+		rev := validRevision()
+		rev.Tracks[0].Clips[0].Confidence = v
+		err := rev.Validate(validPageContext())
+		if err == nil {
+			t.Fatalf("置信度 %v 被接受了", v)
+		}
+		var ve *ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("错误类型 = %T，期望 *ValidationError", err)
+		}
+		if ve.Status != 400 || !strings.Contains(ve.Field, "confidence") {
+			t.Fatalf("v=%v：状态 %d、字段 %q，期望 400 + confidence", v, ve.Status, ve.Field)
+		}
+	}
+}
+
 func asValidationError(err error, target **ValidationError) bool {
 	ve, ok := err.(*ValidationError)
 	if ok {

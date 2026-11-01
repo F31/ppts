@@ -1,8 +1,7 @@
 # 任务：讲稿绑定预填
 
-> 状态：**第 1、2 组已落地**（来源标注 + 规则绑定器 Go 移植 + 金标复现），3–4 组未开始。
-> 本变更暂不归档——归档意味着规格生效，而规格里的「预填入口」与「编辑器按来源撤销」
-> 两条 MUST 还没有实现。
+> 状态：**第 1–3 组已落地**（来源标注 + 规则绑定器 Go 移植 + 金标复现 + 预填入口），4–5 组未开始。
+> 本变更暂不归档——归档意味着规格生效，而规格里的「编辑器按来源撤销」这条 MUST 还没有实现。
 
 ## 1. 来源标注
 
@@ -43,15 +42,41 @@
       —— `rules_test.go:TestDeterministic`（5 页 × 6 次 `reflect.DeepEqual`）；
       整套 bind 测试 `-count=5` 通过
 
-## 3. 预填入口（未开始——需要先定「在哪儿触发」）
+## 3. 预填入口
 
-- [ ] 3.1 预填不覆盖人工绑定；用户清空后不回填
-- [ ] 3.2 只写 `withSegment:<segmentId>`，MUST NOT 写 `atTime:`
-- [ ] 3.3 分段缺失走既有 `DiagSegmentUnresolved`，不另造降级逻辑
+- [x] 3.1 预填不覆盖人工绑定；用户清空后不回填
+      —— 由读路径的结构天然保证：`GET .../animation` 一旦在存储里找到规格就原样返回，
+      `?default=true` 只在 `ErrNotFound` 时才走到生成（`internal/api/animation.go:get`），
+      所以预填**没有**可以覆盖的对象。测试 `animation_prefill_test.go:TestPrefillNeverOverridesSavedSpec`
+      （PUT 人工绑定 → 带 `prefill=true` 取默认 → 返回 revision 1 与 `withSegment:seg-2`；
+      再 PUT 空轨道 → 取回仍是 0 条，没有被回填）
+- [x] 3.2 只写 `withSegment:<segmentId>`，MUST NOT 写 `atTime:`
+      —— `internal/animation/animdefault/defaults.go:buildBoundTracks`（触发器由
+      `TriggerSegmentPrefix + b.SegmentID` 拼出，没有任何绝对时间分支）；
+      测试 `bound_test.go:TestBoundTracksUseSegmentTriggers`（逐条断前缀）、
+      `internal/app/prefill_e2e_test.go:TestPrefillPipelineOnRealDeck`（真实 5 页 45 条 clip 全是相对锚点）
+- [x] 3.3 分段缺失走既有 `DiagSegmentUnresolved`，不另造降级逻辑
+      —— 分两种情形分开处理：**分段清单为空**时跳过预填并说明
+      （`prefill.applied=false, reason="no_segments"`，轨道退回既有默认规格，不产生任何
+      `withSegment`——没有分段就没有锚点可编）；**绑定指向不存在的分段**只可能来自调用方
+      拼错输入，直接报错而不是降级（`bound_test.go:TestBindingToUnknownSegmentFails`）。
+      运行期讲稿改稿导致锚点失效的路径没有变：编译期 `resolveTrigger` 出
+      `DiagSegmentUnresolved`、保存期 V7 出 409
 
-> 阻塞点不是代码：`animdefault.buildTracks` 现在按「第 N 条要点 → 第 N 段」分配
-> （`preset.SegmentAligned`），这与规则预填是**两套语义**。要么预填取代它（未绑上的元素
-> 退回静态），要么二者并存由预设开关切换——这是产品决策，定下来才能写 3.x。
+- [x] 3.4 每条预填 clip 带连续置信度（规格「可解释」一条的后半句）
+      —— `animation.Clip` 增 `confidence`（omitempty，0 = 无置信度：非字面规则或非预填产物），
+      `validateClipConfidence` 拒收 0..1 之外的值；`buildBoundTracks` 写入 `bind.Binding.Score`。
+      测试 `trigger_source_test.go:TestClipJSONOmitsZeroConfidence` / `TestConfidenceOutOfRangeRejected`、
+      `bound_test.go:TestBoundTracksCarrySourceAndStagger`
+
+> **入口形态（本轮定的）**：`GET .../animation?default=true&prefill=true`。显式开关，
+> 不加参数时产物与引入前逐字节相同（`TestDefaultSpecWithoutPrefillFlagIsUnchanged`
+> 断响应里没有 `prefill` 字段）。`DefaultOptions.Bindings` 为 nil 走既有顺序分配，
+> 非 nil（哪怕零条）走绑定，二者不混用。
+>
+> **实测（真实样本 1/2/4/8/10 页）**：绑定 53 条 → 轨道 45 条。差 8 条是绑在
+> 无文字容器上的（`structural`），business-calm 不给这类元素挂动效——绑定成立、模板不存在。
+> 数字钉在 `TestPrefillPipelineOnRealDeck` 里，改绑定器或预设就要重定基线。
 
 ## 4. 编辑器（未开始）
 

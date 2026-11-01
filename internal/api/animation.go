@@ -12,6 +12,8 @@ import (
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/animation/animdefault"
 	"github.com/F31/ppts/internal/animation/animstore"
+	"github.com/F31/ppts/internal/animation/bind"
+	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
@@ -91,6 +93,14 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 			for _, seg := range script.Segments {
 				if seg != nil && seg.SegmentID != "" {
 					pc.SegmentIDs = append(pc.SegmentIDs, seg.SegmentID)
+					// 文本只喂预填（绑定靠它与元素文本的相似度）；校验不读它。
+					// 用 SpokenText：观众听到的是这一段，DisplayText 只是字幕。
+					// SpokenText 为空时退回 DisplayText——至少比空串强，不至于让整段失去字面依据。
+					text := strings.TrimSpace(seg.SpokenText)
+					if text == "" {
+						text = strings.TrimSpace(seg.DisplayText)
+					}
+					pc.Segments = append(pc.Segments, animation.ScriptSegment{ID: seg.SegmentID, Text: text})
 				}
 			}
 		}
@@ -183,6 +193,23 @@ type animationSpecDTO struct {
 	// NeedsDurationRecheck 为 true 表示保存时页时长未知（尚无配音），
 	// 渲染前必须用真实时长重新校验（设计方案 §5.4 V3 的编辑期例外）。
 	NeedsDurationRecheck bool `json:"needsDurationRecheck,omitempty"`
+	// Prefill 只在 `?default=true&prefill=true` 时出现，说明这次生成里预填做了什么。
+	// 省略它（既有读路径与写路径）是为了让旧客户端的响应逐字节不变。
+	Prefill *animationPrefillDTO `json:"prefill,omitempty"`
+}
+
+// animationPrefillDTO 是「讲稿绑定预填」的落地说明。
+//
+// 为什么要把 Applied 与原因回给前端：预填最坏的结果不是绑错几条（那看得见），
+// 而是静默地一条都没绑上——编辑器打开是空的，用户以为功能坏了或以为页面本来就没动效。
+// 说清楚「做了/跳过了、绑了几条、几条变静态」，用户才知道下一步该点哪里。
+type animationPrefillDTO struct {
+	Applied bool   `json:"applied"`
+	Reason  string `json:"reason,omitempty"` // applied=false 时说明原因（no_segments）
+	Band    string `json:"band,omitempty"`   // structured / low-confidence
+	Signals []string `json:"signals,omitempty"`
+	Bound   int    `json:"bound"`  // 被绑上、产出了轨道的元素数
+	Static  int    `json:"static"` // 因未绑定而保持静态的元素数
 }
 
 func animationDTO(rev *animation.Revision, needsRecheck bool) animationSpecDTO {
@@ -251,18 +278,65 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	rev, derr := animdefault.DefaultSpec(page, animdefault.DefaultOptions{
+
+	// 预填是**显式开关**，不是默认行为：它会把元素从"按顺序淡入"整体换成
+	// "讲到哪条出现哪条"，静默改变产物形态是编辑器的默认规格最不该做的事。
+	prefill := wantsPrefill(r)
+	var bindings []bind.Binding
+	var prefillInfo *animationPrefillDTO
+	if prefill {
+		segs := make([]bind.Segment, 0, len(pc.Segments))
+		for _, seg := range pc.Segments {
+			segs = append(segs, bind.Segment{ID: seg.ID, Text: seg.Text})
+		}
+		if len(segs) == 0 {
+			// 没有分段就没有 withSegment 可锚：跳过预填，退回既有默认规格，并说明原因。
+			// 这里刻意**不**产出零轨道——连讲稿都没有的页面，把编辑器清空只会让人不知所措；
+			// 而预填在这里确实没做（Applied=false），不存在"用 onEnter 假装绑上了"。
+			prefillInfo = &animationPrefillDTO{Applied: false, Reason: "no_segments"}
+		} else {
+			// 页尺寸传 0：解析产物里没有 slide 尺寸，按 16:9 标准页换算。
+			// 绑定器只做相对比较（0.5 切线、60px 紧邻），尺寸差一档不会让结果翻掉，
+			// 这条近似与 PageBindElements 的注释是同一件事。
+			res := bind.Run(app.PageBindElements(page, 0, 0), segs, bind.Options{})
+			bindings = res.Bindings
+			prefillInfo = &animationPrefillDTO{
+				Applied: true,
+				Band:    string(res.Band),
+				Signals: res.Signals,
+			}
+		}
+	}
+
+	rev, report, derr := animdefault.DefaultSpecReport(page, animdefault.DefaultOptions{
 		SlideID: key.SlideID, Language: key.Language, DurationMS: pc.DurationMS,
 		SegmentIDs: pc.SegmentIDs, PresetID: r.URL.Query().Get("preset"),
+		Bindings: bindings,
 	})
 	if derr != nil {
 		writeAnimationError(w, derr)
 		return
 	}
+	if prefillInfo != nil {
+		prefillInfo.Bound = report.Bound
+		prefillInfo.Static = report.Static
+	}
 	rev.TenantID = key.TenantID
 	rev.ProjectID = key.ProjectID
 	rev.SourceRevisionNo = key.SourceRevisionNo
-	writeJSON(w, http.StatusOK, animationDTO(rev, false))
+	dto := animationDTO(rev, false)
+	dto.Prefill = prefillInfo
+	writeJSON(w, http.StatusOK, dto)
+}
+
+// wantsPrefill 读 `?prefill=` 开关。只接受 true/1：拼错的取值宁可当"没开"，
+// 也不要因为写了 "yes" 就悄悄生成一份形态完全不同的规格。
+func wantsPrefill(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("prefill"))) {
+	case "1", "true":
+		return true
+	}
+	return false
 }
 
 func (h *AnimationHandler) put(w http.ResponseWriter, r *http.Request) {

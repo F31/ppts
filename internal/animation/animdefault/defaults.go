@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/project"
 )
 
@@ -22,6 +23,29 @@ type DefaultOptions struct {
 	FPS        int
 	SegmentIDs []string
 	PresetID   string // 空 = DefaultPresetID
+
+	// Bindings 是「讲稿绑定预填」的结果（`animation/bind.Run` 的产出）。
+	//
+	// nil 与空切片**不是一回事**，这是本字段唯一的坑：
+	//   - nil：「这次没做预填」，走既有的按顺序分配（第 N 条要点 → 第 N 段），
+	//     产出与引入本字段之前逐字节相同；
+	//   - 非 nil（哪怕零条）：「这次做了预填」，绑定说了算——没被绑的元素**保持静态**，
+	//     不再按顺序兜底。零条意味着预填一条都没绑上，此时给出一份空轨道是诚实的：
+	//     用户看到的是「没绑上」，而不是一份看起来正常、实际全是猜的动效。
+	//
+	// 为什么不合并成「有绑定就覆盖、没绑定就兜底」：那样「预填一条都没绑上」与
+	// 「没做预填」会得到同一份产物，前端无从区分，用户也无从知道该不该手改。
+	Bindings []bind.Binding
+}
+
+// Report 是一次默认生成里「绑定预填」的落地统计。只在 Bindings 非 nil 时有意义。
+//
+// 存在的理由：预填最危险的失败不是绑错，而是**悄无声息地少绑**——页面照样出片，
+// 用户以为动效都排好了。把「几个元素被绑上、几个因此保持静态」透出来，
+// 前端才能把这件事说出口。
+type Report struct {
+	Bound  int // 产出了绑定轨道的元素数
+	Static int // 有动效模板、但因未绑定而保持静态的元素数
 }
 
 // pageElement 是扁平化后的页内元素（用于默认生成）。
@@ -36,11 +60,18 @@ type pageElement struct {
 // 确定性要求（设计方案 §14 M1 验收）：相同输入必须产出相同规格（id 也确定），
 // 因为快照测试与"首次打开就能出片"都依赖它。时间戳与租户字段由接入层补齐。
 func DefaultSpec(page *project.Page, opt DefaultOptions) (*animation.Revision, error) {
+	rev, _, err := DefaultSpecReport(page, opt)
+	return rev, err
+}
+
+// DefaultSpecReport 同 DefaultSpec，额外返回绑定预填的落地统计（Report）。
+// Bindings 为 nil 时 Report 是全零——没有预填就没什么可统计的。
+func DefaultSpecReport(page *project.Page, opt DefaultOptions) (*animation.Revision, Report, error) {
 	if page == nil {
-		return nil, errors.New("animation: page is nil")
+		return nil, Report{}, errors.New("animation: page is nil")
 	}
 	if opt.DurationMS <= 0 {
-		return nil, errors.New("animation: page duration is required")
+		return nil, Report{}, errors.New("animation: page duration is required")
 	}
 	presetID := opt.PresetID
 	if presetID == "" {
@@ -48,7 +79,7 @@ func DefaultSpec(page *project.Page, opt DefaultOptions) (*animation.Revision, e
 	}
 	preset, ok := animation.Catalog().Preset(presetID)
 	if !ok {
-		return nil, fmt.Errorf("animation: unknown preset %q", presetID)
+		return nil, Report{}, fmt.Errorf("animation: unknown preset %q", presetID)
 	}
 
 	elems := pageElements(page)
@@ -59,7 +90,10 @@ func DefaultSpec(page *project.Page, opt DefaultOptions) (*animation.Revision, e
 		SegmentIDs: opt.SegmentIDs,
 	}
 
-	tracks := buildTracks(preset, elems, opt)
+	tracks, report, err := buildTracks(preset, elems, opt)
+	if err != nil {
+		return nil, Report{}, err
+	}
 	rev := &animation.Revision{
 		SlideID:   opt.SlideID,
 		Language:  opt.Language,
@@ -71,12 +105,116 @@ func DefaultSpec(page *project.Page, opt DefaultOptions) (*animation.Revision, e
 	// 默认规格必须自己先过一遍校验：如果这里不合法，说明 catalog/预设写错了，
 	// 应该在校验里暴露，而不是等用户第一次保存时才报错。
 	if err := rev.Validate(pc); err != nil {
-		return nil, fmt.Errorf("animation: default spec for preset %q is invalid: %w", presetID, err)
+		return nil, Report{}, fmt.Errorf("animation: default spec for preset %q is invalid: %w", presetID, err)
 	}
-	return rev, nil
+	return rev, report, nil
 }
 
-func buildTracks(preset *animation.Preset, elems []pageElement, opt DefaultOptions) []*animation.Track {
+// buildTracks 按「有没有绑定预填」分两条路。两者**不混用**：一旦有绑定，就不再按
+// 「第 N 条要点 → 第 N 段」的顺序分配——那是没有绑定信息时的替代品，两套同时生效
+// 会让同一个元素既被绑到 seg-3、又被顺序逻辑拉到 seg-1，谁赢取决于遍历顺序。
+func buildTracks(preset *animation.Preset, elems []pageElement, opt DefaultOptions) ([]*animation.Track, Report, error) {
+	if opt.Bindings != nil {
+		return buildBoundTracks(preset, elems, opt)
+	}
+	return buildSequencedTracks(preset, elems, opt), Report{}, nil
+}
+
+// buildBoundTracks 把预填结果翻译成轨道。
+//
+// 三条硬约束（changes/animation-narration-binding tasks 3.x）：
+//   - 只写 `withSegment:<id>`，绝不写 `atTime:`——绝对毫秒在讲稿改稿后就错了；
+//   - 没被绑定的元素保持静态（不出轨道），不拿 onEnter 兜底假装绑上了；
+//   - 分段 id 必须真的在当前分段清单里，否则直接报错。这里不降级：绑定是刚由同一份
+//     分段清单算出来的，对不上说明调用方把两份输入拼错了，属于编程错误而不是数据漂移。
+func buildBoundTracks(preset *animation.Preset, elems []pageElement, opt DefaultOptions) ([]*animation.Track, Report, error) {
+	segSet := make(map[string]struct{}, len(opt.SegmentIDs))
+	for _, id := range opt.SegmentIDs {
+		segSet[id] = struct{}{}
+	}
+	// 按元素 id 索引绑定。重复绑定保留第一条：绑定器输出已按元素去重，重复只可能来自
+	// 调用方拼接了多份结果，此时"先来先得"比"后来覆盖"更好预测。
+	byElem := make(map[string]bind.Binding, len(opt.Bindings))
+	for _, b := range opt.Bindings {
+		if _, dup := byElem[b.ElementID]; dup {
+			continue
+		}
+		byElem[b.ElementID] = b
+	}
+
+	var tracks []*animation.Track
+	var report Report
+	clipSeq := 0
+
+	for _, el := range elems {
+		templates := preset.Clips[el.kind]
+		if len(templates) == 0 {
+			// 这套预设本来就不动这类元素：既不是"绑上了"，也不是"因为没绑所以静态"。
+			// 记进 Static 会把预设的能力边界说成预填的失职。
+			continue
+		}
+		if len(tracks) >= animation.MaxTracksPerSlide || clipSeq >= animation.MaxClipsPerSlide {
+			break
+		}
+		b, bound := byElem[el.id]
+		if !bound {
+			report.Static++
+			continue
+		}
+		if _, ok := segSet[b.SegmentID]; !ok {
+			return nil, Report{}, fmt.Errorf(
+				"animation: binding for element %q points at segment %q, which is not in this page's segment list",
+				el.id, b.SegmentID)
+		}
+
+		track := &animation.Track{ElementID: el.id, Kind: el.kind}
+		for _, tpl := range templates {
+			if clipSeq >= animation.MaxClipsPerSlide {
+				break
+			}
+			duration := tpl.DurationMs
+			if duration > opt.DurationMS {
+				continue
+			}
+			start := b.StaggerMS
+			if start+duration > opt.DurationMS {
+				start = opt.DurationMS - duration
+			}
+			clipSeq++
+			track.Clips = append(track.Clips, &animation.Clip{
+				ID:         fmt.Sprintf("c%d", clipSeq),
+				Type:       tpl.Type,
+				StartMs:    start,
+				DurationMs: duration,
+				Easing:     tpl.Easing,
+				Params:     tpl.Params,
+				Trigger:    animation.TriggerSegmentPrefix + b.SegmentID,
+				// 来源标注让编辑器能"先看同块带出的那 9 条"（tasks 4.1）；
+				// 置信度让它们能按可疑程度升序排（tasks 4.2）。
+				TriggerSource: b.Source,
+				Confidence:    b.Score,
+			})
+		}
+		if len(track.Clips) > 0 {
+			tracks = append(tracks, track)
+			report.Bound++
+		} else {
+			// 模板时长放不下（页太短）：这个元素最终没有轨道，如实记成静态。
+			report.Static++
+		}
+	}
+
+	if len(tracks) == 0 {
+		// 预填一条都没绑上：**不**退化到整页淡入。整页淡入会让用户以为预填生效了，
+		// 而真相是这一页什么都没对上。空轨道 + Report.Static 才是看得见的失败。
+		return nil, report, nil
+	}
+	return tracks, report, nil
+}
+
+// buildSequencedTracks 是没有绑定信息时的既有行为：按阅读顺序错落出场，
+// 要点按「第 N 条 → 第 N 段」相对锚定。逐字节保持原样（有 golden 钉住）。
+func buildSequencedTracks(preset *animation.Preset, elems []pageElement, opt DefaultOptions) []*animation.Track {
 	var tracks []*animation.Track
 	clipSeq := 0
 	bulletSeq := 0

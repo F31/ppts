@@ -191,6 +191,9 @@ func (r *Revision) Validate(pc PageContext) error {
 			if err := validateClipTriggerSource(c, cf); err != nil {
 				return err
 			}
+			if err := validateClipConfidence(c, cf); err != nil {
+				return err
+			}
 			if err := validateClipParams(c, eff, cf); err != nil {
 				return err
 			}
@@ -322,6 +325,22 @@ func validateClipTriggerSource(c *Clip, field string) error {
 		Hint:    strings.Join(TriggerSources(), ", "),
 		Status:  400,
 	}
+}
+
+// validateClipConfidence 校验预填置信度的取值范围。
+//
+// 越界值不是"略有问题"而是"算错了"：置信度会进入排序与低置信样式，1.2 或 -0.3 会让
+// 「先看最可疑的那批」这个用途直接失效，且界面上看不出来。宁可拒收。
+func validateClipConfidence(c *Clip, field string) error {
+	if c.Confidence < 0 || c.Confidence > 1 {
+		return &ValidationError{
+			Rule: RuleStructure, Field: field + ".confidence",
+			Message: fmt.Sprintf("confidence %v out of range", c.Confidence),
+			Hint:    "0..1；0 表示没有置信度（非字面规则或非预填产物）",
+			Status:  400,
+		}
+	}
+	return nil
 }
 
 func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, tolerance int64, field string) error {
