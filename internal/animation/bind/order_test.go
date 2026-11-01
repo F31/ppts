@@ -84,6 +84,64 @@ func TestReadingOrderDoesNotMutateInput(t *testing.T) {
 	}
 }
 
+// 跨栏标签：右栏标签比正文行高一点点（y=546 vs 570），中间还夹着一块 302px 高的
+// 无字底板。行高容差若把底板算进去（中位 169→101），两行会被并成一行，行内按 x
+// 排序把右栏标签（x=1588）拉到正文（x=1183）之后——顺序反了，单调对齐只能把它
+// 退回后一段。容差只看文本元素（中位 37→22）时两行正确断开。
+// 对应 33 页 Token 方案 p16 的「Token增值」。
+func TestReadingOrderIgnoresNonTextHeights(t *testing.T) {
+	bg := Element{ID: "bg", Kind: "shape", Box: Box{X: 84, Y: 213, W: 1459, H: 302}} // 无字底板
+	in := []Element{
+		el("mid", 1183, 570, 319, 37),
+		bg,
+		el("right", 1588, 546, 276, 37),
+		el("title", 59, 30, 1625, 88),
+	}
+	got := ids(readingOrder(in))
+	want := []string{"title", "bg", "right", "mid"}
+	if !equalIDs(got, want) {
+		t.Fatalf("跨栏行应断开、右栏标签在前：want %v, got %v", want, got)
+	}
+}
+
+// 空形状不能当行带的基准线。
+//
+// 一行字从上往下扫，第一个落进这一行的元素就是基准。底板常比它装的文字高、顶边也靠上
+// 几像素（这里是 y=326 vs 331），基准线被抬高后，下一行字（y=382，只差 51）就掉出了
+// 这一行，顺序反过来——单调对齐于是把本该属于后一段的元素错配。对应 33 页 Token 方案
+// p7 的「核心逻辑闭环」：它整段让给了后面的段落，自己反倒变成「同块带出」。
+func TestReadingOrderEmptyShapeIsNotAnchor(t *testing.T) {
+	// 底板 302px 高，但文字元素有 3 个 37px：中位高度落在 37，容差 22.2，
+	// 加不加底板都一样——所以这条用例只考「基准线是谁」，不掺容差变大。
+	bg := Element{ID: "bg", Kind: "shape", Box: Box{X: 1001, Y: 326, W: 400, H: 302}} // 无字底板
+	in := []Element{
+		el("b", 1041, 382, 724, 37),
+		el("a", 1112, 331, 360, 37),
+		bg,
+		el("title", 59, 30, 1625, 37),
+	}
+	got := ids(readingOrder(in))
+	// b 的 y=382 与 a 的 331 差 51，超过容差，本来就该是两行；
+	// 底板 y=326 若当基准，a 会被并进底板那一行、b 被切到下一行，顺序就成了 bg,a,b。
+	want := []string{"title", "a", "bg", "b"}
+	if !equalIDs(got, want) {
+		t.Fatalf("底板抬高了基准线，把下一行切走了：want %v, got %v", want, got)
+	}
+}
+
+// 全页没有任何文字元素时，容差退回全体高度，不能退化成 0 而逐元素成行。
+func TestReadingOrderNoTextFallback(t *testing.T) {
+	in := []Element{
+		{ID: "a", Box: Box{X: 0, Y: 0, W: 100, H: 40}},
+		{ID: "b", Box: Box{X: 200, Y: 20, W: 100, H: 40}},
+	}
+	got := ids(readingOrder(in))
+	want := []string{"a", "b"}
+	if !equalIDs(got, want) {
+		t.Fatalf("同高元素应同行、从左到右：want %v, got %v", want, got)
+	}
+}
+
 func TestReadingOrderSmallInputs(t *testing.T) {
 	if got := readingOrder(nil); len(got) != 0 {
 		t.Fatalf("nil 应原样返回，得到 %v", got)
