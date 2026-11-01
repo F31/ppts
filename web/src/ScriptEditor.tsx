@@ -1,8 +1,19 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { FormEvent, MouseEvent as ReactMouseEvent } from 'react';
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useI18n } from './i18n';
 import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
 import type { RewriteAction } from './api';
+import {
+  canRedo as historyCanRedo,
+  canUndo as historyCanUndo,
+  emptyHistory,
+  recordEdit,
+  redo as redoHistory,
+  snapshotOf,
+  undo as undoHistory,
+  type ScriptHistory,
+  type ScriptSnapshot
+} from './scriptHistory';
 
 export type ScriptEditorStatus = 'saved' | 'dirty' | 'saving' | 'error' | 'conflict';
 
@@ -102,6 +113,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   // 各分段展示文本与隐藏朗读文本分开维护：displayText 给编辑器看，spokenText 给 TTS 用。
   const [texts, setTexts] = useState<Record<string, string>>(() => initialTexts(script));
   const [spokenTexts, setSpokenTexts] = useState<Record<string, string>>(() => initialSpokenTexts(script));
+  // 撤销/重做只作用于**当前页**：切页即清空。跨页撤销会让人分不清"撤的是哪一页"，
+  // 而每页的草案本来就是独立提交的（见下方 draftsRef）。
+  const [history, setHistory] = useState<ScriptHistory>(() => emptyHistory());
   const [saveState, setSaveState] = useState<ScriptEditorStatus>('saved');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusedId, setFocusedId] = useState<string | null>(script.segments[0]?.segmentId ?? null);
@@ -202,6 +216,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (!switchedSlide && draftsRef.current.has(script.slideId)) return;
     setTexts(initialTexts(script));
     setSpokenTexts(initialSpokenTexts(script));
+    // 只在切页时清空历史。服务端落库（revision 推进）后**不能**清：自动保存只隔几百毫秒，
+    // 一次保存就把撤销历史抹掉，等于刚写完就没法撤。
+    if (switchedSlide) setHistory(emptyHistory());
     // 本地读音规则只在切页/首次加载时重建：停留同页期间，应用/删除读音用的是内存里的精确 (word→reading)，
     // 若在 revision 落库时重建，反而会用 `precedingPronunciationPattern` 反向猜测的词体把高亮范围扩大。
     if (switchedSlide) {
@@ -358,6 +375,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     editSeqRef.current += 1;
     const seq = editSeqRef.current;
     const slideId = script.slideId;
+    // 记的是**编辑前**的快照；同一段落的连续输入在 scriptHistory 里合并成一步。
+    setHistory((current) => recordEdit(current, snapshotOf(texts, spokenTexts), segmentId));
     const nextSpoken = { ...spokenTexts, [segmentId]: value };
     setSpokenTexts(nextSpoken);
     setTexts((current) => {
@@ -402,11 +421,64 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     editSeqRef.current += 1;
     const seq = editSeqRef.current;
     const slideId = script.slideId;
+    // 朗读文本编辑（发音标记等）同样可撤销；key 用固定值，连续应用规则合并成一步。
+    setHistory((current) => recordEdit(current, snapshotOf(texts, spokenTexts), '@spoken'));
     setSpokenTexts(nextSpoken);
     draftsRef.current.set(slideId, { segments: segmentsWithTexts(texts, nextSpoken), seq });
     setSaveState('dirty');
     onEdited?.();
     if (!composingRef.current) scheduleSaveRef.current(slideId);
+  };
+
+  // applySnapshot：把撤销/重做得到的快照落回本地状态，并**照常走草案与自动保存**。
+  // 关键点：撤销不是"只改屏幕上的字"——不落草案的话，撤销结果既不会提交到服务端，
+  // 切页后还会被服务端文本覆盖回来，看起来像"撤销没生效"。
+  const applySnapshot = (snapshot: ScriptSnapshot) => {
+    editSeqRef.current += 1;
+    const seq = editSeqRef.current;
+    const slideId = script.slideId;
+    setTexts(snapshot.texts);
+    setSpokenTexts(snapshot.spokenTexts);
+    draftsRef.current.set(slideId, { segments: segmentsWithTexts(snapshot.texts, snapshot.spokenTexts), seq });
+    setSaveState('dirty');
+    onEdited?.();
+    if (!composingRef.current) scheduleSaveRef.current(slideId);
+  };
+
+  // 这里刻意不用 setHistory(updater)：updater 必须是纯函数（StrictMode 会执行两次），
+  // 而撤销要连带改 texts / 草案 / 保存状态，副作用放进去会提交两次。
+  const undo = () => {
+    if (!canEdit) return;
+    const result = undoHistory(history, snapshotOf(texts, spokenTexts));
+    if (!result) return;
+    applySnapshot(result.snapshot);
+    setHistory(result.history);
+  };
+
+  const redo = () => {
+    if (!canEdit) return;
+    const result = redoHistory(history, snapshotOf(texts, spokenTexts));
+    if (!result) return;
+    applySnapshot(result.snapshot);
+    setHistory(result.history);
+  };
+
+  // 快捷键挂在 section 上（而不是 document）：只在本编辑器内生效，
+  // 不会和页面别处的 Ctrl+Z 抢。输入法组合期间直接放行——那是输入法自己的撤销。
+  const handleEditorKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!canEdit || composingRef.current) return;
+    if (!event.ctrlKey && !event.metaKey) return;
+    const key = event.key.toLowerCase();
+    if (key === 'z') {
+      event.preventDefault();
+      if (event.shiftKey) redo();
+      else undo();
+      return;
+    }
+    if (key === 'y') {
+      event.preventDefault();
+      redo();
+    }
   };
 
   // 段落改写（缩短/润色/衔接）：逐段串行调用 LLM（避免突发顶爆限流），成功即经本地草稿
@@ -610,7 +682,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const anchorTypes = [...new Set(anchors.map((anchor) => anchorTypeLabel(anchor.kind)))];
 
   return (
-    <section className="editor-card script-editor" aria-label={t('script.aria')}>
+    <section className="editor-card script-editor" aria-label={t('script.aria')} onKeyDown={handleEditorKeyDown}>
       <header>
         <div>
           <span className="eyebrow">{t('script.currentSlide')}</span>
@@ -646,6 +718,25 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         </button>
         <button type="button" disabled={!canEdit || !onRewriteText || rewritingRef.current || targetIds().length === 0} onClick={() => { setPopoverOpen(false); handleRewrite('transition'); }} title={t('editor.transitionHint')}>
           {t('editor.transition')}
+        </button>
+        <span className="toolbar-sep" />
+        {/* 撤销/重做：讲稿是逐字输入的，没有撤销时改错一句只能手工改回来。
+            快捷键在下方 section 的 onKeyDown 里统一处理（Ctrl/Cmd+Z、Shift+Z、Ctrl+Y）。 */}
+        <button
+          type="button"
+          disabled={!canEdit || !historyCanUndo(history)}
+          onClick={() => { setPopoverOpen(false); undo(); }}
+          title={t('editor.undoHint')}
+        >
+          {t('editor.undo')}
+        </button>
+        <button
+          type="button"
+          disabled={!canEdit || !historyCanRedo(history)}
+          onClick={() => { setPopoverOpen(false); redo(); }}
+          title={t('editor.redoHint')}
+        >
+          {t('editor.redo')}
         </button>
         <span className="toolbar-sep" />
         <button type="button" disabled={!canEdit || rewritingRef.current || targetIds().length === 0} onClick={openPronounce} title={t('editor.pronounceHint')}>

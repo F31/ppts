@@ -1383,5 +1383,9 @@
   "editor.animationPrefillDeferred": "The model result is ready, but you have already started editing, so your bindings were left untouched.",
   "editor.animationPrefillApplyModel": "Use model result",
   "editor.animationPrefillEmptyResult": "The server returned no usable default spec. Retry, or pick a style.",
-  "editor.animationPrefillReasonClientTimeout": "The model result never arrived (the background job may not have been picked up). What you see came from the rules; try again in a moment"
+  "editor.animationPrefillReasonClientTimeout": "The model result never arrived (the background job may not have been picked up). What you see came from the rules; try again in a moment",
+  "editor.undo": "Undo",
+  "editor.redo": "Redo",
+  "editor.undoHint": "Undo the last script edit (Ctrl+Z)",
+  "editor.redoHint": "Redo (Ctrl+Shift+Z or Ctrl+Y)"
 }
