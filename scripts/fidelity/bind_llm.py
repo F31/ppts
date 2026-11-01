@@ -360,18 +360,26 @@ def chat_with_retry(base_url, api_key, model, system, user, timeout, attempts=3)
 
 
 def call_cached(cache_dir, key, fn):
-    """命中即返回（含 latencyMs，但标 cached=True）；未命中则调用并落盘。"""
+    """命中即返回；未命中则调用并落盘。
+
+    命中时 `latencyMs` 记 0，历史生成耗时挪到 `genMs`。原来是把写入时那次请求的
+    延迟原样回放，于是报告出现「缓存 5/5 命中、P95 13.8s」这种自相矛盾的数字——
+    读者会以为这次真的等了 13 秒。延迟是「这次等了多少」，不是「模型当时多慢」。
+    """
     cache_dir = Path(cache_dir)
     path = cache_dir / (key + ".json")
     if path.exists():
         try:
             rec = json.loads(path.read_text(encoding="utf-8"))
             rec["cached"] = True
+            rec["genMs"] = rec.get("latencyMs")
+            rec["latencyMs"] = 0
             return rec
         except (json.JSONDecodeError, OSError):
             pass
     rec = fn()
     rec["cached"] = False
+    rec["genMs"] = rec.get("latencyMs")
     rec["at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     cache_dir.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -558,7 +566,7 @@ def rules_baseline(args):
     print("%-28s %8s %8s   %s" % ("变体", "内容召回", "精确", "exact/wrong/missed/extra/skip"))
     for name in args.variants:
         pages = variant_pages(name, a["q8_seg"], a["q7_seg"], a["q8_elem"],
-                              a["q7_elem"], a["q7_colloquial"])
+                              a["q7_elem"], a["q7_colloquial"], parse_mix(args.mix_pages))
         sums, per = [], []
         for idx, page, segments, gold_page in pages:
             pairs = rule_pairs(page, segments)
@@ -638,13 +646,56 @@ def load_assets():
     return out
 
 
-def variant_pages(name, q8_seg, q7_seg, q8_elem, q7_elem, q7_colloquial):
+def parse_mix(spec):
+    """'1,4' → {1, 4}。空串/None → 空集。
+
+    接受中文逗号：这个参数是给人手输的，用全角逗号打不出来结果最烦。
+    """
+    if not spec:
+        return set()
+    out = set()
+    for part in str(spec).replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise SystemExit("--mix-pages 只接逗号分隔的页下标（0 起）：%r" % spec)
+        out.add(int(part))
+    return out
+
+
+def build_mixed(pages, ablate_idx, kinds=("ordinal", "count", "spatial")):
+    """只消融指定页（0 起下标），其余页原文一字不动。
+
+    为什么要混合样本：此前只有「全 structured」（原稿 0.972）和「全 script」
+    （去全部结构词 0.667）两个极端。按页路由是这两端的中间形态，只有用一份
+    「一半页保留结构词、一半页没有」的讲稿，路由的收益才测得到——否则两条策略
+    各自跑满全场，路由退化成「选哪个」，而不是「怎么分工」。
+    """
+    out, hits = [], 0
+    for i, page in enumerate(pages):
+        if i in ablate_idx:
+            variant, h = build_variant([page], kinds)
+            out.append(variant["pages"][0])
+            hits += h
+        else:
+            out.append(page)
+    return {"pages": out}, hits
+
+
+def variant_pages(name, q8_seg, q7_seg, q8_elem, q7_elem, q7_colloquial, mix_pages=()):
     """返回 [(page_index, page, segments, gold_page)]。
 
     golden 一律取**未扰动**的那一份：扰动只改讲稿用词，不改「哪个元素该在哪一段出现」。
     口语变体要拿 `q7-script-colloquial.json` 的分段，golden 仍取 `q7-script.json`
     ——第一版这里传错，所谓「口语样本」跑的是原稿，数字照抄了却没有意义。
     """
+    if name == "mixed":
+        if not mix_pages:
+            raise SystemExit("mixed 变体必须给出要消融的页：--mix-pages 1,4")
+        ablated, _ = build_mixed(q8_seg["pages"], set(mix_pages))
+        return list(zip(range(len(q8_elem)), q8_elem, [p["segments"] for p in ablated["pages"]],
+                        q8_seg["pages"]))
     if name == "baseline":
         return list(zip(range(len(q8_elem)), q8_elem, [p["segments"] for p in q8_seg["pages"]],
                         q8_seg["pages"]))
@@ -662,7 +713,55 @@ VARIANT_LABELS = {
     "baseline": "q8 原始讲稿（不能倒退）",
     "no-structure": "q8 去全部结构词（主战场）",
     "colloquial": "q7 合成口语样本",
+    "mixed": "q8 混合讲稿（部分页保留结构词）",
 }
+
+
+# 按页路由：分档决定这一页交给谁。这张表不是实现细节，是 6.2 的结论本身——
+#   structured：版面有结构 + 讲稿念出结构，规则 0.972 / 0.962，快且确定；
+#   script    ：版面有结构、讲稿没念出来，规则掉到 0.667，模型 0.972；
+#   layout    ：版面本身没结构，模型在 q7 上也只有 0.353（精确 0.400），救不了，
+#               继续用规则并给低置信提示。both 同理。
+# 把 layout/both 也路由给模型是这一行最容易犯的错：它看起来「更彻底」，
+# 实测是拿 0.353 换掉规则的 0.533，还多花十几秒。
+ROUTE_MODEL = {"script"}
+
+
+def route_of(band, band_reason):
+    """返回 'rule' 或 'model'。band_reason 为空表示判成结构化。"""
+    if band == "structured":
+        return "rule"
+    return "model" if band_reason in ROUTE_MODEL else "rule"
+
+
+def load_band_file(path, n_pages):
+    """读 bandcheck 的输出，按页下标建索引。
+
+    页数或页序对不上必须直接停：路由是按页下标配的，错位不会报错，只会安静地
+    把「这页走规则」的结论套到另一页上，最后得出一个看起来正常的错数字。
+    """
+    if not path:
+        raise SystemExit("--mode route 需要 --band-file（先用 scripts/fidelity/bandcheck 生成）")
+    p = Path(path)
+    if not p.exists():
+        raise SystemExit("分档文件不存在：%s" % path)
+    doc = load(p)
+    pages = doc.get("pages") or []
+    if len(pages) != n_pages:
+        raise SystemExit("分档文件 %d 页，样本 %d 页——路由按页下标配对，不能错位"
+                         % (len(pages), n_pages))
+    by_index = {}
+    for item in pages:
+        idx = item.get("index")
+        if idx is None or not (0 <= idx < n_pages):
+            raise SystemExit("分档文件里有越界页号：%r（样本共 %d 页）" % (idx, n_pages))
+        if idx in by_index:
+            raise SystemExit("分档文件重复页号：%r" % (idx,))
+        by_index[idx] = item
+    missing = sorted(set(range(n_pages)) - set(by_index))
+    if missing:
+        raise SystemExit("分档文件缺页：%s" % missing)
+    return by_index
 
 
 def fill_structure(page, segments, pred):
@@ -700,7 +799,7 @@ def fill_structure(page, segments, pred):
     return out, len(prior), len(struct)
 
 
-def run_variant(name, pages, args, cache_dir):
+def run_variant(name, pages, args, cache_dir, sample=0):
     per_page = []
     reject_total = Counter()
     total_items = 0
@@ -708,54 +807,84 @@ def run_variant(name, pages, args, cache_dir):
     requests = 0
     cache_hits = 0
     fill_prior = fill_struct = 0
+    routed = {"rule": 0, "model": 0}
+
+    bands = load_band_file(args.band_file, len(pages)) if args.mode == "route" else None
 
     for idx, page, segments, gold_page in pages:
         rp = rule_pairs(page, segments)  # 别叫 rule_pairs：同名局部变量会让函数本身不可见
         rule_pred = pred_from_pairs(page, segments, rp)
         _, rule_sum = score(page, segments, rule_pred, gold_page)
 
-        if args.mode == "rule+model":
-            # 规则已绑的元素对模型只读：只允许它填规则留下的空位。
-            user = build_page_input_with_rules(page, segments, rp)
-            bound_ids = {page["elements"][ei]["id"] for ei, _, _ in rp}
-            allow = {e["id"] for e in page["elements"]} - bound_ids
+        if args.mode == "route":
+            which = route_of(bands[idx]["band"], bands[idx].get("bandReason", ""))
         else:
-            allow = None
-            user = build_page_input(page, segments)
-
-        key = cache_key(args.model, PROMPT_VERSION + "|" + args.mode, SYSTEM_PROMPT, user)
-        rec = call_cached(cache_dir, key, lambda: chat_with_retry(
-            args.base_url, args.api_key, args.model, SYSTEM_PROMPT, user, args.timeout))
-        requests += 1
-        if rec.get("cached"):
-            cache_hits += 1
-        latencies.append(rec.get("latencyMs") or 0)
-
-        obj = extract_json(rec.get("raw"))
-        pred, stats, mono = validate(obj, page, segments, allow)
-        reject_total.update(stats)
-        # 分母至少算 1：整页返回非 JSON 时 bindings 不存在，若按 0 条算，
-        # rejectRatio 会变成 0/0 → 0.0，「invalid ≤ 5%」这条门槛就会假通过。
-        # 这是最危险的一种绿——模型什么都没给，报告却说格式合规。
-        total_items += count_items(obj)
-
-        if args.mode == "rule+model":
-            # 规则的结果原样保留，模型只补空位。
-            merged = dict(rule_pred)
-            for sid, lst in pred.items():
-                merged.setdefault(sid, [])
-                merged[sid] = merged[sid] + lst
-            pred = merged
+            which = "model"
+        routed[which] += 1
 
         page_prior = page_struct = 0
-        if args.struct_fill:
-            pred, page_prior, page_struct = fill_structure(page, segments, pred)
-            fill_prior += page_prior
-            fill_struct += page_struct
+        stats, mono = Counter(), 0
+
+        if which == "rule":
+            # 路由到规则：一次请求都不发。这不只是省钱——分档说「这页规则更可信」，
+            # 再调一次模型反而多一个可能出错的环节，而且延迟会从毫秒级变成十秒级。
+            pred = rule_pred
+            rec = {}
+        else:
+            if args.mode == "rule+model":
+                # 规则已绑的元素对模型只读：只允许它填规则留下的空位。
+                user = build_page_input_with_rules(page, segments, rp)
+                bound_ids = {page["elements"][ei]["id"] for ei, _, _ in rp}
+                allow = {e["id"] for e in page["elements"]} - bound_ids
+            else:
+                allow = None
+                user = build_page_input(page, segments)
+
+            # 采样序号进 key：否则第二次采样读到第一次的缓存，测出来「方差为 0」。
+            # 但同一个 sample 重跑必须命中——那才是「确定性只能靠缓存」的兑现方式。
+            #
+            # route 与 model 共用 key：两者的 prompt 一字不差，分开缓存就等于拿两次
+            # 不同抽样去比两种策略，方差会被算进「策略差异」里。
+            eff_mode = "model" if args.mode == "route" else args.mode
+            tag = PROMPT_VERSION + "|" + eff_mode + (("|s%d" % sample) if sample else "")
+            key = cache_key(args.model, tag, SYSTEM_PROMPT, user)
+            rec = call_cached(cache_dir, key, lambda: chat_with_retry(
+                args.base_url, args.api_key, args.model, SYSTEM_PROMPT, user, args.timeout))
+            requests += 1
+            if rec.get("cached"):
+                cache_hits += 1
+
+            obj = extract_json(rec.get("raw"))
+            pred, stats, mono = validate(obj, page, segments, allow)
+            reject_total.update(stats)
+            # 分母至少算 1：整页返回非 JSON 时 bindings 不存在，若按 0 条算，
+            # rejectRatio 会变成 0/0 → 0.0，「invalid ≤ 5%」这条门槛就会假通过。
+            # 这是最危险的一种绿——模型什么都没给，报告却说格式合规。
+            total_items += count_items(obj)
+
+            if args.mode == "rule+model":
+                # 规则的结果原样保留，模型只补空位。
+                merged = dict(rule_pred)
+                for sid, lst in pred.items():
+                    merged.setdefault(sid, [])
+                    merged[sid] = merged[sid] + lst
+                pred = merged
+
+            if args.struct_fill:
+                pred, page_prior, page_struct = fill_structure(page, segments, pred)
+                fill_prior += page_prior
+                fill_struct += page_struct
+
+        # 规则页也记 0：这一页真的没等模型。P95 因此反映「每页实际耗时」，
+        # 而不是「假设每页都调模型的耗时」——后者会让路由看起来没有延迟收益。
+        latencies.append(rec.get("latencyMs") or 0)
 
         rows, summary = score(page, segments, pred, gold_page)
         per_page.append({
             "index": idx,
+            "route": which,
+            "band": (bands[idx]["band"] if bands else None),
+            "bandReason": (bands[idx].get("bandReason") if bands else None),
             "latencyMs": rec.get("latencyMs"),
             "cached": bool(rec.get("cached")),
             "promptTokens": rec.get("promptTokens"),
@@ -789,11 +918,115 @@ def run_variant(name, pages, args, cache_dir):
         "formatRejectRatio": round(format_ratio, 4),
         "semanticRejectRatio": round(semantic_ratio, 4),
         "fill": {"prior": fill_prior, "struct": fill_struct},
+        "routed": routed if args.mode == "route" else None,
         "p95Ms": p95,
         "requests": requests,
         "cacheHits": cache_hits,
         "gate": judge(name, total_model, format_ratio, p95, total_rule),
     }
+
+
+def spread_report(runs):
+    """把 n 次独立采样合成一份报告。
+
+    为什么需要它：温度 0 不保证确定性。实测同一 prompt 连调三次，同一页分别输出
+    6 / 11 / 7 条绑定，整体召回因此能在 0.972 与 0.694 之间跳。任何单轮数字都是抽样，
+    把它当结论就是在抽奖——所以结论读 `spread`（均值/最差/极差），门槛用**最差一轮**：
+    上线之后用户抽到的是某一次，不是均值。
+    """
+    base = dict(runs[0])
+    spread = {}
+    for field in ("recall_content", "precision"):
+        vals = [r["model"].get(field) for r in runs if r["model"].get(field) is not None]
+        if not vals:
+            spread[field] = None
+            continue
+        spread[field] = {
+            "n": len(vals),
+            "mean": round(sum(vals) / len(vals), 3),
+            "min": min(vals),
+            "max": max(vals),
+            "spread": round(max(vals) - min(vals), 3),
+            "values": [round(v, 3) for v in vals],
+        }
+
+    worst = min(runs, key=lambda r: (r["model"].get("recall_content") or 0))
+    base["model"] = worst["model"]
+    base["worstRun"] = runs.index(worst)
+    base["spread"] = spread
+    base["runs"] = [{
+        "run": i,
+        "model": r["model"],
+        "rules": r["rules"],
+        "formatRejectRatio": r["formatRejectRatio"],
+        "semanticRejectRatio": r["semanticRejectRatio"],
+        "p95Ms": r["p95Ms"],
+        "requests": r["requests"],
+        "cacheHits": r["cacheHits"],
+    } for i, r in enumerate(runs)]
+    base["fill"] = {
+        "prior": sum(r["fill"]["prior"] for r in runs),
+        "struct": sum(r["fill"]["struct"] for r in runs),
+    }
+    base["p95Ms"] = max((r["p95Ms"] or 0) for r in runs)
+    base["requests"] = sum(r["requests"] for r in runs)
+    base["cacheHits"] = sum(r["cacheHits"] for r in runs)
+    base["gate"] = judge(base["variant"], base["model"], base["formatRejectRatio"],
+                         base["p95Ms"], base["rules"])
+    return base
+
+
+def route_gate(res, out_dir, name):
+    """路由的判据是**相对**的：必须同时不输给两条单策略。
+
+    绝对门槛在这里没有意义——mixed 的规则基线取决于「消融了哪几页」，写死一个数字
+    等于把夹具的巧合当标准。
+
+    比较必须逐轮配对：route 与 model 共用缓存键，第 i 轮拿到的是同一份模型输出，
+    所以「路由这轮比全模型少多少」才是策略差，而不是两次抽样的运气差。用均值比均值
+    会把模型方差混进来——实测同一 prompt 的召回能在 0.694 与 0.972 之间跳。
+
+    判据（两条都要过）：
+      1. 逐轮 routed ≥ model：交给规则的那几页，不能比交给模型差；
+      2. 逐轮 routed ≥ rule ：不能比全规则差。
+    """
+    cand = Path(out_dir) / ("report-model-%s.json" % name)
+    if not cand.exists():
+        return [{
+            "name": "需要同变体的 --mode model 报告作为对照（先跑一遍全模型）",
+            "need": None, "got": None, "pass": False,
+        }]
+    base = json.loads(cand.read_text(encoding="utf-8"))
+    base_runs = base.get("runs") or [{"model": base.get("model") or {}}]
+    my_runs = res.get("runs") or [{"model": res.get("model") or {},
+                                   "rules": res.get("rules") or {}}]
+    n = min(len(base_runs), len(my_runs))
+    if n == 0:
+        return [{"name": "没有可比的轮次", "need": 0, "got": 0, "pass": False}]
+
+    deltas_model, deltas_rule = [], []
+    for i in range(n):
+        routed = my_runs[i]["model"].get("recall_content")
+        full_model = base_runs[i]["model"].get("recall_content")
+        full_rule = my_runs[i].get("rules", {}).get("recall_content")
+        if routed is None or full_model is None or full_rule is None:
+            continue
+        deltas_model.append(routed - full_model)
+        deltas_rule.append(routed - full_rule)
+
+    if not deltas_model:
+        return [{"name": "配对轮次里没有有效召回值", "need": None, "got": None, "pass": False}]
+
+    # 不是「平均不输」就算过：只要有一轮输给单策略，就说明路由表在某些页上做了
+    # 更差的选择。取最差一轮守门，和「门槛用最差一轮」同一个理由。
+    worst_model = min(deltas_model)
+    worst_rule = min(deltas_rule)
+    return [
+        {"name": "逐轮路由 ≥ 全模型（配对，最差轮）", "need": 0.0,
+         "got": round(worst_model, 3), "pass": worst_model >= -1e-9},
+        {"name": "逐轮路由 ≥ 全规则（配对，最差轮）", "need": 0.0,
+         "got": round(worst_rule, 3), "pass": worst_rule >= -1e-9},
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -933,11 +1166,70 @@ def selftest():
     if count_items({"bindings": [1, 2]}) != 2 or count_items({"bindings": []}) != 1:
         fails.append("count_items 对空 bindings 应至少记 1")
 
+    # 路由分派：只有 script 该交给模型。把 layout/both 也路由过去是这里最容易犯的错，
+    # 它看起来更彻底，实测是拿模型 0.353 换掉规则的 0.533，还多花十几秒。
+    route_cases = [
+        (("structured", ""), "rule", "结构化走规则"),
+        (("structured", None), "rule", "结构化（无原因）走规则"),
+        (("low-confidence", "script"), "model", "script 走模型"),
+        (("low-confidence", "layout"), "rule", "layout 走规则（模型救不了）"),
+        (("low-confidence", "both"), "rule", "both 走规则"),
+        (("low-confidence", None), "rule", "原因缺失时保守走规则"),
+        (("low-confidence", "layout-v3"), "rule", "未知原因不硬套模型"),
+    ]
+    for (band, reason), want, why in route_cases:
+        got = route_of(band, reason)
+        if got != want:
+            fails.append("路由错：%s / %r → %s（期望 %s，%s）"
+                         % (band, reason, got, want, why))
+
+    # 页下标解析：全角逗号是手输时最容易打出来的，不能因此报错。
+    if parse_mix("1,4") != {1, 4} or parse_mix("1，4") != {1, 4} or parse_mix("") != set():
+        fails.append("--mix-pages 解析不对：%r / %r / %r"
+                     % (parse_mix("1,4"), parse_mix("1，4"), parse_mix("")))
+
+    # 分档文件页数不符必须停：路由按下标配，错位不会报错，只会安静地把结论套错页。
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bad = Path(td) / "band.json"
+        bad.write_text(json.dumps({"pages": [{"index": 0, "band": "structured"}]}),
+                       encoding="utf-8")
+        try:
+            load_band_file(str(bad), 5)
+            fails.append("分档文件页数与样本不符却没有停")
+        except SystemExit:
+            pass
+        okf = Path(td) / "ok.json"
+        okf.write_text(json.dumps({"pages": [
+            {"index": i, "band": "structured"} for i in range(3)]}), encoding="utf-8")
+        if sorted(load_band_file(str(okf), 3)) != [0, 1, 2]:
+            fails.append("分档文件正常输入也读不出来")
+
+    # 采样合并：极差与最差轮必须算对。单轮数字从 0.972 掉到 0.694 是实测发生过的，
+    # 若合并逻辑取均值当结论，报告会把一次抽奖说成稳定表现。
+    fake = []
+    for rec, prec in ((0.972, 0.975), (0.694, 1.0), (0.833, 0.95)):
+        fake.append({
+            "variant": "mixed", "label": "x", "pages": [],
+            "model": {"recall_content": rec, "precision": prec},
+            "rules": {"recall_content": 0.694, "precision": 0.927},
+            "rejected": {}, "formatRejectRatio": 0.0, "semanticRejectRatio": 0.0,
+            "fill": {"prior": 0, "struct": 0}, "routed": None,
+            "p95Ms": 5000, "requests": 5, "cacheHits": 0, "gate": [],
+        })
+    sp = spread_report(fake)
+    st = sp["spread"]["recall_content"]
+    if (st["mean"], st["min"], st["max"]) != (0.833, 0.694, 0.972):
+        fails.append("spread 统计不对：%s" % st)
+    if sp["model"]["recall_content"] != 0.694:
+        fails.append("门槛没有用最差一轮：%s" % sp["model"]["recall_content"])
+
     if fails:
         for f in fails:
             print("FAIL " + f)
         return 1
     print("selftest OK：%d 条校验器用例 + 评测链路 + 跨页合并 + 门槛判定 + 分母守卫 + 缓存 key"
+          " + 路由分派 + 页下标解析 + 分档文件校验 + 采样合并"
           % len(cases))
     return 0
 
@@ -945,7 +1237,7 @@ def selftest():
 def dry_run(args):
     a = load_assets()
     pages = variant_pages(args.variants[0], a["q8_seg"], a["q7_seg"], a["q8_elem"],
-                          a["q7_elem"], a["q7_colloquial"])
+                          a["q7_elem"], a["q7_colloquial"], parse_mix(args.mix_pages))
     idx, page, segments, _ = pages[0]
     user = build_page_input(page, segments)
     chars = len(SYSTEM_PROMPT) + len(user)
@@ -965,9 +1257,17 @@ def dry_run(args):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--variants", nargs="+", default=["baseline", "no-structure", "colloquial"],
-                    choices=["baseline", "no-structure", "colloquial"])
-    ap.add_argument("--mode", choices=["model", "rule+model"], default="model",
-                    help="model = 模型独立完成；rule+model = 规则先绑、模型只补空位")
+                    choices=["baseline", "no-structure", "colloquial", "mixed"])
+    ap.add_argument("--mode", choices=["model", "rule+model", "route"], default="model",
+                    help="model = 模型独立完成；rule+model = 规则先绑、模型只补空位；"
+                         "route = 按分档逐页选（需要 --band-file）")
+    ap.add_argument("--band-file", default=None,
+                    help="scripts/fidelity/bandcheck 的输出；route 模式必填")
+    ap.add_argument("--repeat", type=int, default=1,
+                    help="同一变体独立采样几次。>1 时结论读 spread、门槛用最差一轮；"
+                         "温度 0 不保证确定性，单轮数字是抽样")
+    ap.add_argument("--mix-pages", default="1,4",
+                    help="mixed 变体要消融结构词的页下标（0 起，逗号分隔）；默认 1,4")
     ap.add_argument("--base-url", default=None)
     ap.add_argument("--api-key", default=None)
     ap.add_argument("--model", default=None)
@@ -1032,8 +1332,17 @@ def main():
 
     for name in args.variants:
         pages = variant_pages(name, a["q8_seg"], a["q7_seg"], a["q8_elem"],
-                              a["q7_elem"], a["q7_colloquial"])
-        res = run_variant(name, pages, args, args.cache_dir)
+                              a["q7_elem"], a["q7_colloquial"], parse_mix(args.mix_pages))
+        reps = max(1, args.repeat)
+        runs = []
+        for si in range(reps):
+            if reps > 1:
+                sys.stderr.write("  [%s] 采样 %d/%d\n" % (name, si + 1, reps))
+            runs.append(run_variant(name, pages, args, args.cache_dir, sample=si))
+        res = spread_report(runs) if reps > 1 else runs[0]
+        if args.mode == "route":
+            # 路由的判据是相对的，且要配对比较；加在最前面，因为它才是这个模式的结论。
+            res["gate"] = route_gate(res, out_dir, name) + (res.get("gate") or [])
         report["variants"].append(res)
         (out_dir / ("report-%s-%s.json" % (args.mode.replace("+", "-"), name))).write_text(
             json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1044,6 +1353,11 @@ def main():
                  validate_stats_total(Counter(res["rejected"]), SEMANTIC_REJECT),
                  res["fill"]["prior"], res["fill"]["struct"],
                  res["p95Ms"], res["cacheHits"], res["requests"]))
+        if res.get("spread"):
+            for field, st in res["spread"].items():
+                if st:
+                    print("    %s：均值 %.3f / 最差 %.3f / 最好 %.3f / 极差 %.3f  各轮 %s"
+                          % (field, st["mean"], st["min"], st["max"], st["spread"], st["values"]))
         for g in res["gate"]:
             extra = ""
             if g.get("rules") is not None:
