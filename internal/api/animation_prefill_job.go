@@ -13,6 +13,7 @@ import (
 	"github.com/F31/ppts/internal/animation/animdefault"
 	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 )
@@ -162,7 +163,13 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 	// 反复重试也不会好转，只有改一个字才行。配上模型却不生效，比多花一次调用糟得多。
 	// 代价是模型持续不可用时每次打开都会排一个任务；它在后台跑、不挡住编辑器
 	// （编辑器手里已有规则底稿），失败原因仍会写进结果，所以这个代价是可接受的。
-	if cached, hit, _ := app.LoadPrefillResult(r.Context(), h.objects, key.TenantID, key.ProjectID, key.SourceRevisionNo, hash); hit && cached.Model.Fallback == "" {
+	cached, hit, cerr := app.LoadPrefillResult(r.Context(), h.objects, key.TenantID, key.ProjectID, key.SourceRevisionNo, hash)
+	if cerr != nil {
+		// 读失败和「没算过」分开记：前者意味着对象存储或签名在坏，
+		// 表现上却是「每次打开都重新算」，只看 miss 数永远看不出这个问题。
+		observability.PrefillCache(observability.PrefillCacheReadError)
+	} else if hit && cached.Model.Fallback == "" {
+		observability.PrefillCache(observability.PrefillCacheHit)
 		dto, report, derr := h.defaultSpecFor(page, pc, key, presetID, cached.Bindings)
 		if derr != nil {
 			writeAnimationError(w, derr)
@@ -171,7 +178,12 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 		dto.Prefill = prefillDTOFromResult(cached, &report)
 		writeJSON(w, http.StatusOK, prefillResponse{Status: "succeeded", JobID: cached.JobID, Spec: &dto})
 		return
+	} else if hit {
+		observability.PrefillCache(observability.PrefillCacheRetryAfterFailed)
 	}
+	// 没命中不在这里记：规则档（structured / layout / both）根本不会存结果，
+	// 在入口记 miss 会把「每次打开结构化页」也算成 miss，这个数就只剩噪音了。
+	// miss 记在真正要排任务的地方——那里 miss 与「需要模型」是同一件事。
 
 	// ② 规则先算一份。它同时充当三个角色：分档判定、script 档的即时底稿、
 	// 以及模型失败时的最终结果——三者用的是同一次计算，不会互相矛盾。
@@ -200,6 +212,9 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, prefillResponse{Status: "succeeded", Spec: &dto})
 		return
 	}
+
+	// 走到这里说明这一页该问模型、而缓存里没有可用结果：这才是一次真正的 miss。
+	observability.PrefillCache(observability.PrefillCacheMiss)
 
 	snapBytes, merr := json.Marshal(snap)
 	if merr != nil {

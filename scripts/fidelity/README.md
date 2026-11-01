@@ -879,6 +879,7 @@ bash scripts/e2e/prefill_live.sh
 | 6 | 模型停掉后 `route=rule` + `fallback=error`，任务仍成功 | 模型挂掉时编辑器拿到空白 |
 | 7 | 模型恢复、内容不变，再点预填仍是 202 并重新问模型 | **上一次失败被当成结论缓存**（见下） |
 | 8 | 结果成功后再点走 200，模型调用次数不变 | 一轮修复把缓存整个废掉 |
+| 5–8 | 每步顺手查 `/metrics`：`runs{route,band,reason}`、`fallback{reason}`、`model_calls`、`cache{result}` | 计数只写在代码里、没接上；标签被渲染成指标名的一部分 |
 | 末 | `usage_ledger` 有 `prefill:<jobId>` 的 token 记账 | 「预填偷偷烧额度」 |
 
 第 7 步是这次联调抓到的真缺陷：结果按内容指纹缓存，而缓存短路排在路由之前，于是
@@ -893,6 +894,32 @@ bash scripts/e2e/prefill_live.sh
 
 它**不点前端**：界面与像素归 `npm run animation:test` 与 `web/animation-check.mjs`。
 这里保证的是「后端到模型到落盘再读回」这条路是真的。
+
+### 可观测（`/metrics`）
+
+预填跑在 worker 里，产物只有一份 JSON——**不问就只能靠用户说「感觉慢」**。四个计数
+（`internal/observability/prefill.go`）各回答一个具体决策：
+
+| 指标 | 回答的问题 | 数值异常时该动哪里 |
+|---|---|---|
+| `ppts_animation_prefill_runs_total{route,band,reason}` | 这一档页面到底有没有走模型 | `route=rule` 而 `reason=script` 占多数 → 路由/模型配置没生效 |
+| `ppts_animation_prefill_model_fallback_total{reason}` | 没用上的原因分布 | `quota` 充值、`timeout` 调超时或查网关、`no_model` 配模型 |
+| `ppts_animation_prefill_model_calls_total` + `..._latency_ms_total` | 真调用了几次、平均多慢 | 均值逼近 45s（`defaultModelTimeout`）→ 超时给得太松 |
+| `ppts_animation_prefill_cache_total{result}` | 复用/重算的比例 | `retry_after_failure` 随打开次数线性增长 → 该考虑负缓存 |
+
+两个刻意的口径：
+
+- **`band` 与 `reason` 分开标**。`band` 只有 `structured` / `low-confidence` 两种，而
+  `low-confidence` 里「讲稿没念出结构」（值得问模型，实测 0.833）与「版面本身没结构」
+  （问也白问，0.353）是同一档。只看 band 会发现 `route=rule` 占多数，却分不出这是正常
+  还是整档在空跑。
+- **`fallback` 的空值不记**。空串是「模型正常产出」或「这一页本就不该问」，记进去会让
+  回退率的分母变成全部任务，看起来永远正常。
+
+前端另有一条**等待预算**（`PREFILL_WAIT_BUDGET_MS = 90s`，服务端模型超时 45s）：任务一直
+`pending` 时按钮是禁用的，没有预算就意味着一次「任务没被领走」能把按钮永久按住，用户除了
+刷新页面没有出路。超预算后停止轮询、放开按钮，原因记成 `client_timeout`——与服务端的
+`timeout` 分开：前者查 worker 有没有起、任务有没有被领取，后者说明模型自己慢。
 
 ### 复现
 

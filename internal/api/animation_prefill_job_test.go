@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"expvar"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/db"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 )
 
@@ -136,6 +138,7 @@ func TestPrefillPostCreatesJobOnlyForModelBand(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			h := newPrefillHarness(t, prefillPC(c.segs...), true)
+			missBefore := prefillCacheMetric(t, observability.PrefillCacheMiss)
 			status, payload := doJSON(t, http.MethodPost, h.url(), nil)
 			if status != c.wantCode {
 				t.Fatalf("status = %d，期望 %d（%v）", status, c.wantCode, payload)
@@ -143,6 +146,15 @@ func TestPrefillPostCreatesJobOnlyForModelBand(t *testing.T) {
 			gotJob, _ := payload["jobId"].(string)
 			if c.wantJob != (gotJob != "") {
 				t.Fatalf("jobId = %q，wantJob=%v", gotJob, c.wantJob)
+			}
+			// miss 只在「这一页需要模型且缓存里没有」时记。规则档根本不存结果，
+			// 在入口记 miss 会把每次打开结构化页都算成 miss，这个数就只剩噪音。
+			if got := prefillCacheMetric(t, observability.PrefillCacheMiss) - missBefore; c.wantJob {
+				if got != 1 {
+					t.Fatalf("cache{result=miss} 增量 = %d，期望 1（这一页要排队）", got)
+				}
+			} else if got != 0 {
+				t.Fatalf("cache{result=miss} 增量 = %d，规则档不该记 miss", got)
 			}
 			spec, _ := payload["spec"].(map[string]any)
 			if spec == nil {
@@ -214,9 +226,14 @@ func TestPrefillPostReusesCachedResult(t *testing.T) {
 		t.Fatalf("写缓存结果: %v", err)
 	}
 
+	hitBefore := prefillCacheMetric(t, observability.PrefillCacheHit)
 	status, payload := doJSON(t, http.MethodPost, h.url(), nil)
 	if status != http.StatusOK {
 		t.Fatalf("status = %d，命中缓存应直接 200（%v）", status, payload)
+	}
+	// 命中要可观测：只按 miss 看会以为「没人重复打开」，而真实原因是读失败被当成了 miss。
+	if got := prefillCacheMetric(t, observability.PrefillCacheHit) - hitBefore; got != 1 {
+		t.Fatalf("cache{result=hit} 增量 = %d，期望 1", got)
 	}
 	if id, _ := payload["jobId"].(string); id != "job-earlier" {
 		t.Fatalf("jobId = %q，期望沿用产生这份结果的任务", id)
@@ -257,9 +274,15 @@ func TestPrefillPostRetriesCachedModelFailure(t *testing.T) {
 		t.Fatalf("写缓存结果: %v", err)
 	}
 
+	retryBefore := prefillCacheMetric(t, observability.PrefillCacheRetryAfterFailed)
 	status, payload := doJSON(t, http.MethodPost, h.url(), nil)
 	if status != http.StatusAccepted {
 		t.Fatalf("status = %d，期望 202（模型失败的结果要重试，不能直接当成品）（%v）", status, payload)
+	}
+	// 这个数随打开次数线性增长，就是「模型持续不可用时每次打开都排任务」的代价，
+	// 也是将来要不要加负缓存的唯一依据。
+	if got := prefillCacheMetric(t, observability.PrefillCacheRetryAfterFailed) - retryBefore; got != 1 {
+		t.Fatalf("cache{result=retry_after_failure} 增量 = %d，期望 1", got)
 	}
 	if h.jobs.creates != 1 {
 		t.Fatalf("建任务 %d 次，期望 1 次（缓存里那份是失败记录，不是结论）", h.jobs.creates)
@@ -462,4 +485,19 @@ func (f *fakePrefillJobs) lastSnapshotForTest() string {
 		return ""
 	}
 	return f.job.InputSnapshot
+}
+
+// prefillCacheMetric 读预填结果缓存的处置计数。
+//
+// 指标是进程级全局量，断言一律写增量：写死绝对值会在 -shuffle 下随机翻红。
+func prefillCacheMetric(t *testing.T, event string) int64 {
+	t.Helper()
+	m, ok := expvar.Get("ppts_animation_prefill_cache_total").(*expvar.Map)
+	if !ok {
+		t.Fatal("ppts_animation_prefill_cache_total 不是 expvar.Map（指标没定义或名字写错）")
+	}
+	if v, ok := m.Get("result=" + event).(*expvar.Int); ok {
+		return v.Value()
+	}
+	return 0
 }

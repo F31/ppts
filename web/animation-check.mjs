@@ -26,7 +26,9 @@ const {
   prefillSourceKey,
   prefillSignalKey,
   prefillLowConfidenceKey,
-  prefillModelFallbackKey
+  prefillModelFallbackKey,
+  prefillWaitExpired,
+  PREFILL_WAIT_BUDGET_MS
 } = prefill;
 const {
   clampIntensity,
@@ -880,4 +882,35 @@ test('模型没用上的原因各自有文案，未登记的原因不硬套', ()
   assert.equal(prefillModelFallbackKey(undefined), '');
   // 服务端新增原因时显示原文，不要错配成 timeout 这类会误导下一步动作的文案。
   assert.equal(prefillModelFallbackKey('rate_limited'), '');
+});
+
+test('等待预算：超时才放弃，没开始等不算超时', () => {
+  // 服务端单页模型超时 45s。预算必须明显大于它，否则「模型正常但慢」会被当成
+  // 「任务没被领取」，用户看到的提示会指向错误的排查方向。
+  assert.ok(PREFILL_WAIT_BUDGET_MS > 45_000, `预算 ${PREFILL_WAIT_BUDGET_MS}ms 没有给模型留出时间`);
+
+  const start = 1_000_000;
+  assert.equal(prefillWaitExpired(start, start + 1_000), false);
+  assert.equal(prefillWaitExpired(start, start + PREFILL_WAIT_BUDGET_MS - 1), false);
+  // 边界取 >=：正好到点就该放弃，不然「差一毫秒」会再来一轮。
+  assert.equal(prefillWaitExpired(start, start + PREFILL_WAIT_BUDGET_MS), true);
+  assert.equal(prefillWaitExpired(start, start + PREFILL_WAIT_BUDGET_MS + 60_000), true);
+
+  // 没有在等（0 / 非法值）时永远不算超时：首帧或已复位后误判会把刚发出的任务立刻放弃。
+  assert.equal(prefillWaitExpired(0, start), false);
+  assert.equal(prefillWaitExpired(Number.NaN, start), false);
+  assert.equal(prefillWaitExpired(start, Number.NaN), false);
+
+  // 预算可覆盖：用例自己指定更小的值，避免测试跟着产品常量一起漂。
+  assert.equal(prefillWaitExpired(start, start + 5_000, 5_000), true);
+});
+
+test('等待超时有自己的文案，不并进服务端 timeout', () => {
+  // 两者排查方向相反：服务端 timeout 是模型自己慢（调超时/换模型），
+  // client_timeout 是结果压根没回来（查 worker 有没有起、任务有没有被领取）。
+  assert.equal(prefillModelFallbackKey('client_timeout'), 'editor.animationPrefillReasonClientTimeout');
+  assert.notEqual(
+    prefillModelFallbackKey('client_timeout'),
+    prefillModelFallbackKey('timeout')
+  );
 });

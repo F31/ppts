@@ -148,6 +148,10 @@ export function filterBySource(bindings: PrefillBinding[], source: string): Pref
  * 这几个原因对用户意味着完全不同的下一步：timeout/error 值得重试，quota 要去充值，
  * no_model 要找管理员配模型，stale 只需要重新点一次。合成一句「模型不可用」
  * 会让人反复点同一个不会成功的按钮。
+ *
+ * client_timeout 是前端自己造的原因（服务端不存在）：任务一直 pending 到等待预算用完。
+ * 它与 timeout 分开——服务端说 timeout 是模型自己超时了；client_timeout 是「我们连结果
+ * 都没等到」，可能是 worker 没起、任务没被领走，重试之前值得先看一眼部署。
  */
 const MODEL_FALLBACK_KEYS: Record<string, string> = {
   timeout: 'editor.animationPrefillReasonTimeout',
@@ -156,8 +160,33 @@ const MODEL_FALLBACK_KEYS: Record<string, string> = {
   invalid_json: 'editor.animationPrefillReasonInvalidJson',
   no_valid_bindings: 'editor.animationPrefillReasonNoBindings',
   no_model: 'editor.animationPrefillReasonNoModel',
-  stale: 'editor.animationPrefillReasonStale'
+  stale: 'editor.animationPrefillReasonStale',
+  client_timeout: 'editor.animationPrefillReasonClientTimeout'
 };
+
+/**
+ * 异步预填的等待预算（毫秒）。
+ *
+ * 服务端单页模型超时是 45s，加上排队与 1.5s 轮询间隔，90s 覆盖正常的最坏情况。
+ * 超过这个时间还停在 pending，只可能是任务没被领走（worker 没起，或版本不认识
+ * 这个 kind）、或轮询本身一直在失败——继续等下去的唯一效果是把按钮永久按住：
+ * prefilling 为真时按钮禁用，用户除了刷新页面没有别的出路。
+ */
+export const PREFILL_WAIT_BUDGET_MS = 90_000;
+
+/**
+ * 等待是否已经超预算。startedAt 为 0 / 非法表示「还没有开始等」，一律不算超时——
+ * 否则首帧就会误判成超时，把刚发出去的任务立刻放弃。
+ */
+export function prefillWaitExpired(
+  startedAt: number,
+  now: number,
+  budgetMs: number = PREFILL_WAIT_BUDGET_MS
+): boolean {
+  if (!Number.isFinite(startedAt) || startedAt <= 0) return false;
+  if (!Number.isFinite(now)) return false;
+  return now - startedAt >= budgetMs;
+}
 
 export function prefillModelFallbackKey(reason?: string): string {
   if (!reason) return '';

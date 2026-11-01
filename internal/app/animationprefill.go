@@ -13,6 +13,7 @@ import (
 
 	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/usage"
 )
@@ -221,6 +222,16 @@ func (h *AnimationPrefillHandler) Handle(ctx context.Context, job *pipeline.Job)
 	}
 	if meter != nil {
 		h.settleLLMTokens(ctx, job.TenantID, opID, meter)
+	}
+
+	// 观测三件事：这一页最终走谁、模型为什么没用上、真调用了几次/多慢。
+	// 放在结算之后：结算失败不影响结果，也不该让指标漏记这一次尝试。
+	observability.PrefillRun(string(res.Route), string(res.Band), res.BandReason)
+	observability.PrefillModelFallback(res.Model.Fallback)
+	if meter != nil && meter.called {
+		// meter.called 而不是 Route==model：模型回了但一条都没收也要计入耗时，
+		// 那正是「提示词该改了」的信号，漏掉它只剩「模型从没被调用」的假象。
+		observability.PrefillModelCall(res.Model.LatencyMS)
 	}
 
 	out := &PrefillResult{

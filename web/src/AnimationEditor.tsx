@@ -38,6 +38,7 @@ import {
   prefillModelFallbackKey,
   prefillSignalKey,
   prefillSourceKey,
+  prefillWaitExpired,
   reviewOrder,
   revokeBinding,
   revokeSource,
@@ -132,6 +133,11 @@ export function AnimationEditor({
   // 而深比较会把「只拖动了一像素」判成未变。
   const draftRef = useRef<AnimationSpec | null>(null);
   const prefillBaselineRef = useRef<AnimationSpec | null>(null);
+  // 开始等模型结果的时刻（毫秒）。0 表示当前没有在等。
+  //
+  // 没有它，一次「任务永远停在 queued」就会把按钮锁死：prefilling 为真时按钮禁用，
+  // 而轮询会一直拿到 pending，用户除了刷新页面没有出路。
+  const prefillStartedRef = useRef(0);
   draftRef.current = draft;
 
   const load = useCallback(async () => {
@@ -152,6 +158,7 @@ export function AnimationEditor({
     // 对得上时更糟：那是悄悄绑到了一页根本不相干的元素上。
     setPrefillJobId(null);
     setPrefillPending(null);
+    prefillStartedRef.current = 0;
     // 按钮的「进行中」也必须复位：否则换页后按钮永远停在「正在按讲稿绑定…」，
     // 而那个任务已经不会被轮询了。
     setPrefilling(false);
@@ -281,6 +288,7 @@ export function AnimationEditor({
       setPrefillTracks(prefillBindings(next).length);
       setPrefillFilter('');
       pendingJob = res.status === 'pending' ? res.jobId ?? null : null;
+      prefillStartedRef.current = pendingJob ? Date.now() : 0;
       setPrefillJobId(pendingJob);
     } catch (err) {
       if (seq !== generateSeq.current) return;
@@ -292,12 +300,43 @@ export function AnimationEditor({
     }
   };
 
+  // 等待预算用完：停止轮询、放开按钮，把原因写进面板。
+  //
+  // 不把这次预填标成失败：服务端可能还在算。用户再点一次会命中缓存（算好了）
+  // 或重排一个任务，两种结果都比「按钮永远停在正在绑定」强。
+  const abandonPrefillWait = () => {
+    prefillStartedRef.current = 0;
+    setPrefillJobId(null);
+    setPrefilling(false);
+    setPrefillInfo((prev) =>
+      prev ? { ...prev, modelFallback: prev.modelFallback || 'client_timeout' } : prev
+    );
+  };
+
   // 模型结果轮询。只在拿到 jobId 时持有定时器；到终态立刻停。
   usePolling(
     async () => {
       if (!prefillJobId) return;
-      const res = await getAnimationPrefillResult(identity, scope, prefillJobId);
+      // 先看预算再看请求：任务可能永远停在 queued（worker 没起、或版本不认识这个 kind），
+      // 那时连请求都是白发。
+      if (prefillWaitExpired(prefillStartedRef.current, Date.now())) {
+        abandonPrefillWait();
+        return;
+      }
+      const res = await getAnimationPrefillResult(identity, scope, prefillJobId).catch(
+        (err: unknown) => {
+          // 单次失败交给 usePolling 退避重试；但连退避都耗完预算了就不该再等。
+          // 不 rethrow 的话退避失效，会把一个坏网络变成每 1.5 秒一次的硬打。
+          if (prefillWaitExpired(prefillStartedRef.current, Date.now())) return null;
+          throw err;
+        }
+      );
+      if (res === null) {
+        abandonPrefillWait();
+        return;
+      }
       if (res.status === 'pending') return;
+      prefillStartedRef.current = 0;
       setPrefillJobId(null);
       setPrefilling(false);
       if (res.status === 'succeeded' && res.spec) {

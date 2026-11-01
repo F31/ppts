@@ -1382,5 +1382,6 @@
   "editor.animationPrefillReasonStale": "等待期间页面内容被修改，请重新绑定",
   "editor.animationPrefillDeferred": "模型结果已就绪，但你已经开始手工调整，所以没有替换当前绑定。",
   "editor.animationPrefillApplyModel": "采用模型结果",
-  "editor.animationPrefillEmptyResult": "服务端没有返回可用的默认规格，请重试或选一个风格。"
+  "editor.animationPrefillEmptyResult": "服务端没有返回可用的默认规格，请重试或选一个风格。",
+  "editor.animationPrefillReasonClientTimeout": "模型结果迟迟没有回来（可能是后台任务没被领取），上面这份是规则算出来的；稍后再点一次即可"
 }

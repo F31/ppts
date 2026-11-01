@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"testing"
 	"time"
 
@@ -208,6 +209,9 @@ func TestPrefillJobSkipsModelWhenQuotaExhausted(t *testing.T) {
 		WithCompleter(func(context.Context, string) (bind.ModelCompleter, error) { return model, nil }).
 		WithTokenAccounting(acct)
 
+	quotaBefore := prefillMetricCount(t, "ppts_animation_prefill_model_fallback_total", "reason=quota")
+	callsBefore := prefillMetricInt(t, "ppts_animation_prefill_model_calls_total").Value()
+
 	if err := h.Handle(context.Background(), prefillTestJob(t, snap)); err != nil {
 		t.Fatalf("额度不足不该让任务失败：%v", err)
 	}
@@ -217,6 +221,14 @@ func TestPrefillJobSkipsModelWhenQuotaExhausted(t *testing.T) {
 	res := mustResult(t, objects, snap.ContentHash())
 	if res.Model.Fallback != bind.ModelFallbackQuota {
 		t.Fatalf("model.fallback = %q，期望 %q", res.Model.Fallback, bind.ModelFallbackQuota)
+	}
+	// 「没发请求」不只是 model.calls==0 这一条用例内的断言：线上要靠计数分开
+	// quota 与 error——一个要充值，一个要查网关。
+	if got := prefillMetricCount(t, "ppts_animation_prefill_model_fallback_total", "reason=quota") - quotaBefore; got != 1 {
+		t.Fatalf("fallback{reason=quota} 增量 = %d，期望 1", got)
+	}
+	if got := prefillMetricInt(t, "ppts_animation_prefill_model_calls_total").Value() - callsBefore; got != 0 {
+		t.Fatalf("model_calls 增量 = %d，期望 0（没发出去就不该计入调用）", got)
 	}
 }
 
@@ -298,4 +310,54 @@ func (d *deadlineCompleter) Complete(ctx context.Context, _ bind.ModelPrompt) (b
 		d.onCtx(time.Until(dl))
 	}
 	return bind.ModelCompletion{}, ctx.Err()
+}
+
+// prefillMetricInt 读 expvar.Int 的当前值。没注册就是接错地方了，直接失败。
+func prefillMetricInt(t *testing.T, name string) *expvar.Int {
+	t.Helper()
+	v, ok := expvar.Get(name).(*expvar.Int)
+	if !ok {
+		t.Fatalf("%s 不是 expvar.Int（指标没定义或名字写错）", name)
+	}
+	return v
+}
+
+func prefillMetricCount(t *testing.T, name, key string) int64 {
+	t.Helper()
+	m, ok := expvar.Get(name).(*expvar.Map)
+	if !ok {
+		t.Fatalf("%s 不是 expvar.Map", name)
+	}
+	if v, ok := m.Get(key).(*expvar.Int); ok {
+		return v.Value()
+	}
+	return 0
+}
+
+// 指标漏接是静默的：定义得再全，Handle 里不调用就永远是 0。
+// 这条用例盯的是「跑完一次任务，计数真的动了」——不是「代码里有这行」。
+func TestPrefillJobEmitsModelMetrics(t *testing.T) {
+	objects := prefillTestObjects(t)
+	snap := prefillJobSnapshot(t)
+	model := &fakeCompleter{text: `{"bindings":[{"elementId":"shape-b1","segmentId":"seg-1","confidence":0.9}]}`}
+	h := NewAnimationPrefillHandler(objects).WithCompleter(func(context.Context, string) (bind.ModelCompleter, error) {
+		return model, nil
+	})
+
+	runsBefore := prefillMetricCount(t, "ppts_animation_prefill_runs_total", "route=model,band=low-confidence,reason=script")
+	callsBefore := prefillMetricInt(t, "ppts_animation_prefill_model_calls_total").Value()
+
+	if err := h.Handle(context.Background(), prefillTestJob(t, snap)); err != nil {
+		t.Fatalf("任务失败：%v", err)
+	}
+	if got := prefillMetricCount(t, "ppts_animation_prefill_runs_total", "route=model,band=low-confidence,reason=script") - runsBefore; got != 1 {
+		t.Fatalf("runs{route=model,band=low-confidence,reason=script} 增量 = %d，期望 1", got)
+	}
+	if got := prefillMetricInt(t, "ppts_animation_prefill_model_calls_total").Value() - callsBefore; got != 1 {
+		t.Fatalf("model_calls 增量 = %d，期望 1（真调用了一次）", got)
+	}
+	// 模型正常产出不是回退：空值不记，否则「回退率」的分母会变成全部任务。
+	if _, ok := expvar.Get("ppts_animation_prefill_model_fallback_total").(*expvar.Map).Get("reason=").(*expvar.Int); ok {
+		t.Fatal("模型正常产出却记了一条空 reason 回退")
+	}
 }

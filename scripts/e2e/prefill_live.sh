@@ -10,7 +10,8 @@
 #   2. script 档是不是真的把 HTTP 请求发给了模型，回来的绑定是不是真的被采纳；
 #   3. 模型挂掉时编辑器手里是不是仍有可编辑的规则底稿（而不是一屏空白）；
 #   4. 模型恢复后，同一页再点预填会不会被上一次的失败结果挡住（联调里抓到过，已修）；
-#   5. token 预占/结算是不是真的落进了额度账本。
+#   5. token 预占/结算是不是真的落进了额度账本；
+#   6. 计数（route / fallback / 缓存处置）是不是真的被写进了 /metrics。
 #
 # 用法：
 #   bash scripts/e2e/prefill_live.sh
@@ -24,6 +25,8 @@ ROOT=$PWD
 
 PPTS_PORT=${PPTS_PORT:-38081}
 LLM_PORT=${LLM_PORT:-38190}
+# worker 的指标端点在另一个监听上（进程隔离：worker 侧的 expvar 只有本进程能读）。
+METRICS_PORT=${METRICS_PORT:-38091}
 WORK=${WORK:-tmp/live-e2e}
 DECK=${DECK:-internal/animation/animdefault/testdata/sample-customer-deck.pptx}
 # 假模型回的是这一页的元素：第 7 页（index 6，slide-262）四张卡片。
@@ -43,6 +46,9 @@ WORK_ABS=$($PY -c "import os,sys;print(os.path.abspath(sys.argv[1]).replace(os.s
 
 SECRET=$($PY -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())")
 AES=$($PY -c "import base64,os;print(base64.b64encode(os.urandom(32)).decode())")
+# 指标端点 fail-closed：没配 token 一律 401。这里必须给一个，否则「指标读不到」
+# 会被误当成「指标没写」。
+METRICS_TOKEN=$($PY -c "import base64,os;print(base64.b64encode(os.urandom(24)).decode())")
 
 cat > "$WORK/env.sh" <<EOF
 PPTS_DB_DRIVER=sqlite
@@ -59,6 +65,8 @@ PPTS_LLM_PROVIDER=siliconflow
 PPTS_LLM_API_KEY=fake-key
 PPTS_LLM_BASE_URL=http://127.0.0.1:$LLM_PORT/v1
 PPTS_LLM_MODEL=fake-model
+PPTS_WORKER_METRICS_ADDR=127.0.0.1:$METRICS_PORT
+PPTS_METRICS_TOKEN=$METRICS_TOKEN
 EOF
 
 PIDS=()
@@ -192,6 +200,16 @@ prefill_get() {
 }
 field() { $PY -c "import sys,json;d=json.load(sys.stdin);print(d.get('$1') or '')"; }
 
+# metric_value <port> <series 前缀>：取该 series 的值；同一指标的多条 series 求和。
+#
+# 不看指标就等于「上线后只能靠用户说感觉慢」。这一步同时验证两件事：
+# 计数真的被写出来了（不是代码里有这行），以及标签渲染成了 label 而不是指标名的一部分。
+metric_value() {
+  curl -s --noproxy '*' -H "Authorization: Bearer $METRICS_TOKEN" \
+    "http://127.0.0.1:$1/metrics" 2>/dev/null \
+    | awk -v want="$2" 'index($0, want) == 1 { total += $2 } END { printf "%d\n", total + 0 }'
+}
+
 log "5/8 模型可用：script 档应真的走模型"
 BEFORE=$(count_llm_calls)
 RESP=$(prefill_post)
@@ -205,6 +223,12 @@ AFTER=$(count_llm_calls)
 [ "$ROUTE" = "model" ] || fail "route=$ROUTE，期望 model"
 [ "$AFTER" -gt "$BEFORE" ] || fail "模型一次都没被调用（请求数 $BEFORE -> $AFTER）"
 echo "route=model，模型请求 +$((AFTER-BEFORE))"
+
+RUNS=$(metric_value "$METRICS_PORT" 'ppts_animation_prefill_runs_total{route="model",band="low-confidence",reason="script"')
+[ "$RUNS" -ge 1 ] || fail "worker 指标里没有 route=model/reason=script 的预填计数（指标没接上，或标签被渲染成了指标名）"
+CALLS=$(metric_value "$METRICS_PORT" 'ppts_animation_prefill_model_calls_total')
+[ "$CALLS" -ge 1 ] || fail "worker 指标里 model_calls=0：真实调用没有被计数"
+echo "worker 指标：runs(model/script)=$RUNS，model_calls=$CALLS"
 
 log "6/8 模型挂掉：必须降级到规则，任务仍然成功"
 kill -9 "${PIDS[0]}" 2>/dev/null || true
@@ -233,6 +257,10 @@ ROUTE=$(echo "$GOT" | $PY -c 'import sys,json;print(((json.load(sys.stdin).get("
 [ "$ROUTE" = "rule" ] || fail "route=$ROUTE，期望 rule"
 echo "route=rule，fallback=error"
 
+ERRS=$(metric_value "$METRICS_PORT" 'ppts_animation_prefill_model_fallback_total{reason="error"}')
+[ "$ERRS" -ge 1 ] || fail "worker 指标里没有 fallback{reason=error}：模型挂了却看不出原因分布"
+echo "worker 指标：fallback(error)=$ERRS"
+
 log "7/8 模型恢复：同一内容再点预填必须重试，不能被上次的失败挡住"
 $PY scripts/e2e/fake_llm.py "$LLM_PORT" "$WORK/fake-llm.jsonl" &
 PIDS[0]=$!
@@ -250,6 +278,11 @@ AFTER=$(count_llm_calls)
 [ "$AFTER" -gt "$BEFORE" ] || fail "模型恢复了却没被调用"
 echo "route=model，模型请求 +$((AFTER-BEFORE))"
 
+# 这个数随「模型不可用时被打开的次数」线性增长，是判断要不要加负缓存的唯一依据。
+RETRIES=$(metric_value "$PPTS_PORT" 'ppts_animation_prefill_cache_total{result="retry_after_failure"}')
+[ "$RETRIES" -ge 1 ] || fail "API 指标里没有 cache{result=retry_after_failure}：失败结果被重算这件事不可观测"
+echo "API 指标：cache(retry_after_failure)=$RETRIES"
+
 log "8/8 同内容已成功：再点应当复用缓存，不再问模型"
 BEFORE=$(count_llm_calls)
 RESP=$(prefill_post)
@@ -258,6 +291,10 @@ AFTER=$(count_llm_calls)
 [ "$STATUS" = "succeeded" ] || fail "status=$STATUS，期望 succeeded（成功结果应直接复用）"
 [ "$AFTER" -eq "$BEFORE" ] || fail "命中了成功结果却又问了一次模型（$BEFORE -> $AFTER）"
 echo "复用缓存，模型调用 0 次"
+
+HITS=$(metric_value "$PPTS_PORT" 'ppts_animation_prefill_cache_total{result="hit"}')
+[ "$HITS" -ge 1 ] || fail "API 指标里没有 cache{result=hit}：复用缓存不可观测"
+echo "API 指标：cache(hit)=$HITS"
 
 LEDGER=$($PY - "$WORK_ABS/data/live.db" "$PID" <<'PYEOF'
 import sqlite3, sys
