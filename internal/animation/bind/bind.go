@@ -63,7 +63,7 @@ const (
 
 // 结构信号名。报告与编辑器都按这些字面量筛选。
 //
-// 前三条读版面，最后两条读讲稿（互斥，永远只出一条）：版面有没有把顺序编码出来，
+// 前三条读版面，后三条读讲稿（三条互斥，永远只出一条）：版面有没有把顺序编码出来，
 // 与讲稿有没有把那个顺序念出来，是两件事，缺哪一件的补救动作也不同。
 const (
 	SignalMarkers         = "markers"          // 页内有 ≥3 个编号标记（01/02/03）
@@ -71,13 +71,19 @@ const (
 	SignalDirections      = "directions"       // 页内元素覆盖 ≥2 个方向半区
 	SignalScriptStructure = "script-structure" // 讲稿含序数/精确数量/空间指代
 	SignalScriptFlat      = "script-flat"      // 讲稿没有把结构讲出来
+	// SignalScriptAbsent 表示这一页根本没有可念的文字。
+	// 它和 script-flat 是两件事：一个要写讲稿，一个要改讲稿。
+	// 真实客户 deck 里这个分支是常态——33 页 Token 方案有 27 页没有备注，
+	// 混成 script-flat 会让编辑器对着空讲稿说「改讲解词」。
+	SignalScriptAbsent = "script-absent"
 )
 
-// 低置信的原因。三者预期准确率与补救动作都不同，不能合成一句提示。
+// 低置信的原因。四者预期准确率与补救动作都不同，不能合成一句提示。
 const (
-	BandReasonLayout = "layout" // 版面无结构信号（0.533）
-	BandReasonScript = "script" // 版面有结构、讲稿没讲出来（0.667）
-	BandReasonBoth   = "both"   // 两侧都缺（0.533）
+	BandReasonLayout   = "layout"    // 版面无结构信号（0.533）
+	BandReasonScript   = "script"    // 版面有结构、讲稿没讲出来（0.667）
+	BandReasonBoth     = "both"      // 两侧都缺（0.533）
+	BandReasonNoScript = "no-script" // 这一页还没有讲稿，无从判断（不预填，先写稿）
 )
 
 // Result 是一次预填的全部产出。
@@ -86,7 +92,8 @@ type Result struct {
 	Band     Band
 	// Signals 是命中的结构信号，按固定顺序（markers/clusters/directions/script-*）排列。
 	Signals []string
-	// BandReason 只在低置信时有值（layout / script / both）：说明缺的是版面还是讲稿。
+	// BandReason 只在低置信时有值（layout / script / both / no-script）：
+	// 说明缺的是版面、讲稿，还是这一页压根还没有讲稿。
 	// 结构化结果为空。
 	BandReason string
 	// DirectionCoverage 是四个方向半区里非空的个数（0..4）。分档判据用 ≥2，
@@ -122,7 +129,11 @@ type pair struct {
 }
 
 // Run 是唯一入口：纯函数，同一输入必然同一输出。
+//
+// elements 的顺序不被信任：调用方给的是形状树顺序（z-order），而 align 的单调
+// 假设是讲解顺序。入口先按阅读序重排（readingOrder），下游所有规则都吃这一份。
 func Run(elements []Element, segments []Segment, opt Options) Result {
+	elements = readingOrder(elements)
 	pairs, _ := align(elements, segments, opt.threshold())
 
 	// 辅助元素白名单：字面匹配上的也退掉。图注/页码被绑属于**错绑**——精确率会掉，

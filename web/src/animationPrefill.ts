@@ -47,7 +47,8 @@ const SIGNAL_KEYS: Record<string, string> = {
   clusters: 'editor.animationSignalClusters',
   directions: 'editor.animationSignalDirections',
   'script-structure': 'editor.animationSignalScriptStructure',
-  'script-flat': 'editor.animationSignalScriptFlat'
+  'script-flat': 'editor.animationSignalScriptFlat',
+  'script-absent': 'editor.animationSignalScriptAbsent'
 };
 
 export type PrefillBinding = {
@@ -147,12 +148,19 @@ export function prefillSignalKey(signal: string): string {
 /**
  * 低置信提示的文案 key，按「缺的是哪一侧」分叉。
  *
- * 三种情况的实测召回不同（layout 0.533 / script 0.667 / both 0.533），补救动作也不同：
- * script 该改写讲解词，layout 才该动版面。留一句通用文案，用户会照着去改错的地方。
- * 未登记的 reason 退回 layout 那句——但不能是「没有检测到版面信号」以外的措辞，
- * 因为 band=low-confidence 时版面确实没被判成结构化。
+ * 四种情况的补救动作不同：layout 该动版面，script 该改写讲解词，no-script 该先写稿
+ * （用户手里还没有可改的东西），both 两边都缺。留一句通用文案，用户会照着去改错的地方。
+ *
+ * no-script 这一条在预填面板里不单独渲染——同一页的「预填已跳过」已经把
+ * 「没有讲稿分段」说过一遍了，再说一遍只是噪音。这里保留映射，是为了别的调用方
+ * 拿到 no-script 时不至于退回到「没有检测到结构化版面信号」——那句话对一页
+ * 有编号有卡片的版面是假话。
+ *
+ * 未登记的 reason 退回 layout 那句：band=low-confidence 且没给原因时，
+ * 版面确实没被判成结构化。
  */
 export function prefillLowConfidenceKey(reason?: string): string {
+  if (reason === 'no-script') return 'editor.animationPrefillLowConfidenceNoScript';
   if (reason === 'script') return 'editor.animationPrefillLowConfidenceScript';
   if (reason === 'both') return 'editor.animationPrefillLowConfidenceBoth';
   return 'editor.animationPrefillLowConfidenceLayout';

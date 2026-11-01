@@ -52,6 +52,13 @@ type script struct {
 	Pages []scriptPage `json:"pages"`
 }
 
+type row struct {
+	ElementID string  `json:"elementId"`
+	SegmentID string  `json:"segmentId"`
+	Source    string  `json:"source"`
+	Score     float64 `json:"score"`
+}
+
 type verdict struct {
 	Index      int      `json:"index"`
 	SlideID    string   `json:"slideId,omitempty"`
@@ -59,12 +66,16 @@ type verdict struct {
 	BandReason string   `json:"bandReason,omitempty"`
 	Signals    []string `json:"signals,omitempty"`
 	Bound      int      `json:"bound"`
+	// Rows 只在 -rows 时输出：绑定明细。自引用召回要按 elementId 逐条对，
+	// 只给 bound 计数看不出「绑到了哪个元素」。
+	Rows []row `json:"rows,omitempty"`
 }
 
 func main() {
 	elemPath := flag.String("elements", "", "elements.json（数组，每项一页）")
 	segPath := flag.String("segments", "", "讲稿 JSON（pages[].segments[]）")
 	out := flag.String("out", "", "输出路径；留空打印到 stdout")
+	rows := flag.Bool("rows", false, "输出每条绑定明细（elementId/segmentId/source/score）")
 	flag.Parse()
 
 	if *elemPath == "" || *segPath == "" {
@@ -94,14 +105,26 @@ func main() {
 		}
 
 		res := bind.Run(bel, bsegs, bind.Options{})
-		outPages = append(outPages, verdict{
+		v := verdict{
 			Index:      p.Index,
 			SlideID:    p.SlideID,
 			Band:       string(res.Band),
 			BandReason: res.BandReason,
 			Signals:    res.Signals,
 			Bound:      len(res.Bindings),
-		})
+		}
+		if *rows {
+			v.Rows = make([]row, 0, len(res.Bindings))
+			for _, b := range res.Bindings {
+				v.Rows = append(v.Rows, row{
+					ElementID: b.ElementID,
+					SegmentID: b.SegmentID,
+					Source:    b.Source,
+					Score:     b.Score,
+				})
+			}
+		}
+		outPages = append(outPages, v)
 	}
 
 	doc := map[string]any{"pages": outPages}

@@ -536,8 +536,10 @@ export function AnimationEditor({
                   )}
 
                   {/* 低置信的原因必须分开说：script 档是讲稿没把结构讲出来（版面没问题），
-                      沿用「没有检测到结构化版面信号」等于对用户说假话，还会把他引去重排 PPT。 */}
-                  {lowConfidence && (
+                      沿用「没有检测到结构化版面信号」等于对用户说假话，还会把他引去重排 PPT。
+                      no-script 档不在这里说：上面那条「预填已跳过」已经讲了同一件事
+                      （这一页没有讲稿分段），再叠一句只是把同一句话说两遍。 */}
+                  {lowConfidence && prefillInfo?.bandReason !== 'no-script' && (
                     <p className="prefill-warn">{t(prefillLowConfidenceKey(prefillInfo?.bandReason))}</p>
                   )}
 

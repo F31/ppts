@@ -822,6 +822,9 @@ test('低置信提示按「缺的是哪一侧」分叉', async () => {
   // 未登记的 reason 退回版面那句，不凭空造 key。
   assert.equal(prefillLowConfidenceKey(undefined), 'editor.animationPrefillLowConfidenceLayout');
   assert.equal(prefillLowConfidenceKey('layout-v3'), 'editor.animationPrefillLowConfidenceLayout');
+  // no-script 不能退回版面那句：一页有编号有卡片的版面被判 low-confidence/no-script 时，
+  // 「没有检测到结构化版面信号」是假话，而且它把用户引去重排 PPT——真正缺的是讲稿。
+  assert.equal(prefillLowConfidenceKey('no-script'), 'editor.animationPrefillLowConfidenceNoScript');
 
   // script 档的版面是有信号的：文案必须点名「讲稿」，否则用户会去重排 PPT。
   const zh = JSON.parse(await readFile(new URL('./src/i18n/zh.json', import.meta.url), 'utf8'));
@@ -831,13 +834,21 @@ test('低置信提示按「缺的是哪一侧」分叉', async () => {
   assert.ok(zhScript.includes('讲稿'), `script 档文案没说清该改讲稿：${zhScript}`);
   assert.ok(!zhScript.includes('没有检测到结构化版面信号'), '版面明明有信号，不能复用版面文案');
   assert.ok(enScript.toLowerCase().includes('narration'), `英文 script 档文案未点名讲稿：${enScript}`);
-  // 三份文案必须各不相同：合成一句就等于不分档。
-  const texts = ['layout', 'script', 'both'].map((r) => zh[prefillLowConfidenceKey(r)]);
-  assert.equal(new Set(texts).size, 3, '低置信三种原因的文案重复了');
+  // 四份文案必须各不相同：合成一句就等于不分档。
+  const reasons = ['layout', 'script', 'both', 'no-script'];
+  const texts = reasons.map((r) => zh[prefillLowConfidenceKey(r)]);
+  assert.equal(new Set(texts).size, 4, '低置信四种原因的文案重复了');
+  texts.forEach((text, i) => assert.ok(text, `${reasons[i]} 档缺中文文案`));
+  reasons.forEach((r) => assert.ok(en[prefillLowConfidenceKey(r)], `${r} 档缺英文文案`));
+  // no-script 指向的补救动作是「先写稿」，不能是「改讲解词」。
+  const zhNoScript = zh[prefillLowConfidenceKey('no-script')];
+  assert.ok(zhNoScript.includes('写'), `no-script 档没说该先写稿：${zhNoScript}`);
+  assert.ok(!zhNoScript.includes('要提升就先改讲解词'), 'no-script 不该让人去改还不存在的讲稿');
 });
 
 test('讲稿侧信号有文案，未登记信号不硬套', () => {
   assert.equal(prefillSignalKey('script-structure'), 'editor.animationSignalScriptStructure');
   assert.equal(prefillSignalKey('script-flat'), 'editor.animationSignalScriptFlat');
+  assert.equal(prefillSignalKey('script-absent'), 'editor.animationSignalScriptAbsent');
   assert.equal(prefillSignalKey('script-v2'), '');
 });

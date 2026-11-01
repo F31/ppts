@@ -1,5 +1,7 @@
 package bind
 
+import "strings"
+
 // 本文件是设计文档 §2 的分档实现：预填之前先判「这一页的版面有没有把讲解顺序编码出来」。
 //
 // 为什么必须先判：同一套规则在结构化版面 0.972、纯文字页 0.533。硬套会得到一个
@@ -54,10 +56,16 @@ func classifyBand(elements []Element, segments []Segment) bandVerdict {
 	}
 
 	layoutOK := ms >= 3 || clustered
+	scriptAbsent := noScriptText(segments)
 	scriptOK := hasScriptStructure(segments)
-	if scriptOK {
+	switch {
+	case scriptAbsent:
+		// 没有可念的文字：分档的另一半根本不存在，不能判结构化，也不该说
+		// 「讲稿没把结构念出来」——用户还没写讲稿，该做的是先写，不是改。
+		signals = append(signals, SignalScriptAbsent)
+	case scriptOK:
 		signals = append(signals, SignalScriptStructure)
-	} else {
+	default:
 		signals = append(signals, SignalScriptFlat)
 	}
 
@@ -65,6 +73,9 @@ func classifyBand(elements []Element, segments []Segment) bandVerdict {
 	switch {
 	case layoutOK && scriptOK:
 		v.Band = BandStructured
+	case scriptAbsent:
+		v.Band = BandLowConfidence
+		v.Reason = BandReasonNoScript
 	case layoutOK:
 		// 版面没问题、讲稿没把结构念出来：实测 0.667。提示必须指向讲稿，
 		// 否则用户会去重排 PPT——而该改的是讲解词。
@@ -80,12 +91,26 @@ func classifyBand(elements []Element, segments []Segment) bandVerdict {
 	return v
 }
 
+// noScriptText 报告这一页有没有可念的文字。
+//
+// 只判「全空」而不判「太少」：一页只有一句「谢谢」也是讲稿，能不能绑是绑定器的事，
+// 分档不该替它下结论。这里区分的是「有文字但没念结构」与「压根没有文字」——
+// 前者改讲解词，后者先写稿，两个动作指向不同的人。
+func noScriptText(segments []Segment) bool {
+	for _, s := range segments {
+		if strings.TrimSpace(s.Text) != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // bandVerdict 是一次分档的全部产出。
 type bandVerdict struct {
 	Band       Band
 	Signals    []string
 	Directions int
-	// Reason 只在低置信时有值：layout / script / both。
+	// Reason 只在低置信时有值：layout / script / both / no-script。
 	Reason string
 }
 

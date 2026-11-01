@@ -154,6 +154,16 @@ func TestPrefillBandReadsNarration(t *testing.T) {
 			wantReason: "script",
 			wantSignal: "script-flat",
 		},
+		{
+			// 分段存在但一个字都没有：讲稿生成失败、占位段都会长这样。
+			// 以前和「讲了话但没讲结构」共用 script-flat，提示会说「要提升就先改讲解词」，
+			// 而这一页根本没有讲解词可改。
+			name:       "有分段但全空",
+			segs:       []animation.ScriptSegment{{ID: "seg-1", Text: "  "}, {ID: "seg-2", Text: "\n"}},
+			wantBand:   "low-confidence",
+			wantReason: "no-script",
+			wantSignal: "script-absent",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

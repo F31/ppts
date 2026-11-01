@@ -261,6 +261,44 @@ func TestBand(t *testing.T) {
 	}
 }
 
+// 没有讲稿与「讲稿没讲出结构」是两件事：一个要写稿，一个要改稿。
+// 真实客户 deck 上这一格是常态（33 页 Token 方案有 27 页没有备注），
+// 混成 script-flat 会让编辑器对着空讲稿说「先去改讲解词」。
+func TestBandNoScript(t *testing.T) {
+	markerPage := []Element{
+		elem("m1", "marker", 100, 120, 80, 80, "01"),
+		elem("m2", "marker", 100, 260, 80, 80, "02"),
+		elem("m3", "marker", 100, 400, 80, 80, "03"),
+		elem("b1", "bullet", 200, 120, 600, 60, "市场趋势"),
+	}
+
+	// 版面有编号，但一个分段都没有：不能判结构化，也不能说「讲稿没念出结构」。
+	v := classifyBand(markerPage, nil)
+	if v.Band != BandLowConfidence || v.Reason != BandReasonNoScript {
+		t.Fatalf("无讲稿应 low-confidence/no-script，实际 %q/%q", v.Band, v.Reason)
+	}
+	if !hasSignal(v.Signals, SignalScriptAbsent) {
+		t.Fatalf("无讲稿应出 script-absent：%v", v.Signals)
+	}
+	if hasSignal(v.Signals, SignalScriptFlat) {
+		t.Fatalf("无讲稿不该同时出 script-flat（两个信号互斥）：%v", v.Signals)
+	}
+
+	// 分段存在但全是空白：同样算「没有可念的文字」。空段落不是讲稿。
+	blank := []Segment{{ID: "s0", Text: "  "}, {ID: "s1", Text: "\n"}}
+	v = classifyBand(markerPage, blank)
+	if v.Reason != BandReasonNoScript {
+		t.Fatalf("全空段落也应按 no-script，实际 %q", v.Reason)
+	}
+
+	// 只要有一句可念的字，就回到 script-flat：能绑不能绑是绑定器的事，
+	// 分档只管「有没有文字」。
+	v = classifyBand(markerPage, []Segment{{ID: "s0", Text: "谢谢"}})
+	if v.Reason != BandReasonScript {
+		t.Fatalf("有一句讲稿应回到 script，实际 %q", v.Reason)
+	}
+}
+
 func TestScriptStructureKinds(t *testing.T) {
 	cases := []struct {
 		name string
