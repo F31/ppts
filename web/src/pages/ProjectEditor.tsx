@@ -30,6 +30,7 @@ import {
   listJobsPage,
   listProjectScripts,
   listVoiceModels,
+  previewVoice,
   regenerateScriptDraft,
   rewriteScriptText,
   saveVoiceSettings,
@@ -55,6 +56,7 @@ import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
+import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } from '../voicePreview';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
@@ -171,6 +173,13 @@ export function ProjectEditor({
   const [voiceDraftRate, setVoiceDraftRate] = useState(100);
   const [voiceSaving, setVoiceSaving] = useState(false);
   const [voiceSaveError, setVoiceSaveError] = useState('');
+  // 音色试听：只返回一次性 Blob，不落对象存储。URL 的生命周期由本组件负责 revoke。
+  const [voicePreviewLoading, setVoicePreviewLoading] = useState(false);
+  const [voicePreviewURL, setVoicePreviewURL] = useState('');
+  const [voicePreviewError, setVoicePreviewError] = useState('');
+  const [voicePreviewModel, setVoicePreviewModel] = useState('');
+  const [voicePreviewDuration, setVoicePreviewDuration] = useState(0);
+  const voicePreviewSeq = useRef(new VoicePreviewSequencer());
   // 配音生成方式：incremental=只补未配音/讲稿已更新的页；full=全部重新生成并覆盖。
   const [voiceGenMode, setVoiceGenMode] = useState<'incremental' | 'full'>('incremental');
   // 隐藏页默认不参与成片（放映与 PDF 导出都会跳过），因此“全部生成”默认也跳过它们；
@@ -1086,6 +1095,66 @@ export function ProjectEditor({
     setVoiceDraftModel(name);
     const voices = voicesForModel(name);
     setVoiceDraftVoice(voices[0] ?? '');
+  };
+
+  // 换音色/语速、或关掉弹窗后立即丢弃上一次样音：
+  // 留着它只会让用户以为"刚选的音色就是这个声音"（串音的另一种形态）。
+  useEffect(() => {
+    voicePreviewSeq.current.cancel();
+    setVoicePreviewURL('');
+    setVoicePreviewError('');
+    setVoicePreviewModel('');
+    setVoicePreviewDuration(0);
+    setVoicePreviewLoading(false);
+  }, [voiceDraftVoice, voiceDraftRate, propsOpen]);
+
+  // Blob URL 必须在替换或卸载时释放，否则每试听一次就留下一个不可回收的音频对象。
+  useEffect(() => {
+    if (!voicePreviewURL) return undefined;
+    return () => URL.revokeObjectURL(voicePreviewURL);
+  }, [voicePreviewURL]);
+
+  // playVoicePreview：用**草稿**音色/语速合成一段样音，用户不必先保存再听。
+  // 结果按 (音色, 语速) 键校验后才落地：上一次请求晚到不会覆盖当前选择。
+  const playVoicePreview = async () => {
+    if (!voiceDraftVoice) {
+      setVoicePreviewError(t('editor.voiceModelEmpty'));
+      return;
+    }
+    const request = { voice: voiceDraftVoice, ratePercent: voiceDraftRate };
+    const key = voicePreviewKey(request);
+    const token = voicePreviewSeq.current.begin(key);
+    setVoicePreviewLoading(true);
+    setVoicePreviewError('');
+    try {
+      const result = await previewVoice(identity, projectId, request);
+      if (!voicePreviewSeq.current.isCurrent(token, key)) return;
+      setVoicePreviewURL(URL.createObjectURL(result.blob));
+      setVoicePreviewModel(result.model);
+      setVoicePreviewDuration(result.durationMs);
+    } catch (error) {
+      if (!voicePreviewSeq.current.isCurrent(token, key)) return;
+      if (error instanceof ConnectError) {
+        // 四种失败的处置不同：去配模型 / 稍后重试 / 改短文本 / 其它。
+        switch (classifyVoicePreviewError(error.code)) {
+          case 'not_configured':
+            setVoicePreviewError(t('editor.voicePreviewNoGateway'));
+            break;
+          case 'timeout':
+            setVoicePreviewError(t('editor.voicePreviewTimeout'));
+            break;
+          case 'too_long':
+            setVoicePreviewError(t('editor.voicePreviewTooLong'));
+            break;
+          default:
+            setVoicePreviewError(describeApiError(error, t('editor.voicePreviewFailed'), t));
+        }
+      } else {
+        setVoicePreviewError(describeApiError(error, t('editor.voicePreviewFailed'), t));
+      }
+    } finally {
+      if (voicePreviewSeq.current.isCurrent(token, key)) setVoicePreviewLoading(false);
+    }
   };
 
   // 「配音」：先保存语音配置，再按所选生成方式发起配音任务。
@@ -2006,6 +2075,35 @@ export function ProjectEditor({
                   ))}
                 </select>
               </label>
+
+              {/* 先试听再确认：不必等整篇生成，也不必先保存草稿。
+                  用的是草稿音色/语速，因此"听到的"就是点击「配音」后会用的参数。 */}
+              <div className="voice-preview">
+                <button
+                  type="button"
+                  className="button-ghost"
+                  disabled={!voiceDraftVoice || voicePreviewLoading || !canEditScript}
+                  onClick={() => void playVoicePreview()}
+                >
+                  {voicePreviewLoading ? t('editor.voicePreviewLoading') : t('editor.voicePreview')}
+                </button>
+                {voicePreviewURL && (
+                  <audio controls autoPlay src={voicePreviewURL} aria-label={t('editor.voicePreview')} />
+                )}
+                {voicePreviewModel && (
+                  <p className="narration-note">{t('editor.voicePreviewModel', { model: voicePreviewModel })}</p>
+                )}
+                {voicePreviewDuration > 0 && (
+                  <p className="narration-note">
+                    {t('editor.voicePreviewDuration', { seconds: (voicePreviewDuration / 1000).toFixed(1) })}
+                  </p>
+                )}
+                {voicePreviewError && (
+                  <p className="form-error" role="alert">
+                    {voicePreviewError}
+                  </p>
+                )}
+              </div>
 
               <label className="field-label">
                 {t('editor.rate', { percent: voiceDraftRate })}

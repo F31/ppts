@@ -89,6 +89,7 @@ Upload PPTX ──▶ Parse slides/elements ──▶ Generate AI script ──�
 ### Narration and export
 
 - **Production TTS provider**: SiliconFlow (CosyVoice2) by default over an OpenAI-compatible interface — swap providers with one env var
+- **Voice preview**: pick a voice and rate, then audition a ≤120-character sample. It resolves the *same* gateway the narration job will use — no full job needed, and no sample audio is stored
 - **Segment-level regeneration**: only changed segments are re-synthesized; untouched ones hit the cache at zero TTS cost
 - **Target-duration loop**: after the first pass the rate deviation is measured; beyond ±10% the speaking rate is adjusted proportionally and the segment re-synthesized
 - **Export formats**: web narrated deck (zip: timeline + subtitles + audio segments) / MP4 / SRT / VTT / narrated PPTX (audio + auto-advance embedded in a copy of the source deck)

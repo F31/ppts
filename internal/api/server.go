@@ -23,6 +23,7 @@ import (
 	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/messaging"
@@ -99,6 +100,10 @@ type Options struct {
 	Gateway                gateway.StoreResolver
 	ScriptSources          app.ScriptSourceStore
 	VoiceSettings          app.VoiceSettingsStore
+	// VoicePreviewProvider 覆盖音色试听的 TTS 供应商（测试与离线部署）。
+	// nil 时按租户缺省 TTS 网关构建 —— 与配音 worker 同一条解析路径，
+	// 保证"试听听到的"就是"成片会用的"。
+	VoicePreviewProvider tts.TTSProvider
 	// 邮箱自助注册（B5-M4）：JWT 签发/校验密钥与密码全局 pepper，均来自环境变量，不落库。
 	JWTSecret      string
 	PasswordPepper string
@@ -335,6 +340,11 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	NewBundleExportHandler(jobs, opt.Members, opt.Audit, opt.Animation, animationGate, opt.AnimationProbe, objects, opt.UsageStore).Register(mux, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
 	registerEditorRoutes(mux, jobs, objects, scripts, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
+	// 音色试听：一次性合成 120 字以内的样音，不落对象存储、不建任务。
+	registerVoicePreviewRoutes(mux, voicePreviewDeps{
+		gateways: opt.Gateway, provider: opt.VoicePreviewProvider,
+		projects: projects, members: opt.Members, recorder: opt.Audit,
+	}, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。
 	registerJobDetailRoutes(mux, jobs, auth)
 	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。

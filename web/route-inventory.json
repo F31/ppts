@@ -101,9 +101,9 @@
   },
   "narration": {
    "name": "配音与音色",
-   "prefixes": ["/projects/{pid}/narration", "/projects/{pid}/revisions/{rev}/narration", "/projects/{pid}/voice-settings", "/projects/{pid}/voice-models"],
+   "prefixes": ["/projects/{pid}/narration", "/projects/{pid}/revisions/{rev}/narration", "/projects/{pid}/voice-settings", "/projects/{pid}/voice-models", "/projects/{pid}/voice-preview"],
    "disposition": "keep",
-   "reason": "draft-count / stale 是编辑器加载态探测（N/M 进度与过期检测），与 NarrationService.Estimate（费用估算）**不是同一能力**——架构审视原列为双写属误判，实测确认两者前端各自在用且语义无关。"
+   "reason": "draft-count / stale 是编辑器加载态探测（N/M 进度与过期检测），与 NarrationService.Estimate（费用估算）**不是同一能力**——架构审视原列为双写属误判，实测确认两者前端各自在用且语义无关。voice-preview 是一次性样音合成（返回音频字节，不落对象存储），RPC 无等价契约。"
   },
   "editor": {
    "name": "编辑器（页面/版本）",

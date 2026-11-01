@@ -50,6 +50,11 @@ var (
 	// 这类任务本来就没到点，混进 backlog 会让看板凭空报警。单列出来，
 	// 才能把"调度慢"与"调用方自己排的未来任务"分开看。
 	queueBackoffByKind = expvar.NewMap("ppts_worker_queue_backoff_by_kind")
+	// voicePreviewTotal 按结果累计音色试听请求。
+	// 试听是一次**真实且计费**的合成调用，但不像配音任务那样有 job 记录可查；
+	// 没有这个计数，用户报"试听没声音"时只能翻服务端日志猜。
+	// 键：event=ok | invalid | tts_not_configured | timeout | tts_failed。
+	voicePreviewTotal = expvar.NewMap("ppts_voice_preview_total")
 )
 
 // includeTenantLabel 控制指标键是否携带租户维度。默认关闭，避免以租户 UUID 作为
@@ -176,6 +181,9 @@ func kindKey(kind string) string { return "kind=" + clean(kind) }
 
 // AddRateLimitDegrade 按限流 scope（端点名）累计一次降级。
 func AddRateLimitDegrade(scope string) { ratelimitDegradeTotal.Add(clean(scope), 1) }
+
+// VoicePreview 记录一次音色试听的结果（ok / invalid / tts_not_configured / timeout / tts_failed）。
+func VoicePreview(result string) { voicePreviewTotal.Add("event="+clean(result), 1) }
 
 // DebugVarsPublic 返回 GET /debug/vars 是否允许匿名读取（PPTS_DEBUG_VARS_PUBLIC=true）。
 // 与 SetAuthDevHeadersActive 同构：把"有意放行"与"忘了配 token"区分成两种后果。
