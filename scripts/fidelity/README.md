@@ -859,6 +859,41 @@ q8 真实讲稿锚点 0.972 / 0.667 与 q7 0.353 一条没动。
 
 `GET ?default=true&prefill=true` 的同步路径保留：它是纯规则的，毫秒级，作为兜底还在。
 
+### 真机联调（`scripts/e2e/prefill_live.sh`）
+
+上面所有用例都停在进程内：假 resolver、假模型、假账本。它们证明不了「服务端把快照交给
+worker 之后还是同一份内容」，也证明不了「HTTP 请求真的按 OpenAI 协议发了出去」。这两件事
+只有跑真实进程才能验：
+
+```bash
+bash scripts/e2e/prefill_live.sh
+```
+
+它起真实的 `ppts server` + `ppts worker`（SQLite + 本地对象存储 + fake TTS），模型侧用
+本机假 OpenAI 兼容服务（`scripts/e2e/fake_llm.py`，协议是真的，答案是固定的）。八步走完
+上传 → 解析 → 讲稿 → 配音 → 预填 → 模型 → 落盘 → 读回，并逐步断言：
+
+| 步骤 | 断言 | 它拦的是什么 |
+|---|---|---|
+| 5 | script 档返回 202，最终 `route=model` | 快照/路由接错，模型根本没被问 |
+| 6 | 模型停掉后 `route=rule` + `fallback=error`，任务仍成功 | 模型挂掉时编辑器拿到空白 |
+| 7 | 模型恢复、内容不变，再点预填仍是 202 并重新问模型 | **上一次失败被当成结论缓存**（见下） |
+| 8 | 结果成功后再点走 200，模型调用次数不变 | 一轮修复把缓存整个废掉 |
+| 末 | `usage_ledger` 有 `prefill:<jobId>` 的 token 记账 | 「预填偷偷烧额度」 |
+
+第 7 步是这次联调抓到的真缺陷：结果按内容指纹缓存，而缓存短路排在路由之前，于是
+「模型没问成」的失败结果也会被当成成品复用。实测现象是——模型服务恢复后，同一页反复
+点预填始终显示 `fallback=error`，模型一次都没被调用，只有改一个字（换指纹）才恢复。
+配上模型却不生效，比多花一次调用糟得多，所以现在只有 `Model.Fallback == ""` 的结果才短路
+（`TestPrefillPostRetriesCachedModelFailure` 钉住它，且在旧实现上会红）。
+
+脚本会直插一行 `narration_scripts`（`source_revision_no=0`）：产品里的讲稿来自「AI 生成草稿」
+或「PPT 备注导入」，两条路都要 LLM 或备注，而这一段要验的是预填不是讲稿生成。此后每次编辑
+仍走真实 RPC（`ScriptService.Update` 会从 legacy 分叉）。
+
+它**不点前端**：界面与像素归 `npm run animation:test` 与 `web/animation-check.mjs`。
+这里保证的是「后端到模型到落盘再读回」这条路是真的。
+
 ### 复现
 
 ```bash

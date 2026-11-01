@@ -155,7 +155,14 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 	// 反复打开同一个编辑器、同一个页面重试，都不会再问一次模型。
 	// 读失败按「没有」处理：它只意味着这次可能多花一次模型调用，
 	// 而不是「结果不对」；真写不回去会在任务侧暴露。
-	if cached, hit, _ := app.LoadPrefillResult(r.Context(), h.objects, key.TenantID, key.ProjectID, key.SourceRevisionNo, hash); hit {
+	//
+	// 但「模型这次没问成」的结果不能这样复用：它记的是上一次尝试的失败，不是这一页的结论。
+	// 联调里实测到过：模型服务恢复后，同一页再点预填仍然拿到 fallback=error 的旧结果，
+	// 模型一次都没被调用——因为缓存短路排在路由之前。用户看到「模型调用失败」，
+	// 反复重试也不会好转，只有改一个字才行。配上模型却不生效，比多花一次调用糟得多。
+	// 代价是模型持续不可用时每次打开都会排一个任务；它在后台跑、不挡住编辑器
+	// （编辑器手里已有规则底稿），失败原因仍会写进结果，所以这个代价是可接受的。
+	if cached, hit, _ := app.LoadPrefillResult(r.Context(), h.objects, key.TenantID, key.ProjectID, key.SourceRevisionNo, hash); hit && cached.Model.Fallback == "" {
 		dto, report, derr := h.defaultSpecFor(page, pc, key, presetID, cached.Bindings)
 		if derr != nil {
 			writeAnimationError(w, derr)

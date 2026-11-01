@@ -231,6 +231,44 @@ func TestPrefillPostReusesCachedResult(t *testing.T) {
 	}
 }
 
+// 上一次「本该问模型却没问成」的结果不能当成品复用。
+//
+// 联调里实测到过：模型服务恢复后，同一页再点预填仍然拿到 fallback=error 的旧结果，
+// 模型一次都没被调用（缓存短路排在路由之前）。用户反复重试也不会好转——
+// 配上模型却不生效，比多花一次调用糟得多。这里把「重试」钉住。
+func TestPrefillPostRetriesCachedModelFailure(t *testing.T) {
+	h := newPrefillHarness(t, prefillPC(prefillSegments()...), true)
+	snap := h.snapshot()
+	stored := &app.PrefillResult{
+		SchemaVersion: "1",
+		SlideID:       anTestSlide,
+		ContentHash:   snap.ContentHash(),
+		JobID:         "job-failed-model",
+		Route:         "rule",
+		Band:          "low-confidence",
+		BandReason:    "script",
+		Bindings: []bind.Binding{
+			{ElementID: "shape-b1", SegmentID: "seg-1", Source: animation.TriggerSourceText},
+		},
+		Model:       bind.ModelRun{Fallback: bind.ModelFallbackError},
+		GeneratedAt: time.Now().UTC(),
+	}
+	if err := app.SavePrefillResult(context.Background(), h.objects, db.LocalTenantID, anTestProject, 0, stored); err != nil {
+		t.Fatalf("写缓存结果: %v", err)
+	}
+
+	status, payload := doJSON(t, http.MethodPost, h.url(), nil)
+	if status != http.StatusAccepted {
+		t.Fatalf("status = %d，期望 202（模型失败的结果要重试，不能直接当成品）（%v）", status, payload)
+	}
+	if h.jobs.creates != 1 {
+		t.Fatalf("建任务 %d 次，期望 1 次（缓存里那份是失败记录，不是结论）", h.jobs.creates)
+	}
+	if id, _ := payload["jobId"].(string); id == "job-failed-model" {
+		t.Fatal("沿用了失败任务的 jobId：用户会继续轮询一个不会再有新结果的任务")
+	}
+}
+
 // GET 的三个终态：还在跑、跑完了（且页面没变）、页面变了。
 func TestPrefillGetStates(t *testing.T) {
 	t.Run("还在跑", func(t *testing.T) {
