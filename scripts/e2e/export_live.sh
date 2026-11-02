@@ -18,7 +18,8 @@
 #
 # 用法：
 #   bash scripts/e2e/export_live.sh
-#   PORT=38081 RENDER_PORT=38090 bash scripts/e2e/export_live.sh
+#   PORT=38081 bash scripts/e2e/export_live.sh
+#   SLIDE_LIMIT=2 ANIMATE=1 bash scripts/e2e/export_live.sh   # 动画通道（只取前 2 页，短片）
 #   KEEP=1 bash scripts/e2e/export_live.sh     # 保留容器与工作目录排障
 #
 # 产物：$WORK/out/artifact.mp4、frame-*.png、ffprobe.json、时间轴与讲稿快照。
@@ -29,12 +30,10 @@ cd "$ROOT"
 
 WORK=${WORK:-/tmp/ppts-export-live}
 PORT=${PORT:-38081}
-RENDER_PORT=${RENDER_PORT:-38090}
 # worker 的指标端点是**另一个监听**（进程隔离：worker 侧的 expvar 只有本进程能读）。
 # 之前这里只读 api 的 /metrics，于是 ppts_tts_fake_provider_active 永远缺失——
 # 不看这个端口，"假 TTS 是否真的在跑"就只能靠猜。
 WMETRICS=${WMETRICS:-38091}
-DB_PORT_UNUSED=0
 NET=${NET:-ppts-export-e2e}
 API_NAME=ppts-e2e-api
 WORKER_NAME=ppts-e2e-worker
