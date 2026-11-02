@@ -141,10 +141,41 @@ worker MUST NOT 另建一条 ffmpeg 交叉淡化（`xfade`）路径：`xfade` �
 
 镜像 MUST 提供自检入口：用固定样例渲染至少 2 页，校验产物存在、为合法 MP4 容器，且编码参数符合「片段编码参数固定」。自检 MUST NOT 依赖 ffprobe 等镜像外的二进制——运行时镜像里没有 ffmpeg，靠它校验等于把门禁建在镜像之外。自检失败 MUST 以非零退出码结束，并在失败信息里带上实测值。部署流水线 MUST 在发布前执行自检。
 
+自检样例 MUST 覆盖页内切镜：每页至少两镜，第二镜带 `crop`。镜头图是 staging 的派生物，缺了不会报错——合成器读不到就整页退回静态画面，成片「看着正常、切镜全黑」。断言 MUST 按 `crop` 与页图实际倍率算出期望像素尺寸，MUST NOT 只查文件存在：文件在、尺寸错，观众只看到一张放大得不合适的图，没有任何报错。
+
 #### Scenario: 浏览器缺失
 
 - **WHEN** 镜像内浏览器路径错误
 - **THEN** 自检以非零退出码失败并指出缺失的路径，而不是发布一个「构建成功但渲染必失败」的镜像
+
+#### Scenario: 切镜图未被派生
+
+- **WHEN** staging 不再从页图裁出特写（例如 `stageShotAssets` 早退）
+- **THEN** 自检 MUST 以非零退出码失败（实测报 `all 2 pages failed`：合成器读不到图），MUST NOT 产出一段「无切镜但声称成功」的成片
+
+#### Scenario: 切镜图尺寸不对
+
+- **WHEN** 页图是画布的 2 倍，而镜头图按 1× 裁出
+- **THEN** 自检 MUST 报出实测与期望尺寸（`尺寸 560x160, want 1120x320`）
+
+### Requirement: 构建期校验镜像内源码闭合
+
+镜像的源码来自 Dockerfile 里的白名单 `COPY`，因此「仓库里有、镜像里没有」是一个构建成功也发现不了的缺陷类别。构建 MUST 在编译产物之后、切到非 root 之前执行两道检查，任一失败即让构建失败：
+
+- **入口的相对导入闭合**：静态解析 `render.mjs` / `still.mjs` 的 `from './x'`，逐个确认目标存在。MUST NOT 用真实 `import()` 验证——入口顶层会直接执行渲染。
+- **真打一次包**：调 `@remotion/bundler` 的 `bundle()`，覆盖 `src/*.tsx` 的跨目录依赖（静态解析看不到这些）。它只用 webpack，不启动浏览器。
+
+两道检查都必须放在 `/app` 下：Node 的包解析是按**文件位置**向上找 `node_modules`，放到 `/tmp` 会以「模块不存在」失败，看起来像检查自己坏了。
+
+#### Scenario: 入口依赖漏拷
+
+- **WHEN** `render.mjs` 引用的 `degrade.mjs` 没有被 `COPY` 进镜像
+- **THEN** 构建 MUST 在「入口的相对导入闭合」一步失败并报 `missing import ./degrade.mjs`
+
+#### Scenario: 合成器依赖漏拷
+
+- **WHEN** `renderer/src/*.tsx` 引用的仓库根 `shared/` 没有被 `COPY` 进镜像
+- **THEN** 构建 MUST 在「真打一次包」一步失败，并透出 webpack 的解析错误（`Can't resolve '/shared/motion'`）
 
 ### Requirement: 渲染不可用不得阻断导出
 

@@ -120,7 +120,20 @@ RUN npm ci --omit=dev \
       --fetch-retries=5 --fetch-retry-maxtimeout=120000 --fetch-timeout=300000 \
  && npm cache clean --force
 COPY renderer/src ./src
-COPY renderer/render.mjs renderer/still.mjs ./
+# 合成器 import 仓库根的 ../../shared/{motion,shots,types}（两端动效求值共用同一份）。
+# 镜像里 /app/src/*.tsx 的 ../../shared 就是 /shared，路径关系必须与仓库里一致。
+COPY shared /shared
+# degrade.mjs 必须一起拷：render.mjs 会 import 它（单页降级），漏了就是
+# ERR_MODULE_NOT_FOUND——而那次构建是绿的，因为没有东西在构建期导入过入口。
+COPY renderer/render.mjs renderer/still.mjs renderer/degrade.mjs ./
+# 两个构建期检查都放在 /app：Node 的包解析是按**文件位置**向上找 node_modules，
+# 放到 /tmp 就找不到 /app/node_modules，检查本身会以「模块不存在」失败。
+COPY deploy/renderer/check-imports.mjs deploy/renderer/check-bundle.mjs ./
+# 第一道：入口的相对导入闭合（几毫秒，静态解析）。
+RUN node ./check-imports.mjs /app/render.mjs /app/still.mjs
+# 第二道：真打一次包（webpack，不开浏览器）。它覆盖的是 src/*.tsx 的跨目录依赖，
+# 静态解析看不到——漏拷 shared/ 那次就是在这里露出来的。
+RUN node ./check-bundle.mjs /app/src/index.tsx
 COPY --from=gobuild /out/ppts-renderer /usr/local/bin/ppts-renderer
 # 入口脚本负责拼 -fonts（见文件头注释）：字体版本只能在构建期推导，
 # 写死在 CMD 里迟早会与 charset.txt 脱节。

@@ -25,6 +25,30 @@ docker build -f deploy/renderer/Dockerfile \
 上下文已经在 `.dockerignore` 里收到约 6MB（`dist/`、`build/`、根目录 go build 产物都排除了），
 所以从网络盘（WSL 的 `/mnt/e`、SMB 挂载）构建也不会卡在传上下文这一步。
 
+## 构建期源码闭合检查（两道）
+
+镜像里的源码是白名单 `COPY`，所以「仓库里有、镜像里没有」这个缺陷类别**不会让构建失败**，
+只会让镜像一跑就挂。2026-11-02 第一次真构建完整镜像时连续踩到两次：
+
+| 漏掉的东西 | 表现 | 谁引用的 |
+|---|---|---|
+| `renderer/degrade.mjs` | `ERR_MODULE_NOT_FOUND: /app/degrade.mjs`（2 秒后，Chrome 都没起来） | `render.mjs` 的单页降级 |
+| 仓库根 `shared/` | webpack `Can't resolve '/shared/motion'`（28 秒后） | `renderer/src/{Timeline.tsx,types.ts}` |
+
+两次构建都是绿的，CI 也是绿的——**因为 CI 不构建镜像**。所以现在构建期有两道检查
+（`deploy/renderer/check-imports.mjs` 与 `check-bundle.mjs`），任一不过即构建失败：
+
+| 检查 | 覆盖 | 本机耗时 | 失败输出 |
+|---|---|---|---|
+| 入口导入闭合 | `render.mjs` / `still.mjs` 的 `from './x'` 是否存在 | 几毫秒 | `missing import ./degrade.mjs` |
+| 真打一次包 | `src/*.tsx` 的跨目录依赖（静态解析看不到） | 约 7 秒 | webpack 的 `Can't resolve ...` |
+
+两个脚本都放在 `/app` 下，不是 `/tmp`：Node 的包解析按**文件位置**向上找 `node_modules`，
+放 `/tmp` 会让检查自己以「模块不存在」失败。它们不启动浏览器，所以不需要 tmpfs。
+
+新增 `renderer/*.mjs` 入口、或让渲染器 import 仓库里别处的目录时，记得同步 Dockerfile 的 `COPY`
+——检查会告诉你漏了哪一条。
+
 ## 构建期网络（构建机只能走代理时必看）
 
 这个镜像在**构建期**有四处要出网，任一失败都会让 `docker build` 停在中途：
@@ -139,6 +163,11 @@ docker run --rm --network none --read-only \
 失败非零退出。
 自检走的是与线上**同一个 Backend 实现**：staging（底板）→ Node → 片段校验，
 所以「镜像能起、但渲染必挂」这种状态过不了门禁。
+
+样例每页是**两镜**（整页 + 卡片特写），自检会按 `crop` 与页图实际倍率算出期望像素，
+再核对 staging 派生出的镜头图。这条断言不是凑数：镜头图是派生物，缺了不会报错，
+合成器读不到就整页退回静态画面——成片「看着正常、切镜全黑」。把 `stageShotAssets` 改成早退，
+自检 2 秒内就报 `all 2 pages failed`。
 
 `degraded` 不是装饰：自检样例底图齐全，出现非零就说明链路有问题（例如底图取不到）。
 

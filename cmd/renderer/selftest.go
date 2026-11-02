@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -57,6 +58,11 @@ func runSelfTest(ctx context.Context, backend render.Backend, workDir string, fa
 			return err
 		}
 		plan.Pages[i].BaseImage = rel
+		// 首镜必须等于这一页的「显示底图」（无底板时就是原页），见 validateShots。
+		// staging 会在副本里把它改指向底板——编译期拿不到底板，只能先填这个。
+		if len(plan.Pages[i].Shots) > 0 {
+			plan.Pages[i].Shots[0].Image = rel
+		}
 	}
 
 	// 故障注入通过环境变量传给 render.mjs：它只影响脚本内的「第一次渲染」，
@@ -100,6 +106,9 @@ func runSelfTest(ctx context.Context, backend render.Backend, workDir string, fa
 	if err != nil {
 		return fmt.Errorf("%w (workdir kept at %s)", err, dir)
 	}
+	if err := checkSelftestShots(plan, dir); err != nil {
+		return fmt.Errorf("%w (workdir kept at %s)", err, dir)
+	}
 	fmt.Printf("selftest ok: backend=%s pages=%d elapsed=%s degraded=%d codec=%s chroma=%s gop<=%d\n",
 		backend.Name(), len(plan.Pages), time.Since(started).Round(time.Millisecond),
 		len(report.Degraded), enc.Codec, enc.ChromaName(), render.SegmentEncodingContract.GOP)
@@ -128,6 +137,61 @@ func checkSegmentEncodings(plan *render.Timeline, dir string) (render.SegmentEnc
 		last = got
 	}
 	return last, nil
+}
+
+// checkSelftestShots 确认 staging 把特写镜头真的裁出来了，且尺寸对得上。
+//
+// 只查「文件存在」不够：文件在、内容错（裁错区域或尺寸不对），成片里同样看不出来
+// ——观众只看到一张放大得不太对的图，没有任何报错。所以按 crop 与页图倍率算出
+// 期望像素再比。
+//
+// 这条检查存在的理由与 checkSegmentEncodings 同类：镜头图是 staging 的派生物，
+// 缺了不会报错，合成器读不到就整页退回静态画面，成片「看着正常、切镜全黑」。
+func checkSelftestShots(plan *render.Timeline, dir string) error {
+	checked := 0
+	for i := range plan.Pages {
+		page := &plan.Pages[i]
+		if len(page.Shots) < 2 {
+			continue
+		}
+		srcW, srcH, err := pngSize(filepath.Join(dir, filepath.FromSlash(page.BaseImage)))
+		if err != nil {
+			return fmt.Errorf("selftest: page %d base image: %w", i, err)
+		}
+		for k, shot := range page.Shots[1:] {
+			if shot.Crop == nil {
+				return fmt.Errorf("selftest: page %d shot %d 没有 crop（非首镜必须声明）", i, k+1)
+			}
+			gotW, gotH, err := pngSize(filepath.Join(dir, filepath.FromSlash(shot.Image)))
+			if err != nil {
+				return fmt.Errorf("selftest: page %d shot %d 镜头图 %s: %w", i, k+1, shot.Image, err)
+			}
+			wantW := int(math.Round(float64(shot.Crop.W) * float64(srcW) / float64(plan.Width)))
+			wantH := int(math.Round(float64(shot.Crop.H) * float64(srcH) / float64(plan.Height)))
+			if gotW != wantW || gotH != wantH {
+				return fmt.Errorf("selftest: page %d shot %d 尺寸 %dx%d, want %dx%d（crop %dx%d × 页图倍率）",
+					i, k+1, gotW, gotH, wantW, wantH, shot.Crop.W, shot.Crop.H)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		return fmt.Errorf("selftest: 夹具里没有特写镜头，镜头图派生这条路径没被覆盖到")
+	}
+	return nil
+}
+
+func pngSize(path string) (int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil {
+		return 0, 0, err
+	}
+	return cfg.Width, cfg.Height, nil
 }
 
 // checkSelftestDegradation 判降级是否符合预期。
@@ -166,6 +230,19 @@ func selftestPlan() *render.Timeline {
 			Index:      i,
 			SlideID:    fmt.Sprintf("selftest-%d", i),
 			DurationMs: selftestPageMS,
+			// 每页两镜：整页 + 卡片特写。带切镜不是为了让自检「更全面」，而是因为
+			// 镜头图是 staging 的派生物——它缺了不会报错，合成器读不到就整页退回
+			// 静态画面，成片「看着正常、切镜全黑」。这条路径只有真渲染一次才能验。
+			Shots: []render.Shot{
+				{Index: 0, StartMs: 0, DurationMs: selftestPageMS / 2},
+				{
+					Index:      1,
+					Image:      fmt.Sprintf("slides/%03d-shot-01.png", i),
+					Crop:       &render.Box{X: 40, Y: 160, W: 560, H: 160},
+					StartMs:    selftestPageMS / 2,
+					DurationMs: selftestPageMS / 2,
+				},
+			},
 			Layers: []render.Layer{{
 				ElementID: fmt.Sprintf("title-%d", i),
 				Kind:      "title",
