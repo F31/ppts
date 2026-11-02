@@ -8,6 +8,14 @@
     「这一页什么时候换图」，而它只在切点附近的一两帧上表现出来。
   * 只看全片平均会掩盖单页的失败：20 页里一页崩了，均值仍然很好看。
     所以判定用**逐页最差帧**。
+  * 全帧均值还会被静止背景稀释：实测在成片侧单独加 6px 位移，全帧 SSIM 只从
+    0.9947 掉到 0.9826——仍然高于 0.95，判据看不见「元素位置错了」。
+    所以每个取样点**再在运动区域（所有带 clip 的层的并集）上量一次**，
+    两条都要达标。区域外的一致性由全帧那一项兜着。
+  * 区域 SSIM 对「小范围平移」仍然钝：同一份 6px 位移只让它从 0.9930 掉到 0.9749。
+    于是再报一个 p99——区域里最差的那 1% 像素平均差多少灰度级。实测干净成片
+    ≤7，同一份 6px 位移 ≥17，两档之间留了一倍余量。它不替代 SSIM（SSIM 抓
+    「整片发灰/结构错乱」，p99 抓「局部错位」），两条都判。
   * 两端比较必须解码 MP4。编码本身有损，所以先要确认天花板够高
     （实测 CRF18/yuv420p 的编码损失 SSIM 在 0.9986 以上）。
 
@@ -103,6 +111,35 @@ def sample_points(page, fps):
     return unique
 
 
+def motion_region(page, stage):
+    """返回这一页运动区域的像素矩形 (x0, y0, x1, y1)，None 表示退回全帧。
+
+    区域取「所有带 clip 的层 box 的并集」再外扩一圈：元素在动画中会移出 box
+    （位移/缩放），不外扩就会把「动到框外」这件事裁掉——而框外那段恰恰是
+    移动端最容易算错的地方。
+    """
+    rects = []
+    for layer in page.get("layers") or []:
+        if not layer.get("clips"):
+            continue
+        box = layer.get("box") or {}
+        try:
+            rects.append((int(box["x"]), int(box["y"]), int(box["w"]), int(box["h"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not rects:
+        return None
+    pad = 24
+    x0 = max(0, min(r[0] for r in rects) - pad)
+    y0 = max(0, min(r[1] for r in rects) - pad)
+    x1 = min(stage[0], max(r[0] + r[2] for r in rects) + pad)
+    y1 = min(stage[1], max(r[1] + r[3] for r in rects) + pad)
+    # 窗口是 11×11：太小的区域算出来只有几个窗口，均值没有代表性。
+    if x1 - x0 < 32 or y1 - y0 < 32:
+        return None
+    return (x0, y0, x1, y1)
+
+
 def grab_mp4_frame(segment, local_ms, dst):
     # Windows 上 ffmpeg 常常只装在 WSL 里；本机没有就走 WSL，并把路径一并转换。
     use_wsl = os.name == "nt" and shutil.which("ffmpeg") is None
@@ -142,7 +179,11 @@ def main():
     ap.add_argument("--pkg", required=True, help="成品包目录（含 index.html）")
     ap.add_argument("--segments", required=True, help="MP4 分段目录（segment_000.mp4 ...）")
     ap.add_argument("--out", required=True, help="输出目录（截图、抽帧、报告）")
-    ap.add_argument("--min", type=float, default=0.95, help="逐帧阈值（默认 0.95）")
+    ap.add_argument("--min", type=float, default=0.95, help="逐帧全帧阈值（默认 0.95）")
+    ap.add_argument("--min-region", type=float, default=0.97,
+                    help="逐帧运动区域阈值（默认 0.97；全帧 0.95 看不见 6px 级位移）")
+    ap.add_argument("--max-p99", type=float, default=12.0,
+                    help="运动区域内最差 1%% 像素的平均灰度差上限（默认 12；干净实测 ≤7，6px 位移 ≥17）")
     args = ap.parse_args()
 
     plan = json.load(open(args.plan, encoding="utf-8"))
@@ -192,7 +233,10 @@ def main():
         return 2
     shots = {s["requestedMs"]: s for s in report.get("shots", [])}
 
-    rows, worst = [], (1.0, None)
+    # 每页的运动区域在循环外算一次：它是计划本身的属性，与取样点无关。
+    regions = {i: motion_region(page, stage) for i, page in enumerate(pages)}
+
+    rows, worst_full, worst_region, worst_p99 = [], (1.0, None), (1.0, None), (0.0, None)
     for index, label, local_ms, abs_ms in cases:
         shot = shots.get(abs_ms)
         if shot is None:
@@ -219,33 +263,63 @@ def main():
                   f"{b.shape[1]}×{b.shape[0]}（{frame}）", file=sys.stderr)
             return 2
         score = float(ssim_map(a, b).mean())
-        rows.append((index, label, local_ms, score))
-        if score < worst[0]:
-            worst = (score, f"page={index} {label}@{local_ms}ms")
+        region = regions.get(index)
+        if region:
+            x0, y0, x1, y1 = region
+            sub_a, sub_b = a[y0:y1, x0:x1], b[y0:y1, x0:x1]
+            region_score = float(ssim_map(sub_a, sub_b).mean())
+            # p99 用同一块区域：它量的是「最不像的那 1% 像素差多少」，
+            # 全帧上算会被大片静止背景压成 2-3 级，任何错位都看不出来。
+            p99 = float(np.percentile(np.abs(sub_a - sub_b), 99))
+        else:
+            # 没有运动（静态页）：区域分退回全帧分，判据不因此空转。
+            region_score = score
+            p99 = float(np.percentile(np.abs(a - b), 99))
+        rows.append((index, label, local_ms, score, region_score, p99))
+        if score < worst_full[0]:
+            worst_full = (score, f"page={index} {label}@{local_ms}ms")
+        if region_score < worst_region[0]:
+            worst_region = (region_score, f"page={index} {label}@{local_ms}ms")
+        if p99 > worst_p99[0]:
+            worst_p99 = (p99, f"page={index} {label}@{local_ms}ms")
 
     print(f"成品包：{args.pkg}")
     print(f"浏览器：{report.get('chrome')}")
     print(f"舞台：{stage[0]}×{stage[1]}")
     print()
-    print(f"{'page':<5}{'point':<10}{'local_ms':>9}{'ssim':>9}")
-    for index, label, local_ms, score in rows:
-        flag = "" if score >= args.min else "  <-- 未达标"
-        print(f"{index:<5}{label:<10}{local_ms:>9}{score:>9.5f}{flag}")
+    print(f"{'page':<5}{'point':<10}{'local_ms':>9}{'ssim':>9}{'region':>9}{'p99':>7}")
+    for index, label, local_ms, score, region_score, p99 in rows:
+        flags = []
+        if score < args.min:
+            flags.append("全帧未达标")
+        if region_score < args.min_region:
+            flags.append("运动区域未达标")
+        if p99 > args.max_p99:
+            flags.append(f"p99>{args.max_p99:g}")
+        flag = ("  <-- " + "、".join(flags)) if flags else ""
+        print(f"{index:<5}{label:<10}{local_ms:>9}{score:>9.5f}{region_score:>9.5f}{p99:>7.1f}{flag}")
 
     # 逐页最差：一页里任一取样点不达标就判该页失败，不拿别的页平均掉它。
+    # 两个指标各算一份最差，任一不达标都算这页失败——它们是两件事（整体一致 / 元素对齐），
+    # 用其中之一的分数去掩盖另一个是这类门禁最常见的假绿方式。
     per_page = {}
-    for index, _, _, score in rows:
-        per_page[index] = min(per_page.get(index, 1.0), score)
+    for index, _, _, score, region_score, p99 in rows:
+        cur = per_page.setdefault(index, (1.0, 1.0, 0.0))
+        per_page[index] = (min(cur[0], score), min(cur[1], region_score), max(cur[2], p99))
     print()
     for index in sorted(per_page):
-        print(f"page {index} worst = {per_page[index]:.5f}")
+        full, reg, p99 = per_page[index]
+        print(f"page {index} worst = 全帧 {full:.5f} / 区域 {reg:.5f} / p99 {p99:.1f}")
 
-    bad = [i for i, v in per_page.items() if v < args.min]
-    print(f"\n最差帧: {worst[1]} = {worst[0]:.5f}")
+    bad = [i for i, (full, reg, p99) in per_page.items()
+           if full < args.min or reg < args.min_region or p99 > args.max_p99]
+    print(f"\n最差帧: 全帧 {worst_full[1]} = {worst_full[0]:.5f}；"
+          f"区域 {worst_region[1]} = {worst_region[0]:.5f}；"
+          f"p99 {worst_p99[1]} = {worst_p99[0]:.1f}")
     if bad:
-        print(f"FAIL: 页 {bad} 低于 {args.min}")
+        print(f"FAIL: 页 {bad} 低于阈值（全帧 {args.min} / 运动区域 {args.min_region} / p99 {args.max_p99:g}）")
         return 1
-    print(f"PASS: 所有页最差帧 ≥ {args.min}")
+    print(f"PASS: 所有页最差帧 ≥ 全帧 {args.min}、运动区域 {args.min_region}，p99 ≤ {args.max_p99:g}")
     return 0
 
 

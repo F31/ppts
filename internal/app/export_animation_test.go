@@ -62,9 +62,9 @@ func animatedPlan() *render.Timeline {
 
 func TestBundleAnimationsBlanksPlateAndCropsLayer(t *testing.T) {
 	plan := animatedPlan()
-	pages, err := bundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
+	pages, err := BundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
 	if err != nil {
-		t.Fatalf("bundleAnimations: %v", err)
+		t.Fatalf("BundleAnimations: %v", err)
 	}
 	if len(pages) != 1 {
 		t.Fatalf("pages = %d", len(pages))
@@ -112,9 +112,9 @@ func TestBundleAnimationsBlanksPlateAndCropsLayer(t *testing.T) {
 func TestBundleAnimationsSkipsPagesWithoutClips(t *testing.T) {
 	plan := animatedPlan()
 	plan.Pages[0].Layers[0].Clips = nil
-	pages, err := bundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
+	pages, err := BundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
 	if err != nil {
-		t.Fatalf("bundleAnimations: %v", err)
+		t.Fatalf("BundleAnimations: %v", err)
 	}
 	if len(pages[0].PlatePNG) != 0 || len(pages[0].Layers) != 0 {
 		t.Fatalf("page without clips should stay static: plate=%d layers=%d",
@@ -124,9 +124,9 @@ func TestBundleAnimationsSkipsPagesWithoutClips(t *testing.T) {
 
 // 页图缺失时不能造半个包：没有底图就无从挖空，应交给打包器的缺图降级。
 func TestBundleAnimationsToleratesMissingPageImage(t *testing.T) {
-	pages, err := bundleAnimations(animatedPlan(), [][]byte{nil}, nil)
+	pages, err := BundleAnimations(animatedPlan(), [][]byte{nil}, nil)
 	if err != nil {
-		t.Fatalf("bundleAnimations: %v", err)
+		t.Fatalf("BundleAnimations: %v", err)
 	}
 	if len(pages[0].PlatePNG) != 0 || len(pages[0].Layers) != 0 {
 		t.Fatal("expected empty animation for missing page image")
@@ -152,9 +152,9 @@ func TestBundleAnimationsBuildsShotAssets(t *testing.T) {
 			},
 		}},
 	}
-	pages, err := bundleAnimations(plan, [][]byte{pagePNG}, nil)
+	pages, err := BundleAnimations(plan, [][]byte{pagePNG}, nil)
 	if err != nil {
-		t.Fatalf("bundleAnimations: %v", err)
+		t.Fatalf("BundleAnimations: %v", err)
 	}
 	if len(pages) != 1 {
 		t.Fatalf("pages = %d", len(pages))

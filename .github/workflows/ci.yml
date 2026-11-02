@@ -147,23 +147,26 @@ jobs:
       - name: 切图门禁（V18）
         run: python3 scripts/review/shot-gate.py --pkg /tmp/fixture-shots/pkg
 
-      # V13（包端 vs 成片）以前只能对着真实作业跑：MP4 要渲染镜像，而镜像只在
-      # WSL 的 docker 里。夹具把成片也做成可复现的——按 30fps 逐帧截包自己的 DOM、
-      # 裁剪到舞台再编码成分段。所以这一步验的是「截图落点 / 抽帧 / 解码 / 阈值」
-      # 这条管线本身；「包 vs 真实渲染」仍然只能靠真成片，判据一字未改。
-      - name: 造分段夹具（V13 用）
+      # V13（包端 vs 成片）以前是自证的：夹具按 30fps 把包自己的 DOM 截出来编码成「成片」，
+      # 所以那一步只能验「截图落点 / 抽帧 / 解码 / 阈值」这条管线，验不了「两端是否一致」——
+      # 两端本来就是同一张图。现在成片走产品真正的渲染路径（RemotionBackend → render.mjs →
+      # Chromium 逐帧 → H.264），包走产品真正的打包路径，两者同源于一份 IR（cmd/film-baseline）。
+      # 代价是这一步要在 runner 上装渲染依赖（npm ci，约 1 分钟）与 ffmpeg（下面已装）。
+      # 判据也收紧了：全帧 SSIM 会被静止背景稀释（实测 6px 位移只从 0.9947 掉到 0.9826），
+      # 所以另有运动区域 SSIM 与区域 p99 两条，见 dom-ssim.py 文件头。
+      - name: 造同源夹具（包 + 真成片）
         run: |
           command -v ffmpeg >/dev/null || {
             sudo apt-get update -qq
             sudo apt-get install -y -qq ffmpeg
           }
-          # --shots 2：夹具里带上页内切镜，V13 才会取「每个切点之后」的样本。
-          # 没有它，两端在切图上分叉时这条门禁看不见。
-          node scripts/review/make-fixture.mjs --out /tmp/v13 --pages 2 --page-secs 2 --shots 2
+          ( cd renderer && npm ci --omit=dev )
+          go run ./cmd/film-baseline -out /tmp/v13real -chrome "$PPT_CHROME" \
+            -renderer-script renderer/render.mjs
       - name: 同帧 SSIM 门禁（V13）
         run: |
-          python3 scripts/review/dom-ssim.py --plan /tmp/v13/plan.json --pkg /tmp/v13/pkg \
-            --segments /tmp/v13 --out /tmp/v13/gate
+          python3 scripts/review/dom-ssim.py --plan /tmp/v13real/render/plan.json \
+            --pkg /tmp/v13real/pkg --segments /tmp/v13real/render --out /tmp/v13real/gate
 
   # 配音 PPTX 的包结构门禁（G0-8 里与客户端无关的那一半）。
   #

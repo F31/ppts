@@ -46,7 +46,7 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 	return compiler.Compile(inputs)
 }
 
-// bundleAnimations 把 IR 与原始页图变成成品包的分层 + 镜头素材。
+// BundleAnimations 把 IR 与原始页图变成成品包的分层 + 镜头素材。
 //
 // 顺序是关键：**挖空与出层图必须在原始 PNG 上做**。BuildPlate 的填充色取自元素
 // 外环的中位数，若先转成 JPEG（或先降采样到长边 1600），取到的颜色会偏，
@@ -58,7 +58,12 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 // 镜头裁切失败只丢特写，分层挖空失败只丢层，绝不让整包失败。
 //
 // 返回与 plan.Pages 同序；某项为空值表示该页没有元素级动画也没有镜头。
-func bundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Logger) ([]share.PageAnimation, error) {
+//
+// 导出而不是留在包内：V13 的成片夹具（cmd/film-baseline）要从**同一份 IR** 派生
+// 成品包，若夹具另写一份「IR → share.Clip」的转换，这条判据就变成「两份实现互相
+// 对齐」，而它本来的用途正是发现实现之间的分叉。导出后只有一份转换，夹具只负责
+// 造输入与落盘。
+func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Logger) ([]share.PageAnimation, error) {
 	if plan == nil {
 		return nil, nil
 	}
@@ -363,7 +368,7 @@ func (h *ExportHandler) htmlBundleAnimations(ctx context.Context, job *pipeline.
 	}
 	// 对带 Crop 的页做 300 DPI 重渲并替换源图，使特写清晰（graceful 降级，见函数）。
 	h.rerenderHiResPages(ctx, job, plan, bundle, pagePNGs)
-	return bundleAnimations(plan, pagePNGs, h.logger)
+	return BundleAnimations(plan, pagePNGs, h.logger)
 }
 
 // rerenderHiResPages 对带 Crop 的页做 300 DPI 重渲，并替换 pagePNGs 中对应页的字节。
