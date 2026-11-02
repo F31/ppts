@@ -1736,22 +1736,34 @@ func elementTemplatePrompt(kinds map[string]bool) string {
 	return "【讲解结构】" + strings.Join(parts, "")
 }
 
-// pgInput 按页面级来源取文本，**并标出最终胜出的来源**。
+// SourceShapeText 是「原文素材」计算所需的形状最小视图（只用到种类与文字）。
+//
+// 单独定义而不是直接吃 project.Shape：成稿读的是 document.json 的最小视图
+// （parsedShape），并排对照读的是 project.Document——两者字段不同，但
+// 「什么算原文、按什么优先级取」必须**只有一份实现**，否则对照面板显示的
+// "原文"会和成稿实际吃进去的素材不一致。
+type SourceShapeText struct {
+	Kind string
+	Text string
+}
+
+// PageSourceText 按页面级来源取文本，**并返回最终胜出的来源种类**（page/notes/custom）。
 // source 指定时只取该来源对应文本；source=custom 用 custom 文本；source=notes 仅用备注。
 // 这是页面级取值的唯一实现——文本与来源种类必须由同一处产生，
 // 否则"返回的文本算在一处、来源判定写在另一处"会重新漂移。
-func pgInput(pg parsedPage, source, custom string) draftInput {
+func PageSourceText(shapes []SourceShapeText, notes, source, custom string) (string, string) {
+	source = strings.TrimSpace(source)
 	switch source {
 	case "notes":
-		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
+		return "notes", strings.TrimSpace(notes)
 	case "custom":
 		if t := strings.TrimSpace(custom); t != "" {
-			return draftInput{Kind: inputCustom, Text: t}
+			return "custom", t
 		}
-		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
+		return "notes", strings.TrimSpace(notes)
 	}
 	var parts []string
-	for _, sh := range pg.Shapes {
+	for _, sh := range shapes {
 		if source == "title" && !strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
 			continue
 		}
@@ -1765,9 +1777,20 @@ func pgInput(pg parsedPage, source, custom string) draftInput {
 	text := strings.TrimSpace(strings.Join(parts, "\n"))
 	if text == "" {
 		// 形状文字为空 → 回退备注：来源种类也必须是备注，不能仍标成"页面文字"。
-		return draftInput{Kind: inputNotes, Text: strings.TrimSpace(pg.NotesText)}
+		return "notes", strings.TrimSpace(notes)
 	}
-	return draftInput{Kind: inputPage, Text: text}
+	return "page", text
+}
+
+// pgInput 是 SourceShapeText 版本的页面级取值：把 parsedShape 投影成最小视图后
+// 交给 PageSourceText，保证成稿与对照面板共用同一套来源优先级。
+func pgInput(pg parsedPage, source, custom string) draftInput {
+	shapes := make([]SourceShapeText, 0, len(pg.Shapes))
+	for _, sh := range pg.Shapes {
+		shapes = append(shapes, SourceShapeText{Kind: sh.Kind, Text: sh.Text})
+	}
+	kind, text := PageSourceText(shapes, pg.NotesText, source, custom)
+	return draftInput{Kind: draftInputKind(kind), Text: text}
 }
 
 // pgInputForMode 在页面级来源之上叠加批量来源（sourceMode，来自一键成稿）。

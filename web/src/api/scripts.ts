@@ -53,6 +53,34 @@ export type UpdateScriptResult = {
   latest?: ScriptRevision;
 };
 
+// ScriptCompareData 是 G2-2 并排对照的数据：左侧「原文素材」由服务端按成稿同一套
+// 来源优先级算出（页面文字/备注/自定义），右侧是当前讲稿。
+// source='none' 表示该页既无形状文字也无备注——面板要如实说"没有可对照的原文"，
+// 而不是给一个空白的"页面原文"标签。
+export type ScriptCompareData = {
+  slideId: string;
+  revisionNo: number;
+  language: string;
+  mode: ScriptMode | string;
+  scriptRevision: number;
+  source: 'page' | 'notes' | 'custom' | 'none' | string;
+  originalText: string;
+  currentText: string;
+  segments: Array<{ segmentId: string; text: string }>;
+};
+
+// getScriptCompare 读取单页对照数据（只读；接受修改走既有讲稿保存通道）。
+export async function getScriptCompare(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string
+): Promise<ScriptCompareData> {
+  return getJSON<ScriptCompareData>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/script/compare`
+  );
+}
+
 export async function updateScript(
   identity: ClientIdentity,
   projectId: string,

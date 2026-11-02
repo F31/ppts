@@ -43,6 +43,10 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/slides/sources", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorListSlideSources(w, r, srcStore, projects, members, recorder)
 	})))
+	// G2-2 并排对照：单页「原文素材 vs 当前讲稿」。只读端点，接受修改走既有讲稿保存通道。
+	mux.Handle("GET /projects/{pid}/slides/{sid}/script/compare", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorScriptCompare(w, r, objects, scripts, srcStore, projects, members, recorder)
+	})))
 	// 重新生成讲稿（用户显式覆盖已有讲稿）：原生 HTTP，避免改 proto。
 	mux.Handle("POST /projects/{pid}/script-draft", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorRegenerateScriptDraft(w, r, jobs, srcStore, projects, members, recorder)

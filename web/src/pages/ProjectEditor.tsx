@@ -24,6 +24,7 @@ import {
   setSlideNotes,
   type SourceRevisionSummary,
   getScript,
+  getScriptCompare,
   listDictionaries,
   getSlideRenderURLs,
   getSlideScriptSources,
@@ -43,6 +44,7 @@ import {
   type NarrationEstimate,
   type ProjectVoiceSettings,
   type RewriteAction,
+  type ScriptCompareData,
   type SlideScriptSource,
   type VoiceModel
 } from '../api';
@@ -52,6 +54,7 @@ import { can } from '../permissions';
 import { AnimationEditor } from '../AnimationEditor';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
+import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
@@ -273,6 +276,11 @@ export function ProjectEditor({
   const [activeGenJobs, setActiveGenJobs] = useState<Job[]>([]);
   const [exporting, setExporting] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  // G2-2 并排对照：数据每次打开时现取（原文来自服务端解析产物，缓存会看到旧版原文）。
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [compareData, setCompareData] = useState<ScriptCompareData | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState('');
   const [exportError, setExportError] = useState('');
   // 后端受理了带动画的导出、但渲不出来时摘掉动画（按静态版导出）的说明。
   // 与 exportError 分开：任务确实入队并会成功，用错误样式说它反而是假消息。
@@ -1411,6 +1419,50 @@ export function ProjectEditor({
     await generateScript(mode, [activeSlideID], true);
   };
 
+  // 讲稿栏「与原稿对照」（G2-2）：先落库本页未保存编辑，再取服务端对照数据。
+  // 不缓存：原文来自解析产物，换了源版本或改了备注后旧数据会指向另一版原文。
+  const openScriptCompare = async () => {
+    if (!activeSlideID) return;
+    setCompareOpen(true);
+    setCompareData(null);
+    setCompareError('');
+    setCompareLoading(true);
+    // 右侧必须是"已落库的当前讲稿"：带着未保存编辑去对照，用户会按旧稿做选择，
+    // 采用后把刚输入的内容覆盖掉。等待上限与重新生成讲稿一致。
+    scriptEditorRef.current?.flush();
+    const waitDeadline = Date.now() + 5000;
+    while (scriptEditorRef.current?.isDirty() && Date.now() < waitDeadline) {
+      await sleep(200);
+    }
+    // 仍未落库就不取数：拿旧稿做对照，采用后会把刚输入的内容覆盖掉。宁可让用户重试。
+    if (scriptEditorRef.current?.isDirty()) {
+      setCompareLoading(false);
+      setCompareError(t('compare.savePending'));
+      return;
+    }
+    try {
+      const data = await getScriptCompare(identity, projectId, activeSlideID);
+      setCompareData(data);
+    } catch (error) {
+      setCompareData(null);
+      setCompareError(describeApiError(error, t('compare.loadFailed'), t));
+    } finally {
+      setCompareLoading(false);
+    }
+  };
+
+  // 采用所选：写入本页段落（走编辑器自动保存），然后关闭面板。
+  // 多段页面的采用在面板内已禁用；这里不做"合并成一段"的隐式操作。
+  // 页守卫：面板打开期间若当前页已变（快捷键切页等），合并结果属于原页，绝不能写进新页。
+  const applyScriptCompare = (text: string) => {
+    if (!compareData || compareData.slideId !== activeSlideID) {
+      setCompareOpen(false);
+      return;
+    }
+    scriptEditorRef.current?.applyText(text);
+    setCompareOpen(false);
+  };
+
   // 全部已有讲稿的页（配音时间轴须完整覆盖，否则未提交的页会从播放器消失）。
   const allScriptSlideIds = (includeHidden = false): string[] => {
     // 闭包内 TS 不会沿用 isReady 的别名收窄，需就地判别可辨识联合。
@@ -1920,6 +1972,7 @@ export function ProjectEditor({
               voiceNeedsUpdate={voiceDirty}
               onRewriteText={canEditScript ? rewriteActive : undefined}
               onRewriteError={rewriteError}
+              onCompareScript={() => void openScriptCompare()}
               onAddToDictionary={addToDictionary}
               pronunciationRules={pronunciationRules ?? []}
               onNeedPronunciationRules={ensurePronunciationRules}
@@ -2373,6 +2426,18 @@ export function ProjectEditor({
             setExportDropped('');
           }}
           onSubmit={(format, options) => void runExport(format, options)}
+        />
+      )}
+      {compareOpen && (
+        <ScriptCompareDialog
+          data={compareData}
+          loading={compareLoading}
+          error={compareError}
+          canApply={canEditScript}
+          segmentCount={activeRealScript?.segments.length ?? 0}
+          onClose={() => setCompareOpen(false)}
+          onApply={applyScriptCompare}
+          onRetry={() => void openScriptCompare()}
         />
       )}
     </div>

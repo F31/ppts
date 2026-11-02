@@ -86,17 +86,27 @@ func recordAdminOverride(ctx context.Context, recorder audit.Recorder, action, p
 //
 // 返回项目 ID 与 true，失败时已写响应。
 func requireProjectAccess(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) (string, bool) {
+	p, ok := requireProject(w, r, projects, members, recorder)
+	if !ok {
+		return "", false
+	}
+	return p.ID, true
+}
+
+// requireProject 是 requireProjectAccess 的"要项目行"版本：调用方还需要项目当前版本号
+// （例如解析文档/讲稿按版本隔离读取）时使用，避免为拿 CurrentRevision 再查一次库。
+func requireProject(w http.ResponseWriter, r *http.Request, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) (*project.Project, bool) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return "", false
+		return nil, false
 	}
 	projectID := r.PathValue("pid")
 	if projectID == "" {
 		http.Error(w, "project_id required", http.StatusBadRequest)
-		return "", false
+		return nil, false
 	}
-	_, override, err := resolveProject(r.Context(), projects, members, principal.TenantID, principal.UserID, projectID)
+	p, override, err := resolveProject(r.Context(), projects, members, principal.TenantID, principal.UserID, projectID)
 	if err != nil {
 		if errors.Is(err, project.ErrProjectNotFound) {
 			http.Error(w, "not found", http.StatusNotFound)
@@ -105,10 +115,10 @@ func requireProjectAccess(w http.ResponseWriter, r *http.Request, projects proje
 		} else {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
-		return "", false
+		return nil, false
 	}
 	if override {
 		recordAdminOverride(r.Context(), recorder, "project.admin_override_access", projectID, map[string]any{"surface": "http"})
 	}
-	return projectID, true
+	return p, true
 }

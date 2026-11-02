@@ -11,7 +11,7 @@
     "route:check": "node route-inventory-check.mjs",
     "core:test": "node --experimental-strip-types --test core-check.mjs",
     "polling:test": "node --experimental-strip-types --test polling-check.mjs",
-    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && npm run animation:test && npm run script:test && npm run visibility:test && npm run preview:test && npm run report:test && npm run anchors:test && npm run ttsmodel:test && tsc -b && vite build",
+    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && npm run animation:test && npm run script:test && npm run visibility:test && npm run preview:test && npm run report:test && npm run anchors:test && npm run ttsmodel:test && npm run compare:test && tsc -b && vite build",
     "build:share": "vite build --config vite.share.config.ts",
     "typecheck": "tsc -b",
     "preview": "vite preview --host 0.0.0.0",
@@ -21,7 +21,8 @@
     "preview:test": "node --experimental-strip-types --test voice-preview-check.mjs",
     "report:test": "node --experimental-strip-types --test import-report-check.mjs",
     "anchors:test": "node --experimental-strip-types --test source-anchors-check.mjs",
-    "ttsmodel:test": "node --experimental-strip-types --test tts-model-check.mjs"
+    "ttsmodel:test": "node --experimental-strip-types --test tts-model-check.mjs",
+    "compare:test": "node --experimental-strip-types --test script-compare-check.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "6.1.1",

@@ -33,6 +33,9 @@ export type ScriptEditorHandle = {
   flush: () => void;
   // isDirty：存在尚未落库的编辑（dirty/saving/error 均视为未保存）。
   isDirty: () => boolean;
+  // applyText：把对照面板的合并结果写回本页**首个段落**，走与手输相同的自动保存通道
+  // （因此可撤销、可续传）。多段页面由调用方禁用采用——整页覆盖会抹掉用户的分段节奏。
+  applyText: (text: string) => void;
 };
 
 type Props = {
@@ -71,6 +74,8 @@ type Props = {
   // onRewriteText：段落工具栏"缩短/润色/衔接"触发 LLM 改写（同步返回新文本）。
   // 成功后的文本经本地草稿自动保存落库；失败抛错由 onRewriteError 呈现。
   onRewriteText?: (text: string, action: RewriteAction) => Promise<string>;
+  // onCompareScript：打开「原文 vs 当前讲稿」并排对照面板（G2-2）。
+  onCompareScript?: () => void;
   // onRewriteError：改写失败（LLM 不可用/超限等）时上报错误文案。
   onRewriteError?: (message: string) => void;
   // onAddToDictionary：M4 ⑤ 读音调整弹窗"添加到租户词典"（pattern=原词, replacement=读音）。
@@ -107,7 +112,7 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onPronunciationHit, onEditDictionary, onRemoveDictionary },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onPronunciationHit, onEditDictionary, onRemoveDictionary },
   ref
 ) {
   const { t } = useI18n();
@@ -339,6 +344,10 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (saveStateRef.current === 'dirty') scheduleSaveRef.current(slideId);
   };
 
+  // applyTextRef：对照面板"采用"的写入通道。handle 以空依赖挂载，拿不到每次渲染新建的
+  // editSegment 闭包；经 ref 转发到最新实现，否则会把上一页的 texts 写回当前页。
+  const applyTextRef = useRef<(text: string) => void>(() => {});
+
   useImperativeHandle(
     ref,
     () => ({
@@ -366,7 +375,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         draftsRef.current.size > 0 ||
         saveStateRef.current === 'dirty' ||
         saveStateRef.current === 'saving' ||
-        saveStateRef.current === 'error'
+        saveStateRef.current === 'error',
+      applyText: (text: string) => applyTextRef.current(text)
     }),
     []
   );
@@ -392,6 +402,14 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     // A10：中文输入法组合期间（拼音串/候选未确认）不调度保存，待 onCompositionEnd 再落库。
     if (composingRef.current) return;
     scheduleSaveRef.current(slideId);
+  };
+
+  // 对照面板采用：写回首个段落。多段页面的采用按钮在面板里已被禁用（见 ScriptCompareDialog），
+  // 这里仍加一道保护——宁可什么都不做，也不要把用户的第二段静默吞掉。
+  applyTextRef.current = (text: string) => {
+    const first = script.segments[0];
+    if (!first || script.segments.length !== 1) return;
+    editSegment(first.segmentId, text);
   };
 
   const toggleSelect = (segmentId: string) => {
@@ -924,6 +942,19 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
             scriptStatusText && <span className={`script-regen-status${scriptError ? ' error' : ''}`}>{scriptStatusText}</span>
           )}
         </div>
+
+        {/* G2-2：原文与当前讲稿逐句对照。只读查看对 Viewer 也开放，采用按钮由面板按权限禁用。 */}
+        {onCompareScript && (
+          <button
+            type="button"
+            className="button-ghost script-compare-open"
+            disabled={scriptBusy}
+            onClick={() => onCompareScript()}
+            title={t('editor.compareScriptHint')}
+          >
+            {t('editor.compareScript')}
+          </button>
+        )}
 
         {(voiceNeedsUpdate || voiceBusy) && (
           <button

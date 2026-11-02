@@ -1378,3 +1378,40 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .report-flag.unknown { color: #fca5a5; border-color: rgba(252, 165, 165, .4); }
 .report-page-hidden td { opacity: .62; }
 .report-diagnostics { margin: 0; padding-left: 18px; color: var(--text-muted); font-size: 12px; line-height: 1.7; word-break: break-word; }
+
+/* ============================================================
+   G2-2 讲稿并排对照
+   - 「原文」由服务端按成稿同一套来源优先级给出，面板只负责对齐与逐句选择；
+   - 颜色全部走令牌，浅色主题由 theme.css 覆盖，不在此处写死深色字面量。
+   ============================================================ */
+.script-compare { width: min(960px, 100%); }
+.script-compare .cell-sub { margin: 4px 0 0; }
+.compare-meta { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+.compare-chip { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border-2); background: var(--neutral-bg); color: var(--text-muted); font-size: 12px; }
+.compare-chip.source-page { border-color: var(--info-border); background: var(--info-soft); color: var(--link-info); }
+.compare-chip.source-notes { border-color: var(--warn-border); background: var(--warn-bg-soft); color: var(--warn); }
+.compare-chip.source-custom { border-color: var(--border-strong); background: var(--bg-item); color: var(--text-body); }
+.compare-chip.source-none { border-style: dashed; }
+.compare-head { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 152px; gap: 12px; padding: 0 12px 6px; color: var(--text-faint); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase; }
+.compare-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow: auto; padding-right: 2px; }
+.compare-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 152px; gap: 12px; align-items: start; padding: 10px 12px; border: 1px solid var(--border); border-left-width: 3px; border-radius: 10px; background: var(--bg-item); }
+.compare-row.changed { border-left-color: var(--warn); }
+.compare-row.added { border-left-color: var(--link); }
+.compare-row.removed { border-left-color: var(--danger); }
+.compare-row.same { border-left-color: var(--border-strong); }
+.compare-row.chosen-original.changed { background: var(--warn-bg-soft); }
+.compare-text { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text-strong); white-space: pre-wrap; word-break: break-word; }
+.compare-text.original { color: var(--text-body); }
+.compare-text.blank { color: var(--text-faintest); }
+.compare-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.compare-state { display: inline-flex; padding: 2px 8px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--border-2); color: var(--text-muted); background: var(--bg-inset); white-space: nowrap; }
+.compare-state.changed { border-color: var(--warn-border); color: var(--warn); }
+.compare-state.added { border-color: var(--info-border); color: var(--link-info); }
+.compare-state.removed { border-color: var(--danger-border); color: var(--danger); }
+.compare-state.chosen-original.changed { background: var(--warn-bg-soft); }
+.compare-state.chosen-original.added { border-color: var(--danger-border); color: var(--danger); }
+.compare-state.chosen-original.removed { background: var(--ok-bg-soft); border-color: var(--ok-border); color: var(--ok); }
+.compare-actions .button-ghost { padding: 4px 10px; font-size: 12px; }
+.compare-warning { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--warn-border); border-radius: 8px; background: var(--warn-bg-soft); color: var(--warn-quiet); font-size: 12.5px; }
+.script-compare .modal-actions { align-items: center; }
+.compare-summary { margin: 0 auto 0 0; color: var(--text-muted); font-size: 12.5px; line-height: 1.5; }
