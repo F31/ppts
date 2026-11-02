@@ -21,6 +21,14 @@ import (
 // ErrQueueFull 表示排队任务已达上限，提交被拒绝（HTTP 对应 429）。
 var ErrQueueFull = errors.New("render: 渲染队列已满")
 
+// ErrTimeout 表示等待任务结束超过了调用方给的 timeout。
+//
+// 必须是一个可判别的错误：Wait 有自己的 deadline 计时器，调用方的 ctx 也有一个，
+// 两者几乎同时到期，谁先触发取决于调度。只看 ctx.Err() 会让"同一个超时"有时报
+// 504（超时）、有时报 502（上游故障）——而这两者对用户的指示完全相反：
+// 前者是"稍后重试或直接导出"，后者是"去查渲染服务"。
+var ErrTimeout = errors.New("timed out")
+
 // queueRetryAfterSeconds 是 429 里建议的退避秒数。
 // 取 5s：比单页渲染耗时短，客户端按契约退避重试两次就能赶上队列消化。
 const queueRetryAfterSeconds = 5

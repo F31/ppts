@@ -321,8 +321,12 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 //
 // ctx 已过期时不能报 502 renderer_unavailable——那会让用户去查服务，
 // 而真实原因是这一页渲得太慢。两种原因的下一步动作完全不同。
+//
+// 两个条件都要判：调用方的 ctx 与 render.Wait 自己的 deadline 是两个计时器，
+// 几乎同时到期，谁先触发取决于调度。只判 ctx.Err() 时，同一场景会随机器负载
+// 在不同 CI 上分别得到 504 与 502——CI 上就因此红过一次。err 侧的判定是确定的。
 func (p *AnimationPreviewer) failBudget(ctx context.Context, w http.ResponseWriter, code string, err error) {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, render.ErrTimeout) {
 		writeJSON(w, http.StatusGatewayTimeout, map[string]any{
 			"code":    "preview_timeout",
 			"message": "预览超时：这一页渲得太慢，稍后重试或直接导出查看",

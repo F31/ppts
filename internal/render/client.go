@@ -266,7 +266,9 @@ func (c *Client) Wait(ctx context.Context, id string, poll, timeout time.Duratio
 			return st, nil
 		}
 		if timeout > 0 && time.Now().After(deadline) {
-			return st, fmt.Errorf("render: job %s timed out after %s", id, timeout)
+			// 包 ErrTimeout 而不是裸错误：调用方要能把"等太久"和"上游失败"分开。
+			// 见 render.ErrTimeout 的说明——只靠 ctx.Err() 判会因两个计时器竞态而时对时错。
+			return st, fmt.Errorf("render: job %s %w after %s", id, ErrTimeout, timeout)
 		}
 		select {
 		case <-ctx.Done():
