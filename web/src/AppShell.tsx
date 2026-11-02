@@ -60,7 +60,7 @@ function activeKey(parts: string[]): string {
 
 export function AppShell({ children, role, roleReady = true }: { children: React.ReactNode; role?: Role; roleReady?: boolean }) {
   const route = useRoute();
-  const { identity, logout } = useSession();
+  const { identity, logout, local } = useSession();
   const { t, lang, toggle } = useI18n();
   const { theme, toggle: toggleTheme } = useTheme();
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -246,9 +246,15 @@ export function AppShell({ children, role, roleReady = true }: { children: React
                   <Link to={settingsHome} className="user-menu-link" onClick={() => setUserMenuOpen(false)}>
                     {t('user.settings')}
                   </Link>
-                  <button type="button" className="danger" onClick={() => { setUserMenuOpen(false); logout(); }}>
-                    {t('user.logout')}
-                  </button>
+                  {/* 本地单租户模式没有账号体系：身份由服务端按请求头固定，登出后没有任何
+                      可用的登录方式。这里给说明，而不是一个点下去就把自己锁在门外的按钮。 */}
+                  {local ? (
+                    <p className="user-menu-note">{t('user.localSession')}</p>
+                  ) : (
+                    <button type="button" className="danger" onClick={() => { setUserMenuOpen(false); logout(); }}>
+                      {t('user.logout')}
+                    </button>
+                  )}
                 </div>
               )}
             </div>

@@ -1516,5 +1516,8 @@
   "gateway.sharedFromPlatform": "平台共享",
   "gateway.platformReadOnly": "由平台统一提供，你可直接使用；如需调整请联系平台管理员。",
   "gateway.inheritedNote": "列表中有 {count} 项来自平台共享：你可直接使用，但不能在此修改。",
-  "gateway.serviceInherited": "当前使用平台共享的语音合成配置，本租户无需重复接入。连通性由平台侧统一检测。"
+  "gateway.serviceInherited": "当前使用平台共享的语音合成配置，本租户无需重复接入。连通性由平台侧统一检测。",
+  "login.enterLocal": "进入本机实例",
+  "login.localNote": "本实例为单租户本地模式，没有账号密码。当前身份是本机管理员（所有者），可直接使用全部功能。",
+  "user.localSession": "本机单租户模式 · 无需登录或退出"
 }

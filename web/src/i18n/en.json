@@ -1516,5 +1516,8 @@
   "gateway.sharedFromPlatform": "Shared by platform",
   "gateway.platformReadOnly": "Provided by the platform. You can use it as-is; contact the platform operator to change it.",
   "gateway.inheritedNote": "{count} item(s) come from the platform. You can use them as-is, but cannot edit them here.",
-  "gateway.serviceInherited": "This tenant uses the platform-shared TTS configuration, so there is nothing to set up here. Connectivity is checked on the platform side."
+  "gateway.serviceInherited": "This tenant uses the platform-shared TTS configuration, so there is nothing to set up here. Connectivity is checked on the platform side.",
+  "login.enterLocal": "Enter this instance",
+  "login.localNote": "This is a single-tenant local instance with no accounts. You are signed in as its owner and can use every feature.",
+  "user.localSession": "Single-tenant local mode · no sign-in or sign-out"
 }

@@ -8,6 +8,7 @@ import { useRoute } from '../router';
 import { describeApiError } from '../apiError';
 import { ConnectError } from '../core';
 import { registrationAccountError, registrationPasswordError } from '../registrationValidation';
+import { canEnterLocalFromLogin, localIdentityFromConfig, type LocalIdentity } from '../localAuth';
 
 const defaultTenantId = '00000000-0000-0000-0000-000000000000';
 type EmailMode = 'signin' | 'register' | 'forgot';
@@ -29,7 +30,7 @@ function orgNameError(name: string): string | null {
 }
 
 export function Login() {
-  const { loginDev, loginOIDC, loginEmail: loginEmailSession } = useSession();
+  const { loginDev, loginLocal, loginOIDC, loginEmail: loginEmailSession } = useSession();
   const { t, lang, toggle } = useI18n();
   const route = useRoute();
   // 会话过期跳转回来时在顶部给出提示（/login?reason=session_expired）。
@@ -41,6 +42,9 @@ export function Login() {
 
   // 邮箱能力探测（B5 门控：能力未配置则隐藏入口，不做假登录）。
   const [emailEnabled, setEmailEnabled] = useState<boolean | null>(null);
+  // localEntry：本地单租户模式的固定身份。拿到它就说明本实例没有账号体系，
+  // 页面必须给出可用的入口，而不是一句「登录服务尚未配置」把人拦住。
+  const [localEntry, setLocalEntry] = useState<LocalIdentity | null>(null);
   const [registerEnabled, setRegisterEnabled] = useState(true);
   const [inviteRequired, setInviteRequired] = useState(false);
   const [inviteCode, setInviteCode] = useState('');
@@ -72,6 +76,7 @@ export function Login() {
       .then((cfg) => {
         if (cancelled) return;
         setEmailEnabled(cfg.email_password);
+        setLocalEntry(localIdentityFromConfig(cfg));
         setRegisterEnabled(cfg.registration_enabled !== false);
         setInviteRequired(cfg.invite_required === true);
       })
@@ -365,6 +370,13 @@ export function Login() {
             </button>
             <p className="dev-login-note">{t('login.devNote')}</p>
           </>
+        ) : canEnterLocalFromLogin(localEntry) ? (
+          <div className="local-entry">
+            <button type="button" className="button-primary" disabled={submitting} onClick={() => { if (localEntry) loginLocal(localEntry); }}>
+              {t('login.enterLocal')}
+            </button>
+            <p className="dev-login-note">{t('login.localNote')}</p>
+          </div>
         ) : !showOIDC && emailEnabled === false ? (
           <p className="login-unconfigured">{t('login.unconfigured')}</p>
         ) : null}

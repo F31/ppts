@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { getAuthConfig, listMembers, logoutSession, type ClientIdentity } from './api';
 import { AppShell } from './AppShell';
 import { clearAllIdentity, completeOIDCCallback, storedAccessToken, storedDevIdentity, storedLocalIdentity, saveLocalIdentity, saveDevIdentity, storedIdentity, saveIdentity } from './auth';
@@ -32,6 +32,7 @@ import { Watch } from './pages/Watch';
 import { SharedWatch } from './pages/SharedWatch';
 import { PublicAdmin } from './pages/PublicAdmin';
 import { describeApiError } from './apiError';
+import { localIdentityFromConfig, logoutOutcome, type LocalIdentity } from './localAuth';
 
 function AppContent() {
   const route = useRoute();
@@ -56,6 +57,11 @@ function AppContent() {
   const [oidcDone, setOidcDone] = useState(false);
   // localAuthDone：本地模式探测是否完成（避免探测期间闪现登录页）。
   const [localAuthDone, setLocalAuthDone] = useState(false);
+  // localIdentity：服务端声明的本地固定身份。非空即「本实例没有账号体系」，
+  // 此时不存在可完成的登出（见 localAuth.ts）。
+  const [localIdentity, setLocalIdentity] = useState<LocalIdentity | null>(null);
+  // localRef：401 处理器注册在挂载时，拿不到后续 state，用 ref 读最新值。
+  const localRef = useRef<LocalIdentity | null>(null);
 
   // 单租户本地模式自动进入：探测 /auth/config，local=true 时以固定本地身份进入，无需登录。
   // PostgreSQL 多租户模式返回 email_password（无 local 字段），不触发自动进入。
@@ -66,11 +72,14 @@ function AppContent() {
     getAuthConfig()
       .then((cfg) => {
         if (cancelled) return;
-        if (cfg.local && cfg.tenant_id && cfg.user_id) {
+        const local = localIdentityFromConfig(cfg);
+        if (local) {
           // 模式已切为本地单租户：丢弃旧邮箱/开发身份（含过期 token），换为固定本地身份。
           clearAllIdentity();
-          saveLocalIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type, tenantName: cfg.tenant_name });
-          setIdentity({ tenantId: cfg.tenant_id, userId: cfg.user_id, tenantType: cfg.tenant_type, tenantName: cfg.tenant_name });
+          saveLocalIdentity(local);
+          localRef.current = local;
+          setLocalIdentity(local);
+          setIdentity(local);
         }
       })
       .catch(() => {
@@ -108,11 +117,24 @@ function AppContent() {
     };
   }, []);
 
+  // 本地模式下身份一旦丢失（登出、401 触发的会话清理），必须立刻恢复固定身份。
+  // 否则会落到登录页，而本地实例没有任何登录方式——用户只能看到「登录服务尚未配置」。
+  useEffect(() => {
+    if (!identity && localIdentity) {
+      setIdentity(localIdentity);
+    }
+  }, [identity, localIdentity]);
+
   // 会话过期（AuthMiddleware 401）时清除本地身份并跳转登录页，而不是把"登录已失效"
   // 当作普通错误留在原页面。统一由 core.ts 的 connectErrorFrom 在 http_401 /
   // unauthenticated 时通知（登录失败 invalid_credentials / 口令错误 404 不触发）。
   useEffect(() => {
     setSessionExpiredHandler(() => {
+      // 本地模式没有"重新登录"这一步：直接恢复固定身份，不跳登录页。
+      if (localRef.current) {
+        setIdentity(localRef.current);
+        return;
+      }
       clearAllIdentity();
       setIdentity(null);
       navigate('/login?reason=session_expired');
@@ -123,6 +145,15 @@ function AppContent() {
   const loginDev = useCallback((next: ClientIdentity) => {
     saveDevIdentity({ tenantId: next.tenantId, userId: next.userId });
     setIdentity({ tenantId: next.tenantId, userId: next.userId, accessToken: undefined });
+  }, []);
+
+  // loginLocal：登录页在本地模式下的「进入本机实例」。用的是服务端下发的固定身份，
+  // 不是让用户自己编 tenant/user。
+  const loginLocal = useCallback((local: LocalIdentity) => {
+    saveLocalIdentity(local);
+    localRef.current = local;
+    setLocalIdentity(local);
+    setIdentity(local);
   }, []);
 
   const loginEmail = useCallback((next: ClientIdentity) => {
@@ -138,6 +169,14 @@ function AppContent() {
   const [logoutError, setLogoutError] = useState('');
   const logout = useCallback(async () => {
     setLogoutError('');
+    // 本地单租户模式没有账号可退：身份是每个请求都带的开发头部，服务端不认"登出"，
+    // 而登录页也没有任何可用登录方式（email_password=false、无 OIDC）。清空本地身份
+    // 只会把用户留在一个走不通的页面上，所以这里保持会话。
+    if (logoutOutcome(localIdentity) === 'local-reenter') {
+      // 保持会话：界面不提供这个入口（AppShell 在本地模式下隐藏「退出登录」），
+      // 这里只是防止旧缓存/程序化调用走到清空身份那一步。
+      return;
+    }
     try {
       await logoutSession();
     } catch (err) {
@@ -148,11 +187,11 @@ function AppContent() {
     clearAllIdentity();
     setIdentity(null);
     navigate('/login');
-  }, [t]);
+  }, [t, localIdentity]);
 
   const session: Session = useMemo(
-    () => ({ identity, loginDev, loginOIDC, loginEmail, logout }),
-    [identity, loginDev, loginOIDC, loginEmail, logout]
+    () => ({ identity, local: Boolean(localIdentity), loginDev, loginLocal, loginOIDC, loginEmail, logout }),
+    [identity, localIdentity, loginDev, loginLocal, loginOIDC, loginEmail, logout]
   );
 
   // 未完成 OIDC 回调 / 本地模式探测判定前不闪登录页（深链接登录 A05）。
