@@ -1,4 +1,4 @@
-# 构建上下文只留两个镜像需要的部分：Go 源码 + renderer 工程。
+# 构建上下文只留两个镜像需要的部分：Go 源码 + renderer 工程 + 前端构建产物。
 # node_modules 一旦进来，上下文会从几 MB 涨到几百 MB，且会把宿主机的二进制带进镜像。
 .git
 .github
@@ -7,7 +7,11 @@ docs
 tmp_*
 **/node_modules
 renderer/out
-web
+# web 目录不能整目录排除：cmd/ppts 通过 //go:embed 引用 github.com/F31/ppts/web，
+# Dockerfile.api 还要 COPY web/dist。排除后 go build 直接报
+# "no required module provides package github.com/F31/ppts/web"——
+# 而 CI 从不构建镜像，所以这条错误只能在真机构建时才暴露。
+# node_modules 已由上面的 **/node_modules 挡住，排除后 web 只剩约 2.5MB。
 *.exe
 *.test
 *.log

@@ -32,6 +32,9 @@ FROM debian:bookworm-slim AS runtime
 # 静态 ffmpeg 必须带 libass，否则 subtitles 滤镜缺失、字幕烧录会明确失败
 # （media.ErrSubtitlesUnavailable，见 internal/media/mp4.go）。
 ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+# 下载用 --http1.1：该站点在本机实测 HTTP/2 会在传输中途报
+# "stream was not closed cleanly"（curl exit 18），重试三次仍失败；降级到 HTTP/1.1
+# 后同一个文件 40MB 稳定下完。对能正常走 h2 的环境没有副作用。
 # apt 源默认走官方；本机可达性差时由 docker-compose.yml 传 APT_MIRROR=mirrors.aliyun.com。
 ARG APT_MIRROR=deb.debian.org
 
@@ -41,7 +44,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates tzdata poppler-utils fonts-wqy-zenhei libreoffice-impress-nogui \
         curl xz-utils; \
-    curl -fsSL "$FFMPEG_URL" -o /tmp/ffmpeg.tar.xz; \
+    curl -fsSL --http1.1 --retry 3 --retry-delay 2 "$FFMPEG_URL" -o /tmp/ffmpeg.tar.xz; \
     tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; \
     install -m 0755 /tmp/ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg; \
     install -m 0755 /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe; \

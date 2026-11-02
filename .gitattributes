@@ -49,5 +49,9 @@ internal/share/assets/* text eol=lf
 # 10. Dockerfile：CRLF 会让多行 RUN 的续行变成 `\` + `\r`，构建时报的错与真正原因
 #     毫无关系（像是命令不存在，其实是行尾多了一个字节）。这类文件只在 Linux 侧被
 #     执行，Windows 检出没有任何理由碰它的行尾。
-Dockerfile text eol=lf
-**/Dockerfile text eol=lf
+#     用 Dockerfile* 而不是 Dockerfile：本仓库叫 Dockerfile.api / Dockerfile.worker，
+#     精确文件名规则一个都没覆盖到（检出时仍会报 "LF will be replaced by CRLF"）。
+#     .dockerignore 同理——它的模式串带 \r 时不再匹配任何路径，而且失败是静默的。
+Dockerfile* text eol=lf
+**/Dockerfile* text eol=lf
+.dockerignore text eol=lf
