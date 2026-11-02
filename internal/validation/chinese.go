@@ -142,5 +142,11 @@ func chineseNumeralEntity(numeral, tail string, ordinal bool) (Entity, bool) {
 		// 值为 1 且后面是计数后缀：「一方面」「一部分」是固定说法，不是「1 个方面」。
 		return Entity{}, false
 	}
-	return Entity{Text: strconv.Itoa(v), Kind: "number", Measure: measure, Form: FormCount}, true
+	// 形态必须与阿拉伯数字一致：「第三个」与「第 3 个」是同一处内容，不能一个按序号、
+	// 一个按计数判定——否则同一句改成汉字写法就绕过了序号策略（insertedOrdinals）。
+	form := FormCount
+	if ordinal {
+		form = FormOrdinal
+	}
+	return Entity{Text: strconv.Itoa(v), Kind: "number", Measure: measure, Form: form}, true
 }

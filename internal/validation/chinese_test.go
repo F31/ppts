@@ -110,3 +110,26 @@ func TestValidateChineseNumerals(t *testing.T) {
 		}
 	}
 }
+
+// TestChineseOrdinalKeepsItsForm 汉字序数必须与阿拉伯写法同形态、同判定。
+//
+// 真实数据（2026-11-02，slide-258）暴露：讲稿写「第二个变化」，被标成 FormCount，
+// 于是按「概括计数」放行并提示；同一句写成「第 2 个变化」却按序号拦。同一处内容
+// 因写法不同有两种判定，等于给了一个绕过序号策略的写法。
+func TestChineseOrdinalKeepsItsForm(t *testing.T) {
+	for _, e := range ExtractEntities("第二个变化") {
+		if e.Text == "2" && e.Form != FormOrdinal {
+			t.Fatalf("「第二个」应标为序号，实际 %q", e.Form)
+		}
+	}
+	// 默认策略下序号不豁免：两种写法都应判违规。
+	for _, target := range []string{"第二个变化很重要。", "第 2 个变化很重要。"} {
+		if r := CheckPreserved("本页讲三个方面", target); r.OK() {
+			t.Fatalf("%q 属于自行编号，应拦下", target)
+		}
+	}
+	// 素材本来就有的序号，改写说法不影响通过。
+	if r := CheckPreserved("第 2 个变化是培训", "第二个变化是培训"); !r.OK() {
+		t.Fatalf("素材已有的序号应可配对，实际 missing=%v", FormatEntities(r.Missing))
+	}
+}

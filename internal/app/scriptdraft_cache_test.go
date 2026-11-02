@@ -61,3 +61,41 @@ func TestScriptDraftCacheMissOnDifferentInstructions(t *testing.T) {
 		t.Fatalf("expected 2 LLM calls (different instructions), got %d", len(f.calls))
 	}
 }
+
+// TestScriptDraftCacheRevalidatesAgainstCurrentRules 锁定缓存命中也要过**现行**规则。
+//
+// 真实事故（2026-11-02，slide-258）：中文序数改成按序号判定后重新生成同一页，
+// 任务 0.43 秒即成功——命中内容缓存，缓存路径只查了"文本没坏"（含内部标记/过短/
+// 照抄原文），没有按当前规则复验，于是一份带「第一个变化」的旧稿被直接标成成功。
+// 缓存 key 不含规则版本，规则一变，旧产出就可能不合格；这里必须重新判定。
+func TestScriptDraftCacheRevalidatesAgainstCurrentRules(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	f := &fakeRewriter{replies: []string{"本页介绍 100 型号A 的内容。"}}
+	h := NewScriptDraftHandler(nil, objects).WithPolisher(f)
+
+	const source = "100 型号A"
+	snap := ScriptDraftSnapshot{}
+	in := draftInput{Kind: inputPage, Text: source}
+
+	// 按生产同一套函数算出缓存 key，再种一份"旧规则下合格、现规则不合格"的稿子：
+	// 素材没有序号，稿件自行编号——insertedOrdinals=block 该拦。
+	instructions := draftInstructions(narration.ModePolish, in.Kind, snap) + factCitationInstruction(nil)
+	promptSource, _ := augmentDraftSource(source, nil)
+	key := h.scriptCacheKey("tenant-1", narration.ModePolish, "zh-CN", instructions, promptSource)
+	h.saveScriptCache(context.Background(), key, "本页介绍 100 型号A 的内容。第一个变化很重要。")
+
+	text, _, degraded, err := h.draftText(context.Background(), "tenant-1", "project-1", "slide-1", "zh-CN",
+		narration.ModePolish, in, nil, snap, f)
+	if err != nil {
+		t.Fatalf("draftText: %v", err)
+	}
+	if degraded {
+		t.Fatalf("重新生成后应成功，实际降级")
+	}
+	if len(f.calls) != 1 {
+		t.Fatalf("缓存不合格时必须重新调用模型，实际调用 %d 次", len(f.calls))
+	}
+	if text != "本页介绍 100 型号A 的内容。" {
+		t.Fatalf("应返回新生成的稿子，实际 %q", text)
+	}
+}

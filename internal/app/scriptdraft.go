@@ -1170,7 +1170,15 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 		if cached, ok := h.loadScriptCache(ctx, cacheKey); ok &&
 			!draftOutputSuspect(language, cached) && !draftTooShort(cached, snap.TargetSeconds) &&
 			!draftEchoesSource(source, cached) {
-			return draftTextResult{Display: cached, Spoken: cached}, nil
+			// 三道判定只保证「文本没坏」，不保证「按**当前**规则仍然合规」。缓存 key 不含
+			// 规则表版本，而规则会变（中文序数改按序号判定、计数策略收紧）：旧产出可能
+			// 已经该被拦，却在缓存路径直接判成功——这是假成功，用户看到的是一份按现行
+			// 标准不合格的稿子。此处按现行规则复验，不合格就走下面的重新生成。
+			report := validation.CheckPreserved(validationSource, cached)
+			_, cited := extractFactCitations(cached)
+			if report.OK() && len(unknownFactCitations(cited, facts)) == 0 {
+				return draftTextResult{Display: cached, Spoken: cached, Note: toleratedNote(report, cached)}, nil
+			}
 		}
 	}
 	opID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode)
