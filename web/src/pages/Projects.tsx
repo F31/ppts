@@ -39,7 +39,7 @@ import { useConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
 import { can, type Capability } from '../permissions';
-import { type ArtifactFormat, type Folder, type PlaybackManifest, type Project, type ProjectOrg, type Role, type Tag } from '../types';
+import { type Folder, type PlaybackManifest, type Project, type ProjectOrg, type Role, type Tag } from '../types';
 
 type ProjectVersionsState = {
   loading: boolean;

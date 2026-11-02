@@ -30,7 +30,7 @@ function orgNameError(name: string): string | null {
 }
 
 export function Login() {
-  const { loginDev, loginLocal, loginOIDC, loginEmail: loginEmailSession } = useSession();
+  const { loginDev, loginLocal, loginEmail: loginEmailSession } = useSession();
   const { t, lang, toggle } = useI18n();
   const route = useRoute();
   // 会话过期跳转回来时在顶部给出提示（/login?reason=session_expired）。

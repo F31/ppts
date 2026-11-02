@@ -37,7 +37,6 @@ export const MATCH_THRESHOLD = 0.4;
 export const SAME_THRESHOLD = 0.95;
 
 const CJK_TERMINATORS = '。！？；…';
-const ASCII_TERMINATORS = '.!?;';
 // 句末引号/括号要跟着上一句走，否则会出现 “你好。” 被拆成 「“你好。」+「”」两行。
 const CLOSERS = '”’」』）)》〉"\'';
 // 这些字符结尾时，下一句直接接上、不加空格（中文排版）。

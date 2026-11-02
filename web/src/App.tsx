@@ -204,7 +204,7 @@ function AppContent() {
   if (isPublicRoute(route.parts)) {
     return (
       <SessionContext.Provider value={session}>
-        <PublicApp parts={route.parts} query={route.query} />
+        <PublicApp parts={route.parts} />
       </SessionContext.Provider>
     );
   }
@@ -406,7 +406,7 @@ function isPublicRoute(parts: string[]): boolean {
   );
 }
 
-function PublicApp({ parts, query }: { parts: string[]; query: URLSearchParams }) {
+function PublicApp({ parts }: { parts: string[] }) {
   const section = parts[0] ?? 'explore';
   let content: React.ReactNode;
   if (section === 'watch' && parts[1]) {

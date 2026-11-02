@@ -82,8 +82,6 @@ type Props = {
   onAddToDictionary?: (word: string, reading: string) => void;
   pronunciationRules?: PronunciationRule[];
   onNeedPronunciationRules?: () => void;
-  // onPronunciationHit：点击讲稿中已高亮的发音词（供重新编辑/删除读音）。
-  onPronunciationHit?: (pattern: string, replacement: string, source: 'local' | 'dictionary') => void;
   // onEditDictionary：更新词典中某词条的读音。
   onEditDictionary?: (pattern: string, reading: string) => void;
   // onRemoveDictionary：从词典删除某词条。
@@ -112,7 +110,7 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onPronunciationHit, onEditDictionary, onRemoveDictionary },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onEditDictionary, onRemoveDictionary },
   ref
 ) {
   const { t } = useI18n();

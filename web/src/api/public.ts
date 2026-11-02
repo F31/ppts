@@ -7,7 +7,6 @@
 import { requestJSON } from '../core';
 import type { PlaybackManifest } from '../types';
 import type { ClientIdentity } from './identity';
-import { getPlaybackManifest } from './playback';
 import { connectJSON } from './http';
 import { identityHeaders } from './identity';
 // ---- 公开区（/public/*，V1.6 C-1） ----

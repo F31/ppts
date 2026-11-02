@@ -56,8 +56,8 @@ import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type Script
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
 import { useI18n } from '../i18n';
-import { Link, navigate, useRoute } from '../router';
-import type { ArtifactFormat, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import { Link, navigate } from '../router';
+import type { Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
 import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } from '../voicePreview';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
@@ -200,9 +200,8 @@ export function ProjectEditor({
   //  绑定保留不删——属"后端有、前端无 UI"的未接线能力）。
   const [revisions, setRevisions] = useState<SourceRevisionSummary[]>([]);
   const [currentRevision, setCurrentRevision] = useState(0);
-  // 项目标题与当前 PPT 展示名（用于回退链接）
+  // 项目标题（用于回退链接）
   const [projectTitle, setProjectTitle] = useState('');
-  const [pptDisplayName, setPptDisplayName] = useState('');
   // 当前幻灯片备注编辑
   const [slideNotesText, setSlideNotesText] = useState('');
   const [notesSlideID, setNotesSlideID] = useState('');
@@ -218,8 +217,6 @@ export function ProjectEditor({
         clearProbe('revisions');
         setRevisions(r.revisions);
         setCurrentRevision(r.currentRevision);
-        const cur = r.revisions.find((rv) => rv.isCurrent);
-        setPptDisplayName(cur?.displayName ?? '');
       })
       .catch((err: unknown) => {
         // 失败时版本下拉会整体不渲染（功能消失），比报错更难排查 → 必须显式说明。

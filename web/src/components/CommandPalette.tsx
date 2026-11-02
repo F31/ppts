@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { navigate } from '../router';
 import { useI18n } from '../i18n';
 import { useDialogA11y } from '../a11y';
-import { can, type Capability } from '../permissions';
+import { can } from '../permissions';
 import { primaryNav, settingsMenus } from '../AppShell';
 import type { Role } from '../types';
 

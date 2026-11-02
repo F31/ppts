@@ -6,7 +6,6 @@
 
 import type { PlaybackManifest } from '../types';
 import type { ClientIdentity } from './identity';
-import { getProjectSlides } from './projects';
 import { connectJSON, deleteJSON, getJSON } from './http';
 export async function createGeneration(
   identity: ClientIdentity,

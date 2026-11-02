@@ -4,7 +4,7 @@
 // **只动了文件边界，实现代码逐行未改**；对外入口仍是 `../api`（由 index.ts 统一转出），
 // 因此既有调用方的 import 路径无需任何改动。
 
-import { httpConnectError, requestJSON } from '../core';
+import { requestJSON } from '../core';
 import type { Collaborator, PlaybackManifest, ShareLink, SharedMeta } from '../types';
 import type { ClientIdentity } from './identity';
 import { deleteJSON, getJSON, postJSON, putJSON } from './http';
