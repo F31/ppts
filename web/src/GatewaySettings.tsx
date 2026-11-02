@@ -13,7 +13,7 @@ import {
 } from './api';
 import { useDialogA11y } from './a11y';
 import { useConfirmDialog } from './components/ConfirmDialog';
-import { gatewayHealth, gatewayKey, healthKeySuffix, isPlatformShared, serviceKeySuffix, serviceState } from './gatewayState';
+import { gatewayHealth, gatewayKey, healthKeySuffix, inheritedOnly, isPlatformShared, serviceKeySuffix, serviceState } from './gatewayState';
 import { useI18n } from './i18n';
 
 type FormState = {
@@ -184,6 +184,9 @@ function ScopedGatewaySettings({
   // 列表已含平台共享行，因此「平台配了、租户没配」不会再被误报成 unconfigured。
   const ttsState = serviceState(gateways, 'tts', testResult);
   const sharedCount = gateways.filter(isPlatformShared).length;
+  // 本租户自己一个 TTS 都没有、全靠平台共享时，横幅不能说「建议先测试连接」——
+  // 平台行在租户作用域没有测试入口。
+  const ttsInheritedOnly = inheritedOnly(gateways, 'tts');
 
   // 编辑/新增表单。编辑时内联渲染在被编辑的那一项原位（见下方 list），新增时渲染在列表下方。
   const renderForm = () => {
@@ -337,7 +340,7 @@ function ScopedGatewaySettings({
         {!loading && !error && (
           <div className={`service-banner ${ttsState}`} role="status">
             <strong>{t('gateway.serviceTitle')}</strong>
-            <span>{t(`gateway.service${serviceKeySuffix[ttsState]}`)}</span>
+            <span>{ttsInheritedOnly ? t('gateway.serviceInherited') : t(`gateway.service${serviceKeySuffix[ttsState]}`)}</span>
           </div>
         )}
         {!loading && !error && sharedCount > 0 && (

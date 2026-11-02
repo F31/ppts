@@ -81,3 +81,19 @@ test('列表真的用了来源判定，且平台行不渲染编辑/删除入口'
     assert.ok(!sharedBranch.includes(marker), `只读分支里不应出现写入口：${marker}`);
   }
 });
+
+test('全靠平台共享时，不能建议租户「先测试连接」', () => {
+  assert.equal(m.inheritedOnly([tts({ source: 'platform' })], 'tts'), true);
+});
+
+test('本租户也有可用配置时不算「全靠共享」', () => {
+  assert.equal(m.inheritedOnly([tts({ source: 'platform' }), tts({ source: 'tenant', name: 'own' })], 'tts'), false);
+  assert.equal(m.inheritedOnly([tts({ source: 'tenant' })], 'tts'), false);
+  assert.equal(m.inheritedOnly([], 'tts'), false);
+});
+
+test('横幅真的按「全靠共享」切换文案', () => {
+  const src = readFileSync(new URL('./src/GatewaySettings.tsx', import.meta.url), 'utf8');
+  assert.match(src, /inheritedOnly\(gateways, 'tts'\)/, '横幅必须区分「全靠共享」');
+  assert.match(src, /t\('gateway\.serviceInherited'\)/, '全靠共享时要用专用文案');
+});

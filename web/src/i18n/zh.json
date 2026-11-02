@@ -1515,5 +1515,6 @@
   "compare.savePending": "本页讲稿仍在保存，请稍后重试——对照必须基于已保存的版本，否则采用时会覆盖刚输入的内容。",
   "gateway.sharedFromPlatform": "平台共享",
   "gateway.platformReadOnly": "由平台统一提供，你可直接使用；如需调整请联系平台管理员。",
-  "gateway.inheritedNote": "列表中有 {count} 项来自平台共享：你可直接使用，但不能在此修改。"
+  "gateway.inheritedNote": "列表中有 {count} 项来自平台共享：你可直接使用，但不能在此修改。",
+  "gateway.serviceInherited": "当前使用平台共享的语音合成配置，本租户无需重复接入。连通性由平台侧统一检测。"
 }

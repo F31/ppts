@@ -47,6 +47,17 @@ export function isPlatformShared(gw: { source?: string }): boolean {
 }
 
 /**
+ * 是否「本租户没有自己的可用配置，全靠平台共享」。
+ *
+ * 这种情形不能沿用「建议先测试连接」：平台行在租户作用域没有测试入口——后端按本租户
+ * (kind,name) 查，点下去只会 404。把用户指到一个不存在的按钮上，比不提示更糟。
+ */
+export function inheritedOnly(gateways: ModelGateway[], kind: 'tts' | 'llm'): boolean {
+  const usable = gateways.filter((gw) => gw.kind === kind && gw.enabled && gw.hasKey);
+  return usable.length > 0 && usable.every(isPlatformShared);
+}
+
+/**
  * 汇总某类型（tts/llm）服务的总体状态：
  * - `unconfigured`：本租户没有任何「启用 + 有密钥」的该类型网关（A23「未配置/模拟服务」的主场景）。
  * - `unavailable`：有可用配置，但会话内检测结果全部为失败（最近一次检测判定不可用）。
