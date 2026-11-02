@@ -7,16 +7,10 @@ package assets
 
 import (
 	"embed"
-	"io/fs"
 )
 
 //go:embed app.js app.css
 var files embed.FS
-
-// FS 返回播放器资源根（含 app.js、app.css）。
-func FS() fs.FS {
-	return files
-}
 
 // AppJS 返回播放器脚本字节。
 func AppJS() ([]byte, error) {
