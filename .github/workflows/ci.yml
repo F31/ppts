@@ -154,6 +154,8 @@ jobs:
       # 代价是这一步要在 runner 上装渲染依赖（npm ci，约 1 分钟）与 ffmpeg（下面已装）。
       # 判据也收紧了：全帧 SSIM 会被静止背景稀释（实测 6px 位移只从 0.9947 掉到 0.9826），
       # 所以另有运动区域 SSIM 与区域 p99 两条，见 dom-ssim.py 文件头。
+      # 夹具带页内切镜：镜头图两端各有发布者（打包器与渲染服务 staging），缺一边时成片
+      # 只会安静地退回整页——那正是这条门禁要看见的东西。
       - name: 造同源夹具（包 + 真成片）
         run: |
           command -v ffmpeg >/dev/null || {
@@ -161,8 +163,11 @@ jobs:
             sudo apt-get install -y -qq ffmpeg
           }
           ( cd renderer && npm ci --omit=dev )
+          # 显式写死这两项，别依赖默认值：它们决定夹具覆盖什么——每页 2 镜（让页内切镜
+          # 进比对）与 2× 页图（贴近生产的 300 DPI，特写是缩小而不是放大）。
           go run ./cmd/film-baseline -out /tmp/v13real -chrome "$PPT_CHROME" \
-            -renderer-script renderer/render.mjs
+            -renderer-script renderer/render.mjs \
+            -shots-per-page 2 -page-scale 2
       - name: 同帧 SSIM 门禁（V13）
         run: |
           python3 scripts/review/dom-ssim.py --plan /tmp/v13real/render/plan.json \

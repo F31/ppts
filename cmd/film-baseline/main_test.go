@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 
 	"github.com/F31/ppts/internal/animation/animdefault"
@@ -39,11 +40,11 @@ func TestCompilePlanProducesAnimatedLayers(t *testing.T) {
 		durMs   = int64(2000)
 		wantPer = 2 // 每个元素一条轨道
 	)
-	plan, err := compilePlan(w, h, pages, durMs, animdefault.DefaultPresetID, elementBoxes(w, h))
+	plan, err := compilePlan(w, h, pages, durMs, animdefault.DefaultPresetID, elementBoxes(w, h), 2)
 	if err != nil {
 		t.Fatalf("compilePlan: %v", err)
 	}
-	if err := checkPlan(plan); err != nil {
+	if err := checkPlan(plan, 2); err != nil {
 		t.Fatalf("checkPlan: %v", err)
 	}
 	if plan.FPS != fixtureFPS || plan.Width != w || plan.Height != h {
@@ -71,20 +72,104 @@ func TestCompilePlanProducesAnimatedLayers(t *testing.T) {
 				}
 			}
 		}
-		// 首镜不存在（本夹具不造切镜），所以 BaseImage 必须就是页图。
+		// 首镜必须指向页级图（此时还没有底板，编译期给的是 baseImage）；
+		// 特写镜头的图是 staging/打包器从这张页图裁出来的，路径由编译器给。
 		if page.BaseImage == "" {
 			t.Fatalf("page %d 没有底图", i)
 		}
+		if len(page.Shots) != 2 {
+			t.Fatalf("page %d 镜头数 = %d，want 2", i, len(page.Shots))
+		}
+		if page.Shots[0].Image != page.BaseImage {
+			t.Fatalf("page %d 首镜图 = %q，want 页图 %q", i, page.Shots[0].Image, page.BaseImage)
+		}
+		if page.Shots[1].Crop == nil {
+			t.Fatalf("page %d 特写镜头没有裁切框", i)
+		}
+	}
+}
+
+// 切镜必须真的覆盖整页：少 1ms 页尾就停帧，多 1ms 会把下一镜的图提前亮出来，
+// 两种都不报错。IR 校验会拒，但夹具应该在编译后自己再确认一次。
+func TestPageShotInputsCoverPageAndStayInside(t *testing.T) {
+	const (
+		w, h  = 1280, 720
+		durMs = int64(2000)
+	)
+	emuPerPx := float64(slideWidthEMU) / float64(w)
+	shots := pageShotInputs(durMs, 2, elementBoxes(w, h), w, h, emuPerPx)
+	if len(shots) != 2 {
+		t.Fatalf("镜头数 = %d，want 2", len(shots))
+	}
+	var cursor int64
+	for k, s := range shots {
+		if s.StartMs != cursor {
+			t.Fatalf("shot %d 起点 = %d，want %d（有空隙或重叠）", k, s.StartMs, cursor)
+		}
+		if s.DurationMs <= 0 {
+			t.Fatalf("shot %d 时长非正", k)
+		}
+		if int64(s.CrossFadeMs) >= s.DurationMs {
+			t.Fatalf("shot %d 叠化 %d 不短于时长 %d", k, s.CrossFadeMs, s.DurationMs)
+		}
+		if k == 0 && s.Crop != nil {
+			t.Fatalf("首镜是整页，不该带裁切框")
+		}
+		if k > 0 {
+			if s.Crop == nil {
+				t.Fatalf("shot %d 是特写，必须有裁切框", k)
+			}
+			// 裁切框在页内：越界会让裁出来的图右边带黑边（两端都带，SSIM 反而不敏感）。
+			scale := float64(w) / float64(slideWidthEMU)
+			x := int64(math.Round(float64(s.Crop.X) * scale))
+			y := int64(math.Round(float64(s.Crop.Y) * scale))
+			cw := int64(math.Round(float64(s.Crop.Width) * scale))
+			ch := int64(math.Round(float64(s.Crop.Height) * scale))
+			if x < 0 || y < 0 || x+cw > w || y+ch > h {
+				t.Fatalf("shot %d 裁切框 (%d,%d %dx%d) 越出 %dx%d", k, x, y, cw, ch, w, h)
+			}
+			// 与画布同比例：两端按 fill 拉伸，比例不同就会变形——两边一起变形时
+			// SSIM 反而更好看，判据失去意义。
+			if math.Abs(float64(cw)/float64(ch)-float64(w)/float64(h)) > 0.02 {
+				t.Fatalf("shot %d 裁切比 %.3f 与画布比 %.3f 差太多", k, float64(cw)/float64(ch), float64(w)/float64(h))
+			}
+		}
+		cursor += s.DurationMs
+	}
+	if cursor != durMs {
+		t.Fatalf("镜头总长 = %d，want %d", cursor, durMs)
+	}
+}
+
+// 短页 + 多镜：叠化按镜头长度收窄，不能因写死 120ms 而被 IR 校验拒掉。
+func TestPageShotInputsShrinkFadeForShortPages(t *testing.T) {
+	const (
+		w, h  = 640, 360
+		durMs = int64(500)
+	)
+	shots := pageShotInputs(durMs, 4, elementBoxes(w, h), w, h, float64(slideWidthEMU)/float64(w))
+	if len(shots) != 4 {
+		t.Fatalf("镜头数 = %d，want 4", len(shots))
+	}
+	var cursor int64
+	for k, s := range shots {
+		if int64(s.CrossFadeMs) >= s.DurationMs {
+			t.Fatalf("shot %d 叠化 %d 不短于时长 %d", k, s.CrossFadeMs, s.DurationMs)
+		}
+		cursor += s.DurationMs
+	}
+	if cursor != durMs {
+		t.Fatalf("镜头总长 = %d，want %d", cursor, durMs)
 	}
 }
 
 func TestCheckPlanRejectsStaticPlan(t *testing.T) {
 	static := &render.Timeline{Pages: []render.Page{{Index: 0, DurationMs: 1000, BaseImage: "pages/p001.png"}}}
-	if err := checkPlan(static); err == nil {
+	if err := checkPlan(static, 1); err == nil {
 		t.Fatal("没有层的计划必须被拒：否则 V13 会比两张静态图")
 	}
 	empty := &render.Timeline{}
-	if err := checkPlan(empty); err == nil {
+	if err := checkPlan(empty, 1); err == nil {
 		t.Fatal("空计划必须被拒")
 	}
 }

@@ -375,6 +375,38 @@ staging（底图复制、底板与层图生成）MUST 只对「未命中页 ∪ 
 - **WHEN** 第二个镜头声明了 `crop`，且该页有元素动画层
 - **THEN** 该镜头区间内层 MUST NOT 可见，且层节点 MUST 仍留在 DOM 里
 
+### Requirement: 渲染侧镜头图由渲染服务 staging 派生
+
+IR 里 `Shot.Image` 只是一个路径。成片侧 MUST 由渲染服务的 staging 在该路径上写出真实文件：
+staging 已经拿到这一页的页图（有元素层时是它自己派生的底板），镜头图 MUST 用**同一张图**按
+`Crop` 裁出，共用 `render.CropShot` 的像素数学。
+
+这条 MUST 存在的原因不是对称好看：`Timeline.tsx` 用 `staticFile(shot.image)` 读文件，缺文件时
+不会报错，只会整页退化成静态画面——一份「切镜全黑但看着正常的成片」。发布者要么在这里，
+要么在 app 侧；两处都不做，判据就只能在成片里看到一段安静的静止画面。
+
+首镜 MUST 改指向「这一页此刻真正画的那张图」（有底板时是底板，否则是原页图）。编译期还没有
+底板，它填的是 `baseImage`；不改的话合成器会先画「元素还在的整页」再把元素从零淡入一遍——
+表现是重影，而不是报错。
+
+staging MUST NOT 改写调用方的计划：`Shots` 是切片，只复制 `Page` 结构体会把回填落到调用方数组里。
+
+#### Scenario: 有元素层的页
+
+- **WHEN** 一页既有元素动画层、又有 `crop` 非空的镜头，staging 处理该页
+- **THEN** staging MUST 在 `slides/NNN-shot-NN.png` 写出裁出的图，尺寸为「`Crop` × 源图/画布 倍率」，
+  且首镜的 `Image` MUST 等于本页底板路径
+
+#### Scenario: 没有元素层的页
+
+- **WHEN** 一页只有镜头、没有元素动画层
+- **THEN** staging MUST 照样写出镜头图，MUST NOT 因为「不需要底板」而整体跳过
+
+#### Scenario: 非首镜缺 crop
+
+- **WHEN** 非首镜的 `Crop` 为空
+- **THEN** staging MUST 失败并指出页码与镜号，MUST NOT 悄悄退回整页
+
 ### Requirement: 镜头图的裁切比例在打包期核对
 
 `crop` 非空时，该镜头的位图宽高比与 `crop` 的宽高比之差 MUST ≤1%。比例不符说明裁切算错了：播放器把图铺满舞台，拉伸后的画面「看着还挺正常」，只有把特写与原页并排时才看得出元素变形。

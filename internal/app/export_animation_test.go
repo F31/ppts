@@ -182,10 +182,56 @@ func TestBundleAnimationsBuildsShotAssets(t *testing.T) {
 	if r, g, bb, _ := shotImg.At(20, 20).RGBA(); !(r>>8 > 200 && g>>8 < 80 && bb>>8 < 80) {
 		t.Fatalf("shot center lost the red block: rgb=(%d,%d,%d)", r>>8, g>>8, bb>>8)
 	}
-	// 落盘 Crop 必须按源像素坐标，且比例与裁出 PNG 一致（checkCropAspect 会再拦一次）。
+	// 落盘 Crop 必须按**画布像素**，与 IR、播放器、清单校验器同一个坐标系；
+	// 比例也与裁出 PNG 一致（checkCropAspect 会再拦一次）。
 	wantCrop := share.SlideBox{X: 80, Y: 30, W: 40, H: 40}
 	if anim.Shots[1].Crop == nil || *anim.Shots[1].Crop != wantCrop {
 		t.Fatalf("shot crop = %+v, want %+v", anim.Shots[1].Crop, wantCrop)
+	}
+}
+
+// TestBundleAnimationsKeepsCropInCanvasSpace 守的是「裁 PNG 用源像素、落清单用画布像素」
+// 这条分界。它曾经被写成两边都用源像素：页图 1× 时两个坐标系相等，测试全绿；生产页图是
+// 300 DPI（约 2.3×），清单里就出现一个画布放不下的裁切框，打包时被清单校验判越界直接失败。
+func TestBundleAnimationsKeepsCropInCanvasSpace(t *testing.T) {
+	const canvasW, canvasH = 200, 100
+	highPNG := syntheticPageSize(t, canvasW*2, canvasH*2) // 2× 源页图
+	plan := &render.Timeline{
+		Width: canvasW, Height: canvasH, FPS: 30,
+		Pages: []render.Page{{
+			Index: 0, SlideID: "s1", DurationMs: 1000,
+			Shots: []render.Shot{
+				{Index: 0, Image: "slides/001.png", StartMs: 0, DurationMs: 500},
+				{Index: 1, Image: "slides/001-shot-01.png", StartMs: 500, DurationMs: 500,
+					Crop: &render.Box{X: 80, Y: 30, W: 40, H: 40}},
+			},
+		}},
+	}
+	pages, err := BundleAnimations(plan, [][]byte{highPNG}, nil)
+	if err != nil {
+		t.Fatalf("BundleAnimations: %v", err)
+	}
+	shot := pages[0].Shots[1]
+
+	// 高清页图的收益留在 PNG 上：裁切按源像素，产物是画布框的 2 倍。
+	img, err := png.Decode(bytes.NewReader(shot.PNG))
+	if err != nil {
+		t.Fatalf("decode shot: %v", err)
+	}
+	if b := img.Bounds(); b.Dx() != 80 || b.Dy() != 80 {
+		t.Fatalf("shot image = %dx%d, want 80x80 (2× source)", b.Dx(), b.Dy())
+	}
+
+	// 清单里的裁切框必须是画布坐标——不能因为源图是 2 倍就变成 160×80。
+	if shot.Crop == nil {
+		t.Fatal("shot crop must be recorded")
+	}
+	want := share.SlideBox{X: 80, Y: 30, W: 40, H: 40}
+	if *shot.Crop != want {
+		t.Fatalf("manifest crop = %+v, want canvas-space %+v", *shot.Crop, want)
+	}
+	if shot.Crop.X+shot.Crop.W > canvasW || shot.Crop.Y+shot.Crop.H > canvasH {
+		t.Fatalf("manifest crop %+v falls outside canvas %dx%d", *shot.Crop, canvasW, canvasH)
 	}
 }
 

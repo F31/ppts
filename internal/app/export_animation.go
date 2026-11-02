@@ -5,10 +5,8 @@ import (
 	"context"
 	"fmt"
 	"image"
-	"image/draw"
 	"image/png"
 	"log/slog"
-	"math"
 
 	"github.com/F31/ppts/internal/design"
 	sliderenderer "github.com/F31/ppts/internal/integrations/render"
@@ -209,21 +207,19 @@ func buildShotAssets(page render.Page, i int, pagePNGs [][]byte, canvasW, canvas
 			}
 			return nil, false
 		}
-		// Crop 字段按源像素坐标落清单：说明这张特写取自原页的哪一块
-		// （播放器据此画高亮框 / 计算比例）。与裁出的 PNG 比例必然一致。
-		srcW := src.Bounds().Dx()
-		srcH := src.Bounds().Dy()
-		sx := float64(srcW) / float64(canvasW)
-		sy := float64(srcH) / float64(canvasH)
-		srcCrop := share.SlideBox{
-			X: int(math.Round(float64(shot.Crop.X) * sx)),
-			Y: int(math.Round(float64(shot.Crop.Y) * sy)),
-			W: int(math.Round(float64(shot.Crop.W) * sx)),
-			H: int(math.Round(float64(shot.Crop.H) * sy)),
+		// Crop 按**画布像素**落清单，与 IR、播放器、清单校验器保持同一个坐标系。
+		//
+		// 曾经这里按源像素写过（乘了 srcW/canvasW）：页图 1× 时两者相等，所以一直没被
+		// 发现；生产页图是 300 DPI（约 2.3×），于是清单里出现一个画布放不下的裁切框——
+		// 校验器按画布判越界，打包直接失败；就算校验放行，播放器拿到的也是一个它在
+		// 自己坐标系里解释不了的矩形。裁 PNG 用源像素（见 CropShot），落清单用画布像素，
+		// 两个坐标系各归各位。
+		crop := share.SlideBox{
+			X: shot.Crop.X, Y: shot.Crop.Y, W: shot.Crop.W, H: shot.Crop.H,
 		}
 		out = append(out, share.ShotAsset{
 			PNG:         pngBytes,
-			Crop:        &srcCrop,
+			Crop:        &crop,
 			Camera:      toShareCamera(shot.Camera),
 			StartMs:     shot.StartMs,
 			DurationMs:  shot.DurationMs,
@@ -248,43 +244,14 @@ func toShareCamera(kfs []render.CameraKeyframe) []share.CameraKeyframe {
 
 // cropShot 从源页图按画布坐标裁切框裁出一张特写 PNG（原生分辨率，不放大）。
 //
-// 不引入 golang.org/x/image：裁切是像素对齐的整数矩形，用标准库 image/draw 转 RGBA
-// 后取子矩形即可，无需重采样。放大由播放器按舞台缩放完成——源是 150 DPI 则浏览器
-// 放大（已知模糊代价），源是 300 DPI 则零重采样清晰（见 #25 重渲注入）。
+// 裁切本身在 render.CropShot：渲染服务的 staging 也要从同一张页图裁同一块矩形，
+// 两处各写一份的结果不是「两种实现」而是「两张取景不同的图」——那个差异在单端
+// 截图里看不出来，只在逐帧比对时表现为「元素飘了」。
 func cropShot(src image.Image, crop render.Box, canvasW, canvasH int) ([]byte, error) {
-	if canvasW <= 0 || canvasH <= 0 {
-		return nil, fmt.Errorf("invalid canvas dimensions %dx%d", canvasW, canvasH)
+	dst, err := render.CropShot(src, crop, canvasW, canvasH)
+	if err != nil {
+		return nil, err
 	}
-	if crop.W <= 0 || crop.H <= 0 {
-		return nil, fmt.Errorf("crop has non-positive size %dx%d", crop.W, crop.H)
-	}
-	srcW := src.Bounds().Dx()
-	srcH := src.Bounds().Dy()
-	if srcW <= 0 || srcH <= 0 {
-		return nil, fmt.Errorf("source image has zero dimension")
-	}
-	// 画布像素坐标 → 源像素坐标。
-	sx := float64(srcW) / float64(canvasW)
-	sy := float64(srcH) / float64(canvasH)
-	min := src.Bounds().Min
-	x := min.X + int(math.Round(float64(crop.X)*sx))
-	y := min.Y + int(math.Round(float64(crop.Y)*sy))
-	w := int(math.Round(float64(crop.W) * sx))
-	h := int(math.Round(float64(crop.H) * sy))
-	if w <= 0 || h <= 0 {
-		return nil, fmt.Errorf("cropped region has non-positive size %dx%d", w, h)
-	}
-	// 钳制到源图范围内（裁切框换算后可能略越界）。
-	r := image.Rect(x, y, x+w, y+h)
-	if !r.In(src.Bounds()) {
-		r = r.Intersect(src.Bounds())
-		if r.Empty() {
-			return nil, fmt.Errorf("cropped region outside source image")
-		}
-	}
-	// 只把裁切区拷进一张恰好大小的 RGBA（顺便统一色彩空间），避免 SubImage 偏移陷阱。
-	dst := image.NewRGBA(r)
-	draw.Draw(dst, r, src, r.Min, draw.Src)
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, dst); err != nil {
 		return nil, fmt.Errorf("encode cropped shot: %w", err)
