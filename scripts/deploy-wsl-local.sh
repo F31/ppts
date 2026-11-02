@@ -72,6 +72,8 @@ PPTS_DATABASE_URL=$DATA_DIR/ppts.db
 PPTS_OBJECT_BACKEND=local
 PPTS_OBJECT_ROOT=$DATA_DIR/objects
 PPTS_OBJECT_SECRET=$(openssl rand -base64 32)
+# 模型网关/消息服务的凭据用 AES-GCM 加密落库，密钥缺了这两块功能整体返回 503。
+PPTS_GATEWAY_AES_KEY_BASE64=$(openssl rand -base64 32)
 PPTS_AUTH_DEV_HEADERS=true
 PPTS_TTS_PROVIDER=fake
 PPTS_HTTP_ADDR=:$PORT
@@ -81,6 +83,14 @@ EOF
   echo "==> 已生成 $RUN_DIR/config.env（端口 :$PORT）"
 else
   echo "==> 保留既有 $RUN_DIR/config.env"
+  # 早期生成的配置没有这一项：补上，否则「模型服务设置」整页 503 feature_disabled。
+  # 只补不覆盖——换掉密钥后，已保存的模型 API key 密文将无法解密。
+  if ! grep -q '^PPTS_GATEWAY_AES_KEY_BASE64=.\+' "$RUN_DIR/config.env" \
+    && ! grep -q '^PPTS_BYOS_AES_KEY_BASE64=.\+' "$RUN_DIR/config.env"; then
+    printf 'PPTS_GATEWAY_AES_KEY_BASE64=%s\n' "$(openssl rand -base64 32)" >> "$RUN_DIR/config.env"
+    chmod 600 "$RUN_DIR/config.env"
+    echo "==> 已补生成 PPTS_GATEWAY_AES_KEY_BASE64（模型网关启用）"
+  fi
 fi
 
 write_unit() {
