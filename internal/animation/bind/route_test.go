@@ -168,9 +168,9 @@ func TestRoutedModelReplacesRuleBindings(t *testing.T) {
 }
 
 func TestRoutedStructuredBandNeverCallsModel(t *testing.T) {
-	elements, segments := scriptBandPage()
+	elements, _ := scriptBandPage()
 	// 同一页，把讲稿换成逐条讲——分档变结构化，规则更准，不该再问模型。
-	segments = []Segment{
+	segments := []Segment{
 		{ID: "s1", Text: "第一步讲背景数据"},
 		{ID: "s2", Text: "第二步讲做法"},
 		{ID: "s3", Text: "第三步看收益"},
