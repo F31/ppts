@@ -27,6 +27,12 @@ const sqliteSchemaMigrations = `CREATE TABLE IF NOT EXISTS ppts_schema_migration
 //
 // PRAGMA 经 DSN 注入（per-connection，连接池下每条连接都生效）：
 // foreign_keys=ON、busy_timeout=5s、journal_mode=WAL（内存库除外）、synchronous=NORMAL。
+//
+// _txlock=immediate 不是调优项，是正确性项：默认（deferred）下事务先 SELECT、再升级为写，
+// 这中间只要有另一个写者提交，SQLite 立即返回 SQLITE_BUSY_SNAPSHOT——**不经过
+// busy_timeout**，表现为 "database is locked (5)"。真实拓扑里 api 与 worker 共享同一个
+// SQLite 文件，worker 写讲稿时必然与 job 心跳写重叠，任务因此失败。immediate 让
+// BeginTx 一开始就拿写锁，第二个写者改为按 busy_timeout 等待。
 func OpenSQLite(ctx context.Context, dsn string) (*sql.DB, error) {
 	full := sqliteDSN(dsn)
 	sqldb, err := sql.Open("sqlite", full)
@@ -48,6 +54,8 @@ func sqliteDSN(dsn string) string {
 		"_pragma=foreign_keys(1)",
 		"_pragma=busy_timeout(5000)",
 		"_pragma=synchronous(NORMAL)",
+		// 见 OpenSQLite 的说明：把写锁前置，避免 deferred 事务的升级冲突。
+		"_txlock=immediate",
 	}
 	switch {
 	case dsn == ":memory:" || strings.HasPrefix(dsn, "file::memory:"):
