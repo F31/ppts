@@ -101,7 +101,31 @@ docker build -f deploy/renderer/Dockerfile ... -t ppts/renderer:dev .
 `fc-cache` 之后 `fc-list` 能精确匹配到该家族名。最后一条挡的是「装了但 fontconfig 认不出来」——
 那种状态下 `/healthz` 会说字体会，Chrome 实际走 fallback。
 
-`python3-fonttools` 只存在于构建期的 `fontsubset` 段，运行时镜像里没有 python。
+### 运行期字体子集（`/v1/fonts/subset`，HTML 成品包内嵌用）
+
+构建期那份 11MB 母版是给**渲染服务自己**用的（`/healthz.fonts`、`planHash`）。
+HTML 成品包不能内嵌 11MB——它只服务一份讲稿，实际用到的字符通常不到 300 个。
+所以镜像额外提供按字符裁字体的端点：
+
+```bash
+curl -sS -X POST http://127.0.0.1:8090/v1/fonts/subset \
+  -H 'content-type: application/json' \
+  -d '{"codepoints":[65,19968,20108]}' | jq '.codepoints, (.missing|length), (.data|length)'
+```
+
+- 输入是码位数组（上限 8000），输出是 base64 的 OTF + 缺字列表。
+- **二次子集**：从镜像里那份母版再裁一次，不是读源 TTC。好处是产物天然继承
+  `charset.txt` 的边界——母版没有的字（CJK Ext-A/B、emoji）会被报成 `missing`，
+  而不是悄悄从源字体补上。
+- 未配置 `-font-base` 时端点返回 404，导出侧据此降级为「不内嵌字体」，包照常可用。
+
+因此 `python3-fonttools` **现在也在运行镜像里**（约 15MB）。这与 ADR-15 不冲突：
+ADR-15 否决的是「用构建期子集替代全量字体」，依据是渲染路径只吃 PNG、不排版文字；
+本能力服务的是 HTML 包内嵌，与渲染路径无关。取舍见 `docs/adr/ADR-028-*`。
+
+镜像构建期会真裁一次做自检（`font subset ok: N bytes`），裁不出来就让构建失败——
+「端点装上了但一调就崩」在运行时表现为「HTML 包静默不内嵌字体」，那是产物缺陷、
+不是可降级的故障。
 
 ## 自检（发布前必须跑）
 

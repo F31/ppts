@@ -21,8 +21,8 @@
   color: var(--ppts-text);
   border-radius: 12px;
   overflow: hidden;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: "PPTS Text", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 }
 
@@ -267,8 +267,8 @@ body.ppts-share-page {
   overflow: auto;
   background: #0b0d12;
   color: #e6e9ef;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-family: "PPTS Text", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -361,4 +361,26 @@ body.ppts-share-page {
   /* 层图由后端按 box 裁切，尺寸与 box 相等，所以 fill 不会失真——
      若这里用 contain，1px 的舍入会露出底板。 */
   object-fit: fill;
+}
+
+/* 播放器图标是内联 SVG（见 main.ts 的 ICON_PATHS）。
+   之前用的是字符 ▶ ❚ ↻ ‹ ›，而 Noto Sans CJK 没有这些字形——在没装对应符号字体的
+   机器上就是方框。尺寸用 em 跟随字号，颜色用 currentColor 跟随按钮状态。 */
+.ppts-icon {
+  display: block;
+  width: 1em;
+  height: 1em;
+  fill: currentColor;
+  /* 让图标在按钮里与文字基线对齐时不被拉伸。 */
+  flex: none;
+}
+
+.ppts-btn .ppts-icon {
+  width: 17px;
+  height: 17px;
+}
+
+.ppts-cover-glyph .ppts-icon {
+  width: 28px;
+  height: 28px;
 }

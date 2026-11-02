@@ -69,6 +69,9 @@ func main() {
 		outDir       = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath      = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
 		asJSON       = flag.Bool("json", false, "以 JSON 输出")
+		// 内嵌字体（M6-4）：直接塞给定字体文件，不做裁剪——这个工具的职责是造夹具，
+		// 裁剪属于渲染服务。想造「覆盖率达标」的夹具，就先按夹具字幕裁一份再传进来。
+		fontPath = flag.String("font", "", "可选：内嵌该字体文件（OTF/TTF）")
 	)
 	flag.Parse()
 
@@ -182,6 +185,19 @@ func main() {
 
 	var buf bytes.Buffer
 	start := time.Now()
+	var font *share.FontAsset
+	if *fontPath != "" {
+		data, ferr := os.ReadFile(*fontPath)
+		if ferr != nil {
+			log.Fatalf("share-baseline: read font: %v", ferr)
+		}
+		// 格式按扩展名判断：这个工具只用于造夹具，不值得为它做一组 flag。
+		format := "otf"
+		if strings.HasSuffix(strings.ToLower(*fontPath), ".ttf") {
+			format = "ttf"
+		}
+		font = &share.FontAsset{Family: "Baseline Font", Format: format, Version: "baseline", Data: data}
+	}
 	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), share.BundleInput{
 		Timeline:     timeline,
 		PagePNGKeys:  keys,
@@ -192,6 +208,7 @@ func main() {
 		Height:       *height,
 		FPS:          30,
 		Title:        fmt.Sprintf("体积基线样本（%d 页 / %ds）", *pages, *pages*(*pageSecs)),
+		Font:         font,
 		SnapshotHash: "sha256:baseline",
 		CreatedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 	}, &buf)

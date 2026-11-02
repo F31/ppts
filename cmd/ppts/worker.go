@@ -170,26 +170,32 @@ func runWorker() error {
 	} else {
 		exportHandler = exportHandler.WithSlideRenderer(sr)
 	}
-	// 动画通道（ADR-21）：默认关闭，且要求「开关 + 服务地址」同时具备才接入。
-	// 渲染服务是可选依赖——没有它，导出必须照常成功，所以关闭态不建客户端、不探测。
-	// 与 api 同一份判定（见 animationEnabled）：以前这里只认 env，
-	// 本地 profile 下 api 开了动画、worker 却不接，导出静默退回静态版。
-	if animationEnabled(stores.isSQLite()) {
-		if base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL")); base != "" {
-			client, cerr := animrender.NewClient(animrender.ClientConfig{
-				BaseURL: base,
-				Timeout: time.Duration(envInt("PPTS_RENDERER_TIMEOUT_SECONDS", 30)) * time.Second,
-			})
-			if cerr != nil {
-				logger.Warn("animation: renderer client disabled", "error", cerr)
-			} else {
+	// 渲染服务（可选依赖，没有它导出必须照常成功）。地址配了就建客户端：
+	//
+	//   - **字体子集**（M6-4）需要它，且与动画无关——一份没有动画的静态成品包，
+	//     字幕同样要内嵌字体才在别人机器上不出方框。所以这一路无条件接通。
+	//   - **动画通道**（ADR-21）额外受开关约束：开关 + 地址同时具备才接入。
+	//
+	// 建客户端不发请求（Health 才探测），所以「动画关闭」多建一个客户端没有副作用。
+	// 反过来，若把两件事都塞进 animationEnabled，默认关闭的动画开关就会连带
+	// 关掉字体子集，而「开关关闭」只该关掉动画这一件事。
+	if base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL")); base != "" {
+		client, cerr := animrender.NewClient(animrender.ClientConfig{
+			BaseURL: base,
+			Timeout: time.Duration(envInt("PPTS_RENDERER_TIMEOUT_SECONDS", 30)) * time.Second,
+		})
+		if cerr != nil {
+			logger.Warn("renderer client disabled", "error", cerr)
+		} else {
+			exportHandler = exportHandler.WithRenderer(client)
+			if animationEnabled(stores.isSQLite()) {
 				exportHandler = exportHandler.WithAnimation(client,
 					time.Duration(envInt("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
 				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects)
 			}
-		} else {
-			logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; staying static")
 		}
+	} else if animationEnabled(stores.isSQLite()) {
+		logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; staying static")
 	}
 	dispatch := func(ctx context.Context, job *pipeline.Job) error {
 		_, span := observability.Tracer("ppts.worker").Start(ctx, "job."+string(job.Kind))

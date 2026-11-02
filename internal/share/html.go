@@ -18,8 +18,13 @@ import (
 // 注意这里**没有** `'unsafe-inline'`：产物里不应有内联脚本。这带来一个测试上的后果——
 // 任何「往 index.html 插一段 <script> 探针」的做法都会被 CSP 拒绝，门禁必须改用同目录
 // 外部 .js 文件（design ADR-1）。
+//
+// `font-src` 必须显式写：`default-src 'none'` 会一并封掉字体，而被 CSP 拦下的字体
+// **不会报错、也不会拦页面**——它只是回退到系统字体。缺了这一条，内嵌字体等于没做，
+// 唯一的现场是开发者工具控制台里的一行违规记录。
 const indexCSP = "default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; " +
-	"style-src 'self' file: 'unsafe-inline'; script-src 'self' file:; base-uri 'none'; form-action 'none'"
+	"font-src 'self' file:; style-src 'self' file: 'unsafe-inline'; script-src 'self' file:; " +
+	"base-uri 'none'; form-action 'none'"
 
 var indexTemplate = template.Must(template.New("index.html").Parse(`<!doctype html>
 <html lang="zh-CN">
@@ -29,7 +34,8 @@ var indexTemplate = template.Must(template.New("index.html").Parse(`<!doctype ht
 <meta {{.CSPAttr}}>
 <meta name="generator" content="ppts html_bundle">
 <title>{{.Title}}</title>
-<link rel="stylesheet" href="app.css">
+{{if .HasFont}}<link rel="stylesheet" href="fonts.css">
+{{end}}<link rel="stylesheet" href="app.css">
 </head>
 <body>
 <div id="ppts-share-root">
@@ -68,6 +74,9 @@ type indexData struct {
 	// 用 template.HTMLAttr 而非拼进 content="..."：后者的单引号会被转义成 &#39;，
 	// 虽然浏览器解析后等价，但产物不该是这种难读的样子。CSP 是编译期常量，无注入面。
 	CSPAttr template.HTMLAttr
+	// HasFont 决定是否引用 fonts.css。没有内嵌字体时不写这个 <link>：
+	// 引用一个不存在的文件会让控制台多一条 404，而它对排障毫无帮助。
+	HasFont bool
 	Pages   []noscriptPage
 }
 
@@ -78,7 +87,7 @@ type indexData struct {
 //
 // pages / subtitles 只用于 <noscript> 分支：禁用 JS 时没有任何脚本能补内容，
 // 「封面 + 逐页静态图 + 讲稿」必须在打包时写死（design ADR-4）。
-func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.SubtitleCue) ([]byte, error) {
+func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.SubtitleCue, hasFont bool) ([]byte, error) {
 	if title == "" {
 		title = "讲解视频"
 	}
@@ -99,7 +108,7 @@ func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.Subtitl
 
 	var buf bytes.Buffer
 	attr := template.HTMLAttr(`http-equiv="Content-Security-Policy" content="` + indexCSP + `"`)
-	data := indexData{Title: title, CSPAttr: attr, Pages: items}
+	data := indexData{Title: title, CSPAttr: attr, HasFont: hasFont, Pages: items}
 	if err := indexTemplate.Execute(&buf, data); err != nil {
 		return nil, err
 	}

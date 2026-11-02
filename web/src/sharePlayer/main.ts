@@ -60,9 +60,42 @@ declare global {
   }
 }
 
-const PLAY_GLYPH = '\u25B6';
-const PAUSE_GLYPH = '\u275A\u275A';
-const REPLAY_GLYPH = '\u21BB';
+// 图标用内联 SVG 而不是字符。
+//
+// 原来这里放的是 ▶、❚❚、↻ 与 ‹ › 这几个字符，实测 Noto Sans CJK SC **一个都没有**——
+// 它是 Latin+Greek+Cyrillic+CJK 字体，几何图形与箭头只覆盖了部分区间。用字符的后果是
+// 图标显不显示取决于打开者机器上装了什么字体，而这是一个「双击就能播」的离线产物，
+// 不该有这种不确定性。
+//
+// 改成 SVG 之后还有一层收益：成品包可以内嵌一份很小的字体（约 100 KB）并做到
+// 「覆盖片中所有字」，因为 UI 不再向字集里塞任何生僻字形。
+const ICON_PATHS = {
+  play: 'M8 5.5v13l11-6.5z',
+  pause: 'M7 5h3.5v14H7zM13.5 5H17v14h-3.5z',
+  replay: 'M12 5V2L7 6.5 12 11V8a5 5 0 1 1-5 5H4.5A7.5 7.5 0 1 0 12 5z',
+  prev: 'M16 5 7 12l9 7z',
+  next: 'M8 5l9 7-9 7z',
+} as const;
+type IconName = keyof typeof ICON_PATHS;
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function icon(name: IconName): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  svg.classList.add('ppts-icon');
+  const path = document.createElementNS(SVG_NS, 'path');
+  path.setAttribute('d', ICON_PATHS[name]);
+  svg.appendChild(path);
+  return svg;
+}
+
+// replaceChildren 而不是 innerHTML：不引入任何可被注入的解析路径。
+function setIcon(host: Element, name: IconName): void {
+  host.replaceChildren(icon(name));
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -150,8 +183,9 @@ function mount(): void {
   const cover = el('button', 'ppts-cover');
   cover.type = 'button';
   cover.setAttribute('aria-label', `播放：${title}`);
-  const coverGlyph = el('span', 'ppts-cover-glyph', PLAY_GLYPH);
+  const coverGlyph = el('span', 'ppts-cover-glyph');
   coverGlyph.setAttribute('aria-hidden', 'true');
+  setIcon(coverGlyph, 'play');
   const coverLabel = el('span', 'ppts-cover-label', '点击播放');
   cover.append(coverGlyph, coverLabel);
 
@@ -165,14 +199,17 @@ function mount(): void {
   stage.append(prev.panel, cur.panel, cover, subtitleBox);
 
   const controls = el('div', 'ppts-controls');
-  const prevBtn = el('button', 'ppts-btn', '\u2039');
+  const prevBtn = el('button', 'ppts-btn');
   prevBtn.type = 'button';
+  setIcon(prevBtn, 'prev');
   prevBtn.setAttribute('aria-label', '上一页');
-  const playBtn = el('button', 'ppts-btn', PLAY_GLYPH);
+  const playBtn = el('button', 'ppts-btn');
   playBtn.type = 'button';
+  setIcon(playBtn, 'play');
   playBtn.setAttribute('aria-label', '播放');
-  const nextBtn = el('button', 'ppts-btn', '\u203A');
+  const nextBtn = el('button', 'ppts-btn');
   nextBtn.type = 'button';
+  setIcon(nextBtn, 'next');
   nextBtn.setAttribute('aria-label', '下一页');
   const timeLabel = el('span', 'ppts-time', `0:00.0 / ${usecToClock(durationUs)}`);
   const seekBar = el('input', 'ppts-seek');
@@ -597,7 +634,7 @@ function mount(): void {
 
   const showCover = (label: string): void => {
     cover.hidden = false;
-    coverGlyph.textContent = ended ? REPLAY_GLYPH : PLAY_GLYPH;
+    setIcon(coverGlyph, ended ? 'replay' : 'play');
     coverLabel.textContent = label;
   };
 
@@ -617,7 +654,7 @@ function mount(): void {
     stopLoop();
     if (hasAudio) audio.pause();
     wallRunning = false;
-    playBtn.textContent = REPLAY_GLYPH;
+    setIcon(playBtn, 'replay');
     playBtn.setAttribute('aria-label', '重播');
     render(durationUs);
     showCover('已播完，点击重播');
@@ -630,7 +667,7 @@ function mount(): void {
     }
     playing = true;
     hideCover();
-    playBtn.textContent = PAUSE_GLYPH;
+    setIcon(playBtn, 'pause');
     playBtn.setAttribute('aria-label', '暂停');
     if (hasAudio) {
       if (!mixMode && segIndex < 0) loadSegment(segmentAt(positionUs()));
@@ -640,7 +677,7 @@ function mount(): void {
         result.catch(() => {
           playing = false;
           stopLoop();
-          playBtn.textContent = PLAY_GLYPH;
+          setIcon(playBtn, 'play');
           playBtn.setAttribute('aria-label', '播放');
           showCover('点击播放');
         });
@@ -657,7 +694,7 @@ function mount(): void {
     if (hasAudio) audio.pause();
     wallBaseUs = wallPosition();
     wallRunning = false;
-    playBtn.textContent = PLAY_GLYPH;
+    setIcon(playBtn, 'play');
     playBtn.setAttribute('aria-label', '播放');
   };
 
@@ -786,7 +823,7 @@ function mount(): void {
         () => {
           playing = true;
           hideCover();
-          playBtn.textContent = PAUSE_GLYPH;
+          setIcon(playBtn, 'pause');
           playBtn.setAttribute('aria-label', '暂停');
           startLoop();
         },

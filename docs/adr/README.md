@@ -17,6 +17,7 @@
 | [019](./ADR-019-migration-runtime-role-separation.md) | 迁移与运行角色分离（RLS 前提） | 已实现 | 独立记录 |
 | [020](./ADR-020-native-client-timing.md) | G4 原生客户端的启动时机与最小范围（触发制 + G4-lite） | 已采纳（G4 推迟） | 独立记录 |
 | [027](./ADR-027-number-form-boundary.md) | 数字形态判定留在 `internal/validation`，不迁入 textnorm | 已采纳 | 独立记录（021–026 属动画扩展方案，本地文档占用） |
+| [028](./ADR-028-html-bundle-embedded-font.md) | HTML 成品包内嵌字体用「渲染服务二次子集」，按片中字符裁剪 | 已实现 | 独立记录 |
 
 ## 为什么 001–016 没有独立文件
 

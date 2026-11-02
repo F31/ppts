@@ -40,8 +40,18 @@ type Manifest struct {
 	// 单一 currentTime 即全局时间，seek 与字幕对齐无需换算，也不会累积漂移。
 	AudioMix  string       `json:"audioMix,omitempty"`
 	Subtitles SubtitleInfo `json:"subtitles"`
-	// Fonts 本阶段恒为空：播放器只用系统字体族回退（不内嵌字体，M6-4 再说）。
+	// Fonts 是包内内嵌字体的族名列表。为空表示没有内嵌字体，播放器只用系统
+	// 字体族回退——这是引入字体子集化之前的行为，也是「取不到字体」时的降级态。
+	//
+	// 注意族名是 `PPTS Text` 而不是 `Noto Sans CJK SC`：CSS 里用的是
+	// @font-face 声明的名字，与字体文件内部的族名无关（见 fontembed.go）。
 	Fonts []string `json:"fonts"`
+	// FontMissing 是内嵌字体覆盖不到的字符。
+	//
+	// 非空不算失败：charset.txt 明确不收 CJK Ext-A/B 与 emoji，真实文案里出现
+	// 生僻字时它们只能走系统 fallback。但**必须记下来**——「内嵌了字体」与
+	// 「内嵌了字体且覆盖了片中所有字」是两件事，只有后者才是 V15 要验收的东西。
+	FontMissing []string `json:"fontMissing,omitempty"`
 }
 
 type ArtifactInfo struct {

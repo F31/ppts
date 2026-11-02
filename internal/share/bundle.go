@@ -86,6 +86,12 @@ type BundleInput struct {
 	// 它只负责「把这些字节写进包、把这些元数据写进清单」。这样 share 不必依赖
 	// render（也就不会把 animation 的语义带进一个只管打包的包）。
 	Pages []PageAnimation
+	// Font 是内嵌字体（nil = 不内嵌，字幕走系统字体回退）。
+	//
+	// 调用方负责裁剪（按片中字符产出约 100 KB 的字体），打包器只负责写进包并
+	// 校验覆盖率。字体是**增强**：拿不到就出没有内嵌字体的包，与 M6-1 行为一致，
+	// 画面不会坏——所以这里不做成必填。
+	Font *FontAsset
 	// CreatedAt 为零值时省略。
 	CreatedAt time.Time
 }
@@ -285,13 +291,44 @@ func (b *BundleBuilder) buildInto(
 	if err != nil {
 		return nil, nil, fmt.Errorf("share: embedded player stylesheet: %w", err)
 	}
+
+	// ---- 内嵌字体 ----
+	//
+	// 覆盖率在这里校验而不是在调用方：只有打包器同时知道「包里写了哪些文本」
+	// （标题、字幕）与「播放器会显示哪些固定文案」（app.js 里的 UI 字符串）。
+	// 分散到调用方就意味着每加一个文本来源都要有人记得同步校验。
+	if in.Font != nil {
+		fontCSS, ferr := renderFontCSS(*in.Font)
+		if ferr != nil {
+			return nil, nil, ferr
+		}
+		if err := emit(fontEntryPath, in.Font.Data); err != nil {
+			return nil, nil, err
+		}
+		if err := emit(FileFontCSS, fontCSS); err != nil {
+			return nil, nil, err
+		}
+		manifest.Fonts = []string{fontFamilyName}
+		if missing, cerr := checkFontCoverage(*in.Font, in.Title, subtitleTexts(in), appJS); cerr != nil {
+			// 字体解析失败说明产物不是它自称的东西，这不该被容忍：
+			// 写进包的字体浏览器也加载不了，用户看到的是「有字体却还是方框」。
+			return nil, nil, fmt.Errorf("share: verify embedded font: %w", cerr)
+		} else if len(missing) > 0 {
+			manifest.FontMissing = runeStrings(missing)
+			if b.logger != nil {
+				b.logger.Warn("share: embedded font does not cover every character; these fall back to system fonts",
+					"missing", len(missing), "sample", string(missing[:min(len(missing), 8)]))
+			}
+		}
+	}
+
 	if err := emit(FileAppJS, appJS); err != nil {
 		return nil, nil, err
 	}
 	if err := emit(FileAppCSS, appCSS); err != nil {
 		return nil, nil, err
 	}
-	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles)
+	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles, in.Font != nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("share: render index.html: %w", err)
 	}

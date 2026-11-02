@@ -59,9 +59,14 @@ ARG CHROME_SHA256
 
 # 与全量包相比这里少了 fonts-noto-cjk（91MB → 见 stage 2），也少了它连带引入的
 # python3 / fonttools 那一串构建期依赖。fontconfig 要显式装：此前是 fonts-noto-cjk 的依赖。
+#
+# **python3-fonttools 是例外，必须装**（约 15MB）：HTML 成品包要在打包时按讲稿字符
+# 把母版裁到约 100KB，而 CFF 轮廓裁剪没有可用的纯 Go 实现。这是唯一需要它的地方，
+# 也是「把子集放进渲染服务而不是另起 sidecar」的理由——镜像本来就带母版，边际成本
+# 只是一个解释器。注意它**不代表**渲染路径会用到字体：合成器只吃 PNG（见 ADR-15）。
 RUN apt-get -o Acquire::Retries=5 update \
  && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-      ca-certificates curl unzip fontconfig fonts-liberation \
+      ca-certificates curl unzip fontconfig fonts-liberation python3-fonttools \
       libglib2.0-0 libnss3 libnspr4 libdbus-1-3 \
       libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 \
       libcups2 libdrm2 libgbm1 libasound2 \
@@ -72,12 +77,24 @@ RUN apt-get -o Acquire::Retries=5 update \
 
 COPY --from=fontsubset /fonts/ /usr/share/fonts/opentype/ppts/
 COPY --from=fontsubset /fonts.version /etc/ppts/fonts.version
+COPY deploy/renderer/subset-runtime.py /usr/local/bin/ppts-subset-runtime
+RUN chmod 0755 /usr/local/bin/ppts-subset-runtime
+
 # fc-cache 在构建期跑完：运行时 rootfs 只读，缓存不能等到启动才生成。
 # 后面这条断言是门禁：字体装了但 fontconfig 认不出来（族名被改、缓存没建），
 # 表现会是 /healthz 报着字体、Chrome 却拿 fallback 出图——必须在这里就失败。
 RUN fc-cache -f >/dev/null \
  && fc-list : family | tr ',' '\n' | sort -u | grep -Fx "Noto Sans CJK SC" \
  && echo "fonts ok: $(cat /etc/ppts/fonts.version)"
+
+# 子集能力自检：用真实母版真裁一次。跑不通就让镜像构建失败——「端点装上了但一调就崩」
+# 在运行时表现为「HTML 包静默不内嵌字体」，而那是产物缺陷，不是可降级的故障。
+RUN printf '41\n4E00\n' > /tmp/probe.txt \
+ && ppts-subset-runtime --base /usr/share/fonts/opentype/ppts/NotoSansCJKsc-Regular.otf \
+      --charset /tmp/probe.txt --out /tmp/probe.otf \
+ && test -s /tmp/probe.otf \
+ && echo "font subset ok: $(stat -c%s /tmp/probe.otf) bytes" \
+ && rm -f /tmp/probe.txt /tmp/probe.otf
 
 # 固定版本 + 摘要校验：版本化 URL 是不可变的，但校验和能挡住下载截断与镜像源篡改。
 RUN set -eux; \

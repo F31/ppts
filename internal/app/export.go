@@ -551,6 +551,7 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		}
 		pages = nil
 	}
+	font := h.htmlBundleFont(ctx, job, bundle)
 	manifest, err := builder.Build(ctx, share.BundleInput{
 		Timeline:     bundle.Timeline,
 		PagePNGKeys:  snapshot.PagePNGKeys,
@@ -562,6 +563,7 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		Height:       snapshot.Height,
 		FPS:          snapshot.FPS,
 		Title:        bundle.Timeline.SourceDisplayName,
+		Font:         font,
 		SnapshotHash: snapshotHash,
 		CreatedAt:    time.Now(),
 	}, tmp)
@@ -585,6 +587,55 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		return nil, err
 	}
 	return tmp, nil
+}
+
+// htmlBundleFont 取成品包要内嵌的字体：按这份讲稿的字符裁一小份。
+//
+// 字体是**增强**，任何失败都返回 nil 让包退回到「系统字体回退」。但降级必须留痕：
+// 「用户拿到一个没内嵌字体的包」与「导出功能坏了」在界面上一模一样，只有日志能区分。
+//
+// 单独一个 20s 预算，而不是直接用导出的 ctx：子集正常是亚秒级，卡到 20s 说明
+// 渲染服务有问题，这时候应该让包不带字体尽快出去，而不是让整个导出跟着慢慢超时。
+func (h *ExportHandler) htmlBundleFont(ctx context.Context, job *pipeline.Job, bundle *TimelineAsset) *share.FontAsset {
+	if h.renderer == nil || bundle == nil || bundle.Timeline == nil {
+		return nil
+	}
+	charset, err := share.FontRequestCharset(bundle.Timeline.SourceDisplayName, bundle.Timeline)
+	if err != nil {
+		h.warnExport("export: compute font charset failed; bundle will not embed fonts", job, err)
+		return nil
+	}
+	subCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	res, err := h.renderer.SubsetFont(subCtx, charset.Runes)
+	if err != nil {
+		if errors.Is(err, render.ErrFontSubsetUnavailable) {
+			// 不是故障：这个部署没启用字体子集（旧版本渲染器 / 未配母版）。
+			if h.logger != nil {
+				h.logger.Info("export: renderer has no font subset capability; bundle will not embed fonts",
+					"job", job.ID)
+			}
+		} else {
+			h.warnExport("export: font subset failed; bundle will not embed fonts", job, err)
+		}
+		return nil
+	}
+	if len(res.Missing) > 0 && h.logger != nil {
+		h.logger.Warn("export: font subset misses some characters; they will fall back to system fonts",
+			"job", job.ID, "missing", len(res.Missing), "sample", string(res.Missing[:min(len(res.Missing), 8)]))
+	}
+	return &share.FontAsset{
+		Family:  res.Family,
+		Format:  res.Format,
+		Version: res.BaseVersion,
+		Data:    res.Data,
+	}
+}
+
+func (h *ExportHandler) warnExport(msg string, job *pipeline.Job, err error) {
+	if h.logger != nil {
+		h.logger.Warn(msg, "job", job.ID, "error", err)
+	}
 }
 
 // tenantObjectReader 把对象存储适配成 share.ResourceReader。

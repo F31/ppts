@@ -12,6 +12,7 @@ const (
 	KindLayers    = "layers"
 	KindAudio     = "audio"
 	KindPlayer    = "player"
+	KindFont      = "font"
 	KindSubtitles = "subtitles"
 	KindManifest  = "manifest"
 	KindOther     = "other"
@@ -20,8 +21,13 @@ const (
 // 预算基数与每分钟增量（design ADR-6）。
 //
 // 基数 3 MiB 覆盖播放器 + 20 页图 + 清单；每分钟 0.55 MiB 覆盖 AAC 64kbps 单声道
-// （≈0.48 MiB/min）再留 15% 余量。5 分钟 → 5.75 MiB，比方案 §20.6 的 4.2 MB 目标宽 37%，
-// 因为字体子集与 WebP 都还没做：阈值取「当前实现的合理上界」，否则门禁第一天就永久红。
+// （≈0.48 MiB/min）再留 15% 余量。5 分钟 → 5.75 MiB，比方案 §20.6 的 4.2 MB 目标宽 37%。
+//
+// 为什么还没收紧：方案给的 4.2 MB 依赖三项都没做——WebP、AAC、字体子集。三者中
+// **字体子集这轮已落地**（实测 169 个字符 → 86.9 KB，打进 zip 约 75 KB，占基数的 3%），
+// 但 WebP 与 AAC 仍然缺席，所以「当前实现的合理上界」这个定性还成立：真实 PPT 截图
+// 按 150–400 KB/页算，20 页就是 3–8 MB，收紧阈值只会让门禁在真实素材上永久红。
+// 等图像与音频两项编码优化落地，再按实测基线整体重订。
 const (
 	budgetBaseBytes   int64 = 3 << 20
 	budgetBytesPerMin int64 = 589824 // 0.5625 MiB，取整便于核对
@@ -94,6 +100,10 @@ func classifyEntry(name string) string {
 	switch {
 	case name == FileAppJS || name == FileAppCSS:
 		return KindPlayer
+	case name == FileFontCSS || strings.HasPrefix(name, "assets/fonts/"):
+		// 字体单列一类：它和「播放器」的优化手段完全不同（一个是改编码、一个是改字集大小），
+		// 混在一起会让超预算时看不出该动哪一项。
+		return KindFont
 	case strings.HasPrefix(name, "audio/"):
 		return KindAudio
 	case name == FileManifestJSON || name == FileManifestJS || name == FileTimelineJSON:

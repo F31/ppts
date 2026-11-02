@@ -115,6 +115,17 @@ func (h *ExportHandler) WithAnimation(client *render.Client, timeout time.Durati
 	return h
 }
 
+// WithRenderer 只注入渲染客户端，不打开动画通道。
+//
+// 为什么需要它：h.renderer 有两个用途——渲染动画片段，以及**裁成品包要内嵌的字体**。
+// 后者与动画无关：一份不带任何动画的静态成品包，字幕同样需要内嵌字体才能在别人
+// 机器上不出方框。若只有 WithAnimation 一条注入路径，动画开关（默认关）就会连带
+// 关掉字体子集，而「开关关闭」只应该关掉动画这一件事。
+func (h *ExportHandler) WithRenderer(client *render.Client) *ExportHandler {
+	h.renderer = client
+	return h
+}
+
 // RenderAnimation 编排一次动画渲染。workDir 应当**每次导出独占一个目录**：
 // 片段按 `segment_NNN.mp4` 落盘，两个导出共用一个目录会互相覆盖，
 // 而覆写发生在下载阶段，表现得像「这页放错了」。

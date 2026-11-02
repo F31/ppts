@@ -61,6 +61,13 @@ func run() error {
 		segCacheMax = flag.Int64("segment-cache-max-bytes", 4<<30, "片段缓存容量上限（字节；0 = 不限）")
 		// 页级并发：总渲染位 = 页并发 × 帧并发，内存按乘积算（ADR-16）。
 		pageConcurrency = flag.Int("page-concurrency", 0, "同时渲染的页数；0 = 按可用 CPU 自动")
+		// 字体子集（HTML 成品包内嵌用）：默认关闭，容器里由 entrypoint 打开。
+		fontBase     = flag.String("font-base", "", "母版字体路径（空 = 不提供 /v1/fonts/subset）")
+		fontScript   = flag.String("font-subset-script", "", "运行期字体子集脚本路径（-font-base 非空时必填）")
+		fontVersion  = flag.String("font-version", "", "母版版本（参与子集缓存键）")
+		fontFamily   = flag.String("font-family", "Noto Sans CJK SC", "母版字体族名")
+		fontSubsetTO = flag.Duration("font-subset-timeout", 20*time.Second, "单次字体子集超时")
+		fontSubsetCC = flag.Int("font-subset-concurrency", 2, "同时运行的字体子集进程数")
 	)
 	flag.Parse()
 
@@ -131,6 +138,26 @@ func run() error {
 		}
 	}
 
+	// 字体子集是可选能力：不配就返回 404，打包侧据此降级为「不内嵌字体」。
+	// 但**配了就必须可用**——「显式配置了却静默不生效」是部署里最难查的一类问题，
+	// 与 -assets-dir 的处理保持一致：起不来好过每天少一个能力却没人知道。
+	var fontSubsetter *render.FontSubsetter
+	if *fontBase != "" {
+		subsetter, ferr := render.NewFontSubsetter(render.FontSubsetConfig{
+			BasePath:      *fontBase,
+			ScriptPath:    *fontScript,
+			Family:        *fontFamily,
+			Version:       *fontVersion,
+			Timeout:       *fontSubsetTO,
+			MaxConcurrent: *fontSubsetCC,
+		})
+		if ferr != nil {
+			return ferr
+		}
+		fontSubsetter = subsetter
+		log.Printf("font subset: %s (%s)", *fontBase, *fontVersion)
+	}
+
 	svc, err := render.NewService(render.ServiceConfig{
 		Backend:        impl,
 		WorkDir:        *workDir,
@@ -144,6 +171,7 @@ func run() error {
 		MaxPlanBytes:   *maxPlan,
 		KeepOrphans:    *keepOrphans,
 		SegmentCache:   segCache,
+		FontSubsetter:  fontSubsetter,
 		Logf: func(format string, args ...any) {
 			log.Printf(format, args...)
 		},

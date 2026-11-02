@@ -20,6 +20,12 @@ var (
 	ErrAnimationUnavailable = errors.New("render: animation service unavailable")
 	// ErrFontUnavailable 表示渲染器缺少必需字体。宁可明确拒绝，也不产出方框字。
 	ErrFontUnavailable = errors.New("render: required font unavailable")
+	// ErrFontSubsetUnavailable 表示该部署没有字体子集能力（未配置母版，端点不存在）。
+	//
+	// 与「子集调用失败」区分开：前者是**这个部署没有这个功能**，导出应当直接出
+	// 不内嵌字体的包，不必重试；后者可能是临时故障，值得重试一次。把两者混成
+	// 一个错误，会让「旧版本渲染器」被当成「渲染器挂了」，导出链路开始无谓重试。
+	ErrFontSubsetUnavailable = errors.New("render: font subset unavailable")
 )
 
 // HTTPError 是渲染服务返回的非 2xx 响应。

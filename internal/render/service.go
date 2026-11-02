@@ -172,6 +172,12 @@ type ServiceConfig struct {
 	// 缓存是**派生物**：读写出错都只退化，不影响任务终态。多副本部署时指向同一份
 	// 共享存储（目录挂载或对象存储适配器）即可共享命中。
 	SegmentCache SegmentCache
+	// FontSubsetter 是可选的字体子集器（nil = 不注册 /v1/fonts/subset）。
+	//
+	// 它是给 HTML 成品包内嵌字体用的：打包侧传来「这份讲稿用到的字符」，
+	// 这里裁出一份只含那些字的字体。未配置时端点不存在，打包侧据此降级为
+	// 「不内嵌字体、用系统字体回退」——那是引入该能力之前的行为，画面不会坏。
+	FontSubsetter *FontSubsetter
 	// Logf 是启动清扫等后台事件的日志出口（nil = 不输出）。
 	Logf func(format string, args ...any)
 	// Now 便于测试注入时钟（0 = time.Now）。
@@ -401,6 +407,11 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/render", s.handleSubmit)
 	mux.HandleFunc("/v1/render/", s.handleJob)
+	// 未配置子集器时不注册：404 让调用方明确「这个部署没有这个能力」，
+	// 比注册一个永远 503 的端点更好判断——后者会被当成临时故障重试。
+	if s.cfg.FontSubsetter != nil {
+		mux.HandleFunc("/v1/fonts/subset", s.handleFontSubset)
+	}
 	return mux
 }
 

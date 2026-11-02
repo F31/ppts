@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""成品包质量门禁（M6-4）：V14 自包含性、V15 体积、V16 可播放性、V17 降级矩阵。
+"""成品包质量门禁（M6-4）：V14 自包含性、V15 体积与字体子集覆盖、V16 可播放性、V17 降级矩阵。
 
 为什么这些必须是门禁而不是"打开看一眼"：
 
@@ -8,6 +8,8 @@
     单看代码完全正常。实测这一项当场抓到「混音轨 + 逐段音频双份」，占 80% 体积。
   * **V16 可播放性**：删掉一个清单引用的层图，页面照样"看起来正常"，只是那一层没了。
   * **V17 降级**：三条降级路径平时没人走，坏掉也不会有人报 bug。
+  * **V15 字体覆盖**：缺字在浏览器里是方框，不报错、不拦页面——字幕上少几个字，
+    只有恰好认识那个字的人才会发现。
 
 判定与实现分工：
   - V14/V15 交给 `cmd/share-verify`（Go 侧唯一实现，打包时自检与事后校验同一套判据）；
@@ -290,11 +292,29 @@ def main():
     total_mib = measure.get("totalBytes", 0) / (1 << 20)
     budget_mib = measure.get("budgetBytes", 0) / (1 << 20)
     over = bool(measure.get("overBudget"))
-    # 超预算只告警：阈值依赖字体子集/WebP/AAC，这三项都还没做；
-    # 此刻阻断等于用门禁替产品做决定（design ADR-6）。
+    # 超预算仍只告警：阈值里还有两项没兑现（WebP、AAC），此时阻断等于用门禁
+    # 替产品做决定（design ADR-6）。注意字体子集这轮已经做了，所以「字体让体积
+    # 变轻」这条理由已经消失——真要收紧阈值，先看实测基线。参见 measure.go 的注释。
     checks.append(Check("V15", "体积在预算内", not over,
                         f"{total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB", blocking=False))
-    checks.append(Check("V15", "字体子集覆盖", True, "not_applicable（不内嵌字体，使用系统字体栈）", blocking=False))
+    # ---- V15 字体子集覆盖 ----
+    #
+    # 判据来自 share-verify（Go 侧唯一实现）：它从**包内实际文件**重建字集
+    # （标题取清单、字幕解析 VTT、播放器文案读 app.js），再解析字体 cmap 逐字比对，
+    # 不采信清单里自己写的 fontMissing——被测系统的账本不能同时当门禁的账本。
+    #
+    # 没内嵌字体时是 not_applicable 而不是 pass：这份包没做这件事，不该打勾。
+    font = verify.get("font") or {}
+    if not font.get("Embedded"):
+        checks.append(Check("V15", "字体子集覆盖", True,
+                            "not_applicable（未内嵌字体，使用系统字体栈）", blocking=False))
+    else:
+        missing = font.get("Missing") or []
+        detail = (f"{font.get('Family')} {font.get('FontBytes', 0) / 1024:.1f} KB，"
+                  f"覆盖 {font.get('CharsetSize', 0)} 个字符")
+        if missing:
+            detail += f"，缺 {len(missing)} 个：{''.join(chr(c) for c in missing[:12])}"
+        checks.append(Check("V15", "字体子集覆盖片中全部字符", not missing, detail))
 
     reports = {}
     env_error = None

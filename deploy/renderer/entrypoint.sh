@@ -11,7 +11,17 @@
 set -e
 
 if [ -s /etc/ppts/fonts.version ]; then
-    set -- -fonts "Noto Sans CJK SC@$(cat /etc/ppts/fonts.version)" "$@"
+    ver=$(cat /etc/ppts/fonts.version)
+    set -- -fonts "Noto Sans CJK SC@$ver" "$@"
+    # 字体子集（HTML 成品包内嵌用）：母版就是构建期那份 URO 子集产物，运行时再裁到
+    # 「一份讲稿实际用到的字符」（约 100KB）。两个文件都在才打开——缺脚本时宁可让
+    # 端点返回 404 走降级，也不要让服务起不来。
+    if [ -f /usr/share/fonts/opentype/ppts/NotoSansCJKsc-Regular.otf ] \
+        && [ -f /usr/local/bin/ppts-subset-runtime ]; then
+        set -- -font-base /usr/share/fonts/opentype/ppts/NotoSansCJKsc-Regular.otf \
+               -font-subset-script /usr/local/bin/ppts-subset-runtime \
+               -font-version "$ver" "$@"
+    fi
 fi
 
 exec /usr/local/bin/ppts-renderer "$@"

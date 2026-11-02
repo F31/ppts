@@ -32,14 +32,18 @@ type result struct {
 	// ExternalRefSamples 给出「哪个条目里的哪一段」。只报数量的话排查要从头 grep。
 	ExternalRefSamples map[string][]string `json:"externalRefSamples,omitempty"`
 	Measure            share.Measurement   `json:"measure"`
+	// Font 是内嵌字体的覆盖率结论（V15）。Embedded 为 false 时其余字段无意义——
+	// 那是「这份包没有内嵌字体」，与「内嵌了但缺字」是两件事。
+	Font share.FontCoverage `json:"font"`
 }
 
 func main() {
 	jsonOut := flag.Bool("json", false, "以 JSON 输出")
 	allowExternal := flag.Bool("allow-external", false, "检出外链时只警告，不返回失败")
 	checkBudget := flag.Bool("budget", false, "超体积预算时返回失败（默认只报告）")
+	checkFont := flag.Bool("font", false, "内嵌字体覆盖率不足时返回失败（默认只报告）")
 	flag.Usage = func() {
-		fmt.Fprintf(flag.CommandLine.Output(), "用法：share-verify [-json] [-allow-external] [-budget] <bundle.zip|bundle-dir>\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "用法：share-verify [-json] [-allow-external] [-budget] [-font] <bundle.zip|bundle-dir>\n")
 	}
 	flag.Parse()
 	if flag.NArg() != 1 {
@@ -55,6 +59,7 @@ func main() {
 	}
 
 	measure := share.MeasureFiles(files, manifest)
+	fontRep, fontErr := share.CheckEmbeddedFont(manifest, files)
 	res := result{
 		Target: target, Kind: kind,
 		SchemaVersion:      manifest.SchemaVersion,
@@ -67,6 +72,13 @@ func main() {
 		ExternalRefs:       share.CountExternalRefs(files),
 		ExternalRefSamples: share.ExternalRefSamples(files),
 		Measure:            measure,
+		Font:               fontRep,
+	}
+	if fontErr != nil {
+		// 结构性问题（声明了字体却没文件 / 字体解析不了）直接失败：
+		// 这不是「覆盖率不足」，而是包自相矛盾，浏览器拿到也加载不了。
+		fmt.Fprintf(os.Stderr, "share-verify: %v\n", fontErr)
+		os.Exit(1)
 	}
 
 	if *jsonOut {
@@ -88,6 +100,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "share-verify: 失败：体积 %.2f MiB 超出预算 %.2f MiB\n",
 			float64(measure.TotalBytes)/(1<<20), float64(measure.BudgetBytes)/(1<<20))
 		os.Exit(3)
+	}
+	if *checkFont && res.Font.Embedded && len(res.Font.Missing) > 0 {
+		fmt.Fprintf(os.Stderr, "share-verify: 失败：内嵌字体缺 %d 个片中字符（首个 %q）\n",
+			len(res.Font.Missing), string(res.Font.Missing[:min(len(res.Font.Missing), 8)]))
+		os.Exit(4)
 	}
 }
 
@@ -113,6 +130,7 @@ var kindLabels = map[string]string{
 	share.KindLayers:    "层图",
 	share.KindAudio:     "音频",
 	share.KindPlayer:    "播放器",
+	share.KindFont:      "字体",
 	share.KindSubtitles: "字幕",
 	share.KindManifest:  "清单",
 	share.KindOther:     "其它",
@@ -148,7 +166,17 @@ func printResult(r result) {
 	}
 	// 字体子集与 WebP 都还没做，所以这两项在本实现下不适用。
 	// 写成 not_applicable 而不是 pass：门禁报告不该为没做的事打勾。
-	fmt.Println("\n字体子集：not_applicable（当前不内嵌字体，使用系统字体栈）")
+	switch {
+	case !r.Font.Embedded:
+		fmt.Println("\n字体子集：not_applicable（未内嵌字体，使用系统字体栈）")
+	case len(r.Font.Missing) == 0:
+		fmt.Printf("\n字体子集：pass（%s，%d 字节，覆盖 %d 个字符）\n",
+			r.Font.Family, r.Font.FontBytes, r.Font.CharsetSize)
+	default:
+		fmt.Printf("\n字体子集：FAIL（%s，%d 字节，%d 个字符中缺 %d 个：%s）\n",
+			r.Font.Family, r.Font.FontBytes, r.Font.CharsetSize, len(r.Font.Missing),
+			string(r.Font.Missing))
+	}
 
 	if len(r.ExternalRefSamples) > 0 {
 		fmt.Println("\n外链明细：")
