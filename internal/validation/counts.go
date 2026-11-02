@@ -13,8 +13,18 @@ package validation
 //
 // 因此形态在**抽取阶段**判定一次（numberForm），处置在**规则表**里声明（rules.json 的 counts），
 // 两者都不散落在调用方：换语言、换领域、换严格程度都只改配置。
-
-
+//
+// 为什么**不**挪进 textnorm（2026-11-02 评审，见 docs/adr/ADR-027）：那边按「怎么念」分类
+// （date / decimal / percent / telephone，依据是读音歧义），这边按「该不该拦」分类
+// （fact / count / ordinal，依据是业务裁定）。同一批 token 上的两条正交分类轴，合并成一个
+// 枚举谁都用不顺手：textnorm 永远用不到 count，门禁也永远用不到 telephone。另外两侧的
+// 变更驱动不同（这边是门禁口径 + 回放基线，那边是公开契约 + profile 版本 + ConfigHash），
+// 合并后改一句后缀表也要触发 TTS 侧的版本流程。真正重复的只有**词表**（序号前缀 / 单位 /
+// 量词族），词表可以各自演进，判定逻辑不行——`FormatCountHint` 与校验器同源是这套门禁的
+// 核心不变量，拆开必然漂移。
+//
+// 若将来出现第二个消费者（别的服务也要做源/目标保真判定），正确做法是把 validation
+// **整体**抽成独立模块（判定 + rules.json + 回放语料一起走），而不是拆一半给 textnorm。
 
 import (
 	"strconv"
