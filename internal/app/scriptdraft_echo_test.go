@@ -142,4 +142,10 @@ func TestNumberContextHint(t *testing.T) {
 	if got := numberContextHint([]validation.Entity{{Kind: "model", Text: "A100"}}, "A100 很强"); got != "" {
 		t.Fatalf("非数字实体不该截取上下文：%q", got)
 	}
+	// 中文数词：实体值是 3，正文里写的是「三个」。必须按原文写法定位，
+	// 否则会截到前面那个毫不相干的 "3"，提示指错位置比没有提示更糟。
+	cn := []validation.Entity{{Kind: "number", Text: "3", Surface: "三个"}}
+	if got := numberContextHint(cn, "支持 3 种格式，覆盖三个典型场景。"); !strings.Contains(got, "三个典型场景") {
+		t.Fatalf("中文数词应按原文写法定位：%q", got)
+	}
 }

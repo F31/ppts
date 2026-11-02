@@ -205,6 +205,10 @@ type Entity struct {
 	// Form 是数字的**形态**（仅 number 有意义）：实测事实 / 概括计数 / 序号。
 	// 它只影响「目标里多出来的数字」怎么判，不参与 Text 与配对（见 counts.go）。
 	Form string
+	// Surface 是实体在原文里的**写法**（当前只有中文数词会填，如「三个」）。
+	// 只给诊断用：提示要截取用户真正看到的字符，否则「新增数字 3」会去正文里找
+	// 一个毫不相干的 "3"，指向错误的位置。不参与比较，也不进提示词。
+	Surface string
 }
 
 // 数字形态。判定在抽取阶段完成（formOf），策略在规则表里（rules.json 的 counts）。
@@ -237,18 +241,24 @@ func (r Report) HasWarnings() bool { return len(r.Warnings) > 0 }
 // Text here is the *canonical* form of each entity, so two spellings of the same fact
 // collapse to one entity (see the normalization notes at the top of this file).
 func ExtractEntities(text string) []Entity {
+	return extractEntities(text, chineseNumeralsOn)
+}
+
+// extractEntities 是带开关的实现：parseChinese 由规则表（chineseNumerals.enabled）决定，
+// 显式传参是为了让测试能直接验证"关掉之后回到旧行为"，而不必改全局状态。
+func extractEntities(text string, parseChinese bool) []Entity {
 	seen := map[string]bool{}
 	out := []Entity{}
-	add := func(kind, canonical, measure, form string) {
-		if canonical == "" {
+	add := func(e Entity) {
+		if e.Text == "" {
 			return
 		}
-		key := kind + ":" + canonical + "@" + measure
+		key := e.Kind + ":" + e.Text + "@" + e.Measure
 		if seen[key] {
 			return
 		}
 		seen[key] = true
-		out = append(out, Entity{Text: canonical, Kind: kind, Measure: measure, Form: form})
+		out = append(out, e)
 	}
 
 	// 全角 → 半角先做，使 １２ 与 12、Ａ１００ 与 A100 同键。
@@ -259,11 +269,11 @@ func ExtractEntities(text string) []Entity {
 
 	// ① 日期：先登记，再把区间挖成等长空白，免得内部数字参与后面的数量抽取。
 	rest = dateFullRe.ReplaceAllStringFunc(rest, func(m string) string {
-		add("date", canonicalDate(m), "", FormFact)
+		add(Entity{Text: canonicalDate(m), Kind: "date", Form: FormFact})
 		return maskOf(m)
 	})
 	rest = dateYmRe.ReplaceAllStringFunc(rest, func(m string) string {
-		add("date", canonicalDate(m), "", FormFact)
+		add(Entity{Text: canonicalDate(m), Kind: "date", Form: FormFact})
 		return maskOf(m)
 	})
 
@@ -287,18 +297,36 @@ func ExtractEntities(text string) []Entity {
 			continue
 		}
 		measure := measureAfter(rest, matchEnd)
-		add("number", canonicalNumber(num)+unit, measure, numberForm(rest, m[0], matchEnd, unit != "", measure))
+		add(Entity{
+			Text:    canonicalNumber(num) + unit,
+			Kind:    "number",
+			Measure: measure,
+			Form:    numberForm(rest, m[0], matchEnd, unit != "", measure),
+		})
 	}
 
 	// ③ 型号（字母打头且含数字）。
 	for _, m := range modelRe.FindAllString(rest, -1) {
-		add("model", canonicalModel(m), "", FormFact)
+		add(Entity{Text: canonicalModel(m), Kind: "model", Form: FormFact})
 	}
 
 	// ④ 已登记的等效写法：目标里写全称（Kubernetes）也必须算同一个型号。
 	for i, re := range modelAliasRes {
 		if re.MatchString(rest) {
-			add("model", strings.ToLower(modelAliasGroups[i][0]), "", FormFact)
+			add(Entity{Text: strings.ToLower(modelAliasGroups[i][0]), Kind: "model", Form: FormFact})
+		}
+	}
+
+	// ⑤ 中文数词的**计数形态**（「三个」= 3 个）。放在最后：它只认汉字数词，
+	// 与前面基于阿拉伯数字的抽取互不影响。词表与开关都在规则表里，判定见 chinese.go。
+	if parseChinese {
+		for _, m := range chineseNumeralRe.FindAllStringSubmatchIndex(rest, -1) {
+			e, ok := chineseNumeralEntity(rest[m[2]:m[3]], rest[m[4]:m[5]], ordinalPrefix(rest, m[0]))
+			if !ok {
+				continue
+			}
+			e.Surface = rest[m[0]:m[1]]
+			add(e)
 		}
 	}
 	return out

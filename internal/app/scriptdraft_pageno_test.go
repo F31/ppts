@@ -55,8 +55,11 @@ func TestPageSourceTextDropsFooterPageNumber(t *testing.T) {
 	if !strings.Contains(text, "为什么是现在") {
 		t.Fatalf("正文被误删：%q", text)
 	}
-	if got := validation.FormatEntities(validation.ExtractEntities(text)); len(got) != 0 {
-		t.Fatalf("过滤后仍有实体 %v（正文里本来就没有数字）", got)
+	// 正文里的「三个」现在会被解析成计数实体 number:3（chinese.go，2026-11-02）——这是预期：
+	// 成稿写「三个变化」要与「3 个变化」可比。页脚 "03" 若漏进来会与它同键，所以"页码有没有
+	// 被过滤掉"由上面的字符串断言守住；这里只确认实体没有被页码额外污染。
+	if got := validation.FormatEntities(validation.ExtractEntities(text)); len(got) != 1 || got[0] != "number:3" {
+		t.Fatalf("实体 = %v，期望仅 [number:3]（正文的「三个」；页脚 03 不得额外贡献）", got)
 	}
 }
 

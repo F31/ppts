@@ -861,7 +861,13 @@ func numberContextHint(inserted []validation.Entity, text string) string {
 		if e.Kind != "number" || len(hints) >= 2 {
 			continue
 		}
-		idx := strings.Index(text, e.Text)
+		// 中文数词的实体值是归一后的阿拉伯数字（「三个」→ 3），但正文里并没有 "3"。
+		// 这种情况下必须按原文写法定位，否则会截取到毫不相干的另一个 3。
+		needle := e.Text
+		if e.Surface != "" {
+			needle = e.Surface
+		}
+		idx := strings.Index(text, needle)
 		if idx < 0 {
 			continue
 		}

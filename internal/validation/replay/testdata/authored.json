@@ -186,7 +186,43 @@
     "want": "pass",
     "tag": "chinese-numeral",
     "provenance": "authored",
-    "note": "已知缺口（用户裁定暂不做）：中文数字未解析，故此处必然被判违规＝误杀。实现中文数字解析后本用例应翻为 pass 并更新基线——这条用例的意义就是把缺口挂在门禁上（改动会立刻显形），而不是只写在文档里。"
+    "note": "原为已知缺口：中文数字未解析，此处必然被判违规＝误杀。2026-11-02 已实现计数形态解析（chinese.go），本用例由 block 翻为 pass。保留 id 以便对照基线历史。"
+  },
+  {
+    "id": "auth-chinese-numeral-changed",
+    "source": "共 3 个要点",
+    "target": "共四个要点。",
+    "want": "block",
+    "tag": "chinese-numeral",
+    "provenance": "authored",
+    "note": "换写法不等于可以改数：3 个写成「四个」必须拦。解析中文数词是为了消除误杀，不是为了放宽事实比对。"
+  },
+  {
+    "id": "auth-chinese-numeral-reverse",
+    "source": "本页覆盖三个方向：成本、体验、交付。",
+    "target": "本页覆盖 3 个方向：成本、体验、交付。",
+    "want": "pass",
+    "tag": "chinese-numeral",
+    "provenance": "authored",
+    "note": "反方向同样等价：页面写中文数字、成稿写阿拉伯数字，不该判「新增数字 3」。"
+  },
+  {
+    "id": "auth-chinese-numeral-ordinal-step",
+    "source": "第 3 步：校准机型与耗材。",
+    "target": "第三步：校准机型与耗材。",
+    "want": "pass",
+    "tag": "chinese-numeral",
+    "provenance": "authored",
+    "note": "序数语境下放宽两条限制：「步」虽在排除表里（避免「进一步」被读成 1 步），「第三步」仍要能与「第 3 步」配对。"
+  },
+  {
+    "id": "auth-chinese-numeral-idiom",
+    "source": "进一步说明：一方面控成本，另一方面保体验。",
+    "target": "补充说明：成本要控，体验要保。",
+    "want": "pass",
+    "tag": "chinese-numeral",
+    "provenance": "authored",
+    "note": "固定说法不得造实体：「进一步」「一方面」若被解析成 1 步/1 方面，成稿把这两处改写成「补充说明」就会判缺失。目标侧故意不保留这些词，让误解析立刻显形（对称改写测不出问题）。"
   },
   {
     "id": "auth-count-summary-tolerated",

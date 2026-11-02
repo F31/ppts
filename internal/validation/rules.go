@@ -43,7 +43,23 @@ type Rules struct {
 	// Counts 决定「目标里多出来的数字」怎么判（见 counts.go）。缺省即全部 block，
 	// 与 M11 以来"原文没有的数字一律拦"的行为一致——不写这段配置不会悄悄放宽门禁。
 	Counts Counts `json:"counts"`
+	// ChineseNumerals 决定中文数词（「三个」「两个方面」）是否参与比较（见 chinese.go）。
+	// 缺省启用：模型把「3 个」写成「三个」是既成事实，不解析就是误杀。设 false 可整体
+	// 退回"只认阿拉伯数字"的旧行为，作为线上回滚开关（不必改代码重发）。
+	ChineseNumerals ChineseNumerals `json:"chineseNumerals"`
 }
+
+// ChineseNumerals 是中文数词解析的开关与词表微调。
+type ChineseNumerals struct {
+	// Enabled 缺省 true。
+	Enabled *bool `json:"enabled,omitempty"`
+	// ExcludeTails 从"允许跟在数词后的词"里剔除若干项，只影响中文数词。
+	// 默认含「步」：「进一步」「一步步」是固定说法，解析成「1 步」会让正常改写被判缺失。
+	ExcludeTails []string `json:"excludeTails,omitempty"`
+}
+
+// enabled 报告是否解析中文数词（未声明即启用）。
+func (c ChineseNumerals) enabled() bool { return c.Enabled == nil || *c.Enabled }
 
 // 插入数字的三种处置。block 判违规；warn/allow 都放行，区别只在是否在步骤上提示。
 //
@@ -90,6 +106,9 @@ var (
 	modelAliasGroups = defaultRules.ModelAliasGroups
 	measureGroups    = defaultRules.MeasureGroups
 	counts           = defaultRules.Counts
+	// chineseNumerals 与 chineseNumeralsOn 分开：前者给词表用（排除项），后者给抽取分支用。
+	chineseNumerals   = defaultRules.ChineseNumerals
+	chineseNumeralsOn = chineseNumerals.enabled()
 )
 
 // CountsPolicy 返回当前的数字形态策略（只读）。调用方据此决定是否在步骤上提示
@@ -206,6 +225,30 @@ func ValidateRules(r Rules) []string {
 		}
 	}
 	problems = append(problems, validateCounts(r.Counts)...)
+	problems = append(problems, validateChineseNumerals(r.ChineseNumerals)...)
+	return problems
+}
+
+// validateChineseNumerals 检查中文数词配置的结构性错误。
+//
+// 排除项写错的后果很隐蔽：写成「步 」（带空格）或重复登记不会报错，只会让排除
+// **静默失效**——「进一步」重新被解析成「1 步」，成稿开始莫名降级，而配置看起来是
+// "已经处理过"的。这与 counts 里的后缀表是同一类错误，沿用同一套检查。
+func validateChineseNumerals(c ChineseNumerals) []string {
+	var problems []string
+	seen := map[string]bool{}
+	for _, t := range c.ExcludeTails {
+		switch {
+		case strings.TrimSpace(t) == "":
+			problems = append(problems, "chineseNumerals.excludeTails 含空 token")
+		case strings.ContainsAny(t, " \t\r\n"):
+			problems = append(problems, fmt.Sprintf(
+				"chineseNumerals.excludeTails 的 token 含空白：%q（不会匹配成功，等于没排除）", t))
+		case seen[t]:
+			problems = append(problems, fmt.Sprintf("chineseNumerals.excludeTails 重复 token：%q", t))
+		}
+		seen[t] = true
+	}
 	return problems
 }
 

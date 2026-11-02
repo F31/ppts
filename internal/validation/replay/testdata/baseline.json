@@ -1,7 +1,11 @@
 {
   "note": "逐条审阅后的判定基线；判定改变必须显式更新并说明原因",
   "verdicts": {
-    "auth-chinese-numeral-known-gap": "block",
+    "auth-chinese-numeral-changed": "block",
+    "auth-chinese-numeral-idiom": "pass",
+    "auth-chinese-numeral-known-gap": "pass",
+    "auth-chinese-numeral-ordinal-step": "pass",
+    "auth-chinese-numeral-reverse": "pass",
     "auth-count-over-limit": "block",
     "auth-count-summary-tolerated": "pass",
     "auth-count-unit-fact-inserted": "block",
