@@ -51,6 +51,15 @@ func runWorker() error {
 	if err != nil {
 		return err
 	}
+	// 没有 env 供应商不等于没有 TTS：租户在 Web 里配的模型网关（DB 行）本身就能提供，
+	// 那条路不需要 PPTS_TTS_PROVIDER。但只要两条路都没有，就必须启动失败——
+	// 静音 WAV 与"合成成功"在界面上不可区分，那是典型的假成功。
+	if err := requireTTSProvider(ttsProvider); err != nil {
+		return err
+	}
+	if ttsProvider == nil {
+		logger.Info("TTS provider comes from model gateway only (no env provider set)")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -602,13 +611,32 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 	logger.Info("model gateway attached", "ttl", "30s")
 }
 
+// requireTTSProvider 校验启动期至少有一条 TTS 配置路径可用。
+//
+// 为什么不能要求"必须有 env 供应商"：模型网关是产品的主路径（用户在 Web 里配），
+// 它与 PPTS_TTS_PROVIDER 互不相干。纯网关部署若被这个变量拦住，症状是 worker 起不来，
+// 而报错指向一个用户根本没听说过的环境变量——比"没配音"更难查。
+func requireTTSProvider(envProvider tts.TTSProvider) error {
+	if envProvider != nil {
+		return nil
+	}
+	if _, err := gateway.CipherFromEnv(); err != nil {
+		return errors.New("worker: no TTS provider configured: set PPTS_TTS_PROVIDER=siliconflow with PPTS_TTS_API_KEY, or configure a model gateway (requires PPTS_GATEWAY_AES_KEY_BASE64)")
+	}
+	return nil
+}
+
 // ttsProviderFromEnv 按 PPTS_TTS_PROVIDER 构建 TTS 供应商。
 // siliconflow 需要 PPTS_TTS_BASE_URL / PPTS_TTS_API_KEY / PPTS_TTS_MODEL / PPTS_TTS_VOICE。
 //
-// 未设置 / 拼错 / 未知值一律返回错误（启动失败），绝不静默回落 fake——
-// 静音 WAV 与"合成成功"在 UI 上不可区分，属于典型的假成功。fake 只能显式请求。
+// 空值返回 (nil, nil)：那表示"不配 env 供应商"，而不是"配置缺失"——租户可以在 Web 里
+// 配模型网关（DB 行），这条路不需要本变量。是否可接受由启动期结合网关可用性判定。
+// 拼错 / 未知值仍然启动失败，绝不静默回落 fake：静音 WAV 与"合成成功"在 UI 上不可
+// 区分，属于典型的假成功。fake 只能显式请求。
 func ttsProviderFromEnv(logger *slog.Logger) (tts.TTSProvider, error) {
-	switch provider := os.Getenv("PPTS_TTS_PROVIDER"); provider {
+	switch provider := strings.TrimSpace(os.Getenv("PPTS_TTS_PROVIDER")); provider {
+	case "":
+		return nil, nil
 	case "siliconflow":
 		return tts.NewSiliconFlowProvider(tts.SiliconFlowConfig{
 			BaseURL: os.Getenv("PPTS_TTS_BASE_URL"),
