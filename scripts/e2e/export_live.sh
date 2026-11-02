@@ -20,6 +20,7 @@
 #   bash scripts/e2e/export_live.sh
 #   PORT=38081 bash scripts/e2e/export_live.sh
 #   SLIDE_LIMIT=2 ANIMATE=1 bash scripts/e2e/export_live.sh   # 动画通道（只取前 2 页，短片）
+#   DB=postgres bash scripts/e2e/export_live.sh               # 多租户 + RLS 拓扑（真 PostgreSQL）
 #   KEEP=1 bash scripts/e2e/export_live.sh     # 保留容器与工作目录排障
 #
 # 产物：$WORK/out/artifact.mp4、frame-*.png、ffprobe.json、时间轴与讲稿快照。
@@ -50,11 +51,28 @@ SLIDE_LIMIT=${SLIDE_LIMIT:-0}
 # 这一段的用途是证明渲染服务真的被导出链路调用，而不是只在 selftest 里活着。
 ANIMATE=${ANIMATE:-0}
 PRESET=${PRESET:-business-calm}
+# DB=postgres 时换真 PostgreSQL：多租户 + RLS + ppts_app 运行账号 + 二进制内嵌迁移。
+# 默认 sqlite 是单租户本地 profile（无登录、无 RLS），跑得快，但把生产形态的权限面
+# 整个绕过去了——CI 的 postgres job 只验证 store 层用例，没验过"整栈能在 pg 上导出"。
+DB=${DB:-sqlite}
+PG_IMAGE=${PG_IMAGE:-postgres:16-alpine}
+PG_NAME=ppts-e2e-pg
+# 库名必须是 ppts_test：多条迁移把 `GRANT EXECUTE ON ppts_claim_next_job TO ppts_app`
+# 关在 `IF current_database() = 'ppts_test'` 分支里（生产不放权）。换成别的库名，
+# worker 连得上库、也能读表，但领任务那一步会 42501 permission denied——
+# 报错点在 worker 深处，看上去像"任务卡住"而不是权限问题。
+PG_DB=${PG_DB:-ppts_test}
+PG_USER=ppts_app
+PG_PASS=ppts_app
+# 与 internal/db 的 LocalTenantID / LocalUserID 保持一致：postgres 下没有
+# EnsureLocalIdentity 自动播种，这些行要自己插。
+TENANT_ID=00000000-0000-0000-0000-000000000001
+USER_ID=local-user
 
 log() { printf '\n== %s\n' "$*"; }
 fail() {
   printf '\nFAIL: %s\n' "$*" >&2
-  for c in "$API_NAME" "$WORKER_NAME" "$RENDER_NAME"; do
+  for c in "$API_NAME" "$WORKER_NAME" "$RENDER_NAME" "$PG_NAME"; do
     printf -- '--- %s (last 40 lines)\n' "$c" >&2
     docker logs --tail 40 "$c" 2>&1 >&2 || true
   done
@@ -69,8 +87,9 @@ json() { "$PY" -c "import json,sys;d=json.load(sys.stdin);$1"; }
 post() { # post <path> <json> [extra curl args...]
   local path=$1 body=$2
   shift 2
+  # AUTH 在 postgres 模式下非空；函数定义早于赋值，调用时才展开，没问题。
   curl -sS --noproxy '*' -X POST "http://127.0.0.1:$PORT$path" \
-    -H 'Content-Type: application/json' "$@" -d "$body"
+    -H 'Content-Type: application/json' ${AUTH[@]+"${AUTH[@]}"} "$@" -d "$body"
 }
 
 wait_http() {
@@ -105,7 +124,7 @@ cleanup() {
     printf '\nKEEP=1：容器与 %s 都留着\n' "$WORK"
     return
   fi
-  docker rm -f "$API_NAME" "$WORKER_NAME" "$RENDER_NAME" >/dev/null 2>&1 || true
+  docker rm -f "$API_NAME" "$WORKER_NAME" "$RENDER_NAME" "$PG_NAME" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -114,7 +133,7 @@ log "0/8 前置检查"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "缺镜像 $IMAGE：先 docker build -f Dockerfile.worker -t $IMAGE ."
 docker image inspect "$RENDER_IMAGE" >/dev/null 2>&1 || fail "缺渲染镜像 $RENDER_IMAGE：见 deploy/renderer/README.md"
 [ -f "$DECK" ] || fail "样本 deck 不存在：$DECK"
-docker rm -f "$API_NAME" "$WORKER_NAME" "$RENDER_NAME" >/dev/null 2>&1 || true
+docker rm -f "$API_NAME" "$WORKER_NAME" "$RENDER_NAME" "$PG_NAME" >/dev/null 2>&1 || true
 docker network rm "$NET" >/dev/null 2>&1 || true
 docker network create "$NET" >/dev/null
 
@@ -133,11 +152,65 @@ chmod -R 0777 "$WORK"
 SECRET=$("$PY" -c 'import base64,os;print(base64.b64encode(os.urandom(32)).decode())')
 METRICS_TOKEN=$("$PY" -c 'import base64,os;print(base64.b64encode(os.urandom(24)).decode())')
 
+if [ "$DB" = "postgres" ]; then
+  log "0.5/8 起 PostgreSQL（$PG_IMAGE）"
+  docker run -d --name "$PG_NAME" --network "$NET" \
+    -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB="$PG_DB" \
+    "$PG_IMAGE" >/dev/null
+  for _ in $(seq 1 60); do
+    docker exec "$PG_NAME" pg_isready -U postgres -d "$PG_DB" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  docker exec "$PG_NAME" pg_isready -U postgres -d "$PG_DB" >/dev/null 2>&1 \
+    || fail "PostgreSQL 没起来"
+
+  # 迁移里的建角色是 `IF NOT EXISTS ... CREATE ROLE ppts_app` 且**不带密码**，
+  # 所以运行账号的口令只能在这里补。NOSUPERUSER NOBYPASSRLS 不能省：
+  # 少了它们 RLS 对 ppts_app 形同虚设，测出来的"租户隔离正常"就是假的。
+  docker exec "$PG_NAME" psql -U postgres -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c \
+    "CREATE ROLE $PG_USER LOGIN PASSWORD '$PG_PASS' NOSUPERUSER NOBYPASSRLS;" \
+    || fail "建 $PG_USER 角色失败"
+
+  # 迁移走二进制里内嵌的 FS（ppts migrate），必须 superuser 连接：里面有建角色、建扩展。
+  # 不用 psql 逐个跑 migrations/*.sql —— 那验的是 SQL 文件，不是产品实际执行的路径。
+  docker run --rm --network "$NET" --entrypoint /usr/local/bin/ppts \
+    -e "PPTS_MIGRATE_DATABASE_URL=postgres://postgres:postgres@$PG_NAME:5432/$PG_DB?sslmode=disable" \
+    "$IMAGE" migrate || fail "ppts migrate 失败"
+
+  # postgres 是**多租户** profile：不像 sqlite 有 EnsureLocalIdentity 会把固定租户/用户/成员
+  # 自动播种。空库上第一个请求连租户都解析不出来，表现是 404 而不是 401，很容易误判成路由问题。
+  # 这里用 superuser 插（tenant_members 有 FORCE RLS，ppts_app 自己插不进去）。
+  docker exec "$PG_NAME" psql -U postgres -d "$PG_DB" -v ON_ERROR_STOP=1 -q -c "
+    INSERT INTO tenants (id, name) VALUES ('$TENANT_ID','Local') ON CONFLICT DO NOTHING;
+    INSERT INTO users (id, email) VALUES ('$USER_ID','local@localhost') ON CONFLICT DO NOTHING;
+    INSERT INTO tenant_members (tenant_id, user_id, role)
+      VALUES ('$TENANT_ID','$USER_ID','owner') ON CONFLICT DO NOTHING;" \
+    || fail "播种本地身份失败"
+fi
+
 # 三个进程共用的环境。api 与 worker 必须看到同一份 DB、对象目录与资产目录；
 # 少任何一条，产物就会"看着成功、其实缺内容"。
+if [ "$DB" = "postgres" ]; then
+  DB_ENV=(
+    -e PPTS_DB_DRIVER=postgres
+    -e "PPTS_DATABASE_URL=postgres://$PG_USER:$PG_PASS@$PG_NAME:5432/$PG_DB?sslmode=disable"
+  )
+else
+  DB_ENV=(
+    -e PPTS_DB_DRIVER=sqlite
+    -e "PPTS_DATABASE_URL=/data/db/live.db"
+  )
+fi
+
+# 身份头：sqlite 的单租户 profile 由 LocalPrincipal 直接注入身份，不看请求头；
+# postgres 走 AuthMiddleware，不带这两个头一律 401。
+AUTH=()
+if [ "$DB" = "postgres" ]; then
+  AUTH=(-H "X-PPTS-Tenant-ID: $TENANT_ID" -H "X-PPTS-User-ID: $USER_ID")
+fi
+
 COMMON_ENV=(
-  -e PPTS_DB_DRIVER=sqlite
-  -e "PPTS_DATABASE_URL=/data/db/live.db"
+  "${DB_ENV[@]}"
   -e PPTS_OBJECT_BACKEND=local
   -e PPTS_OBJECT_ROOT=/data/objects
   -e "PPTS_OBJECT_SECRET=$SECRET"
@@ -211,7 +284,7 @@ UP=$(post /ppts.v1.UploadService/CreateUpload \
   "{\"projectId\":\"$PID\",\"filename\":\"deck.pptx\",\"sizeBytes\":$SIZE,\"contentType\":\"application/vnd.openxmlformats-officedocument.presentationml.presentation\"}")
 UPLOAD_ID=$(echo "$UP" | json 'print(d["uploadId"])')
 SIGNED=$(echo "$UP" | json 'print(d["signedUploadUrls"][0])')
-curl -sS --noproxy '*' -X PUT "http://127.0.0.1:$PORT$SIGNED" --data-binary @"$DECK" -o /dev/null
+curl -sS --noproxy '*' -X PUT "http://127.0.0.1:$PORT$SIGNED" ${AUTH[@]+"${AUTH[@]}"} --data-binary @"$DECK" -o /dev/null
 PARSE_JOB=$(post /ppts.v1.UploadService/CompleteUpload \
   "{\"uploadId\":\"$UPLOAD_ID\",\"expectedHash\":\"$HASH\",\"sizeBytes\":$SIZE}" | json 'print(d["jobId"])')
 wait_job "$PARSE_JOB" 300 "解析任务" || fail "解析没完成"
@@ -239,7 +312,7 @@ fi
 TIMELINE_PAGES=$(echo "$SLIDE_IDS" | json 'print(len(d))')
 echo "本次参与成片页数=$TIMELINE_PAGES（解析页数 $PAGES）"
 SCRIPT_JOB=$(curl -sS --noproxy '*' -X POST "http://127.0.0.1:$PORT/projects/$PID/script-draft" \
-    -H 'Content-Type: application/json' -H "Idempotency-Key: e2e-script-$PID" \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: e2e-script-$PID" ${AUTH[@]+"${AUTH[@]}"} \
     -d "{\"slideIds\":$SLIDE_IDS,\"mode\":\"SCRIPT_MODE_ORIGINAL\",\"sourceMode\":\"notes_first\",\"revisionNo\":1,\"overwrite\":true}" \
     | json 'print(d["jobId"])')
 wait_job "$SCRIPT_JOB" 180 "讲稿任务" || fail "讲稿没生成"
@@ -285,17 +358,24 @@ if [ "$ANIMATE" = "1" ]; then
   # 默认规格由服务端规则算出（GET ?default=true），不需要模型；把它原样 PUT 回去，
   # 就得到一份「真实存在库里」的规格。视频通道只认库里这一版，不认请求里的草稿。
   echo "$SLIDE_IDS" > "$WORK/slide-ids.json"
+  PPTS_TENANT_ID="$TENANT_ID" PPTS_USER_ID="$USER_ID" \
   "$PY" - "$PORT" "$PID" "$WORK/slide-ids.json" "$PRESET" "$WORK/specs.json" <<'PY'
-import json, sys, urllib.request
+import json, os, sys, urllib.request
 
 port, pid, ids_path, preset, out_path = sys.argv[1:6]
+# postgres 模式是多租户 profile，这两个头缺一个就是 401；sqlite 的单租户 profile
+# 由 LocalPrincipal 直接注入身份、不读头，所以带上也无害——这里统一带上。
+auth = {}
+if os.environ.get("PPTS_TENANT_ID"):
+    auth = {"X-PPTS-Tenant-ID": os.environ["PPTS_TENANT_ID"],
+            "X-PPTS-User-ID": os.environ["PPTS_USER_ID"]}
 slide_ids = json.load(open(ids_path, encoding='utf-8'))
 specs = []
 for sid in slide_ids:
     base = f"http://127.0.0.1:{port}/api/projects/{pid}/slides/{sid}/animation"
     get = urllib.request.Request(
         f"{base}?default=true&sourceRevisionNo=1&preset={preset}",
-        headers={"X-PPTS-Source-Revision": "1"})
+        headers={"X-PPTS-Source-Revision": "1", **auth})
     with urllib.request.urlopen(get, timeout=30) as r:
         dto = json.load(r)
     if "tracks" not in dto:
@@ -308,7 +388,7 @@ for sid in slide_ids:
     }).encode()
     put = urllib.request.Request(
         f"{base}?sourceRevisionNo=1", data=body, method="PUT",
-        headers={"Content-Type": "application/json", "X-PPTS-Source-Revision": "1"})
+        headers={"Content-Type": "application/json", "X-PPTS-Source-Revision": "1", **auth})
     with urllib.request.urlopen(put, timeout=30) as r:
         saved = json.load(r)
     rev = saved.get("revision")
@@ -328,7 +408,7 @@ if [ -n "$ANIM_ARGS" ]; then
   # （见 internal/api/export_bundle.go 文件头）。用 Connect 入口发 specs 会被 protojson
   # 直接丢掉，导出静默退回静态——成片看起来"成功"，动画一帧都没有。
   EXPORT=$(curl -sS --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/projects/$PID/exports" \
-    -H 'Content-Type: application/json' -H "Idempotency-Key: e2e-export-$PID" \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: e2e-export-$PID" ${AUTH[@]+"${AUTH[@]}"} \
     -d "{\"format\":\"mp4\",\"timelineKey\":\"$TIMELINE_KEY\",\"pagePngKeys\":$PAGE_KEYS,\"width\":1920,\"height\":1080,\"fps\":30,\"burnSubtitles\":true,\"includeNotes\":false$ANIM_ARGS}")
 else
   EXPORT=$(post /ppts.v1.ExportService/CreateExport \
@@ -339,7 +419,7 @@ EXPORT_JOB=$(echo "$EXPORT" | json 'print(d.get("jobId") or "")')
 [ -n "$EXPORT_JOB" ] || fail "创建导出任务失败：$EXPORT"
 wait_job "$EXPORT_JOB" "$JOB_TIMEOUT" "导出任务" || fail "导出没完成"
 
-curl -sS --noproxy '*' "http://127.0.0.1:$PORT/projects/$PID/artifacts" > "$WORK/artifacts.json"
+curl -sS --noproxy '*' ${AUTH[@]+"${AUTH[@]}"} "http://127.0.0.1:$PORT/projects/$PID/artifacts" > "$WORK/artifacts.json"
 ART_ID=$(json 'print([a["id"] for a in d["artifacts"] if a["format"]=="mp4"][0])' < "$WORK/artifacts.json")
 [ -n "$ART_ID" ] || fail "成品列表里没有 mp4：$(cat "$WORK/artifacts.json")"
 DL=$(post /ppts.v1.ExportService/CreateDownload "{\"artifactId\":\"$ART_ID\",\"ttlSeconds\":600}")
