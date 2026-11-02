@@ -40,6 +40,42 @@ type Rules struct {
 	// 异族不可（页 ≠ 个）——"3 页"与"3 个项目"是两件事，而"3 个"与"3 条"是同一件事。
 	// 只登记确定可互换的；吃不准的量词**单独成组**（跨族即判违规，取保守侧）。
 	MeasureGroups [][]string `json:"measureGroups"`
+	// Counts 决定「目标里多出来的数字」怎么判（见 counts.go）。缺省即全部 block，
+	// 与 M11 以来"原文没有的数字一律拦"的行为一致——不写这段配置不会悄悄放宽门禁。
+	Counts Counts `json:"counts"`
+}
+
+// 插入数字的三种处置。block 判违规；warn/allow 都放行，区别只在是否在步骤上提示。
+//
+// 为什么不用布尔：warn 与 allow 的差别是**可见性**而不是门禁强度。把"放过一个模型
+// 自己数出来的条目数"静默处理，等于让用户失去核对机会；这条链路上已经吃过一次
+// "假成功"的亏（2026-11-02），所以默认值取 warn。
+const (
+	ModeBlock = "block"
+	ModeWarn  = "warn"
+	ModeAllow = "allow"
+)
+
+// Counts 是数字形态策略：把「插入的数字」按**形态**分流，而不是一刀切。
+//
+// 形态由抽取阶段判定（见 entities.go 的 formOf）：带单位 = 实测事实（永远严格）；
+// 紧跟序数前缀 = 序号；紧跟量词/计数后缀 = 概括计数；其余 = 裸数字（按事实处理）。
+//
+// 之所以要分流：实测事实（64GB→96GB）改一个数字就是错，而「4 类场景」是模型对
+// 页面已列条目的概括——两者混在一条规则里，只能二选一：要么放过真实的数字篡改，
+// 要么把正常的概括判成编造（2026-11-02 slide-262 即此）。
+type Counts struct {
+	// InsertedCounts / InsertedOrdinals 取 ModeBlock / ModeWarn / ModeAllow。
+	InsertedCounts   string `json:"insertedCounts"`
+	InsertedOrdinals string `json:"insertedOrdinals"`
+	// MaxValue 是计数豁免的上限：超过它的"计数"不再当作概括（编造「120 个城市」必须拦）。
+	// <=0 表示不限制。
+	MaxValue float64 `json:"maxValue"`
+	// OrdinalPrefixes 是数字前的序数标记（"第 2 步"）。比较时忽略中间空白。
+	OrdinalPrefixes []string `json:"ordinalPrefixes"`
+	// Suffixes 是量词之外的计数后缀（"4 大场景"里的「大」、「3 个维度」已由量词覆盖）。
+	// 只登记**不会与内容冲突**的词：像「点」会与时间（3 点）混淆，不登记。
+	Suffixes []string `json:"suffixes"`
 }
 
 // defaultRules 是进程内唯一的一份规则表；加载或校验失败直接 panic——
@@ -53,7 +89,12 @@ var (
 	plainUnits       = defaultRules.PlainUnits
 	modelAliasGroups = defaultRules.ModelAliasGroups
 	measureGroups    = defaultRules.MeasureGroups
+	counts           = defaultRules.Counts
 )
+
+// CountsPolicy 返回当前的数字形态策略（只读）。调用方据此决定是否在步骤上提示
+// 「这个数字是模型自己数出来的」——策略在规则表里，判断逻辑不该在调用方各写一份。
+func CountsPolicy() Counts { return counts }
 
 // RulesVersion 返回当前规则表版本，供回放报告/基线留痕。
 func RulesVersion() string { return defaultRules.Version }
@@ -164,5 +205,51 @@ func ValidateRules(r Rules) []string {
 			check("量词", measures, where, t)
 		}
 	}
+	problems = append(problems, validateCounts(r.Counts)...)
+	return problems
+}
+
+// validateCounts 检查数字形态策略的**结构性错误**。
+//
+// 这里的错误同样属于"编译期看不见、运行期不报错、只表现为某类数字被静默放过"：
+// 模式写错（"warm"）会让门禁按默认值静默生效，maxValue 漏写会让任意大的编造计数
+// 都被当作概括，后缀表空则 count 形态永远不会被识别——三种都不会报错。
+func validateCounts(c Counts) []string {
+	var problems []string
+	checkMode := func(field, v string) {
+		switch v {
+		case "", ModeBlock, ModeWarn, ModeAllow:
+			return
+		default:
+			problems = append(problems, fmt.Sprintf(
+				"%s=%q 非法：只能是 %s / %s / %s（留空视为 %s）",
+				field, v, ModeBlock, ModeWarn, ModeAllow, ModeBlock))
+		}
+	}
+	checkMode("counts.insertedCounts", c.InsertedCounts)
+	checkMode("counts.insertedOrdinals", c.InsertedOrdinals)
+
+	tolerant := func(m string) bool { return m == ModeWarn || m == ModeAllow }
+	if (tolerant(c.InsertedCounts) || tolerant(c.InsertedOrdinals)) && c.MaxValue <= 0 {
+		problems = append(problems,
+			"counts 启用了豁免但 maxValue<=0：任意大的编造计数都会被当作概括，必须给定上限")
+	}
+
+	tokens := func(where string, list []string) {
+		seen := map[string]bool{}
+		for _, t := range list {
+			switch {
+			case strings.TrimSpace(t) == "":
+				problems = append(problems, where+" 含空 token")
+			case strings.ContainsAny(t, " \t\r\n"):
+				problems = append(problems, where+" 的 token 含空白："+fmt.Sprintf("%q", t))
+			case seen[t]:
+				problems = append(problems, where+" 重复 token："+fmt.Sprintf("%q", t))
+			}
+			seen[t] = true
+		}
+	}
+	tokens("counts.ordinalPrefixes", c.OrdinalPrefixes)
+	tokens("counts.suffixes", c.Suffixes)
 	return problems
 }

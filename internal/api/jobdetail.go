@@ -135,10 +135,11 @@ func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 			// result_ref 是内部对象键，只回「是否存在结果」，不把内部存储键透给前端。
 			"hasResult": st.ResultRef != "",
 		}
-		// 逐页成稿（step_type=page）的 result_ref 存的是**人类可读的失败/降级原因**
-		// （例如「第一版遗漏「数字 13」；修补调用失败」），不是对象键。
-		// 用户看到某页 degraded 时必须知道为什么，否则只能反复重试。
-		if st.StepType == "page" && (st.State == pipeline.StepDegraded || st.State == pipeline.StepFailed) {
+		// 逐页成稿（step_type=page）的 result_ref 存的是**人类可读的文本**，不是对象键：
+		//   · degraded/failed → 为什么没成稿（「第一版遗漏「数字 13」；修补调用失败」）；
+		//   · success 且非空 → "已放行但请核对"（按策略放行的概括计数，如「新增数字 4」）。
+		// 后者不能因为状态是成功就不下发：那正是最容易被当成"原文事实"的数字。
+		if st.StepType == "page" && st.ResultRef != "" {
 			item["reason"] = st.ResultRef
 			item["hasResult"] = false
 		}

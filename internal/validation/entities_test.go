@@ -112,7 +112,9 @@ func TestRealViolationsStillBlocked(t *testing.T) {
 		{name: "计数前缀被改", source: "A100 x8", target: "A100 x4。"},
 		{name: "x86 与 x64 归一后仍不同", source: "x86 架构", target: "x64 架构。"},
 		{name: "原文无数字时模型自行编号", source: "先做解析\n再做渲染", target: "第一步先做解析，第 2 步再做渲染。"},
-		{name: "原文无数字时模型自行计数", source: "解析后渲染", target: "解析后渲染，共 3 个步骤。"},
+		// 「共 3 个步骤」这类**概括计数**的处置由 counts 策略决定（见 counts_test.go），
+		// 不再固定判违规：改计数会同时表现为 missing，仍被拦住（下面这条）。
+		{name: "计数被改", source: "共 3 个步骤", target: "共 4 个步骤。"},
 	}
 	for _, c := range cases {
 		r := CheckPreserved(c.source, c.target)

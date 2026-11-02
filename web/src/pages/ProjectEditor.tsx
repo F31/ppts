@@ -818,13 +818,16 @@ export function ProjectEditor({
                   degraded: counts.degraded ?? 0,
                   failed: counts.failed ?? 0
                 });
-                // 有降级/失败时同时给出**逐页原因**：只说"3 页降级"用户无从下手。
-                setOneDraftReasons(
-                  (detail.steps ?? [])
-                    .filter((s) => (s.state === 'degraded' || s.state === 'failed') && s.reason)
-                    .map((s) => s.reason as string)
-                    .slice(0, 3)
-                );
+                // 逐页原因：降级/失败排前面（那是"为什么不能用"），成功页的提示排后面
+                // （那是"哪个数字是模型自己数出来的，请核对"）。只说"3 页降级"用户无从下手。
+                {
+                  const withReason = (detail.steps ?? []).filter((s) => s.reason);
+                  const urgent = withReason.filter((s) => s.state === 'degraded' || s.state === 'failed');
+                  const notes = withReason.filter((s) => s.state === 'success');
+                  setOneDraftReasons(
+                    [...urgent, ...notes].slice(0, 3).map((s) => s.reason as string)
+                  );
+                }
                 setOneDraftResultUnavailable(false);
               }
             }

@@ -120,6 +120,7 @@ type jobDetailResponse struct {
 		State         string `json:"state"`
 		UpdatedAtUnix int64  `json:"updatedAtUnix"`
 		HasResult     bool   `json:"hasResult"`
+		Reason        string `json:"reason"`
 	} `json:"steps"`
 	StepCounts     map[string]int `json:"stepCounts"`
 	StepTotal      int            `json:"stepTotal"`
@@ -364,5 +365,39 @@ func TestPublicJobsSummaryUnsupportedStore(t *testing.T) {
 	rec := serveJobRoute(&jobDetailStub{}, "/jobs/summary?ids=job-a")
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d want 501 (body=%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestJobDetailPageStepCarriesNoteOnSuccess 保证"已放行但请核对"的提示不会因为
+// 步骤成功就丢失：按策略放行的概括计数（「新增数字 4」）恰恰是用户最该核对的数字，
+// 只回 hasResult=true 等于把它藏进内部存储。
+func TestJobDetailPageStepCarriesNoteOnSuccess(t *testing.T) {
+	job := &pipeline.Job{
+		ID: "job-3", Kind: pipeline.KindScriptDraft, TenantID: "t1",
+		InputSnapshot: `{"revisionNo":1,"pageCount":1}`,
+	}
+	store := &jobDetailInspectorStub{
+		jobDetailStub: jobDetailStub{job: job},
+		steps: []pipeline.JobStep{
+			{StepType: "page", StepKey: "page:v1:slide-1", State: pipeline.StepSuccess,
+				ResultRef: "提示：新增数字 4（…覆盖 4 类场景…）。已放行，请核对是否与页面一致。", UpdatedAt: time.Unix(300, 0)},
+		},
+	}
+	rec := serveJobRoute(store, "/jobs/job-3/detail")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+	got := decodeDetail(t, rec)
+	if len(got.Steps) != 1 {
+		t.Fatalf("steps = %+v", got.Steps)
+	}
+	if got.Steps[0].Reason == "" {
+		t.Fatal("成功页的放行提示被丢弃：reason 为空")
+	}
+	if strings.Contains(got.Steps[0].Reason, "t/") {
+		t.Fatalf("page 步骤的 reason 不该是对象键：%q", got.Steps[0].Reason)
+	}
+	if got.Steps[0].HasResult {
+		t.Fatal("page 步骤的 hasResult 应为 false（reason 是文本，不是对象键）")
 	}
 }

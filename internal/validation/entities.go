@@ -63,7 +63,25 @@ var (
 	// 不做全局扫描——量词单字（如「个」「页」）在正文里到处都是，全局扫会制造噪声实体。
 	measureRe        = buildMeasureRe()
 	measureCanonical = buildMeasureCanonical()
+
+	// 计数后缀与序数前缀来自规则表（rules.json 的 counts），不在这里写死：
+	// 不同语言/领域对"概括计数"的表达不同（「4 大类」vs「4 key areas」），
+	// 换一套配置即可，不必改判定逻辑。
+	countSuffixes    = sortedByLenDesc(counts.Suffixes)
+	ordinalPrefixes  = sortedByLenDesc(counts.OrdinalPrefixes)
 )
+
+// sortedByLenDesc 按长度降序排列 token，保证长词先匹配（「关键」不应被「关」抢先）。
+func sortedByLenDesc(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, t := range in {
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
 
 // foldMultiplier 把 `x8` / `×8` 折成裸数量（保留数字、去掉前缀字母）。
 func foldMultiplier(s string) string {
@@ -184,16 +202,36 @@ type Entity struct {
 	// 它不参与 Text（提示词与既有调用方看到的仍是 number:3），只在比较时决定
 	// 「3 个」与「3 条」兼容、「3 页」与「3 个项目」冲突。
 	Measure string
+	// Form 是数字的**形态**（仅 number 有意义）：实测事实 / 概括计数 / 序号。
+	// 它只影响「目标里多出来的数字」怎么判，不参与 Text 与配对（见 counts.go）。
+	Form string
 }
+
+// 数字形态。判定在抽取阶段完成（formOf），策略在规则表里（rules.json 的 counts）。
+//
+// 分成三种而不是"事实/非事实"两种，是因为序号与计数的处置不同：原文没有的
+// 「第 2 步」是凭空造结构（用户已裁定不豁免），而「4 类场景」是对页面已列条目的
+// 概括（2026-11-02 slide-262 因它整页回退原文）。混成一种就只能二选一。
+const (
+	FormFact    = "fact"    // 带单位或裸数字：实测事实，改动即违规
+	FormCount   = "count"   // 紧跟量词/计数后缀：概括计数
+	FormOrdinal = "ordinal" // 紧跟序数前缀（第 2 步）：序号
+)
 
 // Report is the preservation result for source-vs-target text.
 type Report struct {
 	Source   []Entity
 	Missing  []Entity
 	Inserted []Entity
+	// Warnings 是按策略**放行但值得核对**的插入（当前仅概括计数）。它不参与 OK()：
+	// 放行就是放行，但调用方应把提示带给用户——"无声放过"是这套门禁最不该做的事。
+	Warnings []Entity
 }
 
 func (r Report) OK() bool { return len(r.Missing) == 0 && len(r.Inserted) == 0 }
+
+// HasWarnings 报告是否存在"放行但需提示"的项。
+func (r Report) HasWarnings() bool { return len(r.Warnings) > 0 }
 
 // ExtractEntities returns normalized numeric/date/model entities in first-seen order.
 // Text here is the *canonical* form of each entity, so two spellings of the same fact
@@ -201,7 +239,7 @@ func (r Report) OK() bool { return len(r.Missing) == 0 && len(r.Inserted) == 0 }
 func ExtractEntities(text string) []Entity {
 	seen := map[string]bool{}
 	out := []Entity{}
-	add := func(kind, canonical, measure string) {
+	add := func(kind, canonical, measure, form string) {
 		if canonical == "" {
 			return
 		}
@@ -210,7 +248,7 @@ func ExtractEntities(text string) []Entity {
 			return
 		}
 		seen[key] = true
-		out = append(out, Entity{Text: canonical, Kind: kind, Measure: measure})
+		out = append(out, Entity{Text: canonical, Kind: kind, Measure: measure, Form: form})
 	}
 
 	// 全角 → 半角先做，使 １２ 与 12、Ａ１００ 与 A100 同键。
@@ -221,11 +259,11 @@ func ExtractEntities(text string) []Entity {
 
 	// ① 日期：先登记，再把区间挖成等长空白，免得内部数字参与后面的数量抽取。
 	rest = dateFullRe.ReplaceAllStringFunc(rest, func(m string) string {
-		add("date", canonicalDate(m), "")
+		add("date", canonicalDate(m), "", FormFact)
 		return maskOf(m)
 	})
 	rest = dateYmRe.ReplaceAllStringFunc(rest, func(m string) string {
-		add("date", canonicalDate(m), "")
+		add("date", canonicalDate(m), "", FormFact)
 		return maskOf(m)
 	})
 
@@ -248,18 +286,19 @@ func ExtractEntities(text string) []Entity {
 			// （modelRe 要求字母打头）。保持既有行为：不作为实体。
 			continue
 		}
-		add("number", canonicalNumber(num)+unit, measureAfter(rest, matchEnd))
+		measure := measureAfter(rest, matchEnd)
+		add("number", canonicalNumber(num)+unit, measure, numberForm(rest, m[0], matchEnd, unit != "", measure))
 	}
 
 	// ③ 型号（字母打头且含数字）。
 	for _, m := range modelRe.FindAllString(rest, -1) {
-		add("model", canonicalModel(m), "")
+		add("model", canonicalModel(m), "", FormFact)
 	}
 
 	// ④ 已登记的等效写法：目标里写全称（Kubernetes）也必须算同一个型号。
 	for i, re := range modelAliasRes {
 		if re.MatchString(rest) {
-			add("model", strings.ToLower(modelAliasGroups[i][0]), "")
+			add("model", strings.ToLower(modelAliasGroups[i][0]), "", FormFact)
 		}
 	}
 	return out
@@ -282,21 +321,37 @@ func measureAfter(s string, pos int) string {
 // 比较按「同 Kind + 同 Text + 量词兼容」配对（见 measuresCompatible），而不是纯集合查表：
 // 集合查表无法表达"量词缺省即兼容、量词异族即冲突"这条规则。
 func CheckPreserved(source, target string) Report {
+	return CheckPreservedWithPolicy(source, target, counts)
+}
+
+// CheckPreservedWithPolicy 用**显式策略**比较，供规则试验与按租户覆盖使用。
+//
+// 默认策略只有一份（内嵌规则表）；这里把策略参数化，是为了让"换一套严格程度"不必
+// 改判定逻辑，也让测试能直接构造策略而不依赖全局状态。
+func CheckPreservedWithPolicy(source, target string, policy Counts) Report {
 	src := ExtractEntities(source)
 	dst := ExtractEntities(target)
 	missing := make([]Entity, 0)
 	inserted := make([]Entity, 0)
+	warnings := make([]Entity, 0)
 	for _, e := range src {
+		// 素材有、目标没有 → 一律违规。这一侧不存在"策略放行"：事实被删是失真，
+		// 与"多算了一个条目数"不是一回事。
 		if !hasCompatible(dst, e) {
 			missing = append(missing, e)
 		}
 	}
 	for _, e := range dst {
-		if !hasCompatible(src, e) {
-			inserted = append(inserted, e)
+		if hasCompatible(src, e) {
+			continue
 		}
+		if toleratedInsertion(e, policy) {
+			warnings = append(warnings, e)
+			continue
+		}
+		inserted = append(inserted, e)
 	}
-	return Report{Source: src, Missing: missing, Inserted: inserted}
+	return Report{Source: src, Missing: missing, Inserted: inserted, Warnings: warnings}
 }
 
 // hasCompatible 在 hay 里找是否存在与 needle 同 Kind、同 Text 且量词兼容的实体。
@@ -412,7 +467,9 @@ func humanNumber(text string) string {
 // 指令里说「可以这样写」，校验器就必须接受；否则会出现「模型照着指令写、仍被判违规」
 // 的假失败——那不是模型的问题，是指令与校验器各写了一份标准（M1/M3 的教训）。
 //
-// 序号（第 N 步 / N 个要点）**不在**豁免范围：原文没有的数字一律不许新增。
+// 序号（第 N 步 / N 个要点）与概括计数的处置由 rules.json 的 counts 决定（见 counts.go）：
+// 默认序号仍判违规、概括计数放行并提示。等价写法说明本身不涉及这条策略，
+// 它只讲"同一个事实可以怎么写"，不讲"能不能多写一个数"。
 func FormatEquivalenceHint() string {
 	units := make([]string, 0, len(unitAliasGroups))
 	for _, g := range unitAliasGroups {

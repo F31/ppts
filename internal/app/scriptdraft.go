@@ -356,7 +356,7 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 			}
 			source := snap.Sources[pg.SlideID]
 			custom := snap.CustomSources[pg.SlideID]
-			outcome, reason, err := h.ensureDraft(runCtx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap, renderKeys, polisher, vision)
+			outcome, reason, note, err := h.ensureDraft(runCtx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap, renderKeys, polisher, vision)
 			if err != nil {
 				// 单页失败**不牵连其它页**：记该页失败步骤后继续。整任务最终仍返回错误，
 				// 借助「重试跳过已完成页」补跑，避免一页超时就让已完成的页白跑一遍。
@@ -380,7 +380,7 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 				return
 			}
 			dbMu.Lock()
-			h.markPageStep(runCtx, job, pg, outcome, reason)
+			h.markPageStep(runCtx, job, pg, outcome, reason, note)
 			dbMu.Unlock()
 			reportDone()
 		}()
@@ -495,16 +495,16 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 // source/custom 为该页显式选择的讲稿来源；为空时回退默认行为（见 selectDraftInput）。
 // renderKeys 为 slideId → 页面 PNG 对象键（来自渲染清单），用于视觉锚点取图。
 // polisher/vision 由调用方按任务解析一次后复用（避免每页查网关库）。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot, renderKeys map[string]string, polisher llm.TextRewriter, vision llm.VisionExtractor) (draftOutcome, string, error) {
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot, renderKeys map[string]string, polisher llm.TextRewriter, vision llm.VisionExtractor) (draftOutcome, string, string, error) {
 	slideID := pg.SlideID
 	if slideID == "" {
-		return draftSkippedNoText, "", nil
+		return draftSkippedNoText, "", "", nil
 	}
 	rev, err := h.scripts.Get(ctx, tenantID, projectID, revisionNo, slideID, language)
 	if err == nil && len(rev.Segments) > 0 && !snap.Overwrite {
-		return draftSkippedExisting, "", nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
+		return draftSkippedExisting, "", "", nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
 	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
-		return "", "", err
+		return "", "", "", err
 	} else if err != nil {
 		rev = nil
 	}
@@ -513,7 +513,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	// 否则会告诉模型"把当前讲稿润色一遍"，而实际喂进去的是 PPT 页面文字。
 	in := selectDraftInput(pg, source, custom, snap.SourceMode, mode, snap.Overwrite, revisionText(rev))
 	if in.Text == "" {
-		return draftSkippedNoText, "", nil // 无正文/备注，不生成空讲稿。
+		return draftSkippedNoText, "", "", nil // 无正文/备注，不生成空讲稿。
 	}
 	anchorSource := sourceForAnchors(in.Kind, source)
 	anchors, facts := h.slideInsight(ctx, vision, tenantID, projectID, revisionNo, language, pg, anchorSource, renderKeys)
@@ -526,13 +526,13 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	}
 	res, err := h.draftTextDetail(ctx, tenantID, projectID, slideID, language, mode, in, facts, snap, polisher)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	displayText, spokenText, degraded := res.Display, res.Spoken, res.Degraded
 	if rev == nil {
 		rev, err = h.scripts.EnsureExists(ctx, tenantID, projectID, revisionNo, slideID, language, mode)
 		if err != nil {
-			return "", "", fmt.Errorf("script_draft: ensure script: %w", err)
+			return "", "", "", fmt.Errorf("script_draft: ensure script: %w", err)
 		}
 	}
 	segment := &narration.Segment{
@@ -544,14 +544,14 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		Status:        narration.StatusDraft,
 	}
 	if _, err := h.scripts.Update(ctx, tenantID, projectID, revisionNo, slideID, language, rev.Revision, []*narration.Segment{segment}); err != nil {
-		return "", "", fmt.Errorf("script_draft: write draft: %w", err)
+		return "", "", "", fmt.Errorf("script_draft: write draft: %w", err)
 	}
 	if degraded {
 		// 稿子写进去了，但内容是未经加工的原始素材。返回 degraded 让调用方把它记为
 		// degraded 步骤、界面给出"待人工确认"，而不是"成稿完成"。
-		return draftDegraded, res.Reason, nil
+		return draftDegraded, res.Reason, "", nil
 	}
-	return draftGenerated, "", nil
+	return draftGenerated, "", res.Note, nil
 }
 
 // truncateRunes 按**字符**截断（不是字节）：步骤原因里全是中文，按字节截会把
@@ -585,7 +585,11 @@ func pageStepState(outcome draftOutcome) pipeline.JobStepState {
 	}
 }
 
-func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome, reason string) {
+func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome, reason, note string) {
+	// 降级原因优先（那才是"这页为什么不能用"）；成功页的 note 是"已放行但请核对"。
+	if reason == "" {
+		reason = note
+	}
 	h.markPageStepState(ctx, job, pg, pageStepState(outcome), reason)
 }
 
@@ -599,7 +603,8 @@ func (h *ScriptDraftHandler) markPageStepState(ctx context.Context, job *pipelin
 		StepType: stepTypePage,
 		StepKey:  pageStepKey(pg.SlideID),
 		State:    state,
-		// ResultRef 存失败/降级原因（短文本）：用户必须能看到「为什么这页没成稿」，
+		// ResultRef 存失败/降级原因，或成功页的"已放行但请核对"提示（短文本）：
+		// 用户必须能看到「为什么这页没成稿」以及「哪个数字是模型自己数出来的」，
 		// 而不是只看到一个 degraded 标记再去猜。
 		ResultRef: truncateRunes(reason, 240),
 	}
@@ -808,6 +813,41 @@ func entityFixSuffix(report validation.Report) string {
 		parts = append(parts, "不要出现原素材没有的「"+strings.Join(inserted, "、")+"」。")
 	}
 	return strings.Join(parts, "")
+}
+
+// toleratedNote 把「按策略放行的插入数字」转成一句给用户看的提示。
+//
+// 为什么必须提示：这条路径是**明知可能数错仍放行**——模型写「4 类场景」时，校验器
+// 无法确认页面真的只有 4 条。沉默放行等于让用户失去核对机会，与 A26 的"不得假成功"
+// 只差一步；写进步骤原因，代价很小。
+//
+// 只提示 warn 模式：allow 表示运营方明确不要提示（见 rules.json 的 counts）。
+func toleratedNote(r validation.Report, text string) string {
+	if !r.HasWarnings() {
+		return ""
+	}
+	policy := validation.CountsPolicy()
+	counts, ordinals := make([]validation.Entity, 0, len(r.Warnings)), make([]validation.Entity, 0, 2)
+	for _, e := range r.Warnings {
+		if e.Form == validation.FormOrdinal {
+			ordinals = append(ordinals, e)
+			continue
+		}
+		counts = append(counts, e)
+	}
+	parts := make([]string, 0, 2)
+	if len(counts) > 0 && policy.InsertedCounts == validation.ModeWarn {
+		parts = append(parts, "新增"+strings.Join(validation.FormatEntitiesHuman(counts), "、")+
+			numberContextHint(counts, text)+"，属于对页面条目的概括而非实测数值")
+	}
+	if len(ordinals) > 0 && policy.InsertedOrdinals == validation.ModeWarn {
+		parts = append(parts, "新增序号"+strings.Join(validation.FormatEntitiesHuman(ordinals), "、")+
+			numberContextHint(ordinals, text))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "提示：" + strings.Join(parts, "；") + "。已放行，请核对是否与页面一致。"
 }
 
 // numberContextHint 从产出里截取"新增数字"周围的原文（最多两条，各留 8 字上下文）。
@@ -1091,6 +1131,9 @@ type draftTextResult struct {
 	Spoken   string
 	Degraded bool
 	Reason   string
+	// Note 是"已放行但请核对"的提示（当前仅按策略放行的概括计数）。它不影响落库，
+	// 只随步骤记录带给用户：这类数字是模型自己数出来的，界面不该假装它是原文事实。
+	Note string
 }
 
 // draftText 保留原签名，供既有调用方与测试使用；需要降级原因时用 draftTextDetail。
@@ -1149,7 +1192,7 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 		if !h.disableCache {
 			h.saveScriptCache(ctx, cacheKey, clean)
 		}
-		return draftTextResult{Display: clean, Spoken: clean}, nil
+		return draftTextResult{Display: clean, Spoken: clean, Note: toleratedNote(report, clean)}, nil
 	}
 	// 降级原因：两轮各自为什么没过，逐条留痕。
 	why := make([]string, 0, 4)
@@ -1215,7 +1258,7 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 			if !h.disableCache {
 				h.saveScriptCache(ctx, cacheKey, fixedClean)
 			}
-			return draftTextResult{Display: fixedClean, Spoken: fixedClean}, nil
+			return draftTextResult{Display: fixedClean, Spoken: fixedClean, Note: toleratedNote(fixedReport, fixedClean)}, nil
 		}
 		if suspectSecond {
 			why = append(why, "修补版含内部标记或思考过程")
@@ -1345,7 +1388,9 @@ func draftInstructions(mode narration.ScriptMode, kind draftInputKind, snap Scri
 	// 量词自 M16 起参与判违规（"3 页" ≠ "3 个项目"），因此必须由校验器一并说明。
 	suffix := strings.Join(parts, "") +
 		"硬约束：① 原文中的数字、单位、日期、型号必须逐一保留，不得改写、替换或省略；" +
-		"② 原文没有出现的数字一律不得新增——不要自行编号或计数（例如不要写「第 1 步」「3 个要点」）；" +
+		// ② 由校验器按 counts 策略生成：策略放开了概括计数，指令却仍写"不要计数"，
+		// 模型只能把「四个用例」拆成别扭的无数字句子（M1/M3：同一件事两处各写一份必然漂移）。
+		validation.FormatCountHint() +
 		"③ 型号与缩写保持原样，不要擅自改写、展开或省略。" +
 		validation.FormatMeasureHint() +
 		validation.FormatEquivalenceHint() +

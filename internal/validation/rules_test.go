@@ -144,3 +144,81 @@ func TestRulesTableIsDataDriven(t *testing.T) {
 		t.Fatal("plainUnits / modelAliasGroups 与数据文件不同源")
 	}
 }
+
+// TestValidateRulesCatchesCountPolicyErrors 覆盖数字形态策略的结构性错误。
+//
+// 这些错误与等价表错误同源：**不会在编译期或运行期报错**，只表现为"某类数字被静默
+// 放过或永远不会被识别"。模式拼错（"warm"）会退回默认的 block，maxValue 漏写会让
+// 任意大的编造计数都算概括——都必须在上线前炸掉。
+func TestValidateRulesCatchesCountPolicyErrors(t *testing.T) {
+	base := func() Rules {
+		return Rules{
+			Version:         "test",
+			MeasureGroups:   [][]string{{"个", "项"}},
+			PlainUnits:      []string{"gb"},
+			UnitAliasGroups: [][]string{{"ms", "毫秒"}},
+		}
+	}
+	cases := []struct {
+		name    string
+		mutate  func(*Rules)
+		wantSub string
+	}{
+		{
+			name:    "模式拼错",
+			mutate:  func(r *Rules) { r.Counts.InsertedCounts = "warm"; r.Counts.MaxValue = 20 },
+			wantSub: "非法",
+		},
+		{
+			name:    "启用豁免却没给上限",
+			mutate:  func(r *Rules) { r.Counts.InsertedCounts = ModeWarn },
+			wantSub: "maxValue",
+		},
+		{
+			name: "全 block 时 maxValue 可留空",
+			mutate: func(r *Rules) {
+				r.Counts.InsertedCounts = ModeBlock
+				r.Counts.InsertedOrdinals = ModeBlock
+			},
+		},
+		{
+			name: "后缀含空白",
+			mutate: func(r *Rules) {
+				r.Counts.InsertedCounts = ModeAllow
+				r.Counts.MaxValue = 20
+				r.Counts.Suffixes = []string{"大 类"}
+			},
+			wantSub: "含空白",
+		},
+		{
+			name: "后缀重复",
+			mutate: func(r *Rules) {
+				r.Counts.InsertedCounts = ModeAllow
+				r.Counts.MaxValue = 20
+				r.Counts.Suffixes = []string{"大", "大"}
+			},
+			wantSub: "重复",
+		},
+		{
+			name:   "合法策略",
+			mutate: func(r *Rules) { r.Counts = Counts{InsertedCounts: ModeWarn, MaxValue: 20} },
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := base()
+			c.mutate(&r)
+			problems := ValidateRules(r)
+			if c.wantSub == "" {
+				if len(problems) > 0 {
+					t.Fatalf("合法配置被误判：%v", problems)
+				}
+				return
+			}
+			joined := strings.Join(problems, "；")
+			if !strings.Contains(joined, c.wantSub) {
+				t.Fatalf("未报出预期问题（want 含 %q），实际：%v", c.wantSub, problems)
+			}
+		})
+	}
+}

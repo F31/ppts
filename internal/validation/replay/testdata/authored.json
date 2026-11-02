@@ -187,5 +187,32 @@
     "tag": "chinese-numeral",
     "provenance": "authored",
     "note": "已知缺口（用户裁定暂不做）：中文数字未解析，故此处必然被判违规＝误杀。实现中文数字解析后本用例应翻为 pass 并更新基线——这条用例的意义就是把缺口挂在门禁上（改动会立刻显形），而不是只写在文档里。"
+  },
+  {
+    "id": "auth-count-summary-tolerated",
+    "source": "企业培训 / 内训\n在线课程 / 微课\n销售 / 路演素材\n无障碍 / 多语言",
+    "target": "本页覆盖 4 类场景：内训、微课、路演素材与多语言讲解。",
+    "want": "pass",
+    "tag": "count-inserted",
+    "provenance": "authored",
+    "note": "概括计数：页面列了 4 个用例，模型写「4 类场景」。属于对已列条目的转述，不是编造事实；按 counts.insertedCounts=warn 放行并在步骤上提示（2026-11-02 slide-262 的根因）"
+  },
+  {
+    "id": "auth-count-over-limit",
+    "source": "解析后渲染",
+    "target": "解析后渲染，共 120 个步骤。",
+    "want": "block",
+    "tag": "count-inserted",
+    "provenance": "authored",
+    "note": "超过 counts.maxValue 的计数不当作概括：编造「120 个步骤」必须拦"
+  },
+  {
+    "id": "auth-count-unit-fact-inserted",
+    "source": "本页讲增长",
+    "target": "本页讲增长 40%。",
+    "want": "block",
+    "tag": "count-inserted",
+    "provenance": "authored",
+    "note": "带单位的数字永远是实测事实，形态分流不得成为篡改旁路"
   }
 ]
