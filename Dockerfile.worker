@@ -35,7 +35,9 @@ ARG FFMPEG_URL=https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-st
 # 下载用 --http1.1：该站点在本机实测 HTTP/2 会在传输中途报
 # "stream was not closed cleanly"（curl exit 18），重试三次仍失败；降级到 HTTP/1.1
 # 后同一个文件 40MB 稳定下完。对能正常走 h2 的环境没有副作用。
-# apt 源默认走官方；本机可达性差时由 docker-compose.yml 传 APT_MIRROR=mirrors.aliyun.com。
+# 该站被限流/维护时会返回 **HTTP 200 + HTML 挑战页**（实测 7272 字节），curl -f 拦不住，
+# 于是失败点漂移到下一行，报成 "xz: (stdin): File format not recognized" / tar 不可恢复——
+# 看上去像 tar 用法问题，实际是下载被挡。先验 xz 魔数，把失败钉在下载这一步。
 ARG APT_MIRROR=deb.debian.org
 
 RUN set -eux; \
@@ -45,6 +47,13 @@ RUN set -eux; \
         ca-certificates tzdata poppler-utils fonts-wqy-zenhei libreoffice-impress-nogui \
         curl xz-utils; \
     curl -fsSL --http1.1 --retry 3 --retry-delay 2 "$FFMPEG_URL" -o /tmp/ffmpeg.tar.xz; \
+    magic=$(head -c 6 /tmp/ffmpeg.tar.xz | od -An -tx1 | tr -d ' \n'); \
+    if [ "$magic" != "fd377a585a00" ]; then \
+        echo "ffmpeg 下载结果不是 xz 压缩包（magic=$magic，大小 $(wc -c </tmp/ffmpeg.tar.xz) 字节）" >&2; \
+        echo "多为源站限流返回了 HTML 页面；换 FFMPEG_URL 或改用镜像内的 ffmpeg 包" >&2; \
+        head -c 300 /tmp/ffmpeg.tar.xz >&2; \
+        exit 1; \
+    fi; \
     tar -xJf /tmp/ffmpeg.tar.xz -C /tmp; \
     install -m 0755 /tmp/ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg; \
     install -m 0755 /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe; \
