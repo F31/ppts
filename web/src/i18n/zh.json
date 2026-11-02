@@ -1512,5 +1512,8 @@
   "compare.nothingToApply": "与当前讲稿一致，没有需要采用的改动",
   "compare.applyBlocked": "当前不能采用：没有可对照的原文、本页为多段，或缺少编辑权限",
   "compare.loadFailed": "读取对照数据失败",
-  "compare.savePending": "本页讲稿仍在保存，请稍后重试——对照必须基于已保存的版本，否则采用时会覆盖刚输入的内容。"
+  "compare.savePending": "本页讲稿仍在保存，请稍后重试——对照必须基于已保存的版本，否则采用时会覆盖刚输入的内容。",
+  "gateway.sharedFromPlatform": "平台共享",
+  "gateway.platformReadOnly": "由平台统一提供，你可直接使用；如需调整请联系平台管理员。",
+  "gateway.inheritedNote": "列表中有 {count} 项来自平台共享：你可直接使用，但不能在此修改。"
 }

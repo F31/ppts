@@ -345,3 +345,106 @@ func TestGatewayUpdateSwitchKindConflict(t *testing.T) {
 		t.Fatalf("conflict code = %d want 409 body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// gwListRows 解出管理面列表：除了存储字段，还要断言来源标记。
+type gwListRows struct {
+	Gateways []struct {
+		gateway.Gateway
+		Source string `json:"source"`
+	} `json:"gateways"`
+}
+
+func gwList(t *testing.T, h http.Handler, path string) gwListRows {
+	t.Helper()
+	rec := gwDo(t, h, "GET", path, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list %s: %d %s", path, rec.Code, rec.Body.String())
+	}
+	var rows gwListRows
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode list: %v body=%s", err, rec.Body.String())
+	}
+	return rows
+}
+
+// TestGatewayListMergesPlatformShared 守护「平台配了、租户看得见」：
+// 运行时 Resolve 早就会回落到平台默认行，但列表此前只查本租户，界面显示「尚未接入」，
+// 用户明明在用平台 TTS 却被告知没配——这条用例锁住列表与运行时语义一致。
+func TestGatewayListMergesPlatformShared(t *testing.T) {
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	ctx := context.Background()
+	if err := store.Create(ctx, &gateway.Gateway{
+		TenantID: gateway.PlatformTenantID, Name: "plat-tts", Kind: gateway.KindTTS,
+		Provider: "openai_compatible", BaseURL: "https://platform.example.com",
+		Model: "cosyvoice", IsDefault: true, Enabled: true,
+	}, "sk-platform"); err != nil {
+		t.Fatalf("create platform row: %v", err)
+	}
+
+	rows := gwList(t, h, "/api/model-gateways?kind=tts")
+	if len(rows.Gateways) != 1 {
+		t.Fatalf("merged rows = %d want 1: %+v", len(rows.Gateways), rows.Gateways)
+	}
+	got := rows.Gateways[0]
+	if got.Source != gatewaySourcePlatform {
+		t.Fatalf("source = %q want %q", got.Source, gatewaySourcePlatform)
+	}
+	if got.TenantID != gateway.PlatformTenantID || got.Name != "plat-tts" || got.Model != "cosyvoice" {
+		t.Fatalf("platform row mangled: %+v", got.Gateway)
+	}
+}
+
+// TestGatewayListHidesShadowedPlatformRow 守护优先级在列表上的表现：
+// 租户已有同名配置时只列租户那行，否则同一模型出现两次，用户无法判断哪行真正生效。
+func TestGatewayListHidesShadowedPlatformRow(t *testing.T) {
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	ctx := context.Background()
+	for _, row := range []*gateway.Gateway{
+		{TenantID: gateway.PlatformTenantID, Name: "shared", Kind: gateway.KindTTS, BaseURL: "https://p", Model: "m-platform", IsDefault: true, Enabled: true},
+		{TenantID: "00000000-0000-0000-0000-000000000001", Name: "shared", Kind: gateway.KindTTS, BaseURL: "https://t", Model: "m-tenant", Enabled: true},
+	} {
+		if err := store.Create(ctx, row, "sk"); err != nil {
+			t.Fatalf("create %s: %v", row.TenantID, err)
+		}
+	}
+
+	rows := gwList(t, h, "/api/model-gateways?kind=tts")
+	if len(rows.Gateways) != 1 {
+		t.Fatalf("rows = %d want 1（同名平台行应被租户行遮住）: %+v", len(rows.Gateways), rows.Gateways)
+	}
+	if rows.Gateways[0].Source != gatewaySourceTenant || rows.Gateways[0].Model != "m-tenant" {
+		t.Fatalf("shadowed row = %+v", rows.Gateways[0])
+	}
+}
+
+// TestGatewayTenantScopeCannotMutatePlatformRow 守护写边界：
+// 列表里能看到平台行，不等于能在租户作用域改它——否则任何租户管理员都能改掉别家的默认模型。
+func TestGatewayTenantScopeCannotMutatePlatformRow(t *testing.T) {
+	store := newFakeGatewayStore()
+	h := gwHandler(t, store, membership.RoleAdmin)
+	ctx := context.Background()
+	if err := store.Create(ctx, &gateway.Gateway{
+		TenantID: gateway.PlatformTenantID, Name: "plat-tts", Kind: gateway.KindTTS,
+		BaseURL: "https://platform.example.com", Model: "cosyvoice", IsDefault: true, Enabled: true,
+	}, "sk-platform"); err != nil {
+		t.Fatalf("create platform row: %v", err)
+	}
+
+	for _, route := range []struct{ method, path, body string }{
+		{"PUT", "/api/model-gateways/plat-tts", `{"kind":"tts","version":1,"model":"hijacked"}`},
+		{"DELETE", "/api/model-gateways/plat-tts?kind=tts", ""},
+		{"POST", "/api/model-gateways/plat-tts/set-default?kind=tts", ""},
+	} {
+		rec := gwDo(t, h, route.method, route.path, route.body)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s %s: got %d want 404 body=%s", route.method, route.path, rec.Code, rec.Body.String())
+		}
+	}
+	// 平台行必须原样保留。
+	row, err := store.Get(ctx, gateway.PlatformTenantID, "plat-tts", gateway.KindTTS)
+	if err != nil || row.Model != "cosyvoice" || !row.IsDefault {
+		t.Fatalf("platform row mutated: %+v err=%v", row, err)
+	}
+}

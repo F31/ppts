@@ -112,30 +112,59 @@ func (h *GatewayHandler) requireAdmin(w http.ResponseWriter, r *http.Request) (P
 	return p, true
 }
 
+// gatewayView 是管理面响应：在存储模型上附加「来源」，让前端区分本租户配置与平台共享配置。
+// 不写进 gateway.Gateway——Source 是管理面视角，Store 的 List/Get 不该关心它出自哪一层。
+type gatewayView struct {
+	*gateway.Gateway
+	Source string `json:"source"`
+}
+
+const (
+	gatewaySourceTenant   = "tenant"
+	gatewaySourcePlatform = "platform"
+)
+
 func (h *GatewayHandler) list(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.requireAdmin(w, r)
 	if !ok {
 		return
 	}
 	kind := gateway.Kind(strings.TrimSpace(r.URL.Query().Get("kind")))
+	kinds := []gateway.Kind{gateway.KindTTS, gateway.KindLLM}
 	if kind == gateway.KindTTS || kind == gateway.KindLLM {
-		gws, err := h.store.List(r.Context(), p.TenantID, kind)
-		if err != nil {
-			http.Error(w, `{"code":"internal","message":"failed to list gateways"}`, http.StatusInternalServerError)
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"gateways": gws})
-		return
+		kinds = []gateway.Kind{kind}
 	}
-	// 无 kind 过滤：返回两类全部。
-	var out []*gateway.Gateway
-	for _, k := range []gateway.Kind{gateway.KindTTS, gateway.KindLLM} {
-		gws, err := h.store.List(r.Context(), p.TenantID, k)
+	// 空列表编码成 [] 而不是 null：前端拿到 null 时会分成"没配"和"请求失败"两种分支。
+	out := make([]gatewayView, 0, 4)
+	for _, k := range kinds {
+		own, err := h.store.List(r.Context(), p.TenantID, k)
 		if err != nil {
 			http.Error(w, `{"code":"internal","message":"failed to list gateways"}`, http.StatusInternalServerError)
 			return
 		}
-		out = append(out, gws...)
+		seen := make(map[string]bool, len(own))
+		for _, gw := range own {
+			seen[gw.Name] = true
+			out = append(out, gatewayView{Gateway: gw, Source: gatewaySourceTenant})
+		}
+		// 平台共享行只在租户作用域合并：平台视角看自己的列表，不该混进别人的行。
+		//
+		// 同 (kind,name) 已被租户行占用时跳过：运行时 Resolve/ResolveModel 都是租户行优先，
+		// 列表若把两行同名都列出来，用户会以为平台那行也在生效，排查时反而被误导。
+		if p.TenantID == gateway.PlatformTenantID {
+			continue
+		}
+		shared, err := h.store.List(r.Context(), gateway.PlatformTenantID, k)
+		if err != nil {
+			http.Error(w, `{"code":"internal","message":"failed to list gateways"}`, http.StatusInternalServerError)
+			return
+		}
+		for _, gw := range shared {
+			if seen[gw.Name] {
+				continue
+			}
+			out = append(out, gatewayView{Gateway: gw, Source: gatewaySourcePlatform})
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"gateways": out})
 }

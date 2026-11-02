@@ -1512,5 +1512,8 @@
   "compare.nothingToApply": "Nothing to apply — the result matches the current script",
   "compare.applyBlocked": "Cannot apply: no source text, multiple segments, or missing edit permission",
   "compare.loadFailed": "Failed to load the comparison",
-  "compare.savePending": "This slide's script is still saving. Retry shortly — the comparison must use the saved version, or applying it would overwrite what you just typed."
+  "compare.savePending": "This slide's script is still saving. Retry shortly — the comparison must use the saved version, or applying it would overwrite what you just typed.",
+  "gateway.sharedFromPlatform": "Shared by platform",
+  "gateway.platformReadOnly": "Provided by the platform. You can use it as-is; contact the platform operator to change it.",
+  "gateway.inheritedNote": "{count} item(s) come from the platform. You can use them as-is, but cannot edit them here."
 }

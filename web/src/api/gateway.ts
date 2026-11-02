@@ -26,6 +26,9 @@ export type ModelGateway = {
   keyMasked: string;
   createdAt: number;
   updatedAt: number;
+  // source 由管理面列表下发：tenant = 本租户自己的配置；platform = 平台共享（只读）。
+  // 旧后端/单条响应可能不带该字段，按 tenant 处理（可编辑）。
+  source?: 'tenant' | 'platform';
 };
 
 export type GatewayTestResult = { ok: boolean; latencyMs: number; error?: string };

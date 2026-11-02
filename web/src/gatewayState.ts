@@ -33,6 +33,20 @@ export function gatewayHealth(gw: ModelGateway, result?: GatewayTestResult): Gat
 export type ServiceState = 'unconfigured' | 'unavailable' | 'untested' | 'ready';
 
 /**
+ * 是否为平台共享行。
+ *
+ * 平台行对租户是「直接用、不能改」：运行时 Resolve 在租户没有默认行时会回落到平台默认，
+ * 但管理面写入路径只认本租户 (kind,name)，在租户作用域改平台行会 404。界面必须把这条
+ * 边界显式画出来，否则用户会对着一个删不掉的条目反复点删除。
+ *
+ * 缺省（旧后端/单条响应）按本租户处理：宁可让用户看到可编辑按钮后被后端拒绝，
+ * 也好过把可编辑的配置误标成只读、让人以为改不了。
+ */
+export function isPlatformShared(gw: { source?: string }): boolean {
+  return gw.source === 'platform';
+}
+
+/**
  * 汇总某类型（tts/llm）服务的总体状态：
  * - `unconfigured`：本租户没有任何「启用 + 有密钥」的该类型网关（A23「未配置/模拟服务」的主场景）。
  * - `unavailable`：有可用配置，但会话内检测结果全部为失败（最近一次检测判定不可用）。
