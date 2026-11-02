@@ -250,5 +250,14 @@
     "tag": "count-inserted",
     "provenance": "authored",
     "note": "带单位的数字永远是实测事实，形态分流不得成为篡改旁路"
+  },
+  {
+    "id": "auth-chinese-ordinal-inserted",
+    "source": "成本、体验与交付",
+    "target": "第一个变化是成本，第二个变化是体验。",
+    "want": "block",
+    "tag": "chinese-numeral",
+    "provenance": "authored",
+    "note": "汉字序数与阿拉伯写法同形态：素材没有编号时，自行编号按序号拦（insertedOrdinals=block）。真实事故：slide-258 的「第二个变化」曾被标成计数而放行。"
   }
 ]

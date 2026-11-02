@@ -6,6 +6,7 @@
     "auth-chinese-numeral-known-gap": "pass",
     "auth-chinese-numeral-ordinal-step": "pass",
     "auth-chinese-numeral-reverse": "pass",
+    "auth-chinese-ordinal-inserted": "block",
     "auth-count-over-limit": "block",
     "auth-count-summary-tolerated": "pass",
     "auth-count-unit-fact-inserted": "block",
