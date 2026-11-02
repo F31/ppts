@@ -237,3 +237,60 @@ func TestSiliconFlowLiveSmoke(t *testing.T) {
 		t.Fatalf("live smoke result = %+v", res)
 	}
 }
+
+// TestSiliconFlowInvalidVoiceShowsSentValue 守护「报错要能自解释」：
+// 供应商只回 {"code":20047,"message":"Invalid voice"}，用户不知道是我们发了什么。
+// 真实事故：音色写成 "FunAudioLLM/CosyVoice2-0.5B.alex"（点号），只看到 Invalid voice。
+func TestSiliconFlowInvalidVoiceShowsSentValue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":20047,"message":"Invalid voice","data":null}`))
+	}))
+	defer srv.Close()
+
+	p := NewSiliconFlowProvider(SiliconFlowConfig{
+		BaseURL: srv.URL, APIKey: "sk-test", Model: "FunAudioLLM/CosyVoice2-0.5B",
+	})
+	const sent = "FunAudioLLM/CosyVoice2-0.5B.alex"
+	_, err := p.Synthesize(context.Background(), SynthesisRequest{Text: "hi", VoiceID: sent})
+	if err == nil {
+		t.Fatal("invalid voice should fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{sent, "<model>:<voice>", "20047"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error should contain %q, got: %s", want, msg)
+		}
+	}
+}
+
+// TestSiliconFlowOtherErrorsCarryNoVoiceHint：只有"音色被拒"才补格式提示。
+// 401/429 也带这句话会把用户引向错误方向（去改音色，而问题在密钥/限流）。
+func TestSiliconFlowOtherErrorsCarryNoVoiceHint(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"invalid token", http.StatusUnauthorized, `{"code":20001,"message":"Invalid token"}`},
+		{"bad request other code", http.StatusBadRequest, `{"code":20003,"message":"Invalid model"}`},
+		{"rate limited", http.StatusTooManyRequests, `{"code":20015,"message":"rate limited"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			p := NewSiliconFlowProvider(SiliconFlowConfig{BaseURL: srv.URL, APIKey: "sk-test"})
+			_, err := p.Synthesize(context.Background(), SynthesisRequest{Text: "hi", VoiceID: "v"})
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if strings.Contains(err.Error(), "sent voice=") {
+				t.Fatalf("%s should not carry voice hint: %s", tc.name, err)
+			}
+		})
+	}
+}

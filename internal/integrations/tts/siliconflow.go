@@ -106,7 +106,7 @@ func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisReque
 		return SynthesisResult{}, &RetryableError{Err: err}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return SynthesisResult{}, siliconFlowError(resp.StatusCode, audio)
+		return SynthesisResult{}, siliconFlowError(resp.StatusCode, audio, voice)
 	}
 	if len(audio) == 0 {
 		return SynthesisResult{}, &RetryableError{Err: errors.New("tts: siliconflow returned empty audio")}
@@ -135,7 +135,7 @@ func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisReque
 }
 
 // siliconFlowError 把非 2xx 响应映射为错误；429/5xx 为可重试。
-func siliconFlowError(status int, body []byte) error {
+func siliconFlowError(status int, body []byte, voice string) error {
 	msg := strings.TrimSpace(string(body))
 	if len(msg) > 400 {
 		msg = msg[:400]
@@ -148,11 +148,33 @@ func siliconFlowError(status int, body []byte) error {
 	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error.Message != "" {
 		msg = parsed.Error.Message
 	}
-	base := fmt.Errorf("tts: siliconflow http %d: %s", status, msg)
+	base := fmt.Errorf("tts: siliconflow http %d: %s%s", status, msg, voiceFormatHint(status, body, voice))
 	if status == http.StatusTooManyRequests || status >= 500 {
 		return &RetryableError{Err: base}
 	}
 	return base
+}
+
+// voiceFormatHint 只在供应商明确拒绝音色时，补上"我们实际发了什么"和正确格式。
+//
+// SiliconFlow 对写错的音色只回 {"code":20047,"message":"Invalid voice"}，
+// 用户看到这句话无从判断：是音色名不存在，还是分隔符写成了 "."（预置音色要求
+// "<model>:<voice>"）。补一句原文不会泄露任何东西，却能让人一眼看出是格式问题。
+func voiceFormatHint(status int, body []byte, voice string) string {
+	if status != http.StatusBadRequest {
+		return ""
+	}
+	var parsed struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return ""
+	}
+	if parsed.Code != 20047 && !strings.Contains(strings.ToLower(parsed.Message), "invalid voice") {
+		return ""
+	}
+	return fmt.Sprintf(" (sent voice=%q; SiliconFlow preset voices require \"<model>:<voice>\", e.g. FunAudioLLM/CosyVoice2-0.5B:alex)", voice)
 }
 
 // wavDurationMSFromRIFF 解析 PCM WAV 得到时长（毫秒）。
