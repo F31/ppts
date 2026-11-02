@@ -129,10 +129,12 @@ func TestCompileEncodeArgsTimelineFilterChainPinsPageDurations(t *testing.T) {
 		t.Fatalf("total = %v, want (700+300)/1000 = 1", total)
 	}
 	// 注意：可变时长路径下每个输入各自带 -t（页时长），故输出总时长必须看**末尾**的 -t。
-	// 其后固定跟 -movflags +faststart（moov 前置，浏览器可渐进播放/拖动）。
-	tail := args[len(args)-5:]
-	if tail[0] != "-t" || tail[1] != "1.000000" || tail[2] != "-movflags" || tail[3] != "+faststart" || tail[4] != "/out/v.mp4" {
-		t.Fatalf("tail = %v, want [-t 1.000000 -movflags +faststart /out/v.mp4]", tail)
+	// 其后依次是输出帧率 -r（见 TestCompileEncodeArgsPinsOutputFrameRate）与
+	// -movflags +faststart（moov 前置，浏览器可渐进播放/拖动）。
+	tail := args[len(args)-7:]
+	if tail[0] != "-t" || tail[1] != "1.000000" || tail[2] != "-r" || tail[3] != "20" ||
+		tail[4] != "-movflags" || tail[5] != "+faststart" || tail[6] != "/out/v.mp4" {
+		t.Fatalf("tail = %v, want [-t 1.000000 -r 20 -movflags +faststart /out/v.mp4]", tail)
 	}
 }
 
@@ -295,6 +297,39 @@ func TestEncodeWithoutFFmpegReportsUnavailable(t *testing.T) {
 	// 本机通常没有 ffmpeg；此处只断言「构造器把缺失如实报出来」，不依赖具体环境。
 	if _, err := NewMP4Encoder(); err != nil && !errors.Is(err, ErrFFmpegUnavailable) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestCompileEncodeArgsPinsOutputFrameRate 守输出帧率必须显式给。
+//
+// -framerate 只作用于**输入**；输出端不写 -r 时 ffmpeg 按默认 25fps 编码。
+// 真机实测：快照声明 30fps 的 638.12s 成片 nb_frames=15953，正好是 25fps。
+// 三种输入形态都要覆盖，否则容易只补多页路径、漏掉单页或变时长路径。
+func TestCompileEncodeArgsPinsOutputFrameRate(t *testing.T) {
+	const fps = 30
+	cases := []struct {
+		name string
+		opts MP4EncodeOptions
+		in   encodeInputs
+	}{
+		{"single", MP4EncodeOptions{OutPath: "/out/v.mp4", FPS: fps, Width: 320, Height: 180,
+			PagePNGs: [][]byte{{1}}}, inputsFor(1, false)},
+		{"sequence", MP4EncodeOptions{OutPath: "/out/v.mp4", FPS: fps, Width: 320, Height: 180,
+			PagePNGs: [][]byte{{1}, {2}}}, inputsFor(2, false)},
+		{"timeline", MP4EncodeOptions{OutPath: "/out/v.mp4", FPS: fps, Width: 320, Height: 180,
+			PagePNGs: [][]byte{{1}, {2}}, PageDurationsMS: []int64{700, 300}}, inputsFor(2, true)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			args, _, err := compileEncodeArgs(tc.opts, tc.in)
+			if err != nil {
+				t.Fatalf("compileEncodeArgs: %v", err)
+			}
+			got, ok := argsValue(args, "-r")
+			if !ok || got != "30" {
+				t.Fatalf("-r = %q (ok=%v), want 30: %v", got, ok, args)
+			}
+		})
 	}
 }
 

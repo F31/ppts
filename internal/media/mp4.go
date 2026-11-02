@@ -253,6 +253,11 @@ func compileEncodeArgs(opts MP4EncodeOptions, in encodeInputs) ([]string, float6
 		args = append(args, "-vf", vf)
 	}
 	args = append(args, "-t", strconv.FormatFloat(total, 'f', 6, 64))
+	// 输出帧率必须显式给定：上面的 -framerate 只作用于**输入**，输出端不写 -r 时
+	// ffmpeg 按默认 25fps 编码。于是"快照声明 30fps、产物 25fps"——
+	// 实测 638.12s 的成片 nb_frames=15953（=25fps），与传入的 30 不符。
+	// 片段编码（segments.go）一直是显式 -r 的，这里补齐。
+	args = append(args, "-r", strconv.Itoa(fps))
 	// moov 前置：浏览器 <video> 无需下载完整文件即可起播/拖动（配合对象端点的 Range 支持）。
 	args = append(args, "-movflags", "+faststart")
 	args = append(args, opts.OutPath)
