@@ -80,6 +80,36 @@ func numberForm(s string, start, numEnd int, hasUnit bool, measure string) strin
 	return FormFact
 }
 
+// insertionVisible 报告「被放行的插入」是否需要在步骤上提示。
+//
+// warn 与 allow 的差别只在可见性（见 rules.go 的 ModeWarn/ModeAllow 注释），
+// 但这个差别必须由**策略 + 实体**共同决定：中文「一 + 量词」可以单独配 allow，
+// 而其他计数仍是 warn。若只按全局策略判断，Report.Warnings 会把不该提示的实体
+// 也带上，调用方再筛一遍就等于把策略逻辑复制到调用方（M1/M3 的教训）。
+func insertionVisible(e Entity, p Counts) bool {
+	if e.Kind != "number" {
+		return false
+	}
+	switch e.Form {
+	case FormOrdinal:
+		return p.InsertedOrdinals == ModeWarn
+	case FormCount:
+		if e.Surface != "" && e.Text == "1" {
+			switch p.InsertedChineseOnes {
+			case ModeWarn:
+				return true
+			case ModeAllow, ModeBlock:
+				// allow = 明确静默；block 根本不会走到这里（不会进入 Warnings）。
+				return false
+			}
+			// 留空 = 不做特殊处理，落到下面的通用计数策略。
+		}
+		return p.InsertedCounts == ModeWarn
+	default:
+		return false
+	}
+}
+
 // toleratedInsertion 判断"目标里有、素材里没有"的数字是否按策略放行。
 //
 // 注意：**永远只处理插入侧**。素材里的数字在目标里消失（missing）一律判违规——
@@ -94,6 +124,17 @@ func toleratedInsertion(e Entity, p Counts) bool {
 	case FormCount:
 		if p.InsertedCounts != ModeWarn && p.InsertedCounts != ModeAllow {
 			return false
+		}
+		// 中文「一 + 量词」是插入侧的**另一种东西**：它常作不定冠词（「这是一个判断」
+		// 「形成一条主线」），并不是在数条目，所以「属于对页面条目的概括」这句提示对
+		// 它不成立。这里只影响插入侧；「三个 → 一个」仍因 missing 3 被拦（见上）。
+		if e.Surface != "" && e.Text == "1" {
+			switch p.InsertedChineseOnes {
+			case ModeAllow:
+				return true
+			case ModeBlock:
+				return false
+			}
 		}
 		if p.MaxValue <= 0 {
 			// 规则表校验要求启用豁免时必须给上限；这里对应"不限制"的显式配置。

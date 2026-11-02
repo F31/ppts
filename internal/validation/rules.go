@@ -84,6 +84,12 @@ type Counts struct {
 	// InsertedCounts / InsertedOrdinals 取 ModeBlock / ModeWarn / ModeAllow。
 	InsertedCounts   string `json:"insertedCounts"`
 	InsertedOrdinals string `json:"insertedOrdinals"`
+	// InsertedChineseOnes 单独处置中文数词「一 + 量词」（「一个」「一条」「一款」）。
+	// 取 ModeAllow 表示：它照旧参与缺失/改动比对，但作为**插入**时不提示——中文的「一」
+	// 大量用于不定冠词（「这是一个判断」），并没有在数条目；若沿用 counts 的 warn，
+	// 几乎每页都会出现「新增数字 1，属于对页面条目的概括」，那句话本身就不成立。
+	// 留空 = 不做特殊处理，仍走 InsertedCounts 的通用策略。
+	InsertedChineseOnes string `json:"insertedChineseOnes"`
 	// MaxValue 是计数豁免的上限：超过它的"计数"不再当作概括（编造「120 个城市」必须拦）。
 	// <=0 表示不限制。
 	MaxValue float64 `json:"maxValue"`
@@ -271,6 +277,7 @@ func validateCounts(c Counts) []string {
 	}
 	checkMode("counts.insertedCounts", c.InsertedCounts)
 	checkMode("counts.insertedOrdinals", c.InsertedOrdinals)
+	checkMode("counts.insertedChineseOnes", c.InsertedChineseOnes)
 
 	tolerant := func(m string) bool { return m == ModeWarn || m == ModeAllow }
 	if (tolerant(c.InsertedCounts) || tolerant(c.InsertedOrdinals)) && c.MaxValue <= 0 {

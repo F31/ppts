@@ -144,3 +144,60 @@ func TestCountHintFollowsPolicy(t *testing.T) {
 		}
 	}
 }
+
+// TestInsertedChineseOneIsNotCountClaim 锁定「一 + 量词」的插入侧处置。
+//
+// 背景（2026-11-02 真实数据复验）：中文数词解析上线后，14 页里有 11 页出现
+// 「新增数字 1」——来源全是「一个」「一条」「一款」「一遍」。它确实与素材不同键
+// （素材那句没有数量），但提示语「属于对页面条目的概括」对它不成立：中文的「一」
+// 在这里是不定冠词，不是在数条目。默认 allow 让它静默通过，判定强度不变。
+//
+// 三条边界都要钉死：allow 静默、block 拦下、留空则退回通用计数策略（仍提示）；
+// 另外**缺失侧不受影响**——「一个」写成「三个」必须照旧拦。
+func TestInsertedChineseOneIsNotCountClaim(t *testing.T) {
+	const src, dst = "解析后渲染", "解析后渲染，这是一个关键判断。"
+
+	allow := Counts{InsertedCounts: ModeWarn, InsertedOrdinals: ModeBlock,
+		InsertedChineseOnes: ModeAllow, MaxValue: 20}
+	if r := CheckPreservedWithPolicy(src, dst, allow); !r.OK() || r.HasWarnings() {
+		t.Fatalf("allow 应静默放行，实际 ok=%v warnings=%v", r.OK(), FormatEntities(r.Warnings))
+	}
+
+	block := allow
+	block.InsertedChineseOnes = ModeBlock
+	if r := CheckPreservedWithPolicy(src, dst, block); r.OK() {
+		t.Fatalf("block 应拦下「一个」")
+	}
+
+	inherit := allow
+	inherit.InsertedChineseOnes = ""
+	if r := CheckPreservedWithPolicy(src, dst, inherit); !r.OK() || !r.HasWarnings() {
+		t.Fatalf("留空应退回通用计数策略（放行但提示），实际 ok=%v warnings=%v",
+			r.OK(), FormatEntities(r.Warnings))
+	}
+
+	// 不是「一」的计数仍按通用策略提示：别把这条豁免扩大到所有中文数词。
+	if r := CheckPreservedWithPolicy(src, "解析后渲染，共四个步骤。", allow); !r.OK() || !r.HasWarnings() {
+		t.Fatalf("「四个」应仍提示，实际 ok=%v warnings=%v", r.OK(), FormatEntities(r.Warnings))
+	}
+
+	// 缺失/改数侧不受影响：素材的「一个」没出现在目标里，仍旧判违规。
+	if r := CheckPreservedWithPolicy("共一个步骤", "共三个步骤。", allow); r.OK() {
+		t.Fatalf("把「一个」改成「三个」应拦下")
+	}
+}
+
+// TestValidateChineseOnesPolicy 拼错的处置值必须在启动期暴露，不能静默当作默认值。
+func TestValidateChineseOnesPolicy(t *testing.T) {
+	r := DefaultRules()
+	r.Counts.InsertedChineseOnes = "silent"
+	found := false
+	for _, p := range ValidateRules(r) {
+		if strings.Contains(p, "insertedChineseOnes") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("非法处置值未被校验发现：%v", ValidateRules(r))
+	}
+}

@@ -374,7 +374,9 @@ func CheckPreservedWithPolicy(source, target string, policy Counts) Report {
 			continue
 		}
 		if toleratedInsertion(e, policy) {
-			warnings = append(warnings, e)
+			if insertionVisible(e, policy) {
+				warnings = append(warnings, e)
+			}
 			continue
 		}
 		inserted = append(inserted, e)
