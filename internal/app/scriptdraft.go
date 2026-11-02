@@ -795,6 +795,73 @@ func guardInstructions(report validation.Report) string {
 	return strings.Join(parts, "")
 }
 
+// entityFixSuffix 只返回「必须保留的事实」这几句，没有违规项时为空。
+//
+// 用于与 rewriteGuardInstructions 拼接：先要求把素材重写成讲稿，
+// 再点名哪些数字/单位/型号不能少、哪些不能凭空多出来。
+func entityFixSuffix(report validation.Report) string {
+	parts := make([]string, 0, 2)
+	if missing := validation.FormatEntitiesHuman(report.Missing); len(missing) > 0 {
+		parts = append(parts, "务必保留原素材中的「"+strings.Join(missing, "、")+"」，不能遗漏；")
+	}
+	if inserted := validation.FormatEntitiesHuman(report.Inserted); len(inserted) > 0 {
+		parts = append(parts, "不要出现原素材没有的「"+strings.Join(inserted, "、")+"」。")
+	}
+	return strings.Join(parts, "")
+}
+
+// numberContextHint 从产出里截取"新增数字"周围的原文（最多两条，各留 8 字上下文）。
+//
+// 降级原因如果只写「新增数字 3」，用户没法判断这是模型在数页面列出的条目
+// （「4 类场景」），还是凭空编了一个数——前者该放宽规则，后者该换模型或手改。
+func numberContextHint(inserted []validation.Entity, text string) string {
+	runes := []rune(text)
+	hints := make([]string, 0, 2)
+	for _, e := range inserted {
+		if e.Kind != "number" || len(hints) >= 2 {
+			continue
+		}
+		idx := strings.Index(text, e.Text)
+		if idx < 0 {
+			continue
+		}
+		pre := len([]rune(text[:idx]))
+		from := pre - 8
+		if from < 0 {
+			from = 0
+		}
+		to := pre + len([]rune(e.Text)) + 8
+		if to > len(runes) {
+			to = len(runes)
+		}
+		snippet := strings.TrimSpace(strings.ReplaceAll(string(runes[from:to]), "\n", " "))
+		hints = append(hints, "…"+snippet+"…")
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	return "（" + strings.Join(hints, "；") + "）"
+}
+
+// rewriteGuardInstructions 是"上一版根本不是讲稿"时的第二轮指令。
+//
+// 与 guardInstructions 的区别：那里是**定点修补**（只补/删实体，其余一字不动），
+// 这里要求**重新写成讲稿**。用错指令会得到反向结果——对一份照抄的页面文字说
+// "除这些实体外不要改动其它措辞与结构"，模型只会更坚决地照抄。
+func rewriteGuardInstructions(echo bool) string {
+	var b strings.Builder
+	if echo {
+		b.WriteString("上一版把页面文字原样照抄了，不是讲解稿。请把素材改写成可直接朗读的口语化讲稿：")
+		b.WriteString("保留其中的数字、单位、型号与专有名词，")
+		b.WriteString("但不要保留版式的分行、标题罗列与标签堆叠，要用连贯的句子讲出来。")
+	} else {
+		b.WriteString("上一版的正文不干净（混入了思考过程或内部标记）。请重新把素材写成可直接朗读的讲解稿：")
+	}
+	b.WriteString("直接输出讲稿正文，不要解释修改过程，不要输出 number/date/model 这类内部标记，")
+	b.WriteString("也不要把思考过程写进正文。")
+	return b.String()
+}
+
 // factCitationPat 匹配讲稿正文中的事实引用标记：〔fact-xx〕。
 //
 // **允许未闭合**：推理型模型可能恰好停在标记中间（2026-11-02 实测：目标 60 秒的稿子
@@ -944,6 +1011,62 @@ func draftTooShort(text string, targetSeconds int) bool {
 	return utf8.RuneCountInString(strings.TrimSpace(text)) < targetSeconds*2
 }
 
+// draftEchoesSource 判断产出是不是**把页面文字原样回显**。
+//
+// 2026-11-02 真机：slide-266 落库的"讲稿"就是源形状按行拼接的结果
+// （MULTI-PLATFORM / Web / 桌面端…每行原封不动，只少了页码），却记为 success。
+// 实体校验对它毫无办法——逐字相同的文本不可能漏事实，于是"没改写"反而成了
+// 最安全的通过方式。这不是成稿，按 A26 不得报成功。
+//
+// 两条判据：
+//  1. 归一化（去空白/标点、统一小写）后与素材完全一致；
+//  2. 素材至少 3 行，且八成以上的行在产出里逐行原样出现——版式结构被照搬。
+//
+// 素材不足 20 字时不做判据 1：封面单标题页润色后可能确实只剩一句话。
+func draftEchoesSource(source, out string) bool {
+	srcNorm := normalizeDraftText(source)
+	if len([]rune(srcNorm)) >= 20 && srcNorm == normalizeDraftText(out) {
+		return true
+	}
+	lines := nonEmptyLines(source)
+	if len(lines) < 3 {
+		return false
+	}
+	outLines := make(map[string]bool, len(lines))
+	for _, l := range nonEmptyLines(out) {
+		outLines[normalizeDraftText(l)] = true
+	}
+	hit := 0
+	for _, l := range lines {
+		if outLines[normalizeDraftText(l)] {
+			hit++
+		}
+	}
+	return float64(hit)/float64(len(lines)) >= 0.8
+}
+
+// normalizeDraftText 只保留字母与数字（含汉字），用于"是否同一段文字"的比较。
+// 标点与空白不计：模型照抄时常常改写标点、把两行合并成一行。
+func normalizeDraftText(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
+func nonEmptyLines(s string) []string {
+	out := make([]string, 0, 8)
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // asciiLetterCount 统计非空白字符数与其中的 ASCII 字母数，用于粗略判断语言是否跑偏。
 func asciiLetterCount(text string) (letters, total int) {
 	for _, r := range text {
@@ -992,10 +1115,12 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 	var cacheKey objectstore.ObjectKey
 	if !h.disableCache {
 		cacheKey = h.scriptCacheKey(tenantID, mode, language, instructions, promptSource)
-		// 缓存也可能是脏的（历史版本把 number:3 写进过正文，或截断成 69 字残稿）：
-		// 命中后仍要过质量判定，否则一次坏产出会被缓存永久复用。
+		// 缓存也可能是脏的（历史版本把 number:3 写进过正文，截断成 69 字残稿，
+		// 或干脆把页面文字原样存了下来）：命中后仍要过质量判定，
+		// 否则一次坏产出会被缓存永久复用。
 		if cached, ok := h.loadScriptCache(ctx, cacheKey); ok &&
-			!draftOutputSuspect(language, cached) && !draftTooShort(cached, snap.TargetSeconds) {
+			!draftOutputSuspect(language, cached) && !draftTooShort(cached, snap.TargetSeconds) &&
+			!draftEchoesSource(source, cached) {
 			return draftTextResult{Display: cached, Spoken: cached}, nil
 		}
 	}
@@ -1019,7 +1144,8 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 	report := validation.CheckPreserved(validationSource, clean)
 	suspectFirst := draftOutputSuspect(language, clean)
 	shortFirst := draftTooShort(clean, snap.TargetSeconds)
-	if !suspectFirst && !shortFirst && report.OK() && len(unknown) == 0 {
+	echoFirst := draftEchoesSource(source, clean)
+	if !suspectFirst && !shortFirst && !echoFirst && report.OK() && len(unknown) == 0 {
 		if !h.disableCache {
 			h.saveScriptCache(ctx, cacheKey, clean)
 		}
@@ -1027,12 +1153,12 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 	}
 	// 降级原因：两轮各自为什么没过，逐条留痕。
 	why := make([]string, 0, 4)
-	appendReport := func(tag string, r validation.Report) {
+	appendReport := func(tag string, r validation.Report, text string) {
 		if ms := validation.FormatEntitiesHuman(r.Missing); len(ms) > 0 {
 			why = append(why, tag+"遗漏「"+strings.Join(ms, "、")+"」")
 		}
 		if ins := validation.FormatEntitiesHuman(r.Inserted); len(ins) > 0 {
-			why = append(why, tag+"新增「"+strings.Join(ins, "、")+"」")
+			why = append(why, tag+"新增「"+strings.Join(ins, "、")+"」"+numberContextHint(r.Inserted, text))
 		}
 	}
 	if suspectFirst {
@@ -1042,7 +1168,10 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 		why = append(why, fmt.Sprintf("第一版过短（%d 字，目标 %d 秒）",
 			utf8.RuneCountInString(clean), snap.TargetSeconds))
 	}
-	appendReport("第一版", report)
+	if echoFirst {
+		why = append(why, "第一版原样照抄页面文字，没有改写成讲稿")
+	}
+	appendReport("第一版", report, clean)
 	if len(unknown) > 0 {
 		why = append(why, "第一版引用了不存在的事实出处")
 	}
@@ -1051,12 +1180,16 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 	// 部分被丢弃，很可能换一种方式再错，两轮下来只剩下回退原文一条路。
 	guardOpID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode) + ":guard"
 	guardText := clean
-	if suspectFirst {
-		// 上一版是思维链/字面量垃圾：在它上面"修补"只会产出更长的垃圾。
+	if suspectFirst || echoFirst {
+		// 上一版是思维链/字面量垃圾/照抄页面的产物：在它上面"修补"只会得到更长的垃圾。
 		// 回到原始素材重写一次，让第二轮有一次真正的机会。
 		guardText = source
 	}
 	guardInstructionsText := guardInstructions(report)
+	if suspectFirst || echoFirst {
+		// 此时 report 可能恰好 OK（照抄不会漏实体），用实体修补指令等于让模型继续照抄。
+		guardInstructionsText = rewriteGuardInstructions(echoFirst) + entityFixSuffix(report)
+	}
 	if c := citationGuardInstructions(unknown); c != "" {
 		guardInstructionsText += c
 	}
@@ -1077,7 +1210,8 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 		fixedReport := validation.CheckPreserved(validationSource, fixedClean)
 		suspectSecond := draftOutputSuspect(language, fixedClean)
 		shortSecond := draftTooShort(fixedClean, snap.TargetSeconds)
-		if !suspectSecond && !shortSecond && fixedReport.OK() && len(fixedUnknown) == 0 {
+		echoSecond := draftEchoesSource(source, fixedClean)
+		if !suspectSecond && !shortSecond && !echoSecond && fixedReport.OK() && len(fixedUnknown) == 0 {
 			if !h.disableCache {
 				h.saveScriptCache(ctx, cacheKey, fixedClean)
 			}
@@ -1090,7 +1224,10 @@ func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, proj
 			why = append(why, fmt.Sprintf("修补版过短（%d 字，目标 %d 秒）",
 				utf8.RuneCountInString(fixedClean), snap.TargetSeconds))
 		}
-		appendReport("修补版", fixedReport)
+		if echoSecond {
+			why = append(why, "修补版仍然照抄页面文字")
+		}
+		appendReport("修补版", fixedReport, fixedClean)
 		if len(fixedUnknown) > 0 {
 			why = append(why, "修补版引用了不存在的事实出处")
 		}
