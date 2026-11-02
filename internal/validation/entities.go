@@ -340,6 +340,74 @@ func FormatEntities(in []Entity) []string {
 	return out
 }
 
+// FormatEntitiesHuman 把实体渲染成**模型能读懂的提示词文本**（「数字 3」「64GB」「型号 A100」）。
+//
+// 与 FormatEntities 的分工必须严格：FormatEntities 输出内部键（number:3），只用于日志、
+// 测试与诊断；**任何进入提示词的文本都必须走本函数**。2026-11-02 的事故就是 guard
+// 指令把 number:3 原样发给模型，模型把它当成要写入正文的字面量，产出了
+// 「这就是number:1」「专业编辑8能力」「本系统为版本11。」这类脏内容，而数字集合
+// 恰好对得上，于是被记成 success——比失败更糟。
+func FormatEntitiesHuman(in []Entity) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, e := range in {
+		s := humanEntity(e)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// humanEntity 把单个实体转成自然语言片段。
+func humanEntity(e Entity) string {
+	switch e.Kind {
+	case "number":
+		return humanNumber(e.Text)
+	case "date":
+		return "日期 " + e.Text
+	case "model":
+		return "型号 " + e.Text
+	default:
+		return e.Text
+	}
+}
+
+// humanUnit 是校验器内部单位 → 提示词写法的映射。只影响展示，不参与比较：
+// 比较永远走 canonicalUnit，两者不得共用一张表的两份拷贝（规则表在 rules.json）。
+var humanUnit = map[string]string{
+	"%": "%", "x": "倍", "s": "秒", "ms": "毫秒", "min": "分钟", "h": "小时",
+	"hz": "Hz", "khz": "kHz", "mhz": "MHz", "ghz": "GHz",
+	"bps": "bps", "usd": "USD", "rmb": "RMB", "cny": "CNY",
+	"tb": "TB", "gb": "GB", "mb": "MB", "kb": "KB", "b": "B",
+	"kw": "kW", "mw": "MW", "w": "W", "v": "V", "a": "A",
+	"元": "元", "万元": "万元", "亿元": "亿元",
+}
+
+// humanNumber 拆出「数量 + 单位」并渲染：64gb → 64GB、12ms → 12毫秒、9 → 数字 9。
+// 单位可能不只一个字符，故按长度降序匹配，避免 gb 被 b 抢先截断。
+func humanNumber(text string) string {
+	units := make([]string, 0, len(humanUnit))
+	for u := range humanUnit {
+		units = append(units, u)
+	}
+	sort.Slice(units, func(i, j int) bool { return len(units[i]) > len(units[j]) })
+	for _, u := range units {
+		if len(text) <= len(u) || !strings.HasSuffix(text, u) {
+			continue
+		}
+		num := text[:len(text)-len(u)]
+		if num == "" || strings.ContainsAny(num, "abcdefghijklmnopqrstuvwxyz") {
+			continue
+		}
+		return num + humanUnit[u]
+	}
+	return "数字 " + text
+}
+
 // FormatEquivalenceHint 返回给提示词用的「等价写法」说明。**与校验器共用 rules.json**：
 // 指令里说「可以这样写」，校验器就必须接受；否则会出现「模型照着指令写、仍被判违规」
 // 的假失败——那不是模型的问题，是指令与校验器各写了一份标准（M1/M3 的教训）。

@@ -1519,5 +1519,6 @@
   "gateway.serviceInherited": "当前使用平台共享的语音合成配置，本租户无需重复接入。连通性由平台侧统一检测。",
   "login.enterLocal": "进入本机实例",
   "login.localNote": "本实例为单租户本地模式，没有账号密码。当前身份是本机管理员（所有者），可直接使用全部功能。",
-  "user.localSession": "本机单租户模式 · 无需登录或退出"
+  "user.localSession": "本机单租户模式 · 无需登录或退出",
+  "editor.oneDraftFailed": "其中 {failed} 页未能生成讲稿（模型限流或调用失败），这些页仍是空的——请稍后重试这几页。"
 }

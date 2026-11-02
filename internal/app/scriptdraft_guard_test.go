@@ -68,7 +68,7 @@ func TestGuardRoundRepairsPreviousDraft(t *testing.T) {
 		t.Fatalf("第二轮输入 = %q，应为第一版文案 %q（重发原文会让模型重写一遍、丢掉已写好的部分）",
 			f.calls[1].SourceText, firstDraft)
 	}
-	if !strings.Contains(f.calls[1].Instructions, "number:80gb") {
+	if !strings.Contains(f.calls[1].Instructions, "80GB") {
 		t.Fatalf("第二轮指令未列出具体违规实体：%q", f.calls[1].Instructions)
 	}
 	if !strings.Contains(f.calls[1].Instructions, "最小必要修改") {
@@ -144,25 +144,30 @@ func TestGuardInstructionsListViolations(t *testing.T) {
 		t.Fatalf("前置条件不成立：应判为违规")
 	}
 	got := guardInstructions(report)
-	if !strings.Contains(got, "number:80gb") {
+	if !strings.Contains(got, "80GB") {
 		t.Errorf("指令未列出遗漏实体：%q", got)
+	}
+	// 回归门禁（2026-11-02）：内部键 number: 一旦进入提示词，模型会把它抄进正文，
+	// 产出的"讲稿"里出现「这就是number:1」。指令只许说人话。
+	if strings.Contains(got, "number:") || strings.Contains(got, "model:") {
+		t.Errorf("指令泄漏内部实体键：%q", got)
 	}
 	if !strings.Contains(got, "最小必要修改") {
 		t.Errorf("指令未要求最小改动：%q", got)
 	}
-	if !strings.Contains(got, "只输出修正后的正文") {
+	if !strings.Contains(got, "直接输出修正后的讲解正文") {
 		t.Errorf("指令缺少输出约束：%q", got)
 	}
 
 	inserted := validation.CheckPreserved("容量 80GB", "存储 96GB，容量很大。")
 	gotInserted := guardInstructions(inserted)
-	if !strings.Contains(gotInserted, "number:96gb") {
+	if !strings.Contains(gotInserted, "96GB") {
 		t.Errorf("指令未列出新增实体：%q", gotInserted)
 	}
 
 	// 兜底分支不得产出半句话（调用方只在 !OK() 时进入，但函数自身要无死角）。
 	empty := guardInstructions(validation.Report{})
-	if !strings.Contains(empty, "不一致") || !strings.Contains(empty, "只输出修正后的正文") {
+	if !strings.Contains(empty, "不一致") || !strings.Contains(empty, "直接输出修正后的讲解正文") {
 		t.Errorf("空报告下的指令不完整：%q", empty)
 	}
 }

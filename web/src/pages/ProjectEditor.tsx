@@ -330,8 +330,10 @@ export function ProjectEditor({
   // 成稿逐页结果（来自任务步骤计数）。任务"成功"不等于"有页被更新"：
   // 「仅补空」可能把每一页都跳过；数字/单位/型号校验两轮不过的页还会**降级保留原文**。
   // 三者必须分开显示，否则用户会以为来源选择没生效，或把页面原文当成 AI 讲解稿。
-  const [oneDraftResult, setOneDraftResult] = useState<{ generated: number; skipped: number; degraded: number } | null>(null);
+  const [oneDraftResult, setOneDraftResult] = useState<{ generated: number; skipped: number; degraded: number; failed: number } | null>(null);
   const [oneDraftResultUnavailable, setOneDraftResultUnavailable] = useState(false);
+  // 逐页失败/降级原因（后端 job_steps.reason）。只展示前几条：面板是提示，不是日志。
+  const [oneDraftReasons, setOneDraftReasons] = useState<string[]>([]);
   const [unsaved, setUnsaved] = useState(false);
   // 编辑区网格容器 + 讲稿栏宽度拖拽（CSS 变量 --script-panel-width，仅当前会话生效）。
   const editorLayoutRef = useRef<HTMLDivElement>(null);
@@ -806,20 +808,30 @@ export function ProjectEditor({
             if (!cancelled) {
               if (detail.stepsError) {
                 setOneDraftResult(null);
+                setOneDraftReasons([]);
                 setOneDraftResultUnavailable(true);
               } else {
                 const counts = detail.stepCounts ?? {};
                 setOneDraftResult({
                   generated: counts.success ?? 0,
                   skipped: counts.skipped ?? 0,
-                  degraded: counts.degraded ?? 0
+                  degraded: counts.degraded ?? 0,
+                  failed: counts.failed ?? 0
                 });
+                // 有降级/失败时同时给出**逐页原因**：只说"3 页降级"用户无从下手。
+                setOneDraftReasons(
+                  (detail.steps ?? [])
+                    .filter((s) => (s.state === 'degraded' || s.state === 'failed') && s.reason)
+                    .map((s) => s.reason as string)
+                    .slice(0, 3)
+                );
                 setOneDraftResultUnavailable(false);
               }
             }
           } catch {
             if (!cancelled) {
               setOneDraftResult(null);
+              setOneDraftReasons([]);
               setOneDraftResultUnavailable(true);
             }
           }
@@ -2375,6 +2387,18 @@ export function ProjectEditor({
                 <p className="narration-note warn" role="status">
                   {t('editor.oneDraftDegraded', { degraded: oneDraftResult.degraded })}
                 </p>
+              )}
+              {oneDraftResult && oneDraftResult.failed > 0 && (
+                <p className="narration-note warn" role="status">
+                  {t('editor.oneDraftFailed', { failed: oneDraftResult.failed })}
+                </p>
+              )}
+              {oneDraftResult && oneDraftReasons.length > 0 && (
+                <ul className="narration-note warn" role="status">
+                  {oneDraftReasons.map((reason, i) => (
+                    <li key={`${i}-${reason}`}>{reason}</li>
+                  ))}
+                </ul>
               )}
               {!oneDraftResult && oneDraftResultUnavailable && (
                 <p className="narration-note warn" role="status">{t('editor.oneDraftResultUnknown')}</p>

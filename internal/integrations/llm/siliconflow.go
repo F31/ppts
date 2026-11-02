@@ -109,7 +109,11 @@ func (p *SiliconFlowProvider) Rewrite(ctx context.Context, req RewriteRequest) (
 			{Role: "user", Content: buildRewritePrompt(req)},
 		},
 		Temperature: 0.35,
-		MaxTokens:   800,
+		// 800 对推理型模型不够：agnes / reasoner 这类模型把 thinking token 也算进
+		// completion 预算，800 会在正文只写了半句话时就被截断（2026-11-02 实测：
+		// 目标 60 秒的稿子只落库 69 字，末尾还留着半个「〔fact-c」）。
+		// 2048 覆盖「思考 + 300~400 字正文」的常见组合。
+		MaxTokens: 2048,
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

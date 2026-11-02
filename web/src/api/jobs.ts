@@ -48,14 +48,17 @@ export async function getJob(identity: ClientIdentity, jobId: string): Promise<J
 //   GET /jobs/summary?ids=… —— 批量「范围 / 阶段 / 步骤计数」，供任务列表两列（避免逐任务查询）
 // 权限与 JobService.Get/List 同级（viewer 可见，租户隔离），无需额外能力判定。
 
-export type JobStepState = 'pending' | 'success' | 'skipped' | 'failed';
+export type JobStepState = 'pending' | 'success' | 'skipped' | 'failed' | 'degraded';
 
-// JobStep 是一步执行记录；resultRef 属内部对象键，后端只回 hasResult。
+// JobStep 是一步执行记录。
+// resultRef 属内部对象键，后端只回 hasResult；但逐页成稿（stepType=page）的
+// 失败/降级原因由后端以 reason 字段下发（人类可读），供成稿面板直接展示。
 export type JobStep = {
   stepType: string;
   state: JobStepState;
   updatedAtUnix: number;
   hasResult: boolean;
+  reason?: string;
 };
 
 // JobScope 是任务范围摘要：kind 为范围性质，pageCount 为受影响页数；

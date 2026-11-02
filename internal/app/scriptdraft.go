@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/F31/ppts/internal/integrations/llm"
@@ -332,8 +333,10 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 		errMu    sync.Mutex
 		dbMu     sync.Mutex // 串行化 SQLite 写：逐页步骤记录与进度上报
 		firstErr error
-		done     atomic.Int64
-		total    = int64(len(targets))
+		// firstNonRateLimitErr 只记「非限流」的失败：限流用尽后不该让整任务判死。
+		firstNonRateLimitErr error
+		done                 atomic.Int64
+		total                = int64(len(targets))
 	)
 	reportDone := func() {
 		n := done.Add(1)
@@ -353,7 +356,7 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 			}
 			source := snap.Sources[pg.SlideID]
 			custom := snap.CustomSources[pg.SlideID]
-			outcome, err := h.ensureDraft(runCtx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap, renderKeys, polisher, vision)
+			outcome, reason, err := h.ensureDraft(runCtx, job.TenantID, snap.ProjectID, snap.RevisionNo, snap.Language, mode, pg, source, custom, snap, renderKeys, polisher, vision)
 			if err != nil {
 				// 单页失败**不牵连其它页**：记该页失败步骤后继续。整任务最终仍返回错误，
 				// 借助「重试跳过已完成页」补跑，避免一页超时就让已完成的页白跑一遍。
@@ -361,26 +364,40 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 					return // worker 停机/取消：不写终态，靠租约重领
 				}
 				dbMu.Lock()
-				h.markPageStepState(runCtx, job, pg, pipeline.StepFailed)
+				h.markPageStepState(runCtx, job, pg, pipeline.StepFailed, err.Error())
 				dbMu.Unlock()
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
+				}
+				// 限流（429）是外部配额问题，不是这页的内容问题：单独记下来，
+				// 重试窗口内照常退避重跑；用尽后只保留该页 failed，不连坐整任务。
+				if !isRateLimitError(err) && firstNonRateLimitErr == nil {
+					firstNonRateLimitErr = err
 				}
 				errMu.Unlock()
 				reportDone()
 				return
 			}
 			dbMu.Lock()
-			h.markPageStep(runCtx, job, pg, outcome)
+			h.markPageStep(runCtx, job, pg, outcome, reason)
 			dbMu.Unlock()
 			reportDone()
 		}()
 	}
 	wg.Wait()
-	if firstErr != nil {
-		if retry := pipeline.AsRetry(firstErr); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
+	if firstNonRateLimitErr != nil {
+		if retry := pipeline.AsRetry(firstNonRateLimitErr); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
 			return retry.Err
+		}
+		return firstNonRateLimitErr
+	}
+	if firstErr != nil {
+		// 走到这里说明失败页**全部**是限流（429）：重试窗口内继续退避重跑（跳过已完成页），
+		// 窗口用尽后保留单页 failed 步骤并让任务收敛为成功——否则一页配额失败会让
+		// 另外十几页的成果整体呈现为"任务失败"，用户无法区分"没生成"和"跑挂了"。
+		if retry := pipeline.AsRetry(firstErr); retry != nil && job.Attempt >= maxScriptDraftRetryAttempts {
+			return nil
 		}
 		return firstErr
 	}
@@ -438,7 +455,12 @@ type slideInsightSnapshot struct {
 	Anchors []narration.SourceAnchor `json:"anchors"`
 }
 
-const slideInsightVersion = "slide-insight-v1"
+// slideInsightVersion 是页面洞察快照的格式版本。
+//
+// v2（2026-11-02）：锚点/facts 不再包含页脚页码与版式编号。v1 的快照把「13」这类
+// 页码当成事实缓存了下来，命中旧缓存时过滤逻辑等于没生效——页面照旧"漏数字"降级。
+// 改判定口径必须升版本，否则线上旧快照会继续污染校验基准。
+const slideInsightVersion = "slide-insight-v2"
 
 func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID string, revisionNo int) ([]parsedPage, error) {
 	if projectID == "" {
@@ -473,16 +495,16 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 // source/custom 为该页显式选择的讲稿来源；为空时回退默认行为（见 selectDraftInput）。
 // renderKeys 为 slideId → 页面 PNG 对象键（来自渲染清单），用于视觉锚点取图。
 // polisher/vision 由调用方按任务解析一次后复用（避免每页查网关库）。
-func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot, renderKeys map[string]string, polisher llm.TextRewriter, vision llm.VisionExtractor) (draftOutcome, error) {
+func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectID string, revisionNo int, language string, mode narration.ScriptMode, pg parsedPage, source, custom string, snap ScriptDraftSnapshot, renderKeys map[string]string, polisher llm.TextRewriter, vision llm.VisionExtractor) (draftOutcome, string, error) {
 	slideID := pg.SlideID
 	if slideID == "" {
-		return draftSkippedNoText, nil
+		return draftSkippedNoText, "", nil
 	}
 	rev, err := h.scripts.Get(ctx, tenantID, projectID, revisionNo, slideID, language)
 	if err == nil && len(rev.Segments) > 0 && !snap.Overwrite {
-		return draftSkippedExisting, nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
+		return draftSkippedExisting, "", nil // 已存在实际分段，不覆盖用户稿（仅显式"重新生成讲稿"时 overwrite=true）。
 	} else if err != nil && !errors.Is(err, narration.ErrNotFound) {
-		return "", err
+		return "", "", err
 	} else if err != nil {
 		rev = nil
 	}
@@ -491,7 +513,7 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	// 否则会告诉模型"把当前讲稿润色一遍"，而实际喂进去的是 PPT 页面文字。
 	in := selectDraftInput(pg, source, custom, snap.SourceMode, mode, snap.Overwrite, revisionText(rev))
 	if in.Text == "" {
-		return draftSkippedNoText, nil // 无正文/备注，不生成空讲稿。
+		return draftSkippedNoText, "", nil // 无正文/备注，不生成空讲稿。
 	}
 	anchorSource := sourceForAnchors(in.Kind, source)
 	anchors, facts := h.slideInsight(ctx, vision, tenantID, projectID, revisionNo, language, pg, anchorSource, renderKeys)
@@ -502,14 +524,15 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 	if in.Kind == inputExisting || in.Kind == inputCustom {
 		facts = nil
 	}
-	displayText, spokenText, degraded, err := h.draftText(ctx, tenantID, projectID, slideID, language, mode, in, facts, snap, polisher)
+	res, err := h.draftTextDetail(ctx, tenantID, projectID, slideID, language, mode, in, facts, snap, polisher)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	displayText, spokenText, degraded := res.Display, res.Spoken, res.Degraded
 	if rev == nil {
 		rev, err = h.scripts.EnsureExists(ctx, tenantID, projectID, revisionNo, slideID, language, mode)
 		if err != nil {
-			return "", fmt.Errorf("script_draft: ensure script: %w", err)
+			return "", "", fmt.Errorf("script_draft: ensure script: %w", err)
 		}
 	}
 	segment := &narration.Segment{
@@ -521,14 +544,27 @@ func (h *ScriptDraftHandler) ensureDraft(ctx context.Context, tenantID, projectI
 		Status:        narration.StatusDraft,
 	}
 	if _, err := h.scripts.Update(ctx, tenantID, projectID, revisionNo, slideID, language, rev.Revision, []*narration.Segment{segment}); err != nil {
-		return "", fmt.Errorf("script_draft: write draft: %w", err)
+		return "", "", fmt.Errorf("script_draft: write draft: %w", err)
 	}
 	if degraded {
 		// 稿子写进去了，但内容是未经加工的原始素材。返回 degraded 让调用方把它记为
 		// degraded 步骤、界面给出"待人工确认"，而不是"成稿完成"。
-		return draftDegraded, nil
+		return draftDegraded, res.Reason, nil
 	}
-	return draftGenerated, nil
+	return draftGenerated, "", nil
+}
+
+// truncateRunes 按**字符**截断（不是字节）：步骤原因里全是中文，按字节截会把
+// 最后一个字切成半个 UTF-8，前端显示成乱码。
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	rs := []rune(strings.TrimSpace(s))
+	if len(rs) <= max {
+		return string(rs)
+	}
+	return string(rs[:max]) + "…"
 }
 
 // markPageStep 登记单页处理结果。步骤写失败不影响已完成的成稿（计数缺一条好过整任务失败）。
@@ -549,12 +585,12 @@ func pageStepState(outcome draftOutcome) pipeline.JobStepState {
 	}
 }
 
-func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome) {
-	h.markPageStepState(ctx, job, pg, pageStepState(outcome))
+func (h *ScriptDraftHandler) markPageStep(ctx context.Context, job *pipeline.Job, pg parsedPage, outcome draftOutcome, reason string) {
+	h.markPageStepState(ctx, job, pg, pageStepState(outcome), reason)
 }
 
 // markPageStepState 以显式状态登记单页步骤（供 outcome 映射与失败页记录复用）。
-func (h *ScriptDraftHandler) markPageStepState(ctx context.Context, job *pipeline.Job, pg parsedPage, state pipeline.JobStepState) {
+func (h *ScriptDraftHandler) markPageStepState(ctx context.Context, job *pipeline.Job, pg parsedPage, state pipeline.JobStepState, reason string) {
 	if h.steps == nil || pg.SlideID == "" {
 		return
 	}
@@ -563,6 +599,9 @@ func (h *ScriptDraftHandler) markPageStepState(ctx context.Context, job *pipelin
 		StepType: stepTypePage,
 		StepKey:  pageStepKey(pg.SlideID),
 		State:    state,
+		// ResultRef 存失败/降级原因（短文本）：用户必须能看到「为什么这页没成稿」，
+		// 而不是只看到一个 degraded 标记再去猜。
+		ResultRef: truncateRunes(reason, 240),
 	}
 	_ = h.steps.MarkStep(ctx, step)
 }
@@ -738,46 +777,66 @@ func (h *ScriptDraftHandler) visualAnchors(ctx context.Context, vision llm.Visio
 // 也能锁定「指令里必须出现哪些信息」。
 func guardInstructions(report validation.Report) string {
 	parts := []string{"以下是需要修正的文案，它违反了数字/单位/型号保持规则："}
-	if missing := validation.FormatEntities(report.Missing); len(missing) > 0 {
-		parts = append(parts, "遗漏了原素材中的 "+strings.Join(missing, "、")+"，必须补回；")
+	if missing := validation.FormatEntitiesHuman(report.Missing); len(missing) > 0 {
+		parts = append(parts, "遗漏了原素材中的「"+strings.Join(missing, "、")+"」，必须补回；")
 	}
-	inserted := validation.FormatEntities(report.Inserted)
+	inserted := validation.FormatEntitiesHuman(report.Inserted)
 	if len(inserted) > 0 {
-		parts = append(parts, "出现了原素材没有的 "+strings.Join(inserted, "、")+"，必须删除；")
+		parts = append(parts, "出现了原素材没有的「"+strings.Join(inserted, "、")+"」，必须删除；")
 	}
 	if len(report.Missing) == 0 && len(report.Inserted) == 0 {
 		// 调用方只在 !OK() 时才会走到这里；留一个无死角的兜底，避免指令成为半句话。
 		parts = append(parts, "其中的数字、单位与型号与原素材不一致；")
 	}
-	parts = append(parts, "除这些实体外不要改动其它措辞与结构，只做最小必要修改。只输出修正后的正文。")
+	parts = append(parts, "除这些实体外不要改动其它措辞与结构，只做最小必要修改。")
+	// 内部标记与思考过程必须显式禁止：模型会把 number:3 当成正文内容原样抄进去。
+	parts = append(parts, "直接输出修正后的讲解正文：不要解释修改过程，不要输出 number/date/model "+
+		"这类内部标记，也不要把思考过程写进正文。")
 	return strings.Join(parts, "")
 }
 
-// factCitationPat 匹配讲稿正文中的事实引用标记：〔fact-xx〕。ID 允许
-// 小写字母与数字（factsFromAnchors/factID 的产生范围）。
-var factCitationPat = regexp.MustCompile(`〔fact-[a-z0-9-]+〕`)
+// factCitationPat 匹配讲稿正文中的事实引用标记：〔fact-xx〕。
+//
+// **允许未闭合**：推理型模型可能恰好停在标记中间（2026-11-02 实测：目标 60 秒的稿子
+// 被截断在「〔fact-c」，长度只有 69 字）。只匹配闭合标记会把残片留在正文里，
+// 用户照着念就会念出「左方括号 fact 横线 c」。残片只剥离、不计入引用集合。
+var factCitationPat = regexp.MustCompile(`〔fact-[a-z0-9-]*〕?`)
 
 // extractFactCitations 从模型产出中提取并剥离事实引用标记，返回纯正文
 // 与引用的 ID 集合（保序、去重）。未匹配任何标记 = 纯正文原样返回。
+//
+// 只剥离两种情况：① 闭合且 ID 合法；② 停在文末的合法残片（真截断）。
+// 「〔fact-〕」「〔fact-©〕」「〔fact-a b〕」这类畸形标记一律原样保留——
+// 宁可漏判，也不要把用户正文里的方括号内容误删。
 func extractFactCitations(text string) (clean string, cited []string) {
 	seen := map[string]bool{}
 	cited = []string{}
-	for _, m := range factCitationPat.FindAllString(text, -1) {
+	var b strings.Builder
+	last := 0
+	for _, loc := range factCitationPat.FindAllStringIndex(text, -1) {
+		m := text[loc[0]:loc[1]]
+		closed := strings.HasSuffix(m, "〕")
 		id := strings.TrimSuffix(strings.TrimPrefix(m, "〔"), "〕")
-		if string(id) == "" {
+		if id == "" {
 			continue
 		}
 		inner := strings.TrimPrefix(id, "fact-")
 		if !factCitationIDOK(inner) {
 			continue
 		}
-		if !seen[id] {
+		truncatedTail := !closed && strings.TrimSpace(text[loc[1]:]) == ""
+		if !closed && !truncatedTail {
+			continue // 行中间未闭合 → 更像畸形标记，保留原文
+		}
+		b.WriteString(text[last:loc[0]])
+		last = loc[1]
+		if closed && !seen[id] {
 			seen[id] = true
 			cited = append(cited, id)
 		}
 	}
-	clean = factCitationPat.ReplaceAllString(text, "")
-	return strings.TrimSpace(clean), cited
+	b.WriteString(text[last:])
+	return strings.TrimSpace(b.String()), cited
 }
 
 // factCitationIDOK 校验 fact- 后缀只含小写字母/数字/连字符（与 factID/
@@ -839,13 +898,91 @@ func citationGuardInstructions(unknown []string) string {
 // degraded=true 表示数字/单位/型号校验两轮仍不过，已**保守回退为原始素材原文**（未经 AI 加工）：
 // 落库的是页面要点片段而非讲解稿。该标志必须向上传递——当作成功会让界面把要点片段报告成
 // "成稿完成"（A26：不得假成功）。
+// internalEntityLiteralPat 匹配**只应存在于校验器内部**的实体标记（number:3 / date:2026-01-01）。
+// 它们一旦出现在正文里，说明模型把修补指令当成了要复述的内容。
+var internalEntityLiteralPat = regexp.MustCompile(`(?i)\b(?:number|date|model)\s*:`)
+
+// chainOfThoughtMarkers 是"模型把思考过程写进正文"的典型片段。宁可漏判也不能误杀，
+// 所以只收录语义上不可能出现在正常讲解稿里的句子开头。
+var chainOfThoughtMarkers = []string{
+	"The user wants", "The user says", "The user is asking", "Let me ",
+	"I need to ", "I'm realizing", "Looking at the", "I should ",
+	"用户要求我", "用户在要求我", "让我仔细阅读", "我应该假设", "我在尝试理解",
+}
+
+// draftOutputSuspect 判断模型产出是不是**不可用产出**：内部实体标记泄漏，或正文里
+// 混入了思考过程。这类文本即便数字集合恰好对得上，也绝不能落库——它看起来像稿子，
+// 实际是模型写完稿之前的中间状态，用户拿到会直接念出来（A26：不得假成功）。
+//
+// language 用于限定英文占比检查：英文讲稿本来就以英文为主，只在中文目标下判"英文过多"。
+func draftOutputSuspect(language, text string) bool {
+	if internalEntityLiteralPat.MatchString(text) {
+		return true
+	}
+	for _, marker := range chainOfThoughtMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(language)), "zh") {
+		if letters, total := asciiLetterCount(text); total > 200 && float64(letters)/float64(total) > 0.5 {
+			return true
+		}
+	}
+	return false
+}
+
+// draftTooShort 判断产出是否明显短于目标时长——即"残稿"。
+//
+// 中文讲解约 4 字/秒，这里按 2 字/秒取下限：只拦明显不完整的产出
+// （2026-11-02 实测：目标 60 秒的稿子只落库 69 字，模型在 800 token 预算里
+// 把大部分花在了思考上），不评判风格是否精炼。targetSeconds<=0 时不检查。
+func draftTooShort(text string, targetSeconds int) bool {
+	if targetSeconds <= 0 {
+		return false
+	}
+	return utf8.RuneCountInString(strings.TrimSpace(text)) < targetSeconds*2
+}
+
+// asciiLetterCount 统计非空白字符数与其中的 ASCII 字母数，用于粗略判断语言是否跑偏。
+func asciiLetterCount(text string) (letters, total int) {
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			continue
+		}
+		total++
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			letters++
+		}
+	}
+	return letters, total
+}
+
+// draftTextResult 是单页成稿的产出与**降级原因**。
+//
+// Reason 只在 Degraded 时有值，写入 job_steps.result_ref：用户看到「已保留原文」
+// 时必须知道是哪条规则没过（缺了哪个数字、多了哪个数字、还是模型吐了思考过程），
+// 否则只能反复重试，无法判断该改页面、该换模型还是该改配置。
+type draftTextResult struct {
+	Display  string
+	Spoken   string
+	Degraded bool
+	Reason   string
+}
+
+// draftText 保留原签名，供既有调用方与测试使用；需要降级原因时用 draftTextDetail。
 func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, facts []draftFact, snap ScriptDraftSnapshot, polisher llm.TextRewriter) (string, string, bool, error) {
+	res, err := h.draftTextDetail(ctx, tenantID, projectID, slideID, language, mode, in, facts, snap, polisher)
+	return res.Display, res.Spoken, res.Degraded, err
+}
+
+func (h *ScriptDraftHandler) draftTextDetail(ctx context.Context, tenantID, projectID, slideID, language string, mode narration.ScriptMode, in draftInput, facts []draftFact, snap ScriptDraftSnapshot, polisher llm.TextRewriter) (draftTextResult, error) {
 	source := in.Text
 	if mode == narration.ModeOriginal {
-		return source, source, false, nil
+		return draftTextResult{Display: source, Spoken: source}, nil
 	}
 	if polisher == nil {
-		return "", "", false, errors.New("script_draft: LLM draft mode requires configured text rewriter")
+		return draftTextResult{}, errors.New("script_draft: LLM draft mode requires configured text rewriter")
 	}
 	instructions := draftInstructions(mode, in.Kind, snap)
 	promptSource, validationSource := augmentDraftSource(source, facts)
@@ -855,13 +992,16 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 	var cacheKey objectstore.ObjectKey
 	if !h.disableCache {
 		cacheKey = h.scriptCacheKey(tenantID, mode, language, instructions, promptSource)
-		if cached, ok := h.loadScriptCache(ctx, cacheKey); ok {
-			return cached, cached, false, nil
+		// 缓存也可能是脏的（历史版本把 number:3 写进过正文，或截断成 69 字残稿）：
+		// 命中后仍要过质量判定，否则一次坏产出会被缓存永久复用。
+		if cached, ok := h.loadScriptCache(ctx, cacheKey); ok &&
+			!draftOutputSuspect(language, cached) && !draftTooShort(cached, snap.TargetSeconds) {
+			return draftTextResult{Display: cached, Spoken: cached}, nil
 		}
 	}
 	opID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode)
 	if err := h.reserveLLMTokens(ctx, tenantID, opID, promptSource); err != nil {
-		return "", "", false, err
+		return draftTextResult{}, err
 	}
 	result, err := polisher.Rewrite(ctx, llm.RewriteRequest{
 		LogicalOpID:  opID,
@@ -871,29 +1011,57 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		Instructions: instructions,
 	})
 	if err != nil {
-		return "", "", false, classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
+		return draftTextResult{}, classifyLLMError(fmt.Errorf("script_draft: generate text: %w", err))
 	}
 	h.settleLLMTokens(ctx, tenantID, opID, result)
 	clean, cited := extractFactCitations(result.Text)
 	unknown := unknownFactCitations(cited, facts)
 	report := validation.CheckPreserved(validationSource, clean)
-	if report.OK() && len(unknown) == 0 {
+	suspectFirst := draftOutputSuspect(language, clean)
+	shortFirst := draftTooShort(clean, snap.TargetSeconds)
+	if !suspectFirst && !shortFirst && report.OK() && len(unknown) == 0 {
 		if !h.disableCache {
 			h.saveScriptCache(ctx, cacheKey, clean)
 		}
-		return clean, clean, false, nil
+		return draftTextResult{Display: clean, Spoken: clean}, nil
+	}
+	// 降级原因：两轮各自为什么没过，逐条留痕。
+	why := make([]string, 0, 4)
+	appendReport := func(tag string, r validation.Report) {
+		if ms := validation.FormatEntitiesHuman(r.Missing); len(ms) > 0 {
+			why = append(why, tag+"遗漏「"+strings.Join(ms, "、")+"」")
+		}
+		if ins := validation.FormatEntitiesHuman(r.Inserted); len(ins) > 0 {
+			why = append(why, tag+"新增「"+strings.Join(ins, "、")+"」")
+		}
+	}
+	if suspectFirst {
+		why = append(why, "第一版含内部标记或思考过程")
+	}
+	if shortFirst {
+		why = append(why, fmt.Sprintf("第一版过短（%d 字，目标 %d 秒）",
+			utf8.RuneCountInString(clean), snap.TargetSeconds))
+	}
+	appendReport("第一版", report)
+	if len(unknown) > 0 {
+		why = append(why, "第一版引用了不存在的事实出处")
 	}
 	// 第二轮是**定点修补**：把上一版文案本身当作待修的稿子，只列出违规项。
 	// 原先这里重发原文（SourceText: source），等于让模型从头再写一遍——第一版已经写好的
 	// 部分被丢弃，很可能换一种方式再错，两轮下来只剩下回退原文一条路。
 	guardOpID := tenantID + ":" + projectID + ":" + slideID + ":" + string(mode) + ":guard"
 	guardText := clean
+	if suspectFirst {
+		// 上一版是思维链/字面量垃圾：在它上面"修补"只会产出更长的垃圾。
+		// 回到原始素材重写一次，让第二轮有一次真正的机会。
+		guardText = source
+	}
 	guardInstructionsText := guardInstructions(report)
 	if c := citationGuardInstructions(unknown); c != "" {
 		guardInstructionsText += c
 	}
 	if err := h.reserveLLMTokens(ctx, tenantID, guardOpID, guardText); err != nil {
-		return "", "", false, err
+		return draftTextResult{}, err
 	}
 	fix, err := polisher.Rewrite(ctx, llm.RewriteRequest{
 		LogicalOpID:  guardOpID,
@@ -906,16 +1074,36 @@ func (h *ScriptDraftHandler) draftText(ctx context.Context, tenantID, projectID,
 		h.settleLLMTokens(ctx, tenantID, guardOpID, fix)
 		fixedClean, fixedCited := extractFactCitations(fix.Text)
 		fixedUnknown := unknownFactCitations(fixedCited, facts)
-		if validation.CheckPreserved(validationSource, fixedClean).OK() && len(fixedUnknown) == 0 {
+		fixedReport := validation.CheckPreserved(validationSource, fixedClean)
+		suspectSecond := draftOutputSuspect(language, fixedClean)
+		shortSecond := draftTooShort(fixedClean, snap.TargetSeconds)
+		if !suspectSecond && !shortSecond && fixedReport.OK() && len(fixedUnknown) == 0 {
 			if !h.disableCache {
 				h.saveScriptCache(ctx, cacheKey, fixedClean)
 			}
-			return fixedClean, fixedClean, false, nil
+			return draftTextResult{Display: fixedClean, Spoken: fixedClean}, nil
 		}
+		if suspectSecond {
+			why = append(why, "修补版含内部标记或思考过程")
+		}
+		if shortSecond {
+			why = append(why, fmt.Sprintf("修补版过短（%d 字，目标 %d 秒）",
+				utf8.RuneCountInString(fixedClean), snap.TargetSeconds))
+		}
+		appendReport("修补版", fixedReport)
+		if len(fixedUnknown) > 0 {
+			why = append(why, "修补版引用了不存在的事实出处")
+		}
+	} else {
+		why = append(why, "修补调用失败")
 	}
 	// 两轮校验都不过：保守回退为原始素材原文，并以 degraded=true 告知调用方——落库的是
 	// 页面要点片段，界面必须显示"已保留原文、待人工确认"，不得报告成稿完成。
-	return source, source, true, nil
+	reason := strings.Join(why, "；")
+	if reason == "" {
+		reason = "数字/单位/型号校验未通过"
+	}
+	return draftTextResult{Display: source, Spoken: source, Degraded: true, Reason: reason}, nil
 }
 
 // scriptDraftCacheAssetType 是讲稿内容缓存的资产类型（租户级共享缓存段）。
@@ -1088,6 +1276,13 @@ func classifyLLMError(err error) error {
 	return retry
 }
 
+// isRateLimitError 判断错误是否为供应商 429（速率/配额限流）。
+// 判断走错误链，而不是匹配文案：供应商文案千差万别，状态码是唯一稳定契约。
+func isRateLimitError(err error) bool {
+	var httpErr interface{ HTTPStatus() int }
+	return errors.As(err, &httpErr) && httpErr.HTTPStatus() == 429
+}
+
 // pgAnchors 收集页面形状文本作为来源锚点；无形状时回退到备注。
 // source 指定时只收集该来源对应的形状（notes 时回退备注锚点）。
 func pgAnchors(pg parsedPage, source string) []narration.SourceAnchor {
@@ -1104,6 +1299,11 @@ func pgAnchors(pg parsedPage, source string) []narration.SourceAnchor {
 		}
 		text := strings.TrimSpace(sh.Text)
 		if text == "" {
+			continue
+		}
+		// 与 PageSourceText 保持一致：版式编号既不该进讲稿，也不该成为来源锚点，
+		// 否则对照面板会显示一个正文里永远不存在的"来源"。
+		if IsLayoutOnlyNumber(sh.Kind, text) {
 			continue
 		}
 		kind := "shape_text"
@@ -1747,6 +1947,31 @@ type SourceShapeText struct {
 	Text string
 }
 
+// IsLayoutOnlyNumber 判断一个形状是否只是**版式编号**（页脚页码 "03"、目录序号 "12"），
+// 而不是页面内容。判定刻意保守：纯 ASCII 数字、1~3 位、且不是标题形状。
+// 4 位以上的纯数字（年份 2026、编号 10086）一律当作内容保留——误删页面数据的代价
+// 比多留一个页码大得多。
+//
+// 为什么必须剔除：一键成稿以 page_content 为来源时，页脚页码会进入
+// validation.ExtractEntities，被当成"必须保留的事实"。讲解稿不朗读页码，于是每页都
+// 判 missing，两轮修补后回退原文（degraded）——这正是 2026-11-02 那次 14 页任务里
+// 5 页降级的根因。
+func IsLayoutOnlyNumber(kind, text string) bool {
+	if strings.EqualFold(strings.TrimSpace(kind), "title") {
+		return false
+	}
+	t := strings.TrimSpace(text)
+	if t == "" || len(t) > 3 {
+		return false
+	}
+	for i := 0; i < len(t); i++ {
+		if t[i] < '0' || t[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // PageSourceText 按页面级来源取文本，**并返回最终胜出的来源种类**（page/notes/custom）。
 // source 指定时只取该来源对应文本；source=custom 用 custom 文本；source=notes 仅用备注。
 // 这是页面级取值的唯一实现——文本与来源种类必须由同一处产生，
@@ -1768,6 +1993,11 @@ func PageSourceText(shapes []SourceShapeText, notes, source, custom string) (str
 			continue
 		}
 		if source == "body" && strings.EqualFold(strings.TrimSpace(sh.Kind), "title") {
+			continue
+		}
+		// 版式编号（页脚页码、目录序号）不是页面内容：讲解稿不会朗读"03"，
+		// 若把它拼进校验基准，模型每页都"漏掉一个数字"，两轮修补后只能回退原文。
+		if IsLayoutOnlyNumber(sh.Kind, sh.Text) {
 			continue
 		}
 		if t := strings.TrimSpace(sh.Text); t != "" {

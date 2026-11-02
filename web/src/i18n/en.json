@@ -1519,5 +1519,6 @@
   "gateway.serviceInherited": "This tenant uses the platform-shared TTS configuration, so there is nothing to set up here. Connectivity is checked on the platform side.",
   "login.enterLocal": "Enter this instance",
   "login.localNote": "This is a single-tenant local instance with no accounts. You are signed in as its owner and can use every feature.",
-  "user.localSession": "Single-tenant local mode · no sign-in or sign-out"
+  "user.localSession": "Single-tenant local mode · no sign-in or sign-out",
+  "editor.oneDraftFailed": "{failed} slides could not generate a script (model rate limit or API error) and are still empty. Retry these slides later."
 }
