@@ -76,7 +76,7 @@ PPTS adapters keep compiling unchanged.
 - `ZHScoreRule()` reads `X:Y` as `X比Y`, gated on a `SemanticScore` hint (ambiguous forms are conservative without the hint).
 - `ZHFractionRule()` reads `1/3` as `三分之一`, requiring a covering `SemanticFraction` hint; zero denominators and slash-separated dates are not converted.
 - `ZHTimeRule()` reads 24-hour `HH:mm[:ss]` forms, requiring a covering `SemanticTime` hint (`10:30` → `十点三十分`). Invalid clock times stay unchanged inside the hint.
-- `ZHOrdinalRule()` reads explicit ordinals (`第12章` → `第十二章`, `第 12 章` → `第十二章`, `No.3` → `第三`, `#2` → `第二`). `#` only accepts one or two digits so hashtags and years (`#2024`) are not read as ordinals; ASCII boundaries keep `C#2` and `piano.3` intact.
+- `ZHOrdinalRule()` reads explicit ordinals (`第12章` → `第十二章`, `第 12 章` → `第十二章`, `No.3` → `第三`, `#2` → `第二`). `#` only accepts one or two digits so hashtags and years (`#2024`) are not read as ordinals. ASCII boundaries keep the marker inside `C#2` and `piano.3` from being treated as an ordinal; the digits there are still subject to other rules.
 - `ZHEnglishMoneyRule()` reads currency-prefixed English magnitudes in Chinese (`USD 1.5 million` → `美元一百五十万`, `A$500K` → `澳元五十万`). Supported scales: thousand/million/billion and K/M/B. Decimal shifting is exact; bare `500K` is not assumed to be money. Register with `ZHMoneyRule()` to let the longer magnitude candidate win over the shorter currency candidate.
 
 Date rules have higher priority than decimal rules, so `2024.01.28` is handled as one date candidate instead of being split into decimal fragments. In preserve mode, the date remains unchanged but still blocks lower-priority decimal edits inside the same range.
