@@ -9,8 +9,9 @@ tmp_*
 renderer/out
 # web 目录不能整目录排除：cmd/ppts 通过 //go:embed 引用 github.com/F31/ppts/web，
 # Dockerfile.api 还要 COPY web/dist。排除后 go build 直接报
-# "no required module provides package github.com/F31/ppts/web"——
-# 而 CI 从不构建镜像，所以这条错误只能在真机构建时才暴露。
+# "no required module provides package github.com/F31/ppts/web"。
+# 这条错误曾经只能靠真机构建才暴露——当时 CI 的 13 个 job 里没有一个构建镜像。
+# 现在 ci.yml 的 images job 会构建两个镜像并把容器跑起来，所以再犯会在这里被挡住。
 # node_modules 已由上面的 **/node_modules 挡住，排除后 web 只剩约 2.5MB。
 *.exe
 *.test

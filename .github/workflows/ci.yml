@@ -287,6 +287,139 @@ jobs:
       - name: renderer seam check
         run: node --experimental-strip-types --test renderer/seam-check.mjs
 
+  # 镜像可运行性门禁。
+  #
+  # 为什么单开一个 job：CI 在此之前**从不构建镜像**，于是只存在于镜像构建期的问题
+  # 全部只能在真机上撞见。2026-11-02 在真机跑一次真实导出，一次性撞到三个，而当时
+  # CI 是 11 个 job 全绿：
+  #   1. `.dockerignore` 整目录排除 web → `//go:embed web` 直接编译失败；
+  #   2. Dockerfile.worker 下载静态 ffmpeg 走 HTTP/2 传输中途断流（curl exit 18）；
+  #   3. renderer 镜像缺两个必需文件。
+  # 第 1 条尤其说明「构建退出码」为什么不够当判据：Dockerfile.api 依赖 `COPY web/dist`，
+  # 而 web/dist 在仓库里只有 .gitkeep（其余全被 .gitignore 挡掉）。在干净检出上直接
+  # docker build，镜像会**构建成功**——只是容器里没有前端：/healthz 200，`/` 404。
+  # 两者都不报错，部署出去才发现是白屏。所以本 job 的判据是「把容器跑起来、真取到前端」。
+  #
+  # 反面约束：这里**不跑** scripts/e2e/export_live.sh。那条链路要渲染镜像（3GB + Chrome）
+  # 与 LibreOffice 全量渲染，单次十几分钟，放进 PR 门禁只会被绕过。它保持在本地手动跑。
+  images:
+    runs-on: ubuntu-latest
+    needs: lint
+    # worker 镜像要拉 LibreOffice（约 250MB）与静态 ffmpeg（40MB），比其它 job 慢得多。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # 镜像契约：Dockerfile.api 的 `COPY web/dist` 要求前端**先**构建好。
+      # 这条步骤不能删（删了镜像里就是空的），也不能"删了还照样绿"——下一步断言产物。
+      - name: 构建前端（Dockerfile.api 的构建输入）
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+      - name: 断言前端产物非空
+        run: |
+          test -f web/dist/index.html
+          grep -q 'id="root"' web/dist/index.html
+      - uses: docker/setup-buildx-action@v3
+      # 两个镜像共用 golang:1.25-bookworm 与 `go mod download` 层，第二次构建会命中缓存；
+      # gha cache 让这一层跨 run 复用，否则每次都要重新拉 800MB 基础镜像。
+      - name: 构建 api 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          load: true
+          tags: ppts-api:ci
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+      - name: 构建 worker 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.worker
+          load: true
+          tags: ppts-worker:ci
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+      # worker 镜像的外部依赖全部对应代码里的 exec.LookPath 调用点。Dockerfile 的构建期
+      # 断言只覆盖了 ffmpeg 的 subtitles 滤镜，soffice / pdftoppm 没有任何检查——
+      # 少了它们，导出会在"解析 PPTX"这一步失败，而镜像本身构建得好好的。
+      - name: 断言 worker 镜像的外部依赖齐备
+        run: |
+          docker run --rm --entrypoint sh ppts-worker:ci -c '
+            set -e
+            for c in ffmpeg ffprobe soffice pdftoppm pdfinfo; do
+              command -v "$c" >/dev/null || { echo "缺可执行文件: $c"; exit 1; }
+            done
+            ffmpeg -hide_banner -filters 2>/dev/null | grep -qw subtitles \
+              || { echo "ffmpeg 缺 subtitles 滤镜（字幕烧录会失败）"; exit 1; }
+            echo "worker 外部依赖齐备"
+          '
+      # 镜像以 UID 10001 运行，/data 下的挂载点必须可写：db 要跑迁移，objects 要落页图。
+      # tmpfs 的 mode=1777 正是为了这一点（直接挂空目录会是 root:root 0755）。
+      #
+      # PPTS_AUTH_DEV_HEADERS 不是可选装饰：不配它也不配 PPTS_JWT_SECRET 时，进程启动阶段
+      # 直接 `no authenticator configured` 退出（实测：容器 3 秒后 Exited(1)，日志只有这一行）。
+      # 本步骤只验"镜像里的前端能不能被取到"，不涉及鉴权，用 dev 头是最小依赖。
+      # 生产部署绝不能带这一条——它接受未签名的租户/用户头。
+      - name: 起 api 容器并断言前端真的能被取到
+        run: |
+          set -euo pipefail
+          docker run -d --name ppts-api-ci -p 127.0.0.1:18080:8080 \
+            -e PPTS_HTTP_ADDR=:8080 \
+            -e PPTS_DB_DRIVER=sqlite \
+            -e PPTS_DATABASE_URL=/data/db/ci.db \
+            -e PPTS_OBJECT_BACKEND=local \
+            -e PPTS_OBJECT_ROOT=/data/objects \
+            -e PPTS_OBJECT_SECRET=ci-only-not-a-secret \
+            -e PPTS_AUTH_DEV_HEADERS=true \
+            --tmpfs /data/db:rw,mode=1777,size=64m \
+            --tmpfs /data/objects:rw,mode=1777,size=64m \
+            ppts-api:ci server
+
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1 && break
+            sleep 1
+          done
+
+          # 探活通过不等于服务可用：上一层的 COPY 曾经把空目录拷进去，/healthz 照样 200。
+          health=$(curl -fsS http://127.0.0.1:18080/healthz) \
+            || { echo "healthz 不可达"; docker logs ppts-api-ci; exit 1; }
+          echo "healthz: $health"
+          case "$health" in
+            *'"ok"'*) ;;
+            *) echo "healthz 不是 ok"; exit 1;;
+          esac
+
+          # 核心判据：根路径必须拿到真正的 index.html，而不是 404 / 空 body。
+          body=$(curl -fsS http://127.0.0.1:18080/) \
+            || { echo "GET / 失败——镜像里没有前端（Dockerfile.api 的 COPY web/dist 拷空了？）"; \
+                 docker logs ppts-api-ci; exit 1; }
+          case "$body" in
+            *'id="root"'*) ;;
+            *) echo "GET / 返回的不是 SPA 入口："; echo "$body" | head -c 300; exit 1;;
+          esac
+
+          # 光有 index.html 不够：它引用的哈希资源也必须真的在镜像里，否则页面白屏。
+          asset=$(echo "$body" | grep -o '/assets/index-[^"]*\.js' | head -1)
+          [ -n "$asset" ] || { echo "index.html 没有引用构建产物"; exit 1; }
+          code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080$asset")
+          echo "GET $asset -> $code"
+          [ "$code" = "200" ] || { echo "静态资源取不到，镜像里的 assets 不完整"; exit 1; }
+
+          echo "api 镜像可运行：前端入口与哈希资源都可取"
+      - name: 失败时打印容器日志
+        if: failure()
+        run: docker logs ppts-api-ci 2>&1 | tail -60 || true
+      - name: 清理
+        if: always()
+        run: docker rm -f ppts-api-ci >/dev/null 2>&1 || true
+
   # CGO_ENABLED=0 交叉构建：验证架构约束（对齐 go-pptx 的 CI 惯例）。
   crossbuild:
     runs-on: ubuntu-latest
