@@ -76,7 +76,7 @@ PPTS adapters keep compiling unchanged.
 - `ZHScoreRule()` reads `X:Y` as `X比Y`, gated on a `SemanticScore` hint (ambiguous forms are conservative without the hint).
 - `ZHFractionRule()` reads `1/3` as `三分之一`, requiring a covering `SemanticFraction` hint; zero denominators and slash-separated dates are not converted.
 - `ZHTimeRule()` reads 24-hour `HH:mm[:ss]` forms, requiring a covering `SemanticTime` hint (`10:30` → `十点三十分`). Invalid clock times stay unchanged inside the hint.
-- `ZHOrdinalRule()` reads explicit ordinals (`第12章` → `第十二章`).
+- `ZHOrdinalRule()` reads explicit ordinals (`第12章` → `第十二章`, `第 12 章` → `第十二章`, `No.3` → `第三`, `#2` → `第二`). `#` only accepts one or two digits so hashtags and years (`#2024`) are not read as ordinals; ASCII boundaries keep `C#2` and `piano.3` intact.
 - `ZHEnglishMoneyRule()` reads currency-prefixed English magnitudes in Chinese (`USD 1.5 million` → `美元一百五十万`, `A$500K` → `澳元五十万`). Supported scales: thousand/million/billion and K/M/B. Decimal shifting is exact; bare `500K` is not assumed to be money. Register with `ZHMoneyRule()` to let the longer magnitude candidate win over the shorter currency candidate.
 
 Date rules have higher priority than decimal rules, so `2024.01.28` is handled as one date candidate instead of being split into decimal fragments. In preserve mode, the date remains unchanged but still blocks lower-priority decimal edits inside the same range.
@@ -137,7 +137,7 @@ The root `go.mod` names the published baseline `github.com/F31/textnorm v0.1.0`.
 
 `Normalize` computes a request-local UTF-8 byte-to-rune index for built-in regex rules. Candidate selection uses a sorted sweep and binary search over normalized protected ranges; source-map coordinates remain rune-indexed. Direct `FindCandidates(Request)` calls remain supported. Run `go test -run '^$' -bench BenchmarkNormalize -benchmem` for short, medium, and long mixed Chinese text workloads.
 
-PPTS registers optional rules via `PPTS_TEXT_NORM_CLASSES` (`ordinal`, `english_money`, `fraction`, `time` in addition to the original classes). Its narration path does not automatically generate fraction/time hints; module callers can pass those explicitly. The production combination version is `ppts.v3.1` version 2, including the fix that combines number, class, and contextual-rule options.
+PPTS registers optional rules via `PPTS_TEXT_NORM_CLASSES` (`ordinal`, `english_money`, `fraction`, `time` in addition to the original classes). Its narration path does not automatically generate fraction/time hints; module callers can pass those explicitly. The production combination version is `ppts.v3.1` version 3: v2 combined the number, class, and contextual-rule options; v3 picks up the `zh.ordinal` fixes below (`No.3` / `#2`, spaced `第 3 章`).
 
 PPTS workers cache immutable engines by tenant, language, and environment configuration. `PPTS_TEXT_NORM_ENGINE_TTL` defaults to `5m`; `PPTS_TEXT_NORM_ENGINE_MAX` defaults to 256 FIFO entries per worker. TTL expiry reloads dictionary/contextual rules, bounding staleness after edits across processes. Setting TTL to `0` or capacity to `0` disables caching. Errors are not cached; concurrent same-key builds share work and waiting callers can cancel. Cache hit/miss counts are exposed through `ppts_textnorm_engine_cache_total`.
 
@@ -182,7 +182,7 @@ This package is currently a draft API. PPTS uses it when `PPTS_TEXT_NORM_ENABLED
 
 ## Versioning
 
-Module version is exposed as `Version` (currently `v0.2.2`) and carried on every `Result.Manifest`. `Manifest.ConfigHash` is a deterministic SHA-256 over module version, profile metadata, pause settings, and rule IDs/priorities. Compatibility policy (V3.1 §13):
+Module version is exposed as `Version` (currently `v0.2.3`) and carried on every `Result.Manifest`. `Manifest.ConfigHash` is a deterministic SHA-256 over module version, profile metadata, pause settings, and rule IDs/priorities. Compatibility policy (V3.1 §13):
 
 - Within a major module version, the public API stays backward compatible.
 - Behavioral changes to a named profile must bump that profile's combination version (`Profiles()` / `ProfileVersion`), independently of the module version.

@@ -24,6 +24,12 @@ func TestExpressionRules(t *testing.T) {
 		{"10:60", "10:60", SemanticTime},
 		{"10:30:20:10", "10:30:20:10", SemanticTime},
 		{"第12章", "第十二章", ""},
+		{"第 12 章", "第十二章", ""},
+		{"No.3 要点", "第三 要点", ""},
+		{"no.4 版", "第四 版", ""},
+		{"No. 5 章", "第五 章", ""},
+		{"#2 问题", "第二 问题", ""},
+		{"第3 ABC", "第三 ABC", ""},
 		{"USD 1.5 million", "美元一百五十万", ""},
 		{"$1.25 billion", "美元十二亿五千万", ""},
 		{"A$500K", "澳元五十万", ""},
@@ -45,6 +51,33 @@ func TestExpressionRules(t *testing.T) {
 				t.Fatalf("text = %q, want %q", res.Text, tc.want)
 			}
 		})
+	}
+}
+
+// TestOrdinalRuleGuards 只装 ordinal 规则，断言「哪些标记不算序数」——
+// 与完整规则集混跑时，数字规则会把被拒的数字读掉，掩盖真正的守卫行为。
+func TestOrdinalRuleGuards(t *testing.T) {
+	e, err := Compile(Config{Rules: []CandidateRule{ZHOrdinalRule()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ text, want string }{
+		{"#2024", "#2024"},     // 话题标签/年份，超过两位不按序号读
+		{"C#2", "C#2"},         // ASCII 左边界：C# 语言名里的 # 不是序号
+		{"piano.3", "piano.3"}, // 不是 no. 前缀（左边界被字母占用）
+		{"No.3", "第三"},         // 基本形态
+		{"# 2", "第二"},          // 标记与数字间允许空格
+		{"第 3 章", "第三章"},       // 空格被并入候选，不留「第三 章」
+		{"第3 ABC", "第三 ABC"},   // 后面不是汉字，保留中英间隔
+		{"第x章", "第x章"},         // 没有数字，不是候选
+	} {
+		res, err := e.Normalize(context.Background(), Request{Text: tc.text})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.text, err)
+		}
+		if res.Text != tc.want {
+			t.Errorf("%s: text = %q, want %q", tc.text, res.Text, tc.want)
+		}
 	}
 }
 

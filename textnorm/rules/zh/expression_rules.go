@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/F31/textnorm/internal/contract"
 )
@@ -32,15 +34,90 @@ func TimeRule() contract.CandidateRule {
 	}
 }
 
-// OrdinalRule reads explicit Chinese ordinal forms such as 第12 → 第十二.
-func OrdinalRule() contract.CandidateRule {
-	return expressionRule{
-		id: "zh.ordinal", category: "ordinal", priority: 14, re: ordinalRe,
-		convert: func(s string) (string, bool) {
-			n, ok := zhIntegerToSpeech(strings.TrimPrefix(s, "第"))
-			return "第" + n, ok
-		},
+// OrdinalRule reads explicit ordinal forms and normalizes them to the Chinese
+// 「第N」 reading: 第12 → 第十二, No.3 → 第三, #2 → 第二.
+//
+// 为什么 No./# 也算序数（2026-11-02）：中文技术文案里「No.3」「#2」与「第3」是同一处
+// 序号的三种写法。不识别时数字会落到 NumberRule 上，读成「No.三」——那是念错，不是
+// 「不转换」；同时它也让校验器与读音侧对「什么算序号」的认知对齐。
+//
+// 守卫（都有测试）：
+//   - `#` 只接 1–2 位数字：`#2024` 更像话题标签或年份，读成「第二千零二十四」是误读；
+//   - `第 3 章` 里数字与汉字间的空格只在「后面紧跟汉字」时并入候选，得到「第三章」；
+//     `第3 ABC` 的中英间隔保留，不把两个词粘成一个；
+//   - 沿用引擎的 ASCII 边界检查：`C#2`、`piano.3` 里的标记不当作独立序号。
+func OrdinalRule() contract.CandidateRule { return ordinalRule{re: ordinalRe} }
+
+type ordinalRule struct{ re *regexp.Regexp }
+
+func (r ordinalRule) RuleID() string    { return "zh.ordinal" }
+func (r ordinalRule) RulePriority() int { return 14 }
+
+func (r ordinalRule) FindCandidates(req contract.Request) []contract.Candidate {
+	var out []contract.Candidate
+	for _, loc := range r.re.FindAllStringIndex(req.Text, -1) {
+		if !contract.ASCIIBoundary(req.Text, loc[0], loc[1]) {
+			continue
+		}
+		prefix, digits, ok := splitOrdinal(req.Text[loc[0]:loc[1]])
+		if !ok {
+			continue
+		}
+		if prefix == "#" && len(digits) > 2 {
+			continue
+		}
+		spoken, ok := zhIntegerToSpeech(digits)
+		if !ok {
+			continue
+		}
+		end := loc[1]
+		if prefix == "第" {
+			end = absorbHanGap(req.Text, end)
+		}
+		out = append(out, contract.Candidate{
+			Src:         contract.Range{Start: req.RuneOffset(loc[0]), End: req.RuneOffset(end)},
+			Replacement: "第" + spoken,
+			RuleID:      r.RuleID(),
+			Category:    "ordinal",
+			Priority:    r.RulePriority(),
+		})
 	}
+	return out
+}
+
+// splitOrdinal 把匹配到的原文拆成「标记 + 数字」。三种标记都归一到「第」的读法，
+// 标记本身不朗读（「No.3」念「第三」，不念「No.三」）。
+func splitOrdinal(raw string) (prefix, digits string, ok bool) {
+	switch {
+	case strings.HasPrefix(raw, "第"):
+		prefix, digits = "第", strings.TrimLeft(raw[len("第"):], " \t")
+	case len(raw) >= 3 && strings.EqualFold(raw[:3], "no."):
+		prefix, digits = "No.", strings.TrimLeft(raw[3:], " \t")
+	case strings.HasPrefix(raw, "#"):
+		prefix, digits = "#", strings.TrimLeft(raw[1:], " \t")
+	default:
+		return "", "", false
+	}
+	if digits == "" {
+		return "", "", false
+	}
+	return prefix, digits, true
+}
+
+// absorbHanGap 把数字与后一个汉字之间的空格并入候选区间（「第 3 章」→「第三章」）。
+// 后一个字符不是汉字时原样返回，保留「第3 ABC」这种中英间隔。
+func absorbHanGap(s string, end int) int {
+	i := end
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	if i == end || i >= len(s) {
+		return end
+	}
+	if r, _ := utf8.DecodeRuneInString(s[i:]); !unicode.Is(unicode.Han, r) {
+		return end
+	}
+	return i
 }
 
 // EnglishMoneyRule reads English monetary magnitudes in Chinese.
@@ -55,7 +132,7 @@ func EnglishMoneyRule() contract.CandidateRule {
 var (
 	fractionRe     = regexp.MustCompile(`[0-9]+/[0-9]+`)
 	timeRe         = regexp.MustCompile(`[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?`)
-	ordinalRe      = regexp.MustCompile(`第[0-9]+`)
+	ordinalRe      = regexp.MustCompile(`(?:第|(?i:no\.)|#)[ \t]*[0-9]+`)
 	englishMoneyRe = regexp.MustCompile(`(?:A\$|HKD|USD|\$)\s*[+-]?[0-9]+(?:\.[0-9]+)?\s*(?i:thousand|million|billion|K|M|B)`)
 )
 

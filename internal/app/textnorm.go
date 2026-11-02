@@ -17,8 +17,14 @@ import (
 )
 
 const (
-	textNormProductionProfileName    = "ppts.v3.1"
-	textNormProductionProfileVersion = 2
+	textNormProductionProfileName = "ppts.v3.1"
+	// textNormProductionProfileVersion 是**装配组合**的版本（V3.1 §13.1 第二标识）：
+	// 同一份输入在组合版本之间若读音不同，就必须升位，否则音频缓存键与审计留痕会
+	// 指向不同行为却挂同一个版本号。
+	//   v2 → v3（2026-11-02）：zh.ordinal 识别 No.3 / #2，且「第 3 章」不再留下空格。
+	//   该规则只在 PPTS_TEXT_NORM_CLASSES 含 ordinal 时注册；未启用时行为不变，但仍统一升位
+	//   —— 组合版本描述的是"装配后的这套组合"，不是"当前开关状态"。
+	textNormProductionProfileVersion = 3
 )
 
 // NarrationTextNorm is the component-specific builder used by the adapter/cache.
