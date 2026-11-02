@@ -45,3 +45,9 @@ internal/render/testdata/*.golden.json text eol=lf
 #    逐字节比对。仓库里存的是 LF，Windows 检出成 CRLF 的话，本机重建一次就是整文件
 #    改动——真差异（比如少了一次 rebuild）会被这层噪音盖住。
 internal/share/assets/* text eol=lf
+
+# 10. Dockerfile：CRLF 会让多行 RUN 的续行变成 `\` + `\r`，构建时报的错与真正原因
+#     毫无关系（像是命令不存在，其实是行尾多了一个字节）。这类文件只在 Linux 侧被
+#     执行，Windows 检出没有任何理由碰它的行尾。
+Dockerfile text eol=lf
+**/Dockerfile text eol=lf
