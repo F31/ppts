@@ -51,6 +51,16 @@ SLIDE_LIMIT=${SLIDE_LIMIT:-0}
 # 这一段的用途是证明渲染服务真的被导出链路调用，而不是只在 selftest 里活着。
 ANIMATE=${ANIMATE:-0}
 PRESET=${PRESET:-business-calm}
+# TTS=fake（默认）用假供应商：产出**静音** WAV，时长按字数估算，只适合验通路。
+# TTS=siliconflow 走真实供应商。凭据只从**宿主环境变量** PPTS_TTS_API_KEY 读，
+# 不写进脚本、不落盘、不提交——脚本会被提交，密钥不会。
+TTS=${TTS:-fake}
+TTS_BASE_URL=${TTS_BASE_URL:-https://api.siliconflow.cn}
+TTS_MODEL=${TTS_MODEL:-FunAudioLLM/CosyVoice2-0.5B}
+# 预置音色必须写成 "<model>:<voice>"。只写 alex 会被供应商以 20047 Invalid voice
+# 拒绝——错误信息里不会告诉你分隔符写错了，所以这里直接按正确格式兜底。
+TTS_VOICE=${TTS_VOICE:-}
+[ -n "$TTS_VOICE" ] || TTS_VOICE="${TTS_MODEL}:alex"
 # DB=postgres 时换真 PostgreSQL：多租户 + RLS + ppts_app 运行账号 + 二进制内嵌迁移。
 # 默认 sqlite 是单租户本地 profile（无登录、无 RLS），跑得快，但把生产形态的权限面
 # 整个绕过去了——CI 的 postgres job 只验证 store 层用例，没验过"整栈能在 pg 上导出"。
@@ -209,13 +219,64 @@ if [ "$DB" = "postgres" ]; then
   AUTH=(-H "X-PPTS-Tenant-ID: $TENANT_ID" -H "X-PPTS-User-ID: $USER_ID")
 fi
 
+# TTS 供应商与音色。voiceId 会原样透传给供应商（API 层不校验），所以真实模式下
+# 必须传供应商认识的音色；假模式下它只是个占位标识。
+case "$TTS" in
+  fake)
+    TTS_ENV=(-e PPTS_TTS_PROVIDER=fake)
+    VOICE_ID=e2e-voice
+    ;;
+  siliconflow)
+    if [ -z "${PPTS_TTS_API_KEY:-}" ]; then
+      echo "TTS=siliconflow 需要在宿主环境里提供 PPTS_TTS_API_KEY（不要写进脚本）" >&2
+      exit 2
+    fi
+    TTS_ENV=(
+      -e PPTS_TTS_PROVIDER=siliconflow
+      -e "PPTS_TTS_BASE_URL=$TTS_BASE_URL"
+      -e "PPTS_TTS_API_KEY=$PPTS_TTS_API_KEY"
+      -e "PPTS_TTS_MODEL=$TTS_MODEL"
+      -e "PPTS_TTS_VOICE=$TTS_VOICE"
+    )
+    VOICE_ID=$TTS_VOICE
+    ;;
+  gateway)
+    if [ -z "${PPTS_TTS_API_KEY:-}" ]; then
+      echo "TTS=gateway 需要在宿主环境里提供 PPTS_TTS_API_KEY（用来写入租户网关，不写进脚本）" >&2
+      exit 2
+    fi
+    # 网关用 AES-GCM 加密保存 DB 里的凭据；没有这把密钥，网关整体禁用，
+    # worker 会退回 env 供应商——而本模式故意不配 env 供应商。
+    if [ -z "${GATEWAY_AES_KEY:-}" ]; then
+      GATEWAY_AES_KEY=$("$PY" -c 'import base64,os;print(base64.b64encode(os.urandom(32)).decode())')
+    fi
+    # 刻意不设 PPTS_TTS_PROVIDER：模拟"只在 Web 里配过网关、部署侧没配模型"的形态。
+    # 这正是本轮修掉的那个缺陷——修前 worker 会因为空值直接拒绝启动。
+    TTS_ENV=(-e "PPTS_GATEWAY_AES_KEY_BASE64=$GATEWAY_AES_KEY")
+    VOICE_ID=$TTS_VOICE
+    ;;
+  *)
+    echo "TTS 只支持 fake / siliconflow / gateway，收到：$TTS" >&2
+    exit 2
+    ;;
+esac
+
+# PPTS_BIN 指向本地交叉编译的 linux 二进制时，挂载覆盖镜像里的 /usr/local/bin/ppts。
+# 用途只有一个：改完代码快速验证逻辑，不必重建 2GB 镜像（镜像构建依赖外网下载 ffmpeg 包）。
+# 生产部署不能用它——镜像自带的二进制才是被审计、被扫描的那一个。
+MOUNT_BIN=()
+if [ -n "${PPTS_BIN:-}" ]; then
+  [ -f "$PPTS_BIN" ] || { echo "PPTS_BIN 指向的文件不存在：$PPTS_BIN" >&2; exit 2; }
+  MOUNT_BIN=(-v "$PPTS_BIN":/usr/local/bin/ppts:ro)
+fi
+
 COMMON_ENV=(
   "${DB_ENV[@]}"
   -e PPTS_OBJECT_BACKEND=local
   -e PPTS_OBJECT_ROOT=/data/objects
   -e "PPTS_OBJECT_SECRET=$SECRET"
   -e PPTS_AUTH_DEV_HEADERS=true
-  -e PPTS_TTS_PROVIDER=fake
+  "${TTS_ENV[@]}"
   -e PPTS_ANIMATION_ENABLED=true
   -e "PPTS_RENDERER_URL=http://$RENDER_NAME:8090"
   -e PPTS_ANIMATION_ASSET_DIR=/data/assets
@@ -252,6 +313,7 @@ docker run -d --name "$API_NAME" --network "$NET" \
   -p "127.0.0.1:$PORT:8080" \
   -e PPTS_HTTP_ADDR=:8080 \
   "${COMMON_ENV[@]}" \
+  "${MOUNT_BIN[@]}" \
   -v "$WORK/db":/data/db -v "$WORK/objects":/data/objects -v "$WORK/assets":/data/assets \
   "$IMAGE" server >/dev/null
 
@@ -263,10 +325,46 @@ docker run -d --name "$WORKER_NAME" --network "$NET" \
   -p "127.0.0.1:$WMETRICS:8091" \
   -e PPTS_WORKER_METRICS_ADDR=:8091 \
   "${COMMON_ENV[@]}" \
+  "${MOUNT_BIN[@]}" \
   -v "$WORK/db":/data/db -v "$WORK/objects":/data/objects -v "$WORK/assets":/data/assets \
   "$IMAGE" worker >/dev/null
 sleep 3
 docker ps --format '{{.Names}}' | grep -qx "$WORKER_NAME" || fail "worker 退出了"
+
+# 网关模式下配置租户级 TTS——这是产品主路径（用户在 Web 里填 key，加密存 DB），
+# 与 env 供应商是两条独立的路。这里刻意只在 DB 里放 key，env 里没有：
+# 后面成片若仍有声音，就证明 worker 真的按租户读到了网关配置，而不是 env 兜底。
+if [ "$TTS" = "gateway" ]; then
+  log "2b/8 在租户网关里配置 TTS（密钥只进 DB）"
+  GW_BODY=$("$PY" -c '
+import json,sys
+kind,name,base,key,model,voice = sys.argv[1:7]
+print(json.dumps({"kind": kind, "name": name, "baseUrl": base, "apiKey": key,
+                  "model": model, "voice": voice,
+                  "isDefault": True, "enabled": True}, ensure_ascii=False))
+' tts siliconflow "$TTS_BASE_URL" "$PPTS_TTS_API_KEY" "$TTS_MODEL" "$TTS_VOICE")
+  GW_RESP=$(curl -sS --noproxy '*' -X POST "http://127.0.0.1:$PORT/api/model-gateways" \
+    -H 'Content-Type: application/json' ${AUTH[@]+"${AUTH[@]}"} -d "$GW_BODY")
+  echo "$GW_RESP" | "$PY" -c '
+import json,sys
+d=json.load(sys.stdin)["gateway"]
+print("网关已建：name=%s kind=%s model=%s voice=%s hasKey=%s key=%s" % (
+    d["name"], d["kind"], d["model"], d["voice"], d["hasKey"], d["keyMasked"]))
+' || fail "创建租户网关失败：$GW_RESP"
+  curl -sS --noproxy '*' "http://127.0.0.1:$PORT/api/model-gateways?kind=tts" \
+    ${AUTH[@]+"${AUTH[@]}"} > "$WORK/gateways.json"
+  "$PY" - "$WORK/gateways.json" <<'PY' || fail "网关列表不符合预期：$WORK/gateways.json"
+import json, sys
+rows = json.load(open(sys.argv[1], encoding='utf-8'))['gateways']
+assert rows, '网关列表为空：配置没真正落库'
+g = rows[0]
+assert g['kind'] == 'tts', g
+assert g['hasKey'], 'hasKey=false：密钥没存进去'
+assert g['enabled'], '网关未启用'
+print('网关列表：', [(r['name'], r['source'], r['model'], r['voice']) for r in rows])
+PY
+fi
+
 # 端点起不来就等于"看不见降级"，这里必须先确认它真的能读。
 for i in $(seq 1 20); do
   curl -sS --noproxy '*' -H "Authorization: Bearer $METRICS_TOKEN" \
@@ -302,7 +400,16 @@ echo "页数=$PAGES 页图=$PNG_COUNT"
 curl -sS --noproxy '*' -H "Authorization: Bearer $METRICS_TOKEN" \
   "http://127.0.0.1:$WMETRICS/metrics" > "$WORK/worker-metrics.txt"
 grep -qE '^ppts_render_pages_disabled 1' "$WORK/worker-metrics.txt" && fail "渲染处于禁用态（ppts_render_pages_disabled=1）"
-grep -qE '^ppts_tts_fake_provider_active 1' "$WORK/worker-metrics.txt" || fail "假 TTS 没启用，本次配音来源与预期不符"
+if [ "$TTS" = "fake" ]; then
+  grep -qE '^ppts_tts_fake_provider_active 1' "$WORK/worker-metrics.txt" || fail "假 TTS 没启用，本次配音来源与预期不符"
+else
+  # 真实供应商下这条指标必须不成立。它为 1 说明 worker 仍在用假 TTS：
+  # 成片照样能播、时长照样"合理"，只是从头到尾没有声音——这正是本项目最不能接受的假成功。
+  if grep -qE '^ppts_tts_fake_provider_active 1' "$WORK/worker-metrics.txt"; then
+    fail "TTS=$TTS 但 worker 仍启用假 TTS（ppts_tts_fake_provider_active=1）"
+  fi
+  echo "TTS 供应商=$TTS 模型=$TTS_MODEL 音色=$TTS_VOICE"
+fi
 
 log "5/8 生成讲稿（原文朗读，取每页备注）"
 SLIDE_IDS=$(json 'print(json.dumps([s["slideId"] for s in d["slides"]]))' < "$WORK/slides.json")
@@ -330,7 +437,7 @@ echo "首屏分段=$SEGMENTS 字数=$TEXT_CHARS"
 
 log "6/8 生成配音与时间轴"
 GEN=$(post /ppts.v1.NarrationService/CreateGeneration \
-  "{\"projectId\":\"$PID\",\"slideIds\":$SLIDE_IDS,\"voiceId\":\"e2e-voice\",\"ratePercent\":100}" \
+  "{\"projectId\":\"$PID\",\"slideIds\":$SLIDE_IDS,\"voiceId\":\"$VOICE_ID\",\"ratePercent\":100}" \
   -H "X-PPTS-Source-Revision: 1" \
   -H "Idempotency-Key: e2e-narr-$PID")
 NARR_JOB=$(echo "$GEN" | json 'print(d.get("jobId") or "")')
@@ -465,6 +572,22 @@ print(f"视频 h264 {video[0]['width']}x{video[0]['height']} {video[0].get('pix_
       f"{video[0].get('avg_frame_rate')}；音频 {audio[0].get('codec_name')} "
       f"{audio[0].get('sample_rate')}Hz/{audio[0].get('channels')}ch；时长 {duration:.2f}s")
 PY
+
+# 成片音轨是不是真的有声音。
+# 只看时长分不出「真配音」和「静音占位」：假 TTS 的时长是按字数估算出来的，长度看着
+# 完全合理。volumedetect 的 max_volume 是直接判据——静音轨在 -91dB 附近，真实人声通常
+# 在 -10dB 上下。不跑这一步，"配音已接入"就只能靠 worker 日志自证。
+if [ "$TTS" = "fake" ]; then
+  echo "假 TTS：跳过音轨音量校验（本模式产出静音是预期行为）"
+else
+  MAXVOL=$(docker run --rm -v "$WORK/out":/out --entrypoint ffmpeg "$IMAGE" \
+    -hide_banner -nostats -i /out/artifact.mp4 -vn -af volumedetect -f null /dev/null 2>&1 \
+    | sed -n 's/.*max_volume: \([-0-9.]*\) dB.*/\1/p' | head -1)
+  [ -n "$MAXVOL" ] || fail "取不到成片音轨的最大音量（volumedetect 没有输出）"
+  awk -v v="$MAXVOL" 'BEGIN{exit !(v > -60)}' \
+    || fail "成片音轨是静音（max_volume=${MAXVOL}dB）：配音没有真正进入成片"
+  echo "音轨峰值 ${MAXVOL}dB（> -60dB 视为有真实人声）"
+fi
 
 # 抽三帧：起势/中段/收尾。字幕是否真的烧进画面只能看像素，这一条不交给脚本猜。
 DURATION=$(json 'print(d["format"]["duration"])' < "$WORK/out/ffprobe.json")
