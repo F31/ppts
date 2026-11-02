@@ -122,8 +122,14 @@ EXPOSE 8090
 # -max-queued / -job-ttl 在这里显式写上而不是靠默认值：容器里 /work 是 2g tmpfs，
 # 「排队位」与「产物保留窗口」直接决定它多久写满，属于部署决策，不该藏在代码默认值里。
 #
+# -concurrency / -page-concurrency 同理，而且这两个数决定 120s 的 P95 目标能不能达成：
+# 帧并发 1 × 页并发 4 = 4 个渲染位，30s 正片 P95 实测 49.3s（开启页并行的唯一达标切法；
+# 2 位实测 133.9s）。镜像按参考机型（4 vCPU / 6g）定这个值，2 核机型必须显式降成
+# -page-concurrency 2——4 位在 2 核上实测 OOM。位预算是乘积，改一个要连带改 mem_limit。
+#
 # -fonts 不在这里：它由 entrypoint 从 /etc/ppts/fonts.version 拼出来（见入口脚本注释）。
 ENTRYPOINT ["/usr/local/bin/ppts-renderer-entry"]
 CMD ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work", \
-     "-renderer-script", "/app/render.mjs", "-concurrency", "2", \
+     "-renderer-script", "/app/render.mjs", \
+     "-concurrency", "1", "-page-concurrency", "4", \
      "-max-queued", "8", "-job-ttl", "30m"]

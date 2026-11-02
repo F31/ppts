@@ -35,7 +35,8 @@ services:
     # 导出侧（worker）要把 PPTS_ANIMATION_ASSET_DIR 指到**同一个宿主目录**，
     # 由它把页图写进去（内容寻址命名、原子落地）。接线与 S3 换法见 README「单机部署」。
     # command: ["-addr", ":8090", "-backend", "remotion", "-workdir", "/work",
-    #           "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets"]
+    #           "-renderer-script", "/app/render.mjs", "-assets-dir", "/assets",
+    #           "-concurrency", "1", "-page-concurrency", "4"]
     # 片段缓存（M5）：落在**持久卷**上，不能放 /work 或 /tmp（都是 tmpfs，重启即空，
     # 等于每次都是冷启动）。多副本部署把它指向同一份共享存储，命中即可跨副本共享。
     # 不给 -segment-cache 就是「每页都渲」的旧行为。
@@ -48,10 +49,13 @@ services:
     #           "-segment-cache", "/cache", "-segment-cache-max-bytes", "4294967296",
     #           "-concurrency", "1", "-page-concurrency", "4"]
     # 上面最后的两个数是**达标配置**，不是随手填的（M5 实测，10 页 × 3s / 1080p30 / 5 次）：
-    #   1 任务 × 4 页 × 1 帧 = 4 个渲染位 → P95 49.3s
-    #   1 任务 × 2 页 × 2 帧 = 4 个渲染位 → P95 71.6s（同样的位，切开方式差 30%）
-    #   1 任务 × 1 页 × 2 帧 = 2 个渲染位 → P95 133.9s（默认值，**达不到 120s 目标**）
-    # 注意 -concurrency 同时喂「任务数」与「帧并发」，总位是三者乘积（ADR-16 的乘积结论）。
+    #   页并发 4 × 帧并发 1 = 4 个渲染位 → P95 49.3s   ← 镜像 CMD 默认就是这组
+    #   页并发 2 × 帧并发 2 = 4 个渲染位 → P95 71.6s（同样 4 位，切开方式差 30%）
+    #   页并发 1 × 帧并发 2 = 2 个渲染位 → P95 133.9s（**达不到 120s 目标**）
+    # 位 = 页并发 × 帧并发。任务数（-concurrency 兼任）不参与这个乘积——
+    # 旧版这里写成「2 任务 × 2 页 × 2 帧 = 8」，把同一个数乘了两遍。
+    # 2 核机型必须显式改成 -page-concurrency 2：4 位在 2 核实测 OOM，
+    # 而 2 位达不到 120s——这是机型限制，不是调参能解决的。
     # 注意：不要在这里补 -fonts。字体版本由镜像 entrypoint 从 /etc/ppts/fonts.version
     # 拼出来（见 Dockerfile 说明），在这里覆盖会让版本与实际字体脱节。
     network_mode: none

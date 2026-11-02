@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -37,7 +38,7 @@ func run() error {
 		backend    = flag.String("backend", "stub", "backend：stub | remotion")
 		version    = flag.String("version", "dev", "服务版本（参与 planHash；remotion 后端建议写成 remotion@x|chrome@y）")
 		fonts      = flag.String("fonts", "", "逗号分隔的可用字体族，格式 family@version")
-		concurrent = flag.Int("concurrency", 2, "同时渲染任务数")
+		concurrent = flag.Int("concurrency", 0, "帧渲染并发（Remotion --concurrency），同时是任务并发上限；0 = 按可用 CPU 自动")
 		maxQueued  = flag.Int("max-queued", 8, "排队任务数上限（超出返回 429 + Retry-After）")
 		jobTTL     = flag.Duration("job-ttl", 30*time.Minute, "终态任务与产物的保留时长")
 		sweepEvery = flag.Duration("retention-sweep", time.Minute, "过期任务回收的最小间隔")
@@ -59,9 +60,33 @@ func run() error {
 		segCacheDir = flag.String("segment-cache", "", "片段缓存目录（空 = 关闭缓存）")
 		segCacheMax = flag.Int64("segment-cache-max-bytes", 4<<30, "片段缓存容量上限（字节；0 = 不限）")
 		// 页级并发：总渲染位 = 页并发 × 帧并发，内存按乘积算（ADR-16）。
-		pageConcurrency = flag.Int("page-concurrency", 1, "同时渲染的页数（1 = 串行）")
+		pageConcurrency = flag.Int("page-concurrency", 0, "同时渲染的页数；0 = 按可用 CPU 自动")
 	)
 	flag.Parse()
+
+	// 并发位预算按可用 CPU 定档（ADR-16）。两个 flag 都不写时走这里，
+	// 于是「默认配置能不能达标」不再取决于部署者有没有读 README。
+	//
+	// 用 GOMAXPROCS 而不是 NumCPU：前者在 Go 1.25 起读容器 CPU 配额，
+	// 后者在容器里报的是宿主机核数。
+	cpus := runtime.GOMAXPROCS(0)
+	if auto := render.DefaultRenderSlots(cpus); *concurrent <= 0 || *pageConcurrency <= 0 {
+		if *concurrent <= 0 {
+			*concurrent = auto.Frame
+		}
+		if *pageConcurrency <= 0 {
+			*pageConcurrency = auto.Page
+		}
+	}
+	slots := render.RenderSlots{Page: *pageConcurrency, Frame: *concurrent}
+	// 启动就把位预算打出来：它是内存峰值的决定项，出事时第一个要看的就是这个数。
+	log.Printf("render slots: %d（页并发 %d × 帧并发 %d；可用 CPU %d；任务并发上限 %d）",
+		slots.Total(), slots.Page, slots.Frame, cpus, *concurrent)
+	if slots.Total() < render.SLARecommendedSlots {
+		log.Printf("警告：单任务仅 %d 个渲染位，低于 %d。30s 正片 P95 实测 133.9s，达不到 120s 目标；"+
+			"2 核机型无法靠调参达标（4 位实测 OOM），只能升配或加副本。",
+			slots.Total(), render.SLARecommendedSlots)
+	}
 
 	if *workDir == "" {
 		return errors.New("-workdir 必填：产物必须落在明确的目录里")
