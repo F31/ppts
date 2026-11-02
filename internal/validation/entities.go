@@ -67,8 +67,8 @@ var (
 	// 计数后缀与序数前缀来自规则表（rules.json 的 counts），不在这里写死：
 	// 不同语言/领域对"概括计数"的表达不同（「4 大类」vs「4 key areas」），
 	// 换一套配置即可，不必改判定逻辑。
-	countSuffixes    = sortedByLenDesc(counts.Suffixes)
-	ordinalPrefixes  = sortedByLenDesc(counts.OrdinalPrefixes)
+	countSuffixes   = sortedByLenDesc(counts.Suffixes)
+	ordinalPrefixes = sortedByLenDesc(counts.OrdinalPrefixes)
 )
 
 // sortedByLenDesc 按长度降序排列 token，保证长词先匹配（「关键」不应被「关」抢先）。

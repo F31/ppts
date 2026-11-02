@@ -59,11 +59,11 @@ type NarrationSnapshot struct {
 	VoiceID          string                   `json:"voiceId"`
 	// Model 是本次任务点名的语音模型（网关的 Model 或 Name）；为空表示租户默认。
 	// 必须随快照固化：任务重放/幂等比对要能区分"同一音色的两个模型"。
-	Model            string                   `json:"model,omitempty"`
-	RequireConfirmed bool                     `json:"requireConfirmed"`
-	SpeechControl    tts.SpeechControl        `json:"speechControl"`
-	SampleRate       int                      `json:"sampleRate"`
-	Timing           media.Timing             `json:"timing"`
+	Model            string            `json:"model,omitempty"`
+	RequireConfirmed bool              `json:"requireConfirmed"`
+	SpeechControl    tts.SpeechControl `json:"speechControl"`
+	SampleRate       int               `json:"sampleRate"`
+	Timing           media.Timing      `json:"timing"`
 	// BypassCache 表示用户显式要求"重新生成"：跳过内容哈希缓存读取，每段真实调用语音合成，
 	// 并把新音频写回同一 configHash 键（覆盖旧音频对象）。
 	//
