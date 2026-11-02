@@ -513,18 +513,15 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 		planned = append(planned, plannedSlide{snapshot: slide, revision: revision})
 	}
 
-	totalMS := int64(0)
 	// 本次任务的音频来源构成（按 job 局部累计，绝不放 handler 字段：handler 跨任务共享，
 	// 并发任务会互相串数据）。
-	stats := SynthesisStats{}
-
 	asm, err := h.synthesizeAllSegments(ctx, job, snapshot, provider, capabilities, planned, segmentFilter, dictRules, textNormEngine)
 	if err != nil {
 		return err
 	}
 	timelineSlides := asm.slides
-	stats = asm.stats
-	totalMS = asm.totalMS
+	stats := asm.stats
+	totalMS := asm.totalMS
 
 	// G2-5 时长控制：首轮合成后若超出目标 ±10%，自动按比例调整速率重合成。
 	if snapshot.TargetDurationMS > 0 && totalMS > 0 {

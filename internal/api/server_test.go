@@ -1317,7 +1317,6 @@ func TestTenantServiceStorageUsage(t *testing.T) {
 type fakeTenantArchive struct {
 	files []tenant.ArchiveFile
 	err   error
-	limit int
 }
 
 func (f *fakeTenantArchive) ListAuditArchives(context.Context, string, int) ([]tenant.ArchiveFile, error) {

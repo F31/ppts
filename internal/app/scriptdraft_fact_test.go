@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 
@@ -285,7 +286,9 @@ func TestFmtFactNumber(t *testing.T) {
 		{1676.0, "1676"},
 		{12.5, "12.5"},
 		{0, "0"},
-		{-0.0, "0"},
+		// Go 里字面量 -0.0 就是 +0，必须用 Copysign 造真正的负零，
+		// 否则这条用例与 {0, "0"} 完全重复，fmtFactNumber 的 "-0" 兜底无人验证。
+		{math.Copysign(0, -1), "0"},
 		{1e-7, "0.0000001"},
 	}
 	for _, c := range cases {
@@ -400,9 +403,6 @@ func TestAugmentDraftSourceCohesionInstruction(t *testing.T) {
 	promptMulti, validateMulti := augmentDraftSource("容量 80GB", multi)
 	if !strings.Contains(promptMulti, "【编排】") || !strings.Contains(promptMulti, "chart、table") {
 		t.Fatalf("多元素 prompt 应含编排指令（枚举 ElementKind 排序后）：%q", promptMulti)
-	}
-	if strings.Contains(promptMulti, "【编排】") {
-		// 注释：编排指令已确认存在于 prompt；校验基准断言在下文。
 	}
 	if validateMulti != "容量 80GB\n表格列「容量」数值范围：最小 80，最大 256\n图表系列「华东」数值范围：最小 12.5，最大 1676" {
 		t.Fatalf("多元素校验基准应只含事实值，不含编排说明：%q", validateMulti)

@@ -19,8 +19,6 @@ const (
 	emuPerPixel = 6350
 )
 
-func ptr[T any](v T) *T { return &v }
-
 func newTestCompiler(t *testing.T) *Compiler {
 	t.Helper()
 	c, err := NewCompiler(Options{

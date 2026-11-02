@@ -17,10 +17,6 @@ func strictCounts() Counts {
 	return Counts{InsertedCounts: ModeBlock, InsertedOrdinals: ModeBlock, MaxValue: 20}
 }
 
-func laxCounts(mode string) Counts {
-	return Counts{InsertedCounts: mode, InsertedOrdinals: ModeBlock, MaxValue: 20}
-}
-
 // TestNumberForm 锁定形态判定的边界：带单位=事实、序数前缀=序号、量词/后缀=计数。
 func TestNumberForm(t *testing.T) {
 	cases := []struct {

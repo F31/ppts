@@ -2,7 +2,6 @@ package retention
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 )
 
@@ -88,16 +87,6 @@ func assetSpecOf(assetType string) (assetSpec, bool) {
 		}
 	}
 	return assetSpec{}, false
-}
-
-// AssetTypes 返回已登记的全部对象类型（稳定升序）。
-func AssetTypes() []string {
-	out := make([]string, 0, len(assetRegistry))
-	for _, s := range assetRegistry {
-		out = append(out, s.Name)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // retentionFieldOf 返回该类型实际使用的保留天数键；未登记的类型返回空（不参与过期）。

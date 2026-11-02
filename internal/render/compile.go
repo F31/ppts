@@ -100,8 +100,8 @@ func NewCompiler(opt Options) (*Compiler, error) {
 		inferred = true
 	}
 	if w <= 0 {
-		// 底图是按源页比例渲染的，所以"底图宽高比"就是"页宽高比"。
-		w = int64(math.Round(float64(h) * opt.Canvas.Aspect()))
+		// 底图是按源页比例渲染的，所以"底图宽高比"就是"页宽高比"：此时无需校验宽高比
+		// （w 只用于 else 分支的校验，算出来的值没有其他消费者）。
 		inferred = true
 	} else {
 		got := float64(w) / float64(h)
@@ -624,17 +624,6 @@ func (c *Compiler) motionProps(plan animation.MotionPlan) []animation.MotionProp
 		props = append(props, p)
 	}
 	return props
-}
-
-// lerpProp 在属性 from→to 之间按分数 f∈[0,1] 线性插值。
-func lerpProp(from, to, f float64) float64 {
-	return from + (to-from)*f
-}
-
-// continuationSeg 是 continues clip 溢出到次页的余量段（已编译完成，仅待注入）。
-type continuationSeg struct {
-	elementID string
-	motion    Motion
 }
 
 // continuationSegFor 计算一个 continues clip 溢出到次页的余量 Motion（不修改入参）。

@@ -98,14 +98,11 @@ func (s *PGStore) ListTenantsPage(ctx context.Context, cursor string, pageSize i
 	q := `SELECT id::text, name, type, status, created_at FROM tenants`
 	args := []any{}
 	if cursor != "" {
-		created, id, ok := decodeTenantCursor(cursor)
-		if !ok {
-			// 非法游标：按第一页处理（不返回 500）。
-			cursor = ""
-		} else {
+		if created, id, ok := decodeTenantCursor(cursor); ok {
 			args = append(args, created, id)
 			q += ` WHERE (created_at, id) < ($1::timestamptz, $2::uuid)`
 		}
+		// 非法游标：不加过滤条件，按第一页处理（不返回 500）。
 	}
 	// 多取一条判断是否还有下一页。
 	q += ` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(len(args)+1)

@@ -99,3 +99,29 @@ func TestSyntheticFixtureComposesToPage(t *testing.T) {
 		}
 	}
 }
+
+// TestCyclePagesReusesEverySourcePage 锁定「页数超过素材时循环复用」的取模口径。
+//
+// 此前写成 len(pagePNGs)%len(pagePNGs)，恒等于 0：3 张素材补到 7 张会得到
+// [1 1 1 1 1 1 1]，第二、三页永远不出现在样包里。用长度可区分的假数据断言顺序，
+// 这样"只复用第一页"会被直接看出来。
+func TestCyclePagesReusesEverySourcePage(t *testing.T) {
+	got := cyclePages([][]byte{{1}, {2}, {3}}, 7)
+	want := [][]byte{{1}, {2}, {3}, {1}, {2}, {3}, {1}}
+	if len(got) != len(want) {
+		t.Fatalf("补页后长度 = %d，期望 %d", len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i], want[i]) {
+			t.Fatalf("第 %d 张 = %v，期望 %v（全量：%v）", i, got[i], want[i], got)
+		}
+	}
+
+	// 素材够用时不得改动；空素材原样返回，由调用方决定是否致命。
+	if got := cyclePages([][]byte{{9}, {8}}, 2); len(got) != 2 {
+		t.Fatalf("素材足够时被改动：%v", got)
+	}
+	if got := cyclePages(nil, 3); len(got) != 0 {
+		t.Fatalf("空素材应原样返回，实际 %v", got)
+	}
+}

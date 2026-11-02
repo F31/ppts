@@ -156,9 +156,6 @@ func (v *pgSessionValidator) ValidateSession(ctx context.Context, userID string,
 	return status == "active" && tv == tokenVersion, nil
 }
 
-// errUserDisabled 表示账号被停用。
-var errUserDisabled = errors.New("auth: account disabled")
-
 // loginRow 是登录定位查询的结果。
 type loginRow struct {
 	TenantID   string

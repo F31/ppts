@@ -21,6 +21,13 @@ import (
 // ErrRendererUnavailable 表示渲染器（LibreOffice 或 poppler-utils）未安装。
 var ErrRendererUnavailable = errors.New("render: required renderer executable not found")
 
+// pdfinfo 输出解析。documentInfo 每次渲染都会调用，正则在包级只编译一次——
+// 放在函数体内等于每次导出都重新编译两条正则（2026-11-02 静态检查发现）。
+var (
+	pdfPagesRe    = regexp.MustCompile(`(?m)^Pages:\s+(\d+)\s*$`)
+	pdfPageSizeRe = regexp.MustCompile(`(?m)^Page size:\s+(.+)`)
+)
+
 // SlideRenderer 渲染适配器端口（V4.0 §5.1）：按指定尺寸输出页面图像与兼容性报告。
 // 未实现/不可用时显式返回错误，不得输出伪成功。
 type SlideRenderer interface {
@@ -296,12 +303,10 @@ func (r *SofficeRenderer) documentInfo(ctx context.Context, pdf string) (int, st
 	}
 	pageCount := 0
 	pageSize := ""
-	rePages := regexp.MustCompile(`(?m)^Pages:\s+(\d+)\s*$`)
-	reSize := regexp.MustCompile(`(?m)^Page size:\s+(.+)`)
-	if m := rePages.FindSubmatch(out); len(m) == 2 {
+	if m := pdfPagesRe.FindSubmatch(out); len(m) == 2 {
 		fmt.Sscanf(string(m[1]), "%d", &pageCount)
 	}
-	if m := reSize.FindSubmatch(out); len(m) == 2 {
+	if m := pdfPageSizeRe.FindSubmatch(out); len(m) == 2 {
 		pageSize = strings.TrimSpace(string(m[1]))
 	}
 	if pageCount == 0 {

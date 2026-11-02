@@ -37,6 +37,21 @@ import (
 	"github.com/F31/ppts/internal/share"
 )
 
+// cyclePages 把 src 按顺序循环复用，补到 pages 长。
+//
+// 取模必须用**素材原始长度**：此前写成 len(pagePNGs)%len(pagePNGs) 恒为 0，
+// 结果是第一页被重复 N 次而不是循环复用（2026-11-02 静态检查 SA4000 发现）。
+func cyclePages(src [][]byte, pages int) [][]byte {
+	if len(src) == 0 || len(src) >= pages {
+		return src
+	}
+	base := len(src)
+	for len(src) < pages {
+		src = append(src, src[len(src)%base])
+	}
+	return src
+}
+
 func main() {
 	var (
 		pages    = flag.Int("pages", 30, "页数")
@@ -70,12 +85,11 @@ func main() {
 		if err != nil {
 			log.Fatalf("share-baseline: %v", err)
 		}
-		if len(pagePNGs) < *pages {
-			// 页数超过素材时循环复用，保证总时长仍由 -pages 控制。
-			for len(pagePNGs) < *pages {
-				pagePNGs = append(pagePNGs, pagePNGs[len(pagePNGs)%len(pagePNGs)])
-			}
+		if len(pagePNGs) == 0 {
+			log.Fatalf("share-baseline: %s 下没有任何页图", *pagesDir)
 		}
+		// 页数超过素材时循环复用，保证总时长仍由 -pages 控制。
+		pagePNGs = cyclePages(pagePNGs, *pages)
 	}
 
 	timeline := buildTimeline(*pages, *pageSecs)

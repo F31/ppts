@@ -286,8 +286,6 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		if err := h.objects.Put(ctx, key, file, objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: size}); err != nil {
 			return failStep(fmt.Errorf("export job: publish artifact: %w", err))
 		}
-		_ = data
-		data = nil
 		a, aerr := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
 			ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
 			ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: size,
