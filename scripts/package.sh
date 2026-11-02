@@ -57,6 +57,8 @@ if [[ "${SKIP_FFMPEG:-0}" != "1" || ! -x build/ffmpeg/ffmpeg ]]; then
   mkdir -p build/ffmpeg
   install -m 0755 build/ffmpeg-*-static/ffmpeg build/ffmpeg/ffmpeg
   install -m 0755 build/ffmpeg-*-static/ffprobe build/ffmpeg/ffprobe
+  # 压缩包与解压目录只在安装二进制时需要，留着就是每次构建多 200 MB
+  rm -rf build/ffmpeg-*-static build/ffmpeg-static.tar.xz
 else
   log "SKIP_FFMPEG=1，沿用 build/ffmpeg 缓存"
 fi
@@ -87,3 +89,22 @@ tar -czf "dist/$PKG.tar.gz" -C dist "$PKG"
 (cd dist && sha256sum "$PKG.tar.gz" > "$PKG.tar.gz.sha256")
 log "完成：dist/$PKG.tar.gz"
 ls -lh "dist/$PKG.tar.gz"
+
+# ---------- 6. 收尾：不留暂存目录，旧包按份数滚动 ----------
+# 暂存目录只是归档的中间态。留在 dist/ 里每次构建就多约 180 MB，
+# 实测 9 次构建积到 2.2 GB —— 清理靠人记性迟早会忘，交给脚本。
+rm -rf "$STAGE"
+for leftover in dist/ppts-*-linux-amd64; do
+  [[ -d "$leftover" ]] && rm -rf "$leftover"
+done
+
+# 只保留最近 KEEP_PACKAGES 份发行包（默认 2）；设为 1 只留本次。
+# 下限锁死 1：否则 0 会把刚打出来的包连同 sha256 一起删掉。
+KEEP="${KEEP_PACKAGES:-2}"
+(( KEEP >= 1 )) || KEEP=1
+mapfile -t stale < <(ls -1t dist/ppts-*.tar.gz 2>/dev/null | tail -n +"$((KEEP + 1))" || true)
+for f in "${stale[@]}"; do
+  [[ -n "$f" ]] || continue
+  rm -f "$f" "$f.sha256"
+  log "清理旧包：$f"
+done
