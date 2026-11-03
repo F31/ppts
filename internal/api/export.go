@@ -94,9 +94,15 @@ func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[p
 	if idempotencyKey == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("Idempotency-Key header is required"))
 	}
+	// 画布比例取自源页图（ADR-029 ③）：本入口没有尺寸字段，此前一律 1920×1080，
+	// 竖屏源页会在渲染编译时因比例不符失败。见 export_canvas.go。
+	width, height, err := canvasFor(ctx, s.objects, p.TenantID, pageKeys, 0, 0)
+	if err != nil {
+		return nil, err
+	}
 	snapshot := app.ExportSnapshot{
 		Format: format, TimelineKey: req.Msg.GetTimelineKey(), PagePNGKeys: pageKeys,
-		FPS: 30, Width: 1920, Height: 1080,
+		FPS: 30, Width: width, Height: height,
 		BurnSubtitles: req.Msg.GetBurnSubtitles(), IncludeNotes: req.Msg.GetIncludeNotes(),
 	}
 	// 用 app 侧的规范字节：导出步骤会把这份载荷反序列化后重算步骤键，

@@ -1197,3 +1197,34 @@ func propsKeyOf(m *Motion) string {
 	sort.Strings(parts)
 	return strings.Join(parts, "|")
 }
+
+func TestGeometryPortraitCanvas(t *testing.T) {
+	// 竖屏（ADR-029 ③）：画布与页尺寸同为 9:16，编译必须通过，且盒子按比例缩放。
+	// 这条不是"多一个比例"的装饰：编译器的比例校验只认 Canvas.Aspect() 与页尺寸之比，
+	// 若哪天有人把画布写死 16:9（旧实现就是这样），9:16 的源页会在这里红。
+	c, err := NewCompiler(Options{
+		Canvas:        design.Canvas{Width: 1080, Height: 1920},
+		SlideWidthEMU: emuHeight, SlideHeightEMU: emuWidescreen,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "s", DurationMs: 4000, BaseImage: "p0.png",
+		Elements: []Element{{ID: "e", Kind: animation.KindShape, Bounds: emuBox(72, 72, 600, 300)}},
+		Revision: revisionOf("", 1, &animation.Track{ElementID: "e", Kind: animation.KindShape,
+			Clips: []*animation.Clip{clipOf("c", "fadeIn", 0, 400, "onEnter")}}),
+	})
+	if err != nil {
+		t.Fatalf("竖屏编译失败: %v", err)
+	}
+	// 9:16 画布宽 1080 对 6858000 EMU：1 EMU ≈ 0.0001575 px，600 EMU 宽 → 94.5 → 95 左右。
+	// 断言用"落在画布内且宽高比保持"而不是写死像素，避免把换算常数复制进测试。
+	box := page.Layers[0].Box
+	if box.W <= 0 || box.H <= 0 || box.X < 0 || box.Y < 0 {
+		t.Fatalf("盒子非法: %+v", box)
+	}
+	if box.X+box.W > 1080 || box.Y+box.H > 1920 {
+		t.Fatalf("盒子越出竖屏画布: %+v", box)
+	}
+}

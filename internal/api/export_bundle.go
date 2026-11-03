@@ -171,9 +171,17 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 			errors.New("Idempotency-Key header is required")))
 		return
 	}
+	// 尺寸不再直接采信请求值：客户端的默认值是 1920×1080（它手里没有页尺寸），
+	// 竖屏源页照此导出会被塞进 16:9 画布。改为"显式值校验、缺省值取自页图"。
+	// 见 export_canvas.go。
+	width, height, cerr := canvasFor(r.Context(), h.objects, principal.TenantID, pageKeys, req.Width, req.Height)
+	if cerr != nil {
+		writeConnectError(w, cerr)
+		return
+	}
 	snapshot := app.ExportSnapshot{
 		Format: format, TimelineKey: timelineKey, PagePNGKeys: pageKeys,
-		FPS: req.FPS, Width: req.Width, Height: req.Height,
+		FPS: req.FPS, Width: width, Height: height,
 		BurnSubtitles: req.BurnSubtitles, IncludeNotes: req.IncludeNotes,
 	}
 	animation, err := animationExportOptions(string(format), req.Animation)
@@ -224,15 +232,10 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	snapshot.Animation = animation
-	// 与 Connect 入口保持同一套默认值：缺省 1080p30，避免同一份时间轴因入口不同产出不同尺寸。
+	// 与 Connect 入口保持同一套默认值：帧率缺省 30。
+	// 尺寸不在这里补：它已经由 canvasFor 按源页比例定好，再补一次会把竖屏改回 16:9。
 	if snapshot.FPS <= 0 {
 		snapshot.FPS = 30
-	}
-	if snapshot.Width <= 0 {
-		snapshot.Width = 1920
-	}
-	if snapshot.Height <= 0 {
-		snapshot.Height = 1080
 	}
 	// 与 Connect 入口共用同一份规范字节（见 app.SnapshotBytes）。
 	snapshotBytes, err := app.SnapshotBytes(snapshot)
