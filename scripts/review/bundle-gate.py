@@ -224,10 +224,15 @@ def check_degrade(reports, slides):
     checks.append(Check("V17", "reduced-motion 去掉位移", reduced_moved == 0,
                         f"仍有 {reduced_moved} 层带位移" if reduced_moved else "全部为 identity"))
 
-    reduced_opacity = [layer.get("opacity", 1) for s in reduced_samples for layer in layers_of(s)]
-    checks.append(Check("V17", "reduced-motion 保留 opacity",
-                        any(op < 0.99 for op in reduced_opacity),
-                        f"透明度取值 {sorted(set(round(o, 3) for o in reduced_opacity))[:6]}"))
+    # 判据落在关键帧上而不是取样时刻的 computed style：淡入通常在页首几百毫秒内
+    # 就结束，取样点稍偏后 opacity 就贴近 1（实测 0.99–0.993），阈值判会变成
+    # "机器快一点就失败"的假阴性——而它要回答的其实是"降级后还留不留淡入"。
+    reduced_layers = [layer for s in reduced_samples for layer in layers_of(s)]
+    reduced_opacity_anim = any(layer.get("opacityAnimation") for layer in reduced_layers)
+    sampled_opacity = sorted({round(layer.get("opacity", 1), 3) for layer in reduced_layers})
+    checks.append(Check("V17", "reduced-motion 保留 opacity", reduced_opacity_anim,
+                        f"{sum(1 for l in reduced_layers if l.get('opacityAnimation'))}/{len(reduced_layers)} 层关键帧含 opacity<1"
+                        f"（取样值 {sampled_opacity[:6]}）"))
 
     default_durations = sorted({layer.get("durationMs") for s in default_samples for layer in layers_of(s)})
     reduced_durations = sorted({layer.get("durationMs") for s in reduced_samples for layer in layers_of(s)})

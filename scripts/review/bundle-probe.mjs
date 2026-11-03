@@ -188,7 +188,23 @@ const LAYER_EXPR = `(async () => {
       const anims = n.getAnimations ? n.getAnimations() : [];
       let durationMs = -1;
       if (anims.length) { try { durationMs = anims[0].effect.getTiming().duration; } catch (e) { durationMs = -1; } }
-      return { transform: cs.transform, opacity: Number(cs.opacity), animations: anims.length, durationMs };
+      // 是否还带 opacity 通道：读关键帧而不是读采样时刻的 computed style。
+      // 淡入多在页首几百毫秒内完成，取样点只要偏后一点，opacity 就贴近 1
+      // （实测 0.99–0.993），用阈值判断会变成"跑得快就失败"的假阴性。
+      let opacityAnimation = false;
+      if (anims.length) {
+        try {
+          opacityAnimation = anims.some((a) => (a.effect.getKeyframes() || [])
+            .some((k) => k.opacity !== undefined && Number(k.opacity) < 1));
+        } catch (e) { opacityAnimation = false; }
+      }
+      return {
+        transform: cs.transform,
+        opacity: Number(cs.opacity),
+        animations: anims.length,
+        durationMs,
+        opacityAnimation
+      };
     });
   };
   const total = man && man.artifact ? man.artifact.durationUs : 0;
