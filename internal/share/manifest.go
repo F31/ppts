@@ -57,6 +57,11 @@ type Manifest struct {
 	// 写进清单而不是由播放器读租户策略：一份已经发出去的文件，其行为不该因为
 	// 后台改配置而变化。默认 false（字段省略），与旧包的播放行为一致。
 	TextCopy bool `json:"textCopy,omitempty"`
+	// Watermark 是画面上的水印文案（ADR-029 ②）；空 = 不加（字段省略，旧包行为不变）。
+	//
+	// 与 TextCopy 同一条理由写进清单：成品发出去之后，它的行为与外观不该因为
+	// 后台改套餐而变化。
+	Watermark string `json:"watermark,omitempty"`
 }
 
 type ArtifactInfo struct {

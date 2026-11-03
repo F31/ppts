@@ -93,11 +93,12 @@ func (h *ExportHandler) animatedVideo(ctx context.Context, job *pipeline.Job, sn
 		PagePNGs:        pagePNGs,
 		PageDurationsMS: pageDurations,
 		AudioPath:       audioPath,
-		BurnSubtitles:   snapshot.BurnSubtitles,
-		SubtitleASS:     subtitleASS,
-		FPS:             snapshot.FPS,
-		Width:           snapshot.Width,
-		Height:          snapshot.Height,
+		// 与静态路径同一判据：ASS 非空就是要烧（字幕、水印，或两者都有）。
+		BurnSubtitles: len(subtitleASS) > 0,
+		SubtitleASS:   subtitleASS,
+		FPS:           snapshot.FPS,
+		Width:         snapshot.Width,
+		Height:        snapshot.Height,
 	})
 }
 

@@ -51,6 +51,8 @@ type ShareManifest = {
   artifact: { durationUs: number; snapshotHash?: string };
   /** 讲稿文本是否可选中/复制（ADR-029 ⑥）。缺省视为 false，与旧包行为一致。 */
   textCopy?: boolean;
+  /** 画面水印文案（ADR-029 ②）。缺省视为无水印，与旧包行为一致。 */
+  watermark?: string;
 };
 
 declare global {
@@ -205,7 +207,18 @@ function mount(): void {
   const unspoken = el('span', 'ppts-unspoken');
   subtitleBox.append(spoken, unspoken);
 
-  stage.append(prev.panel, cur.panel, cover, subtitleBox);
+  // 水印（ADR-029 ②）：文案在导出时写进清单，播放器只按它摆位置。
+  // 用文字而不是图片：任意分辨率下都清晰，改文案也不用重新出图。
+  // 挂在最后（最上层）是因为封面也算画面——免费层最先被看到的就是封面那一屏，
+  // 水印若藏在封面下面，转发出去的截图就是干净的了。pointer-events:none 保证
+  // 它不会挡住"点击播放"与滑杆。
+  const watermarkBox = el('div', 'ppts-watermark');
+  if (manifest.watermark) {
+    watermarkBox.textContent = manifest.watermark;
+    stage.append(prev.panel, cur.panel, cover, subtitleBox, watermarkBox);
+  } else {
+    stage.append(prev.panel, cur.panel, cover, subtitleBox);
+  }
 
   const controls = el('div', 'ppts-controls');
   const prevBtn = el('button', 'ppts-btn');

@@ -25,11 +25,20 @@ type ExportService struct {
 	parser    signedURLParser
 	members   membership.Reader
 	recorder  audit.Recorder
+	// gate 与 REST 导出入口用同一份能力判定（ADR-029 ②）。
+	//
+	// 本入口不产出动画，但免费层的分辨率上限与水印必须同样生效：否则免费用户
+	// 走 RPC 导一次静态 mp4 就绕过了 REST 入口的限制——两条入口对同一份时间轴
+	// 给出两种"套餐"结果，是最难解释的一类不一致。
+	gate AnimationGate
 }
 
-func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder) *ExportService {
+func NewExportService(jobs JobCreator, artifacts artifact.Store, objects objectstore.ObjectStore, members membership.Reader, recorder audit.Recorder, gate AnimationGate) *ExportService {
 	parser, _ := objects.(signedURLParser)
-	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser, members: members, recorder: recorder}
+	if gate == nil {
+		gate = deployGate{}
+	}
+	return &ExportService{jobs: jobs, artifacts: artifacts, objects: objects, parser: parser, members: members, recorder: recorder, gate: gate}
 }
 
 // 导出/下载审计（P2-B2）。
@@ -104,6 +113,15 @@ func (s *ExportService) CreateExport(ctx context.Context, req *connect.Request[p
 		Format: format, TimelineKey: req.Msg.GetTimelineKey(), PagePNGKeys: pageKeys,
 		FPS: 30, Width: width, Height: height,
 		BurnSubtitles: req.Msg.GetBurnSubtitles(), IncludeNotes: req.Msg.GetIncludeNotes(),
+	}
+	// 免费层三项（ADR-029 ②）：与 REST 入口同一份判定。
+	// 时长超限在此返回，不建任务——设计 §7.5 禁止"先排队再失败"。
+	if lerr := enforceExportLimits(ctx, s.objects, p.TenantID, req.Msg.GetTimelineKey(), s.gate.Resolve(ctx, p.TenantID), &snapshot); lerr != nil {
+		var overdur *exportDurationExceeded
+		if errors.As(lerr, &overdur) {
+			return nil, connectExportDurationExceeded(overdur)
+		}
+		return nil, connect.NewError(connect.CodeInternal, lerr)
 	}
 	// 用 app 侧的规范字节：导出步骤会把这份载荷反序列化后重算步骤键，
 	// 两边若各写一遍序列化，迟早会因为规整规则不同而对不上（app.SnapshotBytes 的注释）。

@@ -70,6 +70,7 @@ func main() {
 		zipPath      = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
 		singlePath   = flag.String("single", "", "可选：把包内联成单个 .html（ADR-029 ⑤），便于转发与双击")
 		textCopy     = flag.Bool("text-copy", false, "可选：清单标记讲稿可复制（ADR-029 ⑥），用于对比两种形态")
+		watermark    = flag.String("watermark", "", "可选：清单写入水印文案（ADR-029 ②），用于核对成品观感")
 		asJSON       = flag.Bool("json", false, "以 JSON 输出")
 		// 内嵌字体（M6-4）：直接塞给定字体文件，不做裁剪——这个工具的职责是造夹具，
 		// 裁剪属于渲染服务。想造「覆盖率达标」的夹具，就先按夹具字幕裁一份再传进来。
@@ -214,6 +215,7 @@ func main() {
 		SnapshotHash: "sha256:baseline",
 		CreatedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		TextCopy:     *textCopy,
+		Watermark:    *watermark,
 	}
 	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), bundleIn, &buf)
 	if err != nil {

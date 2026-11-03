@@ -97,6 +97,9 @@ type BundleInput struct {
 	// TextCopy 决定成品里的讲稿文本是否可选中/复制（ADR-029 ⑥）。
 	// 由调用方按租户能力给出，打包器只负责写进清单——它不知道也不该知道租户是谁。
 	TextCopy bool
+	// Watermark 是成品画面上的水印文案（ADR-029 ②）；空 = 不加。
+	// 同样由调用方给出：打包器不该去读租户策略，否则离线打包（夹具/CLI）会需要一整套租户上下文。
+	Watermark string
 }
 
 // PageAnimation 是一页的动画素材。
@@ -216,6 +219,7 @@ func (b *BundleBuilder) buildInto(
 
 	manifest := newManifest(timeline, in.Width, in.Height, in.FPS, in.Title, in.SnapshotHash, in.CreatedAt)
 	manifest.TextCopy = in.TextCopy
+	manifest.Watermark = in.Watermark
 
 	files := make(map[string]struct{}, len(timeline.Slides)+8)
 	emit := func(name string, data []byte) error {

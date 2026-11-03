@@ -175,3 +175,33 @@ func TestTextCopyDefaultsOffAndFollowsMasterGate(t *testing.T) {
 		t.Fatal("总闸关闭时不应单独开放文本复制")
 	}
 }
+
+// 免费层三项（ADR-029 ②）：默认不限，显式配置才生效，且不能越过总闸。
+//
+// 默认不限是刻意的：升级当天给所有存量租户突然加上"720p + 水印"，
+// 等于把所有客户的成片质量降一档，且他们什么也没改（与 ADR-7 同一条理由）。
+func TestFreeTierLimitsResolve(t *testing.T) {
+	off := false
+	cfg := GateConfig{DeployEnabled: true, DefaultPercent: 100}
+
+	if got := (AnimationPolicy{}).Resolve("t1", cfg); got.MaxShortSide != 0 || got.Watermark != "" || got.MaxDurationSec != 0 {
+		t.Fatalf("未配置时不应有任何限制：%+v", got)
+	}
+
+	height, duration := 720, 180
+	text := "  由智讲PPT生成  "
+	got := (AnimationPolicy{MaxHeight: &height, MaxDurationSec: &duration, Watermark: &text}).Resolve("t1", cfg)
+	if got.MaxShortSide != 720 || got.MaxDurationSec != 180 || got.Watermark != "由智讲PPT生成" {
+		t.Fatalf("限制未生效：%+v", got)
+	}
+	// 文案两端空白要去掉：运营在 jsonb 里手写时常带空格，渲进画面会变成偏移的水印。
+	if got.Watermark != "由智讲PPT生成" {
+		t.Fatalf("水印文案未 trim：%q", got.Watermark)
+	}
+
+	// 总闸关着时三项限制不该单独带出：没有成品可限制。
+	got = (AnimationPolicy{Enabled: &off, MaxHeight: &height, Watermark: &text}).Resolve("t1", cfg)
+	if got.MaxShortSide != 0 || got.Watermark != "" {
+		t.Fatalf("总闸关闭时不应带出限制：%+v", got)
+	}
+}

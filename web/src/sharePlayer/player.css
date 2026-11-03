@@ -172,6 +172,34 @@ body.ppts-share-page {
   display: none;
 }
 
+/* 画面水印（ADR-029 ②）：右上角、半透明。
+   与烧进 MP4 的 ASS 水印同一位置与同一观感——同一条套餐规则，两种成品不该长得不一样。
+   位置避开底部字幕与左下页码；pointer-events:none 保证它不吃点击。 */
+.ppts-watermark {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  max-width: 60%;
+  padding: 4px 10px;
+  border-radius: 6px;
+  /* 底板与字色是实测调出来的：0.28 的底 + 0.72 的白在浅色页上几乎看不见
+     （白字压白底，只剩一层很淡的灰）。水印的作用是标明出处，先得看得见。
+     55% 纯黑底在白页上约 #737373，白字对比度 ≈4.6:1；在深色页上则与背景同色阶，
+     几乎看不出底板，只剩下文字——两种底图都不突兀。 */
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: clamp(11px, 1.05vw, 16px);
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  pointer-events: none;
+  user-select: none;
+  z-index: 3;
+}
+
 .ppts-subtitle .ppts-spoken {
   color: var(--ppts-spoken);
 }

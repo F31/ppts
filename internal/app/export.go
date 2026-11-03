@@ -53,6 +53,12 @@ type ExportSnapshot struct {
 	// 用 omitempty 保持旧快照逐字节不变：关闭时这个键不出现，
 	// 存量作业的 snapshot_hash 不会因为新增字段而全部变化。
 	TextCopy bool `json:"textCopy,omitempty"`
+	// Watermark 是成片水印文案（ADR-029 ②）；空 = 不加。
+	//
+	// 进快照而不是"导出时再读策略"：水印改变了产物内容，必须改变产物身份。
+	// 否则租户升级去掉水印后，用同一幂等键重放会命中旧的去重记录，
+	// 用户拿到的还是带水印的那份，且没有任何环节报错。
+	Watermark string `json:"watermark,omitempty"`
 }
 
 // AnimationOptions 固定「这片视频依据哪些动画规格渲染」。
@@ -568,6 +574,7 @@ func (h *ExportHandler) htmlBundleInput(ctx context.Context, job *pipeline.Job, 
 		SnapshotHash: snapshotHash,
 		CreatedAt:    time.Now(),
 		TextCopy:     snapshot.TextCopy,
+		Watermark:    snapshot.Watermark,
 	}, pages, nil
 }
 
@@ -851,7 +858,9 @@ func (h *ExportHandler) renderMP4(ctx context.Context, job *pipeline.Job, snapsh
 	if _, err := h.encoder.Encode(ctx, media.MP4EncodeOptions{
 		OutPath: tmp, FPS: snapshot.FPS, Width: snapshot.Width, Height: snapshot.Height,
 		PagePNGs: pagePNGs, PageDurationsMS: pageDurations, AudioPath: audioTmpName,
-		BurnSubtitles: snapshot.BurnSubtitles, SubtitleASS: subtitleASS,
+		// 判据是"有没有要烧的素材"而不是"勾没勾字幕"：只有水印时 ASS 非空，
+		// 也必须开滤镜，否则免费层最有价值的那条路径（导出成片）恰好没有水印。
+		BurnSubtitles: len(subtitleASS) > 0, SubtitleASS: subtitleASS,
 		SubtitleFontName: h.subtitleFontName,
 	}); err != nil {
 		return nil, classifyEncodeError(err)
@@ -885,11 +894,20 @@ func classifyEncodeError(err error) error {
 
 // subtitleASSForBurning 取烧录用字幕（ASS：逐行轮换 + 已朗读位置高亮）。未勾选烧录时返回 nil。
 // 以时间轴 cue（含字符级时间戳）为唯一来源，内容与下载的 .srt/.vtt 同源，只是呈现方式不同。
+//
+// 水印（ADR-029 ②）也走这里：它是一条额外 Dialogue，与字幕同一个 ASS、同一个滤镜。
+// 因此"只有水印、没有字幕"时仍要产出 ASS——返回非空就代表"这一段素材需要烧"，调用方
+// 据此决定是否开字幕滤镜，不必再单独判断水印。
 func (h *ExportHandler) subtitleASSForBurning(snapshot ExportSnapshot, bundle *TimelineAsset) ([]byte, error) {
-	if !snapshot.BurnSubtitles {
+	watermark := strings.TrimSpace(snapshot.Watermark)
+	if !snapshot.BurnSubtitles && watermark == "" {
 		return nil, nil
 	}
-	if bundle.Timeline == nil || len(bundle.Timeline.Subtitles) == 0 {
+	if bundle.Timeline == nil {
+		return nil, errors.New("export job: timeline is empty")
+	}
+	hasCues := len(bundle.Timeline.Subtitles) > 0
+	if snapshot.BurnSubtitles && !hasCues {
 		return nil, errors.New("export job: timeline has no subtitles to burn")
 	}
 	// 字号按输出高度缩放（1080p 约 48px）；缺省 52。
@@ -902,11 +920,32 @@ func (h *ExportHandler) subtitleASSForBurning(snapshot ExportSnapshot, bundle *T
 	}
 	ass, err := media.RenderASS(bundle.Timeline.Subtitles, media.ASSOptions{
 		FontName: h.subtitleFontName, PlayResX: snapshot.Width, PlayResY: snapshot.Height, FontSize: fontSize,
+		Watermark: watermark, DurationUS: timelineDurationUS(bundle.Timeline),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("export job: render burned subtitles: %w", err)
 	}
 	return ass, nil
+}
+
+// timelineDurationUS 取时间轴总时长（微秒）。
+//
+// DurationUS 为 0 的历史时间轴按页累加：水印要覆盖到片尾，靠一个 0 会让它整片不出现，
+// 而合成分支的页时长本来就是逐页给的，累加值与成片长度一致。
+func timelineDurationUS(timeline *media.Timeline) int64 {
+	if timeline == nil {
+		return 0
+	}
+	if timeline.DurationUS > 0 {
+		return timeline.DurationUS
+	}
+	var total int64
+	for _, slide := range timeline.Slides {
+		if slide.EndUS > slide.StartUS {
+			total += slide.EndUS - slide.StartUS
+		}
+	}
+	return total
 }
 
 // blankPagePNG 生成一张深色占位页面图（与播放器暗色主题一致），用于缺图页 / 首屏缺失 /

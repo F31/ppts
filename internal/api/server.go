@@ -203,6 +203,14 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	auth := func(handler http.Handler) http.Handler {
 		return AuthMiddlewareWithOptions(handler, AuthOptions{TenantStatus: opt.TenantStatus, Authenticator: opt.Auth, AllowDevHeaders: allowDevHeaders, LocalPrincipal: opt.LocalPrincipal, TrustProxy: opt.TrustProxy})
 	}
+	// 能力判定只构造一次，四处入口共用：写规格、导出选项、REST 导出、RPC 导出。
+	// 各构造一份也不是不行（判定是纯函数），但共用一份能保证灰度盐与默认百分比不会在某处漏配。
+	// 位置必须在这几个服务注册之前：RPC 导出同样要按套餐夹分辨率、加水印（ADR-029 ②）。
+	animationGate := newTenantAnimationGate(opt.Policy, animation.GateConfig{
+		DeployEnabled:  opt.AnimationEnabled,
+		DefaultPercent: rolloutPercentOrDefault(opt.AnimationRolloutPercent),
+		Salt:           opt.AnimationRolloutSalt,
+	})
 	path, handler := pptsv1connect.NewProjectServiceHandler(NewProjectService(projects, objects, opt.Members, opt.Audit, project.NewPgSlideNotesStore(objects)), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewUploadServiceHandler(NewUploadService(app.NewUploadService(uploads, projects, jobs, objects), objects, opt.Members, opt.Audit), handlerOpts...)
@@ -216,7 +224,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewNarrationServiceHandler(NewNarrationGenerationService(scripts, jobs, projects, objects, opt.Quota, opt.Policy, opt.Members, opt.Audit).WithVoiceSettings(opt.VoiceSettings), handlerOpts...)
 	mux.Handle(path, auth(handler))
-	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members, opt.Audit), handlerOpts...)
+	path, handler = pptsv1connect.NewExportServiceHandler(NewExportService(jobs, artifacts, objects, opt.Members, opt.Audit, animationGate), handlerOpts...)
 	mux.Handle(path, auth(handler))
 	path, handler = pptsv1connect.NewPlaybackServiceHandler(NewPlaybackService(jobs, objects), handlerOpts...)
 	mux.Handle(path, auth(handler))
@@ -236,13 +244,6 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 规格读写与预览共用同一个 resolver：页时长与元素分类只能有一份口径，
 	// 否则"保存时校验用的时长"与"预览渲出的时长"可能是两个数。
 	animationPages := newAnimationResolver(projects, objects, scripts, jobs)
-	// 能力判定只构造一次，三处入口共用：写规格、导出选项、导出入口。
-	// 各构造一份也不是不行（判定是纯函数），但共用一份能保证灰度盐与默认百分比不会在某处漏配。
-	animationGate := newTenantAnimationGate(opt.Policy, animation.GateConfig{
-		DeployEnabled:  opt.AnimationEnabled,
-		DefaultPercent: rolloutPercentOrDefault(opt.AnimationRolloutPercent),
-		Salt:           opt.AnimationRolloutSalt,
-	})
 	NewAnimationHandlerWithGate(opt.Animation, animationPages, animationGate).
 		WithPrefill(jobs, objects).
 		Register(mux, auth)

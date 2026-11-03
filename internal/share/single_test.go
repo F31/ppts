@@ -154,3 +154,41 @@ func TestManifestCarriesTextCopy(t *testing.T) {
 		t.Fatal("关闭时产物里不应出现 textCopy 字样（含压缩前的清单文本）")
 	}
 }
+
+// 水印（ADR-029 ②）：写进清单，且两种形态写的是同一个值。
+// 两种形态必须一致——同一个租户导出的 zip 与单文件不该一个有水印一个没有。
+func TestManifestCarriesWatermark(t *testing.T) {
+	ctx := context.Background()
+
+	in := buildInput()
+	in.Watermark = "由智讲PPT生成"
+	var buf bytes.Buffer
+	m, err := NewBundleBuilder(baseReader(t), nil).Build(ctx, in, &buf)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if m.Watermark != "由智讲PPT生成" {
+		t.Fatalf("清单水印 = %q", m.Watermark)
+	}
+
+	single, mSingle, err := NewBundleBuilder(baseReader(t), nil).BuildSingle(ctx, in)
+	if err != nil {
+		t.Fatalf("build single: %v", err)
+	}
+	if mSingle.Watermark != m.Watermark {
+		t.Fatalf("两种形态水印不一致：bundle=%q single=%q", m.Watermark, mSingle.Watermark)
+	}
+	if !bytes.Contains(single, []byte(`"watermark":"由智讲PPT生成"`)) {
+		t.Fatal("单文件清单没有带 watermark")
+	}
+
+	// 未配置时必须整个键都不出现：旧包没有这个字段，行为要逐字节保持。
+	in.Watermark = ""
+	var buf2 bytes.Buffer
+	if _, err := NewBundleBuilder(baseReader(t), nil).Build(ctx, in, &buf2); err != nil {
+		t.Fatalf("build off: %v", err)
+	}
+	if bytes.Contains(buf2.Bytes(), []byte("watermark")) {
+		t.Fatal("未配置水印时产物里不应出现 watermark 字样")
+	}
+}

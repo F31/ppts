@@ -77,6 +77,15 @@ type ASSOptions struct {
 	FontSize int
 	// MarginV 为底部边距（缺省 60）。
 	MarginV int
+	// Watermark 是压在画面右上角的水印文案（ADR-029 ②）；空 = 不加。
+	//
+	// 走 ASS 而不是 drawtext：字幕烧录已经依赖 libass，再加一条 Dialogue 不需要
+	// 新滤镜、不需要在 filtergraph 里转义字体文件路径（Windows 盘符与反斜杠是这里
+	// 最容易出错的地方），也不会因为 drawtext 缺 fontconfig 而在某些镜像里静默不画。
+	Watermark string
+	// DurationUS 是水印的显示时长（微秒）。有水印时必填：ASS 的 Dialogue 需要
+	// 明确的起止时间，而"整片多久"只有调用方知道（字幕 cue 的末尾不等于片尾）。
+	DurationUS int64
 }
 
 // 与前端 playerClock.splitLines 保持一致的断行参数：烧录字幕与播放器逐行轮换同规则，
@@ -136,6 +145,30 @@ func RenderASS(cues []SubtitleCue, opts ASSOptions) ([]byte, error) {
 	b.WriteString("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n")
 	fmt.Fprintf(&b, "Style: Default,%s,%d,%s,%s,%s,%s,0,0,0,0,100,100,0,0,1,3,1,2,60,60,%d,1\n\n",
 		font, fontSize, spokenColor, unspokenColor, outlineColor, backColor, marginV)
+	// 水印样式（ADR-029 ②）：右上角、半透明白字黑边。
+	//
+	// 选右上角不是随手定的：字幕固定在底部居中，水印压在右下会与字幕互相遮挡，
+	// 而左下常有页码等版式元素。右上角在纯色与图片背景上都能看清。
+	watermark := strings.TrimSpace(opts.Watermark)
+	watermarkSize := playY * 30 / 1080
+	if watermarkSize < 18 {
+		watermarkSize = 18
+	}
+	if watermark != "" {
+		// 时长拿不到就不画：ASS 没有"到片尾"的写法，写死一个猜测值会让水印
+		// 在长片上提前消失——比不加水印更糟，因为没人会发现。
+		if opts.DurationUS <= 0 {
+			return nil, errors.New("media: watermark requires a positive duration")
+		}
+		// 白色填充 + 深色描边（Outline 1.5）：浅色页与深色页都能读。
+		//
+		// 描边不透明度从 0x90 收紧到 0x20，是实测出来的：0x90（约 56% 不透明）在纯白页上
+		// 只剩一圈淡灰，字几乎化在背景里；水印既然要"标明出处"，就得先看得见。
+		fmt.Fprintf(&b, "Style: Watermark,%s,%d,&H40FFFFFF,&H40FFFFFF,&H20000000,&H00000000,0,0,0,0,100,100,0,0,1,1.5,0,9,40,40,40,1\n\n",
+			font, watermarkSize)
+	} else {
+		b.WriteString("\n")
+	}
 	b.WriteString("[Events]\n")
 	b.WriteString("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
 
@@ -173,6 +206,13 @@ func RenderASS(cues []SubtitleCue, opts ASSOptions) ([]byte, error) {
 			fmt.Fprintf(&b, "Dialogue: 0,%s,%s,Default,,0,0,0,,%s\n",
 				formatASSTimestamp(lineStartUS), formatASSTimestamp(lineEndUS), text.String())
 		}
+	}
+	// 水印排在字幕之后：libass 按出现顺序叠同层事件，写在后面才盖在上层。
+	// 位置在右上角、字幕在底部，正常不重叠；但水印文案较长或画布很窄时可能碰上，
+	// 那时"标明出处"应该压过字幕，而不是被字幕压掉。
+	if watermark != "" {
+		fmt.Fprintf(&b, "Dialogue: 0,0:00:00.00,%s,Watermark,,0,0,0,,%s\n",
+			formatASSTimestamp(opts.DurationUS), escapeASSText(watermark))
 	}
 	return []byte(b.String()), nil
 }

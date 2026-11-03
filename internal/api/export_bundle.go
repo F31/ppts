@@ -179,10 +179,24 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeConnectError(w, cerr)
 		return
 	}
+	// 能力判定提前到建快照之前：分辨率夹紧、水印文案、时长上限都要写进快照，
+	// 而快照一旦定稿就进了 snapshotHash——先建后改等于同一个幂等键能产出两份成片。
+	capability := h.gate.Resolve(r.Context(), principal.TenantID)
 	snapshot := app.ExportSnapshot{
 		Format: format, TimelineKey: timelineKey, PagePNGKeys: pageKeys,
 		FPS: req.FPS, Width: width, Height: height,
 		BurnSubtitles: req.BurnSubtitles, IncludeNotes: req.IncludeNotes,
+	}
+	// 免费层三项（ADR-029 ②）：分辨率夹紧、水印、时长上限。
+	// 时长超限在这里就返回，不建任务、不预占额度（设计 §7.5）。
+	if lerr := enforceExportLimits(r.Context(), h.objects, principal.TenantID, timelineKey, capability, &snapshot); lerr != nil {
+		var overdur *exportDurationExceeded
+		if errors.As(lerr, &overdur) {
+			writeExportDurationExceeded(w, overdur)
+			return
+		}
+		writeConnectError(w, connect.NewError(connect.CodeInternal, lerr))
+		return
 	}
 	animation, err := animationExportOptions(string(format), req.Animation)
 	if err != nil {
@@ -193,7 +207,6 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 	// 快照是"这次导出依据什么"的承诺，同一份快照必须对应同一份产物。
 	// 若留着动画照着静态渲，这个快照键就会被写成静态字节——之前那份同键的动画产物被覆盖，
 	// 用户下次下载"动画版"拿到的其实是静态版，而且全程没有任何报错。
-	capability := h.gate.Resolve(r.Context(), principal.TenantID)
 	// 文本复制（ADR-029 ⑥）只对 HTML 成品有意义：mp4 的画面是烧进像素的，
 	// 写进快照只会改变 hash、把同一份 mp4 拆成两个去重键。
 	if format == artifact.FormatHTMLBundle || format == artifact.FormatHTMLSingle {

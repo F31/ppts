@@ -74,6 +74,23 @@ type AnimationPolicy struct {
 	// 共用同一行、同一次读取、同一个解析器，避免为单个布尔再引一套存储与迁移。
 	// 代价是名字不精确，接受。
 	TextCopy *bool `json:"text_copy,omitempty"`
+	// MaxHeight 是成片**短边**上限（ADR-029 ②）。0 / nil 表示不限。
+	//
+	// 用短边而不是高度：竖屏 1080×1920 的"高度"是 1920，按高度限制会把竖屏一律压到 720×1280
+	// 的同一档里，而横屏 1280×720 的短边也是 720——两者本该是同一档画质。
+	// 取短边，"720p"在横竖两种画布上指同一件事。
+	MaxHeight *int `json:"max_height,omitempty"`
+	// Watermark 是成片水印文案（ADR-029 ②）；nil / 空串表示不加。
+	//
+	// 用文案而不是 bool：水印的作用是标明出处，出处得写出来（"由智讲PPT生成"）。
+	// 文案由运营按套餐配，代码里不写死产品名——改文案不该发一次版。
+	Watermark *string `json:"watermark,omitempty"`
+	// MaxDurationSec 是单个成片的时长上限（秒），0 / nil 表示不限。
+	//
+	// 与 MaxMinutes 是两件事：MaxMinutes 是**账期累计**（用超了要等下个月），
+	// 这条是**单次**（这条片子本身就不该出）。混成一个会让用户看不懂
+	// "为什么上个月的额度还剩很多，这条 5 分钟的片子却不让导"。
+	MaxDurationSec *int `json:"max_duration_sec,omitempty"`
 }
 
 // GateConfig 是判定所需的环境输入。
@@ -97,6 +114,13 @@ type Capability struct {
 	Bucket int `json:"bucket"`
 	// TextCopy 表示本次判定允许成品携带可复制文本（仅 HTML 成品有效）。
 	TextCopy bool `json:"textCopy,omitempty"`
+	// MaxShortSide 是成片短边上限（0 = 不限）。受理时据此夹紧画布（ADR-029 ②）。
+	MaxShortSide int `json:"maxShortSide,omitempty"`
+	// Watermark 是成片水印文案（空 = 不加）。写进快照后进 snapshotHash：
+	// 同一份输入在"有水印"与"无水印"两种策略下必须产出两个不同的产物键。
+	Watermark string `json:"watermark,omitempty"`
+	// MaxDurationSec 是单条成片时长上限（0 = 不限）。超限在受理时拒绝，不建任务。
+	MaxDurationSec int `json:"maxDurationSec,omitempty"`
 	// MaxMinutes 是每月动画渲染分钟数上限；0 表示不限。
 	//
 	// 0 是默认值，不是"用系统默认的 60"：升级当天给所有存量租户加一道硬停，
@@ -155,6 +179,16 @@ func (p AnimationPolicy) Resolve(tenantID string, cfg GateConfig) Capability {
 		c.Preview = boolValue(p.Preview, true)
 		// 文本复制跟随总闸：动画通道整体关闭时不单独开放成品能力。
 		c.TextCopy = boolValue(p.TextCopy, false)
+		// 三项免费层限制（ADR-029 ②）同样跟随总闸。
+		if p.MaxHeight != nil && *p.MaxHeight > 0 {
+			c.MaxShortSide = *p.MaxHeight
+		}
+		if p.Watermark != nil {
+			c.Watermark = strings.TrimSpace(*p.Watermark)
+		}
+		if p.MaxDurationSec != nil && *p.MaxDurationSec > 0 {
+			c.MaxDurationSec = *p.MaxDurationSec
+		}
 		if p.MaxMinutes > 0 {
 			c.MaxMinutes = p.MaxMinutes
 		}
