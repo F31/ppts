@@ -59,31 +59,58 @@ python3 scripts/fidelity/compare.py \
 ### 五步
 
 ```bash
-# 0) 底图沿用 5.5 那套（同样五页、同一份字形）
-cp -r tmp/5.5/fid tmp/q7/fid
+# 0) 底图：五页、与线上同一份字形（字体的取法见上文「四步跑完」第 1 步）
+python3 scripts/fidelity/gen_pages.py --fonts /tmp/ppts-fonts --out tmp/q7/fid
+#    不用容器时，指向本机已备好的 NotoSansCJKsc-{Regular,Bold}.otf 所在目录即可——
+#    造出来的底图必须和渲染服务用的是同一份字形，否则比的是字体差异。
 
 # 1) 讲解词 → 逐段配音 + 页内时间轴（edge-tts + ffmpeg，在 WSL 里跑）
-python3 scripts/fidelity/narrate.py
+#    依赖一次性装好。Ubuntu 24.04 的系统 python 是 externally-managed，pip 直接装会
+#    被 PEP 668 拦下，所以走 venv：
+#      python3 -m venv ~/.venvs/fid && ~/.venvs/fid/bin/pip install edge-tts
+#      sudo apt install ffmpeg            # narrate 用 ffmpeg 裁首尾静音与拼整轨
+cd /mnt/e/projects/ppts && ~/.venvs/fid/bin/python scripts/fidelity/narrate.py
 #    → tmp/q7/segments.json（每段起止）+ tmp/q7/audio/timeline.wav（整轨）
 #    → tmp/q7/words.json（逐词边界，绑定与 V11 的参照物）
+
+# 1b) 把脚本里的 bind / focus / focusAt 同步进 segments.json
+python3 scripts/fidelity/sync_bind.py \
+  --script scripts/fidelity/q7-script.json --segments tmp/q7/segments.json
+#    narrate.py 只抄 bind（它只管「何时出场」）；focus / focusAt 决定「讲它时谁让位」，
+#    由这一步写入，顺带把 atText（「念到一百三十一那一刻」）解析成 atMs——那要查
+#    words.json，所以做不成纯文本替换。页级 static 也在这一步补上。
+#
+#    **漏掉这一步不会报错**，这才是它值得单列的理由：plan 只认 atMs，atText 会被
+#    当成 0，focus 更是整段丢失。后果是柱子铺满后 8 秒画面不动，V8.1（画面静止）
+#    与 V11.1（出场对齐数值词，而不是对齐焦点）一起红——看起来像渲染器坏了，
+#    实际只是少跑了一条同步命令。
 
 # 2) 编译计划：clip.trigger 写成 withSegment:<段 id>，页长取配音实测值
 go run ./scripts/fidelity/plan -in tmp/q7/fid -out tmp/q7/job \
   -tier-compliant -script tmp/q7/segments.json -hard-cut
 #    → plan.json（零 warning；未绑定的元素走页末 atTime 淡入）
 
-# 3) 渲染 + 拼接 + 混入音轨（起容器、提交、取产物、合成一次跑完）
-bash tmp/q7/run_all.sh
-#    → tmp/q7/film_C_narrated.mp4
+# 3) 渲染 + 拼接 + 混入音轨（一条命令跑完）
+bash scripts/fidelity/render_film.sh
+#    → tmp/q7/film_M_narrated.mp4（另留一份无声轨的 tmp/q7/video_only.mp4）
+#
+#    默认在本机起 cmd/renderer（Remotion + 本机 Chrome），提交、轮询、取片——不需要
+#    容器，也不需要常驻服务。有现成渲染服务时用
+#    --engine http --renderer-url http://127.0.0.1:8090（起法见 deploy/renderer/
+#    README.md「单机部署」）。
+#
+#    **别为了省事直调 renderer/render.mjs。** 底板（plate）由 Go 侧 stagePages 从原图
+#    抠出来，缺了它，淡入的层只是把整页底图又叠一遍：片子照出，判据却集体读成
+#    「元素从没出现」（第一版 Q7 就这么错过，18 条里 11 条 onset=None）。
 
-# 4) 一次跑完全部测量 + 27 项判据
-PPTS_SEG_DIR=tmp/q7/out-m python3 scripts/fidelity/verify.py \
-  --film tmp/q7/film_M_narrated.mp4 --segments tmp/q7/segments-l.json \
-  --elements tmp/q7/fid/elements.json --plan tmp/q7/job-m/plan.json \
-  --alignment tmp/q7/alignment-m.json --appearance tmp/q7/appearance-m.json \
-  --motion tmp/q7/motion-m.json --chart tmp/q7/chart-m.json --focus tmp/q7/focus-m.json \
-  --words tmp/q7/words.json --json tmp/q7/verify-m.json --rerun
-#    --rerun 会重跑六个测量脚本，再审计；报告一律按 -m 后缀分版，不要共用一个文件
+# 4) 一次跑完全部测量 + 27 项判据（--rerun 会重跑六个测量脚本，再审计）
+python3 scripts/fidelity/verify.py --film tmp/q7/film_M_narrated.mp4 --rerun
+#    其余默认参数就指向 tmp/q7 下的 segments.json / job/plan.json / 各测量报告，
+#    与第 3 步的产物对得上。要同时保留多版实验时显式换名（--json / --alignment /
+#    --appearance / --motion …），不要让两版共用一个报告文件——门禁读的是报告，
+#    报告一律按版本分文件，否则量的是上一版。
+#    注意：六个测量脚本调 ffmpeg 读像素，Windows 的 Git Bash 侧通常没有 ffmpeg，
+#    这一步在 WSL 里跑（`cd /mnt/e/projects/ppts && python3 scripts/fidelity/verify.py …`）。
 
 # 5) 人工评审
 python3 scripts/review/serve.py --root tmp/q7 --page scripts/review/q7.html \

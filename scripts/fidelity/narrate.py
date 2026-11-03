@@ -282,6 +282,18 @@ def main():
     print(f"words → {words_json}（{len(words_doc)} 段 / "
           f"{sum(len(v['words']) for v in words_doc.values())} 词）")
     print(f"audio → {timeline} ({os.path.getsize(timeline)} bytes)")
+
+    # 这里只抄了 bind（「何时出场」）。focus / focusAt（「讲它时谁让位」）还没进
+    # segments.json——它们由 sync_bind.py 写入，因为 atText（「念到一百三十一那一刻」）
+    # 要查 words.json 才能落成 atMs。漏跑那一步不会报错：plan 把 atText 当 0、focus
+    # 整段丢失，成片「铺满之后就不动了」，而 V8/V11 会红成像是渲染器坏了。
+    need_sync = any(seg.get("focus") or seg.get("focusAt")
+                    for page in script.get("pages", [])
+                    for seg in page.get("segments", []))
+    if need_sync:
+        print("\n下一步（脚本里有 focus/focusAt，必须跑）：\n"
+              f"  python3 scripts/fidelity/sync_bind.py --script {args.script} "
+              f"--segments {out_json}")
     return 0
 
 
