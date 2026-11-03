@@ -189,6 +189,27 @@ def numbers_in(text):
     return out
 
 
+def labeled_chart_values(chart):
+    """图表块里**画在屏幕上**的数值：去重、保序。
+
+    只收数据标签打开的图。标签关掉时画面上一个数都没有——数据里有、屏幕上看不见，
+    这时要求讲稿念它，是把判据用错了对象（观众根本没有「图上标了这个数」可比对）。
+
+    去重是因为同一个数在一张图里出现两次（两条系列都画了 100，或者四根柱子都是 100），
+    在画面上仍然是「一个数」，讲稿念一遍就够，不该报两遍。
+    """
+    if not chart or not chart.get("dataLabels"):
+        return []
+    out = []
+    for s in chart.get("series") or []:
+        for v in s.get("values") or []:
+            if v is None:
+                continue
+            if not any(abs(v - o) < 1e-6 for o in out):
+                out.append(float(v))
+    return out
+
+
 def narration_findings(design, elems):
     """V10：图上标了数的元素，讲解必须念到这个数。
 
@@ -199,6 +220,15 @@ def narration_findings(design, elems):
 
     人为什么看不出：讲稿自己读起来是通的（「两核一百七十四秒，四核一百三十一秒」
     是个完整句子）。只有把图和讲稿并排数一遍，才知道四根柱子只讲了 2/4。
+
+    两种来源都要查：手工画的柱子逐个带 `value`；PPTX 里内嵌的图表是一个形状，
+    数值在 `chart` 块里（见 `extract_pptx_elements.py`）。只查前者，真实 deck
+    的图表页会一路报绿——那不是「讲全了」，是「没东西可查」。
+
+    口径是**每个标签都要念**，不是「念一个就够」。理由：标签开着的每个数都是画面
+    上的一句断言，漏掉的观众会在心里问「这个数是什么」。类别太多时，正确做法是
+    关掉数据标签或合并类别，而不是放宽这条判据——放宽之后它就只能抓「一个都没念」，
+    而「念了两个、漏了两个」正是当年查出四个柱子只讲两根的那种情形。
     """
     pages = {p.get("index"): p for p in (elems or [])}
     missing = []
@@ -211,11 +241,13 @@ def narration_findings(design, elems):
             spoken.extend(numbers_in(seg.get("text") or ""))
         for e in meta.get("elements") or []:
             v = e.get("value")
-            if v is None:
-                continue
-            if not any(abs(v - s) < 1e-6 for s in spoken):
+            if v is not None and not any(abs(v - s) < 1e-6 for s in spoken):
                 missing.append("页 %d %s = %g：整页讲解没有念这个数"
                                % (page.get("index"), e.get("id"), v))
+            for cv in labeled_chart_values(e.get("chart")):
+                if not any(abs(cv - s) < 1e-6 for s in spoken):
+                    missing.append("页 %d %s = 图表标签 %g：整页讲解没有念这个数"
+                                   % (page.get("index"), e.get("id"), cv))
     return [{"code": "V10.1", "ok": not missing,
              "msg": "讲稿覆盖：图上每个数值都被念到", "detail": missing}]
 
@@ -644,7 +676,9 @@ def audit(design, align, appear, film, elems=None, plan=None):
         add("V9.1", True, "图表比例未测（--chart），本项跳过", [])
     else:
         detail = []
-        for r in chart:
+        measured = [r for r in chart if not r.get("skipped")]
+        skipped = [r for r in chart if r.get("skipped")]
+        for r in measured:
             if r.get("ok"):
                 continue
             if r.get("missing"):
@@ -653,8 +687,18 @@ def audit(design, align, appear, film, elems=None, plan=None):
             if r.get("spread"):
                 detail.append("页 %d：柱高/数值 最大差 %.2f 倍（容差 %.2f）"
                               % (r["page"], r["spread"], CHART_SPREAD_MAX))
-        add("V9.1", all(r.get("ok") for r in chart),
-            "图表不说谎：柱高与标注值成比例", detail)
+        for r in skipped:
+            detail.append("页 %d：未测——%s" % (r["page"], r["skipped"]))
+        msg = "图表不说谎：柱高与标注值成比例"
+        if not measured:
+            # 整片只有内嵌图表：没有逐柱包围盒，量不了高度。这里说「未测」，
+            # 既不写「通过」（没量过就不是通过），也不退回「本片无图表可查」——
+            # 后者会让读报告的人以为这页压根没有图表，正好把盲区藏起来。
+            msg = "图表比例未测：%d 页为内嵌图表（无逐柱包围盒）" % len(skipped)
+        elif skipped:
+            msg = ("图表不说谎：%d 页测得比例，%d 页内嵌图表未测"
+                   % (len(measured), len(skipped)))
+        add("V9.1", all(r.get("ok") for r in chart), msg, detail)
 
     # ---- V10 讲稿覆盖：画面与旁白对不对得上（不需要成片，纯查两份文本）
     if elems:
@@ -1034,6 +1078,37 @@ def self_test():
                   and numbers_in("174s") == [174.0]
                   and numbers_in("九百四十三") == [943.0],
                   [numbers_in("一百七十四秒"), numbers_in("二点七 GB")]))
+
+    # 内嵌图表：数值在 `chart` 块里，不在元素上。缺这条，真实 deck 的图表页在 V10 上
+    # 是「没东西可查」而不是「讲全了」，报告照样绿。
+    e10c = [{"index": 0, "elements": [
+        {"id": "p1-s2", "kind": "chart", "box": [0, 0, 10, 10],
+         "chart": {"dataLabels": True, "categories": ["2 核", "4 核", "8 核"],
+                   "series": [{"name": "耗时", "values": [174, 131, 96]}]}}]}]
+    d10c = {"pages": [{"index": 0, "segments": [
+        {"id": "s1", "text": "两核一百七十四秒，四核一百三十一秒。"}]}]}
+    got10c = {x["code"]: x["ok"] for x in narration_findings(d10c, e10c)}
+    cases.append(("V10.1-chart", got10c.get("V10.1") is False, got10c))
+    # 反向：三个数都念到就绿
+    d10d = json.loads(json.dumps(d10c))
+    d10d["pages"][0]["segments"][0]["text"] = (
+        "两核一百七十四秒，四核一百三十一秒，八核九十六秒。")
+    got10d = {x["code"]: x["ok"] for x in narration_findings(d10d, e10c)}
+    cases.append(("V10.1-chart-ok", got10d.get("V10.1") is True, got10d))
+    # 数据标签关掉：画面上根本没有数，要求念它是把判据用错了对象
+    e10e = json.loads(json.dumps(e10c))
+    e10e[0]["elements"][0]["chart"]["dataLabels"] = False
+    got10e = {x["code"]: x["ok"] for x in narration_findings(d10c, e10e)}
+    cases.append(("V10.1-chart-unlabeled", got10e.get("V10.1") is True, got10e))
+
+    # 内嵌图表的 V9 必须报「未测」。若它悄悄消失，报告与「量过且合格」长得一模一样。
+    _f9 = json.loads(json.dumps(film))
+    _f9["chart"] = [{"page": 0, "atMs": None, "bars": [], "spread": None,
+                     "missing": [], "ok": True,
+                     "skipped": "内嵌图表 1 个（3 个数值）：只有整块包围盒"}]
+    _v9 = {x["code"]: x for x in audit(design, align, appear, _f9, elems)}.get("V9.1") or {}
+    cases.append(("V9.1-skip-msg",
+                  _v9.get("ok") is True and "未测" in (_v9.get("msg") or ""), _v9))
 
     # V11：这一段讲的就是 174，段首就指它 —— 正确，哪怕「一百七十四」1.5s 后才念到。
     # 这是口径改过的地方：旧版会把这条判成「抢话」，于是逼着编排等数字，

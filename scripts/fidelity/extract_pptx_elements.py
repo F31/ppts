@@ -15,7 +15,9 @@
 
 真实链路里的元素来自 `project.Shape`（`internal/project/model.go`），
 `PageElements` 换算成 `render.Element` 时只留 ID/Kind/Bounds，文本丢掉。
-这里用 python-pptx 复刻同一份清单：同样的四件事——id、kind、包围盒、文本。
+这里用 python-pptx 复刻同一份清单：同样的四件事——id、kind、包围盒、文本，
+外加图表的**数值**（`chart` 键，含类别、系列、数据标签开关）。没有最后这一项，
+V10「图上每个数都要念到」在真实 deck 的图表页上就无从下手，只能报绿。
 **kind 的判定是启发式的**（见 `classify()`），真实链路里 kind 来自形状类型与占位符，
 两边不必逐字相同；绑定器只把 kind 当作「图注/页码这类不该动」的线索用。
 
@@ -60,6 +62,100 @@ def max_font_pt(shape):
     return max(sizes) if sizes else None
 
 
+def chart_block(shape):
+    """图表形状 → 结构化数据。None = 不是图表。
+
+    为什么必须抽出来：真实 deck 里图表是**一个**形状，元素清单只给得出一块包围盒。
+    没有数值，V10（讲稿覆盖）在图表页上不是「通过」而是「没东西可查」——两者在报告
+    里长得一样，都是绿的。这就是路线图记的「嵌入式图表位图，V9/V10/V11 无从下手」。
+
+    这里复刻 go-pptx 侧已有的 `ChartSeries` / `ChartCategories`（`internal/project`），
+    字段名与 `scripts/fidelity/plan` 的输入保持同一套，免得两个样本各说各话。
+
+    `dataLabels` 单独标出来，因为「图上有这个数」和「数据里有这个数」是两件事：
+    数据标签关掉时，观众在画面上看不到任何数值，此时要求讲稿念它反而是错的。
+    """
+    if not getattr(shape, "has_chart", False):
+        return None
+    try:
+        chart = shape.chart
+        plots = list(chart.plots)
+    except Exception:
+        # python-pptx 对少见图表类型（如 3D / 组合图）会抛；退化为普通形状，
+        # 而不是让整个元素清单失败——抽不出数值是这一页的损失，不该是全片的。
+        return None
+    if not plots:
+        return None
+
+    cats, series, labeled = [], [], False
+    for plot in plots:
+        try:
+            if not cats and plot.categories is not None:
+                cats = [str(c) for c in plot.categories]
+        except Exception:
+            pass
+        for s in getattr(plot, "series", []) or []:
+            values = [None if v is None else float(v) for v in s.values]
+            series.append({"name": getattr(s, "name", "") or "", "values": values})
+        labeled = labeled or bool(getattr(plot, "has_data_labels", False))
+    if not series:
+        return None
+
+    title = ""
+    try:
+        if chart.has_title:
+            title = chart.chart_title.text_frame.text.strip()
+    except Exception:
+        pass
+
+    # 枚举的 str() 是 "COLUMN_CLUSTERED (51)"，括号里的内部编号对判据没用。
+    kind = str(getattr(chart, "chart_type", "")).split(" (")[0].lower()
+    return {"chartType": kind, "title": title, "categories": cats,
+            "series": series, "dataLabels": labeled}
+
+
+def self_test():
+    """往一份现造的 deck 上验 `chart_block`：本地跑，不进 CI（CI 没装 python-pptx）。
+
+    为什么要有：`chart_block` 的输出直接决定 V10 能不能判。它若静默返回 None，
+    V10 在图表页上会退回「没东西可查」，报告照样绿——和没写这段代码一个样。
+    """
+    from pptx.chart.data import CategoryChartData
+    from pptx.enum.chart import XL_CHART_TYPE
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    def add_chart(labels):
+        data = CategoryChartData()
+        data.categories = ["2 核", "4 核", "8 核"]
+        data.add_series("耗时", (174, 131, 96))
+        frame = slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, Inches(1), Inches(1),
+                                       Inches(8), Inches(4), data)
+        frame.chart.plots[0].has_data_labels = labels
+        return frame
+
+    labeled = chart_block(add_chart(True))
+    unlabeled = chart_block(add_chart(False))
+    textbox = slide.shapes.add_textbox(Inches(1), Inches(6), Inches(4), Inches(0.6))
+    cases = [
+        ("图表不被当成普通形状", classify(add_chart(True), [0, 0, 10, 10], None) == "chart"),
+        ("抽出类别", bool(labeled) and labeled["categories"] == ["2 核", "4 核", "8 核"]),
+        ("抽出系列与数值",
+         bool(labeled) and labeled["series"][0]["values"] == [174.0, 131.0, 96.0]),
+        ("数据标签开关被如实记录",
+         bool(labeled) and labeled["dataLabels"] is True
+         and bool(unlabeled) and unlabeled["dataLabels"] is False),
+        ("非图表形状返回 None", chart_block(textbox) is None),
+    ]
+    bad = [name for name, ok in cases if not ok]
+    for name, ok in cases:
+        print(("  ok   " if ok else "  FAIL ") + name)
+    print("\n%d/%d 通过" % (len(cases) - len(bad), len(cases)))
+    return 0 if not bad else 1
+
+
 def classify(shape, box, pt):
     """形状 → kind。
 
@@ -72,6 +168,8 @@ def classify(shape, box, pt):
 
     if shape.has_table:
         return "table"
+    if getattr(shape, "has_chart", False):
+        return "chart"
     if shape.shape_type == 13:                     # PICTURE
         return "image"
     if not text:
@@ -100,13 +198,21 @@ def dump_slide(slide, index, sw, sh):
         if box[2] * box[3] < MIN_AREA_PX:
             continue
         text = shape.text_frame.text.strip().replace("\v", "\n") if shape.has_text_frame else ""
+        chart = chart_block(shape)
+        if chart and not text:
+            # 图表没有 text_frame，标题就是它在版面上唯一的文字。绑定器要按字面匹配
+            # 「这一页在讲什么」，没有标题的图表元素只能靠结构先验绑，等于少一路信号。
+            text = chart["title"]
         kind = classify(shape, box, max_font_pt(shape))
-        elements.append({
+        element = {
             "id": f"p{index + 1}-s{shape.shape_id}",
             "kind": kind,
             "box": box,
             "text": text,
-        })
+        }
+        if chart:
+            element["chart"] = chart
+        elements.append(element)
     # 不排序：**保留文档顺序**，也就是 PPTX 里的 z-order。渲染端给元素编的号、
     # 上一版样片里 `120 + i*180` 的错落、单调对齐 DP 吃的顺序，都是这一个顺序。
     # 按 (y 带, x) 重排听起来更像阅读顺序，实际上会把「卡片标题」和「卡片注释」
@@ -115,6 +221,8 @@ def dump_slide(slide, index, sw, sh):
 
 
 def main():
+    if "--self-test" in sys.argv:
+        return self_test()
     ap = argparse.ArgumentParser()
     ap.add_argument("--pptx",
                     default="internal/animation/animdefault/testdata/sample-customer-deck.pptx")
@@ -140,8 +248,15 @@ def main():
         if not args.quiet:
             print(f"== slide {i + 1} → page {page['index']}  {len(page['elements'])} 个元素")
             for e in page["elements"]:
+                extra = ""
+                if e.get("chart"):
+                    ch = e["chart"]
+                    n = sum(len(s["values"]) for s in ch["series"])
+                    extra = "  [图表 %s / %d 系列 / %d 个数 / 标签%s]" % (
+                        ch["chartType"] or "?", len(ch["series"]), n,
+                        "开" if ch["dataLabels"] else "关")
                 print(f"   {e['id']:10s} {e['kind']:12s} {str(e['box']):24s} "
-                      f"{(e['text'] or '<无文本>')[:44]}")
+                      f"{(e['text'] or '<无文本>')[:36]}{extra}")
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     json.dump(pages, open(args.out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

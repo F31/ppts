@@ -579,7 +579,7 @@ jobs:
   #
   # 为什么 CI 只跑 --self-test：真正的审计要成片、旁白音轨与三份测量报告，
   # 那些在 tmp/q7（.gitignore 里），CI 上不存在。但门禁**本身**是纯逻辑，
-  # 可以喂合成数据——16 项逐条注入故障（剧透、无音轨、覆盖缺口、错落不符…），
+  # 可以喂合成数据——43 项逐条注入故障（剧透、无音轨、覆盖缺口、错落不符…），
   # 断言每种都能红。这样「门禁写坏了、永远返回通过」不会静默通过。
   #
   # 本地要跑真片：python3 scripts/fidelity/verify.py --rerun（约 2 分钟）
@@ -591,5 +591,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: 门禁自检（16 项故障注入）
+      - name: 门禁自检（43 项故障注入）
         run: python3 scripts/fidelity/verify.py --self-test
+      # 元素提取器的图表分支决定 V10 能不能判：它若静默返回空，图表页会一路报绿。
+      # 只有这条路径要 python-pptx，不装它就没法在 CI 上守。
+      - name: 元素提取器自检（图表数值）
+        run: |
+          python3 -m pip install --quiet python-pptx==1.0.2
+          python3 scripts/fidelity/extract_pptx_elements.py --self-test

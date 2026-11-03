@@ -23,6 +23,9 @@
 
 - 只在页末量：动画中间的柱高是设计出来的，不是数据。
 - 只认得「实心柱」：折线、饼图、堆叠柱都不适用，脚本遇到没有 `value` 的元素直接跳过。
+- 内嵌图表（PPTX 里的 chart 形状）**测不了**：它是一个元素、一块包围盒，没有逐柱
+  的几何。这类页会留一条 `skipped` 记录，门禁报「未测」而不是「通过」——柱高本来就
+  由图表引擎算，不会说谎；真正要查的是讲稿有没有念到，那归 V10。
 - 量不出绝对坐标误差：柱底画在亚像素位置时高度会差 1–2px，所以容差给到 8%。
 
 用法：
@@ -108,8 +111,23 @@ def main():
 
     report = []
     for page in seg["pages"]:
-        bars = [e for e in elems.get(page["index"], []) if e.get("value")]
+        page_elems = elems.get(page["index"], [])
+        bars = [e for e in page_elems if e.get("value")]
         if len(bars) < 2:
+            # 内嵌图表（PPTX 里 chart 形状）是**一个**元素，覆盖整块图表区，
+            # 没有逐柱的包围盒，量不出单根柱子的高度。这里留一条显式的「未测」，
+            # 而不是让这页从报告里消失——消失的页和量过的页在汇总里都算绿，
+            # 盲区就是这么被藏起来的。
+            charts = [e for e in page_elems if e.get("chart")]
+            if charts:
+                values = sum(len(s.get("values") or [])
+                             for e in charts for s in (e["chart"].get("series") or []))
+                report.append({
+                    "page": page["index"], "atMs": None, "bars": [],
+                    "spread": None, "missing": [], "ok": True,
+                    "skipped": ("内嵌图表 %d 个（%d 个数值）：只有整块包围盒，"
+                                "没有逐柱包围盒，量不了柱高" % (len(charts), values)),
+                })
             continue
         # 页末前 300ms：入场早已收敛，又还没被切到下一页。
         t = starts[page["index"]] + page["durationMs"] - 300
@@ -138,6 +156,9 @@ def main():
     json.dump(report, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
     for r in report:
+        if r.get("skipped"):
+            print("== page %d  未测：%s" % (r["page"], r["skipped"]))
+            continue
         print("== page %d  @%.2fs  柱高/数值 最大差 %.2f 倍  %s"
               % (r["page"], r["atMs"] / 1000, r["spread"] or 0,
                  "OK" if r["ok"] else "**不成比例**"))
@@ -146,7 +167,7 @@ def main():
                   % (b["element"], b["value"], b["heightPx"], b["pxPerUnit"] or 0,
                      "   ← 柱体缺失" if b["element"] in r["missing"] else ""))
     if not report:
-        print("没有带 value 的元素：本片无图表可查")
+        print("既没有带 value 的元素，也没有内嵌图表：本片无图表可查")
     print("\n→ %s" % out_path)
 
 
