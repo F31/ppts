@@ -53,6 +53,9 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from domshot import run_dom_shot  # noqa: E402
+
+# 与 shot-gate 同一口径：暂停中的播放器读数恒定，超过它就是「画面还在走」。
+MOVE_TOLERANCE_MS = 2
 from ssim import ssim_map  # noqa: E402
 
 
@@ -232,6 +235,22 @@ def main():
         print(f"[V13] 无法执行浏览器截图：{exc}", file=sys.stderr)
         return 2
     shots = {s["requestedMs"]: s for s in report.get("shots", [])}
+
+    # 画面还在走的时候，SSIM 低是「拍晚了一帧」而不是「两端画得不一样」。
+    # 这两种在报告里长得一模一样（实测 0.9388 vs 0.9999），处置却相反：
+    # 前者去修冻结，后者去修渲染。所以先一律拦住，不拿会走的帧去算分数。
+    moving = [c for c in cases
+              if abs(float((shots.get(c[3]) or {}).get("moveMs", 0.0))) > MOVE_TOLERANCE_MS]
+    if moving:
+        for index, label, local_ms, abs_ms in moving:
+            shot = shots.get(abs_ms) or {}
+            print(f"FAIL [V13] page {index} {label}@{local_ms}ms：截图时播放器还在走"
+                  f"（测量窗内前进 {abs(float(shot.get('moveMs', 0.0))):.1f}ms），"
+                  f"拍到的不一定是 {abs_ms}ms 那一帧；暂停方式={shot.get('pauseBy') or '未尝试'}",
+                  file=sys.stderr)
+        print("这一帧不能用，因此没有参与比对；包里的播放器若没有 __PPT_PAUSE__"
+              "（旧包），用当前 HEAD 重新打包。", file=sys.stderr)
+        return 1
 
     # 每页的运动区域在循环外算一次：它是计划本身的属性，与取样点无关。
     regions = {i: motion_region(page, stage) for i, page in enumerate(pages)}

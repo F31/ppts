@@ -17,6 +17,10 @@
   5. 每个取样点上，层的可见性 == 「这一镜是不是特写」。`crop` 非空的镜头里层
      MUST NOT 显示（层的 box 是整页坐标，局部放大后必然错位）；整页镜里 MUST 显示。
 
+先看「画面停住了没有」，再看落点：播放器还在走时，落点差一帧和「切错了图」
+在报告里长得一样，而处置相反（修冻结 vs 修渲染）。探针用播放器的 `__PPT_PAUSE__`
+冻结后再读一次位置差（`moveMs`），超过 2ms 即判「这一帧不能用」。
+
 「主图」= 当前面板里未 hidden、不透明度最高的那张图。只看第一张会答成「底层图」，
 而在叠化期间底层永远是旧图——那个答案在切点前是对的，看起来毫无破绽。
 
@@ -47,6 +51,10 @@ FRAME_MS = 33
 # 超过它就说明定位退化成了滑杆，而滑杆的量化步长随时长变——不拦住的话，
 # 「时间没取准」会被记成「图切错了」。
 SEEK_TOLERANCE_MS = 5
+# 一帧之内允许的位置变化。暂停中的播放器读数是恒定的（音频时钟不推进，
+# 无音频时是固定基准），所以正常值是 0；2ms 只是留给读数本身的毫秒取整。
+# 超过它就是「画面还在走」：这时落点差多少都不重要，拍到的那一帧本来就不该用。
+MOVE_TOLERANCE_MS = 2
 SETTLED_OPACITY = 0.95
 
 
@@ -185,12 +193,26 @@ def main():
             checks.append({"code": "V18", "page": page, "shot": k, "point": label,
                            "status": "fail", "detail": "没有取到这一帧"})
             continue
+        # 先判「画面停住了没有」，再判落点。顺序不能反：画面在走的时候，
+        # 落点差一帧与「切错了图」在报告里长得一模一样，而两者的处置相反
+        # （前者去修冻结，后者去修渲染）。
+        move = abs(float(shot.get("moveMs", 0.0)))
+        if move > MOVE_TOLERANCE_MS:
+            checks.append({"code": "V18", "page": page, "shot": k, "point": label,
+                           "status": "fail",
+                           "detail": f"截图时播放器还在走（测量窗内前进 {move:.1f}ms）：拍到的不一定是"
+                                     f" {at_ms}ms 那一帧。"
+                                     f"暂停方式={shot.get('pauseBy') or '未尝试'}"
+                                     f"，playing={shot.get('playing')}；"
+                                     "包里的播放器若没有 __PPT_PAUSE__（旧包），用当前 HEAD 重新打包"})
+            continue
         drift = abs(float(shot.get("actualMs", -1e9)) - at_ms)
         if drift > SEEK_TOLERANCE_MS:
             checks.append({"code": "V18", "page": page, "shot": k, "point": label,
                            "status": "fail",
                            "detail": f"落点偏差 {drift:.0f}ms > {SEEK_TOLERANCE_MS}ms"
-                                     f"（定位{'钩子' if shot.get('precise') else '退化成了滑杆'}）"})
+                                     f"（定位{'钩子' if shot.get('precise') else '退化成了滑杆'}，"
+                                     f"暂停方式={shot.get('pauseBy') or '未尝试'}）"})
             continue
         ok, detail = check_case(page, k, label, expect, shot)
         rows.append((page, k, label, at_ms, ok, detail))

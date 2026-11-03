@@ -13,6 +13,7 @@ import { shotAt, cameraTransform } from '../../../shared/shots.ts';
 import type { FocusSpan, Shot } from '../../../shared/types';
 import { buildLayerNodes, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
+import { createPlayGuard } from './playGuard';
 import './player.css';
 
 /** 播放器认识的清单版本。读到更高版本必须拒绝——猜着播比不播更糟。 */
@@ -57,6 +58,9 @@ declare global {
     /** 精确定位（微秒）与精确读数。仅供截图探针，见赋值处的说明。 */
     __PPT_SEEK_US__?: (us: number) => void;
     __PPT_POSITION_US__?: () => number;
+    /** 立即冻结画面，以及此刻是否在播。仅供截图探针，理由同下。 */
+    __PPT_PAUSE__?: () => void;
+    __PPT_PLAYING__?: () => boolean;
   }
 }
 
@@ -236,6 +240,8 @@ function mount(): void {
   const mixMode = Boolean(manifest.audioMix);
   let segIndex = -1;
   let playing = false;
+  // 播放尝试的凭据（见 playGuard.ts）：让「暂停」能作废还在途的 play()。
+  const playGuard = createPlayGuard();
   let raf = 0;
   let ended = false;
   // 无音频时的墙钟基准（降级路径：仍能看到翻页与字幕轮换）。
@@ -665,6 +671,11 @@ function mount(): void {
       ended = false;
       seek(0);
     }
+    // 每次 play 领一个号：更早那次尝试的 then/catch 落定时会发现自己已经作废。
+    // 没有它会怎样：首屏自动播放还在途，用户点了暂停（或探针冻结了画面），
+    // 随后那个 Promise 落定，`playing` 又被置回 true 并重启渲染循环——画面自己
+    // 走了起来，而按钮和日志都显示「已暂停」。
+    const attempt = playGuard.begin();
     playing = true;
     hideCover();
     setIcon(playBtn, 'pause');
@@ -675,6 +686,9 @@ function mount(): void {
       if (result && typeof result.catch === 'function') {
         // 自动播放被拦：给出封面手势，绝不静默失败。
         result.catch(() => {
+          // 这次尝试已被 pause() 或后来的 play() 取代：它的失败不代表此刻没在播，
+          // 把封面盖回去只会让「刚点了暂停」变成「突然弹出一层遮罩」。
+          if (!playGuard.accept(attempt)) return;
           playing = false;
           stopLoop();
           setIcon(playBtn, 'play');
@@ -689,6 +703,8 @@ function mount(): void {
   };
 
   const pause = (): void => {
+    // 先作废在途的播放尝试，再停：顺序反了，那次尝试仍可能在 pause 之后落定并接管。
+    playGuard.cancel();
     playing = false;
     stopLoop();
     if (hasAudio) audio.pause();
@@ -732,9 +748,17 @@ function mount(): void {
   // 截图探针用的精确定位入口。滑杆是 0–1000 的千分比：40 分钟的作业上一步
   // 就是 2.4 秒，而门禁要取的「切点前后一帧」只有 33ms——靠滑杆根本定位不到，
   // 而定位不到时截图仍然"成功"，只是取错了时刻（错得看不出来）。
-  // 只暴露定位与读数两个函数，不改变任何播放行为：没有它们，探针退回用滑杆。
+  // 只暴露定位、读数、冻结三件事，不改变任何播放行为：没有它们，探针退回用滑杆
+  // 并按按钮文案猜「有没有暂停」。
+  //
+  // 冻结为什么要单独一个入口：按文案找暂停按钮的做法在**自动播放落定之前**必然
+  // 失败——那时画面已经在走（currentTime 在涨），按钮还写着「播放」。探针据此
+  // 判断"没在播"，于是不暂停就截图，拍到的是请求时刻之后一帧的画面：切点判据
+  // 拍在另一张图上，SSIM 也会掉（实测 0.9388 vs 0.998）。
   window.__PPT_SEEK_US__ = seek;
   window.__PPT_POSITION_US__ = positionUs;
+  window.__PPT_PAUSE__ = pause;
+  window.__PPT_PLAYING__ = () => playing;
 
   const stepSlide = (delta: number): void => {
     const current = slideAt(timeline, positionUs());
@@ -817,17 +841,35 @@ function mount(): void {
   // 首屏尝试自动播放：浏览器允许就直接播，被拦截则停在封面等一次点击。
   // 注意这里不能复用 play()——play() 会再调一次 audio.play()，与本次尝试互相抢占。
   if (hasAudio) {
+    // 这次尝试也要领号：从发出 play() 到 Promise 落定之间，音频管线已经在走
+    // （currentTime 在涨）。这段窗口里若 playing 仍为 false，播放器的状态就是假的：
+    // 按钮还写着「播放」（点它还会再发一次 play()），截图探针据此判断"没在播"、
+    // 于是不暂停就截图——拍到的是请求时刻之后一帧的画面（CI 上实测落点偏差 16ms、
+    // 区域 SSIM 从 0.999 掉到 0.9388，都是这一帧造成的）。
+    // 所以先如实置为「在播」，失败回执再退回封面；领号是为了让这段时间里发生的
+    // 停顿（用户按暂停、探针冻结）不被随后的回执撤销。
+    const attempt = playGuard.begin();
+    playing = true;
+    setIcon(playBtn, 'pause');
+    playBtn.setAttribute('aria-label', '暂停');
     const autoplay = audio.play();
     if (autoplay && typeof autoplay.then === 'function') {
       autoplay.then(
         () => {
-          playing = true;
+          if (!playGuard.accept(attempt)) return;
           hideCover();
-          setIcon(playBtn, 'pause');
-          playBtn.setAttribute('aria-label', '暂停');
           startLoop();
         },
-        () => showCover('点击播放')
+        () => {
+          // 已经作废的尝试失败了，说明不了此刻的状态（多半是我们自己 pause() 导致的
+          // AbortError）；盖一层「点击播放」上去会把已停好的画面挡住。
+          if (!playGuard.accept(attempt)) return;
+          playing = false;
+          stopLoop();
+          setIcon(playBtn, 'play');
+          playBtn.setAttribute('aria-label', '播放');
+          showCover('点击播放');
+        }
       );
     } else {
       showCover('点击播放');

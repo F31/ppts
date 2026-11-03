@@ -60,10 +60,23 @@ const SEEK_FN = `async (ms) => {
   const total = man.artifact.durationUs;
   const totalMs = total / 1000;
   // 播放中就先暂停：不停的话，截图的那 100–200ms 里播放器还在往前走，
-  // 落点会漂。找不到按钮不算失败——但要把实际落点报回去，由判据决定。
-  const pause = [].slice.call(document.querySelectorAll('.ppts-btn'))
+  // 落点会漂，切点判据就会拍在另一张图上。
+  //
+  // 优先用播放器暴露的冻结入口。按 aria-label 找暂停按钮的做法有一个必然失败的
+  // 窗口：首屏自动播放的 Promise 还没落定，音频已经在走（currentTime 在涨），
+  // 而按钮文案还是「播放」——于是找不到按钮、判定"没在播"、不暂停就截图。
+  // CI 上 V18 的「落点偏差 16ms」和 V13 的「区域 SSIM 0.9388」都是这个窗口。
+  // 没有钩子（旧包）时退回按文案找按钮，并把实测的位移如实报回去。
+  const hookPause = typeof window.__PPT_PAUSE__ === 'function';
+  const pauseBtn = [].slice.call(document.querySelectorAll('.ppts-btn'))
     .find((b) => (b.getAttribute('aria-label') || '').indexOf('暂停') >= 0);
-  if (pause) pause.click();
+  if (hookPause) window.__PPT_PAUSE__();
+  else if (pauseBtn) pauseBtn.click();
+  const pauseBy = hookPause ? 'hook' : (pauseBtn ? 'button' : 'none');
+  // 冻结之后 audio.pause() 才算生效；这一读只作诊断，判据用下面的 moveMs。
+  const playingAfterPause = typeof window.__PPT_PLAYING__ === 'function'
+    ? !!window.__PPT_PLAYING__()
+    : null;
   // 滑杆是 0–1000 的千分比，不是毫秒：直接塞毫秒会全部落在 0，
   // 而截图仍然"成功"——只是每一张都在片头。
   //
@@ -128,18 +141,39 @@ const SEEK_FN = `async (ms) => {
       layersVisible: box ? getComputedStyle(box).visibility !== 'hidden' : false,
     };
   })();
+  // 冻结校验：取距截图最近的一次读数差。播放器还在走时它必然非零，于是
+  // 「拍到的不一定是请求的时刻」变成一个可判定的数字——不用猜按钮文案，
+  // 也不用相信播放器自报的状态（自报的状态正是这次要防的东西）。
+  // 这里只负责如实测量；"多远算还在走"由门禁决定。
+  const readPos = () => (
+    precise && typeof window.__PPT_POSITION_US__ === 'function'
+      ? window.__PPT_POSITION_US__() / 1000
+      : (Number(bar.value) / 1000) * totalMs
+  );
+  const posBefore = readPos();
+  // 用真实时间窗，不用 rAF 间隔：无头浏览器里 rAF 未必真的等了一帧（实测两次
+  // requestAnimationFrame 之间音频时钟纹丝不动，而隔 1 秒再看已经走了 1 秒）。
+  // 拿 rAF 当尺子，正在播的画面也会被量成 0——这条判据就成了摆设。
+  //
+  // 窗口取 500ms 而不是一帧：seek 本身会把时钟冻住（正在播的播放器上实测头 150ms
+  // 读数没动，500ms 时已经前进了 168ms）。窗口太短只能测到"seek 还没落定"。
+  // 这段时间冻住是安全的——屏幕上是 render(target) 画的那一帧，与请求时刻一致；
+  // 会出事的是 seek 落定之后 tick 继续往前走，而那时截图还没发生。
+  await new Promise((r) => setTimeout(r, 500));
+  const moveMs = readPos() - posBefore;
   return {
     ok: ready(),
-    paused: !!pause,
+    // 是否成功发出了暂停指令（不等于"停住了"——那由 moveMs 判定）。
+    paused: pauseBy !== 'none',
+    pauseBy,
+    playing: playingAfterPause,
+    moveMs: Math.round(moveMs * 1000) / 1000,
     // 这次定位是靠微秒钩子还是靠千分比滑杆。报告里带出来——两者的落点精度
     // 差两个数量级，混在一起看会让人误以为滑杆也够用。
     precise,
-    // 精确钩子在读的时候不受千分比量化影响；没有钩子时只能读滑杆。
-    actualMs: Math.round(
-      precise && typeof window.__PPT_POSITION_US__ === 'function'
-        ? window.__PPT_POSITION_US__() / 1000
-        : (Number(bar.value) / 1000) * totalMs
-    ),
+    // 落点与"是否还在走"必须出自同一个钟（精确钩子 vs 滑杆），否则
+    // "偏差 0 却在动"会看起来自相矛盾。没有钩子时只能读滑杆，量化误差随总时长变。
+    actualMs: Math.round(readPos()),
     slides: [].slice.call(document.querySelectorAll('.ppts-slide'))
       .map((im) => ((im.getAttribute('src') || '').split('/').pop())).filter(Boolean),
     layers: document.querySelectorAll('.ppts-layer').length,
