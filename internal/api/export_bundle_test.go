@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -247,5 +248,42 @@ func TestBundleExportKeepsAnimationWhenAvailable(t *testing.T) {
 	}
 	if snapshot.Animation == nil || len(snapshot.Animation.Specs) != 1 {
 		t.Fatalf("快照里应当保留动画规格，got %+v", snapshot.Animation)
+	}
+}
+
+// TestBundleExportAcceptsSingleFileFormat 守第五项决策（ADR-029 ⑤）的入口：
+// 单文件与目录包走同一个端点、同一份快照结构，格式字段如实透传。
+//
+// 为什么单独立一条而不是并进上一条：这两条一旦只对了一个，症状是
+// 「导出单文件得到 zip」或「导出报 unsupported format」——两者都不会在编译期暴露，
+// 只会在用户点按钮之后出现，而那时已经排了一个任务。
+func TestBundleExportAcceptsSingleFileFormat(t *testing.T) {
+	jobs := &jobCreatorStub{}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true}))
+	t.Cleanup(server.Close)
+
+	body := `{"format":"html_single","timelineKey":"tenant-1/project-1/narration/timeline/tl.json","pagePngKeys":["tenant-1/project-1/render/page/p1.png"]}`
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/projects/project-1/exports", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(tenantHeader, "tenant-1")
+	req.Header.Set(userHeader, "user-1")
+	req.Header.Set("Idempotency-Key", "bundle-export-single-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /api/projects/project-1/exports: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 201; body=%s", resp.StatusCode, raw)
+	}
+	var snapshot app.ExportSnapshot
+	if err := json.Unmarshal([]byte(jobs.inputSnapshot), &snapshot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snapshot.Format != artifact.FormatHTMLSingle {
+		t.Fatalf("snapshot format = %q, want html_single", snapshot.Format)
 	}
 }

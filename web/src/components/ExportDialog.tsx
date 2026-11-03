@@ -9,7 +9,9 @@ export type ExportOptions = { burnSubtitles: boolean; includeNotes: boolean; ani
 
 // ExportFormat 比 ArtifactFormat 多一个 html_bundle：它不走 Connect（proto enum 里没有该值），
 // 而是走原生 REST 端点。两者对用户是同一层"导出格式"，故在这里统一。
-export type ExportFormat = ArtifactFormat | 'html_bundle';
+// html_single 与 html_bundle 同源（同一份组装），差别只在交付形态：
+// 前者是一个 .html，双击即看、便于转发；后者是 zip，便于托管与增量更新。
+export type ExportFormat = ArtifactFormat | 'html_bundle' | 'html_single';
 
 type ExportChoice = {
   format: ExportFormat;
@@ -24,6 +26,7 @@ type ExportChoice = {
 // HTML 成品包（弹窗最上、默认选中）：解压双击 index.html 即可播放，无需后端与网络。
 const CHOICES: ExportChoice[] = [
   { format: 'html_bundle', labelKey: 'editor.fmtHtmlBundle', enabled: true, noteKey: 'editor.fmtHtmlBundleNote' },
+  { format: 'html_single', labelKey: 'editor.fmtHtmlSingle', enabled: true, noteKey: 'editor.fmtHtmlSingleNote' },
   { format: 'ARTIFACT_FORMAT_WEB_PROJECT', labelKey: 'editor.fmtWebProject', enabled: true },
   { format: 'ARTIFACT_FORMAT_MP4', labelKey: 'editor.fmtMp4', enabled: true },
   { format: 'ARTIFACT_FORMAT_SUBTITLE_SRT', labelKey: 'editor.fmtSrt', enabled: true },
@@ -127,6 +130,7 @@ export function ExportDialog({
         </fieldset>
 
         {format === 'html_bundle' && <p className="form-hint">{t('editor.fmtHtmlBundleNote')}</p>}
+        {format === 'html_single' && <p className="form-hint">{t('editor.fmtHtmlSingleNote')}</p>}
 
         {format === 'ARTIFACT_FORMAT_MP4' && (
           <div className="export-options">

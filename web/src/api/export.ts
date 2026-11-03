@@ -145,7 +145,7 @@ export async function createArtifactExport(
   identity: ClientIdentity,
   params: {
     projectId: string;
-    format: ArtifactFormat | 'html_bundle';
+    format: ArtifactFormat | 'html_bundle' | 'html_single';
     timelineKey: string;
     pagePngKeys: string[];
     burnSubtitles?: boolean;
@@ -155,14 +155,16 @@ export async function createArtifactExport(
   }
 ): Promise<ExportJobResult> {
   const specs = params.animation ?? [];
-  if (params.format === 'html_bundle' || params.format === 'ARTIFACT_FORMAT_MP4') {
+  if (params.format === 'html_bundle' || params.format === 'html_single' || params.format === 'ARTIFACT_FORMAT_MP4') {
     // 路径必须带 /api：本端点在 internal/api/export_bundle.go 里注册为
     // `POST /api/projects/{projectId}/exports`，与动画规格/选项那一族同前缀。
     // 漏掉前缀时 mux 上是 404（没有 SPA 兜底：SPA 只兜 GET），表现为
     // 「点导出 → 立刻提示 HTTP 404」，而且只在 UI 上出现——脚本验收走的是完整路径，
     // 从 M6-1 到本轮一直没被发现。见 api-contract-check.mjs 的路由表校验。
     return postJSON<ExportJobResult>(identity, `/api/projects/${encodeURIComponent(params.projectId)}/exports`, {
-      format: params.format === 'html_bundle' ? 'html_bundle' : 'mp4',
+      // 两个 HTML 形态走同一个端点、同一份快照结构；差别只在后端写成 zip 还是一个 .html。
+      format:
+        params.format === 'html_bundle' ? 'html_bundle' : params.format === 'html_single' ? 'html_single' : 'mp4',
       timelineKey: params.timelineKey,
       pagePngKeys: params.pagePngKeys,
       burnSubtitles: params.format === 'ARTIFACT_FORMAT_MP4' ? params.burnSubtitles : undefined,

@@ -1660,7 +1660,8 @@ export function ProjectEditor({
     try {
       // 透传「按 slide 对齐」的页图键（缺图位置为空串）；后端据此缺图降级，而非因一页缺失整单失败。
       // HTML 成品包的底图同样来自这些页图，故与 MP4 共用同一份键。
-      const needsPages = format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle';
+      const needsPages =
+        format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle' || format === 'html_single';
       const pagePngKeys = needsPages ? exportPagePngKeys : [];
       // 动画规格只对 mp4 有意义；勾了但探测结果里一页都没有时会传空数组，
       // 后端归一成"不要动画"，产物与不勾完全一致（同一个快照键）。

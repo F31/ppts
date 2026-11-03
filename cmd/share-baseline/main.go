@@ -68,6 +68,7 @@ func main() {
 		continuation = flag.Bool("continuation", false, "注入一条跨相邻两页的延续元素（G8）；需 -layers>0 且 -pages>=2，并配合 seam-gate 使用")
 		outDir       = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath      = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
+		singlePath   = flag.String("single", "", "可选：把包内联成单个 .html（ADR-029 ⑤），便于转发与双击")
 		asJSON       = flag.Bool("json", false, "以 JSON 输出")
 		// 内嵌字体（M6-4）：直接塞给定字体文件，不做裁剪——这个工具的职责是造夹具，
 		// 裁剪属于渲染服务。想造「覆盖率达标」的夹具，就先按夹具字幕裁一份再传进来。
@@ -198,7 +199,7 @@ func main() {
 		}
 		font = &share.FontAsset{Family: "Baseline Font", Format: format, Version: "baseline", Data: data}
 	}
-	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), share.BundleInput{
+	bundleIn := share.BundleInput{
 		Timeline:     timeline,
 		PagePNGKeys:  keys,
 		Pages:        animPages,
@@ -211,7 +212,8 @@ func main() {
 		Font:         font,
 		SnapshotHash: "sha256:baseline",
 		CreatedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}, &buf)
+	}
+	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), bundleIn, &buf)
 	if err != nil {
 		log.Fatalf("share-baseline: %v", err)
 	}
@@ -228,6 +230,19 @@ func main() {
 			log.Fatalf("share-baseline: write zip: %v", err)
 		}
 		report.ZipPath = *zipPath
+	}
+
+	if *singlePath != "" {
+		// 单文件与目录包同源（同一个 bundleIn）：这里只是换一种写法。
+		single, _, serr := share.NewBundleBuilder(reader, nil).BuildSingle(context.Background(), bundleIn)
+		if serr != nil {
+			log.Fatalf("share-baseline: build single: %v", serr)
+		}
+		if werr := os.WriteFile(*singlePath, single, 0o644); werr != nil {
+			log.Fatalf("share-baseline: write single: %v", werr)
+		}
+		report.SinglePath = *singlePath
+		report.SingleBytes = int64(len(single))
 	}
 
 	if *outDir != "" {
@@ -278,6 +293,11 @@ type report struct {
 	OutputDir     string   `json:"outputDir,omitempty"`
 	ZipPath       string   `json:"zipPath,omitempty"`
 	AudioMixBytes int64    `json:"audioMixBytes"`
+	// SingleBytes 是内联成单个 .html 后的体积；0 表示本次没有生成单文件。
+	// 与 ZipBytes 并列而不是换算：gap 来自「base64 膨胀」与「zip 压缩」两股方向相反的力，
+	// 随音频可压缩性剧烈变化（静音夹具实测 36 倍），换算值只会骗人。
+	SingleBytes int64  `json:"singleBytes,omitempty"`
+	SinglePath  string `json:"singlePath,omitempty"`
 }
 
 func summarize(source string, m *share.Manifest, files map[string][]byte, zipBytes, pages, pageSecs int, elapsed time.Duration) report {
@@ -347,6 +367,13 @@ func printReport(r report) {
 	fmt.Println("要得到可对标的绝对值，用 -pages-dir 指向真实导出的页图目录重跑。")
 	if r.OutputDir != "" {
 		fmt.Printf("目录产物：%s\n", r.OutputDir)
+	}
+	if r.SinglePath != "" {
+		ratio := 0.0
+		if r.ZipBytes > 0 {
+			ratio = float64(r.SingleBytes) / float64(r.ZipBytes)
+		}
+		fmt.Printf("单文件：%s（%.2f MB，为 zip 的 %.2f 倍）\n", r.SinglePath, mb(r.SingleBytes), ratio)
 	}
 }
 

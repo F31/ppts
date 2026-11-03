@@ -130,7 +130,7 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 		format = artifact.FormatMP4
 	}
 	switch format {
-	case artifact.FormatMP4, artifact.FormatWebProject, artifact.FormatHTMLBundle:
+	case artifact.FormatMP4, artifact.FormatWebProject, artifact.FormatHTMLBundle, artifact.FormatHTMLSingle:
 	default:
 		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("unsupported export format on this endpoint")))

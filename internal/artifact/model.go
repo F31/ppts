@@ -19,6 +19,13 @@ const (
 	// 与 FormatWebProject 的区别是**有画面**：后者只有 timeline.json + 字幕 + 音频，
 	// 是给下游程序消费的数据包。两者内容契约不同，故并行存在而非原地升级。
 	FormatHTMLBundle Format = "html_bundle"
+	// FormatHTMLSingle 是「单文件静态讲解成品」（ADR-029 ⑤）：一个 .html，双击即播。
+	//
+	// 与 FormatHTMLBundle **同源**：同一份组装、同一批条目，差别只在"条目怎么交付"——
+	// 目录包便于托管与增量更新，单文件便于转发与双击。不做成 bundle 的一个选项字段：
+	// 两者在成品库里的预览方式、下载扩展名、体积预期都不同，混成一个格式会让
+	// "下载下来的是什么"取决于另一个看不见的开关。
+	FormatHTMLSingle Format = "html_single"
 )
 
 type Artifact struct {

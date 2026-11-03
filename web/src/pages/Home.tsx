@@ -50,7 +50,8 @@ const artifactFormatKey: Record<ProjectArtifact['format'], string> = {
   srt: 'artifacts.formatSrt',
   vtt: 'artifacts.formatVtt',
   web_project: 'artifacts.formatWebProject',
-  html_bundle: 'artifacts.formatHtmlBundle'
+  html_bundle: 'artifacts.formatHtmlBundle',
+  html_single: 'artifacts.formatHtmlSingle'
 };
 
 type TodoItem = {

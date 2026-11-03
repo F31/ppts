@@ -19,10 +19,11 @@ const FORMAT_KEY: Record<string, string> = {
   srt: 'artifacts.formatSrt',
   vtt: 'artifacts.formatVtt',
   web_project: 'artifacts.formatWebProject',
-  html_bundle: 'artifacts.formatHtmlBundle'
+  html_bundle: 'artifacts.formatHtmlBundle',
+  html_single: 'artifacts.formatHtmlSingle'
 };
 
-const FORMATS = ['mp4', 'srt', 'vtt', 'web_project', 'html_bundle'] as const;
+const FORMATS = ['mp4', 'srt', 'vtt', 'web_project', 'html_bundle', 'html_single'] as const;
 
 const TIME_RANGES = [
   { key: 'all', labelKey: 'library.timeAll', days: 0 },
@@ -307,7 +308,9 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
         const { signedUrl } = await createDownload(identity, a.id);
         const link = document.createElement('a');
         link.href = signedUrl;
-        link.download = `${a.id}.${a.format === 'web_project' || a.format === 'html_bundle' ? 'zip' : a.format}`;
+        // 扩展名按"用户拿到的东西"定：两个 HTML 形态里，单文件是 .html，目录包是 zip。
+        const ext = a.format === 'web_project' || a.format === 'html_bundle' ? 'zip' : a.format;
+        link.download = `${a.id}.${ext}`;
         document.body.appendChild(link);
         link.click();
         link.remove();

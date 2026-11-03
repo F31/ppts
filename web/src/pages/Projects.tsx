@@ -390,7 +390,8 @@ export function Projects({
     try {
       // 透传「按 slide 对齐」的页图键（缺图位置为空串）；后端据此缺图降级，而非因一页缺失整单失败。
       // HTML 成品包的底图同样来自这些页图，故与 MP4 共用同一份键。
-      const needsPages = format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle';
+      const needsPages =
+        format === 'ARTIFACT_FORMAT_MP4' || format === 'html_bundle' || format === 'html_single';
       const pagePngKeys = needsPages ? exportPagePngKeys : [];
       const animation = options.animation && format === 'ARTIFACT_FORMAT_MP4' ? animationSpecsOf(exportAnimation) : [];
       const result = await createArtifactExport(identity, {

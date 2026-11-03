@@ -259,6 +259,12 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		// 因为已有下游按"zip 内含 timeline.json"解析，原地改内容属于隐性破坏。
 		file, err = h.packHTMLBundle(ctx, job, snapshot, bundle, snapshotHash)
 		contentType, ext = "application/zip", "zip"
+	case artifact.FormatHTMLSingle:
+		// 单文件成品（ADR-029 ⑤）：与成品包同一份组装，只是内联成一个文件。
+		// Content-Type 用 text/html 而不是 application/octet-stream：用户的浏览器
+		// 点开链接就能看，不必先存盘再拖进浏览器。
+		file, err = h.packHTMLSingle(ctx, job, snapshot, bundle, snapshotHash)
+		contentType, ext = "text/html; charset=utf-8", "html"
 	case artifact.FormatAudioPPTX:
 		data, err = h.renderAudioPPTX(ctx, job, bundle)
 		contentType, ext = "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"
@@ -515,31 +521,23 @@ func (h *ExportHandler) packWebProject(ctx context.Context, tenantID string, bun
 	return tmp, nil
 }
 
-// packHTMLBundle 打包「静态讲解成品包」（html_bundle，M6-1）：解压双击 index.html 即可播放。
+// htmlBundleInput 组装成品包的输入。
 //
-// 与 packWebProject 的差别只在内容（多 index.html/清单/底图/播放器），打包方式一致：
-// 写临时文件、资源流式写入，返回值由调用方流式上传后关闭。
-func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot, bundle *TimelineAsset, snapshotHash string) (*os.File, error) {
+// 目录包（zip）与单文件（.html）**必须**从这一份输入产出：两者的差别只在
+// 「条目怎么交给用户」，不在「条目是什么」。分两处组装的话，动画降级、字体子集、
+// 页图读取这些语义会慢慢分叉，而分叉的现场在客户手里（「zip 能播、单文件黑屏」）。
+func (h *ExportHandler) htmlBundleInput(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
+	bundle *TimelineAsset, snapshotHash string) (share.BundleInput, []share.PageAnimation, error) {
 	if bundle == nil || bundle.Timeline == nil {
-		return nil, errors.New("export job: timeline bundle is empty")
+		return share.BundleInput{}, nil, errors.New("export job: timeline bundle is empty")
 	}
-	tmp, err := os.CreateTemp("", "ppts-htmlbundle-*.zip")
-	if err != nil {
-		return nil, err
-	}
-	cleanup := func() {
-		tmp.Close()
-		os.Remove(tmp.Name())
-	}
-	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
 	// 页图先读一遍：挖空必须基于原始 PNG（转码后再挖取色会偏），而 builder 也要写它们。
 	// 读到的字节同时交给两边，避免同一份对象读两次。
 	pagePNGs, pngErr := h.readPagePNGs(ctx, job.TenantID, snapshot.PagePNGKeys)
-	if pngErr != nil {
-		if h.logger != nil {
-			h.logger.Warn("export: read page images for html bundle failed; bundle will fall back to re-reading",
-				"job", job.ID, "error", pngErr)
-		}
+	if pngErr != nil && h.logger != nil {
+		// 读失败不致命：打包器会退回按 key 再读一次。留痕是为了让「包很慢」有解释。
+		h.logger.Warn("export: read page images for html bundle failed; bundle will fall back to re-reading",
+			"job", job.ID, "error", pngErr)
 	}
 	pages, animErr := h.htmlBundleAnimations(ctx, job, snapshot, bundle, pagePNGs)
 	if animErr != nil {
@@ -551,8 +549,7 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		}
 		pages = nil
 	}
-	font := h.htmlBundleFont(ctx, job, bundle)
-	manifest, err := builder.Build(ctx, share.BundleInput{
+	return share.BundleInput{
 		Timeline:     bundle.Timeline,
 		PagePNGKeys:  snapshot.PagePNGKeys,
 		PagePNGBytes: pagePNGs,
@@ -563,30 +560,94 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		Height:       snapshot.Height,
 		FPS:          snapshot.FPS,
 		Title:        bundle.Timeline.SourceDisplayName,
-		Font:         font,
+		Font:         h.htmlBundleFont(ctx, job, bundle),
 		SnapshotHash: snapshotHash,
 		CreatedAt:    time.Now(),
-	}, tmp)
+	}, pages, nil
+}
+
+// packHTMLBundle 打包「静态讲解成品包」（html_bundle，M6-1）：解压双击 index.html 即可播放。
+func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
+	bundle *TimelineAsset, snapshotHash string) (*os.File, error) {
+	in, pages, err := h.htmlBundleInput(ctx, job, snapshot, bundle, snapshotHash)
+	if err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp("", "ppts-htmlbundle-*.zip")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
+	manifest, err := builder.Build(ctx, in, tmp)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("export job: pack html bundle: %w", err)
 	}
 	if h.logger != nil {
-		animated := 0
-		for _, p := range pages {
-			if len(p.Layers) > 0 {
-				animated++
-			}
-		}
 		h.logger.Info("export: html bundle assembled",
 			"job", job.ID, "slides", len(manifest.Slides), "audio_segments", len(manifest.Audio),
-			"audio_mix", manifest.AudioMix != "", "animated_slides", animated)
+			"audio_mix", manifest.AudioMix != "", "animated_slides", animatedPageCount(pages))
 	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		cleanup()
 		return nil, err
 	}
 	return tmp, nil
+}
+
+// packHTMLSingle 打包单文件成品（html_single，ADR-029 ⑤）：一个 .html，双击即播。
+//
+// 与目录包同源：同一个 htmlBundleInput、同一个 buildInto。这里只负责内联。
+func (h *ExportHandler) packHTMLSingle(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
+	bundle *TimelineAsset, snapshotHash string) (*os.File, error) {
+	in, pages, err := h.htmlBundleInput(ctx, job, snapshot, bundle, snapshotHash)
+	if err != nil {
+		return nil, err
+	}
+	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
+	data, manifest, err := builder.BuildSingle(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("export job: pack single-file html: %w", err)
+	}
+	tmp, err := os.CreateTemp("", "ppts-htmlsingle-*.html")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		tmp.Close()
+		os.Remove(tmp.Name())
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if h.logger != nil {
+		// 体积如实记：单文件是 base64 内联，约为目录包的 1.37 倍。用户抱怨
+		// 「附件太大」时，这条日志是唯一能对上账的数字。
+		h.logger.Info("export: html single file assembled", "job", job.ID, "bytes", len(data),
+			"slides", len(manifest.Slides), "audio_segments", len(manifest.Audio),
+			"animated_slides", animatedPageCount(pages))
+	}
+	return tmp, nil
+}
+
+// animatedPageCount 数出真的带分层的页数（日志用）。
+func animatedPageCount(pages []share.PageAnimation) int {
+	n := 0
+	for _, p := range pages {
+		if len(p.Layers) > 0 {
+			n++
+		}
+	}
+	return n
 }
 
 // htmlBundleFont 取成品包要内嵌的字体：按这份讲稿的字符裁一小份。
