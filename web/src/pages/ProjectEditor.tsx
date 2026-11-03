@@ -120,7 +120,7 @@ export function ProjectEditor({
   role?: Role;
   roleReady?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   // 页面列表加载失败后的重试计数（与 scriptsRefreshNonce 同款：变化即重跑加载 effect）。
   const [slidesReloadKey, setSlidesReloadKey] = useState(0);
@@ -1687,7 +1687,7 @@ export function ProjectEditor({
       }
     } catch (error) {
       // 额度用尽的 429 要单独解释（等账期重置 / 导出静态版），不能把英文原文糊到界面上。
-      setExportError(exportFailureText(error, t));
+      setExportError(exportFailureText(error, t, lang));
     } finally {
       setExporting(false);
     }

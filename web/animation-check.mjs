@@ -240,6 +240,51 @@ test('降级提示必须同时带上原因与任务号', () => {
   assert.doesNotMatch(msg, /connection refused|10\.0\.0\.5/, '内网地址与 errno 不该出现在用户界面');
 });
 
+// ---- 免费层时长超限（ADR-029 ②）----
+//
+// 后端返回 422 + {code, limitSeconds, actualSeconds}，message 是中文写死的。
+// 直接把它显示出来，英文界面就会冒出中文——而这条错误恰恰带着用户唯一能据以行动的信息
+// （差多少、改到多少能过），退回通用「导出失败」等于把它丢掉。
+test('时长超限：数字取自错误信封，文案按语言本地化', () => {
+  const { exportFailureText } = text;
+  const err = {
+    code: 'export_duration_exceeded',
+    message: '成片时长 6 分 00 秒 超过当前套餐上限 3 分 00 秒；请精简讲稿，或升级套餐后再导出',
+    details: { code: 'export_duration_exceeded', limitSeconds: 180, actualSeconds: 360 }
+  };
+  const zh = exportFailureText(err, fakeT, 'zh');
+  assert.match(zh, /^editor\.exportDurationExceeded\(/, zh);
+  assert.match(zh, /limit=3 分 00 秒/, '上限必须出现在文案里');
+  assert.match(zh, /actual=6 分 00 秒/, '实际时长必须出现在文案里');
+
+  const en = exportFailureText(err, fakeT, 'en');
+  assert.match(en, /^editor\.exportDurationExceeded\(/, en);
+  assert.match(en, /limit=3m 00s/, 'English copy must not borrow the Chinese duration format');
+  assert.match(en, /actual=6m 00s/, 'English copy must not borrow the Chinese duration format');
+  assert.doesNotMatch(en, /成片时长|套餐/, '英文界面不许出现服务端那句中文');
+});
+
+test('时长超限：不足一分钟不带「分」，四舍五入到整秒', () => {
+  const { exportFailureText } = text;
+  const err = (actual) => ({
+    code: 'export_duration_exceeded',
+    details: { limitSeconds: 60, actualSeconds: actual }
+  });
+  assert.match(exportFailureText(err(45), fakeT, 'zh'), /actual=45 秒/);
+  assert.match(exportFailureText(err(45), fakeT, 'en'), /actual=45s/);
+  // 后端给的是浮点（微秒换算），显示层四舍五入，不能出现 59.8 秒
+  assert.match(exportFailureText(err(59.8), fakeT, 'zh'), /actual=1 分 00 秒/);
+});
+
+test('时长超限：数字缺失时仍走专用文案，不退回「导出失败」', () => {
+  const { exportFailureText } = text;
+  const bare = exportFailureText({ code: 'export_duration_exceeded' }, fakeT, 'en');
+  assert.equal(bare, 'editor.exportDurationExceededBare',
+    '退回通用失败会把「改小就能过」这条唯一有用的信息丢掉');
+  assert.equal(exportFailureText({ code: 'export_duration_exceeded', details: { limitSeconds: 0, actualSeconds: 10 } }, fakeT, 'zh'),
+    'editor.exportDurationExceededBare', '上限为 0 说明字段没填对，不能拼出「超过 0 秒」这种文案');
+});
+
 // ---- 成品包动画层：关键帧编译（M6-2）----
 //
 // 这里只测纯函数部分（compileKeyframes）。buildLayerNodes 需要 DOM 与 WAAPI，

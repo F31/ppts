@@ -29,13 +29,19 @@ export class ConnectError extends Error {
   // rule 是业务信封里的规则编号（如动画规格校验的 V3）。前端按编号取本地文案，
   // 不依赖服务端那句话的措辞——文案改了不该让用户看到英文。
   readonly rule?: string;
+  // details 是信封里除 code/message/rule 之外的字段（如时长超限的 limitSeconds /
+  // actualSeconds）。做成一袋原始字段而不是逐个加 readonly 属性：每加一个业务字段
+  // 就要改一次错误类型，而客户端并不需要理解它们的语义，只需要能取到数字拼本地文案。
+  readonly details?: Record<string, unknown>;
 
-  constructor(code: string, message: string, retryAfterSeconds?: number, rule?: string) {
+  constructor(code: string, message: string, retryAfterSeconds?: number, rule?: string,
+    details?: Record<string, unknown>) {
     super(message);
     this.name = 'ConnectError';
     this.code = code;
     this.retryAfterSeconds = retryAfterSeconds;
     this.rule = rule;
+    this.details = details;
   }
 }
 
@@ -75,11 +81,15 @@ export async function connectErrorFrom(response: Response, label: string): Promi
   let code = `http_${response.status}`;
   let message = `${label}: HTTP ${response.status}`;
   let rule: string | undefined;
+  let details: Record<string, unknown> | undefined;
   try {
-    const envelope = (await response.json()) as { code?: string; message?: string; rule?: string };
+    const envelope = (await response.json()) as { code?: string; message?: string; rule?: string } & Record<string, unknown>;
     if (envelope.code) code = envelope.code;
     if (envelope.message) message = envelope.message;
     if (envelope.rule) rule = envelope.rule;
+    // 整袋原始字段留一份：文案本地化要靠 limitSeconds / actualSeconds 这类数字，
+    // 只把服务端那句中文转给前端，英文界面就会突然冒出中文（export_duration_exceeded 正是这样）。
+    details = envelope;
   } catch {
     // 非 JSON 错误体（如网关 HTML 错误页）：保留 http_<status> 与默认 message。
   }
@@ -91,7 +101,7 @@ export async function connectErrorFrom(response: Response, label: string): Promi
   const retryHeader = response.headers.get('Retry-After');
   const retrySeconds = retryHeader === null ? NaN : Number(retryHeader);
   return new ConnectError(code, message,
-    Number.isFinite(retrySeconds) && retrySeconds > 0 ? Math.ceil(retrySeconds) : undefined, rule);
+    Number.isFinite(retrySeconds) && retrySeconds > 0 ? Math.ceil(retrySeconds) : undefined, rule, details);
 }
 
 export async function httpConnectError(response: Response, label: string): Promise<never> {

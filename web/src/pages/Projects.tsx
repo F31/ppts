@@ -89,7 +89,7 @@ export function Projects({
   role?: Role;
   roleReady?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, lang } = useI18n();
   const confirmDialog = useConfirmDialog();
   const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const [projects, setProjects] = useState<Project[]>([]);
@@ -415,7 +415,7 @@ export function Projects({
       }
     } catch (err) {
       // 额度用尽的 429 要单独解释（等账期重置 / 导出静态版），不能把英文原文糊到界面上。
-      setExportError(exportFailureText(err, t));
+      setExportError(exportFailureText(err, t, lang));
     } finally {
       setExportBusy(false);
     }

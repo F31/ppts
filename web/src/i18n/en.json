@@ -848,6 +848,8 @@
   "editor.exportAnimationDropped": "{reason} This export is processed as a static video (job {jobId}) and will still complete.",
   "editor.exportAnimationQuota": "This month's animation render quota is used up, so animated export is unavailable. Static video export is unaffected.",
   "editor.exportAnimationQuotaReset": "This month's animation render quota is used up. It resets on {date}. Static video export is unaffected until then.",
+  "editor.exportDurationExceeded": "This cut runs {actual}, over your plan's {limit} limit. Trim the script or upgrade to export.",
+  "editor.exportDurationExceededBare": "This cut is longer than your plan allows for a single export. Trim the script or upgrade to export.",
   "editor.animationButton": "Motion",
   "editor.animationEyebrow": "Per-slide motion",
   "editor.animationTitle": "Slide motion",

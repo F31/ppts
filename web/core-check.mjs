@@ -247,3 +247,22 @@ test('默认超时是 15 秒（未显式指定时必须带超时，否则等于�
     globalThis.fetch = prev;
   }
 });
+
+// 业务信封里的数字必须传到前端（ADR-029 ②：时长超限要按语言拼文案）。
+//
+// 只把 code/message 传出去，前端能做的只有「显示服务端那句话」——而那句话是中文写死的，
+// 英文界面会突然冒中文；或者退回通用「导出失败」，把「差多少、改到多少能过」丢掉。
+test('error envelope keeps business numbers in details', async () => {
+  const res = new Response(JSON.stringify({
+    code: 'export_duration_exceeded',
+    message: '成片时长 6 分 00 秒 超过当前套餐上限 3 分 00 秒；请精简讲稿，或升级套餐后再导出',
+    limitSeconds: 180,
+    actualSeconds: 360
+  }), { status: 422, headers: { 'Content-Type': 'application/json' } });
+
+  const err = await core.connectErrorFrom(res, 'export');
+  assert.equal(err.code, 'export_duration_exceeded');
+  assert.equal(err.details?.limitSeconds, 180, '上限没传出去，前端只能显示中文 message');
+  assert.equal(err.details?.actualSeconds, 360, '实际时长没传出去，文案里就写不出差多少');
+  assert.equal(err.rule, undefined, '没有 rule 字段时不该凭空造一个');
+});

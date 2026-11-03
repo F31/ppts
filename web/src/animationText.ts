@@ -39,6 +39,18 @@ export function animationDroppedText(reason: string, jobId: string, t: Translate
   return t('editor.exportAnimationDropped', { reason: animationReasonText(reason, t), jobId });
 }
 
+// durationSpan 把秒数写成当前语言能读的时长：中文「3 分 00 秒」、英文「3m 00s」。
+//
+// 放前端做而不是直接用后端 message：后端那句话是中文的，英文界面会突然冒中文；
+// 而两个数字（limitSeconds / actualSeconds）已经在错误信封里，拼文案不该再猜。
+function durationSpan(seconds: number, lang: 'zh' | 'en'): string {
+  const total = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(total / 60);
+  const rest = String(total % 60).padStart(2, '0');
+  if (lang === 'en') return minutes > 0 ? `${minutes}m ${rest}s` : `${total}s`;
+  return minutes > 0 ? `${minutes} 分 ${rest} 秒` : `${total} 秒`;
+}
+
 // exportFailureText 把导出请求的失败翻成一句用户能看懂的话。
 //
 // 额度用尽是一条**必须单独解释**的失败：它是 429，但既不是限流（重试没用），
@@ -48,8 +60,30 @@ export function animationDroppedText(reason: string, jobId: string, t: Translate
 //
 // 恢复时间取 Retry-After（core.ts 已解析成 retryAfterSeconds）：用相对秒数换算成
 // 本地日期，避免让前端去解析业务字段。
-export function exportFailureText(error: unknown, t: Translate): string {
-  const coded = error as { code?: string; retryAfterSeconds?: number } | null;
+//
+// 时长超限（422 export_duration_exceeded，ADR-029 ②）同理，但更必须本地化：
+// 后端那句「成片时长 6 分 00 秒 超过当前套餐上限 3 分 00 秒」是中文写死的。
+// 数字从错误信封的 details 取，文案走 i18n。
+export function exportFailureText(error: unknown, t: Translate, lang: 'zh' | 'en'): string {
+  const coded = error as {
+    code?: string;
+    retryAfterSeconds?: number;
+    details?: Record<string, unknown>;
+  } | null;
+  if (coded && coded.code === 'export_duration_exceeded') {
+    const details = coded.details ?? {};
+    const limit = Number(details.limitSeconds);
+    const actual = Number(details.actualSeconds);
+    if (Number.isFinite(limit) && Number.isFinite(actual) && limit > 0 && actual > 0) {
+      return t('editor.exportDurationExceeded', {
+        limit: durationSpan(limit, lang),
+        actual: durationSpan(actual, lang)
+      });
+    }
+    // 数字缺失（旧服务端、网关改写了错误体）时仍走专用文案：退回通用「导出失败」
+    // 等于把「改小一点就能过」这条唯一有用的信息丢掉。
+    return t('editor.exportDurationExceededBare');
+  }
   if (coded && coded.code === 'animation_quota_exceeded') {
     const seconds = coded.retryAfterSeconds;
     if (typeof seconds === 'number' && seconds > 0) {
