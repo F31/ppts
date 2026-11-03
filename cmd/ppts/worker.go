@@ -522,13 +522,15 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 		logger.Info("model gateway disabled (no AES key); using env providers")
 		// 没有网关时仍然要接上这一层：任务点名了模型就必须失败，而不是用 env 供应商
 		// 合成完再报成功。否则「界面选了 A、实际是 B」在最常见的私有化部署里依然成立。
-		narr.WithTenantProvider(func(_ context.Context, _, model string) (tts.TTSProvider, error) {
+		narr.WithTenantProvider(func(_ context.Context, tenantID, model string) (tts.TTSProvider, error) {
 			if model != "" {
 				return nil, fmt.Errorf("worker: model gateway disabled (no gateway AES key), cannot honor requested model %q", model)
 			}
 			if envTTS == nil {
 				return nil, errors.New("worker: no TTS provider configured (env or gateway)")
 			}
+			logger.Info("narration tts resolved", "source", "env", "tenant", tenantID,
+				"provider", os.Getenv("PPTS_TTS_PROVIDER"))
 			return envTTS, nil
 		})
 		// 网关不可用时预填仍可用：退到 env 供应商（如果有）。
@@ -585,15 +587,33 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 			if err != nil {
 				return nil, err
 			}
+			logTTSResolution(logger, "requested-model", tenantID, cfg)
 			return providers.TTS(cfg), nil
 		}
-		if cfg, err := store.Resolve(ctx, tenantID, gateway.KindTTS); err == nil {
+		cfg, err := store.Resolve(ctx, tenantID, gateway.KindTTS)
+		if err == nil {
+			logTTSResolution(logger, "default-gateway", tenantID, cfg)
 			return providers.TTS(cfg), nil
 		}
-		if envTTS == nil {
-			return nil, errors.New("worker: no TTS provider configured (env or gateway)")
+		// 只有"本租户（含平台回退）没有任何可用默认网关"才允许回退 env。
+		// 其它错误（解密失败、DB 故障）必须原样上抛：把它们当成"没配"同样会静默换音色。
+		if !errors.Is(err, gateway.ErrNotFound) {
+			return nil, err
 		}
-		return envTTS, nil
+		// Resolve 的 ErrNotFound 同时覆盖"从没配过"和"配了但没设默认"，两者后果天差地别，
+		// 所以这里必须再查一次列表才能分开。这一步不便宜，但只在回退路径上发生。
+		rows, lerr := store.List(ctx, tenantID, gateway.KindTTS)
+		if lerr != nil {
+			return nil, fmt.Errorf("worker: 读取租户 %s 的 TTS 网关列表失败，无法判断是否漏设默认：%w", tenantID, lerr)
+		}
+		provider, ferr := ttsFallback(tenantID, rows, envTTS)
+		if ferr != nil {
+			return nil, ferr
+		}
+		// 回退成功也留一条 Warn：这是"界面里配了、实际没用上"的唯一线索。
+		logger.Warn("narration tts resolved", "source", "env", "tenant", tenantID,
+			"provider", os.Getenv("PPTS_TTS_PROVIDER"))
+		return provider, nil
 	})
 	// 预填与成稿共用同一套租户级 LLM 配置：用户在网关里换模型，
 	// 预填跟着换，不需要第二个开关。解析不到就退回 env 供应商。
@@ -609,6 +629,48 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 		return nil, errors.New("worker: no LLM provider configured (env or gateway)")
 	})
 	logger.Info("model gateway attached", "ttl", "30s")
+}
+
+// logTTSResolution 记录本次配音任务最终用了哪个 TTS 来源。
+//
+// 存在的理由：这条路径此前一行日志都没有，"用了租户网关"与"掉了 env 兜底"在日志里
+// 完全同形。真机排查时只能靠推理（去猜有没有标默认），代价远高于一行结构化日志。
+// 只记名字与模型，绝不记 APIKey。
+func logTTSResolution(logger *slog.Logger, source, tenantID string, cfg *gateway.Config) {
+	logger.Info("narration tts resolved",
+		"source", source, "tenant", tenantID,
+		"gateway", cfg.Name, "model", cfg.Model, "voice", cfg.Voice)
+}
+
+// ttsFallback 决定"解析不到默认 TTS 网关"时该怎么走。
+//
+// 三种情形对用户含义完全不同，不能共用一条静默回退：
+//   - 本租户没有任何 TTS 行：纯 env 部署，回退是对的；
+//   - 有行但都不处于"启用 + 默认"：用户在界面里配过、还点过测试连接（那只查指定
+//     名字那一行，与默认无关），但任务根本不会用它。此时回退 env（大概率是 fake）
+//     会产出静音成片且状态成功——这是假成功，必须失败并指出去哪儿补；
+//   - 既没有行也没有 env：本来就没配。
+func ttsFallback(tenantID string, rows []*gateway.Gateway, envProvider tts.TTSProvider) (tts.TTSProvider, error) {
+	if len(rows) > 0 {
+		names := make([]string, 0, len(rows))
+		for _, gw := range rows {
+			if gw == nil {
+				continue
+			}
+			label := gw.Name
+			if !gw.Enabled {
+				label += "(已停用)"
+			}
+			names = append(names, label)
+		}
+		return nil, fmt.Errorf(
+			"worker: 租户 %s 有 %d 条 TTS 网关（%s），但没有一条同时处于「启用 + 默认」状态；请到「设置 → 模型服务」把要用的那条设为默认。不会回退到环境变量供应商——那会用另一套音色静默合成，而界面上的连通性测试依然是通过的",
+			tenantID, len(rows), strings.Join(names, ", "))
+	}
+	if envProvider == nil {
+		return nil, errors.New("worker: no TTS provider configured (env or gateway)")
+	}
+	return envProvider, nil
 }
 
 // requireTTSProvider 校验启动期至少有一条 TTS 配置路径可用。

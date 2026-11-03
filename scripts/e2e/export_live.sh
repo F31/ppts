@@ -589,6 +589,27 @@ else
   echo "音轨峰值 ${MAXVOL}dB（> -60dB 视为有真实人声）"
 fi
 
+# 配音到底走了哪条配置路径。
+#
+# 只看"网关表里有这一行"是不够的：网关行存在但没被解析到（没标默认/被停用）时，
+# 任务会回退 env 供应商——如果 env 恰好也是真供应商，成片听起来一样，日志里也看不出来。
+# 所以判据落在 worker 的路由日志上，它记录的是本次任务**实际**用了谁。
+TTS_LOG=$(docker logs "$WORKER_NAME" 2>&1 | grep '"msg":"narration tts resolved"' || true)
+[ -n "$TTS_LOG" ] || fail "worker 没有记录配音来源（narration tts resolved 缺失），无法证明这次用的是哪条配置"
+case "$TTS" in
+  gateway)
+    echo "$TTS_LOG" | grep -q '"source":"default-gateway"' \
+      || fail "配音没走租户默认网关（解析落到了别的分支）：$TTS_LOG"
+    echo "$TTS_LOG" | grep -q '"gateway":"siliconflow"' \
+      || fail "配音走的不是刚配的那条网关：$TTS_LOG"
+    ;;
+  siliconflow | fake)
+    echo "$TTS_LOG" | grep -q '"source":"env"' \
+      || fail "无网关密钥的部署应走 env 供应商，实际不是：$TTS_LOG"
+    ;;
+esac
+echo "配音来源：$(echo "$TTS_LOG" | head -1)"
+
 # 抽三帧：起势/中段/收尾。字幕是否真的烧进画面只能看像素，这一条不交给脚本猜。
 DURATION=$(json 'print(d["format"]["duration"])' < "$WORK/out/ffprobe.json")
 for f in 1 2 3; do

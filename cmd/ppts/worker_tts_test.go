@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/tts"
 )
 
@@ -44,6 +45,53 @@ func TestTTSProviderFromEnvRejectsUnknownValue(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported PPTS_TTS_PROVIDER") {
 		t.Fatalf("错误信息应指明变量名，实际：%v", err)
 	}
+}
+
+// TestTTSFallback 守"配了但没设默认"这条线。
+//
+// 修前：Resolve 返回 ErrNotFound 时一律回退 env 供应商。而 ErrNotFound 同时表示
+// "从没配过"和"配了但没标默认"——后者的典型现场是：用户在设置页配好 TTS、点测试
+// 连接通过（那一步按名字探活，与默认无关），导出却拿到 env 的 fake 静音轨，任务还是
+// succeeded。日志里没有任何一行能看出用了谁。
+func TestTTSFallback(t *testing.T) {
+	const tenant = "11111111-1111-1111-1111-111111111111"
+
+	t.Run("有网关但未启用或未设默认必须报错", func(t *testing.T) {
+		rows := []*gateway.Gateway{
+			{Name: "siliconflow", Kind: gateway.KindTTS, Enabled: true, IsDefault: false},
+			{Name: "backup", Kind: gateway.KindTTS, Enabled: false, IsDefault: true},
+		}
+		_, err := ttsFallback(tenant, rows, tts.NewFakeProvider())
+		if err == nil {
+			t.Fatal("有 TTS 行却都不处于「启用 + 默认」时必须失败，不能回退 env 静默合成")
+		}
+		for _, want := range []string{"siliconflow", "backup(已停用)", "设置 → 模型服务", "不会回退到环境变量供应商"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("错误信息应包含 %q，实际：%v", want, err)
+			}
+		}
+	})
+
+	t.Run("没有任何 TTS 行才允许回退 env", func(t *testing.T) {
+		env := tts.NewFakeProvider()
+		got, err := ttsFallback(tenant, nil, env)
+		if err != nil {
+			t.Fatalf("无 TTS 行时应回退 env 供应商，实际报错：%v", err)
+		}
+		if got != env {
+			t.Fatalf("应原样返回 env 供应商，实际得到 %T", got)
+		}
+	})
+
+	t.Run("既无行也无 env 供应商必须报错", func(t *testing.T) {
+		_, err := ttsFallback(tenant, nil, nil)
+		if err == nil {
+			t.Fatal("两条路都没有时必须失败")
+		}
+		if !strings.Contains(err.Error(), "no TTS provider configured") {
+			t.Fatalf("错误信息应指出两条路都缺，实际：%v", err)
+		}
+	})
 }
 
 // TestRequireTTSProvider 守启动期"至少有一条路可用"这条线。
