@@ -115,3 +115,42 @@ func mustBuildSingle(t *testing.T) ([]byte, *Manifest) {
 	}
 	return out, manifest
 }
+
+// 文本复制（ADR-029 ⑥）：开关写进清单，且两种形态写的是同一个值。
+func TestManifestCarriesTextCopy(t *testing.T) {
+	ctx := context.Background()
+
+	in := buildInput()
+	in.TextCopy = true
+	var buf bytes.Buffer
+	m, err := NewBundleBuilder(baseReader(t), nil).Build(ctx, in, &buf)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if !m.TextCopy {
+		t.Fatal("开启时清单没有 textCopy")
+	}
+
+	single, mSingle, err := NewBundleBuilder(baseReader(t), nil).BuildSingle(ctx, in)
+	if err != nil {
+		t.Fatalf("build single: %v", err)
+	}
+	if !mSingle.TextCopy || !bytes.Contains(single, []byte(`"textCopy":true`)) {
+		t.Fatal("单文件形态没有带上 textCopy")
+	}
+
+	// 关闭时必须整个键都不出现：默认行为是"不允许把讲稿原文带走"，
+	// 而字段存在与否也是旧包（没有这个键）与新包行为一致的前提。
+	in.TextCopy = false
+	var buf2 bytes.Buffer
+	m2, err := NewBundleBuilder(baseReader(t), nil).Build(ctx, in, &buf2)
+	if err != nil {
+		t.Fatalf("build off: %v", err)
+	}
+	if m2.TextCopy {
+		t.Fatal("默认关闭时清单不应标记 textCopy")
+	}
+	if bytes.Contains(buf2.Bytes(), []byte("textCopy")) {
+		t.Fatal("关闭时产物里不应出现 textCopy 字样（含压缩前的清单文本）")
+	}
+}

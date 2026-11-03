@@ -69,6 +69,7 @@ func main() {
 		outDir       = flag.String("out", "", "可选：把包写成目录，便于人工核对")
 		zipPath      = flag.String("zip", "", "可选：把包写成 zip，便于 share-verify / 分发")
 		singlePath   = flag.String("single", "", "可选：把包内联成单个 .html（ADR-029 ⑤），便于转发与双击")
+		textCopy     = flag.Bool("text-copy", false, "可选：清单标记讲稿可复制（ADR-029 ⑥），用于对比两种形态")
 		asJSON       = flag.Bool("json", false, "以 JSON 输出")
 		// 内嵌字体（M6-4）：直接塞给定字体文件，不做裁剪——这个工具的职责是造夹具，
 		// 裁剪属于渲染服务。想造「覆盖率达标」的夹具，就先按夹具字幕裁一份再传进来。
@@ -212,6 +213,7 @@ func main() {
 		Font:         font,
 		SnapshotHash: "sha256:baseline",
 		CreatedAt:    time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		TextCopy:     *textCopy,
 	}
 	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), bundleIn, &buf)
 	if err != nil {
@@ -246,10 +248,11 @@ func main() {
 	}
 
 	if *outDir != "" {
-		if _, err := share.BuildLocalToDir(context.Background(), share.LocalBundle{Root: writeStagingDir(pageBytes, timeline), Input: share.BundleInput{
-			Timeline: timeline, PagePNGKeys: keys, Pages: animPages, VTTKey: "subs/cues.vtt", SRTKey: "subs/cues.srt",
-			Width: *width, Height: *height, FPS: 30, Title: "体积基线样本",
-		}}, *outDir); err != nil {
+		// 目录形态也用同一份 bundleIn：此前这里另写了一个字面量，于是 -text-copy
+		// 只对 zip 生效、目录包静默退回默认值——两种形态的清单开始不一致。
+		if _, err := share.BuildLocalToDir(context.Background(), share.LocalBundle{
+			Root: writeStagingDir(pageBytes, timeline), Input: bundleIn,
+		}, *outDir); err != nil {
 			log.Fatalf("share-baseline: write dir: %v", err)
 		}
 		report.OutputDir = *outDir

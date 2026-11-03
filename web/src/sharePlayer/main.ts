@@ -49,6 +49,8 @@ type ShareManifest = {
   audioMix?: string;
   subtitles: { src: string; inline: string };
   artifact: { durationUs: number; snapshotHash?: string };
+  /** 讲稿文本是否可选中/复制（ADR-029 ⑥）。缺省视为 false，与旧包行为一致。 */
+  textCopy?: boolean;
 };
 
 declare global {
@@ -145,6 +147,9 @@ function mount(): void {
 
   // ---- DOM 骨架（不使用 innerHTML，PPT 文本一律走 textContent 转义）----
   const root = el('div', 'ppts-share');
+  // 文本复制默认关闭（ADR-029 ⑥）：开关在导出时固化进清单，播放器只读这一个字段。
+  // 不读租户策略、不做运行时开关——一份已经发出去的文件，其行为不该被后台改配置翻转。
+  if (manifest.textCopy) root.classList.add('ppts-text-copy');
   const stage = el('div', 'ppts-stage');
   // 舞台按成片宽高比铺，层的百分比定位才是准确的（写死 16/9 会让非 16:9 的页错位）。
   stage.style.aspectRatio = `${manifest.video.width} / ${manifest.video.height}`;

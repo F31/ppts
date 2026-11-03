@@ -155,7 +155,17 @@ body.ppts-share-page {
   line-height: 1.5;
   text-align: center;
   letter-spacing: 0.01em;
+  /* 文本复制默认关闭（ADR-029 ⑥）：pointer-events 关掉后，点字幕等于点舞台，
+     用户不会因为想暂停却拖出一片选区。开启由 .ppts-text-copy 覆盖。 */
   pointer-events: none;
+  user-select: none;
+}
+
+/* 租户开启文本复制：字幕可选中、可 Ctrl+F、可浏览器翻译。
+   这是 HTML 相对视频的核心优势，也是泄露面——所以它是租户级开关，默认关闭。 */
+.ppts-text-copy .ppts-subtitle {
+  pointer-events: auto;
+  user-select: text;
 }
 
 .ppts-subtitle[hidden] {

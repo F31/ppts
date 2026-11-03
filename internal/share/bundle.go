@@ -94,6 +94,9 @@ type BundleInput struct {
 	Font *FontAsset
 	// CreatedAt 为零值时省略。
 	CreatedAt time.Time
+	// TextCopy 决定成品里的讲稿文本是否可选中/复制（ADR-029 ⑥）。
+	// 由调用方按租户能力给出，打包器只负责写进清单——它不知道也不该知道租户是谁。
+	TextCopy bool
 }
 
 // PageAnimation 是一页的动画素材。
@@ -212,6 +215,7 @@ func (b *BundleBuilder) buildInto(
 	timeline := in.Timeline
 
 	manifest := newManifest(timeline, in.Width, in.Height, in.FPS, in.Title, in.SnapshotHash, in.CreatedAt)
+	manifest.TextCopy = in.TextCopy
 
 	files := make(map[string]struct{}, len(timeline.Slides)+8)
 	emit := func(name string, data []byte) error {

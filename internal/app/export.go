@@ -49,6 +49,10 @@ type ExportSnapshot struct {
 	// 必须是 omitempty 的指针：开关关闭时这一整段不出现在 JSON 里，
 	// 序列化结果与引入动画之前逐字节一致（见 snapshotHashOf 与回归用例）。
 	Animation *AnimationOptions `json:"animation,omitempty"`
+	// TextCopy 决定 HTML 成品里的讲稿文本是否可复制（ADR-029 ⑥）。
+	// 用 omitempty 保持旧快照逐字节不变：关闭时这个键不出现，
+	// 存量作业的 snapshot_hash 不会因为新增字段而全部变化。
+	TextCopy bool `json:"textCopy,omitempty"`
 }
 
 // AnimationOptions 固定「这片视频依据哪些动画规格渲染」。
@@ -563,6 +567,7 @@ func (h *ExportHandler) htmlBundleInput(ctx context.Context, job *pipeline.Job, 
 		Font:         h.htmlBundleFont(ctx, job, bundle),
 		SnapshotHash: snapshotHash,
 		CreatedAt:    time.Now(),
+		TextCopy:     snapshot.TextCopy,
 	}, pages, nil
 }
 

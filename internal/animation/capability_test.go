@@ -158,3 +158,20 @@ func tenantWithBucket(t *testing.T, lo, hi int) string {
 	t.Fatalf("找不到桶号在 [%d,%d) 的租户", lo, hi)
 	return ""
 }
+
+// 文本复制（ADR-029 ⑥）：默认关闭，且不能越过总闸。
+func TestTextCopyDefaultsOffAndFollowsMasterGate(t *testing.T) {
+	on, off := true, false
+	cfg := GateConfig{DeployEnabled: true, DefaultPercent: 100}
+
+	if got := (AnimationPolicy{}).Resolve("t1", cfg); got.TextCopy {
+		t.Fatal("未配置时文本复制必须默认关闭")
+	}
+	if got := (AnimationPolicy{TextCopy: &on}).Resolve("t1", cfg); !got.TextCopy {
+		t.Fatal("显式开启后应当允许")
+	}
+	// 总闸关着时单开子能力没有意义：与 track_editor 同一条规则。
+	if got := (AnimationPolicy{Enabled: &off, TextCopy: &on}).Resolve("t1", cfg); got.TextCopy {
+		t.Fatal("总闸关闭时不应单独开放文本复制")
+	}
+}

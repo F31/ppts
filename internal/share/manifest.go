@@ -52,6 +52,11 @@ type Manifest struct {
 	// 生僻字时它们只能走系统 fallback。但**必须记下来**——「内嵌了字体」与
 	// 「内嵌了字体且覆盖了片中所有字」是两件事，只有后者才是 V15 要验收的东西。
 	FontMissing []string `json:"fontMissing,omitempty"`
+	// TextCopy 表示成品里的讲稿文本可选中/复制（ADR-029 ⑥）。
+	//
+	// 写进清单而不是由播放器读租户策略：一份已经发出去的文件，其行为不该因为
+	// 后台改配置而变化。默认 false（字段省略），与旧包的播放行为一致。
+	TextCopy bool `json:"textCopy,omitempty"`
 }
 
 type ArtifactInfo struct {
@@ -189,6 +194,8 @@ type SubtitleInfo struct {
 }
 
 // newManifest 组装清单骨架；slides/audio 由打包过程填充（文件名在转码时才确定）。
+// newManifest 只负责"由时间轴推出来的字段"；打包选项（如 TextCopy）由 buildInto 填，
+// 不往这个位置参数列表里继续加 bool——它在测试里读起来和相邻的 fps 分不清。
 func newManifest(timeline *media.Timeline, width, height, fps int, title, snapshotHash string, createdAt time.Time) *Manifest {
 	if width <= 0 {
 		width = 1920

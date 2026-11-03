@@ -67,6 +67,13 @@ type AnimationPolicy struct {
 	// RolloutPercent 是本租户参与灰度的百分比；nil 表示用部署级默认。
 	// 显式 0 表示"本租户不参与灰度"，与 nil 不同。
 	RolloutPercent *int `json:"rollout_percent,omitempty"`
+	// TextCopy 控制 HTML 成品里的讲稿文本是否可选中/复制（ADR-029 ⑥）。
+	// nil 视为 false：默认不允许把讲稿原文带走，要开放的租户自己开。
+	//
+	// 为什么放在这份策略里（它叫 AnimationPolicy）：这是"租户能力"的一份 jsonb 配置，
+	// 共用同一行、同一次读取、同一个解析器，避免为单个布尔再引一套存储与迁移。
+	// 代价是名字不精确，接受。
+	TextCopy *bool `json:"text_copy,omitempty"`
 }
 
 // GateConfig 是判定所需的环境输入。
@@ -88,6 +95,8 @@ type Capability struct {
 	Source      string `json:"source"`
 	// Bucket 是租户所在灰度桶（0–99）；-1 表示未计算（租户 ID 缺失或未走到分桶）。
 	Bucket int `json:"bucket"`
+	// TextCopy 表示本次判定允许成品携带可复制文本（仅 HTML 成品有效）。
+	TextCopy bool `json:"textCopy,omitempty"`
 	// MaxMinutes 是每月动画渲染分钟数上限；0 表示不限。
 	//
 	// 0 是默认值，不是"用系统默认的 60"：升级当天给所有存量租户加一道硬停，
@@ -144,6 +153,8 @@ func (p AnimationPolicy) Resolve(tenantID string, cfg GateConfig) Capability {
 		// 子能力不能越过总闸：总开关关着时 track_editor:true 没有意义。
 		c.TrackEditor = boolValue(p.TrackEditor, false)
 		c.Preview = boolValue(p.Preview, true)
+		// 文本复制跟随总闸：动画通道整体关闭时不单独开放成品能力。
+		c.TextCopy = boolValue(p.TextCopy, false)
 		if p.MaxMinutes > 0 {
 			c.MaxMinutes = p.MaxMinutes
 		}
