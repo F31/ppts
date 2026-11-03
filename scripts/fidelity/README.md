@@ -294,6 +294,10 @@ python3 scripts/fidelity/bind_elements.py --rules base --out tmp/q7/bind-report-
 # 4) 第二个样本：真实讲义 5 页（带表格/卡片/页码/装饰形状），元素从 pptx 抽
 python3 scripts/fidelity/extract_pptx_elements.py \
   --slides 1,2,4,8,10 --out tmp/q8/fid/elements.json
+#    图表形状会多带一个 chart 块（类别 / 系列 / 数值 / dataLabels 开关）——
+#    V10「图上每个数都要念到」在真实 deck 的图表页上就靠它，否则那页只是
+#    「没东西可查」。改了这个函数先跑它自己的自检（不需要任何 deck）：
+python3 scripts/fidelity/extract_pptx_elements.py --self-test
 python3 scripts/fidelity/bind_elements.py --rules base \
   --segments scripts/fidelity/q8-script.json \
   --elements tmp/q8/fid/elements.json --golden scripts/fidelity/q8-script.json \
@@ -501,7 +505,7 @@ L 片全过之后还有一层：**状态对，过程不对**。页内**第一个
 V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要数字（「两个 30 页长片」）
 不必逐个念，硬判会逼着讲稿变成报数。
 
-`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 39 项）。
+`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 43 项）。
 没有它，门禁本身会重演「看起来通过了」，而那正是 5.6 的教训。
 
 ### `check_appearance.py` 现在报三个数，别用错
