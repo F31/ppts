@@ -112,6 +112,16 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		Pages:      make([]AnimationPage, 0, len(in.Slides)),
 	}
 	refs := specRefsBySlide(in.Snapshot)
+	// 焦点与"这一页有没有动画规格"无关：稿子里写了"看这根柱子"，这一页就算没配动效
+	// 也该指。所以焦点读文档时用**全片**的源版本号（规格里第一个非零版本）兜底，
+	// 而不是跟着本页的规格走——后者会让"没配动效的页"整页没有焦点。
+	fallbackRev := 0
+	for _, ref := range refs {
+		if ref.SourceRevisionNo > 0 {
+			fallbackRev = ref.SourceRevisionNo
+			break
+		}
+	}
 	// 同一源版本的几何在一次 Build 里只读一次：一页一次读在 S3 上就是 N 次往返，
 	// 而整份 document.json 本来就是一次对象读。
 	geometryByRevision := make(map[int]map[string][]render.Element, 1)
@@ -141,7 +151,7 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
 		elements := a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision)
-		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, elements, durationMS, emuToPx, focusByRevision)
+		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, fallbackRev, elements, durationMS, emuToPx, focusByRevision)
 		req.Pages = append(req.Pages, AnimationPage{
 			SlideID:        slide.SlideID,
 			DurationMs:     durationMS,
@@ -208,7 +218,7 @@ func (a *AnimationPageAssembler) revision(ctx context.Context, in AnimationPageI
 // 一段都没有；为一次导出里每页各读一次整份文档，是最容易写出来、也最容易被忽略的
 // 浪费（而且它是"每次导出多 N 次对象读"，不是"多一次"）。
 func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPageInput, slide media.SlideCue,
-	pageIndex int, ref AnimationSpecRef, elements []render.Element, pageMs int64, emuToPx float64,
+	pageIndex int, ref AnimationSpecRef, fallbackRev int, elements []render.Element, pageMs int64, emuToPx float64,
 	cache map[int]map[string][]FocusBox) ([]render.FocusSpan, []render.Diagnostic) {
 	if a == nil || a.focus == nil {
 		return nil, nil
@@ -226,18 +236,22 @@ func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPag
 	}
 	// 焦点框与元素几何来自同一份文档、同一个源版本；版本号缺失时读不到（见几何来源），
 	// 此时"不指"比"指到别的版本的形状"安全。
-	bySlide, cached := cache[ref.SourceRevisionNo]
+	revNo := ref.SourceRevisionNo
+	if revNo == 0 {
+		revNo = fallbackRev
+	}
+	bySlide, cached := cache[revNo]
 	if !cached {
 		var err error
 		bySlide, err = a.focus.FocusBoxes(ctx, PageGeometryScope{
-			TenantID: in.TenantID, ProjectID: in.ProjectID, SourceRevisionNo: ref.SourceRevisionNo,
+			TenantID: in.TenantID, ProjectID: in.ProjectID, SourceRevisionNo: revNo,
 		})
 		if err != nil {
 			a.warn("animation: load focus boxes failed, page keeps fully lit",
-				"source_revision", ref.SourceRevisionNo, "error", err.Error())
+				"source_revision", revNo, "error", err.Error())
 			bySlide = nil
 		}
-		cache[ref.SourceRevisionNo] = bySlide
+		cache[revNo] = bySlide
 	}
 	layerIDs := make(map[string]struct{}, len(elements))
 	for _, el := range elements {

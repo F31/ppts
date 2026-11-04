@@ -1,8 +1,10 @@
 package app
 
 import (
+	"context"
 	"testing"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/render"
 )
@@ -186,5 +188,55 @@ func TestFocusStartsOutsidePageIsSkipped(t *testing.T) {
 	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
 	if len(spans) != 0 || len(diags) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
+	}
+}
+
+type fakeFocusSource struct {
+	revs  []int
+	boxes map[string][]FocusBox
+}
+
+func (f *fakeFocusSource) FocusBoxes(_ context.Context, scope PageGeometryScope) (map[string][]FocusBox, error) {
+	f.revs = append(f.revs, scope.SourceRevisionNo)
+	return f.boxes, nil
+}
+
+type nilSpecs struct{}
+
+func (nilSpecs) Get(context.Context, animation.Key) (*animation.Revision, error) { return nil, nil }
+
+// TestAssemblerFocusIgnoresPerPageSpec 锁住「焦点与这一页配没配动效无关」。
+//
+// 第 2 页没有动画规格，但讲稿写了"看这根柱子"——它仍然要指。实现上靠全片源版本号兜底：
+// 若跟着本页规格走，第 2 页拿到的版本号是 0，读不到文档，焦点就静默消失。
+func TestAssemblerFocusIgnoresPerPageSpec(t *testing.T) {
+	src := &fakeFocusSource{boxes: map[string][]FocusBox{
+		"slide-2": {{ShapeID: "shape-1", BarID: "b1", Box: box(10, 10, 50, 50)}},
+	}}
+	as := NewAnimationPageAssembler(nil, nilSpecs{}).WithFocus(src)
+	png := []byte{0x89, 'P', 'N', 'G'}
+	req, err := as.Build(context.Background(), AnimationPageInput{
+		Snapshot: ExportSnapshot{
+			Width: 1920, Height: 1080, FPS: 30,
+			Animation: &AnimationOptions{Specs: []AnimationSpecRef{{SlideID: "slide-1", SourceRevisionNo: 7, Revision: 1}}},
+		},
+		Slides: []media.SlideCue{
+			{SlideID: "slide-1", StartUS: 0, EndUS: 1_000_000,
+				Segments: []media.SegmentCue{{SegmentID: "s1", StartUS: 0, EndUS: 1_000_000}}},
+			{SlideID: "slide-2", StartUS: 1_000_000, EndUS: 3_000_000,
+				Segments: []media.SegmentCue{{SegmentID: "s2", StartUS: 1_000_000, EndUS: 2_000_000,
+					Focus: &media.SegmentFocus{ShapeID: "shape-1", BarID: "b1"}}}},
+		},
+		PagePNGs:       [][]byte{png, png},
+		BaseImagePaths: []string{"slides/001.png", "slides/002.png"},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(src.revs) != 1 || src.revs[0] != 7 {
+		t.Fatalf("焦点应按全片源版本 7 读文档，实际 %v", src.revs)
+	}
+	if len(req.Pages[1].Focus) != 1 {
+		t.Fatalf("没有动效规格的页也要有焦点，got %+v", req.Pages[1].Focus)
 	}
 }
