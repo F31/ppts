@@ -25,6 +25,7 @@ import {
   type SourceRevisionSummary,
   getScript,
   getScriptCompare,
+  getFocusTargets,
   listDictionaries,
   getSlideRenderURLs,
   getSlideScriptSources,
@@ -57,7 +58,7 @@ import { ExportDialog, type ExportFormat, type ExportOptions } from '../componen
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
-import type { Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { FocusTarget, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
 import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } from '../voicePreview';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
@@ -336,6 +337,36 @@ export function ProjectEditor({
   const editorLayoutRef = useRef<HTMLDivElement>(null);
   const [scriptResizing, setScriptResizing] = useState(false);
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
+  // 焦点候选：编辑器要告诉用户"这一段能指谁"（形状文字 / 图片 / 图表的每根柱子）。
+  // 按当前页加载；slideId 对不上就按"加载中"处理——切页瞬间不能把上一页的柱子列出来。
+  const [focusTargets, setFocusTargets] = useState<{ slideId: string; targets: FocusTarget[]; note: string } | null>(null);
+  const [focusTargetsError, setFocusTargetsError] = useState<string | null>(null);
+  const activeSourceRevision = slidesState.mode === 'real' ? slidesState.revisionNo : 0;
+
+  useEffect(() => {
+    if (!activeSlideID) {
+      setFocusTargets(null);
+      setFocusTargetsError(null);
+      return;
+    }
+    let cancelled = false;
+    setFocusTargetsError(null);
+    getFocusTargets(identity, projectId, activeSlideID, activeSourceRevision)
+      .then((res) => {
+        if (cancelled) return;
+        setFocusTargets({ slideId: res.slideId, targets: res.targets ?? [], note: res.note ?? '' });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setFocusTargets(null);
+        // 读取失败只影响"能不能选"，不影响已有焦点与讲稿保存；但界面必须说"读失败"，
+        // 不能显示成"这一页没有可指的目标"——那是两件事。
+        setFocusTargetsError(describeApiError(error, t('editor.focusLoadFailed'), t));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, projectId, activeSlideID, activeSourceRevision, t]);
   // 配音任务活跃标志（供 5s 轮询判断"配音任务刚结束"→ 重建播放清单，见 refreshActiveGenJobs）。
   const narrationActiveRef = useRef(false);
   const autoNotesDraftRef = useRef<Set<string>>(new Set());
@@ -1991,6 +2022,11 @@ export function ProjectEditor({
               onNeedPronunciationRules={ensurePronunciationRules}
               onEditDictionary={editDictionaryEntry}
               onRemoveDictionary={removeDictionaryEntry}
+              focusTargets={focusTargets?.slideId === activeSlideID ? focusTargets.targets : null}
+              focusTargetsNote={focusTargets?.slideId === activeSlideID ? focusTargets.note : undefined}
+              focusTargetsStatus={
+                focusTargetsError ? 'failed' : focusTargets?.slideId === activeSlideID ? 'ready' : 'loading'
+              }
             />
           ) : (
             <section className="editor-card">

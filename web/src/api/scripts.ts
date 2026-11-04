@@ -4,7 +4,7 @@
 // **只动了文件边界，实现代码逐行未改**；对外入口仍是 `../api`（由 index.ts 统一转出），
 // 因此既有调用方的 import 路径无需任何改动。
 
-import type { ScriptMode, ScriptRevision, ScriptSegment } from '../types';
+import type { FocusTarget, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
 import type { ClientIdentity } from './identity';
 import { connectJSON, getJSON, postJSON, putJSON } from './http';
 export type SlideScriptSource = { slideId: string; source: string; customText: string };
@@ -78,6 +78,33 @@ export async function getScriptCompare(
   return getJSON<ScriptCompareData>(
     identity,
     `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/script/compare`
+  );
+}
+
+// FocusTargets 是一页可选的焦点目标清单（来自解析期的 document.json）。
+export type FocusTargets = {
+  slideId: string;
+  revisionNo: number;
+  orientation?: string;
+  targets: FocusTarget[];
+  // note 说明清单为什么可能不全（某张图没逐柱切开）。空 = 没有要交代的。
+  note?: string;
+};
+
+// getFocusTargets 列出"这一段可以指谁"：有文字的形状、图片、图表的每一根柱子。
+//
+// revisionNo 是**源版本**号（不是讲稿 revision）：焦点框来自那一次解析的页面图，
+// 版本给错会拿到一份与当前页无关的框——所以调用方必须把当前查看的源版本传进来。
+export async function getFocusTargets(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string,
+  revisionNo?: number
+): Promise<FocusTargets> {
+  const qs = revisionNo && revisionNo > 0 ? `?revision_no=${revisionNo}` : '';
+  return getJSON<FocusTargets>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/focus-targets${qs}`
   );
 }
 

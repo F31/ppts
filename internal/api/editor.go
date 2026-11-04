@@ -47,6 +47,11 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/slides/{sid}/script/compare", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorScriptCompare(w, r, objects, scripts, srcStore, projects, members, recorder)
 	})))
+	// 焦点候选：编辑器要知道"这一段能指谁"（形状文字 / 图表的每一根柱子）。
+	// 只读；选中后写的是讲稿段落的 focus，走既有保存通道。
+	mux.Handle("GET /projects/{pid}/slides/{sid}/focus-targets", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorFocusTargets(w, r, objects, projects, members, recorder)
+	})))
 	// 重新生成讲稿（用户显式覆盖已有讲稿）：原生 HTTP，避免改 proto。
 	mux.Handle("POST /projects/{pid}/script-draft", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorRegenerateScriptDraft(w, r, jobs, srcStore, projects, members, recorder)

@@ -1,9 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useI18n } from './i18n';
-import type { PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment } from './types';
+import type { FocusTarget, PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment, SegmentFocus } from './types';
 import type { RewriteAction } from './api';
 import { segmentReviewReason, summarizeAnchors } from './sourceAnchors';
+// 焦点投影是纯函数（保存时会不会误删已选焦点全靠它），放在 scriptFocus.ts 里由 node 直接断言。
+import { EMPTY_FOCUS, applyFocus, focusLabelOf, initialFocusMap } from './scriptFocus';
 import {
   canRedo as historyCanRedo,
   canUndo as historyCanUndo,
@@ -86,6 +88,14 @@ type Props = {
   onEditDictionary?: (pattern: string, reading: string) => void;
   // onRemoveDictionary：从词典删除某词条。
   onRemoveDictionary?: (pattern: string) => void;
+  // focusTargets：这一页上「这一段可以指谁」的候选（形状文字 / 图片 / 每根柱子）。
+  // null = 还没拿到或拿不到（例如这页还没解析完）；undefined 与 null 同义。
+  // 空数组是**确定没有**可选目标，界面要能把这两件事说成不同的话。
+  focusTargets?: FocusTarget[] | null;
+  // focusTargetsNote：清单为什么可能不全（某张图没切开逐柱）。
+  focusTargetsNote?: string;
+  // focusTargetsStatus：候选清单的加载状态。'failed' 时不能让用户以为"这页没有可指的"。
+  focusTargetsStatus?: 'loading' | 'ready' | 'failed';
 };
 
 type SegmentEditorHandle = {
@@ -110,13 +120,19 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onEditDictionary, onRemoveDictionary },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onEditDictionary, onRemoveDictionary, focusTargets, focusTargetsNote, focusTargetsStatus = 'ready' },
   ref
 ) {
   const { t } = useI18n();
   // 各分段展示文本与隐藏朗读文本分开维护：displayText 给编辑器看，spokenText 给 TTS 用。
   const [texts, setTexts] = useState<Record<string, string>>(() => initialTexts(script));
   const [spokenTexts, setSpokenTexts] = useState<Record<string, string>>(() => initialSpokenTexts(script));
+  // 焦点按段记名：null = 不表态（保存时省略字段，服务端保留原值），
+  // EMPTY_FOCUS = 用户明确清空，其余 = 指向某个目标。
+  // 三态必须留着：只改错别字时不能顺手把整页焦点抹掉。
+  const [focusBySegment, setFocusBySegment] = useState<Record<string, SegmentFocus | null>>(() => initialFocusMap(script.segments));
+  // 打开"指哪"列表的分段（同一时刻只开一个，避免多个浮层叠在一起）。
+  const [openFocusFor, setOpenFocusFor] = useState<string | null>(null);
   // 撤销/重做只作用于**当前页**：切页即清空。跨页撤销会让人分不清"撤的是哪一页"，
   // 而每页的草案本来就是独立提交的（见下方 draftsRef）。
   const [history, setHistory] = useState<ScriptHistory>(() => emptyHistory());
@@ -220,6 +236,9 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     if (!switchedSlide && draftsRef.current.has(script.slideId)) return;
     setTexts(initialTexts(script));
     setSpokenTexts(initialSpokenTexts(script));
+    // 焦点随页重置：与文本同一条规则（服务端落库且有未落库草案时不覆盖，
+    // 否则一次自动保存的 revision 推进会把手刚选的焦点弹回旧值）。
+    setFocusBySegment(initialFocusMap(script.segments));
     // 只在切页时清空历史。服务端落库（revision 推进）后**不能**清：自动保存只隔几百毫秒，
     // 一次保存就把撤销历史抹掉，等于刚写完就没法撤。
     if (switchedSlide) setHistory(emptyHistory());
@@ -235,6 +254,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       // 注意**不能**清原页的待提交定时器与草案 —— 那是原页未落库的编辑，必须继续提交。
       composingRef.current = false;
       setSelected(new Set());
+      setOpenFocusFor(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.slideId, script.revision]);
@@ -244,13 +264,22 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     onStatusChange?.(saveState);
   }, [saveState, onStatusChange]);
 
-  // segmentsWithTexts：把本地展示文本 + 隐藏朗读文本投影回段落（草案快照与提交内容共用同一投影）。
-  const segmentsWithTexts = (displaySource: Record<string, string>, spokenSource = spokenTexts): ScriptSegment[] =>
-    script.segments.map((segment) => ({
-      ...segment,
-      displayText: displaySource[segment.segmentId] ?? segment.displayText,
-      spokenText: spokenSource[segment.segmentId] ?? segment.spokenText
-    }));
+  // segmentsWithTexts：把本地展示文本 + 隐藏朗读文本 + 焦点投影回段落
+  // （草案快照与提交内容共用同一投影）。焦点投影在 scriptFocus.applyFocus 里，
+  // 由 node 门禁守住"缺席 / 清空 / 指向"三态。
+  const segmentsWithTexts = (
+    displaySource: Record<string, string>,
+    spokenSource = spokenTexts,
+    focusSource = focusBySegment
+  ): ScriptSegment[] =>
+    applyFocus(
+      script.segments.map((segment) => ({
+        ...segment,
+        displayText: displaySource[segment.segmentId] ?? segment.displayText,
+        spokenText: spokenSource[segment.segmentId] ?? segment.spokenText
+      })),
+      focusSource
+    );
 
   // commitDraft：把**指定页**的未落库草案提交到服务端（可提交非当前显示页 —— R-13 的关键）。
   const commitDraft = (slideId: string) => {
@@ -398,6 +427,25 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     setSaveState('dirty');
     onEdited?.();
     // A10：中文输入法组合期间（拼音串/候选未确认）不调度保存，待 onCompositionEnd 再落库。
+    if (composingRef.current) return;
+    scheduleSaveRef.current(slideId);
+  };
+
+  // setSegmentFocus：改「这一段指谁」。走与改文字**同一条**保存通道
+  // （草案快照 + 防抖自动保存）：焦点不是另一份数据，它就是段落的一部分。
+  // 分两条写路径的话，先改焦点再打字的顺序不同，服务端收到的可能是"新焦点 + 旧文本"。
+  const setSegmentFocus = (segmentId: string, target: SegmentFocus) => {
+    setOpenFocusFor(null);
+    if (target.shapeId === '' && focusBySegment[segmentId] === null) return; // 本来就没指，不必写一次空目标
+    editSeqRef.current += 1;
+    const seq = editSeqRef.current;
+    const slideId = script.slideId;
+    const next = { ...focusBySegment, [segmentId]: target };
+    setFocusBySegment(next);
+    draftsRef.current.set(slideId, { segments: segmentsWithTexts(texts, spokenTexts, next), seq });
+    setSaveState('dirty');
+    onEdited?.();
+    // 组合期不提交半成品文本（同 editSegment）；组合结束后那次调度会带上这份草案。
     if (composingRef.current) return;
     scheduleSaveRef.current(slideId);
   };
@@ -883,6 +931,91 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                 }}
                 onCompositionCancel={() => finishCompositionIfStuck(script.slideId)}
               />
+              {/* 「这一段指谁」：只在有候选时才有意义，但**永远**显示当前状态——
+                  已经指着的段落在列表加载失败时也不能看起来像"没指"。 */}
+              {(() => {
+                const chosen = focusBySegment[segment.segmentId] ?? null;
+                const hasFocus = Boolean(chosen && chosen.shapeId);
+                const isOpen = openFocusFor === segment.segmentId;
+                const targets = focusTargets ?? [];
+                return (
+                  <div className="segment-focus">
+                    <button
+                      type="button"
+                      className={`segment-focus-trigger${hasFocus ? ' set' : ''}`}
+                      disabled={!canEdit || segRewrite}
+                      aria-haspopup="listbox"
+                      aria-expanded={isOpen}
+                      onClick={() => setOpenFocusFor(isOpen ? null : segment.segmentId)}
+                      title={t('editor.focusHint')}
+                    >
+                      <span className="segment-focus-dot" aria-hidden="true" />
+                      <span className="segment-focus-label">
+                        {hasFocus
+                          ? t('editor.focusSet', { label: focusLabelOf(chosen, targets) })
+                          : t('editor.focusUnset')}
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <div className="segment-focus-menu" role="listbox" aria-label={t('editor.focusChoose')}>
+                        {focusTargetsStatus === 'loading' && (
+                          <p className="segment-focus-empty">{t('editor.focusLoading')}</p>
+                        )}
+                        {focusTargetsStatus === 'failed' && (
+                          <p className="segment-focus-empty">{t('editor.focusLoadFailed')}</p>
+                        )}
+                        {focusTargetsStatus === 'ready' && (
+                          <>
+                            {targets.length === 0 ? (
+                              <p className="segment-focus-empty">{t('editor.focusNoTargets')}</p>
+                            ) : (
+                              targets.map((target) => {
+                                const active =
+                                  chosen?.shapeId === target.shapeId &&
+                                  (chosen?.barId ?? '') === (target.barId ?? '');
+                                return (
+                                  <button
+                                    key={`${target.shapeId}:${target.barId ?? ''}`}
+                                    type="button"
+                                    role="option"
+                                    aria-selected={active}
+                                    className={`segment-focus-option${active ? ' active' : ''}`}
+                                    onClick={() =>
+                                      setSegmentFocus(segment.segmentId, {
+                                        shapeId: target.shapeId,
+                                        barId: target.barId ?? ''
+                                      })
+                                    }
+                                  >
+                                    <span className={`segment-focus-kind kind-${target.kind}`}>
+                                      {target.kind === 'bar'
+                                        ? t('editor.focusKindBar')
+                                        : target.kind === 'picture'
+                                          ? t('editor.focusKindPicture')
+                                          : t('editor.focusKindText')}
+                                    </span>
+                                    <span className="segment-focus-option-label">{target.label}</span>
+                                  </button>
+                                );
+                              })
+                            )}
+                            {focusTargetsNote && <p className="segment-focus-note">{focusTargetsNote}</p>}
+                            {hasFocus && (
+                              <button
+                                type="button"
+                                className="segment-focus-clear"
+                                onClick={() => setSegmentFocus(segment.segmentId, EMPTY_FOCUS)}
+                              >
+                                {t('editor.focusClear')}
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </article>
           );
         })}

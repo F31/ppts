@@ -70,7 +70,33 @@ export type ScriptSegment = {
   spokenText: string;
   sourceRefs?: string[];
   sourceAnchors?: SourceAnchor[];
+  // focus 是"这一段讲的是画面上的谁"（可选）。
+  // 省略 = 不表态（服务端保留原值）；{shapeId:''} = 显式清空；有 shapeId = 指过去。
+  // 这个三态是刻意的：编辑器保存错别字时不会带上它，若省略等于清空，
+  // 改一个字就会把整页焦点抹掉。
+  focus?: SegmentFocus;
   status: 'draft' | 'approved' | 'locked';
+};
+
+// SegmentFocus 指向一个可作焦点的目标。
+// barId 为空 = 整个形状；非空 = 该图表 chartBars[] 里的一根柱子（柱子没有独立图层，
+// 只能靠矩形遮罩指，所以必须精确到 id 而不是坐标）。
+export type SegmentFocus = {
+  shapeId: string;
+  barId?: string;
+};
+
+// FocusTarget 是编辑器列出来的候选（来自解析产物的 document.json）。
+export type FocusTarget = {
+  shapeId: string;
+  barId?: string;
+  kind: 'text' | 'picture' | 'bar' | string;
+  label: string;
+  category?: string;
+  series?: string;
+  // value 缺省 = 这个目标没有数值（不是 0）；0 是一个真实的数。
+  value?: number;
+  box: [number, number, number, number];
 };
 
 export type ScriptMode = 'SCRIPT_MODE_ORIGINAL' | 'SCRIPT_MODE_POLISH' | 'SCRIPT_MODE_AI_GENERATED';
