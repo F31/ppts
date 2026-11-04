@@ -84,7 +84,9 @@ type ChartBar struct {
 	// 也与 Layer.Box / FocusSpan.Rect 同一坐标系。
 	Box [4]int `json:"box"`
 	// LabelDir/LabelPad 是数据标签带相对柱体的方向与距离（画布像素）。
-	// 标签画在柱体之外，只框柱体时这根自己的数字会被压暗——「指谁谁灰」。
+	// 方向是 up / down / right / left：负值柱的标签在柱体下方，负值水平条在左端。
+	// 标签画在柱体之外，只框柱体时这根自己的数字会被压暗——「指谁谁灰」；
+	// 把方向写死成「向上」会把负值柱的标签带扩到反方向，数字照样被压暗。
 	LabelDir string `json:"labelDir,omitempty"`
 	LabelPad int    `json:"labelPad,omitempty"`
 }

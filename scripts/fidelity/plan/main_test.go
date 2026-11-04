@@ -23,7 +23,7 @@ func TestBarRects(t *testing.T) {
 			Bars:       []chartBar{{ID: "p2-s1-b0", Box: [4]int{100, 200, 50, 60}}},
 		}},
 	}
-	got := barRects(elems, 1920)
+	got := barRects(elems, 1920, 1080)
 
 	// 带标签：向上扩 45px，高度同步加上——标签画在柱体包围盒之外，
 	// 不扩进来「讲的是这根」对了，但这根自己的数字被压在纱下面。
@@ -49,7 +49,7 @@ func TestBarRects(t *testing.T) {
 
 // 没有 chart 块的元素不该被当成图表。
 func TestBarRectsIgnoresPlainElements(t *testing.T) {
-	if got := barRects([]element{{ID: "t1", Kind: "title", Box: [4]int{0, 0, 10, 10}}}, 1920); len(got) != 0 {
+	if got := barRects([]element{{ID: "t1", Kind: "title", Box: [4]int{0, 0, 10, 10}}}, 1920, 1080); len(got) != 0 {
 		t.Fatalf("普通元素不该产出柱子矩形：%v", got)
 	}
 }
@@ -66,7 +66,7 @@ func TestBarRectsHorizontalLabel(t *testing.T) {
 				LabelPad: &barLabelPad{Dir: "right", Px: 60}},
 		},
 	}}}
-	got := barRects(elems, 1920)
+	got := barRects(elems, 1920, 1080)
 	if r := got["b-wide"]; r != (render.Box{X: 260, Y: 700, W: 1159 + 74, H: 70}) {
 		t.Fatalf("水平条应向右扩 74px 且不动 Y，实得 %+v", r)
 	}
@@ -82,8 +82,45 @@ func TestBarRectsUsesMeasuredUpPad(t *testing.T) {
 		Bars: []chartBar{{ID: "b0", Box: [4]int{385, 429, 173, 370},
 			LabelPad: &barLabelPad{Dir: "up", Px: 28}}},
 	}}}
-	got := barRects(elems, 1920)
+	got := barRects(elems, 1920, 1080)
 	if r := got["b0"]; r.Y != 429-28 || r.H != 370+28 {
 		t.Fatalf("应按量到的 28px 向上扩，实得 %+v", r)
+	}
+}
+
+// 负值柱的标签在柱体**下方**、负值水平条在**左侧**。
+//
+// 把这两种方向当成「默认朝上/朝右」不会报错：框还在柱子上，只是数字被压暗、
+// 旁边空出一块亮带——正好是「指谁谁灰」的镜像。所以四个方向都要按量到的扩。
+func TestBarRectsNegativeLabelDirections(t *testing.T) {
+	elems := []element{{ID: "p1-s2", Kind: "chart", Chart: &chartInfo{
+		DataLabels: true,
+		Bars: []chartBar{
+			// 垂直负值柱：标签在下方，向上扩会把框盖到零线另一侧。
+			{ID: "b-down", Box: [4]int{399, 667, 171, 148},
+				LabelPad: &barLabelPad{Dir: "down", Px: 28}},
+			// 水平负值条：标签在左端。
+			{ID: "b-left", Box: [4]int{348, 685, 262, 96},
+				LabelPad: &barLabelPad{Dir: "left", Px: 60}},
+			// 贴左缘：只能扩到画布左边，不能出现负原点（Validate 会拒绝）。
+			{ID: "b-left-edge", Box: [4]int{20, 400, 200, 70},
+				LabelPad: &barLabelPad{Dir: "left", Px: 60}},
+			// 贴下缘：同理，向下扩到画布底为止。
+			{ID: "b-down-edge", Box: [4]int{600, 1000, 120, 70},
+				LabelPad: &barLabelPad{Dir: "down", Px: 40}},
+		},
+	}}}
+	got := barRects(elems, 1920, 1080)
+	if r := got["b-down"]; r.Y != 667 || r.H != 148+28 {
+		t.Fatalf("向下扩时 Y 不能动、H 加 28，实得 %+v", r)
+	}
+	if r := got["b-left"]; r.X != 348-60 || r.W != 262+60 || r.Y != 685 {
+		t.Fatalf("向左扩时 X 减 60、W 加 60，实得 %+v", r)
+	}
+	if r := got["b-left-edge"]; r.X != 0 || r.W != 200+20 {
+		t.Fatalf("贴左缘应扩到 0 为止（X=0,W=220），实得 %+v", r)
+	}
+	if r := got["b-down-edge"]; r.Y != 1000 || r.H != 70+10 {
+		t.Fatalf("贴下缘应扩到画布底为止（H=80），实得 %+v", r)
 	}
 }

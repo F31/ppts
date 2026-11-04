@@ -18,8 +18,8 @@ V10 因此能问「图上每个数念到没有」。但 V11 问的是**时间**�
    相近的大色簇（簇状图的系列配色由主题给定，同系列同色）。
 2. 每个色簇的掩码做投影切段 —— 垂直柱按列、水平条按行，取「这一列/行有 ≥3% 是
    柱色」的连续段 = 一根柱。
-3. 每个色簇的段数必须等于类别数；所有柱**厚/宽一致**，垂直柱底边同高、水平条
-   左端同起点——否则说明量到的不是柱子（图例色块、背景块、色带），直接报未测。
+3. 每个色簇的段数必须等于类别数；所有柱**厚/宽一致**，且同符号的柱共用同一条
+   零线——否则说明量到的不是柱子（图例色块、背景块、色带），直接报未测。
 4. 按主轴的先后把柱排开，每 `系列数` 个一组：一组就是一个类别，组内的颜色次序
    必须**每组都一样**。这同时校验了「系列是按声明顺序画的」这条版面前提，也让
    我们不必猜哪个颜色对应哪个系列。
@@ -30,12 +30,14 @@ V10 因此能问「图上每个数念到没有」。但 V11 问的是**时间**�
 
 - 做**垂直柱状**（`column*`）与**水平条形**（`bar*`）。折线、饼图、面积图一律
   报未测：它们在画面上不是「一根柱占一个带」，切出来的段没有语义。
-- 水平条形只做单系列。多系列时组内次序随坐标系翻转（Excel 会把整个绘图区转
-  180°，类别轴也因此自下而上），没有样本可验就不猜——报未测。
-- 水平条形的类别是**自下而上**的（类别 0 在最底下），不是自左向右；这是
-  Excel/PowerPoint 的默认，也是「指错比不指更糟」最容易被踩到的地方。
-- 数值为负时柱会翻到基线另一侧，长度不再反映大小，报未测。
+- 水平条形的类别是**自下而上**的（类别 0 在最底下），不是自左向右；多系列时
+  组内次序也整个翻过来（y 升序的最上面那根是**最后声明**的系列）。这两条都是
+  从 LibreOffice 渲染的 3×2 deck 上量出来的，不是照文档猜的。
+- 数值为负时柱翻到零线另一侧（垂直柱朝下、水平条朝左），基线换到柱体另一端，
+  标签也跟着换边。所以**每根柱的正负必须由数值给**，像素只负责验证画对了没有。
 - 数据标签、轴线、网格线不进任何柱子的包围盒（它们是低饱和或细线，过不了阈值）。
+  图例色块与柱子同色、又可能落在同一行带里，所以求范围时只认「这一列大半都是
+  柱色」的连续段——取 min/max 会被图例拉长（实测把 120 那根从 786 拉到 1015px）。
 - 图被裁切到图表框外（罕见）时量不到，同样报未测。
 
 ## 用法
@@ -133,15 +135,65 @@ def segment_axis(mask, horizontal):
     return segs
 
 
-def detect(patch, n_cats, n_series, horizontal=False):
+def _longest_run(flags):
+    """布尔序列里最长的连续 True 段，返回 (a, b) 闭区间；没有就返回 None。"""
+    best, run = None, None
+    for i, on in enumerate(flags):
+        if on and run is None:
+            run = i
+        elif not on and run is not None:
+            if best is None or i - run > best[1] - best[0] + 1:
+                best = (run, i - 1)
+            run = None
+    if run is not None and (best is None or len(flags) - run > best[1] - best[0] + 1):
+        best = (run, len(flags) - 1)
+    return best
+
+
+def extent(mask, seg, horizontal):
+    """一段色簇 → 完整矩形 (x, y, w, h)；量不到返回 None。
+
+    不能直接取这一带里柱色像素的 min/max：图例里的色块与柱子**同色**，一旦它
+    落在同一行带里（真实渲染里就发生了），x 的最右值会跳到图例上——实测把 120
+    那根从 786px 拉到 1015px，而框仍然压在柱子上，肉眼看不出来。改为只认
+    「这一列大半都是柱色」的列，再取最长的连续一段。
+    """
+    a, b = seg
+    band = b - a + 1
+    need = max(2, band // 2)
+    if horizontal:
+        run = _longest_run(mask[a:b + 1, :].sum(axis=0) >= need)
+        if run is None:
+            return None
+        return (int(run[0]), int(a), int(run[1] - run[0] + 1), int(band))
+    run = _longest_run(mask[:, a:b + 1].sum(axis=1) >= need)
+    if run is None:
+        return None
+    return (int(a), int(run[0]), int(band), int(run[1] - run[0] + 1))
+
+
+def detect(patch, n_cats, n_series, horizontal=False, values=None):
     """页面图里 chart 区域 → 每根柱的像素矩形。返回 (boxes, reason)。
 
-    boxes 按「类别主序、系列次序」排好，元素是 `(x, y, w, h, cat, ser)`。
-    bars 为空时 reason 说明为什么没切成——这句话会原样进报告，所以它必须能
-    让人判断「是这页本来没柱，还是我的工具有洞」。
+    boxes 按「类别主序、系列次序」排好，元素是
+    `(x, y, w, h, cat, ser, label_dir)`，label_dir ∈ up/down/left/right。
+
+    `values` 是系列主序的数值（values[系列][类别]）。它只参与两件事：判断这根
+    柱长在零线的哪一侧，以及校验长度序。坐标仍然只从像素来。
+
+    负值柱翻到零线另一侧（垂直柱朝下、水平条朝左），基线就从「柱体底边」换成
+    「柱体顶边」。全正值图里也可能出现「所有柱等高」这种两端都像基线的情形，
+    光看像素分不出来——猜错会把标签带扩到反方向，所以符号必须由数值给。
     """
-    if horizontal and n_series > 1:
-        return [], "水平条形只做单系列（多系列的组内次序随坐标翻转，没有样本可验）"
+    if n_cats <= 0 or n_series <= 0:
+        return [], "没有类别或系列，未切"
+    if values is None or len(values) != n_series:
+        return [], ("数值矩阵有 %d 个系列，图表声明了 %d 个，未切"
+                    % (len(values or []), n_series))
+    for si, row in enumerate(values):
+        if len(row) < n_cats:
+            return [], ("第 %d 个系列只有 %d 个数值，类别有 %d 个，未切"
+                        % (si, len(row), n_cats))
     colors = color_clusters(patch, n_series)
     if colors is None:
         return [], ("图表区域里找不到 %d 个成规模且互不相同的色簇"
@@ -169,21 +221,11 @@ def detect(patch, n_cats, n_series, horizontal=False):
 
     bars = []   # (主轴起点, 色簇号, x, y, w, h)
     for si, segs in enumerate(per_color):
-        for (a, b) in segs:
-            if horizontal:
-                sub = masks[si][a:b + 1, :]
-                xs = np.where(sub.any(axis=0))[0]
-                if len(xs) == 0:
-                    return [], "色段 %d–%d 里没有柱色像素" % (a, b)
-                bars.append((a, si, int(xs.min()), a, int(xs.max() - xs.min() + 1),
-                             b - a + 1))
-            else:
-                sub = masks[si][:, a:b + 1]
-                ys = np.where(sub.any(axis=1))[0]
-                if len(ys) == 0:
-                    return [], "色段 %d–%d 里没有柱色像素" % (a, b)
-                bars.append((a, si, a, int(ys.min()), b - a + 1,
-                             int(ys.max() - ys.min() + 1)))
+        for seg in segs:
+            r = extent(masks[si], seg, horizontal)
+            if r is None:
+                return [], "色段 %d–%d 里没有柱色像素" % seg
+            bars.append((seg[0], si) + r)
     bars.sort(key=lambda t: t[0])
     if len(bars) != n_cats * n_series:
         return [], ("量到 %d 根柱，类别×系列应为 %d 根（%d×%d）"
@@ -207,38 +249,78 @@ def detect(patch, n_cats, n_series, horizontal=False):
     if max(thick) / float(min(thick)) > WIDTH_SPREAD_MAX:
         return [], ("柱厚/宽差 %.2f 倍（%d–%dpx），不像同一张图里的柱子"
                     % (max(thick) / float(min(thick)), min(thick), max(thick)))
-    if horizontal:
-        # 水平条从左端同一条基线出发。
-        left = [b[2] for b in bars]
-        if max(left) - min(left) > BASE_TOL_PX:
-            return [], ("柱起点差 %dpx，不在同一条基线上，可能量到了图例或背景"
-                        % (max(left) - min(left)))
-    else:
-        bases = [b[3] + b[5] for b in bars]
-        if max(bases) - min(bases) > BASE_TOL_PX:
-            return [], ("色块底边差 %dpx，不在同一条基线上，可能量到了图例或背景"
-                        % (max(bases) - min(bases)))
 
-    out = []
+    out, bases, negs = [], [], []
     for g in range(n_cats):
         # 水平条形的类别轴自下而上：组按 y 升序排开，但第 0 组在最底下。
         cat = (n_cats - 1 - g) if horizontal else g
         chunk = bars[g * n_series:(g + 1) * n_series]
         for pos, (_, si, x, y, w, h) in enumerate(chunk):
             ser = order.index(si) if order else pos
-            out.append((x, y, w, h, cat, ser))
+            # 水平条多系列时组内也是反的：LibreOffice 渲的 3×2 deck 上，y 升序
+            # 的最上面那根是**最后声明**的系列（图例次序同样倒着写）。这一条没有
+            # 文档可依，是从渲染结果量的；猜反了会把两个系列的值张冠李戴，而框
+            # 本身看着完全正常。
+            if horizontal:
+                ser = n_series - 1 - ser
+            value = values[ser][cat]
+            neg = value < 0
+            if horizontal:
+                base = (x + w) if neg else x
+                direction = "left" if neg else "right"
+            else:
+                base = y if neg else (y + h)
+                direction = "down" if neg else "up"
+            out.append((x, y, w, h, cat, ser, direction))
+            bases.append(base)
+            negs.append(neg)
+
+    # 基线必须落在同一条零线上：正负各自成组校验，跨组再对一次。这同时验证了
+    # 渲染器确实把负值柱画到了零线另一侧——画错边的话，它「按符号取的那一端」
+    # 会跑到别处，与另一组对不上。
+    for want_neg, label in ((False, "正值柱"), (True, "负值柱")):
+        group = [b for b, n in zip(bases, negs) if n == want_neg]
+        if group and max(group) - min(group) > BASE_TOL_PX:
+            return [], ("%s的基线差 %dpx，不在同一条零线上，可能量到了图例或背景"
+                        % (label, max(group) - min(group)))
+    pos = [b for b, n in zip(bases, negs) if not n]
+    neg = [b for b, n in zip(bases, negs) if n]
+    if pos and neg and abs(pos[0] - neg[0]) > BASE_TOL_PX:
+        return [], ("正值柱与负值柱的基线差 %dpx，不在同一条零线上，未切"
+                    % abs(pos[0] - neg[0]))
+
+    # 长度序必须与 |数值| 序同向（同一系列内比：不同系列的数值序本来就不一样）。
+    # 相等值不参与——排序不稳定时它们谁在前都可能，比了只会误报。
+    for si in range(n_series):
+        pairs = []
+        for x, y, w, h, ci, s_i, _ in out:
+            if s_i != si:
+                continue
+            v = values[si][ci]
+            if v == 0:
+                continue
+            pairs.append((abs(v), (w if horizontal else h)))
+        for i in range(len(pairs)):
+            for j in range(i + 1, len(pairs)):
+                if abs(pairs[i][0] - pairs[j][0]) < 1e-9:
+                    continue
+                if (pairs[i][0] - pairs[j][0]) * (pairs[i][1] - pairs[j][1]) < 0:
+                    return [], ("第 %d 个系列的长度序与数值序相反（%g→%dpx / %g→%dpx），未采用"
+                                % (si, pairs[i][0], pairs[i][1],
+                                   pairs[j][0], pairs[j][1]))
     # 产物一律按「类别主序、系列次序」排：两种朝向的 id 编号才对得上，
     # 下游拿 b0 当「第一个类别」时不用先问这张图是横的还是竖的。
     out.sort(key=lambda t: (t[4], t[5]))
     return out, ""
 
 
-def measure_label(patch, bx, by, bw, bh, horizontal):
+def measure_label(patch, bx, by, bw, bh, direction):
     """数据标签离柱体有多远（像素）。量不到返回 0。
 
-    标签画在柱体包围盒**之外**：垂直柱在柱顶上方，水平条在条的右端。焦点矩形
-    只框柱体时，这根自己的数字会被压在纱下面——「指谁谁灰」，图上最该清楚的数
-    反而看不见。所以把标签带一起框进来。
+    标签画在柱体包围盒**之外**，而且换边的规则跟柱子一样：正值柱在柱顶上方、
+    水平条的右端；负值柱在柱底**下方**、负值水平条的**左端**。焦点矩形只框柱体
+    时，这根自己的数字会被压在纱下面——「指谁谁灰」，图上最该清楚的数反而看不见。
+    所以把标签带一起框进来。
 
     量而不是用常数：垂直柱实测 42px（旧实现的 45 是量完又加了 3px 余量），
     水平条的标签宽度则随数字位数变（"174" 71px、"96" 48px），一个常数盖不住。
@@ -246,15 +328,28 @@ def measure_label(patch, bx, by, bw, bh, horizontal):
     """
     g = patch.max(axis=2)
     margin = 3
-    if horizontal:
-        x0 = bx + bw
-        band = g[by:by + bh, x0:x0 + 140]
-        if band.size == 0:
+    if direction in ("left", "right"):
+        if direction == "right":
+            x0 = bx + bw
+            band = g[by:by + bh, x0:x0 + 140]
+            if band.size == 0:
+                return 0
+            dark = np.where((band < 110).any(axis=0))[0]
+            return int(dark.max()) + 1 + margin if len(dark) else 0
+        x0 = max(0, bx - 140)
+        band = g[by:by + bh, x0:bx]
+        if band.size == 0 or bx <= x0:
             return 0
         dark = np.where((band < 110).any(axis=0))[0]
+        return int(bx - (x0 + dark.min())) + margin if len(dark) else 0
+    if direction == "down":
+        y0 = by + bh
+        band = g[y0:y0 + 140, bx:bx + bw]
+        if band.size == 0:
+            return 0
+        dark = np.where((band < 110).any(axis=1))[0]
         return int(dark.max()) + 1 + margin if len(dark) else 0
-    y0 = by - 70
-    top = max(0, y0)
+    top = max(0, by - 70)
     band = g[top:by, bx:bx + bw]
     if band.size == 0 or by <= top:
         return 0
@@ -287,10 +382,7 @@ def split_page(page_elems, img, px_per_unit_x, px_per_unit_y):
         if not cats or not series:
             notes.append("%s：没有类别或系列，未切" % e["id"])
             continue
-        # 负值会让柱翻到基线另一侧，长度不再反映大小——长度序校验会失效。
-        if any((v is not None and v < 0) for s in series for v in (s.get("values") or [])):
-            notes.append("%s：含负值，柱会翻到基线另一侧，未切" % e["id"])
-            continue
+        values = [s.get("values") or [] for s in series]
         x, y, w, h = e["box"]
         # 元素坐标 → 页面图像素
         rx0 = max(0, int(round(x * px_per_unit_x)))
@@ -301,14 +393,13 @@ def split_page(page_elems, img, px_per_unit_x, px_per_unit_y):
             notes.append("%s：包围盒在页面图上不足 8px，未切" % e["id"])
             continue
         patch = img[ry0:ry1, rx0:rx1]
-        boxes, reason = detect(patch, len(cats), len(series), horizontal)
+        boxes, reason = detect(patch, len(cats), len(series), horizontal, values)
         if not boxes:
             notes.append("%s：%s" % (e["id"], reason))
             continue
 
-        # boxes 已经按「类别主序、系列次序」排好（水平条形的类别已翻回自下而上）。
         bars = []
-        for k, (bx, by, bw, bh, ci, si) in enumerate(boxes):
+        for k, (bx, by, bw, bh, ci, si, direction) in enumerate(boxes):
             vals = series[si].get("values") or []
             if ci >= len(vals) or vals[ci] is None:
                 continue
@@ -317,8 +408,6 @@ def split_page(page_elems, img, px_per_unit_x, px_per_unit_y):
                 "category": cats[ci] if ci < len(cats) else str(ci),
                 "series": series[si].get("name") or "",
                 "value": float(vals[ci]),
-                # 校验用，写进产物前会删掉：系列名可以重名，按名字找会串。
-                "_si": si,
                 "box": [int(round((rx0 + bx) / px_per_unit_x)),
                         int(round((ry0 + by) / px_per_unit_y)),
                         int(round(bw / px_per_unit_x)), int(round(bh / px_per_unit_y))],
@@ -330,10 +419,10 @@ def split_page(page_elems, img, px_per_unit_x, px_per_unit_y):
                                       / (px_per_unit_x if horizontal else px_per_unit_y))),
             }
             if chart.get("dataLabels"):
-                pad = measure_label(patch, bx, by, bw, bh, horizontal)
+                pad = measure_label(patch, bx, by, bw, bh, direction)
                 if pad:
                     bar["labelPad"] = {
-                        "dir": "right" if horizontal else "up",
+                        "dir": direction,
                         "px": int(round(pad / (px_per_unit_x if horizontal
                                                else px_per_unit_y))),
                     }
@@ -341,31 +430,6 @@ def split_page(page_elems, img, px_per_unit_x, px_per_unit_y):
         if len(bars) < 2:
             notes.append("%s：切出的柱子不足 2 根，未采用" % e["id"])
             continue
-        # 长度序必须与数值序同向（同一系列内比）。相等值不参与比较（排序不稳定会误报）。
-        length_key = "lengthPx"
-        for si in range(len(series)):
-            pairs = [(b["value"], b[length_key]) for b in bars if b["_si"] == si]
-            pairs = [p for p in pairs if p[0] > 0]
-            bad = None
-            for i in range(len(pairs)):
-                for j in range(i + 1, len(pairs)):
-                    (v1, h1), (v2, h2) = pairs[i], pairs[j]
-                    if abs(v1 - v2) < 1e-6:
-                        continue
-                    if (v1 - v2) * (h1 - h2) < 0:
-                        bad = (v1, h1, v2, h2)
-                        break
-                if bad:
-                    break
-            if bad:
-                notes.append("%s：%s 的长度序与数值序相反（%g→%dpx / %g→%dpx），未采用"
-                             % (e["id"], series[si].get("name") or "系列 %d" % si, *bad))
-                bars = []
-                break
-        if not bars:
-            continue
-        for b in bars:
-            b.pop("_si", None)
         chart["orientation"] = "horizontal" if horizontal else "vertical"
         chart["bars"] = bars
         notes.append("%s：切成 %d 根（%s）" % (e["id"], len(bars),
@@ -456,13 +520,54 @@ def self_test():
     cases.append(("非柱状图明确未切",
                   "bars" not in page4[0]["chart"] and "不是柱状" in notes4[0]))
 
-    # 降级四：含负值 → 柱会翻到基线另一侧，长度不再反映大小
-    page5 = [{"id": "p1-s6", "kind": "chart", "box": [0, 0, PAGE_W, PAGE_H],
-              "chart": {"chartType": "column_clustered", "categories": ["a", "b"],
-                        "series": [{"name": "s", "values": [3, -2]}]}}]
-    notes5 = split_page(page5, arr, W / float(PAGE_W), H / float(PAGE_H))
-    cases.append(("含负值明确未切",
-                  "bars" not in page5[0]["chart"] and "负值" in notes5[0]))
+    # ---- 含负值：柱翻到零线另一侧，基线换到另一端，标签也跟着换边 ----
+    # 布局照真实渲染摆：零线在 base_y，-40 那根往下长，数字在柱体下方。
+    ng = Image.new("RGB", (W, H), (255, 255, 255))
+    dn = ImageDraw.Draw(ng)
+    for v, a, b, bh in [(-40, 256, 371, -82), (120, 545, 660, 246), (80, 834, 949, 164)]:
+        if bh < 0:
+            dn.rectangle([a, base_y, b, base_y - bh], fill=(79, 129, 189))
+            dn.text((a + 30, base_y - bh + 6), str(v), fill=(0, 0, 0))
+        else:
+            dn.rectangle([a, base_y - bh, b, base_y], fill=(79, 129, 189))
+            dn.text((a + 30, base_y - bh - 18), str(v), fill=(0, 0, 0))
+    pageN = [{"id": "p1-s11", "kind": "chart", "box": [0, 0, PAGE_W, PAGE_H],
+              "chart": {"chartType": "column_clustered", "dataLabels": True,
+                        "categories": ["华东", "华北", "华南"],
+                        "series": [{"name": "耗时", "values": [-40, 120, 80]}]}}]
+    notes5 = split_page(pageN, np.asarray(ng), W / float(PAGE_W), H / float(PAGE_H))
+    nbars = pageN[0]["chart"].get("bars") or []
+    cases.append(("负值柱切出 3 根", len(nbars) == 3))
+    cases.append(("负值柱翻到零线下方 → %s"
+                  % ([(b["value"], b["box"][1]) for b in nbars],),
+                  bool(nbars) and nbars[0]["box"][1] > nbars[1]["box"][1]
+                  and nbars[0]["labelPad"]["dir"] == "down"))
+    cases.append(("正值柱标签仍朝上 → %s"
+                  % ([b["labelPad"]["dir"] for b in nbars if b["value"] > 0],),
+                  bool(nbars) and all(b["labelPad"]["dir"] == "up"
+                                      for b in nbars if b["value"] > 0)))
+
+    # 水平 + 负值：条往左伸，标签在左端。用同一组数值换个朝向再验一次。
+    hng = Image.new("RGB", (W, H), (255, 255, 255))
+    dhn = ImageDraw.Draw(hng)
+    hz = 343
+    for v, y0, ln in [(-40, 540, -82), (120, 420, 246), (80, 300, 164)]:
+        if ln < 0:
+            dhn.rectangle([hz + ln, y0, hz, y0 + 40], fill=(79, 129, 189))
+            dhn.text((hz + ln - 34, y0 + 10), str(v), fill=(0, 0, 0))
+        else:
+            dhn.rectangle([hz, y0, hz + ln, y0 + 40], fill=(79, 129, 189))
+            dhn.text((hz + ln + 6, y0 + 10), str(v), fill=(0, 0, 0))
+    pageHN = [{"id": "p1-s12", "kind": "chart", "box": [0, 0, PAGE_W, PAGE_H],
+               "chart": {"chartType": "bar_clustered", "dataLabels": True,
+                         "categories": ["华东", "华北", "华南"],
+                         "series": [{"name": "耗时", "values": [-40, 120, 80]}]}}]
+    notesHN = split_page(pageHN, np.asarray(hng), W / float(PAGE_W), H / float(PAGE_H))
+    hnbars = pageHN[0]["chart"].get("bars") or []
+    cases.append(("水平负值条切出 3 根且标签朝左 → %s"
+                  % ([(b["value"], (b.get("labelPad") or {}).get("dir")) for b in hnbars],),
+                  len(hnbars) == 3 and hnbars[0]["value"] == -40.0
+                  and hnbars[0]["labelPad"]["dir"] == "left"))
 
     # ---- 水平条形：类别自下而上，长度沿 x ----
     # 真实导出（LibreOffice）里 174 在最下面，96 在最上面——这是默认的类别轴方向。
@@ -532,19 +637,46 @@ def self_test():
                   % ([b["id"] for b in mbars][:3],),
                   [b["id"] for b in mbars][:3] == ["p1-s8-b0", "p1-s8-b1", "p1-s8-b2"]))
 
-    # 降级五：水平 + 多系列 → 组内次序随坐标翻转，没有样本就不猜
+    # ---- 水平 + 多系列：组内 y 升序对应系列**倒序** ----
+    # 布局照 LibreOffice 渲的 3×2 deck 摆：组内上面那根是最后声明的系列。
+    # 两个系列的值序刻意不同——把组内次序当成正序，系列就会互相张冠李戴，
+    # 而框本身看着完全正常。
+    hm = Image.new("RGB", (W, H), (255, 255, 255))
+    dhm = ImageDraw.Draw(hm)
+    hx = 236
+    # (y, 系列0 长度, 系列1 长度)：y 从上到下是类别 2、1、0。
+    for y0, l0, l1 in [(300, 135, 200), (420, 185, 250), (540, 246, 90)]:
+        dhm.rectangle([hx, y0, hx + l1, y0 + 40], fill=(192, 80, 72))        # 系列 1 在上
+        dhm.rectangle([hx, y0 + 44, hx + l0, y0 + 84], fill=(79, 129, 189))  # 系列 0 在下
+        dhm.text((hx + l1 + 6, y0 + 12), "S1", fill=(0, 0, 0))
+        dhm.text((hx + l0 + 6, y0 + 56), "S0", fill=(0, 0, 0))
     pageHM = [{"id": "p1-s9", "kind": "chart", "box": [0, 0, PAGE_W, PAGE_H],
-               "chart": {"chartType": "bar_clustered", "categories": ["a", "b"],
-                         "series": [{"name": "x", "values": [1, 2]},
-                                    {"name": "y", "values": [2, 1]}]}}]
-    notesHM = split_page(pageHM, np.asarray(hb), W / float(PAGE_W), H / float(PAGE_H))
-    cases.append(("水平多系列明确未切",
-                  "bars" not in pageHM[0]["chart"] and "单系列" in notesHM[0]))
+               "chart": {"chartType": "bar_clustered", "dataLabels": True,
+                         "categories": ["华东", "华北", "华南"],
+                         "series": [{"name": "耗时", "values": [174, 131, 96]},
+                                    {"name": "预算", "values": [60, 200, 140]}]}}]
+    notesHM = split_page(pageHM, np.asarray(hm), W / float(PAGE_W), H / float(PAGE_H))
+    hmbars = pageHM[0]["chart"].get("bars") or []
+    # 页面图 1280 → 元素系 1920：长度要乘 1.5。
+    want_hm = [("华东", "耗时", 246), ("华东", "预算", 90),
+               ("华北", "耗时", 185), ("华北", "预算", 250),
+               ("华南", "耗时", 135), ("华南", "预算", 200)]
+    cases.append(("水平多系列按反序分组 → %s"
+                  % ([(b["category"], b["series"], b["lengthPx"] / 1.5) for b in hmbars],),
+                  len(hmbars) == 6 and all(
+                      b["category"] == c and b["series"] == sr
+                      and abs(b["lengthPx"] / 1.5 - ln) <= 2
+                      for b, (c, sr, ln) in zip(hmbars, want_hm))))
+    cases.append(("水平多系列标签朝右 → %s"
+                  % ([b["labelPad"]["dir"] for b in hmbars],),
+                  len(hmbars) == 6 and all(b["labelPad"]["dir"] == "right"
+                                           for b in hmbars)))
 
     bad_names = [n for n, ok in cases if not ok]
     for n, ok in cases:
         print(("  ok   " if ok else "  FAIL ") + n)
-    for line in notes2 + notes3 + notes4 + notes5 + notesH + notesM + notesHM:
+    for line in (notes2 + notes3 + notes4 + notes5 + notesH + notesM
+                 + notesHN + notesHM):
         if line.strip():
             print("   · " + line)
     print("\n%d/%d 通过" % (len(cases) - len(bad_names), len(cases)))

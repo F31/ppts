@@ -89,9 +89,13 @@ const focusLabelPadPx = 45
 //
 // 不在这里校验矩形是否落在画布内：那是 Validate 的活，且它同时守着
 // 「服务端收到的 plan 也不能越界」。这里只负责把数据送到焦点上——但**扩标签时
-// 要自己夹住**：向右扩过头会越出画布右缘，而 Validate 只报「原点为负」，
-// 右侧越界它不查。
-func barRects(elems []element, canvasW int) map[string]render.Box {
+// 要自己夹住**：向四边扩过头都会越出画布，而 Validate 只报「原点为负」，
+// 右侧/下侧越界它不查。
+//
+// 四个方向都得认：负值柱的标签在柱体**下方**、负值水平条的标签在**左侧**，
+// 把它们当成「默认朝上」会把标签带扩到反方向——焦点框与数字分处两侧，
+// 画面上是「数字被压暗、旁边空出一块亮带」。
+func barRects(elems []element, canvasW, canvasH int) map[string]render.Box {
 	out := make(map[string]render.Box)
 	for _, e := range elems {
 		if e.Chart == nil {
@@ -108,21 +112,40 @@ func barRects(elems []element, canvasW int) map[string]render.Box {
 			if e.Chart.DataLabels {
 				// 只有带标签的图才需要扩：没有标签时扩出一块空白，
 				// 等于在柱子旁边留一条没被压暗的带，反而更显眼。
-				if b.LabelPad != nil && b.LabelPad.Dir == "right" && b.LabelPad.Px > 0 {
-					// 水平条：标签在右端，宽度随位数变（"174" 与 "96" 差一倍），
-					// 一个常数盖不住，所以按根量、按根扩。
-					pad := b.LabelPad.Px
+				dir, measured := "up", 0
+				if b.LabelPad != nil {
+					dir, measured = b.LabelPad.Dir, b.LabelPad.Px
+				}
+				pad := focusLabelPadPx
+				if measured > 0 {
+					// 按根量、按根扩：水平条的标签宽度随位数变（"174" 与 "96"
+					// 差一倍），一个常数盖不住。
+					pad = measured
+				}
+				switch dir {
+				case "right":
 					if room := canvasW - (r.X + r.W); room < pad {
 						pad = room
 					}
 					if pad > 0 {
 						r.W += pad
 					}
-				} else {
-					pad := focusLabelPadPx
-					if b.LabelPad != nil && b.LabelPad.Dir == "up" && b.LabelPad.Px > 0 {
-						pad = b.LabelPad.Px
+				case "left":
+					if room := r.X; room < pad {
+						pad = room
 					}
+					if pad > 0 {
+						r.X -= pad
+						r.W += pad
+					}
+				case "down":
+					if room := canvasH - (r.Y + r.H); room < pad {
+						pad = room
+					}
+					if pad > 0 {
+						r.H += pad
+					}
+				default: // up
 					if r.Y < pad {
 						pad = r.Y // 贴着画布顶边时能扩多少扩多少
 					}
@@ -672,7 +695,7 @@ func main() {
 			} else {
 				rev = scriptRevision(m.Elements, sp, *tierCompliant)
 			}
-			rects := barRects(m.Elements, theme.Canvas.Width)
+			rects := barRects(m.Elements, theme.Canvas.Width, theme.Canvas.Height)
 			focus = focusSpans(sp, rects)
 			// 焦点既不是图层、也不是切出来的柱子时，编译会在 Validate 里报
 			// 「不是本页图层」——那句话对着「我明明写了柱子的 id」很难对上号。

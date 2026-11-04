@@ -86,7 +86,7 @@ for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { py=$c; break; }
 if [ -z "$py" ]; then
   note "  - 跳过：没有 python"
 else
-  for pair in "verify.py:51" "split_chart_bars.py:22" "mask_preview.py:4" \
+  for pair in "verify.py:51" "split_chart_bars.py:26" "mask_preview.py:4" \
               "check_mask.py:17" "check_chart.py:4" "extract_pptx_elements.py:5"; do
     script=${pair%%:*}; want=${pair##*:}
     line=$("$py" "scripts/fidelity/$script" --self-test 2>&1 | tail -1)

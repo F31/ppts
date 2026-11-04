@@ -129,23 +129,87 @@ func TestAnnotateChartBarsKeepsPageOrigin(t *testing.T) {
 	}
 }
 
-// 负值与饼图都不切：一个会翻到基线另一侧，一个画面上不是「一根柱占一个带」。
-func TestAnnotateChartBarsRefusesNegativeAndNonBar(t *testing.T) {
+// 饼图不切：画面上不是「一根柱占一个带」，切出来的段没有语义。
+func TestAnnotateChartBarsRejectsNonBar(t *testing.T) {
 	img := chartPagePNG(t, 1920, 1080)
-	neg := chartShape(&project.Box{X: 0, Y: 0, Width: 12192000, Height: 6858000})
-	neg.ChartSeries[0].Values = []float64{174, -131, 96}
 	pie := chartShape(&project.Box{X: 0, Y: 0, Width: 12192000, Height: 6858000})
 	pie.ID = "p1-s3"
 	pie.ChartType = "pie"
-	pg := &project.Page{Index: 0, SlideID: "slide-0", Shapes: []*project.Shape{neg, pie}}
+	pg := &project.Page{Index: 0, SlideID: "slide-0", Shapes: []*project.Shape{pie}}
 
 	n, notes := AnnotateChartBars([]*project.Page{pg}, [][]byte{img})
 	if n != 0 {
-		t.Fatalf("两个都不该切，实得 %d", n)
+		t.Fatalf("饼图不该切，实得 %d", n)
 	}
-	joined := strings.Join(notes, " | ")
-	if !strings.Contains(joined, "负值") || !strings.Contains(joined, "不是柱状") {
+	if joined := strings.Join(notes, " | "); !strings.Contains(joined, "不是柱状") {
 		t.Fatalf("未切原因应写清楚，实得 %s", joined)
+	}
+}
+
+// 数值说「这根是负的」、像素却画在零线上方 → 不切。
+//
+// 这条是负值支持的安全网：符号来自数值，位置来自像素，两者对不上说明这张图
+// （或这份数值）有一边不对。此时按符号去取基线会得到 180px 的偏差，正好被
+// 「正负柱共用同一条零线」这条校验抓住——否则会带着错位的基线去扩标签带。
+func TestAnnotateChartBarsRejectsMismatchedNegative(t *testing.T) {
+	img := chartPagePNG(t, 1920, 1080)
+	sh := chartShape(&project.Box{X: 0, Y: 0, Width: 12192000, Height: 6858000})
+	sh.ChartSeries[0].Values = []float64{174, -131, 96}
+	pg := &project.Page{Index: 0, SlideID: "slide-0", Shapes: []*project.Shape{sh}}
+
+	n, notes := AnnotateChartBars([]*project.Page{pg}, [][]byte{img})
+	if n != 0 || len(sh.ChartBars) != 0 {
+		t.Fatalf("数值与像素矛盾时不该切，实得 %d 根", len(sh.ChartBars))
+	}
+	if joined := strings.Join(notes, " | "); !strings.Contains(joined, "零线") {
+		t.Fatalf("应报正负柱基线不一致，实得 %s", joined)
+	}
+}
+
+// 负值柱能切：框在零线下方，标签方向是 down（数字画在柱体下面）。
+//
+// 这条守的是「数值真的被用上了」：chartgeo 的符号来自 values，若调用方忘了传，
+// 或传成了空矩阵，这里会退化成「按正值处理」——框仍然压在柱子上，标签却扩到
+// 上方，正好把数字留在纱外面。
+func TestAnnotateChartBarsNegative(t *testing.T) {
+	const w, h = 1920, 1080
+	baseY := h * 3 / 4
+	m := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(m, m.Bounds(), image.NewUniform(cbWhite), image.Point{}, draw.Src)
+	// -40 那根从零线往下；120 / 80 往上。长度比 40:80:120 与数值同向。
+	for i, b := range []struct{ up, down int }{{0, 100}, {240, 0}, {160, 0}} {
+		x, bw := w/8+i*(w/5), w/8
+		draw.Draw(m, image.Rect(x, baseY-b.up, x+bw, baseY+b.down),
+			image.NewUniform(cbBlue), image.Point{}, draw.Src)
+	}
+	// 标签：负值在下方，其余在上方。
+	draw.Draw(m, image.Rect(300, baseY+106, 420, baseY+120), image.NewUniform(cbBlack), image.Point{}, draw.Src)
+	draw.Draw(m, image.Rect(684, baseY-260, 804, baseY-246), image.NewUniform(cbBlack), image.Point{}, draw.Src)
+	draw.Draw(m, image.Rect(1068, baseY-180, 1188, baseY-166), image.NewUniform(cbBlack), image.Point{}, draw.Src)
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, m); err != nil {
+		t.Fatal(err)
+	}
+	sh := chartShape(&project.Box{X: 0, Y: 0, Width: 12192000, Height: 6858000})
+	sh.ChartSeries[0].Values = []float64{-40, 120, 80}
+	pg := &project.Page{Index: 0, SlideID: "slide-0", Shapes: []*project.Shape{sh}}
+
+	n, notes := AnnotateChartBars([]*project.Page{pg}, [][]byte{buf.Bytes()})
+	if n != 1 || len(sh.ChartBars) != 3 {
+		t.Fatalf("负值柱应切出 3 根，实得 %d：%v", len(sh.ChartBars), notes)
+	}
+	b0 := sh.ChartBars[0]
+	if b0.Value != -40 || b0.Box[1] < baseY {
+		t.Fatalf("负值柱应在零线下方（y>=%d），实得 value=%v box=%v", baseY, b0.Value, b0.Box)
+	}
+	if b0.LabelDir != "down" || b0.LabelPad <= 0 {
+		t.Fatalf("负值柱的标签应朝下，实得 %q/%d", b0.LabelDir, b0.LabelPad)
+	}
+	for i := 1; i < 3; i++ {
+		if d := sh.ChartBars[i].LabelDir; d != "up" {
+			t.Fatalf("第 %d 根是正值柱，标签应朝上，实得 %q", i, d)
+		}
 	}
 }
 

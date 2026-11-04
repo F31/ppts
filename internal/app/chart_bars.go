@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"math"
 	"strings"
 
 	"github.com/F31/ppts/internal/chartgeo"
@@ -104,16 +105,19 @@ func annotateShape(img image.Image, sh *project.Shape, pxPerEMU float64) (int, s
 		// 这不是「暂不支持」，是做了会指错——所以留一条明确的未测原因。
 		return 0, fmt.Sprintf("图表类型 %s 不是柱状/条形，未切", ctype)
 	}
-	if negativeValue(sh) {
-		// 负值柱会翻到基线另一侧，长度不再反映大小，长度序校验会失效。
-		return 0, "含负值，柱会翻到基线另一侧，未切"
+	// 数值随图像一起交给切柱：负值柱翻到零线另一侧，基线要从柱体的另一端取，
+	// 标签方向也跟着换边。数值是图表自己的声明，像素是它画出来的样子——两者
+	// 对不上时切柱会报未测，而不是挑一个信。
+	values := make([][]float64, len(sh.ChartSeries))
+	for i := range sh.ChartSeries {
+		values[i] = sh.ChartSeries[i].Values
 	}
 	b := sh.Bounds
 	box := chartgeo.Rect{
 		X: int(float64(b.X) * pxPerEMU), Y: int(float64(b.Y) * pxPerEMU),
 		W: int(float64(b.Width) * pxPerEMU), H: int(float64(b.Height) * pxPerEMU),
 	}
-	bars, why := chartgeo.Split(img, box, len(sh.ChartCategories), len(sh.ChartSeries), horizontal)
+	bars, why := chartgeo.Split(img, box, len(sh.ChartCategories), len(sh.ChartSeries), horizontal, values)
 	if len(bars) == 0 {
 		return 0, why
 	}
@@ -135,13 +139,15 @@ func annotateShape(img image.Image, sh *project.Shape, pxPerEMU float64) (int, s
 			Series:   sh.ChartSeries[bar.Ser].Name,
 			Value:    vals[bar.Cat],
 			LabelDir: bar.LabelDir,
-			LabelPad: int(float64(bar.LabelPad) * k),
+			LabelPad: int(math.Round(float64(bar.LabelPad) * k)),
 			// chartgeo 返回的是**裁剪块内**的坐标，必须加回图表的原点，
 			// 否则整页所有柱子都会差一个「图表在页面上的位置」——框还在柱子上，
 			// 只是整体平移，看起来像框对了，实际指偏了 144/173px。
 			Box: [4]int{
-				int(float64(box.X+bar.Rect.X) * k), int(float64(box.Y+bar.Rect.Y) * k),
-				int(float64(bar.Rect.W) * k), int(float64(bar.Rect.H) * k),
+				int(math.Round(float64(box.X+bar.Rect.X) * k)),
+				int(math.Round(float64(box.Y+bar.Rect.Y) * k)),
+				int(math.Round(float64(bar.Rect.W) * k)),
+				int(math.Round(float64(bar.Rect.H) * k)),
 			},
 		}
 		out = append(out, cb)
@@ -162,15 +168,4 @@ func chartCategoryAt(cats []string, i int) string {
 		return cats[i]
 	}
 	return fmt.Sprintf("类别 %d", i+1)
-}
-
-func negativeValue(sh *project.Shape) bool {
-	for _, s := range sh.ChartSeries {
-		for _, v := range s.Values {
-			if v < 0 {
-				return true
-			}
-		}
-	}
-	return false
 }

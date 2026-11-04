@@ -85,7 +85,9 @@ func FocusTargetsForPage(page *project.Page) PageFocusTargets {
 					})
 				}
 			} else if sh.ChartType != "" {
-				// 是图表但没切开（折线/饼图/负值/水平多系列/渲染器不可用）。
+				// 是图表但没切开（折线/饼图/柱宽不一致/数值与像素矛盾/渲染器不可用）。
+				// 注意负值与水平多系列 2026-11-04 起能切了，不要再写在这里——
+				// 把「能指」说成「不能指」会让用户放弃一个本来就有的选择。
 				// 这里必须说清楚，否则用户会以为"这张图没有柱子可指"。
 				notes = append(notes, fmt.Sprintf("图表 %s 未逐柱切开，不能单独指某一根", shapeDisplayName(sh)))
 			} else if sh.Bounds != nil {
