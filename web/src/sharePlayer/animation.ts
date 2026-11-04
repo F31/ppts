@@ -15,7 +15,7 @@
 //
 // 时钟一律由调用方给（音频 currentTime），这里不持有任何"当前时间"。
 
-import { FOCUS_FADE_MS, evaluateLayer, focusDim, focusMask, focusOpacity, originCss } from '../../../shared/motion.ts';
+import { FOCUS_FADE_MS, evaluateLayer, focusDim, focusMasks, focusOpacity, originCss } from '../../../shared/motion.ts';
 import type { FocusSpan, Layer, Motion } from '../../../shared/types.ts';
 
 /** 清单里的一层（字段是 IR 的投影，见 internal/share/manifest.go 的 SlideLayer）。 */
@@ -276,12 +276,16 @@ export function pickStageLayers(
  * 只有 [起点, 起点+fade]，中间靠 WAAPI 线性插值，而成片逐帧求的是 easeOutCubic。
  * 结果是「同一个函数」这句话在过渡区间里不成立，且两端都不报错。
  *
- * 只认这一段自己的 alpha：别的段生效时这一层必须是 0（焦点互斥）。认领靠的是
- * `focusMask` 返回的 `index`，**不是矩形本身**——两段的矩形原点完全可以相同
- * （同列上下堆叠的两个形状、卡片与压在它上面的标题块），按 x/y 认领会让两个节点
- * 同时亮：孔变成两块矩形的并集（指着标题却把整张卡片一起留白），孔外白纱叠成
- * 1-(1-0.45)² = 0.6975，整页比设计的更白。元素 id 也不够——一页里回到同一个元素
- * 讲第二次是常见编法，`startMs` 也没有唯一性保证。下标是这里唯一可靠的归属。
+ * 只认这一段自己的 alpha：认领靠的是 `focusMasks` 返回的 `index`，**不是矩形本身**
+ * ——两段的矩形原点完全可以相同（同列上下堆叠的两个形状、卡片与压在它上面的标题块），
+ * 按 x/y 认领会让两个节点互相认领：孔变成两块矩形的并集（指着标题却把整张卡片
+ * 一起留白），孔外白纱叠成 1-(1-0.45)² = 0.6975，整页比设计的更白。元素 id 也不够
+ * ——一页里回到同一个元素讲第二次是常见编法，`startMs` 也没有唯一性保证。下标是
+ * 这里唯一可靠的归属。
+ *
+ * 换段那 240ms 里**两个节点同时非零**（旧孔收拢、新孔张开），这是有意的：若旧节点
+ * 在新段开口那一刻归零，整页会硬闪一帧全亮。所以这一段自己的关键帧要覆盖下一段的
+ * 淡入窗口，而不是在 `next.startMs` 处补一个归零点。
  */
 export function focusMaskKeyframes(
   focus: FocusSpan[] | undefined,
@@ -295,21 +299,16 @@ export function focusMaskKeyframes(
   const marks: number[] = [0];
   pushFadeSamples(marks, span.startMs, fade);
   if (span.endMs) pushFadeSamples(marks, span.endMs, fade);
-  // 下一段开口的那一刻，这一段的遮罩必须**放手**：成片只有一个遮罩节点，
-  // 换段时矩形直接换掉，旧矩形在那一帧就没了。关键帧是分段线性，跳变要用
-  // 「前一毫秒仍保持」加「此刻归零」两个点表示；只补一个 0 会被插值拉成
-  // 从 hold 一路淡到那一刻——表现是「讲第一根柱子的时候白纱自己慢慢淡掉」。
-  // 只补 `stopAt` 也不行：它前面的关键帧在 hold 起点，插值区间横跨整段。
+  // 换段窗口必须整段采样：这一段的孔在下一段淡入的 240ms 里收拢，曲线是
+  // easeOutCubic；只补端点又会被 WAAPI 拉成一条弦（正是 5f5f90d 修的那个病）。
+  // 也不能在 `next.startMs` 补归零点——那一刻它仍是满的，归零会让整页闪一帧全亮。
   const next = focus[index + 1];
-  if (next) {
-    marks.push(next.startMs - 1);
-    marks.push(next.startMs);
-  }
+  if (next) pushFadeSamples(marks, next.startMs, next.fadeMs ?? FOCUS_FADE_MS);
   marks.push(pageMs);
   const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
-    const m = focusMask(focus, t);
-    const alpha = m && m.index === index ? m.alpha : 0;
-    return { offset: t / pageMs, opacity: String(round(alpha)) };
+    // 同一时刻可能有两块（换段窗口）：只取自己那一段，别的由它自己的节点画。
+    const mine = focusMasks(focus, t).find((m) => m.index === index);
+    return { offset: t / pageMs, opacity: String(round(mine ? mine.alpha : 0)) };
   });
   return frames.length >= 2 ? frames : null;
 }
@@ -317,11 +316,12 @@ export function focusMaskKeyframes(
 /**
  * 矩形焦点遮罩：每个带 `rect` 的焦点一个节点（整页白纱、rect 处留孔）。
  *
- * 为什么每段一个节点、而不是一个节点换位置：焦点是互斥的，同一时刻只会有一段生效；
- * 拆成多个节点后每段的关键帧只有「淡入—保持—淡出」，不需要在切换点搬动矩形，
- * 也就不会在换柱时出现「白纱从这根滑到那根」的中间态。
+ * 为什么每段一个节点、而不是一个节点换位置：拆成多个节点后每段的关键帧只有
+ * 「淡入—保持—收拢」，不需要在切换点搬动矩形，也就不会在换柱时出现「白纱从这根
+ * 滑到那根」的中间态。换段那 240ms 里两个节点同时非零（旧的收、新的开），
+ * 合成压暗量始终在 0.45 附近——见 shared/motion.ts 的 focusMasks。
  *
- * alpha 由 `focusMask` 逐采样点求出——和成片渲染器**同一个函数**。若这里另写一套
+ * alpha 由 `focusMasks` 逐采样点求出——和成片渲染器**同一个函数**。若这里另写一套
  * 时间逻辑，网页版和 MP4 迟早会在「什么时候压下去」上分叉，而这种分叉没有报错。
  */
 function buildFocusMasks(

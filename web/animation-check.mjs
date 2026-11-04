@@ -1091,7 +1091,7 @@ const sampleKeyframes = (frames, pageMs, t) => {
 
 test('矩形焦点：过渡区间里网页版也走曲线，不是一条弦', async () => {
   const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');
-  const { focusMask } = await import('../shared/motion.ts');
+  const { focusMasks } = await import('../shared/motion.ts');
   const pageMs = 6000;
   const rect = { x: 400, y: 300, w: 600, h: 300 };
   // 两个窗口都要走一遍：淡入（起点之后）与放手（endMs 之后）。只补前者，讲完最后
@@ -1108,7 +1108,10 @@ test('矩形焦点：过渡区间里网页版也走曲线，不是一条弦', as
     let worst = 0;
     let worstAt = 0;
     for (let t = 0; t <= pageMs; t += 1) {
-      const exact = focusMask(focus, t)?.alpha ?? 0;
+      // 只有一段，合成压暗量就是它自己的 alpha。
+      let keep = 1;
+      for (const m of focusMasks(focus, t)) keep *= 1 - m.alpha;
+      const exact = 1 - keep;
       const diff = Math.abs(sampleKeyframes(frames, pageMs, t) - exact);
       if (diff > worst) {
         worst = diff;
@@ -1204,7 +1207,7 @@ test('两段焦点矩形同原点时，遮罩不能互相认领', async () => {
 // （节点只在 hold 起点与页末有关键帧，中间被线性插值一路拉向 0）。
 test('矩形焦点：网页版所有遮罩叠加后的压暗量，逐毫秒等于成片', async () => {
   const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');
-  const { focusMask } = await import('../shared/motion.ts');
+  const { focusMasks } = await import('../shared/motion.ts');
   const pageMs = 6000;
   const focus = [
     // 第一段讲整张卡片，讲完主动放手（endMs 落在下一段之前）。
@@ -1226,7 +1229,10 @@ test('矩形焦点：网页版所有遮罩叠加后的压暗量，逐毫秒等�
     let keep = 1;
     for (const f of frames) keep *= 1 - sampleKeyframes(f, pageMs, t);
     const rendered = 1 - keep;
-    const exact = focusMask(focus, t)?.alpha ?? 0;
+    // 成片那边现在也是**一组**（换段窗口里两块同时存在），所以比的是合成量。
+    let keepExact = 1;
+    for (const m of focusMasks(focus, t)) keepExact *= 1 - m.alpha;
+    const exact = 1 - keepExact;
     const diff = Math.abs(rendered - exact);
     if (diff > worst) {
       worst = diff;

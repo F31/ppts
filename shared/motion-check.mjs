@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cubicBezier, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMask, framesForDuration, IDENTITY } from './motion.ts';
+import { cubicBezier, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY } from './motion.ts';
 
 const linear = { x1: 0, y1: 0, x2: 1, y2: 1 };
 
@@ -112,23 +112,24 @@ test('帧数口径与 Go 侧 round(durationMs × fps / 1000) 一致', () => {
 
 // 矩形焦点遮罩：内嵌图表的柱子没有图层，靠一块矩形指「此刻讲的是这根」。
 // 这组用例守三件事：强度与图层压暗同源、放手必须归零、普通焦点不受影响。
-test('focusMask：hold 期压到与图层压暗同强度', () => {
+test('focusMasks：hold 期压到与图层压暗同强度', () => {
   const rect = { x: 385, y: 384, w: 173, h: 415 };
   const focus = [{ startMs: 1000, elementId: 'p1-s2-b0', rect, fadeMs: 240 }];
-  assert.equal(focusMask(focus, 500), null, '段首之前不该有遮罩');
-  assert.equal(focusMask(focus, 1000), null, '刚开始时 alpha=0，不画节点');
-  const m = focusMask(focus, 2000);
-  assert.ok(m);
+  assert.deepEqual(focusMasks(focus, 500), [], '段首之前不该有遮罩');
+  assert.deepEqual(focusMasks(focus, 1000), [], '刚开始时 alpha=0，不画节点');
+  const ms = focusMasks(focus, 2000);
+  assert.equal(ms.length, 1);
+  const m = ms[0];
   // 0.45：非焦点层此刻 opacity 是 FOCUS_DIM_OPACITY，遮罩要让画面同样淡下去。
   assert.equal(Math.round(m.alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
   assert.deepEqual(m.rect, rect);
 });
 
-test('focusMask：放手后必须真的回到 0', () => {
+test('focusMasks：放手后必须真的回到 0', () => {
   const rect = { x: 10, y: 10, w: 100, h: 100 };
   const focus = [{ startMs: 1000, elementId: 'b0', rect, endMs: 3000, fadeMs: 240 }];
-  assert.ok(focusMask(focus, 3000), '放手那一刻还是满的');
-  assert.equal(focusMask(focus, 3240), null, '淡出结束必须归零');
+  assert.equal(focusMasks(focus, 3000).length, 1, '放手那一刻还是满的');
+  assert.deepEqual(focusMasks(focus, 3240), [], '淡出结束必须归零');
 });
 
 test('focusMask：endMs 写成 0 与「缺席」同义，不是「这一刻就放手」', () => {
@@ -138,27 +139,27 @@ test('focusMask：endMs 写成 0 与「缺席」同义，不是「这一刻就�
   // 症状只有一条：这一页跟完全没有焦点时一模一样。
   const rect = { x: 10, y: 10, w: 100, h: 100 };
   const zero = [{ startMs: 1000, elementId: 'b0', rect, endMs: 0, fadeMs: 240 }];
-  const m = focusMask(zero, 2000);
-  assert.ok(m, 'endMs=0 时遮罩必须还在');
-  assert.equal(Math.round(m.alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
-  assert.equal(focusMask(zero, 1000), null, '刚开始那一下仍然是 alpha=0');
+  const m = focusMasks(zero, 2000);
+  assert.equal(m.length, 1, 'endMs=0 时遮罩必须还在');
+  assert.equal(Math.round(m[0].alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
+  assert.deepEqual(focusMasks(zero, 1000), [], '刚开始那一下仍然是 alpha=0');
   // 缺字段与写 0 必须完全等价：把两者一起比，才不会被“两边都错了”蒙过去。
   const absent = [{ startMs: 1000, elementId: 'b0', rect, fadeMs: 240 }];
   for (const t of [0, 1000, 1240, 2000, 5999]) {
-    assert.deepEqual(focusMask(zero, t), focusMask(absent, t), `t=${t} 时两种写法应当等价`);
+    assert.deepEqual(focusMasks(zero, t), focusMasks(absent, t), `t=${t} 时两种写法应当等价`);
   }
 });
 
-test('focusMask：没有 rect 的焦点不改变原有行为', () => {
+test('focusMasks：没有 rect 的焦点不改变原有行为', () => {
   const focus = [{ startMs: 1000, elementId: 'e1' }];
-  assert.equal(focusMask(focus, 2000), null);
+  assert.deepEqual(focusMasks(focus, 2000), []);
   // 混排时也一样：最新一段是普通焦点，就不画遮罩。
   const mixed = [
     { startMs: 0, elementId: 'b0', rect: { x: 0, y: 0, w: 10, h: 10 } },
     { startMs: 1000, elementId: 'e1' }
   ];
-  assert.equal(focusMask(mixed, 1500), null);
-  assert.ok(focusMask(mixed, 500));
+  assert.deepEqual(focusMasks(mixed, 1500), []);
+  assert.equal(focusMasks(mixed, 500).length, 1);
 });
 
 // 矩形焦点与图层压暗是**两套**让位机制，不能同时作用在同一块画面上。
@@ -187,18 +188,45 @@ test('focusDim：矩形焦点期间图层不再压暗', () => {
 // 此刻该不该亮。归属不能用矩形本身来判——两段的原点完全可以相同（先讲整张卡片、
 // 再回来讲卡片上的标题块，这是最常见的编法），也不能用 elementId（一页里回到
 // 同一个元素讲第二次同样常见）。`index` 是唯一没有歧义的答案，这条把它钉住。
-test('focusMask：返回当前生效那一段的下标，同原点的两段也不含糊', () => {
+test('focusMasks：每块遮罩带自己那一段的下标，同原点的两段也不含糊', () => {
   const x = { x: 400, y: 300, w: 600, h: 300 };
   const title = { x: 400, y: 300, w: 300, h: 80 }; // 原点相同、尺寸不同
   const focus = [
     { startMs: 1000, elementId: 'card', rect: x, fadeMs: 240 },
     { startMs: 3000, elementId: 'title', rect: title, fadeMs: 240 }
   ];
-  assert.equal(focusMask(focus, 2000)?.index, 0);
-  assert.deepEqual(focusMask(focus, 2000)?.rect, x);
-  assert.equal(focusMask(focus, 4000)?.index, 1);
-  assert.deepEqual(focusMask(focus, 4000)?.rect, title);
-  // 换段那一刻 alpha 还是 0（新的一段刚开始淡入），所以返回 null——
-  // 此时不该有任何节点亮着，与成片一致。
-  assert.equal(focusMask(focus, 3000), null);
+  assert.deepEqual(focusMasks(focus, 2000).map((m) => m.index), [0]);
+  assert.deepEqual(focusMasks(focus, 2000)[0].rect, x);
+  assert.deepEqual(focusMasks(focus, 4000).map((m) => m.index), [1]);
+  assert.deepEqual(focusMasks(focus, 4000)[0].rect, title);
+  // 换段那一刻：新的一段 alpha 还是 0（刚开始淡入），但旧的孔还在满档——
+  // 不能返回空表，否则整页硬闪一帧全亮。
+  const at = focusMasks(focus, 3000);
+  assert.deepEqual(at.map((m) => m.index), [0]);
+  assert.equal(Math.round(at[0].alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
+});
+
+// 换段不许「闪一帧全亮」：整页的压暗量是 1−Π(1−α)，它在整个页面上必须连续。
+// 旧实现（新段开口那一刻旧遮罩归零）在换段处从 0.45 直落 0，是肉眼可见的一次白闪；
+// 交叉淡化把它压成一段平滑的谷，最低点约 0.399（两块各 0.225 的合成）。
+test('focusMasks：换段用交叉淡化，整页压暗量全程连续、不归零', () => {
+  const focus = [
+    { startMs: 1000, elementId: 'a', rect: { x: 0, y: 0, w: 100, h: 100 }, fadeMs: 240 },
+    { startMs: 3000, elementId: 'b', rect: { x: 500, y: 0, w: 100, h: 100 }, fadeMs: 240 },
+    { startMs: 5000, elementId: 'c', rect: { x: 900, y: 0, w: 100, h: 100 }, fadeMs: 240 }
+  ];
+  let prev = null;
+  let minAfterStart = 1;
+  for (let t = 1000; t <= 5999; t += 1) {
+    let keep = 1;
+    for (const m of focusMasks(focus, t)) keep *= 1 - m.alpha;
+    const dim = 1 - keep;
+    if (prev !== null) {
+      assert.ok(Math.abs(dim - prev) < 0.01, `t=${t} 压暗量跳了 ${(dim - prev).toFixed(3)}：换段闪白又回来了`);
+    }
+    prev = dim;
+    // 1240ms 之后（第一段淡入完成）就不该再低于 0.38。
+    if (t >= 1240) minAfterStart = Math.min(minAfterStart, dim);
+  }
+  assert.ok(minAfterStart > 0.38, `压暗量最低掉到 ${minAfterStart.toFixed(3)}，交叉淡化没有托住`);
 });

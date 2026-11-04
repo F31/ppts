@@ -231,8 +231,37 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
   return out;
 }
 
+/** 一块矩形遮罩：孔的位置、这一刻要盖多白（alpha）、它属于哪一段。 */
+export interface FocusMask {
+  rect: { x: number; y: number; w: number; h: number };
+  alpha: number;
+  index: number;
+}
+
 /**
- * 焦点**矩形**的遮罩：此刻该压暗到什么程度、只留哪一块。
+ * 单独一段遮罩在「没有别的段插手」时的强度。0 表示这一刻它不该被画出来。
+ *
+ * `endMs` 的 **0 与缺失同义**：IR 里是 `json:"endMs,omitempty"`，0 表示「保持到
+ * 下一段」。这里必须按真值判，不能写 `!== undefined`——一份把 0 显式写出来的计划
+ * （手写 plan、或某个生产者没走 omitempty）会落进「tMs >= 0 恒成立」，
+ * 于是 alpha 整段是 0、遮罩一次都不画，而 `focusDim` 读同一个字段时是真值判、
+ * 图层照常压暗：画面看起来「图层焦点好好的，柱子焦点没反应」。
+ * 2026-11-04 用真片子撞出来的：唯一的症状就是「这一页跟没有焦点一模一样」。
+ */
+function maskAlphaOf(span: FocusSpan, tMs: number): number {
+  const fade = span.fadeMs ?? FOCUS_FADE_MS;
+  let lock: number;
+  if (span.endMs && tMs >= span.endMs) {
+    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - span.endMs) / fade));
+    lock = 1 - p;
+  } else {
+    lock = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - span.startMs) / fade));
+  }
+  return (1 - FOCUS_DIM_OPACITY) * Math.max(0, Math.min(1, lock));
+}
+
+/**
+ * 焦点**矩形**的遮罩：这一刻该盖哪几块、各自多白。
  *
  * 为什么需要和 focusDim 并存：focusDim 让「某个图层」退后，前提是那个东西是一层。
  * 内嵌图表的柱子不是层——图表是一张位图，柱子没法单独拿出来（试过：抹掉柱身恢复
@@ -242,51 +271,52 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
  * 强度与 focusDim 同源：非焦点区最终不透明度 = FOCUS_DIM_OPACITY（0.55），
  * 也就是盖 1−0.55 = 0.45 的白。这里返回的 alpha 就是这个值乘上「收拢进度」。
  *
+ * **返回的是一组**，不是一块。绝大多数时刻只有一块，但**换段的那 240ms 有两块**：
+ * 旧孔收拢、新孔张开，两件事同时进行。理由与 focusDim 的交叉淡化同源——若等新的
+ * 淡入完成再撤旧的，这一窗口里两块白纱叠着，整页压暗量会翻到 0.7；若在新段开口
+ * 那一刻把旧的清零（这正是上一版的写法），整页会**硬闪一帧全亮**。真浏览器量到：
+ * 2999ms 压暗 0.45、3000ms 两个遮罩同时归零、3240ms 才淡回 0.45——一句话一次闪。
+ * 交叉淡化时合成压暗量 = 1−(1−α旧)(1−α新)，中点 0.399，全程连续、没有跳变。
+ *
  * 时间口径：段开始后 fade 内从 0 收到满，endMs 之后 fade 内放回去。
  * 「放手」必须真的回到 0——否则讲完最后一句画面还压着，正是 V12 抓的那类问题。
  *
- * 返回 null 表示「这一刻不该有遮罩」：没有焦点、当前焦点不是矩形焦点（普通图层焦点）、
- * 或者正处在两端（alpha 为 0）。调用方据此完全不画，而不是画一个 alpha=0 的节点。
- *
- * 返回值里的 `index` 是**当前生效那一段在入参数组里的下标**，供「一段一个节点」的
- * 调用方认领自己的那一段。为什么不能靠矩形本身来认：两段的矩形原点完全可以相同
- * （同列上下堆叠的两个形状、卡片与压在它上面的标题块），此时「x/y 相同」会让
- * 两个节点互相认领——孔变成两块矩形的并集、孔外白纱叠两层（0.45 → 0.6975）。
- * 元素 id 也不够：一页里回到同一个元素讲第二次是常见编法。
+ * 每一项的 `index` 是**它在入参数组里的下标**，供「一段一个节点」的调用方认领自己
+ * 那一段。为什么不能靠矩形本身来认：两段的矩形原点完全可以相同（同列上下堆叠的
+ * 两个形状、卡片与压在它上面的标题块），此时「x/y 相同」会让两个节点互相认领——
+ * 孔变成两块矩形的并集、孔外白纱叠两层（0.45 → 0.6975）。元素 id 也不够：一页里
+ * 回到同一个元素讲第二次是常见编法。
  */
-export function focusMask(
-  focus: FocusSpan[] | undefined,
-  tMs: number
-): { rect: { x: number; y: number; w: number; h: number }; alpha: number; index: number } | null {
-  if (!focus || focus.length === 0) return null;
-  let cur: FocusSpan | null = null;
+export function focusMasks(focus: FocusSpan[] | undefined, tMs: number): FocusMask[] {
+  if (!focus || focus.length === 0) return [];
   let index = -1;
   for (let i = 0; i < focus.length; i++) {
-    if (focus[i].startMs <= tMs) {
-      cur = focus[i];
-      index = i;
+    if (focus[i].startMs <= tMs) index = i;
+  }
+  if (index < 0) return [];
+  const out: FocusMask[] = [];
+  const cur = focus[index];
+  if (validRect(cur)) {
+    const alpha = maskAlphaOf(cur, tMs);
+    if (alpha > 1e-6) out.push({ rect: cur.rect!, alpha, index });
+  }
+  // 换段窗口：上一段的孔跟着**新的这一段淡入的进度**收拢。它自己的 endMs 仍然管用
+  // （讲完主动放手的那段，在下一段开口前就已经是 0 了），所以两边相乘。
+  const prev = index > 0 ? focus[index - 1] : undefined;
+  if (prev && validRect(prev)) {
+    const fade = cur.fadeMs ?? FOCUS_FADE_MS;
+    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, Math.max(0, (tMs - cur.startMs) / fade)));
+    if (p < 1) {
+      const alpha = maskAlphaOf(prev, tMs) * (1 - p);
+      if (alpha > 1e-6) out.push({ rect: prev.rect!, alpha, index: index - 1 });
     }
   }
-  if (!cur || !cur.rect) return null;
-  const fade = cur.fadeMs ?? FOCUS_FADE_MS;
-  let lock: number;
-  // `endMs` 的 **0 与缺失同义**：IR 里是 `json:"endMs,omitempty"`，0 表示「保持到
-  // 下一段」。这里必须按真值判，不能写 `!== undefined`——一份把 0 显式写出来的计划
-  // （手写 plan、或某个生产者没走 omitempty）会落进「tMs >= 0 恒成立」，
-  // 于是 alpha 整段是 0、遮罩一次都不画，而 `focusDim` 读同一个字段时是真值判、
-  // 图层照常压暗：画面看起来「图层焦点好好的，柱子焦点没反应」。
-  // 2026-11-04 用真片子撞出来的：唯一的症状就是「这一页跟没有焦点一模一样」。
-  if (cur.endMs && tMs >= cur.endMs) {
-    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.endMs) / fade));
-    lock = 1 - p;
-  } else {
-    lock = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.startMs) / fade));
-  }
-  const alpha = (1 - FOCUS_DIM_OPACITY) * Math.max(0, Math.min(1, lock));
-  if (alpha <= 1e-6) return null;
-  const r = cur.rect;
-  if (!(r.w > 0) || !(r.h > 0)) return null;
-  return { rect: r, alpha, index };
+  return out;
+}
+
+function validRect(span: FocusSpan): boolean {
+  const r = span.rect;
+  return !!r && r.w > 0 && r.h > 0;
 }
 
 /** 把压暗量折成实际不透明度系数：dim=0 → 1，dim=1 → FOCUS_DIM_OPACITY。 */

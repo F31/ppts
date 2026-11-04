@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
-import { easeOutCubic, evaluateLayer, focusDim, focusMask, focusOpacity, framesForDuration, originCss } from '../../shared/motion';
+import { easeOutCubic, evaluateLayer, focusDim, focusMasks, focusOpacity, framesForDuration, originCss } from '../../shared/motion';
 import { shotAt } from '../../shared/shots';
 import type { Layer, Page, Timeline } from './types';
 
@@ -33,7 +33,8 @@ const PageView: React.FC<{
   // 页级焦点：非焦点元素整体退后。位置不动，只降不透明度——
   // 版面是烘焙的底图，改布局不是合成器的事。
   const dims = focusDim(page.focus, tMs);
-  const mask = focusMask(page.focus, tMs);
+  // 换段窗口里是**两块**（旧的收拢、新的张开），所以这里是一组而不是一块。
+  const masks = focusMasks(page.focus, tMs);
   return (
     <AbsoluteFill>
       {frame ? (
@@ -103,20 +104,23 @@ const PageView: React.FC<{
           只能靠这一块矩形告诉观众「此刻讲的是这根」。
           孔用 box-shadow 撑出来（一个 div 就是「透明孔 + 四周无穷大的阴影」），
           blur 让孔边羽化：硬边会在网格线上切出一亮一淡的接缝。 */}
-      {mask && !frame?.shot.crop ? (
-        <div
-          style={{
-            position: 'absolute',
-            left: mask.rect.x,
-            top: mask.rect.y,
-            width: mask.rect.w,
-            height: mask.rect.h,
-            boxShadow: `0 0 0 9999px rgba(255,255,255,${mask.alpha})`,
-            filter: 'blur(8px)',
-            pointerEvents: 'none'
-          }}
-        />
-      ) : null}
+      {!frame?.shot.crop
+        ? masks.map((mask) => (
+            <div
+              key={mask.index}
+              style={{
+                position: 'absolute',
+                left: mask.rect.x,
+                top: mask.rect.y,
+                width: mask.rect.w,
+                height: mask.rect.h,
+                boxShadow: `0 0 0 9999px rgba(255,255,255,${mask.alpha})`,
+                filter: 'blur(8px)',
+                pointerEvents: 'none'
+              }}
+            />
+          ))
+        : null}
     </AbsoluteFill>
   );
 };
