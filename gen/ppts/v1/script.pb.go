@@ -30,6 +30,11 @@ type Segment struct {
 	SourceRefs    []string               `protobuf:"bytes,5,rep,name=source_refs,json=sourceRefs,proto3" json:"source_refs,omitempty"`          // slide-07/shape-12
 	Status        string                 `protobuf:"bytes,6,opt,name=status,proto3" json:"status,omitempty"`                                    // draft / approved / locked
 	SourceAnchors []*SourceAnchor        `protobuf:"bytes,7,rep,name=source_anchors,json=sourceAnchors,proto3" json:"source_anchors,omitempty"` // 结构化来源锚点（G2-1）
+	// focus 是这段讲的是谁：画面上该让位的那一块（整个形状，或其中的一根柱子）。
+	//
+	// 未设置 = 不表态。更新时按"保留原值"解释——编辑器只改文字时不该顺手把焦点抹掉。
+	// 要显式清空，传一个 shape_id 为空的本消息（不是省略它）。
+	Focus         *FocusTarget `protobuf:"bytes,8,opt,name=focus,proto3" json:"focus,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -113,6 +118,71 @@ func (x *Segment) GetSourceAnchors() []*SourceAnchor {
 	return nil
 }
 
+func (x *Segment) GetFocus() *FocusTarget {
+	if x != nil {
+		return x.Focus
+	}
+	return nil
+}
+
+// FocusTarget 是一个画面焦点目标。
+//
+// 它和 source_anchors 不是一回事：锚点是这句话的依据（可以引用三个要点），
+// 焦点是此刻画面指谁（可能一个都不引用，只是"看这根柱子"）。
+type FocusTarget struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	ShapeId string                 `protobuf:"bytes,1,opt,name=shape_id,json=shapeId,proto3" json:"shape_id,omitempty"`
+	// bar_id 为空 = 整个形状；非空 = 该图表形状 chartBars[] 里的一根柱子。
+	// 柱子没有独立图层（图表是一张位图），只能靠矩形遮罩指。
+	BarId         string `protobuf:"bytes,2,opt,name=bar_id,json=barId,proto3" json:"bar_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FocusTarget) Reset() {
+	*x = FocusTarget{}
+	mi := &file_ppts_v1_script_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FocusTarget) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FocusTarget) ProtoMessage() {}
+
+func (x *FocusTarget) ProtoReflect() protoreflect.Message {
+	mi := &file_ppts_v1_script_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FocusTarget.ProtoReflect.Descriptor instead.
+func (*FocusTarget) Descriptor() ([]byte, []int) {
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *FocusTarget) GetShapeId() string {
+	if x != nil {
+		return x.ShapeId
+	}
+	return ""
+}
+
+func (x *FocusTarget) GetBarId() string {
+	if x != nil {
+		return x.BarId
+	}
+	return ""
+}
+
 type SourceAnchor struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SlideId       string                 `protobuf:"bytes,1,opt,name=slide_id,json=slideId,proto3" json:"slide_id,omitempty"`
@@ -126,7 +196,7 @@ type SourceAnchor struct {
 
 func (x *SourceAnchor) Reset() {
 	*x = SourceAnchor{}
-	mi := &file_ppts_v1_script_proto_msgTypes[1]
+	mi := &file_ppts_v1_script_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -138,7 +208,7 @@ func (x *SourceAnchor) String() string {
 func (*SourceAnchor) ProtoMessage() {}
 
 func (x *SourceAnchor) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[1]
+	mi := &file_ppts_v1_script_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -151,7 +221,7 @@ func (x *SourceAnchor) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceAnchor.ProtoReflect.Descriptor instead.
 func (*SourceAnchor) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{1}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SourceAnchor) GetSlideId() string {
@@ -205,7 +275,7 @@ type ScriptRevision struct {
 
 func (x *ScriptRevision) Reset() {
 	*x = ScriptRevision{}
-	mi := &file_ppts_v1_script_proto_msgTypes[2]
+	mi := &file_ppts_v1_script_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -217,7 +287,7 @@ func (x *ScriptRevision) String() string {
 func (*ScriptRevision) ProtoMessage() {}
 
 func (x *ScriptRevision) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[2]
+	mi := &file_ppts_v1_script_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -230,7 +300,7 @@ func (x *ScriptRevision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScriptRevision.ProtoReflect.Descriptor instead.
 func (*ScriptRevision) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{2}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ScriptRevision) GetProjectId() string {
@@ -299,7 +369,7 @@ type GetScriptRequest struct {
 
 func (x *GetScriptRequest) Reset() {
 	*x = GetScriptRequest{}
-	mi := &file_ppts_v1_script_proto_msgTypes[3]
+	mi := &file_ppts_v1_script_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -311,7 +381,7 @@ func (x *GetScriptRequest) String() string {
 func (*GetScriptRequest) ProtoMessage() {}
 
 func (x *GetScriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[3]
+	mi := &file_ppts_v1_script_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -324,7 +394,7 @@ func (x *GetScriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetScriptRequest.ProtoReflect.Descriptor instead.
 func (*GetScriptRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{3}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetScriptRequest) GetProjectId() string {
@@ -353,7 +423,7 @@ type UpdateScriptRequest struct {
 
 func (x *UpdateScriptRequest) Reset() {
 	*x = UpdateScriptRequest{}
-	mi := &file_ppts_v1_script_proto_msgTypes[4]
+	mi := &file_ppts_v1_script_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -365,7 +435,7 @@ func (x *UpdateScriptRequest) String() string {
 func (*UpdateScriptRequest) ProtoMessage() {}
 
 func (x *UpdateScriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[4]
+	mi := &file_ppts_v1_script_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -378,7 +448,7 @@ func (x *UpdateScriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateScriptRequest.ProtoReflect.Descriptor instead.
 func (*UpdateScriptRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{4}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *UpdateScriptRequest) GetProjectId() string {
@@ -420,7 +490,7 @@ type UpdateScriptResponse struct {
 
 func (x *UpdateScriptResponse) Reset() {
 	*x = UpdateScriptResponse{}
-	mi := &file_ppts_v1_script_proto_msgTypes[5]
+	mi := &file_ppts_v1_script_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -432,7 +502,7 @@ func (x *UpdateScriptResponse) String() string {
 func (*UpdateScriptResponse) ProtoMessage() {}
 
 func (x *UpdateScriptResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[5]
+	mi := &file_ppts_v1_script_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -445,7 +515,7 @@ func (x *UpdateScriptResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateScriptResponse.ProtoReflect.Descriptor instead.
 func (*UpdateScriptResponse) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{5}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *UpdateScriptResponse) GetRevision() *ScriptRevision {
@@ -483,7 +553,7 @@ type GenerateDraftRequest struct {
 
 func (x *GenerateDraftRequest) Reset() {
 	*x = GenerateDraftRequest{}
-	mi := &file_ppts_v1_script_proto_msgTypes[6]
+	mi := &file_ppts_v1_script_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -495,7 +565,7 @@ func (x *GenerateDraftRequest) String() string {
 func (*GenerateDraftRequest) ProtoMessage() {}
 
 func (x *GenerateDraftRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[6]
+	mi := &file_ppts_v1_script_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -508,7 +578,7 @@ func (x *GenerateDraftRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateDraftRequest.ProtoReflect.Descriptor instead.
 func (*GenerateDraftRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{6}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GenerateDraftRequest) GetProjectId() string {
@@ -563,7 +633,7 @@ type GenerateDraftResponse struct {
 
 func (x *GenerateDraftResponse) Reset() {
 	*x = GenerateDraftResponse{}
-	mi := &file_ppts_v1_script_proto_msgTypes[7]
+	mi := &file_ppts_v1_script_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -575,7 +645,7 @@ func (x *GenerateDraftResponse) String() string {
 func (*GenerateDraftResponse) ProtoMessage() {}
 
 func (x *GenerateDraftResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[7]
+	mi := &file_ppts_v1_script_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -588,7 +658,7 @@ func (x *GenerateDraftResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateDraftResponse.ProtoReflect.Descriptor instead.
 func (*GenerateDraftResponse) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{7}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GenerateDraftResponse) GetJobId() string {
@@ -615,7 +685,7 @@ type ApproveScriptRequest struct {
 
 func (x *ApproveScriptRequest) Reset() {
 	*x = ApproveScriptRequest{}
-	mi := &file_ppts_v1_script_proto_msgTypes[8]
+	mi := &file_ppts_v1_script_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -627,7 +697,7 @@ func (x *ApproveScriptRequest) String() string {
 func (*ApproveScriptRequest) ProtoMessage() {}
 
 func (x *ApproveScriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[8]
+	mi := &file_ppts_v1_script_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -640,7 +710,7 @@ func (x *ApproveScriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApproveScriptRequest.ProtoReflect.Descriptor instead.
 func (*ApproveScriptRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{8}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ApproveScriptRequest) GetProjectId() string {
@@ -668,7 +738,7 @@ type LockScriptRequest struct {
 
 func (x *LockScriptRequest) Reset() {
 	*x = LockScriptRequest{}
-	mi := &file_ppts_v1_script_proto_msgTypes[9]
+	mi := &file_ppts_v1_script_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -680,7 +750,7 @@ func (x *LockScriptRequest) String() string {
 func (*LockScriptRequest) ProtoMessage() {}
 
 func (x *LockScriptRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ppts_v1_script_proto_msgTypes[9]
+	mi := &file_ppts_v1_script_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -693,7 +763,7 @@ func (x *LockScriptRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockScriptRequest.ProtoReflect.Descriptor instead.
 func (*LockScriptRequest) Descriptor() ([]byte, []int) {
-	return file_ppts_v1_script_proto_rawDescGZIP(), []int{9}
+	return file_ppts_v1_script_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *LockScriptRequest) GetProjectId() string {
@@ -721,7 +791,7 @@ var File_ppts_v1_script_proto protoreflect.FileDescriptor
 
 const file_ppts_v1_script_proto_rawDesc = "" +
 	"\n" +
-	"\x14ppts/v1/script.proto\x12\appts.v1\x1a\x14ppts/v1/common.proto\"\xfe\x01\n" +
+	"\x14ppts/v1/script.proto\x12\appts.v1\x1a\x14ppts/v1/common.proto\"\xaa\x02\n" +
 	"\aSegment\x12\x1d\n" +
 	"\n" +
 	"segment_id\x18\x01 \x01(\tR\tsegmentId\x12\x19\n" +
@@ -732,7 +802,11 @@ const file_ppts_v1_script_proto_rawDesc = "" +
 	"\vsource_refs\x18\x05 \x03(\tR\n" +
 	"sourceRefs\x12\x16\n" +
 	"\x06status\x18\x06 \x01(\tR\x06status\x12<\n" +
-	"\x0esource_anchors\x18\a \x03(\v2\x15.ppts.v1.SourceAnchorR\rsourceAnchors\"\x8a\x01\n" +
+	"\x0esource_anchors\x18\a \x03(\v2\x15.ppts.v1.SourceAnchorR\rsourceAnchors\x12*\n" +
+	"\x05focus\x18\b \x01(\v2\x14.ppts.v1.FocusTargetR\x05focus\"?\n" +
+	"\vFocusTarget\x12\x19\n" +
+	"\bshape_id\x18\x01 \x01(\tR\ashapeId\x12\x15\n" +
+	"\x06bar_id\x18\x02 \x01(\tR\x05barId\"\x8a\x01\n" +
 	"\fSourceAnchor\x12\x19\n" +
 	"\bslide_id\x18\x01 \x01(\tR\aslideId\x12\x19\n" +
 	"\bshape_id\x18\x02 \x01(\tR\ashapeId\x12\x12\n" +
@@ -804,45 +878,47 @@ func file_ppts_v1_script_proto_rawDescGZIP() []byte {
 	return file_ppts_v1_script_proto_rawDescData
 }
 
-var file_ppts_v1_script_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_ppts_v1_script_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_ppts_v1_script_proto_goTypes = []any{
 	(*Segment)(nil),               // 0: ppts.v1.Segment
-	(*SourceAnchor)(nil),          // 1: ppts.v1.SourceAnchor
-	(*ScriptRevision)(nil),        // 2: ppts.v1.ScriptRevision
-	(*GetScriptRequest)(nil),      // 3: ppts.v1.GetScriptRequest
-	(*UpdateScriptRequest)(nil),   // 4: ppts.v1.UpdateScriptRequest
-	(*UpdateScriptResponse)(nil),  // 5: ppts.v1.UpdateScriptResponse
-	(*GenerateDraftRequest)(nil),  // 6: ppts.v1.GenerateDraftRequest
-	(*GenerateDraftResponse)(nil), // 7: ppts.v1.GenerateDraftResponse
-	(*ApproveScriptRequest)(nil),  // 8: ppts.v1.ApproveScriptRequest
-	(*LockScriptRequest)(nil),     // 9: ppts.v1.LockScriptRequest
-	(ScriptMode)(0),               // 10: ppts.v1.ScriptMode
-	(*DurationTarget)(nil),        // 11: ppts.v1.DurationTarget
+	(*FocusTarget)(nil),           // 1: ppts.v1.FocusTarget
+	(*SourceAnchor)(nil),          // 2: ppts.v1.SourceAnchor
+	(*ScriptRevision)(nil),        // 3: ppts.v1.ScriptRevision
+	(*GetScriptRequest)(nil),      // 4: ppts.v1.GetScriptRequest
+	(*UpdateScriptRequest)(nil),   // 5: ppts.v1.UpdateScriptRequest
+	(*UpdateScriptResponse)(nil),  // 6: ppts.v1.UpdateScriptResponse
+	(*GenerateDraftRequest)(nil),  // 7: ppts.v1.GenerateDraftRequest
+	(*GenerateDraftResponse)(nil), // 8: ppts.v1.GenerateDraftResponse
+	(*ApproveScriptRequest)(nil),  // 9: ppts.v1.ApproveScriptRequest
+	(*LockScriptRequest)(nil),     // 10: ppts.v1.LockScriptRequest
+	(ScriptMode)(0),               // 11: ppts.v1.ScriptMode
+	(*DurationTarget)(nil),        // 12: ppts.v1.DurationTarget
 }
 var file_ppts_v1_script_proto_depIdxs = []int32{
-	1,  // 0: ppts.v1.Segment.source_anchors:type_name -> ppts.v1.SourceAnchor
-	10, // 1: ppts.v1.ScriptRevision.mode:type_name -> ppts.v1.ScriptMode
-	0,  // 2: ppts.v1.ScriptRevision.segments:type_name -> ppts.v1.Segment
-	0,  // 3: ppts.v1.UpdateScriptRequest.segments:type_name -> ppts.v1.Segment
-	2,  // 4: ppts.v1.UpdateScriptResponse.revision:type_name -> ppts.v1.ScriptRevision
-	2,  // 5: ppts.v1.UpdateScriptResponse.latest:type_name -> ppts.v1.ScriptRevision
-	10, // 6: ppts.v1.GenerateDraftRequest.mode:type_name -> ppts.v1.ScriptMode
-	11, // 7: ppts.v1.GenerateDraftRequest.duration:type_name -> ppts.v1.DurationTarget
-	3,  // 8: ppts.v1.ScriptService.Get:input_type -> ppts.v1.GetScriptRequest
-	4,  // 9: ppts.v1.ScriptService.Update:input_type -> ppts.v1.UpdateScriptRequest
-	6,  // 10: ppts.v1.ScriptService.GenerateDraft:input_type -> ppts.v1.GenerateDraftRequest
-	8,  // 11: ppts.v1.ScriptService.Approve:input_type -> ppts.v1.ApproveScriptRequest
-	9,  // 12: ppts.v1.ScriptService.Lock:input_type -> ppts.v1.LockScriptRequest
-	2,  // 13: ppts.v1.ScriptService.Get:output_type -> ppts.v1.ScriptRevision
-	5,  // 14: ppts.v1.ScriptService.Update:output_type -> ppts.v1.UpdateScriptResponse
-	7,  // 15: ppts.v1.ScriptService.GenerateDraft:output_type -> ppts.v1.GenerateDraftResponse
-	2,  // 16: ppts.v1.ScriptService.Approve:output_type -> ppts.v1.ScriptRevision
-	2,  // 17: ppts.v1.ScriptService.Lock:output_type -> ppts.v1.ScriptRevision
-	13, // [13:18] is the sub-list for method output_type
-	8,  // [8:13] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	2,  // 0: ppts.v1.Segment.source_anchors:type_name -> ppts.v1.SourceAnchor
+	1,  // 1: ppts.v1.Segment.focus:type_name -> ppts.v1.FocusTarget
+	11, // 2: ppts.v1.ScriptRevision.mode:type_name -> ppts.v1.ScriptMode
+	0,  // 3: ppts.v1.ScriptRevision.segments:type_name -> ppts.v1.Segment
+	0,  // 4: ppts.v1.UpdateScriptRequest.segments:type_name -> ppts.v1.Segment
+	3,  // 5: ppts.v1.UpdateScriptResponse.revision:type_name -> ppts.v1.ScriptRevision
+	3,  // 6: ppts.v1.UpdateScriptResponse.latest:type_name -> ppts.v1.ScriptRevision
+	11, // 7: ppts.v1.GenerateDraftRequest.mode:type_name -> ppts.v1.ScriptMode
+	12, // 8: ppts.v1.GenerateDraftRequest.duration:type_name -> ppts.v1.DurationTarget
+	4,  // 9: ppts.v1.ScriptService.Get:input_type -> ppts.v1.GetScriptRequest
+	5,  // 10: ppts.v1.ScriptService.Update:input_type -> ppts.v1.UpdateScriptRequest
+	7,  // 11: ppts.v1.ScriptService.GenerateDraft:input_type -> ppts.v1.GenerateDraftRequest
+	9,  // 12: ppts.v1.ScriptService.Approve:input_type -> ppts.v1.ApproveScriptRequest
+	10, // 13: ppts.v1.ScriptService.Lock:input_type -> ppts.v1.LockScriptRequest
+	3,  // 14: ppts.v1.ScriptService.Get:output_type -> ppts.v1.ScriptRevision
+	6,  // 15: ppts.v1.ScriptService.Update:output_type -> ppts.v1.UpdateScriptResponse
+	8,  // 16: ppts.v1.ScriptService.GenerateDraft:output_type -> ppts.v1.GenerateDraftResponse
+	3,  // 17: ppts.v1.ScriptService.Approve:output_type -> ppts.v1.ScriptRevision
+	3,  // 18: ppts.v1.ScriptService.Lock:output_type -> ppts.v1.ScriptRevision
+	14, // [14:19] is the sub-list for method output_type
+	9,  // [9:14] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_ppts_v1_script_proto_init() }
@@ -857,7 +933,7 @@ func file_ppts_v1_script_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ppts_v1_script_proto_rawDesc), len(file_ppts_v1_script_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -38,6 +38,15 @@ type AnimationPage struct {
 	Shots []render.PageShotInput
 	// SegmentOffsets 是分段 id → 相对本页起点的毫秒偏移，供 withSegment 触发器解析。
 	SegmentOffsets map[string]int64
+	// Focus 是本页的焦点序列（画布像素矩形，或者图层 id）。
+	//
+	// 由讲稿的分段目标 + 解析产物的框算出（见 focus_spans.go），不是规格的一部分：
+	// 它跟着"这段话在说什么"走，与转场/位移无关。
+	Focus []render.FocusSpan
+	// Diagnostics 是组装期就已经知道的诊断（焦点目标找不到等）。它们不在编译器的
+	// 视野里，但和编译诊断同样不阻断渲染、同样要留痕——所以随页带进去，最后并进
+	// plan.Warnings。
+	Diagnostics []render.Diagnostic
 }
 
 // AnimationRequest 是一次动画渲染的全部输入。

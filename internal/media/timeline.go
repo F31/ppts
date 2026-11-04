@@ -29,6 +29,22 @@ type SegmentInput struct {
 	// （V2.8 §7.5 时间域 A，N2 数值展开时由 textnorm.IndexMap 组合产生）。
 	// 长度必须等于 DisplayText 的 rune 数；nil 时回落 remapCharsToCount 比例近似。
 	CharToToken []int
+	// Focus 是这段讲的是谁（见 SegmentCue.Focus）。只透传，时间轴不解释它。
+	Focus *SegmentFocus
+}
+
+// SegmentFocus 是一段旁白的画面焦点目标。
+//
+// 为什么不复用 narration.FocusTarget：时间轴是播放与导出的唯一时钟模型，它不需要
+// 知道讲稿包的存储语义，也不想让"播放器要链接一个数据库相关的包"。三个字段的拷贝
+// 换来这一层干净（与 render.EMUBox 不复用 project.Box 同一理由）。
+//
+// 为什么不放 animation 规格：焦点由内容决定（这句话在讲哪根柱子），与转场/位移
+// 无关；放规格里会让用户在两处各指一次，而它们会漂。
+type SegmentFocus struct {
+	ShapeID string `json:"shapeId"`
+	// BarID 空 = 整个形状；非空 = 该图表形状里的一根柱子。
+	BarID string `json:"barId,omitempty"`
 }
 
 // SlideInput preserves the caller-provided page order.
@@ -67,6 +83,11 @@ type SegmentCue struct {
 	StartUS         int64               `json:"startUs"`
 	EndUS           int64               `json:"endUs"`
 	AlignmentMethod tts.AlignmentMethod `json:"alignmentMethod,omitempty"`
+	// Focus 是这段旁白「画面该指谁」。空 = 不指，整页保持全亮。
+	//
+	// 它跟着分段走而不是跟着页走：同一页里"先讲整体、再讲第三根柱子"是常态，
+	// 按页记只能表达其中一个。
+	Focus *SegmentFocus `json:"focus,omitempty"`
 }
 
 // UnscopedSegmentID 去掉时间轴分段键的页前缀（"slide-3:seg-2" → "seg-2"）。
@@ -158,7 +179,7 @@ func BuildTimeline(slides []SlideInput, timing Timing) (*Timeline, error) {
 			}
 			segment := SegmentCue{
 				SegmentID: inputSegment.SegmentID, AudioKey: inputSegment.AudioKey,
-				StartUS: cursor, EndUS: segmentEnd,
+				StartUS: cursor, EndUS: segmentEnd, Focus: inputSegment.Focus,
 			}
 			cueStart, cueEnd := cursor, segmentEnd
 			if inputSegment.Alignment != nil {

@@ -53,6 +53,30 @@ type Segment struct {
 	// when updating through user-facing APIs; an empty slice means explicitly no anchors.
 	SourceAnchors []SourceAnchor
 	Status        ScriptStatus
+	// Focus 是这段话讲的是谁：画面上该让位的那一块。nil = 这段不指任何东西。
+	//
+	// 为什么不从 SourceAnchors 推：锚点是**出处**（这句话的依据来自哪个形状），
+	// 一段话可以引用三个要点却说其中一根柱子；反过来也可以没有锚点却明确指着某根柱
+	// （"看这根，掉了 12%"）。两者用途不同，混用会让"改出处"顺手改掉画面焦点。
+	//
+	// 为什么放在讲稿而不是动画规格：焦点属于"这段话在说什么"，与转场/位移无关；
+	// 放规格里就得让用户在两个界面各指一次，而它们会漂。
+	Focus *FocusTarget
+}
+
+// FocusTarget 是一个焦点目标：整个形状，或形状里的某一根柱子。
+//
+// BarID 非空时指向该形状 chartBars[] 里的一根（project.ChartBar.ID）。柱子没有
+// 独立图层（图表是一张位图），所以它只能靠一块矩形指——见 render.FocusSpan.Rect。
+type FocusTarget struct {
+	ShapeID string
+	// BarID 空 = 整个形状；非空 = 该形状里的一根柱子。
+	BarID string
+}
+
+// Valid 报告这个目标是否指向了任何东西。空目标等于「不指」，存储层按 nil 处理。
+func (t *FocusTarget) Valid() bool {
+	return t != nil && t.ShapeID != ""
 }
 
 // SourceAnchor ties generated text back to structural or visual evidence.

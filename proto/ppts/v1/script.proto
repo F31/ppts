@@ -24,6 +24,22 @@ message Segment {
   repeated string source_refs = 5; // slide-07/shape-12
   string status = 6;            // draft / approved / locked
   repeated SourceAnchor source_anchors = 7; // 结构化来源锚点（G2-1）
+  // focus 是这段讲的是谁：画面上该让位的那一块（整个形状，或其中的一根柱子）。
+  //
+  // 未设置 = 不表态。更新时按"保留原值"解释——编辑器只改文字时不该顺手把焦点抹掉。
+  // 要显式清空，传一个 shape_id 为空的本消息（不是省略它）。
+  FocusTarget focus = 8;
+}
+
+// FocusTarget 是一个画面焦点目标。
+//
+// 它和 source_anchors 不是一回事：锚点是这句话的依据（可以引用三个要点），
+// 焦点是此刻画面指谁（可能一个都不引用，只是"看这根柱子"）。
+message FocusTarget {
+  string shape_id = 1;
+  // bar_id 为空 = 整个形状；非空 = 该图表形状 chartBars[] 里的一根柱子。
+  // 柱子没有独立图层（图表是一张位图），只能靠矩形遮罩指。
+  string bar_id = 2;
 }
 
 message SourceAnchor {

@@ -34,14 +34,28 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 		return nil, fmt.Errorf("animation: %w", err)
 	}
 	inputs := make([]render.PageInput, 0, len(req.Pages))
+	var preDiags []render.Diagnostic
 	for i, p := range req.Pages {
 		inputs = append(inputs, render.PageInput{
 			Index: i, SlideID: p.SlideID, DurationMs: p.DurationMs,
 			BaseImage: p.BaseImage, Elements: p.Elements, Revision: p.Revision,
 			SegmentOffsets: p.SegmentOffsets, Shots: p.Shots,
+			// 焦点在这一层已经换算成画布像素：编译器的职责是排版与动效，
+			// 不该再替内容层决定"这段话在讲哪根柱子"。
+			Focus: p.Focus,
 		})
+		preDiags = append(preDiags, p.Diagnostics...)
 	}
-	return compiler.Compile(inputs)
+	plan, err := compiler.Compile(inputs)
+	if err != nil {
+		return nil, err
+	}
+	// 组装期诊断并进 Warnings：它们不参与 planHash（见 render/hash.go），
+	// 所以"多一条焦点缺失"不会让同一份输入变出第二个键。
+	if len(preDiags) > 0 {
+		plan.Warnings = append(plan.Warnings, preDiags...)
+	}
+	return plan, nil
 }
 
 // BundleAnimations 把 IR 与原始页图变成成品包的分层 + 镜头素材。

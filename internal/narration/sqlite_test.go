@@ -182,3 +182,110 @@ func TestSQLiteScriptsIsolatedBySourceRevision(t *testing.T) {
 func oneSeg(text string) []*Segment {
 	return []*Segment{{SegmentID: "seg-01", DisplayText: text, SpokenText: text}}
 }
+
+// TestSQLiteSegmentFocusRoundTrip 覆盖焦点的三种写入语义，以及分叉复制。
+//
+// 为什么值得单独测：焦点是"可空且有两种空"的字段（null / 空目标），而整页替换分段
+// 的实现会 DELETE 再 INSERT。这里任何一处把 null 读成 "{}"、或把"未表态"当成"清空"，
+// 表现都是"用户改了个错别字，整页的焦点全没了"——存稿还在，画面却什么都不指。
+func TestSQLiteSegmentFocusRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newNarrationStore(t)
+	const tenant = db.LocalTenantID
+	const project, slide, lang = "p-focus", "slide-1", "zh-CN"
+
+	if _, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModeOriginal); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	// 写入：整形状 + 某根柱子，第三段没有焦点。
+	segs := []*Segment{
+		{SegmentID: "seg-01", DisplayText: "a", SpokenText: "a",
+			Focus: &FocusTarget{ShapeID: "shape-7"}},
+		{SegmentID: "seg-02", DisplayText: "b", SpokenText: "b",
+			Focus: &FocusTarget{ShapeID: "shape-9", BarID: "b2"}},
+		{SegmentID: "seg-03", DisplayText: "c", SpokenText: "c"},
+	}
+	rev, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, segs)
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	got, err := s.Get(ctx, tenant, project, 0, slide, lang)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if f := got.Segments[0].Focus; f == nil || f.ShapeID != "shape-7" || f.BarID != "" {
+		t.Fatalf("seg-01 focus = %+v, want shape-7", f)
+	}
+	if f := got.Segments[1].Focus; f == nil || f.ShapeID != "shape-9" || f.BarID != "b2" {
+		t.Fatalf("seg-02 focus = %+v, want shape-9/b2", f)
+	}
+	if f := got.Segments[2].Focus; f != nil {
+		t.Fatalf("seg-03 must have no focus, got %+v", f)
+	}
+
+	// 只改文字、不带 Focus：必须保留原值（不是清空）。
+	bare := []*Segment{
+		{SegmentID: "seg-01", DisplayText: "a2", SpokenText: "a2"},
+		{SegmentID: "seg-02", DisplayText: "b2", SpokenText: "b2"},
+		{SegmentID: "seg-03", DisplayText: "c2", SpokenText: "c2"},
+	}
+	if _, err := s.Update(ctx, tenant, project, 0, slide, lang, rev.Revision, bare); err != nil {
+		t.Fatalf("update bare: %v", err)
+	}
+	kept, _ := s.Get(ctx, tenant, project, 0, slide, lang)
+	if kept.Segments[0].DisplayText != "a2" {
+		t.Fatalf("text not updated: %q", kept.Segments[0].DisplayText)
+	}
+	if f := kept.Segments[0].Focus; f == nil || f.ShapeID != "shape-7" {
+		t.Fatalf("focus must survive a text-only update, got %+v", f)
+	}
+
+	// 传一个空目标：显式清空（与"不带字段"是两件事）。
+	clear := []*Segment{
+		{SegmentID: "seg-01", DisplayText: "a3", SpokenText: "a3", Focus: &FocusTarget{}},
+	}
+	if _, err := s.Update(ctx, tenant, project, 0, slide, lang, kept.Revision, clear); err != nil {
+		t.Fatalf("update clear: %v", err)
+	}
+	cleared, _ := s.Get(ctx, tenant, project, 0, slide, lang)
+	if f := cleared.Segments[0].Focus; f != nil {
+		t.Fatalf("explicit empty target must clear focus, got %+v", f)
+	}
+}
+
+// TestSQLiteFocusSurvivesLegacyFork 锁住分叉复制：legacy 稿第一次在某个源版本上被编辑时，
+// 分段是逐条 INSERT ... SELECT 复制过去的，漏掉 focus 列就等于"一升级，存量稿的焦点全丢"。
+func TestSQLiteFocusSurvivesLegacyFork(t *testing.T) {
+	ctx := context.Background()
+	s := newNarrationStore(t)
+	const tenant = db.LocalTenantID
+	const project, slide, lang = "p-fork", "slide-1", "zh-CN"
+
+	if _, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModeOriginal); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	segs := []*Segment{{SegmentID: "seg-01", DisplayText: "legacy", SpokenText: "legacy",
+		Focus: &FocusTarget{ShapeID: "shape-3", BarID: "b1"}}}
+	if _, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, segs); err != nil {
+		t.Fatalf("update legacy: %v", err)
+	}
+
+	// 在 v7 上第一次编辑 → 从 legacy 分叉复制。
+	cur, err := s.Get(ctx, tenant, project, 7, slide, lang)
+	if err != nil {
+		t.Fatalf("get v7: %v", err)
+	}
+	if _, err := s.Update(ctx, tenant, project, 7, slide, lang, cur.Revision, oneSeg("v7")); err != nil {
+		t.Fatalf("update v7: %v", err)
+	}
+	// 分叉时 oneSeg 没带 focus，但原稿有 → 应保留（与"只改文字"同一套语义）。
+	v7, _ := s.Get(ctx, tenant, project, 7, slide, lang)
+	if f := v7.Segments[0].Focus; f == nil || f.ShapeID != "shape-3" || f.BarID != "b1" {
+		t.Fatalf("focus lost across legacy fork: %+v", f)
+	}
+	legacy, _ := s.Get(ctx, tenant, project, 0, slide, lang)
+	if f := legacy.Segments[0].Focus; f == nil || f.ShapeID != "shape-3" {
+		t.Fatalf("legacy focus must stay untouched: %+v", f)
+	}
+}

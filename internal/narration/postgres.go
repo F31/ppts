@@ -94,7 +94,7 @@ func (s *PGStore) Update(ctx context.Context, tenantID, projectID string, source
 		if script.Revision != expected {
 			return &ErrConflict{Latest: loadRevisionTx(ctx, tx, scriptID)}
 		}
-		existingAnchors, err := loadAnchorsTx(ctx, tx, scriptID)
+		meta, err := loadSegmentMetaTx(ctx, tx, scriptID)
 		if err != nil {
 			return err
 		}
@@ -105,10 +105,16 @@ func (s *PGStore) Update(ctx context.Context, tenantID, projectID string, source
 		for _, seg := range segments {
 			anchors := seg.SourceAnchors
 			if anchors == nil {
-				anchors = existingAnchors[seg.SegmentID]
+				anchors = meta.Anchors[seg.SegmentID]
 			}
 			if anchors == nil {
 				anchors = []SourceAnchor{}
+			}
+			// 焦点与锚点同一套「nil = 保留」语义：编辑器只改文字时不该顺手把焦点抹掉。
+			// 显式清空要传一个非 nil 但 ShapeID 为空的目标（见 FocusTarget.Valid）。
+			focus := seg.Focus
+			if focus == nil {
+				focus = meta.Focus[seg.SegmentID]
 			}
 			// source_refs 为 NOT NULL：调用方未填时落空数组而不是 NULL（与 anchors 同样兜底）。
 			refs := seg.SourceRefs
@@ -119,10 +125,19 @@ func (s *PGStore) Update(ctx context.Context, tenantID, projectID string, source
 			if err != nil {
 				return err
 			}
+			var focusRaw *string
+			if focus.Valid() {
+				b, err := json.Marshal(focus)
+				if err != nil {
+					return err
+				}
+				s := string(b)
+				focusRaw = &s
+			}
 			if _, err := tx.Exec(ctx,
-				`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, status, revision)
-				 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,'draft',0)`,
-				scriptID, tenantID, seg.SegmentID, seg.DisplayText, seg.SpokenText, refs, string(anchorBytes)); err != nil {
+				`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status, revision)
+				 VALUES (gen_random_uuid(), $1,$2,$3,$4,$5,$6,$7,$8,'draft',0)`,
+				scriptID, tenantID, seg.SegmentID, seg.DisplayText, seg.SpokenText, refs, string(anchorBytes), focusRaw); err != nil {
 				return err
 			}
 		}
@@ -321,8 +336,8 @@ func forkLegacyTx(ctx context.Context, tx pgx.Tx, tenantID, projectID string, so
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, status, revision)
-		 SELECT gen_random_uuid(), $1, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, status, revision
+		`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status, revision)
+		 SELECT gen_random_uuid(), $1, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status, revision
 		   FROM narration_segments WHERE script_id=$2`, newID, legacy.ID); err != nil {
 		return nil, err
 	}
@@ -331,7 +346,7 @@ func forkLegacyTx(ctx context.Context, tx pgx.Tx, tenantID, projectID string, so
 
 func loadSegmentsTx(ctx context.Context, tx pgx.Tx, scriptID string) ([]*Segment, error) {
 	rows, err := tx.Query(ctx,
-		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, status
+		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status
 		 FROM narration_segments WHERE script_id=$1 ORDER BY segment_id`, scriptID)
 	if err != nil {
 		return nil, err
@@ -341,8 +356,8 @@ func loadSegmentsTx(ctx context.Context, tx pgx.Tx, scriptID string) ([]*Segment
 	for rows.Next() {
 		var seg Segment
 		var refs []string
-		var anchorBytes []byte
-		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refs, &anchorBytes, &seg.Status); err != nil {
+		var anchorBytes, focusBytes []byte
+		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refs, &anchorBytes, &focusBytes, &seg.Status); err != nil {
 			return nil, err
 		}
 		seg.SourceRefs = refs
@@ -351,33 +366,57 @@ func loadSegmentsTx(ctx context.Context, tx pgx.Tx, scriptID string) ([]*Segment
 				return nil, err
 			}
 		}
+		if len(focusBytes) > 0 {
+			var f FocusTarget
+			if err := json.Unmarshal(focusBytes, &f); err != nil {
+				return nil, err
+			}
+			seg.Focus = &f
+		}
 		segs = append(segs, &seg)
 	}
 	return segs, rows.Err()
 }
 
-func loadAnchorsTx(ctx context.Context, tx pgx.Tx, scriptID string) (map[string][]SourceAnchor, error) {
-	rows, err := tx.Query(ctx, `SELECT segment_id, source_anchors FROM narration_segments WHERE script_id=$1`, scriptID)
+// segmentMeta 是更新时需要的"旧值"：调用方传 nil 表示保留，这里就是保留的来源。
+type segmentMeta struct {
+	Anchors map[string][]SourceAnchor
+	Focus   map[string]*FocusTarget
+}
+
+func loadSegmentMetaTx(ctx context.Context, tx pgx.Tx, scriptID string) (segmentMeta, error) {
+	rows, err := tx.Query(ctx, `SELECT segment_id, source_anchors, focus FROM narration_segments WHERE script_id=$1`, scriptID)
 	if err != nil {
-		return nil, err
+		return segmentMeta{}, err
 	}
 	defer rows.Close()
-	out := map[string][]SourceAnchor{}
+	meta := segmentMeta{
+		Anchors: map[string][]SourceAnchor{},
+		Focus:   map[string]*FocusTarget{},
+	}
 	for rows.Next() {
 		var segmentID string
 		var data []byte
-		if err := rows.Scan(&segmentID, &data); err != nil {
-			return nil, err
+		var focusBytes []byte
+		if err := rows.Scan(&segmentID, &data, &focusBytes); err != nil {
+			return segmentMeta{}, err
 		}
 		var anchors []SourceAnchor
 		if len(data) > 0 {
 			if err := json.Unmarshal(data, &anchors); err != nil {
-				return nil, err
+				return segmentMeta{}, err
 			}
 		}
-		out[segmentID] = anchors
+		meta.Anchors[segmentID] = anchors
+		if len(focusBytes) > 0 {
+			var f FocusTarget
+			if err := json.Unmarshal(focusBytes, &f); err != nil {
+				return segmentMeta{}, err
+			}
+			meta.Focus[segmentID] = &f
+		}
 	}
-	return out, rows.Err()
+	return meta, rows.Err()
 }
 
 // loadRevisionTx 读取最新完整讲稿（供 ErrConflict.Latest）。

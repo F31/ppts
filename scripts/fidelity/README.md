@@ -324,6 +324,10 @@ python3 scripts/fidelity/split_chart_bars.py --self-test
 #    chart 形状跑一遍，把 chartBars[] 写进 document/extracted.json。两边用同一张
 #    合成图对齐（internal/chartgeo/parity_test.go），阈值改一边没改另一边会红。
 #    真实渲染的两页 deck 上，产品版与这份脚本切出的 9 根框逐位相同（差 0）。
+#    **产品侧的焦点链路**：讲稿分段带 focus（{shapeId, barId}，NULL = 不指）→ 时间轴
+#    SegmentCue.focus → 导出期按段起点算成 render.FocusSpan（柱走矩形遮罩，形状是
+#    图层走压暗）。同一份实测数据上，焦点矩形与柱框逐位相同（1920 画布差 0；
+#    1280 画布按 2/3 缩放后也差 0）。**编辑器还没有写 focus 的入口**——契约通到这里为止。
 #    实测（3 根柱 / 1280→1920 换算）：切出 174/131/96 三根，柱高 370/279/204px，
 #    px/单位 2.126 / 2.130 / 2.125——同一张图的柱子在比例上一致，说明框量对了。
 #

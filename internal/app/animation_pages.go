@@ -44,6 +44,7 @@ type AnimationPageAssembler struct {
 	publisher AssetPublisher
 	specs     AnimationSpecSource
 	geometry  PageGeometrySource
+	focus     PageFocusSource
 	logger    *slog.Logger
 }
 
@@ -56,6 +57,15 @@ func NewAnimationPageAssembler(publisher AssetPublisher, specs AnimationSpecSour
 // WithGeometry 注入元素几何来源。未注入 = 只编译整页轨道（见 PageGeometrySource）。
 func (a *AnimationPageAssembler) WithGeometry(g PageGeometrySource) *AnimationPageAssembler {
 	a.geometry = g
+	return a
+}
+
+// WithFocus 注入焦点目标来源。未注入 = 无论讲稿写没写焦点，这一页都全亮。
+//
+// 与几何同一条降级原则：拿不到框就"不指"，而不是"指错"。差别在于它多留一条诊断——
+// 用户明明在稿子里写了"看这根柱子"，画面上没有，必须能查到原因。
+func (a *AnimationPageAssembler) WithFocus(f PageFocusSource) *AnimationPageAssembler {
+	a.focus = f
 	return a
 }
 
@@ -105,6 +115,10 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 	// 同一源版本的几何在一次 Build 里只读一次：一页一次读在 S3 上就是 N 次往返，
 	// 而整份 document.json 本来就是一次对象读。
 	geometryByRevision := make(map[int]map[string][]render.Element, 1)
+	focusByRevision := make(map[int]map[string][]FocusBox, 1)
+	// EMU → 画布像素与编译器同一个系数（见 render.NewCompiler 的 scale）：
+	// 页高未显式给出时按标准页高推断，这里必须用同一条，否则焦点框会整体缩放偏。
+	emuToPx := float64(req.Height) / float64(stdSlideHeightEMU)
 
 	for i, slide := range in.Slides {
 		durationMS := (slide.EndUS - slide.StartUS) / 1000
@@ -126,14 +140,18 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		// 先定规格再取几何：版本不符的页按「没有动画」处理，此时几何读进来也会被丢掉。
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
+		elements := a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision)
+		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, elements, durationMS, emuToPx, focusByRevision)
 		req.Pages = append(req.Pages, AnimationPage{
 			SlideID:        slide.SlideID,
 			DurationMs:     durationMS,
 			BaseImage:      rel,
-			Elements:       a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision),
+			Elements:       elements,
 			Revision:       rev,
 			Shots:          revShots(rev),
 			SegmentOffsets: segmentOffsets(slide),
+			Focus:          spans,
+			Diagnostics:    focusDiags,
 		})
 	}
 	return req, nil
@@ -182,6 +200,59 @@ func (a *AnimationPageAssembler) revision(ctx context.Context, in AnimationPageI
 		return nil
 	}
 	return rev
+}
+
+// focusSpans 生成本页的焦点序列。
+//
+// 何时去读 document.json：**只有这一页真的写了焦点**才读。焦点是逐段的，绝大多页
+// 一段都没有；为一次导出里每页各读一次整份文档，是最容易写出来、也最容易被忽略的
+// 浪费（而且它是"每次导出多 N 次对象读"，不是"多一次"）。
+func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPageInput, slide media.SlideCue,
+	pageIndex int, ref AnimationSpecRef, elements []render.Element, pageMs int64, emuToPx float64,
+	cache map[int]map[string][]FocusBox) ([]render.FocusSpan, []render.Diagnostic) {
+	if a == nil || a.focus == nil {
+		return nil, nil
+	}
+	cues := focusCues(slide)
+	wants := false
+	for _, cue := range cues {
+		if cue.Focus != nil && cue.Focus.ShapeID != "" {
+			wants = true
+			break
+		}
+	}
+	if !wants {
+		return nil, nil
+	}
+	// 焦点框与元素几何来自同一份文档、同一个源版本；版本号缺失时读不到（见几何来源），
+	// 此时"不指"比"指到别的版本的形状"安全。
+	bySlide, cached := cache[ref.SourceRevisionNo]
+	if !cached {
+		var err error
+		bySlide, err = a.focus.FocusBoxes(ctx, PageGeometryScope{
+			TenantID: in.TenantID, ProjectID: in.ProjectID, SourceRevisionNo: ref.SourceRevisionNo,
+		})
+		if err != nil {
+			a.warn("animation: load focus boxes failed, page keeps fully lit",
+				"source_revision", ref.SourceRevisionNo, "error", err.Error())
+			bySlide = nil
+		}
+		cache[ref.SourceRevisionNo] = bySlide
+	}
+	layerIDs := make(map[string]struct{}, len(elements))
+	for _, el := range elements {
+		if el.ID != "" {
+			layerIDs[el.ID] = struct{}{}
+		}
+	}
+	spans, diags := buildFocusSpans(cues, bySlide[slide.SlideID], layerIDs, pageMs, emuToPx)
+	for i := range diags {
+		diags[i].Page = pageIndex
+	}
+	if len(diags) > 0 {
+		a.warn("animation: focus target(s) skipped", "slide", slide.SlideID, "count", len(diags))
+	}
+	return spans, diags
 }
 
 // elements 取一页的元素几何。

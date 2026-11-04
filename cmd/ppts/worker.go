@@ -474,7 +474,10 @@ func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL s
 	// 那是能力边界而不是错误，导出照常成功。
 	withGeometry := false
 	if objects != nil {
-		assembler = assembler.WithGeometry(app.NewDocumentGeometry(objects))
+		// 同一个来源同时提供元素几何与焦点框：两者都来自 extracted document 的
+		// 同一份形状树，分成两个适配器只会让"几何读了、框没读"这种半接状态出现。
+		geom := app.NewDocumentGeometry(objects)
+		assembler = assembler.WithGeometry(geom).WithFocus(geom)
 		withGeometry = true
 	}
 	h = h.WithAnimationPages(assembler.Build)

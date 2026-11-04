@@ -418,6 +418,7 @@ func (h *NarrationHandler) synthesizeAllSegments(ctx context.Context, job *pipel
 			SegmentID: scopedSegmentID(ins.slide.snapshot.SlideID, ins.segment.SegmentID), DisplayText: displayForTimeline,
 			AudioKey: out.asset.AudioKey, DurationMS: out.asset.DurationMS, Alignment: out.asset.Alignment,
 			CharToToken: charToToken,
+			Focus:       timelineFocus(ins.segment.Focus),
 		})
 	}
 	return asm, nil
@@ -1164,4 +1165,15 @@ func hashReader(r io.Reader) (string, int64, error) {
 // 但时间轴/字幕/播放清单要求全局唯一，因此统一以「页:段」作为键。
 func scopedSegmentID(slideID, segmentID string) string {
 	return slideID + ":" + segmentID
+}
+
+// timelineFocus 把讲稿的焦点目标搬进时间轴。空目标（ShapeID 为空）= 不指。
+//
+// 这一跳是刻意的拷贝而不是共享类型：时间轴是播放与导出的时钟模型，它只需要
+// "指哪"，不需要讲稿包的存储语义（见 media.SegmentFocus 的注释）。
+func timelineFocus(in *narration.FocusTarget) *media.SegmentFocus {
+	if !in.Valid() {
+		return nil
+	}
+	return &media.SegmentFocus{ShapeID: in.ShapeID, BarID: in.BarID}
 }

@@ -41,6 +41,26 @@ type PageGeometrySource interface {
 	ElementsBySlide(ctx context.Context, scope PageGeometryScope) (map[string][]render.Element, error)
 }
 
+// FocusBox 是一个可作焦点目标的矩形（EMU，页坐标）。
+//
+// 与 render.Element 分开：元素是"能挂动效的层"，焦点目标可以是**不是层**的东西
+// （图表里的某一根柱子）。把柱子伪装成元素会污染元素表——渲染侧会给它找轨道、
+// 找不到就报 anchor_missing，而它本来就不该有轨道。
+type FocusBox struct {
+	ShapeID string
+	// BarID 空 = 整个形状的包围盒；非空 = 该形状 chartBars[] 里某根柱子的框。
+	BarID string
+	Box   render.EMUBox
+}
+
+// PageFocusSource 返回某个源版本里所有可作焦点的矩形（slideID → 目标）。
+//
+// 单独一个接口而不是塞进 PageGeometrySource：预览只需要元素（它没有时间轴，也就
+// 没有焦点序列），强制它实现一个用不上的方法等于让每个测试假实现都多写一段空壳。
+type PageFocusSource interface {
+	FocusBoxes(ctx context.Context, scope PageGeometryScope) (map[string][]FocusBox, error)
+}
+
 // DocumentGeometry 从解析产物读取元素几何。
 type DocumentGeometry struct {
 	objects objectstore.ObjectStore
@@ -54,6 +74,84 @@ func NewDocumentGeometry(objects objectstore.ObjectStore) *DocumentGeometry {
 
 // ElementsBySlide 实现 PageGeometrySource。
 func (g *DocumentGeometry) ElementsBySlide(ctx context.Context, scope PageGeometryScope) (map[string][]render.Element, error) {
+	doc, err := g.load(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]render.Element, len(doc.Pages))
+	for _, page := range doc.Pages {
+		if page == nil || page.SlideID == "" {
+			continue
+		}
+		out[page.SlideID] = PageElements(page)
+	}
+	return out, nil
+}
+
+// FocusBoxes 实现 PageFocusSource：形状框 + 每根柱子的框。
+//
+// 会再读一次 document.json（与 ElementsBySlide 各读一次）。这是刻意的取舍：把两份
+// 结果塞进一个"顺带返回"的结构会让每个只想要元素的调用方（预览）背上一份用不上的
+// 数据；而这里多出来的成本是一次对象读，导出本来就只发生一次。真变贵了再说，先别
+// 让接口变成"读什么都给"。
+func (g *DocumentGeometry) FocusBoxes(ctx context.Context, scope PageGeometryScope) (map[string][]FocusBox, error) {
+	doc, err := g.load(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]FocusBox, len(doc.Pages))
+	for _, page := range doc.Pages {
+		if page == nil || page.SlideID == "" {
+			continue
+		}
+		var boxes []FocusBox
+		var walk func([]*project.Shape)
+		walk = func(shapes []*project.Shape) {
+			for _, sh := range shapes {
+				if sh == nil || sh.ID == "" {
+					continue
+				}
+				if sh.Bounds != nil {
+					boxes = append(boxes, FocusBox{
+						ShapeID: sh.ID,
+						Box: render.EMUBox{
+							X: sh.Bounds.X, Y: sh.Bounds.Y,
+							Width: sh.Bounds.Width, Height: sh.Bounds.Height,
+						},
+					})
+				}
+				// 柱子的框来自解析期的切柱结果。注意它的单位是**解析画布像素**
+				// （1920×1080，见 bindCanvasW），不是 EMU——这里换回 EMU，让下游只需要
+				// 一个换算系数（画布高 / 标准页高），不必按目标类型记两套坐标。
+				//
+				// 这个反推成立的前提与切柱时相同：页面高度按标准 7.5 英寸（6858000 EMU）
+				// 折算。自定义页高的 deck 在切柱那一步就已经"切不出来"（报未切），
+				// 所以不会走到这里拿到一个假的框。
+				for _, bar := range sh.ChartBars {
+					if bar.ID == "" {
+						continue
+					}
+					boxes = append(boxes, FocusBox{
+						ShapeID: sh.ID, BarID: bar.ID,
+						Box: render.EMUBox{
+							X: pxToEMU(bar.Box[0]), Y: pxToEMU(bar.Box[1]),
+							Width: pxToEMU(bar.Box[2]), Height: pxToEMU(bar.Box[3]),
+						},
+					})
+				}
+				if len(sh.Children) > 0 {
+					walk(sh.Children)
+				}
+			}
+		}
+		walk(page.Shapes)
+		out[page.SlideID] = boxes
+	}
+	return out, nil
+}
+
+// load 读取并解码某个源版本的 document.json。
+func (g *DocumentGeometry) load(ctx context.Context, scope PageGeometryScope) (*project.Document, error) {
 	if g == nil || g.objects == nil {
 		return nil, errors.New("animation: geometry source has no object store")
 	}
@@ -82,15 +180,7 @@ func (g *DocumentGeometry) ElementsBySlide(ctx context.Context, scope PageGeomet
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("animation: decode extracted document: %w", err)
 	}
-
-	out := make(map[string][]render.Element, len(doc.Pages))
-	for _, page := range doc.Pages {
-		if page == nil || page.SlideID == "" {
-			continue
-		}
-		out[page.SlideID] = PageElements(page)
-	}
-	return out, nil
+	return &doc, nil
 }
 
 // PageElements 把一页的元素转成渲染几何。

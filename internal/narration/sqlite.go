@@ -88,19 +88,20 @@ func (s *SQLiteStore) sqForkLegacy(ctx context.Context, tx *sql.Tx, tenantID, pr
 // sqForkSegments 逐条复制 legacy 分段到新讲稿（保证每行生成独立 uuid）。
 func (s *SQLiteStore) sqForkSegments(ctx context.Context, tx *sql.Tx, fromScriptID, toScriptID, tenantID string) error {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, status, revision
+		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status, revision
 		   FROM narration_segments WHERE script_id = ?`, fromScriptID)
 	if err != nil {
 		return err
 	}
 	type segRow struct {
 		segmentID, display, spoken, refs, anchors, status string
+		focus                                             sql.NullString
 		revision                                          int64
 	}
 	var segs []segRow
 	for rows.Next() {
 		var r segRow
-		if err := rows.Scan(&r.segmentID, &r.display, &r.spoken, &r.refs, &r.anchors, &r.status, &r.revision); err != nil {
+		if err := rows.Scan(&r.segmentID, &r.display, &r.spoken, &r.refs, &r.anchors, &r.focus, &r.status, &r.revision); err != nil {
 			rows.Close()
 			return err
 		}
@@ -113,9 +114,9 @@ func (s *SQLiteStore) sqForkSegments(ctx context.Context, tx *sql.Tx, fromScript
 	rows.Close()
 	for _, r := range segs {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, status, revision, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			uuid.New().String(), toScriptID, tenantID, r.segmentID, r.display, r.spoken, r.refs, r.anchors, r.status, r.revision, db.Now()); err != nil {
+			`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status, revision, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			uuid.New().String(), toScriptID, tenantID, r.segmentID, r.display, r.spoken, r.refs, r.anchors, r.focus, r.status, r.revision, db.Now()); err != nil {
 			return err
 		}
 	}
@@ -124,7 +125,7 @@ func (s *SQLiteStore) sqForkSegments(ctx context.Context, tx *sql.Tx, fromScript
 
 func (s *SQLiteStore) sqLoadSegments(ctx context.Context, q queryer, scriptID string) ([]*Segment, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, status
+		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status
 		 FROM narration_segments WHERE script_id = ? ORDER BY segment_id`, scriptID)
 	if err != nil {
 		return nil, err
@@ -134,7 +135,8 @@ func (s *SQLiteStore) sqLoadSegments(ctx context.Context, q queryer, scriptID st
 	for rows.Next() {
 		var seg Segment
 		var refsRaw, anchorsRaw string
-		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refsRaw, &anchorsRaw, &seg.Status); err != nil {
+		var focusRaw sql.NullString
+		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refsRaw, &anchorsRaw, &focusRaw, &seg.Status); err != nil {
 			return nil, err
 		}
 		if refsRaw != "" && refsRaw != "[]" {
@@ -143,31 +145,53 @@ func (s *SQLiteStore) sqLoadSegments(ctx context.Context, q queryer, scriptID st
 		if anchorsRaw != "" && anchorsRaw != "[]" {
 			_ = json.Unmarshal([]byte(anchorsRaw), &seg.SourceAnchors)
 		}
+		if focusRaw.Valid && focusRaw.String != "" {
+			var f FocusTarget
+			if err := json.Unmarshal([]byte(focusRaw.String), &f); err == nil {
+				seg.Focus = &f
+			}
+		}
 		segs = append(segs, &seg)
 	}
 	return segs, rows.Err()
 }
 
-func (s *SQLiteStore) sqLoadAnchors(ctx context.Context, q queryer, scriptID string) (map[string][]SourceAnchor, error) {
+// sqSegmentMeta 与 PG 侧 loadSegmentMetaTx 同义：更新时 nil 字段的保留来源。
+type sqSegmentMeta struct {
+	Anchors map[string][]SourceAnchor
+	Focus   map[string]*FocusTarget
+}
+
+func (s *SQLiteStore) sqLoadSegmentMeta(ctx context.Context, q queryer, scriptID string) (sqSegmentMeta, error) {
 	rows, err := q.QueryContext(ctx,
-		`SELECT segment_id, source_anchors FROM narration_segments WHERE script_id = ?`, scriptID)
+		`SELECT segment_id, source_anchors, focus FROM narration_segments WHERE script_id = ?`, scriptID)
 	if err != nil {
-		return nil, err
+		return sqSegmentMeta{}, err
 	}
 	defer rows.Close()
-	out := map[string][]SourceAnchor{}
+	meta := sqSegmentMeta{
+		Anchors: map[string][]SourceAnchor{},
+		Focus:   map[string]*FocusTarget{},
+	}
 	for rows.Next() {
 		var segmentID, data string
-		if err := rows.Scan(&segmentID, &data); err != nil {
-			return nil, err
+		var focusRaw sql.NullString
+		if err := rows.Scan(&segmentID, &data, &focusRaw); err != nil {
+			return sqSegmentMeta{}, err
 		}
 		var anchors []SourceAnchor
 		if data != "" && data != "[]" {
 			_ = json.Unmarshal([]byte(data), &anchors)
 		}
-		out[segmentID] = anchors
+		meta.Anchors[segmentID] = anchors
+		if focusRaw.Valid && focusRaw.String != "" {
+			var f FocusTarget
+			if err := json.Unmarshal([]byte(focusRaw.String), &f); err == nil {
+				meta.Focus[segmentID] = &f
+			}
+		}
 	}
-	return out, rows.Err()
+	return meta, rows.Err()
 }
 
 // sqWithSegments 填充分段后返回。
@@ -235,7 +259,7 @@ func (s *SQLiteStore) Update(ctx context.Context, tenantID, projectID string, so
 		}
 		return nil, &ErrConflict{Latest: latest}
 	}
-	existingAnchors, err := s.sqLoadAnchors(ctx, tx, scriptID)
+	meta, err := s.sqLoadSegmentMeta(ctx, tx, scriptID)
 	if err != nil {
 		return nil, err
 	}
@@ -245,10 +269,22 @@ func (s *SQLiteStore) Update(ctx context.Context, tenantID, projectID string, so
 	for _, seg := range segments {
 		anchors := seg.SourceAnchors
 		if anchors == nil {
-			anchors = existingAnchors[seg.SegmentID]
+			anchors = meta.Anchors[seg.SegmentID]
 		}
 		if anchors == nil {
 			anchors = []SourceAnchor{}
+		}
+		focus := seg.Focus
+		if focus == nil {
+			focus = meta.Focus[seg.SegmentID]
+		}
+		var focusRaw any
+		if focus.Valid() {
+			b, err := json.Marshal(focus)
+			if err != nil {
+				return nil, err
+			}
+			focusRaw = string(b)
 		}
 		anchorBytes, err := json.Marshal(anchors)
 		if err != nil {
@@ -260,10 +296,10 @@ func (s *SQLiteStore) Update(ctx context.Context, tenantID, projectID string, so
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO narration_segments (id, script_id, tenant_id, segment_id, display_text,
-			   spoken_text, source_refs, source_anchors, status, revision, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?)`,
+			   spoken_text, source_refs, source_anchors, focus, status, revision, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 0, ?)`,
 			uuid.New().String(), scriptID, tenantID, seg.SegmentID, seg.DisplayText,
-			seg.SpokenText, string(refsBytes), string(anchorBytes), db.Now()); err != nil {
+			seg.SpokenText, string(refsBytes), string(anchorBytes), focusRaw, db.Now()); err != nil {
 			return nil, err
 		}
 	}

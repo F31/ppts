@@ -500,6 +500,11 @@ func fromProtoSegments(in []*pptsv1.Segment) ([]*narration.Segment, error) {
 			// SourceAnchors are server provenance. User updates preserve existing anchors
 			// in the store instead of accepting client-supplied values.
 			Status: narration.ScriptStatus(segment.GetStatus()),
+			// 未设置（nil）= 保留原值，与锚点同一套语义；传了空 shapeId 的消息才是"清空"。
+			// 不做"目标必须存在"的校验：目标可能在另一份源版本里，写入口拿不到那份文档，
+			// 在这里硬拦会让「先排稿、再补第 3 页的图」变成不可编辑。目标不存在由编译期
+			// 报诊断并跳过那一段（见 app.focusSpans）。
+			Focus: focusFromProto(segment.GetFocus()),
 		})
 	}
 	return out, nil
@@ -519,6 +524,7 @@ func toProtoRevision(rev *narration.Revision) *pptsv1.ScriptRevision {
 			SourceRefs:    append([]string(nil), segment.SourceRefs...),
 			SourceAnchors: toProtoSourceAnchors(segment.SourceAnchors),
 			Status:        string(segment.Status),
+			Focus:         toProtoFocus(segment.Focus),
 		})
 	}
 	return &pptsv1.ScriptRevision{
@@ -550,6 +556,7 @@ func scriptRevisionJSON(rev *narration.Revision) map[string]any {
 			"spokenText":    segment.SpokenText,
 			"sourceRefs":    append([]string(nil), segment.SourceRefs...),
 			"sourceAnchors": anchors,
+			"focus":         focusJSON(segment.Focus),
 			"status":        string(segment.Status),
 		})
 	}
@@ -562,6 +569,34 @@ func scriptRevisionJSON(rev *narration.Revision) map[string]any {
 		"status":    string(rev.Status),
 		"segments":  segments,
 	}
+}
+
+// focusFromProto 把线上的焦点目标转成领域值。
+//
+// 三态：消息缺席（nil）= 不表态，存储层保留原值；消息在场但 shapeId 为空 = 显式清空；
+// 其余照抄。把"缺席"和"空"分开是必要的——编辑器保存文字时不会带上 focus 字段，
+// 若把缺席当成清空，用户改一个错别字就会把整页焦点抹掉。
+func focusFromProto(in *pptsv1.FocusTarget) *narration.FocusTarget {
+	if in == nil {
+		return nil
+	}
+	return &narration.FocusTarget{ShapeID: in.GetShapeId(), BarID: in.GetBarId()}
+}
+
+func toProtoFocus(in *narration.FocusTarget) *pptsv1.FocusTarget {
+	if in == nil {
+		return nil
+	}
+	return &pptsv1.FocusTarget{ShapeId: in.ShapeID, BarId: in.BarID}
+}
+
+// focusJSON 是 REST 镜像的同一份投影。空目标输出 nil（JSON null），
+// 让"没有焦点"在两种传输里都是同一个值，而不是 {} 与 null 两种写法。
+func focusJSON(in *narration.FocusTarget) any {
+	if !in.Valid() {
+		return nil
+	}
+	return map[string]any{"shapeId": in.ShapeID, "barId": in.BarID}
 }
 
 func toProtoSourceAnchors(in []narration.SourceAnchor) []*pptsv1.SourceAnchor {

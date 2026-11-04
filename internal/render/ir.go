@@ -272,6 +272,12 @@ const (
 	DiagTransitionDefaulted       = "transition_defaulted"
 	DiagSiblingOverlapPartial     = "sibling_overlap_partial"
 	DiagCameraInvalid             = "camera_invalid"
+	// 焦点目标在文档里找不到（形状被删/柱号写错）。不阻断渲染：这一段不指，
+	// 整页保持全亮——比整页编译失败、让用户"配了焦点反而导不出视频"要好。
+	DiagFocusTargetMissing = "focus_target_missing"
+	// 同一页里同一目标被两段指向。渲染器要求焦点互斥（按 elementId 求压暗量），
+	// 第二段起无法表达，只能保留第一段并留痕。
+	DiagFocusDuplicate = "focus_duplicate"
 )
 
 // Diagnostic 是一条编译诊断。
