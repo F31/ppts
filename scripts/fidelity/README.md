@@ -322,6 +322,19 @@ python3 scripts/fidelity/split_chart_bars.py \
 python3 scripts/fidelity/split_chart_bars.py --self-test
 #    实测（3 根柱 / 1280→1920 换算）：切出 174/131/96 三根，柱高 370/279/204px，
 #    px/单位 2.126 / 2.130 / 2.125——同一张图的柱子在比例上一致，说明框量对了。
+
+# 6) 拿到框之后，别急着把它当图层交给渲染端——这个实验就是为了让人别再试一遍
+go run ./scripts/fidelity/stagechart \
+  --png tmp/chart/hi-1.png --elements tmp/chart/elements-hi.json --out tmp/chart/stage
+#    它 import 的是产品同一份 internal/render，不是复刻。三个读数：
+#      · 拼回末帧：0 像素差 —— 分层本身是无损的，所以「技术上塞得进去」；
+#      · 柱子按住不出现时，柱顶的数字标签已经在了（标签在柱 box 之外，留在父层里）；
+#      · --label-pad 30 把标签包进柱层 → 标签被切成半截（文字顶边在柱顶上方 41px）；
+#        --label-pad 45 包全 → 标签没了，但柱位留下 173px 宽的白竖带，网格线被切断。
+#    根因是一句话：**图表是一张位图**。柱区域里只有柱色，抹掉柱子就恢复不了背后的
+#    网格线；标签又画在柱 box 之外。所以「逐柱出场」在纯分层下没有正确形态：
+#    要么数字先出来（剧透），要么网格线断（更难看）。
+#    真要逐柱指代，走「矩形遮罩压暗」（bars 只提供矩形），或者等图表矢量化。
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，
