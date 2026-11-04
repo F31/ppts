@@ -431,6 +431,21 @@ export PATH="$HOME/sdk/go/bin:$PATH" GOPROXY=https://goproxy.cn,direct GOSUMDB=o
 不要把源码放在 `/mnt/e`（drvfs）上跑——`-race` 的编译与链接会慢一个数量级，
 `git archive HEAD | tar -x -C ~/race-src` 导一份到 WSL 本地盘即可。
 
+### 提交前预检
+
+```bash
+bash scripts/preflight.sh          # gofmt（忽略 CRLF）/ go vet / 播放器产物同步 / 判据自检
+bash scripts/preflight.sh --full   # 再加 go test ./...
+```
+
+`lint` 是多数 CI 作业的 `needs`，它一红后面全部 skipped，看起来像全线崩溃，实际只有一个原因。
+两类「本地全绿、CI 必红」的坑都在这个脚本里兜住：
+
+- **gofmt**：本地 Windows 检出是 CRLF，`gofmt -l .` 满屏噪声，于是习惯性跳过；脚本按「去掉 CR 后比较」判，
+  与 CI 的 LF 检出等价。
+- **分享播放器产物**：`internal/share/assets/app.js` 是入库的构建产物，改了 `web/src/sharePlayer/**`
+  却没跑 `npm run build:share`，CI 的 drift check 会红——用户下载到的成品包会是旧播放器。
+
 ### 前端
 
 ```bash

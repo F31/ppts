@@ -479,6 +479,22 @@ export PATH="$HOME/sdk/go/bin:$PATH" GOPROXY=https://goproxy.cn,direct GOSUMDB=o
 Do not run it from `/mnt/e` (drvfs) — `-race` compilation and linking is an order of magnitude slower there.
 `git archive HEAD | tar -x -C ~/race-src` into the WSL filesystem first.
 
+### Pre-commit preflight
+
+```bash
+bash scripts/preflight.sh          # gofmt (CRLF-normalized) / go vet / share asset sync / judge self-tests
+bash scripts/preflight.sh --full   # plus go test ./...
+```
+
+`lint` is a `needs` of most CI jobs, so when it fails everything downstream is skipped and it looks like a
+total collapse — while the actual cause is one line. Two "green locally, red in CI" traps are covered here:
+
+- **gofmt**: the Windows checkout is CRLF, so `gofmt -l .` lists half the repo and the real signal drowns; the
+  script compares with CR stripped, which is equivalent to CI's LF checkout.
+- **Share player assets**: `internal/share/assets/app.js` is a committed build artifact. Change
+  `web/src/sharePlayer/**` without running `npm run build:share` and CI's drift check fails — and users would
+  download bundles carrying the old player.
+
 ### Frontend
 
 ```bash

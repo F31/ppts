@@ -7,9 +7,9 @@
 //
 // 它回答三个问题，都是像素级的：
 //
-//	1. 层拼回去能不能还原原图？（composed vs 原图 的逐像素差）
-//	2. 柱子还没出场时，画面是什么样？（before-bars.png）
-//	3. 父层抹掉子元素之后，被抹的位置留下什么？（patches 的 color / spread / noisy）
+//  1. 层拼回去能不能还原原图？（composed vs 原图 的逐像素差）
+//  2. 柱子还没出场时，画面是什么样？（before-bars.png）
+//  3. 父层抹掉子元素之后，被抹的位置留下什么？（patches 的 color / spread / noisy）
 //
 // 用法（输入来自 split_chart_bars.py 的产物）：
 //
