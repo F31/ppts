@@ -1029,3 +1029,27 @@ test('needsLayerStage：只有矩形焦点、没有层的页也要建舞台', ()
   assert.equal(needsLayerStage([], [{ startMs: 0, elementId: 'x', rect: { x: 1, y: 2, w: 0, h: 4 } }]), false);
   assert.equal(needsLayerStage([], undefined), false);
 });
+
+test('pickStageLayers：低电量也只省元素层，焦点遮罩照建', async () => {
+  // 低内存设备（deviceMemory < 4）此前整页不建舞台，焦点遮罩跟着一起没了：
+  // 成片和高端机在指，低端机全亮，两端都不报错。降级的本意是省合成层与图片解码，
+  // 而遮罩只是几个 div —— 该省的是元素层。
+  const { pickStageLayers } = await import('./src/sharePlayer/animation.ts');
+  const rectFocus = [{ startMs: 1000, elementId: 'p1-s2-b0', rect: { x: 10, y: 20, w: 30, h: 40 } }];
+  const oneLayer = [{ box: { x: 0, y: 0, w: 10, h: 10 }, image: 'a.png' }];
+
+  // 正常设备：层一个不少。
+  assert.deepEqual(pickStageLayers(oneLayer, [], false), oneLayer);
+  assert.deepEqual(pickStageLayers(oneLayer, rectFocus, false), oneLayer);
+
+  // 低电量 + 只有层：没有可看的焦点，舞台上什么都不剩 → 不建。
+  assert.equal(pickStageLayers(oneLayer, [], true), null);
+  // 低电量 + 有矩形焦点：舞台要建，但元素层一个不放（遮罩由 buildLayerNodes 追加）。
+  assert.deepEqual(pickStageLayers(oneLayer, rectFocus, true), []);
+  assert.deepEqual(pickStageLayers([], rectFocus, true), []);
+  // 低电量 + 只有「图层压暗」型焦点（无 rect）：没有层可压暗、也没有遮罩 → 不建。
+  assert.equal(pickStageLayers(oneLayer, [{ startMs: 0, elementId: 'title-1' }], true), null);
+  // 什么都没有：两档都不建。
+  assert.equal(pickStageLayers([], [], true), null);
+  assert.equal(pickStageLayers([], [], false), null);
+});

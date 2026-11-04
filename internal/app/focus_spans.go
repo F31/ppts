@@ -124,9 +124,23 @@ func layerElementIDs(rev *animation.Revision, elements []render.Element) map[str
 	}
 	hasGeom := make(map[string]struct{}, len(elements))
 	for _, el := range elements {
-		if el.ID != "" {
-			hasGeom[el.ID] = struct{}{}
+		// 判据逐条对齐编译器的 toBox：元素在页内、有框、框有面积。
+		//
+		// 这一条曾经只判了 ID 非空：注释写着「同时有几何」，实现里却没有那半句，
+		// 于是「有轨道、有 ID、解析不出框（或框宽高为 0）」的元素被认成层，焦点去
+		// 压暗一个不存在的层。表现与 7053433 修掉的完全一样——画面逐像素不变，
+		// 焦点记录与诊断都正常。
+		//
+		// 已知残余：完全落在画布外的元素，编译器钳制后可能因无面积而不成层，这里
+		// 仍会认成层。那种元素在成片里本来就看不见，指它也没有意义；要判死它需要
+		// 本页画布宽高，而焦点侧手上只有高（见 PageFocusSpans）。
+		if el.ID == "" || el.Bounds == nil {
+			continue
 		}
+		if el.Bounds.Width <= 0 || el.Bounds.Height <= 0 {
+			continue
+		}
+		hasGeom[el.ID] = struct{}{}
 	}
 	out := make(map[string]struct{}, len(rev.Tracks))
 	for _, track := range rev.Tracks {

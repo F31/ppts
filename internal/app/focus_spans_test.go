@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
@@ -452,7 +453,16 @@ func TestPageFocusSpansUsesSpecTracks(t *testing.T) {
 // layerElementIDs 的判据就是这一条：**有轨道且有几何**。少任一条都会让焦点去等一个
 // 永远不存在的层——等不到不会报错，只是画面上什么都不变。
 func TestLayerElementIDs(t *testing.T) {
-	elements := []render.Element{{ID: "title"}, {ID: "card"}}
+	boxed := func(id string) render.Element {
+		return render.Element{ID: id, Bounds: &render.EMUBox{Width: 100 * emuPerPxAt1080, Height: 100 * emuPerPxAt1080}}
+	}
+	elements := []render.Element{
+		boxed("title"), boxed("card"),
+		// 有 ID、有轨道，但解析不出框：编译器会报 anchor_missing，不成层。
+		{ID: "nogeo"},
+		// 有框但宽高为 0（零面积）：toBox 同样按 anchor_missing 拒掉。
+		{ID: "flat", Bounds: &render.EMUBox{X: 100, Y: 100}},
+	}
 	cases := []struct {
 		name string
 		rev  *animation.Revision
@@ -461,7 +471,9 @@ func TestLayerElementIDs(t *testing.T) {
 		{"没有规格就一个层都没有", nil, nil},
 		{"整页轨道不算元素层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "", Kind: "page"}}}, nil},
 		{"有轨道有几何 → 是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "card"}}}, []string{"card"}},
-		{"有轨道没几何 → anchor_missing，不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "ghost"}}}, nil},
+		{"轨道指向文档里没有的元素 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "ghost"}}}, nil},
+		{"有轨道有 ID 但没几何 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "nogeo"}}}, nil},
+		{"有轨道但框是零面积 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "flat"}}}, nil},
 		{"多条轨道去重", &animation.Revision{Tracks: []*animation.Track{
 			{ElementID: "card"}, {ElementID: "card"}, {ElementID: "title"},
 		}}, []string{"card", "title"}},
@@ -478,5 +490,89 @@ func TestLayerElementIDs(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestLayerElementIDsMatchesCompiler 把「这一版到底会出几个图层」交给编译器来判。
+//
+// layerElementIDs 与 render 的成层规则是两份代码。焦点侧判成层，就等着靠压暗指它；
+// 渲染侧若没出这一层，压暗的是一个不存在的东西——画面逐像素不变，而焦点记录、
+// 清单、诊断全都正常（7053433 修的就是这一类）。上面那张手搭的表只能证明「判据按我
+// 理解的样子写」，证明不了「和编译器一致」。
+//
+// 所以这里不重写判据，而是拿编译器当裁判：同一份输入交给 CompilePage，焦点侧认的
+// 层集必须与 plan 里的 elementId 集逐项相同。哪天渲染侧多了成层的途径（G8 注入、
+// 父层拆分……）而焦点侧没跟上，这条会先红。
+func TestLayerElementIDsMatchesCompiler(t *testing.T) {
+	page := func(px int) *render.EMUBox {
+		return &render.EMUBox{
+			X: int64(96 * emuPerPxAt1080), Y: int64(px * emuPerPxAt1080),
+			Width: int64(960 * emuPerPxAt1080), Height: int64(120 * emuPerPxAt1080),
+		}
+	}
+	elements := []render.Element{
+		{ID: "title", Kind: animation.KindTitle, Bounds: page(54)},
+		// 有几何没轨道：底板照旧把它烘在底图里，不会单独成层。
+		{ID: "card", Kind: animation.KindShape, Bounds: page(300)},
+		// 有轨道没几何：编译器报 anchor_missing 并跳过，同样不成层。
+		{ID: "ghost", Kind: animation.KindBullet},
+		// 有轨道、有框，但框是零面积：toBox 也按 anchor_missing 拒掉。
+		{ID: "flat", Kind: animation.KindShape, Bounds: &render.EMUBox{X: 100, Y: 100, Width: 0, Height: 0}},
+	}
+	clip := []*animation.Clip{{ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 500,
+		Easing: "easeOut", Trigger: "onEnter"}}
+	rev := &animation.Revision{PresetID: "business-calm", Intensity: 1,
+		Tracks: []*animation.Track{
+			{ElementID: "title", Kind: animation.KindTitle, Clips: clip},
+			{ElementID: "ghost", Kind: animation.KindBullet, Clips: clip},
+			{ElementID: "flat", Kind: animation.KindShape, Clips: clip},
+			{ElementID: "", Kind: animation.KindPage, Clips: clip},
+		}}
+
+	compiler, err := render.NewCompiler(render.Options{
+		Canvas:         design.Canvas{Width: 1920, Height: 1080},
+		SlideWidthEMU:  12192000,
+		SlideHeightEMU: 6858000,
+		FPS:            30,
+	})
+	if err != nil {
+		t.Fatalf("compiler: %v", err)
+	}
+	out, diags, err := compiler.CompilePage(render.PageInput{
+		Index: 0, SlideID: "slide-1", DurationMs: 6000, BaseImage: "pages/p0.png",
+		Elements: elements, Revision: rev,
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	sawAnchorMissing := false
+	for _, d := range diags {
+		if d.Code == render.DiagAnchorMissing {
+			sawAnchorMissing = true
+		}
+	}
+	if !sawAnchorMissing {
+		t.Fatalf("ghost 有轨道没几何，编译器必须报 anchor_missing；got %+v", diags)
+	}
+
+	fromPlan := make(map[string]struct{}, len(out.Layers))
+	for _, l := range out.Layers {
+		if l.ElementID != "" {
+			fromPlan[l.ElementID] = struct{}{}
+		}
+	}
+	got := layerElementIDs(rev, elements)
+
+	// 先钉住"该出谁"：只该有 title。两边一起错也不会被这条放过。
+	if _, ok := fromPlan["title"]; !ok || len(fromPlan) != 1 {
+		t.Fatalf("编译器出的层 = %v，want 只有 title", fromPlan)
+	}
+	if len(got) != len(fromPlan) {
+		t.Fatalf("焦点侧认 %v，编译器出 %v", got, fromPlan)
+	}
+	for id := range fromPlan {
+		if _, ok := got[id]; !ok {
+			t.Fatalf("编译器出了 %q 这一层，焦点侧却不认：%v", id, got)
+		}
 	}
 }

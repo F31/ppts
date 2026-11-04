@@ -1228,3 +1228,53 @@ func TestGeometryPortraitCanvas(t *testing.T) {
 		t.Fatalf("盒子越出竖屏画布: %+v", box)
 	}
 }
+
+// TestCompileContinuationDoesNotSynthesizeLayer 钉住一个焦点功能依赖的事实：
+// 跨页延续（G8）只往**已存在**的层上追加延续段，不会替次页造层。
+//
+// 为什么值得单独立一条：焦点侧要判「这个形状能不能靠压暗层来指」，而它手上只有
+// 本页规格（没有编译产物）。如果 G8 会凭空造层，那条判据就永远看不见它。这里把
+// 事实固定下来——次页有 shape-1 的几何、但没给它轨道时，plan 里不该多出这一层，
+// 只能留一条 continuation_target_missing，让作者知道延续断在页缝上。
+func TestCompileContinuationDoesNotSynthesizeLayer(t *testing.T) {
+	c := newTestCompiler(t)
+	pages := []PageInput{
+		{Index: 0, SlideID: "s1", DurationMs: 6000, BaseImage: "pages/p0.png",
+			Elements: []Element{{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)}},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "shape-1", Kind: animation.KindTitle,
+				Clips: []*animation.Clip{{ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 8000,
+					Easing: "easeOut", Trigger: "onEnter", Continues: true}},
+			})},
+		{Index: 1, SlideID: "s2", DurationMs: 5000, BaseImage: "pages/p1.png",
+			// 次页有 shape-1 的几何——只是没给它轨道。
+			Elements: []Element{
+				{ID: "shape-1", Kind: animation.KindTitle, Bounds: emuBox(96, 54, 960, 540)},
+				{ID: "other", Kind: animation.KindTitle, Bounds: emuBox(96, 700, 960, 100)},
+			},
+			Revision: revisionOf("business-calm", 1, &animation.Track{
+				ElementID: "other", Kind: animation.KindTitle,
+				Clips: []*animation.Clip{{ID: "c2", Type: "slideIn", StartMs: 0, DurationMs: 500,
+					Easing: "easeOut", Trigger: "onEnter"}},
+			})},
+	}
+	plan, err := c.Compile(pages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := findLayerByElementID(plan.Pages[1].Layers, "shape-1"); l != nil {
+		t.Fatalf("次页没有 shape-1 的轨道，延续却替它造了一层：%+v", l)
+	}
+	if len(plan.Pages[1].Layers) != 1 || plan.Pages[1].Layers[0].ElementID != "other" {
+		t.Fatalf("次页层集 = %+v，want 只有 other", plan.Pages[1].Layers)
+	}
+	found := false
+	for _, d := range plan.Warnings {
+		if d.Code == DiagContinuationTargetMissing {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("延续断在页缝上必须留 continuation_target_missing，got %+v", plan.Warnings)
+	}
+}

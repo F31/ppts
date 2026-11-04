@@ -11,7 +11,7 @@ import type { SlideCue, SubtitleCue, Timeline } from '../types';
 import { easeOutCubic } from '../../../shared/motion.ts';
 import { shotAt, cameraTransform } from '../../../shared/shots.ts';
 import type { FocusSpan, Shot } from '../../../shared/types';
-import { buildLayerNodes, needsLayerStage, releaseLayers, seekLayer } from './animation';
+import { buildLayerNodes, pickStageLayers, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
 import './player.css';
@@ -352,8 +352,11 @@ function mount(): void {
     // 有层，或有矩形焦点，就得建这一层舞台：焦点遮罩是 buildLayerNodes 追加的，
     // 只按「有没有层」判会让「只指柱子、没配元素动效」的页连遮罩都不建——
     // 同一份清单，MP4 在指、网页版全亮。
-    if (lowPower || !needsLayerStage(layers, slide.focus)) return;
-    activeLayers = buildLayerNodes(layersBox, layers, videoW, videoH, {
+    //
+    // 低电量也只省元素层、不省遮罩，取舍写在 pickStageLayers 里（那里能被 CI 测到）。
+    const stageLayers = pickStageLayers(layers, slide.focus, lowPower);
+    if (stageLayers === null) return;
+    activeLayers = buildLayerNodes(layersBox, stageLayers as ManifestLayer[], videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: (slide.endUs - slide.startUs) / 1000,
       reduceMotion,
@@ -524,10 +527,12 @@ function mount(): void {
     // （否则页首 360ms 会看到整页的层叠在放大后的局部图上）。
     prev.layers.style.visibility = lastShotIsCrop(before) ? 'hidden' : '';
     // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
-    // 判据与当前页一致：只有焦点没有层的页，交叉时也要把遮罩建出来。
-    if (lowPower || !needsLayerStage(layers, before.focus)) return;
+    // 判据与当前页完全同一条（pickStageLayers）：只有焦点没有层的页，交叉时也要把
+    // 遮罩建出来；低电量下元素层不建，但遮罩仍建。
+    const stageLayers = pickStageLayers(layers, before.focus, lowPower);
+    if (stageLayers === null) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
-    prevLayers = buildLayerNodes(prev.layers, layers, videoW, videoH, {
+    prevLayers = buildLayerNodes(prev.layers, stageLayers as ManifestLayer[], videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: pageMs,
       reduceMotion,

@@ -189,6 +189,16 @@ export function buildLayerNodes(
 }
 
 /**
+ * 这一页有没有「矩形焦点」——即需要靠遮罩来指的目标。
+ *
+ * 单独导出是因为**低电量降级要按它做例外**：低内存设备不建元素层，但焦点遮罩得留下
+ * （见 main.ts 的 lowPower 分支）。判据只有一份，两处不能各写一个「rect.w > 0」。
+ */
+export function hasRectFocus(focus?: FocusSpan[]): boolean {
+  return (focus ?? []).some((f) => !!f.rect && f.rect.w > 0 && f.rect.h > 0);
+}
+
+/**
  * 这一页需不需要建「图层舞台」。
  *
  * 不只看层数：矩形焦点是独立于图层的增强（柱子没有独立图层），一页完全可能
@@ -197,7 +207,29 @@ export function buildLayerNodes(
  */
 export function needsLayerStage(layers: readonly ManifestLayer[], focus?: FocusSpan[]): boolean {
   if (layers.length > 0) return true;
-  return (focus ?? []).some((f) => !!f.rect && f.rect.w > 0 && f.rect.h > 0);
+  return hasRectFocus(focus);
+}
+
+/**
+ * 这一页该建哪些层；返回 null 表示「这一页不用建舞台」。
+ *
+ * 把「低电量怎么降」收在一个函数里，是为了让它在 CI 里可测：降级判断若散在 main.ts
+ * 的两个 if 里，只能靠人读代码相信它，而它要保证的恰恰是「低端机也能看到焦点」——
+ * 一件没人会特意去低端机上验的事。
+ *
+ * 低电量（lowPower）省的是**元素层**：合成层与图片解码是这个形态的主要成本。
+ * 焦点遮罩不省——它只是每组一个 div 加一条合成器跑的 opacity，却是「这段在讲哪一根」
+ * 的唯一画面提示；整页一起跳过会让低端机永远全亮，既不报错，也与成片不一致。
+ */
+export function pickStageLayers(
+  layers: readonly ManifestLayer[],
+  focus: FocusSpan[] | undefined,
+  lowPower: boolean
+): readonly ManifestLayer[] | null {
+  if (!needsLayerStage(layers, focus)) return null;
+  if (!lowPower) return layers;
+  // 低电量：元素层一个不放。若这页连矩形焦点都没有，舞台上就什么都不剩，不建。
+  return hasRectFocus(focus) ? [] : null;
 }
 
 /**
