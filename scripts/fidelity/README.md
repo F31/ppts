@@ -320,6 +320,10 @@ python3 scripts/fidelity/split_chart_bars.py \
 #    切不出来时它给一句理由（段数不符 / 柱高与数值相反 / 非垂直柱状），并**不写 bars**：
 #    没有 bars 时 V11 对这页仍是无声的，所以宁可报未测也不硬凑一个框。
 python3 scripts/fidelity/split_chart_bars.py --self-test
+#    **产品侧也有一份**（internal/chartgeo，Go）：解析期渲染完页面图后对每个
+#    chart 形状跑一遍，把 chartBars[] 写进 document/extracted.json。两边用同一张
+#    合成图对齐（internal/chartgeo/parity_test.go），阈值改一边没改另一边会红。
+#    真实渲染的两页 deck 上，产品版与这份脚本切出的 9 根框逐位相同（差 0）。
 #    实测（3 根柱 / 1280→1920 换算）：切出 174/131/96 三根，柱高 370/279/204px，
 #    px/单位 2.126 / 2.130 / 2.125——同一张图的柱子在比例上一致，说明框量对了。
 #

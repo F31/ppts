@@ -125,7 +125,22 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	}); err != nil {
 		return fmt.Errorf("parse: write extracted document: %w", err)
 	}
-	h.renderPages(ctx, job, key, data, doc, snap)
+	// 先落一份不带逐柱包围盒的文档，再拿页面图补——顺序是刻意的：渲染可能不可用，
+	// 那时文档仍然必须是完整的（此前就是这样）。补出来的结果再覆盖一次，只在
+	// 真有图表被切开时才多这一次写。
+	if pngs := h.renderPages(ctx, job, key, data, doc, snap); len(pngs) > 0 {
+		added, notes := AnnotateChartBars(visiblePages(doc), pngs)
+		doc.Diagnostics = append(doc.Diagnostics, notes...)
+		if added > 0 {
+			if b, err := json.Marshal(doc); err == nil {
+				if err := h.objects.Put(ctx, outKey, bytes.NewReader(b), objectstore.ObjectMeta{
+					ContentType: "application/json", ContentHash: meta.ContentHash,
+				}); err != nil {
+					return fmt.Errorf("parse: rewrite extracted document: %w", err)
+				}
+			}
+		}
+	}
 	if h.projects != nil && doc.Features != nil && doc.Features.PageCount > 0 {
 		// 快照里的 tenant 为空时退回 job 上的 tenant：任务行本身一定是带租户的，
 		// 而 page_count 的更新条件含 tenant_id，空值会让更新静默影响 0 行。
@@ -143,9 +158,11 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 
 // renderPages 把源页面渲染为 PNG 并登记页序清单。页面图是可选增强：
 // 渲染器缺失/不可用或渲染失败都不会让解析任务失败，仅记录失败步骤。
-func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKey objectstore.ObjectKey, data []byte, doc *project.Document, snap ParseSnapshot) {
+// 返回值与**可见页**同序（隐藏页不参与渲染，见下面的对齐说明）；渲染不可用或
+// 失败时返回 nil——调用方据此跳过逐柱包围盒，而不是拿空的图去量。
+func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKey objectstore.ObjectKey, data []byte, doc *project.Document, snap ParseSnapshot) [][]byte {
 	if h.steps == nil {
-		return
+		return nil
 	}
 	step := pipeline.JobStep{
 		JobID: job.ID, TenantID: job.TenantID, StepType: "pages",
@@ -160,7 +177,7 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 		h.publishPageManifest(ctx, step, srcKey, snap, PageManifest{
 			RevisionNo: snap.RevisionNo, Renderer: RendererUnavailable, Pages: []PageEntry{},
 		})
-		return
+		return nil
 	}
 	fail := func() {
 		step.State = pipeline.StepFailed
@@ -169,29 +186,21 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 	res, err := h.renderer.Render(ctx, bytes.NewReader(data), int64(len(data)), render.RenderOptions{})
 	if err != nil || len(res.Pages) == 0 {
 		fail()
-		return
+		return nil
 	}
 	// 渲染页与解析页的对齐必须以"可见页"为基准：LibreOffice 转 PDF 会跳过隐藏页
 	// （p:sldId@show="0"），渲染结果里没有它们的位置。若用解析索引直接对齐，
 	// 第一张隐藏页之后的所有页面图都会挂到错误的 slideId 上（缩略图/播放/导出全错位）。
-	visible := make([]*project.Page, 0, len(doc.Pages))
-	for _, pg := range doc.Pages {
-		if pg == nil {
-			continue
-		}
-		if pg.Hidden != nil && *pg.Hidden {
-			continue
-		}
-		visible = append(visible, pg)
-	}
+	visible := visiblePages(doc)
 	if len(res.Pages) != len(visible) {
 		// 页数不匹配说明渲染结果与解析结果无法可靠对应（渲染器漏页/多页）。
 		// 宁缺毋错：不落清单，标记步骤失败，避免把错位映射写进产物。
 		fail()
-		return
+		return nil
 	}
 	revision := srcRevString(snap.RevisionNo)
 	entries := make([]PageEntry, 0, len(res.Pages))
+	pngs := make([][]byte, 0, len(res.Pages))
 	for i, page := range res.Pages {
 		src := visible[i]
 		key := objectstore.ObjectKey{
@@ -202,11 +211,29 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 			ContentType: "image/png", ContentHash: hashBytes(page.PNG), Size: int64(len(page.PNG)),
 		}); err != nil {
 			fail()
-			return
+			return nil
 		}
 		entries = append(entries, PageEntry{SlideID: src.SlideID, Index: src.Index, Key: key.String()})
+		pngs = append(pngs, page.PNG)
 	}
 	h.publishPageManifest(ctx, step, srcKey, snap, PageManifest{RevisionNo: snap.RevisionNo, Renderer: res.Report.Renderer, Pages: entries})
+	return pngs
+}
+
+// visiblePages 是「渲染器看到的页序」：隐藏页（p:sldId@show="0"）在转 PDF 时被跳过，
+// 解析索引直接对齐会让第一张隐藏页之后的所有页面图挂到错误的 slideId 上。
+func visiblePages(doc *project.Document) []*project.Page {
+	out := make([]*project.Page, 0, len(doc.Pages))
+	for _, pg := range doc.Pages {
+		if pg == nil {
+			continue
+		}
+		if pg.Hidden != nil && *pg.Hidden {
+			continue
+		}
+		out = append(out, pg)
+	}
+	return out
 }
 
 // publishPageManifest 写入页序清单并记录步骤结果。

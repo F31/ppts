@@ -57,8 +57,36 @@ type Shape struct {
 	ChartSeries []ChartSeriesData `json:"chartSeries,omitempty"`
 	// ChartCategories 是图表类别轴（与每条系列 Values 等长）。
 	ChartCategories []string `json:"chartCategories,omitempty"`
-	Bounds          *Box     `json:"bounds,omitempty"`
-	Children        []*Shape `json:"children,omitempty"`
+	// ChartBars 是内嵌图表的**逐柱**包围盒，画布像素（1920×1080）。
+	//
+	// 为什么它必须由量页面图得到：图表在 PPTX 里只是一个形状，柱子由图表引擎
+	// 在渲染时排布，文档模型里没有单根柱的几何。而「这一刻讲的是哪一根」要落到
+	// 画面上，只能靠一块矩形（见 render.FocusSpan.Rect）。
+	//
+	// nil/空 = **没切开**（未测），不是「这张图没有柱子」：折线、饼图、负值柱、
+	// 多系列水平条都在这个集合里，原因写在 Document.Diagnostics。
+	ChartBars []ChartBar `json:"chartBars,omitempty"`
+	// ChartOrientation 是量这些框时的朝向（vertical / horizontal）。判据按数值方向
+	// 量长度：水平条的「高度」是它的厚度，拿厚度除数值会得到一条假比例。
+	ChartOrientation string   `json:"chartOrientation,omitempty"`
+	Bounds           *Box     `json:"bounds,omitempty"`
+	Children         []*Shape `json:"children,omitempty"`
+}
+
+// ChartBar 是一根柱的包围盒与它代表的那个数。
+type ChartBar struct {
+	// ID 形如 `p1-s2-b0`：形状 id + 序号。讲稿/编辑器引用它就能把焦点落成矩形。
+	ID       string  `json:"id"`
+	Category string  `json:"category,omitempty"`
+	Series   string  `json:"series,omitempty"`
+	Value    float64 `json:"value"`
+	// Box 是 [x, y, w, h]，画布像素——与保真链 elements.json 的 box 同一形态，
+	// 也与 Layer.Box / FocusSpan.Rect 同一坐标系。
+	Box [4]int `json:"box"`
+	// LabelDir/LabelPad 是数据标签带相对柱体的方向与距离（画布像素）。
+	// 标签画在柱体之外，只框柱体时这根自己的数字会被压暗——「指谁谁灰」。
+	LabelDir string `json:"labelDir,omitempty"`
+	LabelPad int    `json:"labelPad,omitempty"`
 }
 
 // ChartSeriesData 是一条可确定性计算的图表数据系列。
