@@ -29,6 +29,13 @@
 
     alpha = mean(cur − ref) / mean(255 − ref)
 
+遮罩若从页首就开始（讲一根柱子讲整页，很常见），前面没有这样的帧。这时退到
+**所有遮罩都放开之后**那段干净时间：它是同一页、同一次导出，唯一跨过的时间是
+遮罩这一段。代价是参照在采样之后，中间内容可能变过，所以必须过两道门——
+参照帧自己要和窗口内早 200ms 的帧几乎一样（说明页面已经静下来），并且每个
+采样帧在**孔内**（这里当内容探针）与参照帧一致。任一不满足仍然报「未测」，
+理由写清楚是哪道门没过，不拿一个跨了内容变化的数当结论。
+
 它直接与 DIM(0.45) 比：0.45 = 强度刚好，0 = 没画，0.22 = 画淡了，
 0.90 = 叠了两层。用 alpha 而不是「与 0.45 的比值」，是为了让报告里的数
 能直接和常量对上——比值 1.0 还得回头换算一次才知道白纱多浓。
@@ -70,6 +77,21 @@ OUTER_GAP = 8
 
 # 区域「几乎没有墨」时不算比值：分母小于这个灰度，噪声就能把结果翻倍。
 MIN_INK = 8.0
+
+# 参照帧离遮罩边界起码这么远：淡入淡出 240ms + 一帧余量。比这近的帧上，
+# 白纱正在变浓/变淡，拿它当基准会把强度读低或读高。
+REF_MARGIN = 300
+
+# 后置参照的两道门。前置参照（同一时刻之前的一帧）只需要「之前」这一条，
+# 后置参照跨过了整段遮罩，必须证明画面本身没变过，否则量到的不是白纱：
+#   PAIR_MS / PAIR_TOL —— 参照帧与同窗口内早 200ms 的那帧平均差 ≤ 1.5 级，
+#     说明取参照的这一刻页面已经静下来了（入场动画收了尾）；
+#   HOLE_FIT_TOL —— 参照帧与每个采样帧在**孔内**（这里当内容探针）的差，必须只用
+#     一层白就能解释（把叠白量拟合成一个标量后，逐像素平均残差 ≤ 4 级）。
+#     孔内没被压暗，所以孔里原本应该一动不动；动了却解释不了，就是内容变了。
+REF_PAIR_MS = 200
+REF_PAIR_TOL = 1.5
+HOLE_FIT_TOL = 4.0
 
 
 def ffmpeg_bin():
@@ -192,9 +214,120 @@ def classify(spans, t_ms, page_ms):
     return "skip"
 
 
-def measure_page(ref, samples, spans, page_ms):
+def clean_windows(spans, page_ms, margin=REF_MARGIN):
+    """遮罩完全关闭的时间窗 `(lo, hi)`，按时间升序。
+
+    遮罩的活跃区间是 `[startMs, endMs 或下一段起点)`，两端各留 `margin`——
+    淡入从 startMs 开始算，淡出在终点之后还要 `fadeMs` 才回到全亮。
+    窗口算窄一点只是少几个候选，算宽了会把过渡帧当干净帧，那才是错的。
+    """
+    out, cursor = [], 0
+    for i, s in enumerate(spans):
+        start = s.get("startMs", 0)
+        nxt = spans[i + 1]["startMs"] if i + 1 < len(spans) else page_ms
+        end = s.get("endMs") or nxt
+        if start - margin > cursor:
+            out.append((cursor, start - margin))
+        cursor = max(cursor, end + margin)
+    if page_ms - margin > cursor:
+        out.append((cursor, page_ms - margin))
+    return out
+
+
+def _settled(cand):
+    """在候选帧里找一对「相隔 200ms 却几乎一样」的帧，返回较晚的那一帧。
+
+    只用时间差判断不够：入场动画正好在这 200ms 里做完，两帧也会不一样。
+    所以真去比像素——「页面已经静下来」这件事只能看出来，不能假定。
+    """
+    for i in range(len(cand) - 1, -1, -1):
+        t, f = cand[i]
+        for j in range(i - 1, -1, -1):
+            t0, f0 = cand[j]
+            if t - t0 < REF_PAIR_MS:
+                continue
+            d = float(np.abs(f.astype(np.float32) - f0.astype(np.float32)).mean())
+            if d <= REF_PAIR_TOL:
+                return t, f
+            break
+    return None
+
+
+def pick_ref(frames, spans, page_ms, first):
+    """选参照帧。返回 `(t, frame, mode, reason)`；选不到时 t/frame 为 None。
+
+    优先前置（遮罩开始前 300ms）——它天然跨不过任何一次内容变化。
+    页首就开始时退到末尾那段干净时间，并证明这一刻页面是静的。
+    """
+    cut = first - REF_MARGIN
+    before = [(t, f) for t, f in frames if t <= cut]
+    if before:
+        t, f = before[-1]
+        return t, f, "before", ""
+    wins = clean_windows(spans, page_ms)
+    tail = [w for w in wins if w[0] >= (spans[-1].get("endMs") or page_ms)]
+    if not tail:
+        return None, None, "", ("遮罩从页首 %dms 开始，且到页末都没放开，没有干净参照帧"
+                                % first)
+    lo, hi = tail[-1]
+    cand = [(t, f) for t, f in frames if lo <= t <= hi]
+    if not cand:
+        return None, None, "", "遮罩结束后没有解出可用的干净帧"
+    settled = _settled(cand)
+    if settled is None:
+        return None, None, "", ("遮罩结束后画面仍在动（找不到相隔 %dms 却一致的两帧），"
+                                "后置参照不可用" % REF_PAIR_MS)
+    t, f = settled
+    return t, f, "after", ""
+
+
+def fit_alpha(ref_px, cur_px):
+    """最小二乘拟合 `cur ≈ ref + a × (255 − ref)`，返回 `(a, 平均残差)`。
+
+    后置参照要回答的不是「孔内的数变没变」，而是「变的这个量能不能用一层白解释」：
+    能解释就说明参照可用，且**读数本身仍然有效**——a≈0 是孔开对了，a≈0.45 是
+    遮罩盖在了它不该盖的地方（矩形写错、或播放器漏了定位），后者正是要判红的形态。
+    解释不了（残差大）才是内容真的变了，那时才报未测。
+    """
+    d = 255.0 - ref_px
+    den = float((d * d).sum())
+    if den < 1.0:
+        return None, None
+    a = float(((cur_px - ref_px) * d).sum() / den)
+    resid = float(np.abs(cur_px - (ref_px + a * d)).mean())
+    return a, resid
+
+
+def measure_page(ref, samples, spans, page_ms, ref_mode="before"):
     """一页的汇总：hold / after 两段各自的强度与孔内残余。"""
+    note = ""
+    if ref_mode == "after":
+        # 后置参照跨过了整段遮罩：先证明孔内的变化只用一层白就能解释。
+        worst, worst_at = -1.0, 0
+        for t, frame in samples:
+            if classify(spans, t, page_ms) not in ("hold", "after"):
+                continue
+            span = _span_at(spans, t, page_ms)
+            if not span or not span.get("rect"):
+                continue
+            inside, _ = regions(span["rect"])
+            _, resid = fit_alpha(ref[inside].astype(np.float32),
+                                 frame[inside].astype(np.float32))
+            if resid is None:
+                continue
+            if resid > worst:
+                worst, worst_at = resid, t
+        if worst > HOLE_FIT_TOL:
+            return {"holdSamples": 0, "holdStrength": None, "holdInside": None,
+                    "afterSamples": 0, "afterStrength": None,
+                    "skipped": ("孔内内容在参照帧与 %dms 之间变了（残差 %.1f，"
+                                "不是一层白能解释的），后置参照不可用"
+                                % (worst_at, worst))}
+        if worst < 0:
+            note = "孔内几乎无墨，未做内容一致性校验"
+
     hold_s, hold_in, after_s = [], [], []
+
     for t, frame in samples:
         kind = classify(spans, t, page_ms)
         if kind not in ("hold", "after"):
@@ -217,13 +350,16 @@ def measure_page(ref, samples, spans, page_ms):
                 hold_in.append(a_in)
         else:
             after_s.append(a_out)
-    return {
+    out = {
         "holdSamples": len(hold_s),
         "holdStrength": round(float(np.mean(hold_s)), 3) if hold_s else None,
         "holdInside": round(float(np.mean(hold_in)), 3) if hold_in else None,
         "afterSamples": len(after_s),
         "afterStrength": round(float(np.mean(after_s)), 3) if after_s else None,
     }
+    if note:
+        out["note"] = note
+    return out
 
 
 def _span_at(spans, t_ms, page_ms):
@@ -277,19 +413,18 @@ def main():
             report.append({"index": idx, "spans": len(spans), "skipped": "这一页没有解出帧"})
             continue
 
-        # 参照帧：第一次遮罩开始前 300ms 的最后一帧。同一页、同一套入场动画之后，
-        # 与中间帧只差遮罩这一层。遮罩从页首就开始时没有这样的帧——报未测，
-        # 而不是拿「遮罩已经压上的那一帧」当基准（那会把强度整体读成 0）。
-        cut = first - 300
-        before = [(t, f) for t, f in frames if t <= cut]
-        if not before:
+        # 参照帧：优先「第一次遮罩开始前 300ms 的最后一帧」——同一页、同一套入场
+        # 动画之后，与中间帧只差遮罩这一层。遮罩从页首就开始时退到末尾的干净窗口
+        # （见 pick_ref）：那种片子里「讲一根柱子的同时压暗整页」是常态，不能
+        # 因为参照在前面拿不到就整页不算——但也不能随手拿一帧，所以有两道门。
+        ref_t, ref, ref_mode, why = pick_ref(frames, spans, page_ms, first)
+        if ref is None:
             report.append({"index": idx, "spans": len(spans), "holdSamples": 0,
-                           "skipped": "遮罩在页首 %dms 就开始，没有干净参照帧" % first})
+                           "skipped": why})
             continue
-        ref_t, ref = before[-1]
-        summary = measure_page(ref, frames, spans, page_ms)
+        summary = measure_page(ref, frames, spans, page_ms, ref_mode)
         summary.update({"index": idx, "spans": len(spans), "refAtMs": ref_t,
-                        "holdFromMs": first})
+                        "refMode": ref_mode, "holdFromMs": first})
         if summary["holdSamples"] == 0:
             summary["skipped"] = "没有落在稳态的采样点（遮罩太短或全在过渡里）"
         else:
@@ -298,8 +433,10 @@ def main():
         if summary.get("skipped"):
             print("页 %d：未测——%s" % (idx, summary["skipped"]))
         else:
-            print("页 %d：%d 个稳态采样点，白纱 %.2f，孔内残余 %s，放手后 %s"
-                  % (idx, summary["holdSamples"], summary["holdStrength"],
+            print("页 %d：%d 个稳态采样点（参照 %dms，取自遮罩%s），白纱 %.2f，孔内残余 %s，放手后 %s"
+                  % (idx, summary["holdSamples"], summary["refAtMs"],
+                     "之前" if ref_mode == "before" else "之后",
+                     summary["holdStrength"],
                      "-" if summary["holdInside"] is None else "%.2f" % summary["holdInside"],
                      "-" if summary["afterStrength"] is None else "%.2f" % summary["afterStrength"]))
 
@@ -385,6 +522,68 @@ def _self_test():
                   _span_at(two, 3000, 4000)["rect"] == rect))
     cases.append(("多段第二段起点是过渡 → %s" % classify(two, 2100, 4000),
                   classify(two, 2100, 4000) == "skip"))
+
+    # 10. 干净窗口：遮罩在页中时前后各有一段；页首就开始时只剩末尾那一段
+    head = [{"startMs": 0, "endMs": 2500, "fadeMs": 240, "rect": rect}]
+    mid = [{"startMs": 1000, "endMs": 3000, "fadeMs": 240, "rect": rect}]
+    cases.append(("页首遮罩的干净窗口 → %s" % (clean_windows(head, 4000),),
+                  clean_windows(head, 4000) == [(2800, 3700)]))
+    cases.append(("页中遮罩的干净窗口 → %s" % (clean_windows(mid, 4000),),
+                  clean_windows(mid, 4000) == [(0, 700), (3300, 3700)]))
+
+    # 11. 页首就开始时，参照退到末尾且能读回同一强度（这一条是补洞的正面用例）
+    def _film(spans, page_ms):
+        out = []
+        for t in range(0, page_ms, 100):
+            masked = any(s["startMs"] <= t < s["endMs"] for s in spans)
+            out.append((t, _overlay(ref, rect, DIM) if masked else ref.copy()))
+        return out
+
+    frames_head = _film(head, 4000)
+    t_ref, f_ref, mode, why = pick_ref(frames_head, head, 4000, 0)
+    cases.append(("页首遮罩 → 后置参照（%s @ %sms）" % (mode, t_ref),
+                  mode == "after" and t_ref is not None and t_ref >= 2800))
+    got = measure_page(f_ref, frames_head, head, 4000, mode) if f_ref is not None else {}
+    cases.append(("后置参照读回 %.2f（应 %.2f）" % (got.get("holdStrength") or -1, DIM),
+                  got.get("holdStrength") is not None
+                  and abs(got["holdStrength"] - DIM) < 1e-3))
+
+    # 12. 参照之后画面还在动 → 宁可不测，也不拿动着的帧当基准
+    moving = [(t, f + (t % 400) * 0.5) for t, f in frames_head]
+    moving = [(t, np.clip(f, 0, 255)) for t, f in moving]
+    _, _, mode_m, why_m = pick_ref(moving, head, 4000, 0)
+    cases.append(("参照窗口内画面在动 → 未测（%s）" % (why_m[:18] or mode_m),
+                  mode_m == "" and "仍在动" in why_m))
+
+    # 13. 后置参照的孔内若真的变了（不是一层白能解释的）→ 未测。
+    #     用「内容挪了位置」而不是「整块变亮」：后者与叠一层白在数学上同形，
+    #     本来就分不开——而它也不会被静默放过，孔内读数会直接偏高、V20 判红。
+    changed = [(t, f.copy()) for t, f in frames_head]
+    for i, (t, f) in enumerate(changed):
+        if t >= 2800:
+            # 孔内（480 坐标约 rows 100–194 / cols 100–135）原来是一块均匀的墨，
+            # 改成条纹——结构变了，一层白再怎么调都盖不出来。
+            f[100:195, 100:136] = np.where(
+                np.arange(95)[:, None] % 8 < 4, 40, 200)
+            changed[i] = (t, f)
+    _, f_ref2, mode2, _ = pick_ref(changed, head, 4000, 0)
+    got2 = measure_page(f_ref2, changed, head, 4000, mode2) if f_ref2 is not None else {}
+    cases.append(("孔内内容变了 → 未测（%s）" % (got2.get("skipped", "-")[:20]),
+                  got2.get("holdSamples") == 0 and "残差" in (got2.get("skipped") or "")))
+
+    # 14. 但「孔开在别处」不是内容变化——它是一层白，必须量得出来而不是报未测
+    shifted = rect[:]
+    shifted[0] += 400                          # 计划说孔在 A，实际遮罩盖住了 A
+    hole_wrong = []
+    for t, f in frames_head:
+        masked = 0 <= t < 2500
+        hole_wrong.append((t, _overlay(ref, shifted, DIM) if masked else ref.copy()))
+    _, f_ref3, mode3, _ = pick_ref(hole_wrong, head, 4000, 0)
+    got3 = measure_page(f_ref3, hole_wrong, head, 4000, mode3) if f_ref3 is not None else {}
+    cases.append(("孔开在别处 → 孔内读到 %.2f（不是未测）" % (got3.get("holdInside") or -1),
+                  got3.get("holdInside") is not None
+                  and abs(got3["holdInside"] - DIM) < 0.05))
+
 
     bad = 0
     for name, ok in cases:
