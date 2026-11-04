@@ -287,9 +287,15 @@ def attention_findings(design, words, appear=None, elems=None):
     bad, unjudged = [], []
     for page in design.get("pages") or []:
         idx = page.get("index")
-        vals = {e["id"]: e["value"]
-                for e in (pages.get(idx) or {}).get("elements") or []
-                if e.get("value") is not None}
+        page_els = (pages.get(idx) or {}).get("elements") or []
+        vals = {e["id"]: e["value"] for e in page_els if e.get("value") is not None}
+        # 内嵌图表的逐柱目标（split_chart_bars.py 量出来的）。它们不在元素清单的
+        # 顶层，所以不上面的字典；没有这一行，V11 在图表页上只能指整块图，
+        # 「念到 174 时指没指那根柱子」永远问不出来。
+        for e in page_els:
+            for bar in (e.get("chart") or {}).get("bars") or []:
+                if bar.get("value") is not None:
+                    vals.setdefault(bar["id"], bar["value"])
         if not vals:
             continue
         # 逐词 → 页内绝对时刻。数值常常不是单独一个词（「一百七十四」是一个词，
@@ -1157,6 +1163,26 @@ def self_test():
     d11d["pages"][0]["segments"][0]["focusAt"][1]["atMs"] = 3000
     got11d = {x["code"]: x["ok"] for x in attention_findings(d11d, w11c, p11c, e11c)}
     cases.append(("V11.1-second-ok", got11d.get("V11.1") is True, got11d))
+
+    # 内嵌图表的逐柱目标：bars 挂在 chart 块里（split_chart_bars.py 从页面图量出来），
+    # 不在元素清单顶层。V11 若只认顶层 value，图表页上只能指整块图——
+    # 「念到 174 时有没有指那根柱子」就永远问不出来。
+    e11e = [{"index": 0, "elements": [{
+        "id": "p1-s2", "kind": "chart", "box": [0, 0, 400, 300],
+        "chart": {"dataLabels": True, "chartType": "column_clustered",
+                  "categories": ["2 核"], "series": [{"name": "耗时", "values": [174]}],
+                  "bars": [{"id": "p1-s2-b0", "category": "2 核", "value": 174,
+                            "box": [10, 20, 30, 60], "heightPx": 60}]}}]}]
+    d11e = {"pages": [{"index": 0, "durationMs": 6000, "segments": [
+        {"id": "s0", "startMs": 200, "durationMs": 3000, "focus": "p1-s2-b0"}]}]}
+    got11e = {x["code"]: x["ok"] for x in attention_findings(d11e, w11, None, e11e)}
+    cases.append(("V11.1-chart", got11e.get("V11.1") is True, got11e))
+    # 反向：柱子已经切出来了，但 plan 里没人指它 —— 这条必须红。
+    # 否则「图表切了、判据没接上」和「切不了」在报告里都是绿的。
+    d11f = json.loads(json.dumps(d11e))
+    d11f["pages"][0]["segments"][0].pop("focus")
+    got11f = {x["code"]: x["ok"] for x in attention_findings(d11f, w11, None, e11e)}
+    cases.append(("V11.1-chart-unfocused", got11f.get("V11.1") is False, got11f))
 
     # V12：a 在 3200ms 讲完，b 到 4000ms 才开讲 —— 中间 800ms 该放手
     d12 = {"pages": [{"index": 0, "durationMs": 5000, "segments": [

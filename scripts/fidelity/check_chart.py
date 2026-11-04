@@ -114,21 +114,31 @@ def main():
         page_elems = elems.get(page["index"], [])
         bars = [e for e in page_elems if e.get("value")]
         if len(bars) < 2:
-            # 内嵌图表（PPTX 里 chart 形状）是**一个**元素，覆盖整块图表区，
-            # 没有逐柱的包围盒，量不出单根柱子的高度。这里留一条显式的「未测」，
-            # 而不是让这页从报告里消失——消失的页和量过的页在汇总里都算绿，
-            # 盲区就是这么被藏起来的。
+            # 内嵌图表本来只有一个整块包围盒。若跑过 split_chart_bars.py，
+            # 柱子已经按类别切开（chart.bars 里带 box 和 value），这时就能像
+            # 手绘柱一样逐根量高——不必再留「未测」。
             charts = [e for e in page_elems if e.get("chart")]
-            if charts:
-                values = sum(len(s.get("values") or [])
-                             for e in charts for s in (e["chart"].get("series") or []))
-                report.append({
-                    "page": page["index"], "atMs": None, "bars": [],
-                    "spread": None, "missing": [], "ok": True,
-                    "skipped": ("内嵌图表 %d 个（%d 个数值）：只有整块包围盒，"
-                                "没有逐柱包围盒，量不了柱高" % (len(charts), values)),
-                })
-            continue
+            split = [b for e in charts for b in (e["chart"].get("bars") or [])]
+            if len(split) >= 2:
+                bars = [{"id": b["id"], "value": b["value"], "box": b["box"]} for b in split]
+            else:
+                if charts:
+                    # 没切：整块包围盒量不出单根柱子的高度。这里留一条显式的「未测」，
+                    # 而不是让这页从报告里消失——消失的页和量过的页在汇总里都算绿，
+                    # 盲区就是这么被藏起来的。
+                    values = sum(len(s.get("values") or [])
+                                 for e in charts for s in (e["chart"].get("series") or []))
+                    report.append({
+                        "page": page["index"], "atMs": None, "bars": [],
+                        "spread": None, "missing": [], "ok": True,
+                        "skipped": ("内嵌图表 %d 个（%d 个数值）：只有整块包围盒，"
+                                    "没有逐柱包围盒，量不了柱高（可先跑 split_chart_bars.py）"
+                                    % (len(charts), values)),
+                    })
+                # 这一句是**所有**「没法逐柱量」的出口：既没有手绘柱、也没有图表时
+                # 同样走它。第一版把它写进 if charts 里，于是没有图表的页也往下走，
+                # 量出 spread=None 的 ok:false —— Q7 全量 --rerun 里 5 页有 4 页误判。
+                continue
         # 页末前 300ms：入场早已收敛，又还没被切到下一页。
         t = starts[page["index"]] + page["durationMs"] - 300
         img = frame_at(film, t)

@@ -295,8 +295,9 @@ python3 scripts/fidelity/bind_elements.py --rules base --out tmp/q7/bind-report-
 python3 scripts/fidelity/extract_pptx_elements.py \
   --slides 1,2,4,8,10 --out tmp/q8/fid/elements.json
 #    图表形状会多带一个 chart 块（类别 / 系列 / 数值 / dataLabels 开关）——
-#    V10「图上每个数都要念到」在真实 deck 的图表页上就靠它，否则那页只是
-#    「没东西可查」。改了这个函数先跑它自己的自检（不需要任何 deck）：
+#    V10「图上每个数都要念到」靠它，否则图表页只是「没东西可查」。
+#    （这份样本的 14 页里其实没有图表形状，所以它是能力而不是实测样本；
+#    图表这一路是用自造 deck 验的，见下面第 5 步。）
 python3 scripts/fidelity/extract_pptx_elements.py --self-test
 python3 scripts/fidelity/bind_elements.py --rules base \
   --segments scripts/fidelity/q8-script.json \
@@ -306,6 +307,21 @@ python3 scripts/fidelity/bind_elements.py --rules v2 \
   --segments scripts/fidelity/q8-script.json \
   --elements tmp/q8/fid/elements.json --golden scripts/fidelity/q8-script.json \
   --out tmp/q8/bind-report-v2.json
+
+# 5) 内嵌图表：按类别切成一根一根柱（V10 只需数值，V11 要能「指到某一根」）
+#    柱子的包围盒 PPTX 里没有——图表是一个形状，柱子由图表引擎排布。只能量页面图：
+#      soffice --headless --convert-to pdf deck.pptx     # WSL 里有 LibreOffice
+#      pdftoppm -r 144 -png -scale-to-x 1920 -scale-to-y 1080 deck.pdf hi
+python3 scripts/fidelity/split_chart_bars.py \
+  --elements tmp/chart/elements.json --png-dir tmp/chart --pattern "hi-{i}.png" \
+  --out tmp/chart/elements-hi.json
+#    切完的 chart 块多一个 bars[]：{id: p1-s2-b0, category, value, box, heightPx}。
+#    id 可以直接写进 plan 的 focus / focusAt，V11 就能判「念到 174 时指没指那根」。
+#    切不出来时它给一句理由（段数不符 / 柱高与数值相反 / 非垂直柱状），并**不写 bars**：
+#    没有 bars 时 V11 对这页仍是无声的，所以宁可报未测也不硬凑一个框。
+python3 scripts/fidelity/split_chart_bars.py --self-test
+#    实测（3 根柱 / 1280→1920 换算）：切出 174/131/96 三根，柱高 370/279/204px，
+#    px/单位 2.126 / 2.130 / 2.125——同一张图的柱子在比例上一致，说明框量对了。
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，
@@ -410,8 +426,9 @@ structural7`。所以这个读数不只是实验脚本的行为——两侧在**
 ## 机器门禁：一条命令验完「该动的时候才动」
 
 ```bash
-python3 scripts/fidelity/verify.py --self-test   # 门禁自检，16 项故障注入，无需成片（CI 跑这个）
-python3 scripts/fidelity/verify.py --rerun       # 重跑三个测量 + 审计真片，约 2 分钟
+python3 scripts/fidelity/verify.py --self-test   # 门禁自检，45 项故障注入，无需成片（CI 跑这个）
+python3 scripts/fidelity/verify.py --film tmp/q7/film_M_narrated.mp4 --rerun   # 重跑测量 + 审计真片，约 2 分钟
+#   默认 --film 还是更早的 film_C；换片不传就会停在「缺输入」，不是片子坏了
 python3 scripts/fidelity/verify.py               # 只审计已有报告（快，但报告必须是新的）
 ```
 
@@ -505,7 +522,7 @@ L 片全过之后还有一层：**状态对，过程不对**。页内**第一个
 V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要数字（「两个 30 页长片」）
 不必逐个念，硬判会逼着讲稿变成报数。
 
-`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 43 项）。
+`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 45 项）。
 没有它，门禁本身会重演「看起来通过了」，而那正是 5.6 的教训。
 
 ### `check_appearance.py` 现在报三个数，别用错
