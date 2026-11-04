@@ -441,3 +441,76 @@ func keys(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// 焦点不依赖图层：指一根柱子时那一页往往没有任何元素级动效（柱子没有独立图层），
+// 清单条目走的是「整页图」这条路。焦点必须跟着条目一起落盘——否则同一个成品，
+// 网页版不指、成片在指，而两边都没有报错。
+func TestBuildKeepsFocusOnPagesWithoutLayers(t *testing.T) {
+	reader := baseReader(t)
+	input := buildInput()
+	input.Pages = []PageAnimation{{Focus: []SlideFocus{{
+		StartMs: 1000, ElementID: "slide-1#b0", EndMs: 3000, FadeMs: 240,
+		Rect: &SlideBox{X: 100, Y: 200, W: 300, H: 400},
+	}}}}
+	var buf bytes.Buffer
+	manifest, err := NewBundleBuilder(reader, nil).Build(context.Background(), input, &buf)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(manifest.Slides) != 2 {
+		t.Fatalf("slides = %d", len(manifest.Slides))
+	}
+	if len(manifest.Slides[0].Layers) != 0 {
+		t.Fatalf("这一页本来就不该有层：%+v", manifest.Slides[0].Layers)
+	}
+	got := manifest.Slides[0].Focus
+	if len(got) != 1 {
+		t.Fatalf("无层页的焦点没写进清单：focus = %+v", got)
+	}
+	if got[0].ElementID != "slide-1#b0" || got[0].StartMs != 1000 || got[0].EndMs != 3000 {
+		t.Fatalf("焦点字段 = %+v", got[0])
+	}
+	if got[0].Rect == nil || *got[0].Rect != (SlideBox{X: 100, Y: 200, W: 300, H: 400}) {
+		t.Fatalf("焦点矩形 = %+v", got[0].Rect)
+	}
+	// 校验器不能因为「有焦点却没有层」判这份清单非法——那是完全正常的组合。
+	if err := manifest.Validate(nil); err != nil {
+		t.Fatalf("清单校验不该拒绝无层页的焦点：%v", err)
+	}
+}
+
+// 转场与图层是两件事：这一页没有元素级动效，仍然可以有「怎么进入这一页」。
+// 过去的无层分支只写 Image/Shots，转场走到这里就静默消失——MP4 淡入、网页版硬切。
+func TestBuildKeepsTransitionOnPagesWithoutLayers(t *testing.T) {
+	reader := baseReader(t)
+	input := buildInput()
+	input.Pages = []PageAnimation{{
+		Transition: SlideTransition{Type: "fade", DurationMs: 400},
+	}}
+	var buf bytes.Buffer
+	manifest, err := NewBundleBuilder(reader, nil).Build(context.Background(), input, &buf)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	first := manifest.Slides[0]
+	if len(first.Layers) != 0 || first.Plate {
+		t.Fatalf("这一页本来就不该有层：%+v", first)
+	}
+	if first.Transition == nil || first.Transition.Type != "fade" || first.Transition.DurationMs != 400 {
+		t.Fatalf("无层页的转场丢了：%+v", first.Transition)
+	}
+	if err := manifest.Validate(nil); err != nil {
+		t.Fatalf("清单校验：%v", err)
+	}
+
+	// type=none 不写：它与「没有转场」同义，写进去会让静态包多一个字段。
+	input.Pages = []PageAnimation{{Transition: SlideTransition{Type: "none"}}}
+	var buf2 bytes.Buffer
+	manifest2, err := NewBundleBuilder(reader, nil).Build(context.Background(), input, &buf2)
+	if err != nil {
+		t.Fatalf("Build(none): %v", err)
+	}
+	if manifest2.Slides[0].Transition != nil {
+		t.Fatalf("type=none 不该写进清单：%+v", manifest2.Slides[0].Transition)
+	}
+}

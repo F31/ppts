@@ -89,34 +89,37 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 			}
 		}
 
+		// 转场与焦点**不依赖图层**：转场说的是「这一页怎么进入」，焦点说的是
+		// 「这一刻讲谁」——柱子没有独立图层，所以最需要焦点的那一页往往一个层都没有。
+		// 先把这两项装好，再决定要不要为这一页落一条：过去的写法是「没有分层动画就
+		// 整页跳过」，于是同一份 IR，MP4 在指、网页版全亮，两边都没有报错。
+		anim := share.PageAnimation{
+			Transition: share.SlideTransition{Type: page.Transition.Type, DurationMs: page.Transition.DurationMs},
+			Focus:      slideFocus(page.Focus),
+			Shots:      shots,
+		}
+
 		if !hasAnimatedLayer(page.Layers) {
-			// 无分层动画的页：只有当本页有镜头切片时才落一条（仅 Shots）。
-			if len(shots) == 0 {
+			// 无分层动画的页：只有在还有别的东西要写时才落条目（焦点/镜头/转场）。
+			if !pageNeedsBundleEntry(anim) {
 				continue
 			}
-			out[i] = share.PageAnimation{Shots: shots}
+			out[i] = anim
 			continue
 		}
 		if i >= len(pagePNGs) || len(pagePNGs[i]) == 0 {
-			// 页图缺失：分层无从出，但镜头切片仍可尝试（不依赖分层挖空）。
-			if len(shots) > 0 {
-				out[i] = share.PageAnimation{Shots: shots}
+			// 页图缺失：分层无从出，但焦点与镜头不依赖分层，仍要写。
+			if pageNeedsBundleEntry(anim) {
+				out[i] = anim
 			}
 			continue
 		}
 		base, err := png.Decode(bytes.NewReader(pagePNGs[i]))
 		if err != nil {
-			if len(shots) > 0 {
-				out[i] = share.PageAnimation{Shots: shots}
+			if pageNeedsBundleEntry(anim) {
+				out[i] = anim
 			}
 			continue
-		}
-
-		// 转场与层列表无论挖空是否成功都要写：即使这一页退化为整页图，
-		// 转场仍然是它的一部分（转场不需要分层素材）。
-		anim := share.PageAnimation{
-			Transition: share.SlideTransition{Type: page.Transition.Type, DurationMs: page.Transition.DurationMs},
-			Focus:      slideFocus(page.Focus),
 		}
 
 		plateImg, _ := render.BuildPlate(base, page.Layers, plan.Width, plan.Height)
@@ -124,7 +127,7 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 		if plateImg == nil || len(assets) == 0 {
 			// 挖空不可用（元素几乎占满整页、取不到外环色）：退回整页图 + 无层。
 			// 这一页会「不动的入场」——但至少画面是对的，不会出现纯色疤。
-			out[i] = share.PageAnimation{Transition: anim.Transition, Focus: anim.Focus}
+			out[i] = anim
 		} else {
 			platePNG, err := encodePNG(plateImg)
 			if err != nil {
@@ -153,13 +156,6 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 			}
 			anim.Layers = layers
 			out[i] = anim
-		}
-
-		// 分层页上的镜头切片：并入同一份条目。
-		if len(shots) > 0 {
-			merged := out[i]
-			merged.Shots = shots
-			out[i] = merged
 		}
 	}
 	return out, nil
@@ -434,6 +430,19 @@ func hasAnimatedLayer(layers []render.Layer) bool {
 		}
 	}
 	return false
+}
+
+// pageNeedsBundleEntry 判断这一页在清单里要不要占一条。
+//
+// 判据不是「有没有层」：镜头、焦点、转场都不依赖分层素材，柱子焦点尤其如此——
+// 最需要指的那一页往往一个层都没有。真正什么都没有的静态页不占，M6-1 的包必须
+// 逐字节不变（清单里多一条空动画就是一次回归）。
+func pageNeedsBundleEntry(anim share.PageAnimation) bool {
+	if len(anim.Shots) > 0 || len(anim.Focus) > 0 {
+		return true
+	}
+	// type=none 与「没有转场」同义：写进清单只是多一个字段，播放器按 none 直接切。
+	return anim.Transition.Type != "" && anim.Transition.Type != "none"
 }
 
 func bundleClips(clips []render.Motion) []share.Clip {

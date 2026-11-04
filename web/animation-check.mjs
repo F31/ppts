@@ -291,7 +291,7 @@ test('时长超限：数字缺失时仍走专用文案，不退回「导出失�
 // 像素级验收靠浏览器与真片；但**编译结果**（节点定位、关键帧值）可以用最小 stub 测，
 // 而且必须测：矩形焦点遮罩漏写 `position:absolute` 时，静态检查与类型检查全绿，
 // 只有真浏览器里才会变成「整页均匀压暗、孔不存在」。这条用例让它在 CI 就红。
-const { buildLayerNodes, compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+const { buildLayerNodes, compileKeyframes, needsLayerStage } = await import('./src/sharePlayer/animation.ts');
 
 const slideInClip = (startMs, durationMs) => ({
   clipId: 'c1',
@@ -538,7 +538,7 @@ test('整页轨道不参与拖动（起点是页边界，没有可调空间）',
 test('焦点切换点必须在关键帧里：否则网页从最后关键帧线性插到页末', async () => {
   // 页级 focus（IR 的 page.focus）在播放器里是「谁让位」，采样只覆盖 clip 活动区间
   // 时，切换点（1390/4500）会落在采样之外，压暗被拉长成整页。
-  const { buildLayerNodes, compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { buildLayerNodes, compileKeyframes, needsLayerStage } = await import('./src/sharePlayer/animation.ts');
   const ease = { x1: 0.2, y1: 0, x2: 0, y2: 1 };
   const clips = [
     { effect: 'fadeIn', startMs: 220, durationMs: 520, easing: ease, props: [{ name: 'opacity', from: 0, to: 1 }] }
@@ -562,7 +562,7 @@ test('焦点切换点必须在关键帧里：否则网页从最后关键帧线�
 test('放手时刻也必须在关键帧里：否则「回到全亮」被插值抹成一整页渐变', async () => {
   // 分段之后，a 讲到 4402 就放手，b 到 5938 才开讲。若只采样切换点（5938），
   // 4402→5938 这段会被线性插值填成「从压暗慢慢变亮」——看起来像褪色。
-  const { buildLayerNodes, compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { buildLayerNodes, compileKeyframes, needsLayerStage } = await import('./src/sharePlayer/animation.ts');
   const ease = { x1: 0.2, y1: 0, x2: 0, y2: 1 };
   const clips = [
     { effect: 'fadeIn', startMs: 220, durationMs: 520, easing: ease, props: [{ name: 'opacity', from: 0, to: 1 }] }
@@ -1013,4 +1013,19 @@ test('buildLayerNodes：矩形焦点生成遮罩节点，定位与强度都对',
   }
   assert.equal(Number(frames[0].opacity), 0, '段首之前不压暗');
   delete globalThis.document;
+});
+
+test('needsLayerStage：只有矩形焦点、没有层的页也要建舞台', () => {
+  // 这是我们踩过的第三种「同一份清单、两种画面」：清单里带 focus.rect、layers 为空，
+  // 播放器按 layers.length 提前 return，遮罩节点根本没建——MP4 在指，网页版全亮。
+  const rectFocus = [{ startMs: 1000, elementId: 'p1-s2-b0', rect: { x: 10, y: 20, w: 30, h: 40 } }];
+  assert.equal(needsLayerStage([], rectFocus), true, '有矩形焦点就必须建舞台');
+  assert.equal(needsLayerStage([{ box: { x: 0, y: 0, w: 10, h: 10 }, image: 'a.png' }], []), true,
+    '有层当然要建');
+  assert.equal(needsLayerStage([], []), false, '什么都没有就不建');
+  // 图层压暗型焦点（没有 rect）：没有层就没有可压暗的对象，建了也是空舞台。
+  assert.equal(needsLayerStage([], [{ startMs: 0, elementId: 'title-1' }]), false);
+  // 空矩形不算：buildFocusMasks 也会跳过它，提前建舞台只会多一个空 div。
+  assert.equal(needsLayerStage([], [{ startMs: 0, elementId: 'x', rect: { x: 1, y: 2, w: 0, h: 4 } }]), false);
+  assert.equal(needsLayerStage([], undefined), false);
 });

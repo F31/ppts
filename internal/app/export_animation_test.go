@@ -431,3 +431,64 @@ func TestShotCropPreservesEdgeEnergy(t *testing.T) {
 		t.Fatalf("shot edge energy ratio = %.3f, want >= 0.95 (cropShot must not resample)", ratio)
 	}
 }
+
+// 焦点的主场是「指一根柱子」——柱子没有独立图层，所以这一页很可能**一个层都没有**
+// （没配元素级动效）。这时 BundleAnimations 若提前 continue，HTML 包里的焦点就整条
+// 丢掉，而同一份 IR 渲出来的成片还在指：同一个成品、两种画面，并且没有任何报错。
+func TestBundleAnimationsKeepsFocusWithoutAnimatedLayers(t *testing.T) {
+	plan := &render.Timeline{
+		Width: 200, Height: 100, FPS: 30,
+		Pages: []render.Page{{
+			Index: 0, SlideID: "s1", DurationMs: 6000,
+			Transition: render.Transition{Type: "none"},
+			// 没有 Layers：这一页只有讲稿焦点，没配元素级动效。
+			Focus: []render.FocusSpan{{
+				StartMs: 1000, ElementID: "s1#b0",
+				Rect: &render.Box{X: 40, Y: 20, W: 60, H: 30},
+			}},
+		}},
+	}
+	pages, err := BundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
+	if err != nil {
+		t.Fatalf("BundleAnimations: %v", err)
+	}
+	if len(pages) != 1 {
+		t.Fatalf("pages = %d", len(pages))
+	}
+	if len(pages[0].Focus) != 1 {
+		t.Fatalf("无层页的焦点被丢掉了：focus = %+v", pages[0].Focus)
+	}
+	got := pages[0].Focus[0]
+	if got.ElementID != "s1#b0" || got.StartMs != 1000 {
+		t.Fatalf("焦点字段 = %+v", got)
+	}
+	if got.Rect == nil || *got.Rect != (share.SlideBox{X: 40, Y: 20, W: 60, H: 30}) {
+		t.Fatalf("焦点矩形 = %+v", got.Rect)
+	}
+}
+
+// 只有镜头、没有层的页同理：切镜与焦点是两条独立的增强路径，
+// 不能因为「没有层」把另一条也一起关掉。
+func TestBundleAnimationsKeepsFocusOnShotOnlyPage(t *testing.T) {
+	plan := &render.Timeline{
+		Width: 200, Height: 100, FPS: 30,
+		Pages: []render.Page{{
+			Index: 0, SlideID: "s1", DurationMs: 6000,
+			Transition: render.Transition{Type: "none"},
+			Shots:      []render.Shot{{Index: 0, StartMs: 0, DurationMs: 6000, CrossFadeMs: 0}},
+			Focus: []render.FocusSpan{{
+				StartMs: 500, ElementID: "s1",
+			}},
+		}},
+	}
+	pages, err := BundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
+	if err != nil {
+		t.Fatalf("BundleAnimations: %v", err)
+	}
+	if len(pages) != 1 || len(pages[0].Shots) == 0 {
+		t.Fatalf("应当有镜头：%+v", pages)
+	}
+	if len(pages[0].Focus) != 1 {
+		t.Fatalf("只有镜头的页把焦点丢了：focus = %+v", pages[0].Focus)
+	}
+}

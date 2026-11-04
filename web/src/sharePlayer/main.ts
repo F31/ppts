@@ -11,7 +11,7 @@ import type { SlideCue, SubtitleCue, Timeline } from '../types';
 import { easeOutCubic } from '../../../shared/motion.ts';
 import { shotAt, cameraTransform } from '../../../shared/shots.ts';
 import type { FocusSpan, Shot } from '../../../shared/types';
-import { buildLayerNodes, releaseLayers, seekLayer } from './animation';
+import { buildLayerNodes, needsLayerStage, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
 import './player.css';
@@ -349,7 +349,10 @@ function mount(): void {
     releaseLayers(activeLayers);
     activeSlideStartUs = slide.startUs;
     const layers = slide.layers ?? [];
-    if (layers.length === 0 || lowPower) return;
+    // 有层，或有矩形焦点，就得建这一层舞台：焦点遮罩是 buildLayerNodes 追加的，
+    // 只按「有没有层」判会让「只指柱子、没配元素动效」的页连遮罩都不建——
+    // 同一份清单，MP4 在指、网页版全亮。
+    if (lowPower || !needsLayerStage(layers, slide.focus)) return;
     activeLayers = buildLayerNodes(layersBox, layers, videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: (slide.endUs - slide.startUs) / 1000,
@@ -521,7 +524,8 @@ function mount(): void {
     // （否则页首 360ms 会看到整页的层叠在放大后的局部图上）。
     prev.layers.style.visibility = lastShotIsCrop(before) ? 'hidden' : '';
     // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
-    if (layers.length === 0 || lowPower) return;
+    // 判据与当前页一致：只有焦点没有层的页，交叉时也要把遮罩建出来。
+    if (lowPower || !needsLayerStage(layers, before.focus)) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
     prevLayers = buildLayerNodes(prev.layers, layers, videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,

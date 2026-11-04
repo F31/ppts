@@ -189,6 +189,18 @@ export function buildLayerNodes(
 }
 
 /**
+ * 这一页需不需要建「图层舞台」。
+ *
+ * 不只看层数：矩形焦点是独立于图层的增强（柱子没有独立图层），一页完全可能
+ * **只有焦点、没有层**。只看 `layers.length` 会让这类页连遮罩都不建——
+ * 同一份清单，MP4 在指、网页版全亮，而且两边都没有报错。
+ */
+export function needsLayerStage(layers: readonly ManifestLayer[], focus?: FocusSpan[]): boolean {
+  if (layers.length > 0) return true;
+  return (focus ?? []).some((f) => !!f.rect && f.rect.w > 0 && f.rect.h > 0);
+}
+
+/**
  * 矩形焦点遮罩：每个带 `rect` 的焦点一个节点（整页白纱、rect 处留孔）。
  *
  * 为什么每段一个节点、而不是一个节点换位置：焦点是互斥的，同一时刻只会有一段生效；

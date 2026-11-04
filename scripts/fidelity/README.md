@@ -1389,3 +1389,38 @@ V20 于是只能报「未测」——而矩形焦点最主要的用法正是图�
 `ink ≥ 32` 的像素求均值」后，同一份成片读到 **0.454 / 孔内 −0.00**（整块平均法
 是 0.456；两者差 0.002，区别只在能不能测）。自检加了一条「孔外平均墨 6.5 的
 稀疏页仍读到 0.450」，并把「近白区域 → None」改成按墨像素数判。
+
+### 另一条消费同一份焦点的路：分享成品包（2026-11-04）
+
+上文验的是 MP4。`share.BundleBuilder` 把同一份 IR 翻成清单（`manifest.json` 的
+`slides[].focus`），网页播放器再照着画遮罩——这条路上「没有层」被三处读成了
+「没有动画」，焦点在每一处都可以静默消失：
+
+1. `app.BundleAnimations`：`hasAnimatedLayer(page.Layers)` 为假时直接 `continue`（只有镜头才落条目），`Focus` 没被带上；
+2. `share.buildInto` 的无层分支只写 `Image`/`Shots`，`Focus` 与**转场**都不进清单；
+3. `sharePlayer/main.ts`：`if (layers.length === 0) return` 提前退出，而遮罩节点是
+   `buildLayerNodes` 末尾追加的——DOM 里连节点都没有。
+
+而焦点的主力用法（指一根柱）恰恰**没有图层**（柱子由图表引擎排布），所以这不是边缘情况。
+
+复现（一次性工具，`tmp/` 不入库）：造一个「只有焦点、零图层」的包，页上两块同色块，
+一块正好落在焦点矩形里；用真浏览器按时刻截图，量孔内/孔外的叠白量。
+
+```bash
+go run ./tmp/focusbundle                     # → tmp/focusbundle/pkg（清单里 focus 1 条、layers 0）
+node scripts/review/dom-shot.mjs --pkg tmp/focusbundle/pkg \
+  --times 500,4000,5500 --out tmp/focusbundle/shots --stage 1920x1080
+```
+
+| 时刻 | 孔内 alpha | 孔外 alpha |
+|---|---|---|
+| 0.5s（段首前） | −0.002 | −0.002 |
+| 4.0s（hold） | −0.001 | **+0.442** |
+| 5.5s（页尾） | −0.001 | **+0.442** |
+
+`endMs` 缺省表示「持到下一段」，所以 5.5s 仍在压。同一份包只回退播放器那一条守卫：
+4.0s 的孔外 alpha 变成 **−0.002**（等于没画），`dom-shot` 报的 `layerIds` 从 `"1"` 变成 `""`
+——「少了这个节点」是能读出来的，不必靠肉眼。
+
+转场顺带修好：无层页的 `fade` 之前走的是同一个早退（MP4 淡入、网页版硬切）。
+`type=none` 不写进清单，因为「开关关闭的包必须逐字节等于 M6-1」是一条硬约束。

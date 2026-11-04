@@ -529,10 +529,18 @@ func (b *BundleBuilder) writeSlides(
 		if err != nil {
 			return nil, err
 		}
-		entries = append(entries, SlideEntry{
+		entry := SlideEntry{
 			SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
-			Shots: shots,
-		})
+			Shots: shots, Focus: anim.Focus,
+		}
+		// 转场同样不依赖图层：这一页没有元素级动效，不等于它不该有入场方式。
+		// 只在真的有时才写——type=none 与「没有转场」同义，写进去只是给清单加噪声，
+		// 而「开关关闭的包必须逐字节等于 M6-1」是一条硬约束。
+		if anim.Transition.Type != "" && anim.Transition.Type != "none" {
+			transition := anim.Transition
+			entry.Transition = &transition
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }
