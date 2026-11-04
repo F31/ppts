@@ -1424,3 +1424,49 @@ node scripts/review/dom-shot.mjs --pkg tmp/focusbundle/pkg \
 
 转场顺带修好：无层页的 `fade` 之前走的是同一个早退（MP4 淡入、网页版硬切）。
 `type=none` 不写进清单，因为「开关关闭的包必须逐字节等于 M6-1」是一条硬约束。
+
+## Q7 最后一项外部数据：真人讲稿重测的输入契约
+
+「规则在结构化页上内容召回 **0.972**」是拿**实验者写的讲稿**量出来的：讲稿顺着版面把
+「第一 / 第二 / 左边这块」都念了出来，规则正好吃这些结构词。真人会不会这么讲，只有拿
+一份真人稿重测才知道。这是 Q7 里唯一不能用代码推进的一项，但「素材到位就能跑」这一半
+可以先钉死——2026-11-05 已把评测链路复跑一遍：
+
+```bash
+python3 scripts/fidelity/bind_elements.py --rules v2 \
+  --segments scripts/fidelity/q8-script.json \
+  --elements tmp/q8/fid/elements.json \
+  --golden scripts/fidelity/q8-script.json --out tmp/q8/bind-report-v2.json
+# → 元素 71 / 内容召回 0.972 / 精确 0.962（与登记值逐位一致）
+./scripts/fidelity/llm_check.sh     # 无 key 时 4 步自检全绿 + 明确跳过真实对照
+```
+
+`tmp/q8/fid/elements.json` 是 tmp 产物、不在版本控制里，用
+`python3 scripts/fidelity/extract_pptx_elements.py --slides 1,2,4,8,10 --out tmp/q8/fid/elements.json`
+即可从真实 deck 重建（5 页 / 71 元素）。
+
+**需要外部提供的素材**（两份）：
+
+1. 真人讲稿 `human-script.json`，格式与 `scripts/fidelity/q8-script.json` 相同：
+
+   ```json
+   { "pages": [ { "index": 0, "slideId": "slide-0", "segments": [
+       { "id": "s0-1", "text": "……真人看着页面写的口播原话……",
+         "bind": [ { "elementId": "p1-s5" } ] } ] } ] }
+   ```
+
+   `text` 不要照抄元素文字，也不要主动写「第 N 条」「左边这块」——那正是要验的自证来源。
+   `bind` 是**人工标的金标**：每段该带出哪些元素，由人对照页面判定。没有金标就算不出召回，
+   这一份不能省；`elementId` 必须与元素清单里的 id 逐字一致。
+2. 该 deck 的元素清单 `elements.json`：`extract_pptx_elements.py --pptx <deck> --slides all --out <elements.json>`。
+   沿用现有 5 页样本时，上面的 q8 夹具直接可用。
+
+**跑法与读法**：把上面命令里的 `--segments` / `--golden` 都换成 `human-script.json`（两份是同一份文件：
+文字作输入、bind 作金标）。看「**仅内容元素**」的召回与精确，不看含装饰元素的总数召回。
+按「结构词消融」那节的实测，**合理预期是 0.67–0.75，不是 0.972**；0.972 的前提是讲稿把版面结构念了出来。
+若真人稿仍接近 0.97，要担心的是自证；落在 0.67–0.75，则是把「预填覆盖率按版式分档」钉实的证据。
+两种结论都要把报告与**金标来源、样本页数**一起写回路线图 Q7，不能只搬一个数字。
+
+模型通道对照已不缺：「模型通道对照（6.2）」有 5 轮采样、按页路由与门槛判定，结论是模型不能替代规则
+（原稿 5 轮均值 0.739 < 规则 0.972，极差 0.500），故产品里默认关闭。
+

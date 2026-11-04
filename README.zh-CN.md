@@ -409,6 +409,25 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 > 另需注意讲稿按源版本号分版存储：`narration.PGStore.Get` 的匹配条件是
 > `source_revision_no IN ($rev, 0)`，用 `0` 去读 revision 1 的成稿只会得到 `ErrNotFound`。
 
+### 部署前迁移演练（PostgreSQL）
+
+部署跑的是 `ppts migrate`，而 CI 的 `postgres` job **不是**：CI 把 `migrations/*.sql` 用
+`psql -f` 逐文件应用到空库，`ppts migrate` 则是按 `ppts_schema_migrations` 版本表把内嵌脚本
+应用到「已经有用户讲稿」的库。真正可能把升级搞坏的那一步——在存量行上加
+`narration_segments.focus`（0053）——只存在于后一条路上。
+
+`internal/narration/migrate_pg_test.go`（`-tags=pg`，因此自动进 CI 的 `postgres` job）断言：
+旧行还在、`focus` 是 SQL NULL 而不是 jsonb 的 `'null'` / `'{}'`（后两者会被 `loadSegmentsTx`
+读成「指向一个空形状」）、重放迁移是空操作。上线前想整条部署命令演练一遍：
+
+```bash
+bash scripts/pg-focus-migration-probe.sh          # Linux / WSL，需要 docker + go
+```
+
+脚本会起一个干净的 PostgreSQL，先把 0053 临时移走用 `ppts migrate` 造出「上一版」的库，
+写进一份两分段的老讲稿，再用真实命令升级，最后同时核对 SQL 状态与门禁用例。
+Windows 请在 WSL 里执行：`wsl -e bash scripts/pg-focus-migration-probe.sh`。
+
 ### 竞态检测（`-race`）
 
 race detector 依赖 cgo，而开发机是 Windows + `CGO_ENABLED=0` 且没有任何 C 工具链，

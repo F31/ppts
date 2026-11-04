@@ -1,11 +1,19 @@
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent } from 'react';
 import { useI18n } from './i18n';
-import type { FocusTarget, PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment, SegmentFocus } from './types';
+import type { FocusSuggestion, FocusTarget, PronunciationRule, ScriptMode, ScriptRevision, ScriptSegment, SegmentFocus } from './types';
 import type { RewriteAction } from './api';
 import { segmentReviewReason, summarizeAnchors } from './sourceAnchors';
-// 焦点投影是纯函数（保存时会不会误删已选焦点全靠它），放在 scriptFocus.ts 里由 node 直接断言。
-import { EMPTY_FOCUS, applyFocus, focusLabelOf, initialFocusMap } from './scriptFocus';
+// 焦点投影与建议都是纯函数（保存时会不会误删已选焦点全靠它），放在 scriptFocus.ts 里由 node 直接断言。
+import {
+  EMPTY_FOCUS,
+  acceptUniqueSuggestions,
+  applyFocus,
+  focusLabelOf,
+  initialFocusMap,
+  suggestedOptions,
+  type FocusMap
+} from './scriptFocus';
 import {
   canRedo as historyCanRedo,
   canUndo as historyCanUndo,
@@ -96,6 +104,15 @@ type Props = {
   focusTargetsNote?: string;
   // focusTargetsStatus：候选清单的加载状态。'failed' 时不能让用户以为"这页没有可指的"。
   focusTargetsStatus?: 'loading' | 'ready' | 'failed';
+  // 焦点规则建议：只读端点按需拉取的结果，绝不由组件自动请求或自动落库。
+  // focusSuggestions 为 null = 还没取过；空数组 = 取过了但一条建议也没有。
+  // band 只用来选本地化说明文案（服务端 note/reason 是中文，不直接贴到界面上）。
+  focusSuggestions?: FocusSuggestion[] | null;
+  focusSuggestionsStatus?: 'idle' | 'loading' | 'ready' | 'failed';
+  focusSuggestionsBand?: string;
+  focusSuggestionsError?: string | null;
+  // onNeedFocusSuggestions：用户点「规则建议」时才触发，由页面发起只读 GET。
+  onNeedFocusSuggestions?: () => void;
 };
 
 type SegmentEditorHandle = {
@@ -120,7 +137,7 @@ const SAVE_DEBOUNCE_MS = 700;
 const SAVE_RETRY_MS = 300;
 
 export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function ScriptEditor(
-  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onEditDictionary, onRemoveDictionary, focusTargets, focusTargetsNote, focusTargetsStatus = 'ready' },
+  { script, slideTitle, onChange, commit, onCommitError, onStatusChange, canEdit = true, onEdited, onRegenerateScript, scriptBusy, scriptStatusText, scriptError, onRegenerateVoice, voiceBusy, voiceProgress = -1, voiceStatusText, voiceNeedsUpdate, onRewriteText, onRewriteError, onCompareScript, onAddToDictionary, pronunciationRules = [], onNeedPronunciationRules, onEditDictionary, onRemoveDictionary, focusTargets, focusTargetsNote, focusTargetsStatus = 'ready', focusSuggestions, focusSuggestionsStatus = 'idle', focusSuggestionsBand = '', focusSuggestionsError, onNeedFocusSuggestions },
   ref
 ) {
   const { t } = useI18n();
@@ -133,6 +150,8 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
   const [focusBySegment, setFocusBySegment] = useState<Record<string, SegmentFocus | null>>(() => initialFocusMap(script.segments));
   // 打开"指哪"列表的分段（同一时刻只开一个，避免多个浮层叠在一起）。
   const [openFocusFor, setOpenFocusFor] = useState<string | null>(null);
+  // 采纳建议后的回执（采纳了几个 / 为什么一个都没采纳）。不弹窗、不打断输入。
+  const [suggestionNotice, setSuggestionNotice] = useState<string | null>(null);
   // 撤销/重做只作用于**当前页**：切页即清空。跨页撤销会让人分不清"撤的是哪一页"，
   // 而每页的草案本来就是独立提交的（见下方 draftsRef）。
   const [history, setHistory] = useState<ScriptHistory>(() => emptyHistory());
@@ -255,6 +274,7 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
       composingRef.current = false;
       setSelected(new Set());
       setOpenFocusFor(null);
+      setSuggestionNotice(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.slideId, script.revision]);
@@ -431,16 +451,14 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     scheduleSaveRef.current(slideId);
   };
 
-  // setSegmentFocus：改「这一段指谁」。走与改文字**同一条**保存通道
-  // （草案快照 + 防抖自动保存）：焦点不是另一份数据，它就是段落的一部分。
-  // 分两条写路径的话，先改焦点再打字的顺序不同，服务端收到的可能是"新焦点 + 旧文本"。
-  const setSegmentFocus = (segmentId: string, target: SegmentFocus) => {
+  // applyFocusMap：焦点落库的**唯一**入口，改单段与批量采纳都走它。
+  // 与改文字共用草案快照 + 防抖自动保存：焦点不是另一份数据，它就是段落的一部分。
+  // 若给建议单开一条写路径，先改焦点再打字的顺序不同，服务端会收到"新焦点 + 旧文本"。
+  const applyFocusMap = (next: FocusMap) => {
     setOpenFocusFor(null);
-    if (target.shapeId === '' && focusBySegment[segmentId] === null) return; // 本来就没指，不必写一次空目标
     editSeqRef.current += 1;
     const seq = editSeqRef.current;
     const slideId = script.slideId;
-    const next = { ...focusBySegment, [segmentId]: target };
     setFocusBySegment(next);
     draftsRef.current.set(slideId, { segments: segmentsWithTexts(texts, spokenTexts, next), seq });
     setSaveState('dirty');
@@ -448,6 +466,30 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
     // 组合期不提交半成品文本（同 editSegment）；组合结束后那次调度会带上这份草案。
     if (composingRef.current) return;
     scheduleSaveRef.current(slideId);
+  };
+
+  const setSegmentFocus = (segmentId: string, target: SegmentFocus) => {
+    setOpenFocusFor(null);
+    if (target.shapeId === '' && focusBySegment[segmentId] === null) return; // 本来就没指，不必写一次空目标
+    applyFocusMap({ ...focusBySegment, [segmentId]: target });
+  };
+
+  // uniqueAcceptableCount：这一刻真的会被「一键采纳」写进去的段数。
+  // 只数唯一候选且尚未人工指过的段；判据与按钮执行的是同一个纯函数，
+  // 不会出现界面显示 3 个、点下去一个也没改的假能力。
+  const uniqueAcceptableCount = focusSuggestions
+    ? acceptUniqueSuggestions(script.segments, focusBySegment, focusSuggestions, focusTargets ?? []).accepted.length
+    : 0;
+
+  const handleAcceptUnique = () => {
+    if (!focusSuggestions || focusSuggestions.length === 0) return;
+    const { focus: next, accepted } = acceptUniqueSuggestions(script.segments, focusBySegment, focusSuggestions, focusTargets ?? []);
+    if (accepted.length === 0) {
+      setSuggestionNotice(t('editor.focusSuggestNoUnique'));
+      return;
+    }
+    applyFocusMap(next);
+    setSuggestionNotice(t('editor.focusSuggestAccepted', { count: accepted.length }));
   };
 
   // 对照面板采用：写回首个段落。多段页面的采用按钮在面板里已被禁用（见 ScriptCompareDialog），
@@ -880,6 +922,55 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
         </div>
       )}
 
+      {/* 焦点规则建议：只读拉取 + 人工确认。
+          用户不点就什么都不请求，也不在后台静默预填；采纳写的是本地 FocusMap，
+          再由 applyFocusMap 走与手选完全相同的自动保存通道。 */}
+      {onNeedFocusSuggestions && (
+        <div className="focus-suggest-bar" role="group" aria-label={t('editor.focusSuggestTitle')}>
+          <div className="focus-suggest-actions">
+            <button
+              type="button"
+              className="button-ghost"
+              disabled={!canEdit || focusSuggestionsStatus === 'loading'}
+              onClick={onNeedFocusSuggestions}
+            >
+              {focusSuggestionsStatus === 'loading' ? t('editor.focusSuggestLoading') : t('editor.focusSuggestRefresh')}
+            </button>
+            <button
+              type="button"
+              className="button-ghost"
+              disabled={!canEdit || focusSuggestionsStatus !== 'ready' || uniqueAcceptableCount === 0}
+              onClick={handleAcceptUnique}
+              title={t('editor.focusSuggestAcceptHint')}
+            >
+              {t('editor.focusSuggestAccept', { count: uniqueAcceptableCount })}
+            </button>
+          </div>
+          <p className="focus-suggest-hint">{t('editor.focusSuggestHint')}</p>
+          {focusSuggestionsStatus === 'failed' && (
+            <p className="focus-suggest-error" role="alert">
+              {focusSuggestionsError ?? t('editor.focusSuggestLoadFailed')}
+            </p>
+          )}
+          {focusSuggestionsStatus === 'ready' &&
+            (focusSuggestionsBand && focusSuggestionsBand !== 'structured' ? (
+              <p className="focus-suggest-note">{t('editor.focusSuggestLowConfidence')}</p>
+            ) : focusSuggestions && focusSuggestions.length > 0 ? (
+              <p className="focus-suggest-note">{t('editor.focusSuggestFound', { count: focusSuggestions.length })}</p>
+            ) : (
+              <p className="focus-suggest-note">{t('editor.focusSuggestEmpty')}</p>
+            ))}
+          {suggestionNotice && (
+            <p className="focus-suggest-notice" role="status">
+              {suggestionNotice}
+              <button type="button" className="note-dismiss" onClick={() => setSuggestionNotice(null)} aria-label={t('common.close')}>
+                ×
+              </button>
+            </p>
+          )}
+        </div>
+      )}
+
       {/* 分段编辑（M3 ②）：每段独立卡片，可勾选、独立状态徽标。 */}
       <div className="segment-list">
         {script.segments.map((segment, index) => {
@@ -966,6 +1057,37 @@ export const ScriptEditor = forwardRef<ScriptEditorHandle, Props>(function Scrip
                         )}
                         {focusTargetsStatus === 'ready' && (
                           <>
+                            {/* 规则建议只是"更靠前的一组候选"：点一下才写入，
+                                且只列候选清单里真有的目标（suggestedOptions 的闸门）。
+                                一个都没建议时不显示这一块，别把菜单撑成空标题。 */}
+                            {(() => {
+                              const options = suggestedOptions(focusSuggestions, segment.segmentId, targets);
+                              if (options.length === 0) return null;
+                              return (
+                                <div className="segment-focus-suggestions">
+                                  <p className="segment-focus-group">{t('editor.focusSuggestSection')}</p>
+                                  {options.map((option) => {
+                                    const active =
+                                      chosen?.shapeId === option.focus.shapeId &&
+                                      (chosen?.barId ?? '') === (option.focus.barId ?? '');
+                                    return (
+                                      <button
+                                        key={`suggest:${option.focus.shapeId}:${option.focus.barId}`}
+                                        type="button"
+                                        role="option"
+                                        aria-selected={active}
+                                        className={`segment-focus-option suggested${active ? ' active' : ''}`}
+                                        title={t('editor.focusSuggestSource', { source: option.source })}
+                                        onClick={() => setSegmentFocus(segment.segmentId, option.focus)}
+                                      >
+                                        <span className="segment-focus-kind kind-suggest">{t('editor.focusSuggestKind')}</span>
+                                        <span className="segment-focus-option-label">{option.label}</span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })()}
                             {targets.length === 0 ? (
                               <p className="segment-focus-empty">{t('editor.focusNoTargets')}</p>
                             ) : (

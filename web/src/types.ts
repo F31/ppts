@@ -99,6 +99,30 @@ export type FocusTarget = {
   box: [number, number, number, number];
 };
 
+// 焦点建议是**只读**的：GET .../focus-suggestions 只给候选，不写库。
+// 采纳后由用户确认，写进段落 focus 并走既有讲稿保存通道（见 scriptFocus.applyFocus）。
+export type FocusSuggestionCandidate = {
+  shapeId: string;
+  barId?: string;
+  source: string;
+};
+
+export type FocusSuggestion = {
+  segmentId: string;
+  // 真实编号卡片页上一段常命中多个元素；全列出来让人挑，不替用户猜一个。
+  candidates: FocusSuggestionCandidate[];
+  reason: string;
+};
+
+export type FocusSuggestions = {
+  slideId: string;
+  revisionNo: number;
+  band: string;
+  // 低置信页不自动建议时，这里说明原因。
+  note?: string;
+  suggestions: FocusSuggestion[];
+};
+
 export type ScriptMode = 'SCRIPT_MODE_ORIGINAL' | 'SCRIPT_MODE_POLISH' | 'SCRIPT_MODE_AI_GENERATED';
 
 export type SourceAnchor = {

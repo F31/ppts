@@ -457,6 +457,26 @@ PPTS_TEST_DATABASE='postgres://.../ppts_test' GOWORK=off go test -tags=pg -p 1 .
 > Also note scripts are stored per source revision: `narration.PGStore.Get` matches `source_revision_no IN ($rev, 0)`,
 > so reading a revision-1 draft with `0` returns `ErrNotFound`.
 
+### Pre-deploy migration rehearsal (PostgreSQL)
+
+Deployment runs `ppts migrate`; CI's `postgres` job does **not**. CI applies each `migrations/*.sql` with
+`psql -f` to an empty database, while `ppts migrate` applies the embedded scripts through the
+`ppts_schema_migrations` version table to a database that already holds users' scripts. The step that can break
+an upgrade — adding `narration_segments.focus` (0053) on top of existing rows — only exists on the latter path.
+
+`internal/narration/migrate_pg_test.go` (`-tags=pg`, therefore part of the CI `postgres` job) asserts that legacy
+rows survive, `focus` is SQL NULL rather than jsonb `'null'` / `'{}'` (both would be decoded by
+`loadSegmentsTx` as "pointing at an empty shape"), and replaying the migration is a no-op. To rehearse the
+whole deployment command before shipping:
+
+```bash
+bash scripts/pg-focus-migration-probe.sh          # Linux / WSL; needs docker + go
+```
+
+It starts a clean PostgreSQL, runs `ppts migrate` with 0053 temporarily removed (= the previous release),
+inserts a two-segment legacy script, upgrades with the real command, and checks both the SQL state and the
+gate test. Windows users run it inside WSL (`wsl -e bash scripts/pg-focus-migration-probe.sh`).
+
 ### Race detector (`-race`)
 
 The race detector needs cgo, and the dev box is Windows with `CGO_ENABLED=0` and no C toolchain at all, so a local

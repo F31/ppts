@@ -26,6 +26,7 @@ import {
   getScript,
   getScriptCompare,
   getFocusTargets,
+  getFocusSuggestions,
   listDictionaries,
   getSlideRenderURLs,
   getSlideScriptSources,
@@ -58,7 +59,7 @@ import { ExportDialog, type ExportFormat, type ExportOptions } from '../componen
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
-import type { FocusTarget, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { FocusSuggestion, FocusTarget, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
 import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } from '../voicePreview';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
@@ -367,6 +368,54 @@ export function ProjectEditor({
       cancelled = true;
     };
   }, [identity, projectId, activeSlideID, activeSourceRevision, t]);
+
+  // 焦点规则建议：**按需**拉取，切页/换版本不会自动在后台算，更不会自动落库。
+  // 采纳写的是讲稿段落 focus，走 ScriptEditor 既有的自动保存通道；这里只负责取数。
+  // 服务端 note/reason 是给 API 消费者排查用的中文说明，界面不直接渲染，
+  // 而是按 band + 建议条数走本地化文案（英文界面不能混进中文）。
+  const [focusSuggestions, setFocusSuggestions] = useState<{
+    slideId: string;
+    band: string;
+    suggestions: FocusSuggestion[];
+  } | null>(null);
+  const [focusSuggestionsStatus, setFocusSuggestionsStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
+  const [focusSuggestionsError, setFocusSuggestionsError] = useState<string | null>(null);
+  // 请求序号：切页后上一页的在途响应必须作废，否则建议会串到新页讲稿上。
+  const suggestionReqRef = useRef(0);
+
+  useEffect(() => {
+    suggestionReqRef.current += 1;
+    setFocusSuggestions(null);
+    setFocusSuggestionsStatus('idle');
+    setFocusSuggestionsError(null);
+  }, [identity, projectId, activeSlideID, activeSourceRevision]);
+
+  const loadFocusSuggestions = useCallback(() => {
+    if (!activeSlideID) return;
+    const slideId = activeSlideID;
+    const seq = ++suggestionReqRef.current;
+    setFocusSuggestionsStatus('loading');
+    setFocusSuggestionsError(null);
+    // 与 focus-targets 用同一个源版本号：建议里的 shapeId 必须能在候选清单里找到。
+    getFocusSuggestions(identity, projectId, slideId, activeSourceRevision)
+      .then((res) => {
+        if (seq !== suggestionReqRef.current) return;
+        setFocusSuggestions({
+          slideId,
+          band: res.band ?? '',
+          suggestions: res.suggestions ?? []
+        });
+        setFocusSuggestionsStatus('ready');
+      })
+      .catch((error) => {
+        if (seq !== suggestionReqRef.current) return;
+        setFocusSuggestions(null);
+        setFocusSuggestionsStatus('failed');
+        // 读取失败只影响"有没有建议"，绝不能把已有焦点说成"没有可指的"。
+        setFocusSuggestionsError(describeApiError(error, t('editor.focusSuggestLoadFailed'), t));
+      });
+  }, [identity, projectId, activeSlideID, activeSourceRevision, t]);
+
   // 配音任务活跃标志（供 5s 轮询判断"配音任务刚结束"→ 重建播放清单，见 refreshActiveGenJobs）。
   const narrationActiveRef = useRef(false);
   const autoNotesDraftRef = useRef<Set<string>>(new Set());
@@ -2027,6 +2076,11 @@ export function ProjectEditor({
               focusTargetsStatus={
                 focusTargetsError ? 'failed' : focusTargets?.slideId === activeSlideID ? 'ready' : 'loading'
               }
+              focusSuggestions={focusSuggestions?.slideId === activeSlideID ? focusSuggestions.suggestions : null}
+              focusSuggestionsStatus={focusSuggestions?.slideId === activeSlideID ? focusSuggestionsStatus : 'idle'}
+              focusSuggestionsBand={focusSuggestions?.slideId === activeSlideID ? focusSuggestions.band : ''}
+              focusSuggestionsError={focusSuggestions?.slideId === activeSlideID ? focusSuggestionsError : null}
+              onNeedFocusSuggestions={canEditScript ? loadFocusSuggestions : undefined}
             />
           ) : (
             <section className="editor-card">

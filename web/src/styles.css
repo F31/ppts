@@ -164,6 +164,16 @@ button, textarea, input { font: inherit; }
 .segment-focus-empty, .segment-focus-note { margin: 4px 8px; font-size: 12px; line-height: 1.5; color: #9fb1cf; }
 .segment-focus-clear { margin-top: 4px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: #fca5a5; font-size: 12px; text-align: left; cursor: pointer; }
 .segment-focus-clear:hover { background: rgba(252, 165, 165, .12); }
+/* 焦点规则建议：按需只读拉取 + 人工确认。沿用段落卡片的容器，不新开浮层。 */
+.focus-suggest-bar { display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elevated); }
+.focus-suggest-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.focus-suggest-hint, .focus-suggest-note { margin: 0; font-size: 12px; line-height: 1.5; color: #9fb1cf; }
+.focus-suggest-error { margin: 0; font-size: 12px; color: #fca5a5; }
+.focus-suggest-notice { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12px; color: #67e8f9; }
+.segment-focus-suggestions { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid rgba(255, 255, 255, .1); }
+.segment-focus-group { margin: 2px 8px; font-size: 11px; letter-spacing: .04em; color: #9fb1cf; }
+.segment-focus-option.suggested { background: rgba(103, 232, 249, .06); }
+.segment-focus-kind.kind-suggest { color: #67e8f9; border-color: rgba(103, 232, 249, .4); }
 .script-rich-editor { grid-column: 1 / -1; width: 100%; height: 100%; min-height: 160px; overflow: auto; border: 1px solid rgba(255, 255, 255, .12); border-radius: 8px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); white-space: pre-wrap; word-break: break-word; line-height: 1.7; outline: none; }
 .script-rich-editor:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .16); }
 .script-rich-editor[contenteditable="false"] { opacity: .92; }

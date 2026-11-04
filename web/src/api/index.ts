@@ -12,7 +12,7 @@ export type { EmailAuthResult, AuthConfig } from './auth';
 export { getPlaybackManifest } from './playback';
 export { listProjects, listArchivedProjects, listAllProjects, restoreProject, listProjectsPage, getProject, createProject, archiveProject, getProjectSlides, getSourceRevisions, deleteSourceRevision, updatePptDisplayName, downloadSourceRevision, getSlideNotes, setSlideNotes, getSlideRenderURLs } from './projects';
 export type { ArchivedProject, ProjectPage, SourceRevisionSummary, SlideRenderURL } from './projects';
-export { setSlideScriptSource, getSlideScriptSources, getScript, listProjectScripts, updateScript, regenerateSegments, rewriteScriptText, regenerateScriptDraft, getScriptCompare, getFocusTargets } from './scripts';
+export { setSlideScriptSource, getSlideScriptSources, getScript, listProjectScripts, updateScript, regenerateSegments, rewriteScriptText, regenerateScriptDraft, getScriptCompare, getFocusTargets, getFocusSuggestions } from './scripts';
 export type { SlideScriptSource, UpdateScriptResult, RewriteAction, ScriptCompareData, FocusTargets } from './scripts';
 export { createGeneration, estimateNarration, getNarrationDraftCount, getProjectArtifacts, getLibraryArtifacts, getArtifactManifest, deleteArtifact, getRevisionVoiceStatus, getNarrationStale, getNarration, getRevisionNarration } from './narration';
 export type { NarrationEstimate, ProjectArtifact, LibraryArtifact, NarrationSlideStale, RevisionVoiceStatus, SynthesisStats, NarrationStatus } from './narration';

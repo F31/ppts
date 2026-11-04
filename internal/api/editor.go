@@ -52,6 +52,11 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/slides/{sid}/focus-targets", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorFocusTargets(w, r, objects, projects, members, recorder)
 	})))
+	// 焦点建议（Q7 规则预填）：只读，一段给一组候选而不是替用户定一个。
+	// 采纳写的是讲稿段落的 focus，仍走既有保存通道；这里不提供任何写端点。
+	mux.Handle("GET /projects/{pid}/slides/{sid}/focus-suggestions", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		editorFocusSuggestions(w, r, objects, scripts, projects, members, recorder)
+	})))
 	// 重新生成讲稿（用户显式覆盖已有讲稿）：原生 HTTP，避免改 proto。
 	mux.Handle("POST /projects/{pid}/script-draft", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorRegenerateScriptDraft(w, r, jobs, srcStore, projects, members, recorder)

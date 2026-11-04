@@ -4,7 +4,7 @@
 // **只动了文件边界，实现代码逐行未改**；对外入口仍是 `../api`（由 index.ts 统一转出），
 // 因此既有调用方的 import 路径无需任何改动。
 
-import type { FocusTarget, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
+import type { FocusSuggestions, FocusTarget, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
 import type { ClientIdentity } from './identity';
 import { connectJSON, getJSON, postJSON, putJSON } from './http';
 export type SlideScriptSource = { slideId: string; source: string; customText: string };
@@ -105,6 +105,24 @@ export async function getFocusTargets(
   return getJSON<FocusTargets>(
     identity,
     `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/focus-targets${qs}`
+  );
+}
+
+// getFocusSuggestions 只读地拿到「每段建议指谁」。
+//
+// 它和 getFocusTargets 用同一个源版本号：建议里的 shapeId 必须能在候选清单里
+// 找到，否则用户点了一个成片指不到的目标。这里不提供任何"采纳"接口——
+// 采纳写的是段落 focus，走既有 updateScript 通道（草案 + 防抖 + 乐观并发只有一份）。
+export async function getFocusSuggestions(
+  identity: ClientIdentity,
+  projectId: string,
+  slideId: string,
+  revisionNo?: number
+): Promise<FocusSuggestions> {
+  const qs = revisionNo && revisionNo > 0 ? `?revision_no=${revisionNo}` : '';
+  return getJSON<FocusSuggestions>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/slides/${encodeURIComponent(slideId)}/focus-suggestions${qs}`
   );
 }
 
