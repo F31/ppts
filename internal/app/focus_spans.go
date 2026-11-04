@@ -72,6 +72,10 @@ func buildFocusSpans(cues []focusCue, boxes []FocusBox, layerIDs map[string]stru
 		barBoxes[barKey(b.ShapeID, b.BarID)] = b
 	}
 
+	// outcomes 与 cues 一一对应：记下每段**声明**了什么目标、以及它到底有没有**产出**
+	// 一个焦点。两件事必须分开——下一段声明了目标却找不到时，画面上什么都不会亮，
+	// 这时「下一段也指东西」的前提不成立（见 focusEnd）。
+	outcomes := make([]focusOutcome, len(cues))
 	var spans []render.FocusSpan
 	var diags []render.Diagnostic
 	seen := make(map[string]struct{}, len(cues))
@@ -81,6 +85,7 @@ func buildFocusSpans(cues []focusCue, boxes []FocusBox, layerIDs map[string]stru
 			continue
 		}
 		key := barKey(f.ShapeID, f.BarID)
+		outcomes[i].key = key
 		if _, dup := seen[key]; dup {
 			diags = append(diags, render.Diagnostic{
 				Code: render.DiagFocusDuplicate, ElementID: key,
@@ -93,12 +98,30 @@ func buildFocusSpans(cues []focusCue, boxes []FocusBox, layerIDs map[string]stru
 			diags = append(diags, diag)
 			continue
 		}
-		span.EndMs = focusEnd(i, cues, cue, pageMs)
 		seen[key] = struct{}{}
+		outcomes[i].resolved = true
+		outcomes[i].span = len(spans)
 		spans = append(spans, span)
+	}
+	// 终点在全部解析完之后再定：它取决于**下一段有没有真的亮起来**，而不是它声明了什么。
+	for i := range outcomes {
+		if !outcomes[i].resolved {
+			continue
+		}
+		spans[outcomes[i].span].EndMs = focusEnd(i, cues, outcomes, pageMs)
 	}
 	sort.SliceStable(spans, func(a, b int) bool { return spans[a].StartMs < spans[b].StartMs })
 	return spans, diags
+}
+
+// focusOutcome 是一段旁白在焦点侧的结局。
+//
+// key 是它**声明**的目标（空表示这段不指），resolved 表示这个目标真的产出了焦点。
+// 两者不等只有一种情况：目标在解析产物里找不到、起点不在本页内、或被互斥去重。
+type focusOutcome struct {
+	key      string
+	resolved bool
+	span     int // resolved 时对应的 spans 下标（排序前）
 }
 
 func barKey(shapeID, barID string) string {
@@ -211,19 +234,25 @@ func focusSpanFor(cue focusCue, f *media.SegmentFocus, shapeBoxes, barBoxes map[
 
 // focusEnd 决定这一段要不要在句末放手。
 //
-// 下一段（时间上的下一段，不管它指不指）有焦点 → 0（保持，交给下一段接管）；
-// 下一段没有焦点或本段是最后一段 → 句末放手；算出来的终点落在页末之后就不给
-// （"放手"变成一个不存在的时间点，等于一直指到结尾，与不给终点等价但更难看懂）。
-func focusEnd(i int, cues []focusCue, cue focusCue, pageMs int64) int64 {
-	last := i+1 == len(cues)
-	if !last {
-		next := cues[i+1]
-		if next.Focus != nil && next.Focus.ShapeID != "" {
+// 下一段**真的会亮出焦点** → 0（保持，交给下一段接管）；下一段讲的就是同一个对象
+// （被「焦点互斥」去重）→ 也保持，同一件事连着讲两句，中间闪一下全亮才是错的；
+// 其余情况（下一段不指、或者指了但那个目标不存在）→ 句末放手。
+//
+// 「存在」与「声明」在这里必须分开判：目标缺失时那一段会被跳过、只留一条诊断，
+// 画面上没有任何东西来接管。若照 `next.Focus != nil` 就保持，遮罩会一直压在已经
+// 讲完的对象上——旁白已经在讲别的事，画面还在指旧目标，有时一直压到页末。
+//
+// 算出来的终点落在页末之后或不在本段内就不给（"放手"变成一个不存在的时间点，
+// 等于一直指到结尾，与不给终点等价但更难看懂）。
+func focusEnd(i int, cues []focusCue, outcomes []focusOutcome, pageMs int64) int64 {
+	if i+1 < len(cues) {
+		next := outcomes[i+1]
+		if next.resolved || (next.key != "" && next.key == outcomes[i].key) {
 			return 0
 		}
 	}
-	end := cue.EndMs
-	if end <= cue.StartMs || end >= pageMs {
+	end := cues[i].EndMs
+	if end <= cues[i].StartMs || end >= pageMs {
 		return 0
 	}
 	return end

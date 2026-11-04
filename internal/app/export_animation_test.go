@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	sliderenderer "github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/media"
@@ -490,5 +491,47 @@ func TestBundleAnimationsKeepsFocusOnShotOnlyPage(t *testing.T) {
 	}
 	if len(pages[0].Focus) != 1 {
 		t.Fatalf("只有镜头的页把焦点丢了：focus = %+v", pages[0].Focus)
+	}
+}
+
+// TestBundleFocusEndMsReachesManifest：焦点「什么时候放手」必须真的进清单。
+//
+// 这一条接的是 focusEnd 的判据（下一段的目标不存在 → 本段在句末放手）：单元测试
+// 只能证明 spans 里的 EndMs 算对了，而**观众看到的**取决于它有没有穿过编译器与打包
+// 落到 manifest 上。中间任何一环把它当零值丢掉（`omitempty` 的 0 与「保持到页末」
+// 同义，正好掩盖这种丢失），播放器就会一直压着旧目标，而两端都不报错。
+func TestBundleFocusEndMsReachesManifest(t *testing.T) {
+	boxes := []FocusBox{{ShapeID: "shape-a", Box: box(10, 10, 40, 20)}}
+	slide := slideCue(
+		cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-a"}),
+		cue(1000, 2000, &media.SegmentFocus{ShapeID: "shape-ghost"}),
+	)
+	canvas := design.Canvas{Width: 200, Height: 100}
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 3000, canvas)
+	if len(diags) != 1 || len(spans) != 1 {
+		t.Fatalf("spans=%+v diags=%+v", spans, diags)
+	}
+
+	plan := &render.Timeline{
+		Width: canvas.Width, Height: canvas.Height, FPS: 30,
+		Pages: []render.Page{{
+			Index: 0, SlideID: "s1", DurationMs: 3000,
+			Transition: render.Transition{Type: "none"},
+			Focus:      spans,
+		}},
+	}
+	pages, err := BundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
+	if err != nil {
+		t.Fatalf("BundleAnimations: %v", err)
+	}
+	if len(pages) != 1 || len(pages[0].Focus) != 1 {
+		t.Fatalf("pages=%+v", pages)
+	}
+	got := pages[0].Focus[0]
+	if got.EndMs != 1000 {
+		t.Fatalf("清单里的 endMs = %d，want 1000：目标缺失时旧焦点必须真的在句末放手，否则播放器会一直压着已经讲完的对象", got.EndMs)
+	}
+	if got.Rect == nil || got.Rect.W <= 0 || got.Rect.H <= 0 {
+		t.Fatalf("矩形没进清单：%+v", got.Rect)
 	}
 }

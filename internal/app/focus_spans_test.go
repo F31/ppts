@@ -627,3 +627,72 @@ func TestLayerElementIDsMatchesCompiler(t *testing.T) {
 		}
 	}
 }
+
+// TestFocusReleasesWhenNextTargetMissing：下一段「声明了焦点」但那个目标在解析产物里
+// 不存在时，本段必须在句末放手，而不是一直指下去。
+//
+// 规则写的是「下一段也指东西时不给终点」——判据此前用的是 `next.Focus != nil`，也
+// 就是**声明**；可声明了不等于画面上真会亮：目标缺失时那一段被跳过、只留一条诊断。
+// 于是上一段的 EndMs 被填成 0（保持到下一段），而下一段并没有东西来接管——遮罩就
+// 一直压在已经讲完的对象上，有时直到页末。旁白这时在讲别的事，画面上却还在指旧目标。
+// 这正是规则注释里点名要避免的那种错，只是从「目标缺失」这个口子进来。
+func TestFocusReleasesWhenNextTargetMissing(t *testing.T) {
+	boxes := []FocusBox{
+		{ShapeID: "shape-a", Box: box(100, 100, 400, 300)},
+		{ShapeID: "shape-b", Box: box(600, 100, 400, 300)},
+	}
+	endOf := func(spans []render.FocusSpan, id string) (int64, bool) {
+		for _, s := range spans {
+			if s.ElementID == id {
+				return s.EndMs, true
+			}
+		}
+		return 0, false
+	}
+
+	// ① 末段的目标缺失：旧行为把上一段的终点填成 0，遮罩一直压到页末。
+	slide := slideCue(
+		cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-a"}),
+		cue(1000, 2000, &media.SegmentFocus{ShapeID: "shape-ghost"}),
+	)
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 3000, canvasAt(1080))
+	if len(diags) != 1 || diags[0].Code != render.DiagFocusTargetMissing {
+		t.Fatalf("缺失目标必须留一条 %s，got %+v", render.DiagFocusTargetMissing, diags)
+	}
+	end, ok := endOf(spans, "shape-a")
+	if !ok {
+		t.Fatalf("shape-a 的焦点不该被丢掉：%+v", spans)
+	}
+	if end != 1000 {
+		t.Fatalf("下一段的目标不存在时，shape-a 应在句末(1000ms)放手，got EndMs=%d —— 否则遮罩一直指着已经讲完的对象", end)
+	}
+
+	// ② 中间段缺失、后面还有一段：同样在句末放手，交给真正亮起来的那一段。
+	slide = slideCue(
+		cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-a"}),
+		cue(1000, 2000, &media.SegmentFocus{ShapeID: "shape-ghost"}),
+		cue(2000, 3000, &media.SegmentFocus{ShapeID: "shape-b"}),
+	)
+	// 页在 3000ms 结束（最后一段正好讲完）：最后一段的句末就在页末，等于「保持到页末」。
+	spans, _ = buildFocusSpans(focusCues(slide), boxes, nil, 3000, canvasAt(1080))
+	if end, _ := endOf(spans, "shape-a"); end != 1000 {
+		t.Fatalf("shape-a 的终点 = %d，want 1000", end)
+	}
+	if end, _ := endOf(spans, "shape-b"); end != 0 {
+		t.Fatalf("最后一段讲完就是页末，EndMs 应为 0（保持到页末），got %d", end)
+	}
+
+	// ③ 下一段指的还是同一个对象（被「焦点互斥」去重）：这里必须保持，不能放手——
+	//    同一件事连着讲两句，中间闪一下全亮才是错的。修法不能把这一条一起改坏。
+	slide = slideCue(
+		cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-a"}),
+		cue(1000, 2000, &media.SegmentFocus{ShapeID: "shape-a"}),
+	)
+	spans, diags = buildFocusSpans(focusCues(slide), boxes, nil, 3000, canvasAt(1080))
+	if len(diags) != 1 || diags[0].Code != render.DiagFocusDuplicate {
+		t.Fatalf("重复目标必须留一条 %s，got %+v", render.DiagFocusDuplicate, diags)
+	}
+	if end, _ := endOf(spans, "shape-a"); end != 0 {
+		t.Fatalf("下一段讲的是同一个对象，应保持到页末（EndMs=0），got %d", end)
+	}
+}
