@@ -605,3 +605,7 @@ jobs:
         run: |
           python3 -m pip install --quiet numpy pillow
           python3 scripts/fidelity/split_chart_bars.py --self-test
+      # 遮罩预览的 dim 是从 shared/motion.ts 的 FOCUS_DIM_OPACITY 推的，
+      # 两边漂了看不出来，只有这条能守。
+      - name: 遮罩预览自检（压暗强度对齐）
+        run: python3 scripts/fidelity/mask_preview.py --self-test

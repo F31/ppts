@@ -335,6 +335,15 @@ go run ./scripts/fidelity/stagechart \
 #    网格线；标签又画在柱 box 之外。所以「逐柱出场」在纯分层下没有正确形态：
 #    要么数字先出来（剧透），要么网格线断（更难看）。
 #    真要逐柱指代，走「矩形遮罩压暗」（bars 只提供矩形），或者等图表矢量化。
+
+# 7) 遮罩压暗的样子先定下来（预览，不是产品实现）
+python3 scripts/fidelity/mask_preview.py --png tmp/chart/hi-1.png \
+  --box 385,429,173,370 --label-pad 45 --out tmp/chart/mask-preview.png
+#    强度与 focusDim 对齐：dim = 1 − FOCUS_DIM_OPACITY(0.55) = 0.45，等于「非焦点叠 45% 白」。
+#    两个细节缺一不可：矩形要把柱顶标签包进来（只框柱体时，焦点柱自己的数字也灰了）；
+#    边缘羽化 8px（硬边会在网格线上切出一亮一淡的接缝）。
+#    自检 4 项，其中一项是「dim 与 shared/motion.ts 的 FOCUS_DIM_OPACITY 一致」——
+#    产品改了强度而预览没改，两张看起来差不多的图其实对不上。
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，
