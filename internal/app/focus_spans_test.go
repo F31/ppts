@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/F31/ppts/internal/animation"
@@ -16,6 +17,12 @@ import (
 const emuPerPxAt1080 = 6350
 
 func emuToPx1080() float64 { return 1.0 / emuPerPxAt1080 }
+
+// canvasAt 按页高给一个 16:9 画布。焦点换算的唯一自变量是画布高（EMU→px），
+// 而「框在不在画布内」还要宽——所以测试传的是画布，不是一个系数。
+func canvasAt(height int) design.Canvas {
+	return design.Canvas{Width: height * 16 / 9, Height: height}
+}
 
 func box(x, y, w, h int) render.EMUBox {
 	return render.EMUBox{X: int64(x * emuPerPxAt1080), Y: int64(y * emuPerPxAt1080),
@@ -48,7 +55,7 @@ func TestFocusSpanPointsAtBar(t *testing.T) {
 		{ShapeID: "shape-7", BarID: "b2", Box: box(300, 250, 60, 250)},
 	}
 	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b2"}))
-	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if len(diags) != 0 {
 		t.Fatalf("unexpected diagnostics: %+v", diags)
 	}
@@ -77,7 +84,7 @@ func TestFocusSpanShapeUsesLayerWhenAvailable(t *testing.T) {
 	layers := map[string]struct{}{"shape-3": {}}
 	slide := slideCue(cue(0, 500, &media.SegmentFocus{ShapeID: "shape-3"}))
 
-	spans, diags := buildFocusSpans(focusCues(slide), boxes, layers, 2000, emuToPx1080())
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, layers, 2000, canvasAt(1080))
 	if len(diags) != 0 || len(spans) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
 	}
@@ -89,7 +96,7 @@ func TestFocusSpanShapeUsesLayerWhenAvailable(t *testing.T) {
 	}
 
 	// 没有图层（例如图表整块）→ 退到矩形。
-	spans, diags = buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
+	spans, diags = buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if len(diags) != 0 || len(spans) != 1 || spans[0].Rect == nil {
 		t.Fatalf("非图层形状必须带矩形: spans=%+v diags=%+v", spans, diags)
 	}
@@ -103,7 +110,7 @@ func TestFocusEndHoldsWhenNextSegmentAlsoPoints(t *testing.T) {
 		cue(0, 900, &media.SegmentFocus{ShapeID: "shape-1", BarID: "b1"}),
 		cue(1200, 2000, &media.SegmentFocus{ShapeID: "shape-1", BarID: "b2"}),
 	)
-	spans, _ := buildFocusSpans(focusCues(slide), boxes, nil, 2500, emuToPx1080())
+	spans, _ := buildFocusSpans(focusCues(slide), boxes, nil, 2500, canvasAt(1080))
 	if len(spans) != 2 {
 		t.Fatalf("want 2 spans, got %+v", spans)
 	}
@@ -127,7 +134,7 @@ func TestFocusEndReleasesWhenTalkMovesOn(t *testing.T) {
 		cue(0, 900, &media.SegmentFocus{ShapeID: "shape-1", BarID: "b1"}),
 		cue(1100, 1800, nil),
 	)
-	spans, _ := buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
+	spans, _ := buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if len(spans) != 1 {
 		t.Fatalf("want 1 span, got %+v", spans)
 	}
@@ -139,7 +146,7 @@ func TestFocusEndReleasesWhenTalkMovesOn(t *testing.T) {
 // TestFocusTargetMissingIsDiagnosticNotFailure：目标写错不能让整页编译失败。
 func TestFocusTargetMissingIsDiagnosticNotFailure(t *testing.T) {
 	slide := slideCue(cue(0, 900, &media.SegmentFocus{ShapeID: "shape-404", BarID: "b9"}))
-	spans, diags := buildFocusSpans(focusCues(slide), nil, nil, 2000, emuToPx1080())
+	spans, diags := buildFocusSpans(focusCues(slide), nil, nil, 2000, canvasAt(1080))
 	if len(spans) != 0 {
 		t.Fatalf("不该产出焦点: %+v", spans)
 	}
@@ -154,7 +161,7 @@ func TestFocusDuplicateTargetKeepsFirst(t *testing.T) {
 	boxes := []FocusBox{{ShapeID: "shape-1", BarID: "b1", Box: box(10, 10, 50, 50)}}
 	f := &media.SegmentFocus{ShapeID: "shape-1", BarID: "b1"}
 	slide := slideCue(cue(0, 500, f), cue(600, 900, nil), cue(1000, 1500, f))
-	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if len(spans) != 1 || spans[0].StartMs != 0 {
 		t.Fatalf("应只保留第一段: %+v", spans)
 	}
@@ -171,12 +178,12 @@ func TestFocusRectScalesWithCanvas(t *testing.T) {
 	boxes := []FocusBox{{ShapeID: "shape-1", BarID: "b1", Box: box(100, 100, 200, 100)}}
 	slide := slideCue(cue(0, 500, &media.SegmentFocus{ShapeID: "shape-1", BarID: "b1"}))
 
-	spans, _ := buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
+	spans, _ := buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if *spans[0].Rect != (render.Box{X: 100, Y: 100, W: 200, H: 100}) {
 		t.Fatalf("1080p: %+v", *spans[0].Rect)
 	}
 	// 720p 画布：EMU→px 系数按 1080/6858000 推出，同一块矩形应缩到 2/3。
-	spans, _ = buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080()*2.0/3.0)
+	spans, _ = buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(720))
 	got := *spans[0].Rect
 	if got.X != 67 || got.W != 133 {
 		t.Fatalf("720p: %+v，want x=67 w=133（四舍五入）", got)
@@ -187,9 +194,41 @@ func TestFocusRectScalesWithCanvas(t *testing.T) {
 func TestFocusStartsOutsidePageIsSkipped(t *testing.T) {
 	boxes := []FocusBox{{ShapeID: "shape-1", BarID: "b1", Box: box(10, 10, 50, 50)}}
 	slide := slideCue(cue(2500, 3000, &media.SegmentFocus{ShapeID: "shape-1", BarID: "b1"}))
-	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, emuToPx1080())
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if len(spans) != 0 || len(diags) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
+	}
+}
+
+// TestFocusRectOutsideCanvasIsSkipped：整块落在画布外的目标不指，并留一条诊断。
+//
+// 遮罩的孔若开到画面外，合成器会把它钳在边缘——画面上是一块盖住左上角的白纱，
+// 比「不指」更糟，而所有报告都是绿的。渲染器对同一个框的做法是「钳制后无面积就不
+// 成层」（见 render 的 boxOf），焦点侧跟着它判。
+func TestFocusRectOutsideCanvasIsSkipped(t *testing.T) {
+	boxes := []FocusBox{{ShapeID: "shape-out", Box: box(2000, 200, 300, 100)}}
+	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-out"}))
+	spans, diags := buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
+	if len(spans) != 0 {
+		t.Fatalf("目标整块在画布外时不该产出遮罩，got %+v", spans)
+	}
+	if len(diags) != 1 || diags[0].Code != render.DiagFocusTargetMissing {
+		t.Fatalf("want 一条 %s，got %+v", render.DiagFocusTargetMissing, diags)
+	}
+	if !strings.Contains(diags[0].Message, "画布外") {
+		t.Fatalf("诊断要说清是「画布外」，而不是让人以为框算坏了：%s", diags[0].Message)
+	}
+
+	// 部分越界仍然可用：这里不裁宽（渲染器会把层裁到画布内），而遮罩超出画面的那一截
+	// 本来就被屏幕裁掉了，两种做法在成片里逐像素一致。
+	boxes = []FocusBox{{ShapeID: "shape-edge", Box: box(1900, 200, 300, 100)}}
+	slide = slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-edge"}))
+	spans, diags = buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
+	if len(spans) != 1 || len(diags) != 0 {
+		t.Fatalf("部分越界不该被丢掉：spans=%+v diags=%+v", spans, diags)
+	}
+	if got := *spans[0].Rect; got.X != 1900 || got.W != 300 {
+		t.Fatalf("部分越界的矩形 = %+v，want x=1900 w=300", got)
 	}
 }
 
@@ -267,7 +306,7 @@ func chartPage() *project.Page {
 func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
 	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b1"}))
 
-	exported, diags := PageFocusSpans(chartPage(), slide, nil, 2000, 1080)
+	exported, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(1080))
 	if len(diags) != 0 || len(exported) != 1 {
 		t.Fatalf("1080 画布：spans=%+v diags=%+v", exported, diags)
 	}
@@ -275,7 +314,7 @@ func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
 		t.Fatalf("1080 画布 rect = %+v，want 与解析画布像素一致 (300,250 60x250)", got)
 	}
 
-	previewed, diags := PageFocusSpans(chartPage(), slide, nil, 2000, 540)
+	previewed, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(540))
 	if len(diags) != 0 || len(previewed) != 1 {
 		t.Fatalf("540 画布：spans=%+v diags=%+v", previewed, diags)
 	}
@@ -288,12 +327,12 @@ func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
 // 返回值必须是 nil 而不是空切片：调用方据此决定要不要往计划里塞 Focus 字段。
 func TestPageFocusSpansWithoutFocusSkipsWork(t *testing.T) {
 	slide := slideCue(cue(0, 1000, nil))
-	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, 960)
+	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(960))
 	if spans != nil || diags != nil {
 		t.Fatalf("没有焦点时应返回 nil/nil，got %+v / %+v", spans, diags)
 	}
 	// page 为 nil 也不能 panic：预览的 Resolve 返回 nil 页时这一页本就不该渲。
-	if spans, diags := PageFocusSpans(nil, slide, nil, 2000, 960); spans != nil || diags != nil {
+	if spans, diags := PageFocusSpans(nil, slide, nil, 2000, canvasAt(960)); spans != nil || diags != nil {
 		t.Fatalf("nil page 应返回 nil/nil，got %+v / %+v", spans, diags)
 	}
 }
@@ -301,7 +340,7 @@ func TestPageFocusSpansWithoutFocusSkipsWork(t *testing.T) {
 // TestPageFocusSpansReportsMissingTarget 守「目标不在这一页时留诊断，而不是凭空造框」。
 func TestPageFocusSpansReportsMissingTarget(t *testing.T) {
 	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b9"}))
-	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, 540)
+	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(540))
 	if len(spans) != 0 {
 		t.Fatalf("目标缺失时不该产出焦点，got %+v", spans)
 	}
@@ -432,7 +471,7 @@ func TestPageFocusSpansUsesSpecTracks(t *testing.T) {
 	onlyTitle := &animation.Revision{Tracks: []*animation.Track{{ElementID: "title", Kind: "title"}}}
 
 	// title 没有轨道 → 不会成为图层 → 必须盖白留孔。
-	spans, diags := PageFocusSpans(textPage(), slide, onlyCard, 2000, 1080)
+	spans, diags := PageFocusSpans(textPage(), slide, onlyCard, 2000, canvasAt(1080))
 	if len(diags) != 0 || len(spans) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
 	}
@@ -441,7 +480,7 @@ func TestPageFocusSpansUsesSpecTracks(t *testing.T) {
 	}
 
 	// title 有轨道 → 它是图层，压暗其它层就够，不必整页盖白。
-	spans, diags = PageFocusSpans(textPage(), slide, onlyTitle, 2000, 1080)
+	spans, diags = PageFocusSpans(textPage(), slide, onlyTitle, 2000, canvasAt(1080))
 	if len(diags) != 0 || len(spans) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
 	}
@@ -462,6 +501,11 @@ func TestLayerElementIDs(t *testing.T) {
 		{ID: "nogeo"},
 		// 有框但宽高为 0（零面积）：toBox 同样按 anchor_missing 拒掉。
 		{ID: "flat", Bounds: &render.EMUBox{X: 100, Y: 100}},
+		// 框整块落在画布右边：钳制后宽度变负，编译器也算它不成层。
+		{ID: "offright", Bounds: &render.EMUBox{
+			X: int64(2100 * emuPerPxAt1080), Y: int64(100 * emuPerPxAt1080),
+			Width: int64(200 * emuPerPxAt1080), Height: int64(100 * emuPerPxAt1080),
+		}},
 	}
 	cases := []struct {
 		name string
@@ -474,13 +518,14 @@ func TestLayerElementIDs(t *testing.T) {
 		{"轨道指向文档里没有的元素 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "ghost"}}}, nil},
 		{"有轨道有 ID 但没几何 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "nogeo"}}}, nil},
 		{"有轨道但框是零面积 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "flat"}}}, nil},
+		{"有轨道但框整块在画布外 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "offright"}}}, nil},
 		{"多条轨道去重", &animation.Revision{Tracks: []*animation.Track{
 			{ElementID: "card"}, {ElementID: "card"}, {ElementID: "title"},
 		}}, []string{"card", "title"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := layerElementIDs(tc.rev, elements)
+			got := layerElementIDs(tc.rev, elements, canvasAt(1080))
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -518,6 +563,11 @@ func TestLayerElementIDsMatchesCompiler(t *testing.T) {
 		{ID: "ghost", Kind: animation.KindBullet},
 		// 有轨道、有框，但框是零面积：toBox 也按 anchor_missing 拒掉。
 		{ID: "flat", Kind: animation.KindShape, Bounds: &render.EMUBox{X: 100, Y: 100, Width: 0, Height: 0}},
+		// 整块落在画布右边：钳制后宽度为负，同样不成层（「在不在画布内」要宽度才判得出）。
+		{ID: "offright", Kind: animation.KindShape, Bounds: &render.EMUBox{
+			X: int64(2100 * emuPerPxAt1080), Y: int64(100 * emuPerPxAt1080),
+			Width: int64(200 * emuPerPxAt1080), Height: int64(100 * emuPerPxAt1080),
+		}},
 	}
 	clip := []*animation.Clip{{ID: "c1", Type: "fadeIn", StartMs: 0, DurationMs: 500,
 		Easing: "easeOut", Trigger: "onEnter"}}
@@ -526,6 +576,7 @@ func TestLayerElementIDsMatchesCompiler(t *testing.T) {
 			{ElementID: "title", Kind: animation.KindTitle, Clips: clip},
 			{ElementID: "ghost", Kind: animation.KindBullet, Clips: clip},
 			{ElementID: "flat", Kind: animation.KindShape, Clips: clip},
+			{ElementID: "offright", Kind: animation.KindShape, Clips: clip},
 			{ElementID: "", Kind: animation.KindPage, Clips: clip},
 		}}
 
@@ -561,7 +612,7 @@ func TestLayerElementIDsMatchesCompiler(t *testing.T) {
 			fromPlan[l.ElementID] = struct{}{}
 		}
 	}
-	got := layerElementIDs(rev, elements)
+	got := layerElementIDs(rev, elements, canvasAt(1080))
 
 	// 先钉住"该出谁"：只该有 title。两边一起错也不会被这条放过。
 	if _, ok := fromPlan["title"]; !ok || len(fromPlan) != 1 {

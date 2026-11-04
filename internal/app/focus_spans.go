@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
@@ -55,8 +56,8 @@ func focusCues(slide media.SlideCue) []focusCue {
 //   - 目标不存在就跳过这一段并留诊断，而不是让整页编译失败。焦点是增强层：
 //     一份目标写错的稿子应该照样能出片（那一页全亮），而不是导不出视频。
 func buildFocusSpans(cues []focusCue, boxes []FocusBox, layerIDs map[string]struct{},
-	pageMs int64, emuToPx float64) ([]render.FocusSpan, []render.Diagnostic) {
-	if pageMs <= 0 || len(cues) == 0 {
+	pageMs int64, canvas design.Canvas) ([]render.FocusSpan, []render.Diagnostic) {
+	if pageMs <= 0 || len(cues) == 0 || canvas.Width <= 0 || canvas.Height <= 0 {
 		return nil, nil
 	}
 	shapeBoxes := make(map[string]FocusBox, len(boxes))
@@ -87,7 +88,7 @@ func buildFocusSpans(cues []focusCue, boxes []FocusBox, layerIDs map[string]stru
 			})
 			continue
 		}
-		span, diag, ok := focusSpanFor(cue, f, shapeBoxes, barBoxes, layerIDs, pageMs, emuToPx)
+		span, diag, ok := focusSpanFor(cue, f, shapeBoxes, barBoxes, layerIDs, pageMs, canvas)
 		if !ok {
 			diags = append(diags, diag)
 			continue
@@ -109,53 +110,14 @@ func barKey(shapeID, barID string) string {
 
 // layerElementIDs 返回「这一版规格里真会被切成图层的元素」。
 //
-// 判据是**规格里有轨道**，而不是「文档里有这个元素」：底板只把有轨道的元素从整页图里
-// 挖掉做成图层（其余仍烘在底板上），所以只有这些层的显隐能被单独改。没有轨道的元素
-// 压暗它对画面完全没有作用——而焦点会照常记一条、诊断为零，看起来「指了但不生效」。
+// 判据本身在 render.LayerElementIDs——那是**关于渲染器行为的断言**，只能有一份。
+// 这里保留一个薄入口，只为让调用处读起来是「焦点要的层集」而不是「渲染包的函数」；
+// 不要在这层再加判断：上一个版本就是这么漂的（注释写着「有几何」，实现只判了 ID）。
 //
-// 轨道指向的元素若没有几何，编译器会报 anchor_missing 并跳过它（不会成层），
-// 所以这里要求元素同时有几何，两种判据必须一致，否则焦点会去等一个永远不存在的层。
-//
-// 跨页延续（G8）注入到本页的层不算在内：那是编译期按上一页的 clip 派生的，本页规格里
-// 没有它的轨道。此时焦点会退到矩形遮罩——比压暗更明显，但不会错位，也不会漏指。
-func layerElementIDs(rev *animation.Revision, elements []render.Element) map[string]struct{} {
-	if rev == nil || len(elements) == 0 {
-		return nil
-	}
-	hasGeom := make(map[string]struct{}, len(elements))
-	for _, el := range elements {
-		// 判据逐条对齐编译器的 toBox：元素在页内、有框、框有面积。
-		//
-		// 这一条曾经只判了 ID 非空：注释写着「同时有几何」，实现里却没有那半句，
-		// 于是「有轨道、有 ID、解析不出框（或框宽高为 0）」的元素被认成层，焦点去
-		// 压暗一个不存在的层。表现与 7053433 修掉的完全一样——画面逐像素不变，
-		// 焦点记录与诊断都正常。
-		//
-		// 已知残余：完全落在画布外的元素，编译器钳制后可能因无面积而不成层，这里
-		// 仍会认成层。那种元素在成片里本来就看不见，指它也没有意义；要判死它需要
-		// 本页画布宽高，而焦点侧手上只有高（见 PageFocusSpans）。
-		if el.ID == "" || el.Bounds == nil {
-			continue
-		}
-		if el.Bounds.Width <= 0 || el.Bounds.Height <= 0 {
-			continue
-		}
-		hasGeom[el.ID] = struct{}{}
-	}
-	out := make(map[string]struct{}, len(rev.Tracks))
-	for _, track := range rev.Tracks {
-		if track == nil || track.ElementID == "" {
-			continue // 整页轨道没有元素身份，也压暗不了「某一个形状」
-		}
-		if _, ok := hasGeom[track.ElementID]; !ok {
-			continue
-		}
-		out[track.ElementID] = struct{}{}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
+// 跨页延续（G8）不需要额外照顾：它只在已有层上追加延续段，从不替次页造层
+// （找不到层就记 continuation_target_missing），所以判据天然覆盖它。
+func layerElementIDs(rev *animation.Revision, elements []render.Element, canvas design.Canvas) map[string]struct{} {
+	return render.LayerElementIDs(rev, elements, canvas, stdSlideHeightEMU)
 }
 
 // PageFocusSpans 算**单页**的焦点序列，数据全部由调用方给。
@@ -164,15 +126,16 @@ func layerElementIDs(rev *animation.Revision, elements []render.Element) map[str
 // project.Page（读页文档时拿到的）与这一页的时间轴 cue，再让组装器按源版本去
 // 读一遍整份 document.json 纯属白跑一次对象读——而预览的预算本来就只有几秒。
 //
-// canvasHeight 是**本页画布**的高度（不是导出画布）：EMU → 像素的系数必须跟着
-// 这次真正要渲的画布走。预览是 960 宽，导出是 1920 宽，用错系数会让遮罩整体
+// canvas 是**本页画布**（不是导出画布）：EMU → 像素的系数、以及「框有没有落在画布
+// 里」都要跟着这次真正要渲的画布走。预览是 960 宽，导出是 1920 宽，用错会让遮罩
 // 缩成错误的尺寸，画面上表现成"孔开在旁边"，而日志一切正常。
 //
-// rev 决定「哪个形状能靠压暗图层来指」：与导出侧用同一个 layerElementIDs，
-// 两条路对同一个目标必须给出同一种表达，否则预览在压暗、成片在盖白。
+// rev 决定「哪个形状能靠压暗图层来指」：与导出侧用同一个 layerElementIDs（也就是
+// 同一个 render.LayerElementIDs），两条路对同一个目标必须给出同一种表达，否则预览
+// 在压暗、成片在盖白。
 func PageFocusSpans(page *project.Page, slide media.SlideCue, rev *animation.Revision,
-	pageMs int64, canvasHeight int) ([]render.FocusSpan, []render.Diagnostic) {
-	if page == nil || pageMs <= 0 || canvasHeight <= 0 {
+	pageMs int64, canvas design.Canvas) ([]render.FocusSpan, []render.Diagnostic) {
+	if page == nil || pageMs <= 0 || canvas.Width <= 0 || canvas.Height <= 0 {
 		return nil, nil
 	}
 	hasFocus := false
@@ -188,13 +151,12 @@ func PageFocusSpans(page *project.Page, slide media.SlideCue, rev *animation.Rev
 		return nil, nil
 	}
 	return buildFocusSpans(focusCues(slide), PageFocusBoxes(page),
-		layerElementIDs(rev, PageElements(page)), pageMs,
-		float64(canvasHeight)/float64(stdSlideHeightEMU))
+		layerElementIDs(rev, PageElements(page), canvas), pageMs, canvas)
 }
 
 // focusSpanFor 解析一个目标，返回它在画布上的表达。
 func focusSpanFor(cue focusCue, f *media.SegmentFocus, shapeBoxes, barBoxes map[string]FocusBox,
-	layerIDs map[string]struct{}, pageMs int64, emuToPx float64) (render.FocusSpan, render.Diagnostic, bool) {
+	layerIDs map[string]struct{}, pageMs int64, canvas design.Canvas) (render.FocusSpan, render.Diagnostic, bool) {
 	span := render.FocusSpan{ElementID: barKey(f.ShapeID, f.BarID)}
 	if cue.StartMs < 0 || cue.StartMs >= pageMs {
 		return span, render.Diagnostic{
@@ -211,11 +173,11 @@ func focusSpanFor(cue focusCue, f *media.SegmentFocus, shapeBoxes, barBoxes map[
 				Message: fmt.Sprintf("%s 指向 %s，但解析产物里没有这根柱子", cue.SegmentID, span.ElementID),
 			}, false
 		}
-		rect, ok := toCanvasRect(b.Box, emuToPx)
-		if !ok {
+		rect, why := toCanvasRect(b.Box, canvas)
+		if rect == nil {
 			return span, render.Diagnostic{
 				Code: render.DiagFocusTargetMissing, ElementID: span.ElementID,
-				Message: fmt.Sprintf("%s 的框换算后为空（%d×%d），本段不指", span.ElementID, b.Box.Width, b.Box.Height),
+				Message: fmt.Sprintf("%s 的框%s，本段不指", span.ElementID, why),
 			}, false
 		}
 		span.Rect = rect
@@ -235,11 +197,11 @@ func focusSpanFor(cue focusCue, f *media.SegmentFocus, shapeBoxes, barBoxes map[
 			Message: fmt.Sprintf("%s 指向 %s，但这一页没有这个形状的包围盒", cue.SegmentID, f.ShapeID),
 		}, false
 	}
-	rect, ok := toCanvasRect(b.Box, emuToPx)
-	if !ok {
+	rect, why := toCanvasRect(b.Box, canvas)
+	if rect == nil {
 		return span, render.Diagnostic{
 			Code: render.DiagFocusTargetMissing, ElementID: span.ElementID,
-			Message: fmt.Sprintf("%s 的框换算后为空（%d×%d），本段不指", f.ShapeID, b.Box.Width, b.Box.Height),
+			Message: fmt.Sprintf("%s 的框%s，本段不指", f.ShapeID, why),
 		}, false
 	}
 	span.Rect = rect
@@ -276,8 +238,13 @@ func pxToEMU(px int) int64 {
 	return int64(math.Round(float64(px) * stdSlideHeightEMU / bindCanvasH))
 }
 
-// toCanvasRect 把 EMU 框换算成画布像素。
-func toCanvasRect(b render.EMUBox, emuToPx float64) (*render.Box, bool) {
+// toCanvasRect 把 EMU 框换算成画布像素；返回 nil 时 why 说明这块区域为什么指不了。
+//
+// 画布宽高必须参与：只知道高度时判不出「这个框整个落在画布右边」，而那种元素的遮罩
+// 会把孔开到画面外——合成器把它钳在边缘，看起来就是一块盖住左上角的白纱。渲染器
+// 对同一个框的做法是钳制后无面积就不成层（boxOf），这里跟着它判。
+func toCanvasRect(b render.EMUBox, canvas design.Canvas) (*render.Box, string) {
+	emuToPx := float64(canvas.Height) / float64(stdSlideHeightEMU)
 	rect := &render.Box{
 		X: int(math.Round(float64(b.X) * emuToPx)),
 		Y: int(math.Round(float64(b.Y) * emuToPx)),
@@ -285,7 +252,12 @@ func toCanvasRect(b render.EMUBox, emuToPx float64) (*render.Box, bool) {
 		H: int(math.Round(float64(b.Height) * emuToPx)),
 	}
 	if rect.W <= 0 || rect.H <= 0 {
-		return nil, false
+		return nil, fmt.Sprintf("换算后为空（%d×%d）", b.Width, b.Height)
+	}
+	// 判交集要用换算后、**未钳制**的原点：钳到 0 之后就永远判不出「在画布右边」。
+	if rect.X >= canvas.Width || rect.Y >= canvas.Height {
+		return nil, fmt.Sprintf("整个落在画布外（原点 %d,%d，画布 %d×%d）",
+			rect.X, rect.Y, canvas.Width, canvas.Height)
 	}
 	// 负的原点会让合成器画出一块看不见的孔，而报告里一切正常（validateFocus 也会拒）。
 	if rect.X < 0 {
@@ -294,7 +266,7 @@ func toCanvasRect(b render.EMUBox, emuToPx float64) (*render.Box, bool) {
 	if rect.Y < 0 {
 		rect.Y = 0
 	}
-	return rect, true
+	return rect, ""
 }
 
 // focusSource 是组装器要的窄能力：按源版本取「可作焦点的框」。

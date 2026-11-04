@@ -38,9 +38,15 @@ test('比例原因必须说成比例，不能混同于「目标找不到」', ()
   assert.deepEqual(out[1].params, { count: 2 });
 });
 
-test('目标缺失说成目标缺失', () => {
-  const out = m.previewFocusNotices(preview(0, 1, 'target_missing'));
-  assert.deepEqual(out.map((n) => n.key), ['editor.animationPreviewFocusSkippedMissing']);
+test('目标缺失说成目标缺失（生产发的是诊断码，不是简称）', () => {
+  // 服务端把 render.DiagFocusTargetMissing 原样放进 X-Preview-Focus-Skip-Reason，
+  // 也就是 'focus_target_missing'。这条用例以前喂的是简称 'target_missing'——
+  // 于是「精确文案」这一支在生产上从未命中，而测试全绿。
+  const real = m.previewFocusNotices(preview(0, 1, 'focus_target_missing'));
+  assert.deepEqual(real.map((n) => n.key), ['editor.animationPreviewFocusSkippedMissing']);
+  // 简称仍认：旧服务端/旧链接上可能还带着它。
+  const legacy = m.previewFocusNotices(preview(0, 1, 'target_missing'));
+  assert.deepEqual(legacy.map((n) => n.key), ['editor.animationPreviewFocusSkippedMissing']);
 });
 
 test('未知原因给通用文案，不冒充已知分支', () => {

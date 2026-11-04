@@ -126,9 +126,10 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 	// 而整份 document.json 本来就是一次对象读。
 	geometryByRevision := make(map[int]map[string][]render.Element, 1)
 	focusByRevision := make(map[int]map[string][]FocusBox, 1)
-	// EMU → 画布像素与编译器同一个系数（见 render.NewCompiler 的 scale）：
-	// 页高未显式给出时按标准页高推断，这里必须用同一条，否则焦点框会整体缩放偏。
-	emuToPx := float64(req.Height) / float64(stdSlideHeightEMU)
+	// 本页画布：EMU → 像素的系数（见 render.NewCompiler 的 scale）与「框在不在画布内」
+	// 都要跟着它走。只传高度是不够的——判不出「整个落在画布右边」那种框，而它的遮罩
+	// 会把孔开到画面外，合成器钳在边缘后看起来是一块盖住左上角的白纱。
+	pageCanvas := design.Canvas{Width: req.Width, Height: req.Height}
 
 	for i, slide := range in.Slides {
 		durationMS := (slide.EndUS - slide.StartUS) / 1000
@@ -151,7 +152,7 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
 		elements := a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision)
-		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, rev, fallbackRev, elements, durationMS, emuToPx, focusByRevision)
+		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, rev, fallbackRev, elements, durationMS, pageCanvas, focusByRevision)
 		req.Pages = append(req.Pages, AnimationPage{
 			SlideID:        slide.SlideID,
 			DurationMs:     durationMS,
@@ -222,7 +223,7 @@ func (a *AnimationPageAssembler) revision(ctx context.Context, in AnimationPageI
 // 它可以是 nil——那正是「这一页没配动效」，此时所有形状焦点都走矩形遮罩。
 func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPageInput, slide media.SlideCue,
 	pageIndex int, ref AnimationSpecRef, rev *animation.Revision, fallbackRev int,
-	elements []render.Element, pageMs int64, emuToPx float64,
+	elements []render.Element, pageMs int64, canvas design.Canvas,
 	cache map[int]map[string][]FocusBox) ([]render.FocusSpan, []render.Diagnostic) {
 	if a == nil || a.focus == nil {
 		return nil, nil
@@ -257,7 +258,7 @@ func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPag
 		}
 		cache[revNo] = bySlide
 	}
-	spans, diags := buildFocusSpans(cues, bySlide[slide.SlideID], layerElementIDs(rev, elements), pageMs, emuToPx)
+	spans, diags := buildFocusSpans(cues, bySlide[slide.SlideID], layerElementIDs(rev, elements, canvas), pageMs, canvas)
 	for i := range diags {
 		diags[i].Page = pageIndex
 	}

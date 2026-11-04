@@ -729,20 +729,22 @@ func (c *Compiler) tierConflicts(layers []Layer) int {
 	return n
 }
 
-// toBox 把 EMU 包围盒换算为像素并钳制到画布内。
-func (c *Compiler) toBox(b *EMUBox, page int, elementID string) (Box, bool, *Diagnostic) {
+// boxOf 是 toBox 的纯计算部分：EMU 框换算成画布像素框，并钳制到画布内。
+//
+// 抽成包级函数是为了让**内容层也能问同一个问题**（见 LayerElementIDs）：焦点要决定
+// 「压暗图层还是退成矩形」，而它必须知道这一版会不会真的为某个元素出层。这份换算
+// 规则一旦有两份实现，两边迟早对同一个元素给出不同答案——而答案不同的表现是
+// 画面逐像素不变、诊断全绿（7053433 / f382f89 都是这个病）。
+//
+// ok=false 时 why 说明原因；clamped 表示框越界被裁过（不影响是否成框）。
+func boxOf(b *EMUBox, scale float64, canvasW, canvasH int) (box Box, clamped, ok bool, why string) {
 	if b == nil || b.Width <= 0 || b.Height <= 0 {
-		return Box{}, false, &Diagnostic{
-			Code: DiagAnchorMissing, Page: page, ElementID: elementID,
-			Message: "元素没有可用包围盒（无几何），元素级动画无法挂载",
-		}
+		return Box{}, false, false, "元素没有可用包围盒（无几何），元素级动画无法挂载"
 	}
-	x := int(math.Round(float64(b.X) * c.scale))
-	y := int(math.Round(float64(b.Y) * c.scale))
-	w := int(math.Round(float64(b.Width) * c.scale))
-	h := int(math.Round(float64(b.Height) * c.scale))
-
-	clamped := false
+	x := int(math.Round(float64(b.X) * scale))
+	y := int(math.Round(float64(b.Y) * scale))
+	w := int(math.Round(float64(b.Width) * scale))
+	h := int(math.Round(float64(b.Height) * scale))
 	if x < 0 {
 		w += x
 		x = 0
@@ -753,28 +755,89 @@ func (c *Compiler) toBox(b *EMUBox, page int, elementID string) (Box, bool, *Dia
 		y = 0
 		clamped = true
 	}
-	if x+w > c.opt.Canvas.Width {
-		w = c.opt.Canvas.Width - x
+	if x+w > canvasW {
+		w = canvasW - x
 		clamped = true
 	}
-	if y+h > c.opt.Canvas.Height {
-		h = c.opt.Canvas.Height - y
+	if y+h > canvasH {
+		h = canvasH - y
 		clamped = true
+	}
+	box = Box{X: x, Y: y, W: w, H: h}
+	// 完全落在画布右侧/下方之外时，钳制后宽或高会变成 ≤0：这种元素在成片里看不见，
+	// 也不该占一个图层。
+	if w <= 0 || h <= 0 {
+		return box, clamped, false, "包围盒换算后无面积，元素级动画无法挂载"
+	}
+	return box, clamped, true, ""
+}
+
+// toBox 把 EMU 包围盒换算为像素并钳制到画布内。
+func (c *Compiler) toBox(b *EMUBox, page int, elementID string) (Box, bool, *Diagnostic) {
+	box, clamped, ok, why := boxOf(b, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)
+	if !ok {
+		return box, false, &Diagnostic{
+			Code: DiagAnchorMissing, Page: page, ElementID: elementID, Message: why,
+		}
 	}
 	var diag *Diagnostic
 	if clamped {
 		diag = &Diagnostic{
 			Code: DiagBoxClamped, Page: page, ElementID: elementID,
-			Message: fmt.Sprintf("包围盒越界，已钳制为 (%d,%d %dx%d)", x, y, w, h),
+			Message: fmt.Sprintf("包围盒越界，已钳制为 (%d,%d %dx%d)", box.X, box.Y, box.W, box.H),
 		}
 	}
-	if w <= 0 || h <= 0 {
-		return Box{X: x, Y: y, W: w, H: h}, false, &Diagnostic{
-			Code: DiagAnchorMissing, Page: page, ElementID: elementID,
-			Message: "包围盒换算后无面积，元素级动画无法挂载",
-		}
+	return box, true, diag
+}
+
+// LayerElementIDs 返回「这一版规格里真会成层」的元素 id 集。
+//
+// 判据与 compileTrack 同源：轨道有元素身份、元素在页内、包围盒换算后仍有面积。
+// 只有这些元素会被从整页图里挖出来单独成层，也只有它们的显隐能被单独改；内容层据此
+// 决定焦点走「压暗其它层」还是退成矩形遮罩。
+//
+// 为什么要放在渲染包：这是一份**关于渲染器行为的断言**，写在调用方就是第二份实现。
+// 写成「文档里有几个元素」的那个版本让焦点去压暗一个不存在的层——画面逐像素不变，
+// 而焦点记录、清单、诊断全绿。
+//
+// slideHeightEMU ≤ 0 时按标准页高（与 NewCompiler 的缺省一致）。canvas 必须是这次
+// 真正要渲的画布：导出 1920×1080、预览 960 宽，钳制边界与像素框都跟着它走。
+//
+// 一个照不到的条件：轨道里所有 clip 都编译失败时 compileTrack 也不出层，那需要
+// 逐条编译才能知道（牵扯 fps、分段偏移）。规格过 validate 后轨道非空，真正的失败
+// 会另有诊断，这里不为它把整份规格再编一遍。
+func LayerElementIDs(rev *animation.Revision, elements []Element, canvas design.Canvas,
+	slideHeightEMU int64) map[string]struct{} {
+	if rev == nil || len(elements) == 0 || canvas.Width <= 0 || canvas.Height <= 0 {
+		return nil
 	}
-	return Box{X: x, Y: y, W: w, H: h}, true, diag
+	h := slideHeightEMU
+	if h <= 0 {
+		h = defaultSlideHeightEMU
+	}
+	scale := float64(canvas.Height) / float64(h)
+	elems := make(map[string]Element, len(elements))
+	for _, el := range elements {
+		elems[el.ID] = el
+	}
+	out := make(map[string]struct{}, len(rev.Tracks))
+	for _, track := range rev.Tracks {
+		if track == nil || track.ElementID == "" {
+			continue // 整页轨道没有元素身份，也压暗不了「某一个形状」
+		}
+		el, found := elems[track.ElementID]
+		if !found {
+			continue
+		}
+		if _, _, ok, _ := boxOf(el.Bounds, scale, canvas.Width, canvas.Height); !ok {
+			continue
+		}
+		out[track.ElementID] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // resolveTrigger 把三种触发形式解析为页内锚点毫秒。

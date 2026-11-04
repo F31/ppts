@@ -20,10 +20,16 @@ export function previewFocusNotices(
   if (preview.focusSkipped > 0) {
     // 未知原因不归到已知分支：服务端只给 target_missing / canvas_aspect，
     // 出现别的值说明两边版本不一致，此时给一句不带原因的话比给错原因强。
+    // 服务端把这个头填成**渲染诊断码**（focus_target_missing），早期前端按简称
+    // 'target_missing' 写：两个都认。否则精确文案这一支在真实响应上永远不命中，
+    // 全落进兜底——而用例喂的正是简称，两边一起错，谁也看不见。
+    const missing =
+      preview.focusSkipReason === 'focus_target_missing' ||
+      preview.focusSkipReason === 'target_missing';
     const key =
       preview.focusSkipReason === 'canvas_aspect'
         ? 'editor.animationPreviewFocusSkippedAspect'
-        : preview.focusSkipReason === 'target_missing'
+        : missing
           ? 'editor.animationPreviewFocusSkippedMissing'
           : 'editor.animationPreviewFocusSkipped';
     out.push({ key, params: { count: preview.focusSkipped } });
