@@ -580,10 +580,15 @@ test('放手时刻也必须在关键帧里：否则「回到全亮」被插值�
   // 终点才是判据：放手那一刻仍然是压暗值（0.55），一个淡出之后才是 1。
   // 第一版把 dim 写成了 p，两个端点都成了 1——片子里的形状是「先更暗、然后突然全亮」
   // （0.95 → 0.63 → 0.56 → 1.00），眼睛看得出，但只看「最后是不是 1」是看不出的。
-  const atEnd = frames.find((f) => Math.abs(f.offset * pageMs - 4402) <= 20);
+  // 取**离目标最近**的关键帧，不是第一个撞进 20ms 窗口的：过渡窗口现在按 8ms
+  // 加密采样，窗口里会有好几个点，`find` 拿到的可能是淡出中的中间值。
+  const nearest = (ms) =>
+    frames.reduce((best, f) =>
+      Math.abs(f.offset * pageMs - ms) < Math.abs(best.offset * pageMs - ms) ? f : best);
+  const atEnd = nearest(4402);
   assert.ok(Math.abs(Number(atEnd.opacity) - 0.55) < 0.02,
     `放手那一刻应仍是压暗值 0.55，实际 ${atEnd.opacity}`);
-  const relax = frames.find((f) => Math.abs(f.offset * pageMs - (4402 + 240)) <= 20);
+  const relax = nearest(4402 + 240);
   assert.equal(Number(relax.opacity), 1, `放手后不透明度应为 1，实际 ${relax.opacity}`);
 });
 
@@ -1005,8 +1010,13 @@ test('buildLayerNodes：矩形焦点生成遮罩节点，定位与强度都对',
 
   const frames = out[0].element.frames ?? [];
   assert.ok(frames.length >= 2, '应当有关键帧');
-  // 1000–3000ms 是 hold（4000ms 的 0.25–0.75）：这段时间必须稳定在 0.45。
-  const hold = frames.filter((f) => Number(f.offset) > 0.3 && Number(f.offset) < 0.76);
+  // 1240–3000ms 是 hold（1000ms 起、240ms 淡入之后到放手之前）：这段时间必须稳定
+  // 在 0.45。窗口按毫秒给而不是按 offset 粗略卡：过渡窗口现在按 8ms 加密采样，
+  // 拿 offset>0.3 当界会把淡入尾巴（0.448…）也算进 hold。
+  const hold = frames.filter((f) => {
+    const ms = Number(f.offset) * 4000;
+    return ms >= 1240 && ms <= 3000;
+  });
   assert.ok(hold.length >= 2);
   for (const f of hold) {
     assert.ok(Math.abs(Number(f.opacity) - 0.45) < 1e-9, `hold 期 opacity=${f.opacity}`);
@@ -1052,4 +1062,107 @@ test('pickStageLayers：低电量也只省元素层，焦点遮罩照建', async
   // 什么都没有：两档都不建。
   assert.equal(pickStageLayers([], [], true), null);
   assert.equal(pickStageLayers([], [], false), null);
+});
+
+// ---- 焦点过渡：网页版与成片在**每个帧时刻**逐点一致 ----
+//
+// 两端口径写的是「同一个函数」（focusMask / focusDim 来自 shared/motion.ts），
+// 但网页版把结果编译成 WAAPI 关键帧、帧与帧之间线性插值。只把关键帧放在过渡的
+// 两个端点上，等于用一条弦代替 easeOutCubic：240ms 过渡的中点，成片遮罩已经压到
+// 0.394，网页版还停在 0.225。两端都不会报错，并排播放才看得出「网页版淡得慢」。
+// 真浏览器先量到了这个数（tmp/lowpower-probe.mjs 在 1060/1120/1180/1240ms 读到
+// 0.1125/0.225/0.3375/0.45，一条完美的直线），这里把它钉成 CI 判据。
+
+/** 按 WAAPI 的方式把关键帧还原成「某一毫秒的实际值」：offset 之间线性插值。 */
+const sampleKeyframes = (frames, pageMs, t) => {
+  const at = (f) => ({ ms: f.offset * pageMs, v: Number(f.opacity) });
+  const pts = frames.map(at);
+  if (t <= pts[0].ms) return pts[0].v;
+  for (let i = 1; i < pts.length; i++) {
+    if (t <= pts[i].ms) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const span = b.ms - a.ms;
+      return span <= 0 ? b.v : a.v + ((b.v - a.v) * (t - a.ms)) / span;
+    }
+  }
+  return pts[pts.length - 1].v;
+};
+
+test('矩形焦点：过渡区间里网页版也走曲线，不是一条弦', async () => {
+  const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { focusMask } = await import('../shared/motion.ts');
+  const pageMs = 6000;
+  const rect = { x: 400, y: 300, w: 600, h: 300 };
+  // 两个窗口都要走一遍：淡入（起点之后）与放手（endMs 之后）。只补前者，讲完最后
+  // 一句时那 240ms 的「放回去」仍然是一条斜线。
+  const cases = [
+    { name: '淡入', span: { startMs: 1000, elementId: 'chart#b0', rect } },
+    { name: '放手', span: { startMs: 1000, endMs: 3000, elementId: 'chart#b0', rect } }
+  ];
+  for (const c of cases) {
+    const focus = [c.span];
+    const frames = focusMaskKeyframes(focus, c.span, pageMs);
+    assert.ok(frames && frames.length > 10, `${c.name}：过渡窗口没有加密采样（${frames?.length} 个关键帧）`);
+
+    let worst = 0;
+    let worstAt = 0;
+    for (let t = 0; t <= pageMs; t += 1) {
+      const exact = focusMask(focus, t)?.alpha ?? 0;
+      const diff = Math.abs(sampleKeyframes(frames, pageMs, t) - exact);
+      if (diff > worst) {
+        worst = diff;
+        worstAt = t;
+      }
+    }
+    assert.ok(
+      worst <= 0.002,
+      `${c.name}：网页版与成片的最大差 ${worst.toFixed(4)}（${worstAt}ms）：关键帧只取了端点，线性插值把 easeOutCubic 拉直了`
+    );
+  }
+  // 中点必须落在曲线上（0.45 × easeOutCubic(0.5) = 0.39375），线性插值给出的是 0.225。
+  const span = cases[0].span;
+  const frames = focusMaskKeyframes([span], span, pageMs);
+  assert.ok(Math.abs(sampleKeyframes(frames, pageMs, 1120) - 0.394) < 0.005);
+  // 放手那一侧同理：3000ms 之后 240ms 才回到全亮，中点是 0.225 而不是 0.394 的一半。
+  const rel = { startMs: 1000, endMs: 3000, elementId: 'chart#b0', rect };
+  const relFrames = focusMaskKeyframes([rel], rel, pageMs);
+  assert.ok(Math.abs(sampleKeyframes(relFrames, pageMs, 3120) - 0.056) < 0.005,
+    `放手中点应为 0.056（0.45 × (1 − easeOutCubic(0.5))），实际 ${sampleKeyframes(relFrames, pageMs, 3120)}`);
+});
+
+test('图层让位：过渡窗口同样加密采样，帧时刻的不透明度等于成片', async () => {
+  const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { evaluateLayer, focusDim, focusOpacity } = await import('../shared/motion.ts');
+  // 两个图层型焦点（无 rect）在 4s 换人：a 从「亮」退回，b 从「暗」亮起来。
+  // 换人点是 4000ms，落在两条 clip 的活动区间（0–600ms）之外——正是「只按 clip
+  // 区间采样」会把 240ms 的过渡抹成一整段斜线的那种页。
+  const focus = [
+    { startMs: 1000, elementId: 'a' },
+    { startMs: 4000, elementId: 'b' }
+  ];
+  const clip = slideInClip(0, 600);
+  const pageMs = 6000;
+  const opts = { fps: 30, pageDurationMs: pageMs, reduceMotion: false, focus };
+  const frames = compileKeyframes([clip], opts, 'b');
+  assert.ok(frames);
+  const layer = { kind: 'text', assetMode: 'bitmap-region', box: { x: 0, y: 0, w: 0, h: 0 }, clips: [clip] };
+
+  let worst = 0;
+  let worstAt = 0;
+  for (let t = 0; t <= pageMs; t += 1000 / 30) {
+    const exact = evaluateLayer(layer, t).opacity * focusOpacity(focusDim(focus, t)['b'] ?? 0);
+    const diff = Math.abs(sampleKeyframes(frames, pageMs, t) - exact);
+    if (diff > worst) {
+      worst = diff;
+      worstAt = t;
+    }
+  }
+  assert.ok(
+    worst <= 0.002,
+    `图层不透明度与成片的最大差 ${worst.toFixed(4)}（${worstAt.toFixed(0)}ms）`
+  );
+  // 换人那一刻 b 还在压暗态附近，240ms 后才全亮；线性插值会在中点给出 0.775。
+  assert.ok(Math.abs(sampleKeyframes(frames, pageMs, 4120) - 0.944) < 0.01,
+    `换人中点应为 0.944（0.55 + 0.45 × easeOutCubic(0.5)），实际 ${sampleKeyframes(frames, pageMs, 4120)}`);
 });

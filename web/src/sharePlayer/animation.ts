@@ -49,6 +49,40 @@ export type CompiledLayer = {
 const IDENTITY_TRANSFORM = 'translate(0, 0) scale(1, 1)';
 
 /**
+ * 焦点过渡窗口内的采样步长（毫秒）。
+ *
+ * 为什么过渡要单独加密采样、而不是沿用「每帧一个点」：整页按帧采样是对的，
+ * 因为 MP4 在帧之间没有定义；但过渡曲线（easeOutCubic）在 240ms 里弯得最厉害，
+ * 而 WAAPI 在关键帧之间是**线性**插值。只取两个端点时，网页版的淡入是一条直线：
+ * 真浏览器实测（`tmp/lowpower-probe.mjs`，焦点 1000ms 开始、240ms 过渡）读到
+ * 0.1125 / 0.225 / 0.3375 / 0.45，而同一时刻成片是 0.260 / 0.394 / 0.443 / 0.45
+ * ——中点上差 0.169，是满纱（0.45）的三分之一还多。8ms 的弦与曲线的差 < 0.001
+ * alpha，一次过渡也就三十来个关键帧。
+ */
+const FADE_SAMPLE_MS = 8;
+
+/** 把一段过渡窗口的采样时刻追加进 times（含两端）。 */
+function pushFadeSamples(times: number[], at: number, fade: number): void {
+  if (!isFinite(at) || !isFinite(fade)) return;
+  if (fade <= 0) {
+    times.push(at); // 硬切：窗口没有宽度，端点就是全部
+    return;
+  }
+  for (let t = at; t < at + fade; t += FADE_SAMPLE_MS) times.push(t);
+  times.push(at + fade);
+}
+
+/** 去重并夹到 [0,pageMs]，且必须严格递增（WAAPI 遇到重复 offset 会跳一下）。 */
+function timelinePoints(marks: number[], pageMs: number): number[] {
+  const points: number[] = [];
+  for (const t of marks) {
+    const clamped = Math.max(0, Math.min(pageMs, t));
+    if (points.length === 0 || clamped > points[points.length - 1]) points.push(clamped);
+  }
+  return points;
+}
+
+/**
  * 把一层的 clips 采样成 WAAPI keyframes。
  *
  * 采样区间只覆盖 clip 实际活动的时段：前后各插一个"端点值"关键帧即可。
@@ -81,22 +115,24 @@ export function compileKeyframes(
   // 焦点切换点必须显式采样：它通常落在任何 clip 的活动区间之外（讲完才切换），
   // 只按 clip 区间采样会让播放器从最后一个关键帧直接线性插到页末，
   // 压暗过程被拉长成整页——MP4 里有 240ms 的过渡，网页里变成 8 秒的渐暗。
-  for (const f of opts.focus ?? []) {
-    times.push(f.startMs);
-    times.push(f.startMs + (f.fadeMs ?? 240));
-    // 放手也是一个采样点，理由同上：它落在 clip 区间之外，漏了就会被线性插值
-    // 抹成「一路慢慢变亮」——看起来像褪色，不像放手。
-    if (f.endMs) {
-      times.push(f.endMs);
-      times.push(f.endMs + (f.fadeMs ?? 240));
+  //
+  // 过渡**窗口内部**同样要采样：曲线是 easeOutCubic，而 WAAPI 在关键帧之间做的是
+  // 线性插值。只给两个端点等于把曲线换成它的弦——240ms 过渡的中点，成片里「让位」
+  // 的那个已经压到 0.61、接手的已经亮到 0.94，网页版两个都还停在 0.775：
+  // 看起来像「谁也没被指到」。两端都不报错，并排才看得出。
+  //
+  // 只给「被焦点指过的元素」插：其余层的 focusDim 恒为 0，插了也只是白涨关键帧。
+  const dimmed = elementId ? (opts.focus ?? []).some((f) => f.elementId === elementId) : false;
+  if (dimmed) {
+    for (const f of opts.focus ?? []) {
+      const fade = f.fadeMs ?? FOCUS_FADE_MS;
+      pushFadeSamples(times, f.startMs, fade);
+      // 放手也是一个窗口，理由同上：漏了就会被线性插值抹成一路慢慢变亮。
+      if (f.endMs) pushFadeSamples(times, f.endMs, fade);
     }
   }
   times.push(pageMs);
-  const points: number[] = [];
-  for (const t of times) {
-    const clamped = Math.max(0, Math.min(pageMs, t));
-    if (points.length === 0 || clamped > points[points.length - 1]) points.push(clamped);
-  }
+  const points = timelinePoints(times, pageMs);
   if (points.length < 2) return null;
 
   const layer: Layer = {
@@ -233,6 +269,36 @@ export function pickStageLayers(
 }
 
 /**
+ * 一段矩形焦点的遮罩关键帧（纯函数，可在 node 里跑）。
+ *
+ * 抽出来是因为「网页版在成片的每个帧时刻等于成片」必须能被 CI 核对，而
+ * buildFocusMasks 要 DOM 与 WAAPI。这条等价关系此前**只在端点成立**：关键帧
+ * 只有 [起点, 起点+fade]，中间靠 WAAPI 线性插值，而成片逐帧求的是 easeOutCubic。
+ * 结果是「同一个函数」这句话在过渡区间里不成立，且两端都不报错。
+ *
+ * 只认这一段自己的 alpha：别的段生效时这一层必须是 0（焦点互斥）。
+ */
+export function focusMaskKeyframes(
+  focus: FocusSpan[] | undefined,
+  span: FocusSpan,
+  pageMs: number
+): Keyframe[] | null {
+  const rect = span.rect;
+  if (!focus || !rect || !(rect.w > 0) || !(rect.h > 0) || !(pageMs > 0)) return null;
+  const fade = span.fadeMs ?? FOCUS_FADE_MS;
+  const marks: number[] = [0];
+  pushFadeSamples(marks, span.startMs, fade);
+  if (span.endMs) pushFadeSamples(marks, span.endMs, fade);
+  marks.push(pageMs);
+  const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
+    const m = focusMask(focus, t);
+    const alpha = m && m.rect.x === rect.x && m.rect.y === rect.y ? m.alpha : 0;
+    return { offset: t / pageMs, opacity: String(round(alpha)) };
+  });
+  return frames.length >= 2 ? frames : null;
+}
+
+/**
  * 矩形焦点遮罩：每个带 `rect` 的焦点一个节点（整页白纱、rect 处留孔）。
  *
  * 为什么每段一个节点、而不是一个节点换位置：焦点是互斥的，同一时刻只会有一段生效；
@@ -277,22 +343,8 @@ function buildFocusMasks(
 
     let animation: Animation | null = null;
     if (canAnimate && pageMs > 0) {
-      const fade = f.fadeMs ?? FOCUS_FADE_MS;
-      const marks = [0, f.startMs, f.startMs + fade];
-      if (f.endMs) marks.push(f.endMs, f.endMs + fade);
-      marks.push(pageMs);
-      const points: number[] = [];
-      for (const t of marks) {
-        const clamped = Math.max(0, Math.min(pageMs, t));
-        if (points.length === 0 || clamped > points[points.length - 1]) points.push(clamped);
-      }
-      const frames: Keyframe[] = points.map((t) => {
-        const m = focusMask(focus, t);
-        // 只认这一段自己的 alpha：别的段生效时这一层必须是 0（焦点互斥）。
-        const alpha = m && m.rect.x === rect.x && m.rect.y === rect.y ? m.alpha : 0;
-        return { offset: pageMs > 0 ? t / pageMs : 0, opacity: String(round(alpha)) };
-      });
-      if (frames.length >= 2) {
+      const frames = focusMaskKeyframes(focus, f, pageMs);
+      if (frames) {
         animation = node.animate(frames, {
           duration: Math.max(1, pageMs),
           fill: 'both',
