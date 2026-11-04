@@ -26,6 +26,7 @@
     V9 数据    图里画出来的高度和它自己标的数值成不成比例（柱子会不会说谎）
     V10 叙事   图上标了数的元素，讲解有没有念到这个数（讲稿会不会漏讲）
     V11 同拍   念到某个数的那一刻，注意力是不是正好挪到它身上（讲早了就是抢话）
+    V20 遮罩   矩形焦点（图表柱子）的白纱画了没：孔开没开、强度对不对、放手归零没有
 
   V7 与 V8 是仅有的两组**不问元素、只问画面**的：
   前六组全过而人看着不对，差异就在这里。V7 管「每一刻只有半页内容」，
@@ -89,6 +90,14 @@ SILENT_MAX_MS = 3500      # 讲着话时画面连续多久不变算「静」—�
 # 焦点淡出的时长，与 shared/motion.ts 的 FOCUS_FADE_MS 一致。V14 用它划窗口：
 # 一次切换的过渡应当落在这个窗口里，而不是只占一帧。
 FOCUS_FADE_MS = 240
+# 矩形焦点遮罩（V20）：目标强度 = 1 − FOCUS_DIM_OPACITY = 0.45，即「非焦点区叠 45% 白」。
+# check_mask.py 反解出来的就是这个量，所以阈值可以直接和常量比。
+MASK_DIM = 0.45
+MASK_STRENGTH_TOL = 0.10   # ±0.10：H.264 会在平坦区抹掉几个灰度，但不该抹掉一条白纱
+# 孔内应当完全不受影响。给到 0.10 是因为柱子边上的网格线在编码后会有轻微振铃，
+# 但「孔没开」时这里是 0.45——两者差四倍，这个门槛不会把病当成噪声。
+MASK_INSIDE_MAX = 0.10
+MASK_AFTER_MAX = 0.08      # 放手之后应当回到 0；留一点编码残差
 # V14 判「这一帧是不是孤立尖峰」：峰值帧之后仍要有变化，且不低于峰值的 10%
 # （同时不低于绝对下限 0.5，免得 3.0 的小切换被 0.3 的编码残差糊过去）。
 # 为什么不用「数几帧超过峰值 30%」：easeOutCubic 前快后慢，240ms 的过渡里第二帧
@@ -389,6 +398,82 @@ def focus_unique_findings(rep):
     return [{"code": "V13.1", "ok": not bad,
              "msg": "只指一个：有人被压暗时，满墨的元素恰好一个",
              "detail": bad}]
+
+
+def mask_findings(rep, plan):
+    """V20：矩形焦点遮罩在**像素上**到底发生了什么——孔开没开、白纱够不够、放手归零没有。
+
+    为什么 V13 管不到它：V13 量的是图层的墨量，而矩形焦点指向的东西**不是图层**
+    （内嵌图表的柱子；图表是一张位图，切不出可合成的层）。所以遮罩页在 V13 里
+    一页都进不了统计——**「绿」和「没测」长得一模一样**，正是这个门禁最忌讳的状态。
+
+    三种失败各自对应一种像素表现，都能与「正常」分开：
+
+      · rect 在编译里丢了 / 合成器忘了画 → 外区白纱 0.00（应为 0.45）；
+      · 孔画在别处（播放器漏 `position:absolute` 时就是整页均匀压暗）
+        → 孔内也读到 0.45（应为 0.00），这是唯一能抓住「孔位错」的读数；
+      · 忘了在 endMs 放手 → 放手区间的白纱仍是 0.45（应为 0）。
+
+    计划里有矩形焦点、报告里却没有对应页，也算红：那不是「通过」，是**没测**。
+    """
+    rect_idx = [p.get("index") for p in (plan or {}).get("pages") or []
+                if any(f.get("rect") for f in (p.get("focus") or []))]
+    if not rect_idx:
+        # 本片没有矩形焦点：不是「通过」，是**不适用**。返回空列表让它从报告里消失，
+        # 而不是留一条恒绿的 V20 让读报告的人以为遮罩验过。
+        return []
+    if not rep:
+        return [{"code": "V20.1", "ok": False,
+                 "msg": "矩形焦点未测：缺 check_mask.py 的报告",
+                 "detail": ["计划里有 %d 页带 rect，但没有测量报告（用 --rerun 生成）"
+                            % len(rect_idx)]}]
+
+    by_idx = {p.get("index"): p for p in rep.get("pages") or []}
+    bad, skipped, measured = [], [], 0
+    for idx in rect_idx:
+        r = by_idx.get(idx)
+        if r is None:
+            bad.append("页 %d：计划有矩形焦点，报告里没有这一页（测量没覆盖）" % idx)
+            continue
+        if r.get("skipped"):
+            skipped.append("页 %d：未测——%s" % (idx, r["skipped"]))
+            continue
+        if (r.get("holdSamples") or 0) <= 0:
+            bad.append("页 %d：没有稳态采样点，遮罩强度无从判断" % idx)
+            continue
+        measured += 1
+        s = r.get("holdStrength")
+        if s is None or abs(s - MASK_DIM) > MASK_STRENGTH_TOL:
+            bad.append("页 %d：非焦点区叠白 %.2f，应为 %.2f±%.2f"
+                       % (idx, -1 if s is None else s, MASK_DIM, MASK_STRENGTH_TOL))
+        ins = r.get("holdInside")
+        if ins is not None and ins > MASK_INSIDE_MAX:
+            bad.append("页 %d：孔内也叠了 %.2f 白（应 ≤%.2f）——孔没开在这个矩形上"
+                       % (idx, ins, MASK_INSIDE_MAX))
+    if measured == 0 and skipped and not bad:
+        bad.append("矩形焦点一页都没测成：%s" % "；".join(skipped))
+    detail = bad + skipped
+    findings = [{"code": "V20.1", "ok": not bad,
+                 "msg": "遮罩画对了：非焦点区叠 %.2f 白、孔内不受影响（%d 页）"
+                        % (MASK_DIM, measured),
+                 "detail": detail}]
+
+    # 放手单独一条：只有真的定义了终点才判。焦点保持到页尾是合法编排（V12 管这个），
+    # 那时没有「放手后」可测，硬加一条恒绿的判据只会稀释报告。
+    after_pages = [p for p in (rep.get("pages") or [])
+                   if p.get("index") in rect_idx and (p.get("afterSamples") or 0) > 0]
+    if after_pages:
+        bad_after = []
+        for p in after_pages:
+            a = p.get("afterStrength")
+            if a is not None and a > MASK_AFTER_MAX:
+                bad_after.append("页 %d：放手之后仍叠着 %.2f 白（应 ≤%.2f），最后一句讲完画面还是灰的"
+                                 % (p.get("index"), a, MASK_AFTER_MAX))
+        findings.append({"code": "V20.2", "ok": not bad_after,
+                         "msg": "放手归零：endMs 之后不再压暗（%d 页有放手时刻）"
+                                % len(after_pages),
+                         "detail": bad_after})
+    return findings
 
 
 def focus_release_findings(design, plan):
@@ -719,6 +804,8 @@ def audit(design, align, appear, film, elems=None, plan=None):
         findings.extend(focus_unique_findings(film["focus"]))
     # ---- V14 切换有没有过程：V13 管「亮着几个」，这一条管「从上一个到这个是怎么变的」
     findings.extend(focus_transition_findings(design, film.get("motion")))
+    # ---- V20 矩形焦点遮罩：V13 量的是图层墨量，而图表柱子不是图层，一页都进不了统计
+    findings.extend(mask_findings(film.get("mask"), plan))
 
     return findings
 
@@ -871,6 +958,8 @@ def load_inputs(args):
         film["motion"] = json.load(open(args.motion, encoding="utf-8"))
     if args.focus and os.path.exists(args.focus):
         film["focus"] = json.load(open(args.focus, encoding="utf-8"))
+    if args.mask and os.path.exists(args.mask):
+        film["mask"] = json.load(open(args.mask, encoding="utf-8"))
     if args.chart and os.path.exists(args.chart):
         film["chart"] = json.load(open(args.chart, encoding="utf-8"))
     if args.words and os.path.exists(args.words):
@@ -928,8 +1017,12 @@ def rerun(args):
          args.elements, "--out", args.chart],
         [py, os.path.join(HERE, "check_focus.py"), args.film, args.segments,
          args.elements, args.plan, "--out", args.focus],
+        [py, os.path.join(HERE, "check_mask.py"), args.film, args.plan, "--out", args.mask],
     ):
         if cmd[1].endswith("check_av_sync.py") and args.skip_sync:
+            continue
+        # 没有 plan 就没有矩形焦点可言：跳过，而不是让测量脚本抛异常把整轮 --rerun 打断。
+        if cmd[1].endswith("check_mask.py") and not os.path.exists(args.plan):
             continue
         print("→ %s" % " ".join(os.path.basename(c) for c in cmd[1:3]))
         r = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
@@ -1270,6 +1363,40 @@ def self_test():
         os.utime(el, (2_000_000, 2_000_000))
         cases.append(("V6.2-ok", not elements_stale(el, [rp]), None))
 
+    # V20：矩形焦点遮罩。三条失败各自对应一种像素表现，这里逐条注入。
+    plan20 = {"pages": [{"index": 0, "focus": [
+        {"startMs": 1000, "endMs": 3000, "fadeMs": 240,
+         "elementId": "p1-s2-b0", "rect": {"x": 385, "y": 384, "w": 173, "h": 415}}]}]}
+
+    def mask_page(**kw):
+        base = {"index": 0, "holdSamples": 17, "holdStrength": MASK_DIM,
+                "holdInside": 0.0, "afterSamples": 6, "afterStrength": 0.0}
+        base.update(kw)
+        return {"pages": [base], "checked": 1}
+
+    got20 = {x["code"]: x["ok"] for x in mask_findings(mask_page(), plan20)}
+    cases.append(("V20-ok", all(got20.values()) and len(got20) == 2, got20))
+
+    # 孔没开：这正是播放器漏 `position:absolute` 时的像素形态（整页均匀压暗）
+    got20b = {x["code"]: x["ok"] for x in mask_findings(mask_page(holdInside=0.45), plan20)}
+    cases.append(("V20-hole", got20b.get("V20.1") is False, got20b))
+
+    # 白纱画淡了（强度按 0.22 合成）：与「没画」是两回事，但都不该放行
+    got20c = {x["code"]: x["ok"] for x in mask_findings(mask_page(holdStrength=0.22), plan20)}
+    cases.append(("V20-weak", got20c.get("V20.1") is False, got20c))
+
+    # 放手没归零：讲完最后一句画面还灰着
+    got20d = {x["code"]: x["ok"] for x in mask_findings(mask_page(afterStrength=0.40), plan20)}
+    cases.append(("V20-after", got20d.get("V20.2") is False, got20d))
+
+    # 计划里有 rect、却没有测量报告：这是「没测」，不是「通过」
+    got20e = mask_findings(None, plan20)
+    cases.append(("V20-missing", got20e and got20e[0]["ok"] is False, got20e))
+
+    # 没有矩形焦点的计划一条都不出：否则每片都会多一条恒绿的 V20
+    plain = {"pages": [{"index": 0, "focus": [{"startMs": 0, "elementId": "e1"}]}]}
+    cases.append(("V20-na", mask_findings(mask_page(), plain) == [], None))
+
     bad = 0
     for code, ok, extra in cases:
         print(("  ok   " if ok else "  FAIL ") + code + ("" if ok else "  %r" % (extra,)))
@@ -1299,6 +1426,8 @@ def main():
                     help="编译后的计划：V12 审压暗区间有没有终点；不存在则跳过 V12")
     ap.add_argument("--focus", default="tmp/q7/focus.json",
                     help="check_focus.py 的输出：V13 看「同一时刻亮着几个」")
+    ap.add_argument("--mask", default="tmp/q7/mask.json",
+                    help="check_mask.py 的输出：V20 看矩形焦点的白纱与孔")
     ap.add_argument("--rerun", action="store_true", help="先重跑三个测量再审计")
     ap.add_argument("--skip-sync", action="store_true", help="跳过音画检查（无参考音轨时）")
     ap.add_argument("--json", default="tmp/q7/verify.json")

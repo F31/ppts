@@ -358,6 +358,17 @@ cd renderer && PPTS_CHROME="$PPTS_CHROME" node render.mjs \
 #      孔外与源图的差 = 0.27（= 恰好 45% 白）、孔内 1.04（H.264 误差）、放手后 0.03。
 #    分享播放器走同一条 `focusMask`，节点定位那一条有 stub 用例守着
 #    （web/animation-check.mjs：删掉 position:absolute 就红）。
+
+# 9) 上面那三帧是「人眼看」，这一条是「门禁自己看」：V20 读 check_mask.py 的报告
+PPTS_SEG_DIR=tmp/mask-e2e/out python3 scripts/fidelity/check_mask.py \
+  tmp/mask-e2e/out/segment_000.mp4 tmp/mask-e2e/plan.json --out tmp/mask-e2e/mask.json
+#    它反解「非焦点区实际叠了多少白」：alpha = mean(cur−ref)/mean(255−ref)，
+#    直接与 DIM(0.45) 比，所以报告里的数能和常量对上。参照帧取遮罩开始前 300ms
+#    的那一帧——同一页、入场动画之后，只差遮罩这一层。
+#    实测（正确的片子）：白纱 0.454、孔内 0.000、放手后 0.003。
+#    反例（把 rect 挪到隔壁 400px 再渲染）：孔内立刻读到 0.46 —— 这正是
+#    「孔画在别处」的像素形态，也是播放器漏 position:absolute 时的样子。
+#    计划里没有 rect 时它直接出空报告，不解段时长（绝大多数片子属于这一类）。
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，
@@ -462,7 +473,7 @@ structural7`。所以这个读数不只是实验脚本的行为——两侧在**
 ## 机器门禁：一条命令验完「该动的时候才动」
 
 ```bash
-python3 scripts/fidelity/verify.py --self-test   # 门禁自检，45 项故障注入，无需成片（CI 跑这个）
+python3 scripts/fidelity/verify.py --self-test   # 门禁自检，51 项故障注入，无需成片（CI 跑这个）
 python3 scripts/fidelity/verify.py --film tmp/q7/film_M_narrated.mp4 --rerun   # 重跑测量 + 审计真片，约 2 分钟
 #   默认 --film 还是更早的 film_C；换片不传就会停在「缺输入」，不是片子坏了
 python3 scripts/fidelity/verify.py               # 只审计已有报告（快，但报告必须是新的）
@@ -558,7 +569,7 @@ L 片全过之后还有一层：**状态对，过程不对**。页内**第一个
 V10 只判带 `value` 的图表元素，不判正文要点：正文里的次要数字（「两个 30 页长片」）
 不必逐个念，硬判会逼着讲稿变成报数。
 
-`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 45 项）。
+`--self-test` 是给门禁自己的：往合成数据里逐条注入故障，断言每种都能红（现 51 项）。
 没有它，门禁本身会重演「看起来通过了」，而那正是 5.6 的教训。
 
 ### `check_appearance.py` 现在报三个数，别用错
