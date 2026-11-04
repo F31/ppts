@@ -47,6 +47,66 @@ type element struct {
 	// Value 是图表的数值（秒）。plan 编译用不到它，但 check_chart 要用它
 	// 核对「柱高与标注值成比例」——把数值留在元素清单里，判据才不必去解析图上的字。
 	Value *int `json:"value,omitempty"`
+	// Chart 是图表形状的附加信息（extract_pptx_elements.py 产出）。
+	// plan 只关心 Bars：讲稿里写「讲 174 那根」时，焦点要落成一块矩形，
+	// 而矩形只能来自这里——图表是一张位图，柱子不是图层。
+	Chart *chartInfo `json:"chart,omitempty"`
+}
+
+// chartInfo 只取 plan 用得上的部分，其余字段（类别、系列值）留给判据脚本。
+type chartInfo struct {
+	ChartType string `json:"chartType"`
+	// DataLabels 决定焦点矩形要不要向上扩：柱子顶上的数字画在柱体包围盒**之外**。
+	DataLabels bool       `json:"dataLabels"`
+	Bars       []chartBar `json:"bars"`
+}
+
+// chartBar 是 split_chart_bars.py 从页面图切出来的一根柱：坐标与元素同一套（计划像素）。
+type chartBar struct {
+	ID  string `json:"id"`
+	Box [4]int `json:"box"`
+}
+
+// focusLabelPadPx 是焦点矩形向上多包的高度。
+//
+// 柱顶的数据标签画在柱体包围盒之外：实测文字顶边在柱顶上方 41px（标签带高 22px），
+// 只框柱体时「讲的是这根」对了，但这根自己的数字被压在纱下面——图上最该清楚的数
+// 反而灰了。45px 是量出来的，不是估的（scripts/fidelity/mask_preview.py 的
+// --label-pad 默认值与它同源）。
+const focusLabelPadPx = 45
+
+// barRects 把「柱 id → 矩形」摊平成一页一张表。
+//
+// 不在这里校验矩形是否落在画布内：那是 Validate 的活，且它同时守着
+// 「服务端收到的 plan 也不能越界」。这里只负责把数据送到焦点上。
+func barRects(elems []element) map[string]render.Box {
+	out := make(map[string]render.Box)
+	for _, e := range elems {
+		if e.Chart == nil {
+			continue
+		}
+		for _, b := range e.Chart.Bars {
+			if b.Box[2] <= 0 || b.Box[3] <= 0 {
+				// 切柱脚本已经保证不写无效框；真出现了就跳过并留痕，
+				// 免得一个 0×0 的矩形被当成「已指定」而让焦点静默无效。
+				log.Printf("警告：%s 的柱子 %q 包围盒无效 %v，忽略", e.ID, b.ID, b.Box)
+				continue
+			}
+			r := render.Box{X: b.Box[0], Y: b.Box[1], W: b.Box[2], H: b.Box[3]}
+			if e.Chart.DataLabels {
+				// 只有带标签的图才需要扩：没有标签时向上扩出一块空白，
+				// 等于在柱子上方留一条没被压暗的带，反而更显眼。
+				pad := focusLabelPadPx
+				if r.Y < pad {
+					pad = r.Y // 贴着画布顶边时能扩多少扩多少
+				}
+				r.Y -= pad
+				r.H += pad
+			}
+			out[b.ID] = r
+		}
+	}
+	return out
 }
 
 type pageMeta struct {
@@ -270,9 +330,12 @@ const focusReleaseGapMS = 500
 // 少于两个不同的焦点元素时不启用——一个元素从头亮到尾，没有「让位」可言，
 // 生成出来的序列只会让求值器每帧多查一次表。
 //
+// rects 是「柱 id → 矩形」，来自元素清单里图表形状的 bars。命中就把它挂到焦点上：
+// 那一刻的让位交给遮罩（整页白纱、矩形留孔），而不是图层压暗——柱子没有图层。
+//
 // 注意这里**不看** Bind：出场与焦点已经解耦。把两者绑在一起，就会出现
 // 「元素一起出场后再无变化」的静默页（V8 量的正是它）。
-func focusSpans(page scriptPage) []render.FocusSpan {
+func focusSpans(page scriptPage, rects map[string]render.Box) []render.FocusSpan {
 	static := make(map[string]struct{}, len(page.Static))
 	for _, id := range page.Static {
 		static[id] = struct{}{}
@@ -322,7 +385,13 @@ func focusSpans(page scriptPage) []render.FocusSpan {
 			continue
 		}
 		seen[a.id] = struct{}{}
-		spans = append(spans, render.FocusSpan{StartMs: a.ms, ElementID: a.id})
+		span := render.FocusSpan{StartMs: a.ms, ElementID: a.id}
+		if r, ok := rects[a.id]; ok {
+			span.Rect = &r
+			log.Printf("页 %d：焦点 %q 是图表柱子（来自 %q），矩形 (%d,%d,%d,%d)",
+				page.Index, a.id, a.from, r.X, r.Y, r.W, r.H)
+		}
+		spans = append(spans, span)
 		owns = append(owns, a.segEnd)
 	}
 	// 少于两个不同的焦点元素时不启用：一个元素从头亮到尾，没有「让位」可言，
@@ -417,6 +486,13 @@ func prefillScriptPage(sp scriptPage, rev *animation.Revision) scriptPage {
 func main() {
 	in := flag.String("in", "", "含 pages/ 与 elements.json 的目录（gen_pages.py 的输出）")
 	out := flag.String("out", "job", "job 目录：plan.json 与底图副本写在这里")
+	// 元素清单与底图可覆盖：图表实验链是「extract_pptx_elements.py → split_chart_bars.py」，
+	// 产出的清单不在 gen_pages.py 的目录里，baseImage 也没人填。给两个开关就能直接编，
+	// 不必为了跑一次编译去伪造一份 pages/ 目录。
+	elementsPath := flag.String("elements", "",
+		"元素清单路径，缺省 <in>/elements.json；图表实验用 split_chart_bars.py 的产物")
+	baseImage := flag.String("base-image", "",
+		"覆盖清单里的 baseImage（相对 <in>）；图表实验只有一张整页图时用")
 	duration := flag.Int64("duration", 6000, "每页时长（毫秒）；给了 -script 时由配音实测值取代")
 	// 见 revision() 的注释：默认产物必须与 5.10 的保真基线一致，所以合规档只在新开关下启用。
 	tierCompliant := flag.Bool("tier-compliant", false,
@@ -434,12 +510,20 @@ func main() {
 	}
 
 	raw, err := os.ReadFile(filepath.Join(*in, "elements.json"))
+	if *elementsPath != "" {
+		raw, err = os.ReadFile(*elementsPath)
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
 	var meta []pageMeta
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		log.Fatal(err)
+	}
+	if *baseImage != "" {
+		for i := range meta {
+			meta[i].BaseImage = *baseImage
+		}
 	}
 	// IR 的 kind 是封闭集合（validate.validKind），没有 "text"。纯文字块归到 bullet。
 	for i := range meta {
@@ -455,6 +539,13 @@ func main() {
 	}
 	// 底图拷进 job 目录：合成器只认 plan 所在目录下的相对路径（ADR-14）。
 	for _, m := range meta {
+		if m.BaseImage == "" {
+			// 空 baseImage 会让 filepath.Join 退化成目录本身，ReadFile 报
+			// 「Incorrect function」（Windows）/「is a directory」（Unix）——
+			// 那句话对着「我的清单明明有图」完全对不上号。
+			log.Fatalf("页 %d 缺 baseImage：清单是提取器产的，没填底图；用 -base-image 指定整页图",
+				m.Index)
+		}
 		data, err := os.ReadFile(filepath.Join(*in, filepath.FromSlash(m.BaseImage)))
 		if err != nil {
 			log.Fatal(err)
@@ -540,7 +631,25 @@ func main() {
 			} else {
 				rev = scriptRevision(m.Elements, sp, *tierCompliant)
 			}
-			focus = focusSpans(sp)
+			rects := barRects(m.Elements)
+			focus = focusSpans(sp, rects)
+			// 焦点既不是图层、也不是切出来的柱子时，编译会在 Validate 里报
+			// 「不是本页图层」——那句话对着「我明明写了柱子的 id」很难对上号。
+			// 在这一层先说清楚缺了哪一步：柱子要先切出来才有矩形。
+			layerID := make(map[string]struct{}, len(m.Elements))
+			for _, e := range m.Elements {
+				layerID[e.ID] = struct{}{}
+			}
+			for _, f := range focus {
+				if _, ok := layerID[f.ElementID]; ok {
+					continue
+				}
+				if _, ok := rects[f.ElementID]; !ok {
+					log.Fatalf("页 %d 的焦点 %q 既不是本页图层，也没有切出对应的柱子："+
+						"先跑 split_chart_bars.py 生成 chart.bars，或用 -elements 指向它的产物",
+						sp.Index, f.ElementID)
+				}
+			}
 			offsets = make(map[string]int64, len(sp.Segments))
 			for _, seg := range sp.Segments {
 				offsets[seg.ID] = seg.StartMs

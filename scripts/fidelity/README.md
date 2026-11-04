@@ -369,6 +369,27 @@ PPTS_SEG_DIR=tmp/mask-e2e/out python3 scripts/fidelity/check_mask.py \
 #    反例（把 rect 挪到隔壁 400px 再渲染）：孔内立刻读到 0.46 —— 这正是
 #    「孔画在别处」的像素形态，也是播放器漏 position:absolute 时的样子。
 #    计划里没有 rect 时它直接出空报告，不解段时长（绝大多数片子属于这一类）。
+
+# 10) 不用手写 plan：编译器自己把「讲第几根柱」翻成矩形。
+#     清单直接取第 5、6 步的产物（提取器 + 切柱），讲稿里写柱子 id 就行：
+cat > tmp/chart/segments-bars.json <<'JSON'
+{"pages":[{"index":0,"slideId":"slide-0","durationMs":9000,"static":["p1-s2"],
+ "segments":[
+  {"id":"s0","text":"两核","startMs":500,"endMs":3500,"durationMs":3000,"focus":"p1-s2-b0"},
+  {"id":"s1","text":"四核","startMs":3500,"endMs":6500,"durationMs":3000,"focus":"p1-s2-b1"},
+  {"id":"s2","text":"八核","startMs":6500,"endMs":9000,"durationMs":2500,"focus":"p1-s2-b2"}]}]}
+JSON
+go run ./scripts/fidelity/plan -in tmp/chart -elements tmp/chart/elements-hi.json \\
+  -base-image hi-1.png -script tmp/chart/segments-bars.json -hard-cut -out tmp/chart-e2e/job
+#    `-elements` / `-base-image` 是给这条链用的：提取器的清单没有 gen_pages 的 baseImage，
+#    也不需要为了跑一次编译去伪造 pages/ 目录。
+#    日志会打印「焦点 \"p1-s2-b0\" 是图表柱子，矩形 (385,384,173,415)」——y 比柱顶少 45px，
+#    那是数据标签的高度：只框柱体时，焦点柱自己的数字会被压在纱下面（「指谁谁灰」）。
+#    只有 dataLabels 为真才扩；贴顶边时能扩多少扩多少。
+#    id 写错或清单没切柱时编译直接失败，提示先跑 split_chart_bars.py ——
+#    不会静默退化成「指了个不存在的图层」。
+#    实测（9000ms / 三根柱各 3s / 270 帧）：白纱 0.455、孔内 0.000、75 个稳态采样点，
+#    V20 判绿（量法见第 9 步）。
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，

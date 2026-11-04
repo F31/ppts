@@ -144,8 +144,20 @@ def main():
         idx = page["index"]
         pl = next((p for p in plan.get("pages") or [] if p.get("index") == idx), None)
         spans = (pl or {}).get("focus") or []
-        ids = [f["elementId"] for f in spans]
+        # 矩形焦点（图表柱子）不进这条判据：它指的是一块矩形，不是图层，量不到
+        # 「这个元素的墨量」。硬把它塞进 ids 只会在 boxes 里找不到而抛异常——
+        # 那种「工具坏了」和「片子错了」长得一样，最难分工。遮罩由 V20 负责。
+        skipped = [f["elementId"] for f in spans if f.get("rect")]
+        ids = [f["elementId"] for f in spans if not f.get("rect")]
         if len(ids) < 2:
+            if skipped:
+                # 整页焦点都是柱子：这页在 V13 里本来会「消失」，而消失和测过在汇总里
+                # 都算绿。留一条显式记录，汇总时能看出「这页交给 V20 了」。
+                report.append({"index": idx, "pageStartMs": starts[idx], "violations": [],
+                               "skippedRect": skipped,
+                               "note": "本页焦点全是矩形（图表柱子），V13 量不到图层"})
+                print("页 %d：%d 个矩形焦点，V13 不量（见 V20 的遮罩读数）"
+                      % (idx, len(skipped)))
             continue
         missing = [i for i in ids if i not in boxes.get(idx, {})]
         if missing:
@@ -180,6 +192,10 @@ def main():
                 hits.append((t, bright, dimmed))
 
         page_report = {"index": idx, "pageStartMs": starts[idx], "violations": runs(hits)}
+        if skipped:
+            # 写进报告而不只是打印：报告是门禁读的那一份，「这页有矩形焦点、
+            # 本节没量」必须随报告一起走，否则事后只能靠回忆解释为什么少了一页。
+            page_report["skippedRect"] = skipped
         # 区间同时给页内与全片两种时间：页内便于对着编排读，全片便于在播放器里定位。
         for v in page_report["violations"]:
             v["fromAbsMs"] = starts[idx] + v["fromMs"]

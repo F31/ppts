@@ -172,6 +172,25 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
   const cur = focus[i];
   const fade = cur.fadeMs ?? FOCUS_FADE_MS;
 
+  // 矩形焦点（内嵌图表的柱子）：整页让位由遮罩负责，图层不参与压暗。
+  //
+  // 这一条不是优化，是正确性。柱子的 id 不是图层，`for (f of focus) out[f] = 1`
+  // 只会把**别的焦点候选**压暗；若那一位恰好是同页图表元素（「先讲这张图、再讲
+  // 174 那根」是常见编法），图表层就变成 0.55 不透明度，而遮罩又在它上面盖了
+  // 45% 白——孔里露出来的正是被压过一道的柱子，指谁谁灰。
+  //
+  // 但上一段压暗过的层不能一帧跳回全亮：p 从 0 到 1，dim 从 1 回到 0，
+  // 与图层→图层的切换用同一条曲线，切换处才没有突兀的「啪一下亮了」。
+  if (cur.rect) {
+    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.startMs) / fade));
+    if (p < 1 && i > 0 && !focus[i - 1].rect) {
+      for (const f of focus) {
+        if (!f.rect) out[f.elementId] = 1 - p;
+      }
+    }
+    return out;
+  }
+
   // 放手之后到下一段开始之间：只有刚放下的那个元素还有淡出尾巴，其余一律全亮。
   // 注意这里返回的是「空表 + 一个渐亮的值」，不是「把别的元素调亮」——全亮是
   // 缺省态，不做任何让位就等于全亮。

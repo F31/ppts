@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cubicBezier, evaluateLayer, FOCUS_DIM_OPACITY, focusMask, framesForDuration, IDENTITY } from './motion.ts';
+import { cubicBezier, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMask, framesForDuration, IDENTITY } from './motion.ts';
 
 const linear = { x1: 0, y1: 0, x2: 1, y2: 1 };
 
@@ -141,4 +141,26 @@ test('focusMask：没有 rect 的焦点不改变原有行为', () => {
   ];
   assert.equal(focusMask(mixed, 1500), null);
   assert.ok(focusMask(mixed, 500));
+});
+
+// 矩形焦点与图层压暗是**两套**让位机制，不能同时作用在同一块画面上。
+// 混用时的像素形态是：孔里露出来的柱子被图层压过一道（0.55），再叠 45% 白纱——
+// 「指谁谁灰」。这组用例守的正是这条边界。
+test('focusDim：矩形焦点期间图层不再压暗', () => {
+  const rect = { x: 385, y: 384, w: 173, h: 415 };
+  const focus = [
+    { startMs: 0, elementId: 'p1-s2', fadeMs: 240 },
+    { startMs: 1000, elementId: 'p1-s2-b0', rect, fadeMs: 240 }
+  ];
+  // 第 0 段讲整张图：图是满的，柱子（不是图层）在表里记成退后，但没有层可查。
+  assert.equal(focusDim(focus, 500)['p1-s2'], 0);
+  // 第 1 段讲某根柱：让位交给遮罩，图表层必须回到全亮。
+  const d = focusDim(focus, 2000);
+  assert.equal(d['p1-s2'], undefined, '矩形焦点期间不应再压暗同页图表层');
+  // 切换处要有淡出尾巴：不能一帧从 0.55 跳回 1.00。
+  const mid = focusDim(focus, 1060);
+  assert.ok(mid['p1-s2'] > 0 && mid['p1-s2'] < 1,
+    `切换中该在 0~1 之间，实得 ${mid['p1-s2']}`);
+  // 纯矩形焦点的页（前面没有图层焦点）：一律不压暗。
+  assert.deepEqual(focusDim([{ startMs: 0, elementId: 'b0', rect, fadeMs: 240 }], 500), {});
 });
