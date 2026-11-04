@@ -139,7 +139,8 @@ log "1/3 起 vite dev（端口 ${VITE_PORT}）"
 PIDS+=($!)
 ready=0
 for i in $(seq 1 60); do
-  if curl -s --noproxy '*' -m 1 -o /dev/null "$BASE/focus-suggest-harness.html"; then ready=1; break; fi
+  # -f 不能省：curl 对 404 也返回 0，端口被别的进程占着时会误判成「vite 已就绪」。
+  if curl -fsS --noproxy '*' -m 1 -o /dev/null "$BASE/focus-suggest-harness.html"; then ready=1; break; fi
   sleep 1
 done
 [ "$ready" = 1 ] || { tail -20 "$WORK/vite.log"; die "vite dev 没起来"; }
