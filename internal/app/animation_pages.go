@@ -151,7 +151,7 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
 		elements := a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision)
-		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, fallbackRev, elements, durationMS, emuToPx, focusByRevision)
+		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, rev, fallbackRev, elements, durationMS, emuToPx, focusByRevision)
 		req.Pages = append(req.Pages, AnimationPage{
 			SlideID:        slide.SlideID,
 			DurationMs:     durationMS,
@@ -217,8 +217,12 @@ func (a *AnimationPageAssembler) revision(ctx context.Context, in AnimationPageI
 // 何时去读 document.json：**只有这一页真的写了焦点**才读。焦点是逐段的，绝大多页
 // 一段都没有；为一次导出里每页各读一次整份文档，是最容易写出来、也最容易被忽略的
 // 浪费（而且它是"每次导出多 N 次对象读"，不是"多一次"）。
+//
+// rev 只用来回答一件事：这一版规格里哪些元素真会变成图层（见 layerElementIDs）。
+// 它可以是 nil——那正是「这一页没配动效」，此时所有形状焦点都走矩形遮罩。
 func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPageInput, slide media.SlideCue,
-	pageIndex int, ref AnimationSpecRef, fallbackRev int, elements []render.Element, pageMs int64, emuToPx float64,
+	pageIndex int, ref AnimationSpecRef, rev *animation.Revision, fallbackRev int,
+	elements []render.Element, pageMs int64, emuToPx float64,
 	cache map[int]map[string][]FocusBox) ([]render.FocusSpan, []render.Diagnostic) {
 	if a == nil || a.focus == nil {
 		return nil, nil
@@ -253,13 +257,7 @@ func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPag
 		}
 		cache[revNo] = bySlide
 	}
-	layerIDs := make(map[string]struct{}, len(elements))
-	for _, el := range elements {
-		if el.ID != "" {
-			layerIDs[el.ID] = struct{}{}
-		}
-	}
-	spans, diags := buildFocusSpans(cues, bySlide[slide.SlideID], layerIDs, pageMs, emuToPx)
+	spans, diags := buildFocusSpans(cues, bySlide[slide.SlideID], layerElementIDs(rev, elements), pageMs, emuToPx)
 	for i := range diags {
 		diags[i].Page = pageIndex
 	}

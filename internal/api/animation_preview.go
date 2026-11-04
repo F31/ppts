@@ -233,7 +233,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 	canvas := previewCanvas(png)
 	// 焦点与元素几何来自同一份页文档、同一个源版本，只是这里不需要对象读：
 	// page 就是 Resolve 读出来的那一页。
-	focus, focusDiags := app.PageFocusSpans(page, *slide, durationMS, canvas.Height)
+	focus, focusDiags := app.PageFocusSpans(page, *slide, rev, durationMS, canvas.Height)
 	focusSkipped, focusReason := len(focusDiags), ""
 	if len(focusDiags) > 0 {
 		focusReason = focusDiags[0].Code

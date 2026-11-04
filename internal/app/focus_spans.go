@@ -5,6 +5,7 @@ import (
 	"math"
 	"sort"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
@@ -106,6 +107,43 @@ func barKey(shapeID, barID string) string {
 	return shapeID + "#" + barID
 }
 
+// layerElementIDs 返回「这一版规格里真会被切成图层的元素」。
+//
+// 判据是**规格里有轨道**，而不是「文档里有这个元素」：底板只把有轨道的元素从整页图里
+// 挖掉做成图层（其余仍烘在底板上），所以只有这些层的显隐能被单独改。没有轨道的元素
+// 压暗它对画面完全没有作用——而焦点会照常记一条、诊断为零，看起来「指了但不生效」。
+//
+// 轨道指向的元素若没有几何，编译器会报 anchor_missing 并跳过它（不会成层），
+// 所以这里要求元素同时有几何，两种判据必须一致，否则焦点会去等一个永远不存在的层。
+//
+// 跨页延续（G8）注入到本页的层不算在内：那是编译期按上一页的 clip 派生的，本页规格里
+// 没有它的轨道。此时焦点会退到矩形遮罩——比压暗更明显，但不会错位，也不会漏指。
+func layerElementIDs(rev *animation.Revision, elements []render.Element) map[string]struct{} {
+	if rev == nil || len(elements) == 0 {
+		return nil
+	}
+	hasGeom := make(map[string]struct{}, len(elements))
+	for _, el := range elements {
+		if el.ID != "" {
+			hasGeom[el.ID] = struct{}{}
+		}
+	}
+	out := make(map[string]struct{}, len(rev.Tracks))
+	for _, track := range rev.Tracks {
+		if track == nil || track.ElementID == "" {
+			continue // 整页轨道没有元素身份，也压暗不了「某一个形状」
+		}
+		if _, ok := hasGeom[track.ElementID]; !ok {
+			continue
+		}
+		out[track.ElementID] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // PageFocusSpans 算**单页**的焦点序列，数据全部由调用方给。
 //
 // 预览路径用这个而不是走 AnimationPageAssembler：预览只渲一页，它手里已经有
@@ -115,7 +153,11 @@ func barKey(shapeID, barID string) string {
 // canvasHeight 是**本页画布**的高度（不是导出画布）：EMU → 像素的系数必须跟着
 // 这次真正要渲的画布走。预览是 960 宽，导出是 1920 宽，用错系数会让遮罩整体
 // 缩成错误的尺寸，画面上表现成"孔开在旁边"，而日志一切正常。
-func PageFocusSpans(page *project.Page, slide media.SlideCue, pageMs int64, canvasHeight int) ([]render.FocusSpan, []render.Diagnostic) {
+//
+// rev 决定「哪个形状能靠压暗图层来指」：与导出侧用同一个 layerElementIDs，
+// 两条路对同一个目标必须给出同一种表达，否则预览在压暗、成片在盖白。
+func PageFocusSpans(page *project.Page, slide media.SlideCue, rev *animation.Revision,
+	pageMs int64, canvasHeight int) ([]render.FocusSpan, []render.Diagnostic) {
 	if page == nil || pageMs <= 0 || canvasHeight <= 0 {
 		return nil, nil
 	}
@@ -131,13 +173,8 @@ func PageFocusSpans(page *project.Page, slide media.SlideCue, pageMs int64, canv
 	if !hasFocus {
 		return nil, nil
 	}
-	layerIDs := make(map[string]struct{})
-	for _, el := range PageElements(page) {
-		if el.ID != "" {
-			layerIDs[el.ID] = struct{}{}
-		}
-	}
-	return buildFocusSpans(focusCues(slide), PageFocusBoxes(page), layerIDs, pageMs,
+	return buildFocusSpans(focusCues(slide), PageFocusBoxes(page),
+		layerElementIDs(rev, PageElements(page)), pageMs,
 		float64(canvasHeight)/float64(stdSlideHeightEMU))
 }
 
