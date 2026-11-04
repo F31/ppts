@@ -43,6 +43,11 @@
 分母太小（区域本来就接近纯白）时这个比值会被噪声放大，返回 `None` 报「无墨可测」，
 而不是给出一个看着像结论的随机数——白底区域本来就没有「变淡」可言。
 
+**只在参考帧有墨的像素上求均值**（`ink ≥ INK_AT`，且至少 `MIN_INK_PIXELS` 个）：
+整页平均会把白底一起算进分母，而图表页白底占九成——孔外平均墨量只有 7.48，
+旧版门槛 8 于是把矩形焦点的**主场**判成未测（2026-11-04）。一层白满足
+`cur − ref ≡ a × (255 − ref)` 逐像素成立，选哪些像素都不改变 a，只是把噪声挤出去。
+
 采样口径与 check_focus 一致：10fps、480×270。遮罩边缘有 8px 羽化（1920 宽），
 缩到 480 后约 2px，所以孔内收缩 6px、孔外再让开 8px，避免把过渡带算进任何一边。
 
@@ -75,8 +80,18 @@ DIM = 0.45
 INSET = 6
 OUTER_GAP = 8
 
-# 区域「几乎没有墨」时不算比值：分母小于这个灰度，噪声就能把结果翻倍。
-MIN_INK = 8.0
+# 判据只在**参考帧有墨的像素**上求均值，而不是整块区域的平均。
+#
+# 白底占了页面的大半，把它一起平均进去只会稀释分母，稀释到一定程度就得报
+# 「无墨可测」——而图表页正好是这种稀疏页面：整页只有几根柱子，孔外的平均墨量
+# 实测 7.48，旧门槛（分母 ≥ 8）直接判未测。矩形焦点最主要的用法恰恰是图表柱子，
+# 于是**这条判据在自己的主场上永远沉默**（2026-11-04 用真片子撞上的）。
+#
+# 换成「只取 ink ≥ INK_AT 的像素」不改变读数的含义：一层白满足
+# cur − ref ≡ a × (255 − ref) 逐像素成立，选哪些像素都不改变 a，只是把噪声挤出去。
+# 同一份成片：整块平均 0.456、只取墨像素 0.454，两者差 0.002——差别只在「能不能测」。
+INK_AT = 32.0        # 参考帧 ink = 255 − 灰 ≥ 这个值才算「有墨」
+MIN_INK_PIXELS = 200 # 墨像素少于这个数就不给结论（480×270 下约占 0.15%）
 
 # 参照帧离遮罩边界起码这么远：淡入淡出 240ms + 一帧余量。比这近的帧上，
 # 白纱正在变浓/变淡，拿它当基准会把强度读低或读高。
@@ -173,15 +188,31 @@ def regions(rect):
 
 
 def whitening(ref_mean, cur_mean):
-    """反解叠白量：cur = ref + a × (255 − ref) 时返回 a；区域太浅返回 None。"""
+    """反解叠白量：cur = ref + a × (255 − ref) 时返回 a。
+
+    「区域太浅」由 `ink_means` 先挡掉（墨像素不够就返回 None），这里只剩
+    「分母非正」这种退化情形，返回 None 而不是除出 inf。
+    """
     denom = 255.0 - ref_mean
-    if denom < MIN_INK:
+    if denom <= 0:
         return None
     return (cur_mean - ref_mean) / denom
 
 
-def region_means(ref, cur, mask):
-    return float(ref[mask].mean()), float(cur[mask].mean())
+def ink_means(ref, cur, mask):
+    """一块区域的平均亮度，只算**参考帧有墨**的像素。
+
+    返回 `(ref_mean, cur_mean)`；墨像素太少时返回 None，由调用方报「无墨可测」，
+    而不是给一个看着像结论的随机数。参考帧是**没有遮罩**的那一帧，所以「按它挑
+    像素」不会被要测的那层白影响：孔外被压暗的像素在参考帧里仍然是它原本的深浅。
+    """
+    r_all = ref[mask].astype(np.float32)
+    c_all = cur[mask].astype(np.float32)
+    ink = 255.0 - r_all
+    sel = ink >= INK_AT
+    if int(sel.sum()) < MIN_INK_PIXELS:
+        return None
+    return float(r_all[sel].mean()), float(c_all[sel].mean())
 
 
 def classify(spans, t_ms, page_ms):
@@ -337,10 +368,12 @@ def measure_page(ref, samples, spans, page_ms, ref_mode="before"):
         if not span or not span.get("rect"):
             continue
         inside, outer = regions(span["rect"])
-        ref_in, cur_in = region_means(ref, frame, inside)
-        ref_out, cur_out = region_means(ref, frame, outer)
-        a_out = whitening(ref_out, cur_out)
-        a_in = whitening(ref_in, cur_in)
+        pair_in = ink_means(ref, frame, inside)
+        pair_out = ink_means(ref, frame, outer)
+        if pair_out is None:
+            continue
+        a_out = whitening(*pair_out)
+        a_in = whitening(*pair_in) if pair_in is not None else None
         if a_out is None:
             continue
         if kind == "hold":
@@ -477,33 +510,44 @@ def _self_test():
 
     # 1. 强度算得准：叠 0.45 白 → 读数 0.45（与 DIM 直接可比）
     cur = _overlay(ref, rect, DIM)
-    a = whitening(*region_means(ref, cur, outer))
+    a = whitening(*ink_means(ref, cur, outer))
     cases.append(("叠 45%% 白 → 0.45（实得 %.4f）" % a,
                   a is not None and abs(a - DIM) < 1e-3))
 
     # 2. 没画遮罩 → 0
-    a0 = whitening(*region_means(ref, ref, outer))
+    a0 = whitening(*ink_means(ref, ref, outer))
     cases.append(("没画 → 0.00（实得 %.4f）" % a0, a0 is not None and abs(a0) < 1e-6))
 
     # 3. 画淡了（0.225）→ 0.22：判据要能把「强度不对」与「没画」分开
-    ah = whitening(*region_means(ref, _overlay(ref, rect, DIM / 2), outer))
+    ah = whitening(*ink_means(ref, _overlay(ref, rect, DIM / 2), outer))
     cases.append(("画一半 → 0.22（实得 %.4f）" % ah,
                   ah is not None and abs(ah - DIM / 2) < 1e-3))
 
     # 4. 孔没开：整页都盖白 → 孔内读数也等于 DIM（这正是 position:absolute 那个 bug）
     flat = np.clip(ref * (1 - DIM) + 255 * DIM, 0, 255)
-    ai = whitening(*region_means(ref, flat, inside))
+    ai = whitening(*ink_means(ref, flat, inside))
     cases.append(("孔没开 → 孔内也为 %.2f（应 %.2f）" % (ai, DIM),
                   ai is not None and abs(ai - DIM) < 1e-3))
 
     # 5. 正常时孔内应当 ≈ 0
-    ai_ok = whitening(*region_means(ref, cur, inside))
+    ai_ok = whitening(*ink_means(ref, cur, inside))
     cases.append(("孔正常 → 孔内 %.4f" % ai_ok, ai_ok is not None and abs(ai_ok) < 1e-6))
 
-    # 6. 纯白区域不冒充结论
+    # 6. 纯白区域不冒充结论：没有墨像素，就不给数
     white = np.full((SCALE_H, SCALE_W), 253.0)
-    cases.append(("近白区域 → None（分母 %.0f < %.0f）" % (255 - 253, MIN_INK),
-                  whitening(*region_means(white, white, outer)) is None))
+    cases.append(("近白区域 → None（墨像素 0 < %d）" % MIN_INK_PIXELS,
+                  ink_means(white, white, outer) is None))
+
+    # 6b. **稀疏页也要能测**：图表页整页只有几根柱子，孔外平均墨量只有个位数，
+    #     旧的「整块平均 ≥ 8」会把这块主场判成未测。同一层白，只取墨像素仍然是 0.45。
+    sparse = np.full((SCALE_H, SCALE_W), 255.0)
+    for bx in (40, 140, 240, 340):           # 四根细柱：墨像素约占 4.4%（真图表页 5.8%）
+        sparse[40:40 + 180, bx:bx + 8] = 90
+    sparse_cur = _overlay(sparse, rect, DIM)
+    plain = 255.0 - sparse[outer].mean()
+    a_sp = whitening(*ink_means(sparse, sparse_cur, outer))
+    cases.append(("稀疏页（孔外平均墨 %.1f）仍读到 %.3f" % (plain, a_sp or -1),
+                  plain < 8.0 and a_sp is not None and abs(a_sp - DIM) < 1e-3))
 
     # 7. 时间分类：前 / 稳态 / 过渡 / 放手
     spans = [{"startMs": 1000, "endMs": 3000, "fadeMs": 240, "rect": rect}]

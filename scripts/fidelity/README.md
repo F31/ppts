@@ -1337,3 +1337,55 @@ python3 scripts/fidelity/slo_av_sync_30min.py --duration 1800 --mark-every 60
 - **多并发下的生成耗时曲线**：§14.4 明确说"生成耗时不写固定几秒"，需要
   `生成耗时/成品时长` 与吞吐随并发的实测，目前没有。
 - **HA 版的可用性/恢复目标**（99.5%、RPO/RTO）：属于部署形态，本机测不了。
+
+## 柱子焦点从讲稿走到成片（2026-11-04）
+
+第 10 步验的是「编译器能把柱子 id 翻成矩形」。还差一段：**产品算出来的那个矩形，
+交给真渲染器之后是不是还落在柱子上**。这一节把它走完，顺带撞出两个 bug。
+
+### 走法
+
+计划里的矩形由产品自己的两个函数产出（`app.AnnotateChartBars` → `app.PageFocusSpans`），
+不手写：手写只能证明「合成器会按矩形开孔」，证明不了「产品给的框在哪」。
+
+```bash
+# 一次性核对程序（tmp/ 不入库）：真实页面图 → ChartBars → FocusSpan → plan.json
+go run ./tmp/focusrender
+# 渲染用本机 Chrome（PPTS_CHROME 是 render.mjs 认的入口，不必下载 headless shell）
+cd renderer && PPTS_CHROME="/c/Program Files/Google/Chrome/Application/chrome.exe" \
+  node render.mjs --plan ../tmp/focusrender/plan.json --out-dir ../tmp/focusrender/out
+# 遮罩开始前 / 稳态各取一帧
+ffmpeg -ss 1.0 -i out/segment_000.mp4 -frames:v 1 f-before.png
+ffmpeg -ss 4.0 -i out/segment_000.mp4 -frames:v 1 f-focus.png
+```
+
+实测（一页 6s，第二段起指「120」那根，1920×1080）：
+
+| 量什么 | 读数 |
+|---|---|
+| 焦点柱内部墨量比 | **0.998**（孔内没被压） |
+| 另外两根柱 | **0.555 / 0.555**（= FOCUS_DIM_OPACITY） |
+| 焦点柱**标签带** | **0.961**（自己的数字留在孔里） |
+| 旁柱标签带 | 0.552 / 0.556 |
+| 孔外 40–80px 的竖条 | 0.551 / 0.565 |
+| 整页平均差（前 vs 后） | 3.021，差 >8 的像素 115593 |
+
+即 `PageFocusSpans` 给的 `(831,191,172,477)` 在成片里正好是「柱子 + 它自己的数字」。
+
+### 撞出来的两个 bug
+
+**一、`endMs: 0` 让整段遮罩消失。** `render.FocusSpan.EndMs` 是 `omitempty`，
+0 表示「保持到下一段」；`focusDim`、播放器、`check_mask.py` 都按真值判，只有
+`focusMask` 写成 `cur.endMs !== undefined`。计划里一旦显式出现 `"endMs": 0`，
+`tMs >= 0` 恒成立 → alpha 一路为 0 → **这一页跟完全没有焦点一模一样**，
+而图层焦点照常压暗（同一字段两种读法）。同一份计划只改这一个字段实测：
+修前整页平均差 0.0025（等于没画）、三根柱比全是 1.000；修后 3.021、
+比值 0.998 / 0.555 / 0.555。motion-check 现在有一条用例把「写 0」与「不写」
+逐时刻比对，改回旧判法立刻红。
+
+**二、这条判据在自己的主场上沉默。** `check_mask.py` 原来拿**整块区域的平均墨量**
+当分母、门槛 `MIN_INK = 8`。图表页整页只有几根柱子：孔外平均墨量实测 **7.48**，
+V20 于是只能报「未测」——而矩形焦点最主要的用法正是图表柱子。改成「只取参考帧
+`ink ≥ 32` 的像素求均值」后，同一份成片读到 **0.454 / 孔内 −0.00**（整块平均法
+是 0.456；两者差 0.002，区别只在能不能测）。自检加了一条「孔外平均墨 6.5 的
+稀疏页仍读到 0.450」，并把「近白区域 → None」改成按墨像素数判。

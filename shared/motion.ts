@@ -260,7 +260,13 @@ export function focusMask(
   if (!cur || !cur.rect) return null;
   const fade = cur.fadeMs ?? FOCUS_FADE_MS;
   let lock: number;
-  if (cur.endMs !== undefined && tMs >= cur.endMs) {
+  // `endMs` 的 **0 与缺失同义**：IR 里是 `json:"endMs,omitempty"`，0 表示「保持到
+  // 下一段」。这里必须按真值判，不能写 `!== undefined`——一份把 0 显式写出来的计划
+  // （手写 plan、或某个生产者没走 omitempty）会落进「tMs >= 0 恒成立」，
+  // 于是 alpha 整段是 0、遮罩一次都不画，而 `focusDim` 读同一个字段时是真值判、
+  // 图层照常压暗：画面看起来「图层焦点好好的，柱子焦点没反应」。
+  // 2026-11-04 用真片子撞出来的：唯一的症状就是「这一页跟没有焦点一模一样」。
+  if (cur.endMs && tMs >= cur.endMs) {
     const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.endMs) / fade));
     lock = 1 - p;
   } else {

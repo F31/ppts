@@ -131,6 +131,24 @@ test('focusMask：放手后必须真的回到 0', () => {
   assert.equal(focusMask(focus, 3240), null, '淡出结束必须归零');
 });
 
+test('focusMask：endMs 写成 0 与「缺席」同义，不是「这一刻就放手」', () => {
+  // IR 里 endMs 是 omitempty，0 的含义是「保持到下一段」。从前这里用
+  // `!== undefined` 判，一份把 0 显式写出来的计划就会 tMs >= 0 恒成立 → alpha 0
+  // → 遮罩整段消失，而同一页的图层焦点照常压暗（focusDim 用的是真值判）。
+  // 症状只有一条：这一页跟完全没有焦点时一模一样。
+  const rect = { x: 10, y: 10, w: 100, h: 100 };
+  const zero = [{ startMs: 1000, elementId: 'b0', rect, endMs: 0, fadeMs: 240 }];
+  const m = focusMask(zero, 2000);
+  assert.ok(m, 'endMs=0 时遮罩必须还在');
+  assert.equal(Math.round(m.alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
+  assert.equal(focusMask(zero, 1000), null, '刚开始那一下仍然是 alpha=0');
+  // 缺字段与写 0 必须完全等价：把两者一起比，才不会被“两边都错了”蒙过去。
+  const absent = [{ startMs: 1000, elementId: 'b0', rect, fadeMs: 240 }];
+  for (const t of [0, 1000, 1240, 2000, 5999]) {
+    assert.deepEqual(focusMask(zero, t), focusMask(absent, t), `t=${t} 时两种写法应当等价`);
+  }
+});
+
 test('focusMask：没有 rect 的焦点不改变原有行为', () => {
   const focus = [{ startMs: 1000, elementId: 'e1' }];
   assert.equal(focusMask(focus, 2000), null);
