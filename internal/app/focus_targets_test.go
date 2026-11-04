@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/F31/ppts/internal/project"
+	"github.com/F31/ppts/internal/render"
 )
 
 // 焦点候选清单是编辑器唯一的"能指什么"来源。这里守的不是渲染，
@@ -48,6 +49,33 @@ func TestFocusTargetsBarsThenTextThenPicture(t *testing.T) {
 	}
 	if got.Orientation != "vertical" {
 		t.Fatalf("朝向 = %q", got.Orientation)
+	}
+}
+
+// 柱子的候选框要与成片里那块留孔的矩形一致：柱体 + 这根自己的数字。
+// 这里若还给柱体，编辑器将来做悬停高亮时会出现「选的时候框住一块、亮的是另一块」。
+func TestFocusTargetsBarBoxIncludesLabelBand(t *testing.T) {
+	page := &project.Page{SlideID: "slide-1", Shapes: []*project.Shape{{
+		ID: "shape-2", Kind: "chart", ChartOrientation: "vertical",
+		ChartBars: []project.ChartBar{
+			{ID: "b0", Category: "Q1", Value: 174, Box: [4]int{100, 200, 60, 370},
+				LabelDir: "up", LabelPad: 42},
+			{ID: "b1", Category: "Q2", Value: 131, Box: [4]int{200, 200, 60, 280}},
+		},
+	}}}
+	got := FocusTargetsForPage(page)
+	if len(got.Targets) != 2 {
+		t.Fatalf("want 2 targets, got %+v", got.Targets)
+	}
+	if want := (render.EMUBox{
+		X: pxToEMU(100), Y: pxToEMU(158), Width: pxToEMU(60), Height: pxToEMU(412),
+	}); got.Targets[0].Box != want {
+		t.Fatalf("带标签的柱子候选框 = %+v, want %+v", got.Targets[0].Box, want)
+	}
+	if want := (render.EMUBox{
+		X: pxToEMU(200), Y: pxToEMU(200), Width: pxToEMU(60), Height: pxToEMU(280),
+	}); got.Targets[1].Box != want {
+		t.Fatalf("没标签的柱子候选框 = %+v, want %+v（不该被扩）", got.Targets[1].Box, want)
 	}
 }
 

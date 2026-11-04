@@ -137,6 +137,7 @@ func TestParityWithPythonSplitter(t *testing.T) {
 							Box      []int  `json:"box"`
 							LabelPad *struct {
 								Dir string `json:"dir"`
+								Px  int    `json:"px"`
 							} `json:"labelPad"`
 						} `json:"bars"`
 					} `json:"chart"`
@@ -182,6 +183,16 @@ func TestParityWithPythonSplitter(t *testing.T) {
 				if want[i].LabelPad != nil && want[i].LabelPad.Dir != b.LabelDir {
 					t.Fatalf("第 %d 根的标签方向：Go %q / Python %q",
 						i, b.LabelDir, want[i].LabelPad.Dir)
+				}
+				// 距离也要对：只比方向时，两边「量到最近的墨」和「量到最远的墨」都会过，
+				// 而框会不会把数字包进去，差的就是这十几像素（up/left 曾经各差一半）。
+				// Python 的 px 已经除过 px/单位（换算回 1920 计划系），这里乘回去。
+				if want[i].LabelPad != nil {
+					got := float64(b.LabelPad) * k
+					if d := got - float64(want[i].LabelPad.Px); d < -2 || d > 2 {
+						t.Fatalf("第 %d 根的标签距离：Go %.1f / Python %d（差 %.1f）——两份实现已漂",
+							i, got, want[i].LabelPad.Px, d)
+					}
 				}
 			}
 		})

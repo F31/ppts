@@ -73,14 +73,18 @@ func FocusTargetsForPage(page *project.Page) PageFocusTargets {
 					if bar.ID == "" {
 						continue
 					}
+					// 与导出/预览同一份「焦点框是哪块」：柱体 + 这根自己的数字。
+					// 若这里还给柱体，将来做悬停高亮时会出现「选的时候框住一块、
+					// 成片里亮的是另一块（多出标签带）」的分叉。
+					box := focusBarBox(bar)
 					targets = append(targets, FocusTarget{
 						ShapeID: sh.ID, BarID: bar.ID, Kind: "bar",
 						Label:    barLabel(bar, i),
 						Category: bar.Category, Series: bar.Series,
 						Value: bar.Value, HasValue: true,
 						Box: render.EMUBox{
-							X: pxToEMU(bar.Box[0]), Y: pxToEMU(bar.Box[1]),
-							Width: pxToEMU(bar.Box[2]), Height: pxToEMU(bar.Box[3]),
+							X: pxToEMU(box[0]), Y: pxToEMU(box[1]),
+							Width: pxToEMU(box[2]), Height: pxToEMU(box[3]),
 						},
 					})
 				}

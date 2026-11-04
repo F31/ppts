@@ -150,11 +150,14 @@ func PageFocusBoxes(page *project.Page) []FocusBox {
 				if bar.ID == "" {
 					continue
 				}
+				// 焦点框是「柱体 + 这根的数字」，不只是柱体：标签画在柱体之外，
+				// 只框柱体时它会被压在纱下面（见 focusBarBox）。
+				b := focusBarBox(bar)
 				boxes = append(boxes, FocusBox{
 					ShapeID: sh.ID, BarID: bar.ID,
 					Box: render.EMUBox{
-						X: pxToEMU(bar.Box[0]), Y: pxToEMU(bar.Box[1]),
-						Width: pxToEMU(bar.Box[2]), Height: pxToEMU(bar.Box[3]),
+						X: pxToEMU(b[0]), Y: pxToEMU(b[1]),
+						Width: pxToEMU(b[2]), Height: pxToEMU(b[3]),
 					},
 				})
 			}
@@ -165,6 +168,55 @@ func PageFocusBoxes(page *project.Page) []FocusBox {
 	}
 	walk(page.Shapes)
 	return boxes
+}
+
+// focusBarBox 把「柱体框」扩成「柱体 + 数据标签带」的焦点框（解析画布像素）。
+//
+// 为什么必须扩：数据标签画在柱体包围盒**之外**，而遮罩只保留焦点矩形里的内容。
+// 只框柱体时，这根柱子自己的数字被压在纱下面——观感上正是「指谁谁灰」，图上
+// 最该看清的那个数反而看不见。保真链的 plan（barRects）一直这么扩，产品侧此前
+// 只交出柱体，同一个目标在两条路径上给出两种画面。
+//
+// 方向与距离都是量出来的（chartgeo 逐根扫页面图，见 labelPad）：负值柱的标签在
+// 柱体**下方**、负值水平条在**左端**。写死「向上」会把标签带扩到反方向——框与
+// 数字分处两侧，一头压暗、一头空亮，比不扩更难看。
+//
+// 向四边扩都要夹在画布内。越出的部分本来也不会被画出来，但它会把矩形变成
+// 「原点在画布外」——贴边的柱子就这样把自己的焦点整根弄丢（toCanvasRect 只夹
+// 原点，不夹右下角）。贴边时能扩多少扩多少，与保真链同口径。
+func focusBarBox(bar project.ChartBar) [4]int {
+	x, y, w, h := bar.Box[0], bar.Box[1], bar.Box[2], bar.Box[3]
+	pad := bar.LabelPad
+	if pad <= 0 {
+		// 没量到标签（这张图没有数据标签，或标签压在柱体里）就不扩：
+		// 扩出一块空白等于在柱子旁边留一条没被压暗的带，反而更显眼。
+		return bar.Box
+	}
+	switch bar.LabelDir {
+	case "right":
+		pad = min(pad, int(bindCanvasW)-(x+w))
+		if pad > 0 {
+			w += pad
+		}
+	case "left":
+		pad = min(pad, x)
+		if pad > 0 {
+			x -= pad
+			w += pad
+		}
+	case "down":
+		pad = min(pad, int(bindCanvasH)-(y+h))
+		if pad > 0 {
+			h += pad
+		}
+	default: // "up"；空值/未知值也走这里，与保真链的兜底一致
+		pad = min(pad, y)
+		if pad > 0 {
+			y -= pad
+			h += pad
+		}
+	}
+	return [4]int{x, y, w, h}
 }
 
 // load 读取并解码某个源版本的 document.json。

@@ -56,8 +56,10 @@ func TestSplitVertical(t *testing.T) {
 		if b.Rect.H != heights[i] {
 			t.Fatalf("第 %d 根高度应 %d，实得 %d", i, heights[i], b.Rect.H)
 		}
-		if b.LabelDir != "up" || b.LabelPad <= 0 {
-			t.Fatalf("第 %d 根应量到向上的标签带，实得 %q/%d", i, b.LabelDir, b.LabelPad)
+		// 标签块画在 [柱顶-20, 柱顶-6)：整条带高 20px（含 6px 间隙），加 3px 余量 = 23。
+		// 这条曾只断言 >0，于是「量到最近一排墨」的实现（10）也过了——框会少包一截。
+		if b.LabelDir != "up" || b.LabelPad != 23 {
+			t.Fatalf("第 %d 根应量到向上 23px 的标签带，实得 %q/%d", i, b.LabelDir, b.LabelPad)
 		}
 	}
 }
@@ -181,8 +183,10 @@ func TestSplitHorizontalMultiSeries(t *testing.T) {
 		}
 	}
 	for i, b := range bars {
-		if b.LabelDir != "right" || b.LabelPad <= 0 {
-			t.Fatalf("第 %d 根应量到向右的标签带，实得 %q/%d", i, b.LabelDir, b.LabelPad)
+		// 标签从条右端外 4px 起、宽 24px → 31。取「最近的一列墨」会得到 7+3=10，
+		// 框只包住字的一小截；这四个方向里 right/down 顺着扫本来就对，up/left 曾错。
+		if b.LabelDir != "right" || b.LabelPad != 31 {
+			t.Fatalf("第 %d 根应量到向右 31px 的标签带，实得 %q/%d", i, b.LabelDir, b.LabelPad)
 		}
 	}
 }
@@ -231,12 +235,14 @@ func TestSplitVerticalNegative(t *testing.T) {
 	if got[0].Rect.H != 82 || got[0].Rect.Y != zeroY {
 		t.Fatalf("负值柱应是零线下方 82px，实得 y=%d h=%d", got[0].Rect.Y, got[0].Rect.H)
 	}
-	if got[0].LabelDir != "down" || got[0].LabelPad <= 0 {
-		t.Fatalf("负值柱的标签应朝下，实得 %q/%d", got[0].LabelDir, got[0].LabelPad)
+	// 负值柱：柱底 484，标签块 [490,504) → 503-484+1+3 = 23。
+	if got[0].LabelDir != "down" || got[0].LabelPad != 23 {
+		t.Fatalf("负值柱的标签应朝下 23px，实得 %q/%d", got[0].LabelDir, got[0].LabelPad)
 	}
+	// 正值柱：标签块顶边在柱顶上方 20px → 23。up 方向要是取「最近一排墨」会得到 10。
 	for i := 1; i < 3; i++ {
-		if got[i].LabelDir != "up" || got[i].LabelPad <= 0 {
-			t.Fatalf("第 %d 根是正值柱，标签应朝上，实得 %q/%d", i, got[i].LabelDir, got[i].LabelPad)
+		if got[i].LabelDir != "up" || got[i].LabelPad != 23 {
+			t.Fatalf("第 %d 根是正值柱，标签应朝上 23px，实得 %q/%d", i, got[i].LabelDir, got[i].LabelPad)
 		}
 	}
 }
@@ -268,12 +274,15 @@ func TestSplitHorizontalNegative(t *testing.T) {
 	if got[0].Rect.X != zeroX-82 || got[0].Rect.W != 82 {
 		t.Fatalf("负值条应是零线左侧 82px，实得 x=%d w=%d", got[0].Rect.X, got[0].Rect.W)
 	}
-	if got[0].LabelDir != "left" || got[0].LabelPad <= 0 {
-		t.Fatalf("负值条的标签应朝左，实得 %q/%d", got[0].LabelDir, got[0].LabelPad)
+	// 负值条：条左端 261，标签块 [220,250) → 261-220+3 = 44。
+	// left 方向取「最近一列墨」会得到 261-249+3 = 15，框连字的一半都盖不住。
+	if got[0].LabelDir != "left" || got[0].LabelPad != 44 {
+		t.Fatalf("负值条的标签应朝左 44px，实得 %q/%d", got[0].LabelDir, got[0].LabelPad)
 	}
+	wantRight := []int{38, 35} // 120：条右端 589、标签 [600,624)；80：条右端 507、标签 [515,539)
 	for i := 1; i < 3; i++ {
-		if got[i].LabelDir != "right" || got[i].LabelPad <= 0 {
-			t.Fatalf("第 %d 根是正值条，标签应朝右，实得 %q/%d", i, got[i].LabelDir, got[i].LabelPad)
+		if got[i].LabelDir != "right" || got[i].LabelPad != wantRight[i-1] {
+			t.Fatalf("第 %d 根是正值条，标签应朝右 %dpx，实得 %q/%d", i, wantRight[i-1], got[i].LabelDir, got[i].LabelPad)
 		}
 	}
 }

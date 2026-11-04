@@ -219,3 +219,127 @@ func TestDocumentGeometryReachesRenderPlan(t *testing.T) {
 		t.Fatalf("无规格页出现了 %d 个图层", len(plan.Pages[1].Layers))
 	}
 }
+
+// TestFocusBarBoxExpandsLabelBand 守「焦点框 = 柱体 + 这根的数字」。
+//
+// 只框柱体的话，被指的那根柱子自己的数字会被压在纱下面——「指谁谁灰」。
+// 四个方向都要测：标签方向是从像素量出来的，负值柱朝下、负值水平条朝左，
+// 写死「向上」会把标签带扩到反方向，框与数字分处两侧。
+func TestFocusBarBoxExpandsLabelBand(t *testing.T) {
+	cases := []struct {
+		name string
+		bar  project.ChartBar
+		want [4]int
+	}{
+		{
+			name: "positive column: label above",
+			bar:  project.ChartBar{Box: [4]int{300, 250, 60, 250}, LabelDir: "up", LabelPad: 42},
+			want: [4]int{300, 208, 60, 292},
+		},
+		{
+			name: "negative column: label below",
+			bar:  project.ChartBar{Box: [4]int{300, 250, 60, 120}, LabelDir: "down", LabelPad: 42},
+			want: [4]int{300, 250, 60, 162},
+		},
+		{
+			name: "positive bar: label right",
+			bar:  project.ChartBar{Box: [4]int{300, 250, 700, 60}, LabelDir: "right", LabelPad: 71},
+			want: [4]int{300, 250, 771, 60},
+		},
+		{
+			name: "negative bar: label left",
+			bar:  project.ChartBar{Box: [4]int{300, 250, 200, 60}, LabelDir: "left", LabelPad: 71},
+			want: [4]int{229, 250, 271, 60},
+		},
+		{
+			// 没量到标签就不扩：多出来的那块空白在柱子旁边留下一条没被压暗的带，
+			// 比不扩更显眼。这条同时守「LabelPad>0 才动框」的前提。
+			name: "no measured label: box untouched",
+			bar:  project.ChartBar{Box: [4]int{300, 250, 60, 250}},
+			want: [4]int{300, 250, 60, 250},
+		},
+	}
+	for _, tc := range cases {
+		if got := focusBarBox(tc.bar); got != tc.want {
+			t.Errorf("%s: focusBarBox = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestFocusBarBoxClampsToCanvas 守「贴边时能扩多少扩多少」。
+//
+// 向画布外扩：多出来的部分本来也画不出来，但矩形会变成「原点在画布外」
+// 或右下角越界——前者被 toCanvasRect 拒掉（这根柱子整个失去焦点），
+// 后者渲染端不查、只是白盖一小块。两头都不该发生。
+func TestFocusBarBoxClampsToCanvas(t *testing.T) {
+	cases := []struct {
+		name string
+		bar  project.ChartBar
+		want [4]int
+	}{
+		{
+			name: "at top edge: cannot grow",
+			bar:  project.ChartBar{Box: [4]int{300, 0, 60, 250}, LabelDir: "up", LabelPad: 42},
+			want: [4]int{300, 0, 60, 250},
+		},
+		{
+			name: "near top edge: grow by the room left",
+			bar:  project.ChartBar{Box: [4]int{300, 20, 60, 250}, LabelDir: "up", LabelPad: 42},
+			want: [4]int{300, 0, 60, 270},
+		},
+		{
+			name: "at bottom edge: cannot grow",
+			bar:  project.ChartBar{Box: [4]int{300, 1050, 60, 30}, LabelDir: "down", LabelPad: 42},
+			want: [4]int{300, 1050, 60, 30},
+		},
+		{
+			name: "at right edge: cannot grow",
+			bar:  project.ChartBar{Box: [4]int{1880, 250, 40, 60}, LabelDir: "right", LabelPad: 71},
+			want: [4]int{1880, 250, 40, 60},
+		},
+		{
+			name: "near right edge: grow by the room left",
+			bar:  project.ChartBar{Box: [4]int{1880, 250, 20, 60}, LabelDir: "right", LabelPad: 71},
+			want: [4]int{1880, 250, 40, 60},
+		},
+		{
+			name: "at left edge: cannot grow",
+			bar:  project.ChartBar{Box: [4]int{0, 250, 200, 60}, LabelDir: "left", LabelPad: 71},
+			want: [4]int{0, 250, 200, 60},
+		},
+	}
+	for _, tc := range cases {
+		if got := focusBarBox(tc.bar); got != tc.want {
+			t.Errorf("%s: focusBarBox = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestPageFocusBoxesCarriesLabelBand 守「扩展真的走进了焦点框那条路」。
+//
+// 单独测 focusBarBox 不够：PageFocusBoxes 若还照着 bar.Box 反推 EMU，
+// 函数改得再对，成片里数字照样被压暗。
+func TestPageFocusBoxesCarriesLabelBand(t *testing.T) {
+	page := &project.Page{SlideID: "s1", Shapes: []*project.Shape{{
+		ID: "chart-1", Kind: "chart",
+		ChartBars: []project.ChartBar{
+			{ID: "b1", Box: [4]int{300, 250, 60, 250}, LabelDir: "up", LabelPad: 42},
+			{ID: "b2", Box: [4]int{420, 300, 60, 200}},
+		},
+	}}}
+	byBar := make(map[string]render.EMUBox)
+	for _, b := range PageFocusBoxes(page) {
+		byBar[b.BarID] = b.Box
+	}
+	want := render.EMUBox{
+		X: pxToEMU(300), Y: pxToEMU(208), Width: pxToEMU(60), Height: pxToEMU(292),
+	}
+	if got := byBar["b1"]; got != want {
+		t.Fatalf("带标签的柱子焦点框 = %+v, want %+v（标签带 42px 必须在框里）", got, want)
+	}
+	if got, want := byBar["b2"], (render.EMUBox{
+		X: pxToEMU(420), Y: pxToEMU(300), Width: pxToEMU(60), Height: pxToEMU(200),
+	}); got != want {
+		t.Fatalf("没标签的柱子焦点框 = %+v, want %+v（不该被扩）", got, want)
+	}
+}

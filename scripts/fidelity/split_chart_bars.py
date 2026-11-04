@@ -473,9 +473,12 @@ def self_test():
         ("坐标换算到 1920 系", bool(bars) and abs(bars[0]["heightPx"] - 369) <= 2
          and abs(heights[0] - heights[-1] - 166) <= 3),
         ("id 可被 focus 引用", bool(bars) and bars[0]["id"] == "p1-s2-b0"),
+        # 距离要卡住量级，不能只判 >0：文字画在柱顶上方 18px，量到「最上面一排墨」
+        # 得 28（元素系），量到「离柱体最近的一排墨」只有 16 左右——后者框少包一半，
+        # 柱子自己的数字照样压在纱下面。阈值 24 正好分开这两种。
         ("垂直柱量到标签带（%s）" % (bars[0].get("labelPad") if bars else None,),
          bool(bars) and bars[0].get("labelPad", {}).get("dir") == "up"
-         and bars[0]["labelPad"]["px"] >= 10),
+         and bars[0]["labelPad"]["px"] >= 24),
     ]
 
     # 降级一：图例里同色的方块会被多切一段。它比柱子薄得多，按厚度滤掉之后

@@ -608,16 +608,22 @@ func longestRun(proj []int, need int) (int, int) {
 // 条的右端；负值柱在柱底**下方**、负值水平条的**左端**。焦点矩形只框柱体时，
 // 这根自己的数字会被压在纱下面——「指谁谁灰」，图上最该清楚的数反而看不见。
 // 量而不是用常数：水平条的标签宽度随位数变（"174" 与 "96" 差一倍），一个常数盖不住。
+//
+// 四个方向里 right/down 是**顺着**柱体往外扫（最后命中的就是最远那排墨），
+// up/left 恰好相反：up 从上方往下扫到柱顶、left 从最左扫到柱体，**第一次**命中
+// 那排才是最远那端。而循环把每次命中都往下写，于是 up/left 拿到的是离柱体最近
+// 的一排墨——实测垂直柱顶只量到 16px（真值 31px），框少包一截，自己的数字照样
+// 压在纱下面。所以这两个方向必须在第一次命中时就停。
 func (p plane) labelPad(r Rect, dir string) int {
 	dark := func(i int) bool {
 		return max(p.r[i], max(p.g[i], p.b[i])) < labelDark
 	}
 	switch dir {
 	case "left":
-		// 负值水平条：条在零线左侧，标签再往左一格。
+		// 负值水平条：条在零线左侧，标签再往左一格。从最左往右扫，第一列墨就是字的最左缘。
 		x0 := max(0, r.X-labelLookahead)
 		first := -1
-		for x := x0; x < r.X; x++ {
+		for x := x0; x < r.X && first < 0; x++ {
 			for y := r.Y; y < r.Y+r.H; y++ {
 				if dark(y*p.w + x) {
 					first = x
@@ -665,7 +671,8 @@ func (p plane) labelPad(r Rect, dir string) int {
 	}
 	y0 := max(0, r.Y-labelLookback)
 	first := -1
-	for y := y0; y < r.Y; y++ {
+	// 从最上往柱顶扫，第一排墨就是字的最上缘。
+	for y := y0; y < r.Y && first < 0; y++ {
 		for x := r.X; x < r.X+r.W; x++ {
 			if dark(y*p.w + x) {
 				first = y

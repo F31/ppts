@@ -80,8 +80,10 @@ func TestAnnotateChartBars(t *testing.T) {
 		if i == 0 && b.Box[3] <= sh.ChartBars[2].Box[3] {
 			t.Fatalf("174 那根应比 96 那根高：%d vs %d", b.Box[3], sh.ChartBars[2].Box[3])
 		}
-		if b.LabelDir != "up" || b.LabelPad <= 0 {
-			t.Fatalf("第 %d 根应带向上的标签带，实得 %q/%d", i, b.LabelDir, b.LabelPad)
+		// 标签块画在柱顶上方 20px、高 14px（见 chartPagePNG）→ 20+3 = 23。
+		// 断言具体值而不是 >0：只判 >0 时，「量到最近一排墨」（10）也会过。
+		if b.LabelDir != "up" || b.LabelPad != 23 {
+			t.Fatalf("第 %d 根应带向上 23px 的标签带，实得 %q/%d", i, b.LabelDir, b.LabelPad)
 		}
 	}
 }
