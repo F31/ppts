@@ -617,3 +617,7 @@ jobs:
       # 两边漂了看不出来，只有这条能守。
       - name: 遮罩预览自检（压暗强度对齐）
         run: python3 scripts/fidelity/mask_preview.py --self-test
+      # V9 量的是「长度与数值成不成比例」，长度沿哪个方向取决于图的朝向：
+      # 水平条按高度量会得到「厚度」，三根都是同一个数，正确的图被判红。
+      - name: 柱高判据自检（数值方向）
+        run: python3 scripts/fidelity/check_chart.py --self-test

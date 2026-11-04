@@ -23,7 +23,7 @@ func TestBarRects(t *testing.T) {
 			Bars:       []chartBar{{ID: "p2-s1-b0", Box: [4]int{100, 200, 50, 60}}},
 		}},
 	}
-	got := barRects(elems)
+	got := barRects(elems, 1920)
 
 	// 带标签：向上扩 45px，高度同步加上——标签画在柱体包围盒之外，
 	// 不扩进来「讲的是这根」对了，但这根自己的数字被压在纱下面。
@@ -49,7 +49,41 @@ func TestBarRects(t *testing.T) {
 
 // 没有 chart 块的元素不该被当成图表。
 func TestBarRectsIgnoresPlainElements(t *testing.T) {
-	if got := barRects([]element{{ID: "t1", Kind: "title", Box: [4]int{0, 0, 10, 10}}}); len(got) != 0 {
+	if got := barRects([]element{{ID: "t1", Kind: "title", Box: [4]int{0, 0, 10, 10}}}, 1920); len(got) != 0 {
 		t.Fatalf("普通元素不该产出柱子矩形：%v", got)
+	}
+}
+
+// 水平条形的标签在条的右端，宽度随位数变——切柱脚本逐根量，编译器逐根扩。
+func TestBarRectsHorizontalLabel(t *testing.T) {
+	elems := []element{{ID: "p1-s2", Kind: "chart", Chart: &chartInfo{
+		DataLabels: true,
+		Bars: []chartBar{
+			{ID: "b-wide", Box: [4]int{260, 700, 1159, 70},
+				LabelPad: &barLabelPad{Dir: "right", Px: 74}},
+			// 贴右缘：只能扩到画布边，不能越界（Validate 不查右侧越界）。
+			{ID: "b-edge", Box: [4]int{1700, 500, 180, 70},
+				LabelPad: &barLabelPad{Dir: "right", Px: 60}},
+		},
+	}}}
+	got := barRects(elems, 1920)
+	if r := got["b-wide"]; r != (render.Box{X: 260, Y: 700, W: 1159 + 74, H: 70}) {
+		t.Fatalf("水平条应向右扩 74px 且不动 Y，实得 %+v", r)
+	}
+	if r := got["b-edge"]; r.W != 180+40 || r.X != 1700 {
+		t.Fatalf("贴右缘应扩到画布边为止（W=220），实得 %+v", r)
+	}
+}
+
+// 量到的向上标签带应盖过兜底常数：常数是 42+3 的近似，量的是这一根的实际距离。
+func TestBarRectsUsesMeasuredUpPad(t *testing.T) {
+	elems := []element{{ID: "p1-s2", Kind: "chart", Chart: &chartInfo{
+		DataLabels: true,
+		Bars: []chartBar{{ID: "b0", Box: [4]int{385, 429, 173, 370},
+			LabelPad: &barLabelPad{Dir: "up", Px: 28}}},
+	}}}
+	got := barRects(elems, 1920)
+	if r := got["b0"]; r.Y != 429-28 || r.H != 370+28 {
+		t.Fatalf("应按量到的 28px 向上扩，实得 %+v", r)
 	}
 }

@@ -92,7 +92,79 @@ def bar_height(img, box):
     return height
 
 
+def bar_length(img, box, horizontal=False):
+    """柱体沿**数值方向**的长度：垂直柱数高度，水平条数宽度。
+
+    水平条必须另量：它的厚度对所有类别都一样，拿厚度除以数值只会得到一个
+    随数值倒数变化的假比例——V9 会因此误判红，而红的原因和「图在说谎」毫无关系。
+    背景取盒子**左端外侧 8px** 的那一列（轴与留白所在），与垂直柱取「上方」同理。
+    """
+    if not horizontal:
+        return bar_height(img, box)
+    x, y, w, h = box
+    ref = img[y + h // 2, max(0, x - 8)].astype(np.float32)
+    cols = img[y:y + h, x:x + w].astype(np.float32)
+    dist = np.sqrt(((cols - ref) ** 2).sum(axis=2))
+    is_bar = (dist > ROW_DIFF).mean(axis=0) > 0.5
+    length = 0
+    for v in is_bar:
+        if not v:
+            break
+        length += 1
+    return length
+
+
+def self_test():
+    """验「按数值方向量长度」：垂直柱数高度，水平条数宽度。
+
+    这一条是补洞来的：切柱开始支持水平条形之后，V9 仍按高度量，于是同一张图里的
+    三根条的「高度」都是 70px（那是条的厚度），px/单位随数值倒数变化，spread 1.79
+    ——判红，但图本身没撒谎。判据分不清方向，就会把对的片子判成错的。
+    """
+    W, H, bg = 640, 360, np.array([255, 255, 255], np.uint8)
+    img = np.tile(bg, (H, W, 1))
+
+    # 垂直柱：三根，高 90/60/30，宽 40，底边 y=300。
+    vboxes = []
+    for i, hgt in enumerate((90, 60, 30)):
+        x, w = 100 + i * 120, 40
+        img[300 - hgt:300, x:x + w] = (79, 129, 189)
+        vboxes.append((x, 300 - hgt, w, hgt))
+    # 水平条：三根，长 120/80/40，厚 24，左端 x=100。
+    hboxes = []
+    for i, ln in enumerate((120, 80, 40)):
+        y = 60 + i * 40
+        img[y:y + 24, 100:100 + ln] = (79, 129, 189)
+        hboxes.append((100, y, ln, 24))
+
+    v = [bar_length(img, b) for b in vboxes]
+    hz = [bar_length(img, b, True) for b in hboxes]
+    # 同一张图按「高度」量水平条：三根都是 24（厚度），这正是那个 bug 的读数。
+    wrong = [bar_length(img, b) for b in hboxes]
+
+    cases = [
+        ("垂直柱量到高度 → %s" % (v,), v == [90, 60, 30]),
+        ("水平条量到长度 → %s" % (hz,), hz == [120, 80, 40]),
+        ("水平条按高度量会得到厚度 → %s" % (wrong,), wrong == [24, 24, 24]),
+        # 比例：长度/数值应当全页一致
+        ("水平条比例一致 → %.3f"
+         % (max(a / float(n) for a, n in zip(hz, (3, 2, 1)))
+            / min(a / float(n) for a, n in zip(hz, (3, 2, 1))),),
+         max(a / float(n) for a, n in zip(hz, (3, 2, 1)))
+         / min(a / float(n) for a, n in zip(hz, (3, 2, 1))) <= MAX_SPREAD),
+    ]
+    bad = 0
+    for name, ok in cases:
+        print(("  ok   " if ok else "  FAIL ") + name)
+        if not ok:
+            bad += 1
+    print("\n%d/%d 通过" % (len(cases) - bad, len(cases)))
+    return 0 if not bad else 1
+
+
 def main():
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     film = sys.argv[1] if len(sys.argv) > 1 else "tmp/q7/film_F_narrated.mp4"
     seg_path = sys.argv[2] if len(sys.argv) > 2 else "tmp/q7/segments.json"
     elems_path = sys.argv[3] if len(sys.argv) > 3 else "tmp/q7/fid/elements.json"
@@ -118,9 +190,14 @@ def main():
             # 柱子已经按类别切开（chart.bars 里带 box 和 value），这时就能像
             # 手绘柱一样逐根量高——不必再留「未测」。
             charts = [e for e in page_elems if e.get("chart")]
-            split = [b for e in charts for b in (e["chart"].get("bars") or [])]
+            split = []
+            for e in charts:
+                ori = "horizontal" if (e["chart"].get("orientation") == "horizontal") else ""
+                for b in (e["chart"].get("bars") or []):
+                    split.append((b, ori))
             if len(split) >= 2:
-                bars = [{"id": b["id"], "value": b["value"], "box": b["box"]} for b in split]
+                bars = [{"id": b["id"], "value": b["value"], "box": b["box"], "axis": ori}
+                        for b, ori in split]
             else:
                 if charts:
                     # 没切：整块包围盒量不出单根柱子的高度。这里留一条显式的「未测」，
@@ -144,7 +221,7 @@ def main():
         img = frame_at(film, t)
         rows = []
         for e in bars:
-            h = bar_height(img, e["box"])
+            h = bar_length(img, e["box"], e.get("axis") == "horizontal")
             rows.append({
                 "element": e["id"], "value": e["value"], "heightPx": h,
                 # 每单位数值对应的像素数。柱子成比例 ⇔ 这个值全页一致。

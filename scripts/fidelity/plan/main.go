@@ -65,21 +65,33 @@ type chartInfo struct {
 type chartBar struct {
 	ID  string `json:"id"`
 	Box [4]int `json:"box"`
+	// LabelPad 是数据标签带相对柱体的方向与距离，由切柱脚本在页面图上量出来。
+	// 垂直柱在柱顶上方（up），水平条在条的右端（right）。缺省表示没量到
+	// （或清单来自还没做这一步的旧版本），此时退回下面的实测常数。
+	LabelPad *barLabelPad `json:"labelPad,omitempty"`
 }
 
-// focusLabelPadPx 是焦点矩形向上多包的高度。
+type barLabelPad struct {
+	Dir string `json:"dir"` // "up" | "right"
+	Px  int    `json:"px"`
+}
+
+// focusLabelPadPx 是**量不到标签带时**的兜底高度（垂直柱）。
 //
 // 柱顶的数据标签画在柱体包围盒之外：实测文字顶边在柱顶上方 41px（标签带高 22px），
 // 只框柱体时「讲的是这根」对了，但这根自己的数字被压在纱下面——图上最该清楚的数
 // 反而灰了。45px 是量出来的，不是估的（scripts/fidelity/mask_preview.py 的
-// --label-pad 默认值与它同源）。
+// --label-pad 默认值与它同源），现在切柱脚本也按同一口径逐根量（42px + 3px 余量），
+// 这个常数只留给「清单里还没有 labelPad 字段」的老产物。
 const focusLabelPadPx = 45
 
 // barRects 把「柱 id → 矩形」摊平成一页一张表。
 //
 // 不在这里校验矩形是否落在画布内：那是 Validate 的活，且它同时守着
-// 「服务端收到的 plan 也不能越界」。这里只负责把数据送到焦点上。
-func barRects(elems []element) map[string]render.Box {
+// 「服务端收到的 plan 也不能越界」。这里只负责把数据送到焦点上——但**扩标签时
+// 要自己夹住**：向右扩过头会越出画布右缘，而 Validate 只报「原点为负」，
+// 右侧越界它不查。
+func barRects(elems []element, canvasW int) map[string]render.Box {
 	out := make(map[string]render.Box)
 	for _, e := range elems {
 		if e.Chart == nil {
@@ -94,14 +106,29 @@ func barRects(elems []element) map[string]render.Box {
 			}
 			r := render.Box{X: b.Box[0], Y: b.Box[1], W: b.Box[2], H: b.Box[3]}
 			if e.Chart.DataLabels {
-				// 只有带标签的图才需要扩：没有标签时向上扩出一块空白，
-				// 等于在柱子上方留一条没被压暗的带，反而更显眼。
-				pad := focusLabelPadPx
-				if r.Y < pad {
-					pad = r.Y // 贴着画布顶边时能扩多少扩多少
+				// 只有带标签的图才需要扩：没有标签时扩出一块空白，
+				// 等于在柱子旁边留一条没被压暗的带，反而更显眼。
+				if b.LabelPad != nil && b.LabelPad.Dir == "right" && b.LabelPad.Px > 0 {
+					// 水平条：标签在右端，宽度随位数变（"174" 与 "96" 差一倍），
+					// 一个常数盖不住，所以按根量、按根扩。
+					pad := b.LabelPad.Px
+					if room := canvasW - (r.X + r.W); room < pad {
+						pad = room
+					}
+					if pad > 0 {
+						r.W += pad
+					}
+				} else {
+					pad := focusLabelPadPx
+					if b.LabelPad != nil && b.LabelPad.Dir == "up" && b.LabelPad.Px > 0 {
+						pad = b.LabelPad.Px
+					}
+					if r.Y < pad {
+						pad = r.Y // 贴着画布顶边时能扩多少扩多少
+					}
+					r.Y -= pad
+					r.H += pad
 				}
-				r.Y -= pad
-				r.H += pad
 			}
 			out[b.ID] = r
 		}
@@ -521,8 +548,22 @@ func main() {
 		log.Fatal(err)
 	}
 	if *baseImage != "" {
+		// 逗号分隔可以逐页给：一份 deck 里两页各有一张图表时，两页的整页图不同，
+		// 而 -base-image 原来只能给一个值、会把两页都指到同一张图上——那两页的
+		// 焦点矩形就会落在另一页的画面上，偏偏看起来「有图、有框」。
+		names := strings.Split(*baseImage, ",")
+		for i := range names {
+			names[i] = strings.TrimSpace(names[i])
+		}
+		if len(names) != 1 && len(names) != len(meta) {
+			log.Fatalf("-base-image 给了 %d 个名字，但清单有 %d 页", len(names), len(meta))
+		}
 		for i := range meta {
-			meta[i].BaseImage = *baseImage
+			if len(names) == 1 {
+				meta[i].BaseImage = names[0]
+			} else {
+				meta[i].BaseImage = names[i]
+			}
 		}
 	}
 	// IR 的 kind 是封闭集合（validate.validKind），没有 "text"。纯文字块归到 bullet。
@@ -631,7 +672,7 @@ func main() {
 			} else {
 				rev = scriptRevision(m.Elements, sp, *tierCompliant)
 			}
-			rects := barRects(m.Elements)
+			rects := barRects(m.Elements, theme.Canvas.Width)
 			focus = focusSpans(sp, rects)
 			// 焦点既不是图层、也不是切出来的柱子时，编译会在 Validate 里报
 			// 「不是本页图层」——那句话对着「我明明写了柱子的 id」很难对上号。
