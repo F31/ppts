@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -103,6 +104,41 @@ func barKey(shapeID, barID string) string {
 		return shapeID
 	}
 	return shapeID + "#" + barID
+}
+
+// PageFocusSpans 算**单页**的焦点序列，数据全部由调用方给。
+//
+// 预览路径用这个而不是走 AnimationPageAssembler：预览只渲一页，它手里已经有
+// project.Page（读页文档时拿到的）与这一页的时间轴 cue，再让组装器按源版本去
+// 读一遍整份 document.json 纯属白跑一次对象读——而预览的预算本来就只有几秒。
+//
+// canvasHeight 是**本页画布**的高度（不是导出画布）：EMU → 像素的系数必须跟着
+// 这次真正要渲的画布走。预览是 960 宽，导出是 1920 宽，用错系数会让遮罩整体
+// 缩成错误的尺寸，画面上表现成"孔开在旁边"，而日志一切正常。
+func PageFocusSpans(page *project.Page, slide media.SlideCue, pageMs int64, canvasHeight int) ([]render.FocusSpan, []render.Diagnostic) {
+	if page == nil || pageMs <= 0 || canvasHeight <= 0 {
+		return nil, nil
+	}
+	hasFocus := false
+	for _, seg := range slide.Segments {
+		if seg.Focus != nil && seg.Focus.ShapeID != "" {
+			hasFocus = true
+			break
+		}
+	}
+	// 绝大多数页一段都没有焦点。先在时间轴上判完再动形状树与元素换算：
+	// 预览每点一次都要付这份成本，而它十次里有九次用不上。
+	if !hasFocus {
+		return nil, nil
+	}
+	layerIDs := make(map[string]struct{})
+	for _, el := range PageElements(page) {
+		if el.ID != "" {
+			layerIDs[el.ID] = struct{}{}
+		}
+	}
+	return buildFocusSpans(focusCues(slide), PageFocusBoxes(page), layerIDs, pageMs,
+		float64(canvasHeight)/float64(stdSlideHeightEMU))
 }
 
 // focusSpanFor 解析一个目标，返回它在画布上的表达。

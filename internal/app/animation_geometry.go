@@ -55,8 +55,9 @@ type FocusBox struct {
 
 // PageFocusSource 返回某个源版本里所有可作焦点的矩形（slideID → 目标）。
 //
-// 单独一个接口而不是塞进 PageGeometrySource：预览只需要元素（它没有时间轴，也就
-// 没有焦点序列），强制它实现一个用不上的方法等于让每个测试假实现都多写一段空壳。
+// 单独一个接口而不是塞进 PageGeometrySource：导出要的是「按源版本整份读」，
+// 而预览手里已经有一页 project.Page（Resolve 读出来的），它走 PageFocusSpans +
+// PageFocusBoxes 那条路就够了。塞在一起会让预览被迫实现一个用不上的方法。
 type PageFocusSource interface {
 	FocusBoxes(ctx context.Context, scope PageGeometryScope) (map[string][]FocusBox, error)
 }
@@ -104,50 +105,66 @@ func (g *DocumentGeometry) FocusBoxes(ctx context.Context, scope PageGeometrySco
 		if page == nil || page.SlideID == "" {
 			continue
 		}
-		var boxes []FocusBox
-		var walk func([]*project.Shape)
-		walk = func(shapes []*project.Shape) {
-			for _, sh := range shapes {
-				if sh == nil || sh.ID == "" {
-					continue
-				}
-				if sh.Bounds != nil {
-					boxes = append(boxes, FocusBox{
-						ShapeID: sh.ID,
-						Box: render.EMUBox{
-							X: sh.Bounds.X, Y: sh.Bounds.Y,
-							Width: sh.Bounds.Width, Height: sh.Bounds.Height,
-						},
-					})
-				}
-				// 柱子的框来自解析期的切柱结果。注意它的单位是**解析画布像素**
-				// （1920×1080，见 bindCanvasW），不是 EMU——这里换回 EMU，让下游只需要
-				// 一个换算系数（画布高 / 标准页高），不必按目标类型记两套坐标。
-				//
-				// 这个反推成立的前提与切柱时相同：页面高度按标准 7.5 英寸（6858000 EMU）
-				// 折算。自定义页高的 deck 在切柱那一步就已经"切不出来"（报未切），
-				// 所以不会走到这里拿到一个假的框。
-				for _, bar := range sh.ChartBars {
-					if bar.ID == "" {
-						continue
-					}
-					boxes = append(boxes, FocusBox{
-						ShapeID: sh.ID, BarID: bar.ID,
-						Box: render.EMUBox{
-							X: pxToEMU(bar.Box[0]), Y: pxToEMU(bar.Box[1]),
-							Width: pxToEMU(bar.Box[2]), Height: pxToEMU(bar.Box[3]),
-						},
-					})
-				}
-				if len(sh.Children) > 0 {
-					walk(sh.Children)
-				}
-			}
-		}
-		walk(page.Shapes)
-		out[page.SlideID] = boxes
+		out[page.SlideID] = PageFocusBoxes(page)
 	}
 	return out, nil
+}
+
+// PageFocusBoxes 把一页的形状摊成焦点框（形状框 + 每根柱子的框）。
+//
+// 导出与预览共用这一份：预览手里已经有 project.Page（读页文档时拿到的），
+// 若它自己再遍历一遍，两条路径迟早会在「哪些形状算数、柱子怎么换算」上分叉，
+// 表现是「预览指的位置和成片不一样」——而两边的输入明明是同一份 document.json。
+//
+// 注意这里的取舍：它**不过滤**装饰形状（没有文字也没有包围盒的仍会进来），
+// 因为过滤是「给人选」的事（FocusTargetsForPage 管），而这里是「按 id 找框」，
+// 用户已经选好的目标不该因为一次展示层的过滤而在预览里失效。
+func PageFocusBoxes(page *project.Page) []FocusBox {
+	if page == nil {
+		return nil
+	}
+	var boxes []FocusBox
+	var walk func([]*project.Shape)
+	walk = func(shapes []*project.Shape) {
+		for _, sh := range shapes {
+			if sh == nil || sh.ID == "" {
+				continue
+			}
+			if sh.Bounds != nil {
+				boxes = append(boxes, FocusBox{
+					ShapeID: sh.ID,
+					Box: render.EMUBox{
+						X: sh.Bounds.X, Y: sh.Bounds.Y,
+						Width: sh.Bounds.Width, Height: sh.Bounds.Height,
+					},
+				})
+			}
+			// 柱子的框来自解析期的切柱结果。注意它的单位是**解析画布像素**
+			// （1920×1080，见 bindCanvasW），不是 EMU——这里换回 EMU，让下游只需要
+			// 一个换算系数（画布高 / 标准页高），不必按目标类型记两套坐标。
+			//
+			// 这个反推成立的前提与切柱时相同：页面高度按标准 7.5 英寸（6858000 EMU）
+			// 折算。自定义页高的 deck 在切柱那一步就已经"切不出来"（报未切），
+			// 所以不会走到这里拿到一个假的框。
+			for _, bar := range sh.ChartBars {
+				if bar.ID == "" {
+					continue
+				}
+				boxes = append(boxes, FocusBox{
+					ShapeID: sh.ID, BarID: bar.ID,
+					Box: render.EMUBox{
+						X: pxToEMU(bar.Box[0]), Y: pxToEMU(bar.Box[1]),
+						Width: pxToEMU(bar.Box[2]), Height: pxToEMU(bar.Box[3]),
+					},
+				})
+			}
+			if len(sh.Children) > 0 {
+				walk(sh.Children)
+			}
+		}
+	}
+	walk(page.Shapes)
+	return boxes
 }
 
 // load 读取并解码某个源版本的 document.json。

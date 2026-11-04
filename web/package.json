@@ -12,7 +12,7 @@
     "core:test": "node --experimental-strip-types --test core-check.mjs",
     "polling:test": "node --experimental-strip-types --test polling-check.mjs",
     "freeze:test": "node --experimental-strip-types --test player-freeze-check.mjs",
-    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && npm run freeze:test && npm run animation:test && npm run script:test && npm run visibility:test && npm run preview:test && npm run report:test && npm run anchors:test && npm run ttsmodel:test && npm run compare:test && npm run focus:test && npm run gateway:test && npm run localauth:test && tsc -b && vite build",
+    "build": "npm run contrast && npm run api:check && npm run route:check && npm run core:test && npm run polling:test && npm run freeze:test && npm run animation:test && npm run script:test && npm run visibility:test && npm run preview:test && npm run report:test && npm run anchors:test && npm run ttsmodel:test && npm run compare:test && npm run focus:test && npm run focuspreview:test && npm run gateway:test && npm run localauth:test && tsc -b && vite build",
     "build:share": "vite build --config vite.share.config.ts",
     "typecheck": "tsc -b",
     "preview": "vite preview --host 0.0.0.0",
@@ -25,6 +25,7 @@
     "ttsmodel:test": "node --experimental-strip-types --test tts-model-check.mjs",
     "compare:test": "node --experimental-strip-types --test script-compare-check.mjs",
     "focus:test": "node --experimental-strip-types --test script-focus-check.mjs",
+    "focuspreview:test": "node --experimental-strip-types --test animation-preview-check.mjs",
     "gateway:test": "node --experimental-strip-types --test gateway-share-check.mjs",
     "localauth:test": "node --experimental-strip-types --test local-auth-check.mjs"
   },

@@ -231,6 +231,20 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	canvas := previewCanvas(png)
+	// 焦点与元素几何来自同一份页文档、同一个源版本，只是这里不需要对象读：
+	// page 就是 Resolve 读出来的那一页。
+	focus, focusDiags := app.PageFocusSpans(page, *slide, durationMS, canvas.Height)
+	focusSkipped, focusReason := len(focusDiags), ""
+	if len(focusDiags) > 0 {
+		focusReason = focusDiags[0].Code
+	}
+	// 画布被夹到 [240,1920] 后可能不再保持页图比例（正常 16:9/4:3 永远触发不到）。
+	// 此时 EMU→像素的单一系数会把框整体放歪：宁可这一页不指，也不能指错位置——
+	// 遮罩错位在画面上就是「孔开在旁边」，而所有接口都返回 200。
+	if len(focus) > 0 && !canvasKeepsAspect(canvas, png) {
+		focusSkipped += len(focus)
+		focus, focusReason = nil, "canvas_aspect"
+	}
 	compiler, err := render.NewCompiler(render.Options{
 		Canvas: canvas,
 		FPS:    previewFPS,
@@ -250,6 +264,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		Elements:       app.PageElements(page),
 		Revision:       rev,
 		SegmentOffsets: segmentOffsetsOf(*slide),
+		Focus:          focus,
 	}})
 	if err != nil {
 		// 编译失败是"这份规格/这页数据有问题"，不是服务故障：
@@ -313,6 +328,16 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 	// 只有整页动效，而画面上看起来就是"动效没生效"。前端据此说明预览含几个元素动效。
 	// 导出侧 2.0b 起读同一份解析产物，两边图层数应当一致（画布分辨率/帧率不同）。
 	h.Set("X-Preview-Layers", fmt.Sprintf("%d", len(plan.Pages[0].Layers)))
+	// 焦点条数与跳过条数：前端据此说明「这段指了谁」「有几处指了但找不到」。
+	// 不给的话，用户看到整页全亮只会以为「焦点没生效」，而真实原因可能是
+	// 目标在源版本里不存在（他改过 deck）或者这页根本没写焦点。
+	h.Set("X-Preview-Focus", fmt.Sprintf("%d", len(focus)))
+	if focusSkipped > 0 {
+		h.Set("X-Preview-Focus-Skipped", fmt.Sprintf("%d", focusSkipped))
+		if focusReason != "" {
+			h.Set("X-Preview-Focus-Skip-Reason", focusReason)
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(buf.Bytes())
 }
@@ -410,6 +435,21 @@ func previewCanvas(png []byte) design.Canvas {
 		height = 1920
 	}
 	return design.Canvas{Width: previewCanvasWidth, Height: height}
+}
+
+// canvasKeepsAspect 判断预览画布是否仍保持页图比例。
+//
+// 只在「这一页真有焦点」时才值得一问（调用方先判 len(focus) > 0）：它要再解一次
+// PNG 头，而预览的预算只有几秒。2px 容差用来吃掉两处取整——previewCanvas 会把
+// 奇数高度 +1（H.264 yuv420p 要求偶数），以及 960 宽未必能整除原始比例。
+func canvasKeepsAspect(canvas design.Canvas, png []byte) bool {
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(png))
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		// 解不出页图尺寸时不能说"保持了比例"：焦点框的位置无法核对。
+		return false
+	}
+	want := float64(canvas.Height) * float64(cfg.Width) / float64(cfg.Height)
+	return math.Abs(float64(canvas.Width)-want) <= 2
 }
 
 // segmentOffsetsOf 把分段绝对时间换算成相对本页起点的毫秒偏移。

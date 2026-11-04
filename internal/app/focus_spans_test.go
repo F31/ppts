@@ -6,6 +6,7 @@ import (
 
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -238,5 +239,72 @@ func TestAssemblerFocusIgnoresPerPageSpec(t *testing.T) {
 	}
 	if len(req.Pages[1].Focus) != 1 {
 		t.Fatalf("没有动效规格的页也要有焦点，got %+v", req.Pages[1].Focus)
+	}
+}
+
+// chartPage 造一页带一根切好的柱子的文档。柱子框的单位是**解析画布像素**
+// （1920×1080 基准），与 document.json 里 chartBars[].box 一致。
+func chartPage() *project.Page {
+	return &project.Page{
+		SlideID: "slide-1",
+		Shapes: []*project.Shape{{
+			ID: "shape-7", Kind: "chart",
+			Bounds: &project.Box{X: 800000, Y: 600000, Width: 8000000, Height: 4000000},
+			ChartBars: []project.ChartBar{
+				{ID: "b1", Category: "华东", Series: "耗时", Value: 174, Box: [4]int{300, 250, 60, 250}},
+				{ID: "b2", Category: "华北", Series: "耗时", Value: 131, Box: [4]int{420, 300, 60, 200}},
+			},
+		}},
+	}
+}
+
+// TestPageFocusSpansScalesToPreviewCanvas 守「预览画布 960 宽」这一档。
+//
+// 导出是 1920 宽，预览是 960。若预览沿用导出侧的系数（1080 像素对应标准页高），
+// 遮罩会大整整一倍，画面上是「孔开在柱子外面」，而接口返回 200、日志干净。
+// 这条用例只在 960 下才露馅——所以断言的是「540 画布下的坐标恰是 1080 的一半」。
+func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
+	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b1"}))
+
+	exported, diags := PageFocusSpans(chartPage(), slide, 2000, 1080)
+	if len(diags) != 0 || len(exported) != 1 {
+		t.Fatalf("1080 画布：spans=%+v diags=%+v", exported, diags)
+	}
+	if got := *exported[0].Rect; got != (render.Box{X: 300, Y: 250, W: 60, H: 250}) {
+		t.Fatalf("1080 画布 rect = %+v，want 与解析画布像素一致 (300,250 60x250)", got)
+	}
+
+	previewed, diags := PageFocusSpans(chartPage(), slide, 2000, 540)
+	if len(diags) != 0 || len(previewed) != 1 {
+		t.Fatalf("540 画布：spans=%+v diags=%+v", previewed, diags)
+	}
+	if got := *previewed[0].Rect; got != (render.Box{X: 150, Y: 125, W: 30, H: 125}) {
+		t.Fatalf("540 画布 rect = %+v，want 恰好是 1080 的一半 (150,125 30x125)", got)
+	}
+}
+
+// TestPageFocusSpansWithoutFocusSkipsWork 守「没写焦点就什么都不算」。
+// 返回值必须是 nil 而不是空切片：调用方据此决定要不要往计划里塞 Focus 字段。
+func TestPageFocusSpansWithoutFocusSkipsWork(t *testing.T) {
+	slide := slideCue(cue(0, 1000, nil))
+	spans, diags := PageFocusSpans(chartPage(), slide, 2000, 960)
+	if spans != nil || diags != nil {
+		t.Fatalf("没有焦点时应返回 nil/nil，got %+v / %+v", spans, diags)
+	}
+	// page 为 nil 也不能 panic：预览的 Resolve 返回 nil 页时这一页本就不该渲。
+	if spans, diags := PageFocusSpans(nil, slide, 2000, 960); spans != nil || diags != nil {
+		t.Fatalf("nil page 应返回 nil/nil，got %+v / %+v", spans, diags)
+	}
+}
+
+// TestPageFocusSpansReportsMissingTarget 守「目标不在这一页时留诊断，而不是凭空造框」。
+func TestPageFocusSpansReportsMissingTarget(t *testing.T) {
+	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b9"}))
+	spans, diags := PageFocusSpans(chartPage(), slide, 2000, 540)
+	if len(spans) != 0 {
+		t.Fatalf("目标缺失时不该产出焦点，got %+v", spans)
+	}
+	if len(diags) != 1 || diags[0].Code != render.DiagFocusTargetMissing {
+		t.Fatalf("want 一条 %s 诊断，got %+v", render.DiagFocusTargetMissing, diags)
 	}
 }

@@ -12,6 +12,7 @@ import {
   type AnimationScope,
   type ClientIdentity
 } from './api';
+import { previewFocusNotices, type PreviewFocusNotice } from './animationPreview';
 import { ConnectError } from './core';
 import {
   TRIGGER_ENTER,
@@ -107,6 +108,8 @@ export function AnimationEditor({
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [previewLayers, setPreviewLayers] = useState(0);
+  // 焦点说明与预览一起更新：分开存会让"新预览 + 旧说明"同时出现在屏幕上。
+  const [previewFocus, setPreviewFocus] = useState<PreviewFocusNotice[]>([]);
   // 预设生成请求在途：连点两个预设会发出两个默认规格请求，后到的那个赢——
   // 结果是用户点了 A 却拿到 B。用序号丢弃过期响应。
   const generateSeq = useRef(0);
@@ -442,6 +445,7 @@ export function AnimationEditor({
         return result.url;
       });
       setPreviewLayers(result.layers);
+      setPreviewFocus(previewFocusNotices(result));
     } catch (err) {
       setPreviewError(previewErrorText(err, t));
     } finally {
@@ -872,6 +876,11 @@ export function AnimationEditor({
                       ? t('editor.animationPreviewLayers', { count: previewLayers })
                       : t('editor.animationPreviewStatic')}
                   </p>
+                  {previewFocus.map((notice) => (
+                    <p className="form-hint" key={notice.key}>
+                      {t(notice.key, notice.params)}
+                    </p>
+                  ))}
                 </section>
               )}
             </>

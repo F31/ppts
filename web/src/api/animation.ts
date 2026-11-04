@@ -164,6 +164,12 @@ export type AnimationPreview = {
   url: string;
   /** 编译出的元素图层数：>0 表示这次预览含元素级动效（导出侧目前还渲不出来）。 */
   layers: number;
+  /** 这次预览里生效的焦点条数：0 表示这一段没写焦点，或这一页没配焦点。 */
+  focus: number;
+  /** 写了焦点但没能显示的条数（目标找不到、画布比例不支持）。 */
+  focusSkipped: number;
+  /** 跳过的原因码：target_missing / canvas_aspect；没有跳过时为空串。 */
+  focusSkipReason: string;
 };
 
 export async function previewAnimation(
@@ -184,5 +190,15 @@ export async function previewAnimation(
   });
   const blob = await res.blob();
   const layers = Number(res.headers.get('X-Preview-Layers') ?? '0');
-  return { url: URL.createObjectURL(blob), layers: Number.isFinite(layers) ? layers : 0 };
+  // 三个头都是可选增强：老服务端不给就没有，前端按 0 处理，
+  // 而不是把"没有这个头"当成"这页没有焦点"去提示用户。
+  const focus = Number(res.headers.get('X-Preview-Focus') ?? '0');
+  const focusSkipped = Number(res.headers.get('X-Preview-Focus-Skipped') ?? '0');
+  return {
+    url: URL.createObjectURL(blob),
+    layers: Number.isFinite(layers) ? layers : 0,
+    focus: Number.isFinite(focus) ? focus : 0,
+    focusSkipped: Number.isFinite(focusSkipped) ? focusSkipped : 0,
+    focusSkipReason: res.headers.get('X-Preview-Focus-Skip-Reason') ?? ''
+  };
 }
