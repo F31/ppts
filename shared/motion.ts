@@ -247,15 +247,25 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
  *
  * 返回 null 表示「这一刻不该有遮罩」：没有焦点、当前焦点不是矩形焦点（普通图层焦点）、
  * 或者正处在两端（alpha 为 0）。调用方据此完全不画，而不是画一个 alpha=0 的节点。
+ *
+ * 返回值里的 `index` 是**当前生效那一段在入参数组里的下标**，供「一段一个节点」的
+ * 调用方认领自己的那一段。为什么不能靠矩形本身来认：两段的矩形原点完全可以相同
+ * （同列上下堆叠的两个形状、卡片与压在它上面的标题块），此时「x/y 相同」会让
+ * 两个节点互相认领——孔变成两块矩形的并集、孔外白纱叠两层（0.45 → 0.6975）。
+ * 元素 id 也不够：一页里回到同一个元素讲第二次是常见编法。
  */
 export function focusMask(
   focus: FocusSpan[] | undefined,
   tMs: number
-): { rect: { x: number; y: number; w: number; h: number }; alpha: number } | null {
+): { rect: { x: number; y: number; w: number; h: number }; alpha: number; index: number } | null {
   if (!focus || focus.length === 0) return null;
   let cur: FocusSpan | null = null;
-  for (const f of focus) {
-    if (f.startMs <= tMs) cur = f;
+  let index = -1;
+  for (let i = 0; i < focus.length; i++) {
+    if (focus[i].startMs <= tMs) {
+      cur = focus[i];
+      index = i;
+    }
   }
   if (!cur || !cur.rect) return null;
   const fade = cur.fadeMs ?? FOCUS_FADE_MS;
@@ -276,7 +286,7 @@ export function focusMask(
   if (alpha <= 1e-6) return null;
   const r = cur.rect;
   if (!(r.w > 0) || !(r.h > 0)) return null;
-  return { rect: r, alpha };
+  return { rect: r, alpha, index };
 }
 
 /** 把压暗量折成实际不透明度系数：dim=0 → 1，dim=1 → FOCUS_DIM_OPACITY。 */

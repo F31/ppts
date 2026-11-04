@@ -1102,7 +1102,7 @@ test('矩形焦点：过渡区间里网页版也走曲线，不是一条弦', as
   ];
   for (const c of cases) {
     const focus = [c.span];
-    const frames = focusMaskKeyframes(focus, c.span, pageMs);
+    const frames = focusMaskKeyframes(focus, 0, pageMs);
     assert.ok(frames && frames.length > 10, `${c.name}：过渡窗口没有加密采样（${frames?.length} 个关键帧）`);
 
     let worst = 0;
@@ -1122,11 +1122,11 @@ test('矩形焦点：过渡区间里网页版也走曲线，不是一条弦', as
   }
   // 中点必须落在曲线上（0.45 × easeOutCubic(0.5) = 0.39375），线性插值给出的是 0.225。
   const span = cases[0].span;
-  const frames = focusMaskKeyframes([span], span, pageMs);
+  const frames = focusMaskKeyframes([span], 0, pageMs);
   assert.ok(Math.abs(sampleKeyframes(frames, pageMs, 1120) - 0.394) < 0.005);
   // 放手那一侧同理：3000ms 之后 240ms 才回到全亮，中点是 0.225 而不是 0.394 的一半。
   const rel = { startMs: 1000, endMs: 3000, elementId: 'chart#b0', rect };
-  const relFrames = focusMaskKeyframes([rel], rel, pageMs);
+  const relFrames = focusMaskKeyframes([rel], 0, pageMs);
   assert.ok(Math.abs(sampleKeyframes(relFrames, pageMs, 3120) - 0.056) < 0.005,
     `放手中点应为 0.056（0.45 × (1 − easeOutCubic(0.5))），实际 ${sampleKeyframes(relFrames, pageMs, 3120)}`);
 });
@@ -1165,4 +1165,77 @@ test('图层让位：过渡窗口同样加密采样，帧时刻的不透明度�
   // 换人那一刻 b 还在压暗态附近，240ms 后才全亮；线性插值会在中点给出 0.775。
   assert.ok(Math.abs(sampleKeyframes(frames, pageMs, 4120) - 0.944) < 0.01,
     `换人中点应为 0.944（0.55 + 0.45 × easeOutCubic(0.5)），实际 ${sampleKeyframes(frames, pageMs, 4120)}`);
+});
+
+// ---- 两段焦点的矩形原点相同：遮罩必须各认各的 ----
+//
+// 播放器是「一段焦点一个遮罩节点」，每个节点只在自己那一段生效（焦点互斥）。
+// 但旧实现判断「这一刻是不是我的」用的是**矩形的 x/y 相同**——两段的原点只要
+// 碰巧一样（同列上下堆叠的两个形状、卡片与压在它上面的标题块），第二个节点
+// 在第一段生效时也认领，于是：
+//   1) 孔变成两块矩形的**并集**：指着标题，却把整张卡片一起留白；
+//   2) 孔外白纱叠两层：0.45 变成 1-(1-0.45)² = 0.6975，整页比设计的更白。
+// 两端都不报错，成片（一个遮罩、只画当前段）也不会这样。
+test('两段焦点矩形同原点时，遮罩不能互相认领', async () => {
+  const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const focus = [
+    { startMs: 1000, elementId: 'card', rect: { x: 400, y: 300, w: 600, h: 300 } },
+    { startMs: 3000, elementId: 'title', rect: { x: 400, y: 300, w: 300, h: 80 } }
+  ];
+  const pageMs = 6000;
+  const alphaAt = (index, ms) => {
+    const frames = focusMaskKeyframes(focus, index, pageMs);
+    assert.ok(frames, '应当有关键帧');
+    return sampleKeyframes(frames, pageMs, ms);
+  };
+
+  // t=2000：第一段（card）在讲，只有它的节点该亮。
+  assert.ok(Math.abs(alphaAt(0, 2000) - 0.45) < 0.002, `card@2000 = ${alphaAt(0, 2000)}`);
+  assert.equal(alphaAt(1, 2000), 0, '第一段生效时，第二段的节点必须为 0');
+  // t=4000：第二段（title）在讲，第一段的节点必须放手。
+  assert.equal(alphaAt(0, 4000), 0, '第二段生效后，第一段的节点必须归零（否则孔被并成整张卡片）');
+  assert.ok(Math.abs(alphaAt(1, 4000) - 0.45) < 0.002, `title@4000 = ${alphaAt(1, 4000)}`);
+});
+
+// 上一条件守的是「归属」，这一条件守的是「画面上究竟压了多少」——两者的合成结果
+// 才是观众看到的东西：每个节点是一层整页白纱，最终压暗量是 1 − Π(1 − alpha_i)。
+// 成片只有一个遮罩节点，所以这个合成量必须逐毫秒等于 focusMask 的 alpha。
+// 它能一并抓住两类错：多个节点同时亮（叠成 0.6975）与「hold 期慢慢自己淡掉」
+// （节点只在 hold 起点与页末有关键帧，中间被线性插值一路拉向 0）。
+test('矩形焦点：网页版所有遮罩叠加后的压暗量，逐毫秒等于成片', async () => {
+  const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { focusMask } = await import('../shared/motion.ts');
+  const pageMs = 6000;
+  const focus = [
+    // 第一段讲整张卡片，讲完主动放手（endMs 落在下一段之前）。
+    { startMs: 1000, endMs: 2500, elementId: 'card', rect: { x: 400, y: 300, w: 600, h: 300 } },
+    // 第二段换到另一处讲。
+    { startMs: 3000, elementId: 'aside', rect: { x: 1200, y: 300, w: 300, h: 200 } },
+    // 第三段**回来**讲卡片上的标题块：原点与第一段相同、尺寸不同。
+    // 这个顺序才是真实编法（先整体、再细节），也正是「按矩形认领」会出错的形状：
+    // 页末时第一段的节点会认领第三段的时刻，两个节点一起亮。
+    { startMs: 4500, elementId: 'title', rect: { x: 400, y: 300, w: 300, h: 80 } }
+  ];
+  const frames = focus.map((_, i) => focusMaskKeyframes(focus, i, pageMs));
+  assert.ok(frames.every(Boolean), '每一段都应当有关键帧');
+
+  let worst = 0;
+  let worstAt = 0;
+  for (let t = 0; t <= pageMs; t++) {
+    // 白纱叠层的合成：1 − Π(1 − alpha)。
+    let keep = 1;
+    for (const f of frames) keep *= 1 - sampleKeyframes(f, pageMs, t);
+    const rendered = 1 - keep;
+    const exact = focusMask(focus, t)?.alpha ?? 0;
+    const diff = Math.abs(rendered - exact);
+    if (diff > worst) {
+      worst = diff;
+      worstAt = t;
+    }
+  }
+  assert.ok(
+    worst <= 0.002,
+    `网页版叠加后与成片的最大差 ${worst.toFixed(4)}（${worstAt}ms）：` +
+      '多个遮罩同时亮会叠成 1-(1-0.45)²，hold 期缺关键帧会被插值一路淡到 0'
+  );
 });

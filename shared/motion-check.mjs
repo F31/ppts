@@ -182,3 +182,23 @@ test('focusDim：矩形焦点期间图层不再压暗', () => {
   // 纯矩形焦点的页（前面没有图层焦点）：一律不压暗。
   assert.deepEqual(focusDim([{ startMs: 0, elementId: 'b0', rect, fadeMs: 240 }], 500), {});
 });
+
+// 每段矩形的**归属**：播放器是「一段焦点一个遮罩节点」，每个节点必须知道自己
+// 此刻该不该亮。归属不能用矩形本身来判——两段的原点完全可以相同（先讲整张卡片、
+// 再回来讲卡片上的标题块，这是最常见的编法），也不能用 elementId（一页里回到
+// 同一个元素讲第二次同样常见）。`index` 是唯一没有歧义的答案，这条把它钉住。
+test('focusMask：返回当前生效那一段的下标，同原点的两段也不含糊', () => {
+  const x = { x: 400, y: 300, w: 600, h: 300 };
+  const title = { x: 400, y: 300, w: 300, h: 80 }; // 原点相同、尺寸不同
+  const focus = [
+    { startMs: 1000, elementId: 'card', rect: x, fadeMs: 240 },
+    { startMs: 3000, elementId: 'title', rect: title, fadeMs: 240 }
+  ];
+  assert.equal(focusMask(focus, 2000)?.index, 0);
+  assert.deepEqual(focusMask(focus, 2000)?.rect, x);
+  assert.equal(focusMask(focus, 4000)?.index, 1);
+  assert.deepEqual(focusMask(focus, 4000)?.rect, title);
+  // 换段那一刻 alpha 还是 0（新的一段刚开始淡入），所以返回 null——
+  // 此时不该有任何节点亮着，与成片一致。
+  assert.equal(focusMask(focus, 3000), null);
+});

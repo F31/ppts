@@ -276,23 +276,39 @@ export function pickStageLayers(
  * 只有 [起点, 起点+fade]，中间靠 WAAPI 线性插值，而成片逐帧求的是 easeOutCubic。
  * 结果是「同一个函数」这句话在过渡区间里不成立，且两端都不报错。
  *
- * 只认这一段自己的 alpha：别的段生效时这一层必须是 0（焦点互斥）。
+ * 只认这一段自己的 alpha：别的段生效时这一层必须是 0（焦点互斥）。认领靠的是
+ * `focusMask` 返回的 `index`，**不是矩形本身**——两段的矩形原点完全可以相同
+ * （同列上下堆叠的两个形状、卡片与压在它上面的标题块），按 x/y 认领会让两个节点
+ * 同时亮：孔变成两块矩形的并集（指着标题却把整张卡片一起留白），孔外白纱叠成
+ * 1-(1-0.45)² = 0.6975，整页比设计的更白。元素 id 也不够——一页里回到同一个元素
+ * 讲第二次是常见编法，`startMs` 也没有唯一性保证。下标是这里唯一可靠的归属。
  */
 export function focusMaskKeyframes(
   focus: FocusSpan[] | undefined,
-  span: FocusSpan,
+  index: number,
   pageMs: number
 ): Keyframe[] | null {
-  const rect = span.rect;
-  if (!focus || !rect || !(rect.w > 0) || !(rect.h > 0) || !(pageMs > 0)) return null;
+  const span = focus?.[index];
+  const rect = span?.rect;
+  if (!focus || !span || !rect || !(rect.w > 0) || !(rect.h > 0) || !(pageMs > 0)) return null;
   const fade = span.fadeMs ?? FOCUS_FADE_MS;
   const marks: number[] = [0];
   pushFadeSamples(marks, span.startMs, fade);
   if (span.endMs) pushFadeSamples(marks, span.endMs, fade);
+  // 下一段开口的那一刻，这一段的遮罩必须**放手**：成片只有一个遮罩节点，
+  // 换段时矩形直接换掉，旧矩形在那一帧就没了。关键帧是分段线性，跳变要用
+  // 「前一毫秒仍保持」加「此刻归零」两个点表示；只补一个 0 会被插值拉成
+  // 从 hold 一路淡到那一刻——表现是「讲第一根柱子的时候白纱自己慢慢淡掉」。
+  // 只补 `stopAt` 也不行：它前面的关键帧在 hold 起点，插值区间横跨整段。
+  const next = focus[index + 1];
+  if (next) {
+    marks.push(next.startMs - 1);
+    marks.push(next.startMs);
+  }
   marks.push(pageMs);
   const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
     const m = focusMask(focus, t);
-    const alpha = m && m.rect.x === rect.x && m.rect.y === rect.y ? m.alpha : 0;
+    const alpha = m && m.index === index ? m.alpha : 0;
     return { offset: t / pageMs, opacity: String(round(alpha)) };
   });
   return frames.length >= 2 ? frames : null;
@@ -318,8 +334,10 @@ function buildFocusMasks(
   const out: CompiledLayer[] = [];
   const pageMs = opts.pageDurationMs > 0 ? opts.pageDurationMs : 0;
   const focus = opts.focus ?? [];
-  for (const f of focus) {
-    const rect = f.rect;
+  // 用下标遍历：每一段的归属就是它在数组里的位置（见 focusMaskKeyframes），
+  // 遮罩节点的顺序与 focus 一一对应，认领不需要再看矩形。
+  for (let i = 0; i < focus.length; i++) {
+    const rect = focus[i].rect;
     if (!rect || !(rect.w > 0) || !(rect.h > 0)) continue;
     const node = document.createElement('div');
     node.className = 'ppts-focus-mask';
@@ -343,7 +361,7 @@ function buildFocusMasks(
 
     let animation: Animation | null = null;
     if (canAnimate && pageMs > 0) {
-      const frames = focusMaskKeyframes(focus, f, pageMs);
+      const frames = focusMaskKeyframes(focus, i, pageMs);
       if (frames) {
         animation = node.animate(frames, {
           duration: Math.max(1, pageMs),
