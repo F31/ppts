@@ -15,7 +15,7 @@
 //
 // 时钟一律由调用方给（音频 currentTime），这里不持有任何"当前时间"。
 
-import { evaluateLayer, focusDim, focusOpacity, originCss } from '../../../shared/motion.ts';
+import { FOCUS_FADE_MS, evaluateLayer, focusDim, focusMask, focusOpacity, originCss } from '../../../shared/motion.ts';
 import type { FocusSpan, Layer, Motion } from '../../../shared/types.ts';
 
 /** 清单里的一层（字段是 IR 的投影，见 internal/share/manifest.go 的 SlideLayer）。 */
@@ -180,6 +180,83 @@ export function buildLayerNodes(
       });
       animation.pause();
       animation.currentTime = 0;
+    }
+    out.push({ element: node, animation });
+  }
+  // 遮罩在**所有层之后**追加：它压暗的是画面，不是某一层。
+  out.push(...buildFocusMasks(container, canvasW, canvasH, opts, canAnimate));
+  return out;
+}
+
+/**
+ * 矩形焦点遮罩：每个带 `rect` 的焦点一个节点（整页白纱、rect 处留孔）。
+ *
+ * 为什么每段一个节点、而不是一个节点换位置：焦点是互斥的，同一时刻只会有一段生效；
+ * 拆成多个节点后每段的关键帧只有「淡入—保持—淡出」，不需要在切换点搬动矩形，
+ * 也就不会在换柱时出现「白纱从这根滑到那根」的中间态。
+ *
+ * alpha 由 `focusMask` 逐采样点求出——和成片渲染器**同一个函数**。若这里另写一套
+ * 时间逻辑，网页版和 MP4 迟早会在「什么时候压下去」上分叉，而这种分叉没有报错。
+ */
+function buildFocusMasks(
+  container: HTMLElement,
+  canvasW: number,
+  canvasH: number,
+  opts: CompileOptions,
+  canAnimate: boolean
+): CompiledLayer[] {
+  const out: CompiledLayer[] = [];
+  const pageMs = opts.pageDurationMs > 0 ? opts.pageDurationMs : 0;
+  const focus = opts.focus ?? [];
+  for (const f of focus) {
+    const rect = f.rect;
+    if (!rect || !(rect.w > 0) || !(rect.h > 0)) continue;
+    const node = document.createElement('div');
+    node.className = 'ppts-focus-mask';
+    // `position:absolute` 不能省：left/top 只对定位元素生效。`.ppts-layer` 的那条
+    // 规则来自样式表，而遮罩是新加的类、样式表里没有它——漏掉这一句时 left/top
+    // 被静默忽略，div 退化成一个 0 尺寸的盒子，box-shadow 从左上角铺满全页：
+    // 结果是整页均匀压暗、孔根本不存在。这一条是浏览器截图抓出来的，静态检查全绿。
+    node.style.position = 'absolute';
+    node.style.pointerEvents = 'none';
+    node.style.left = pct(rect.x, canvasW);
+    node.style.top = pct(rect.y, canvasH);
+    node.style.width = pct(rect.w, canvasW);
+    node.style.height = pct(rect.h, canvasH);
+    // 一个透明的 div + 无穷大的阴影 = 中间留孔的白纱。孔边用 blur 羽化：
+    // 硬边会在网格线上切出一亮一淡的接缝。
+    node.style.boxShadow = '0 0 0 9999px #fff';
+    node.style.filter = 'blur(8px)';
+    // 初始「不压暗」是终态：没有 WAAPI 时只是少一层遮罩，不会把整页盖白。
+    node.style.opacity = '0';
+    container.append(node);
+
+    let animation: Animation | null = null;
+    if (canAnimate && pageMs > 0) {
+      const fade = f.fadeMs ?? FOCUS_FADE_MS;
+      const marks = [0, f.startMs, f.startMs + fade];
+      if (f.endMs) marks.push(f.endMs, f.endMs + fade);
+      marks.push(pageMs);
+      const points: number[] = [];
+      for (const t of marks) {
+        const clamped = Math.max(0, Math.min(pageMs, t));
+        if (points.length === 0 || clamped > points[points.length - 1]) points.push(clamped);
+      }
+      const frames: Keyframe[] = points.map((t) => {
+        const m = focusMask(focus, t);
+        // 只认这一段自己的 alpha：别的段生效时这一层必须是 0（焦点互斥）。
+        const alpha = m && m.rect.x === rect.x && m.rect.y === rect.y ? m.alpha : 0;
+        return { offset: pageMs > 0 ? t / pageMs : 0, opacity: String(round(alpha)) };
+      });
+      if (frames.length >= 2) {
+        animation = node.animate(frames, {
+          duration: Math.max(1, pageMs),
+          fill: 'both',
+          easing: 'linear'
+        });
+        animation.pause();
+        animation.currentTime = 0;
+      }
     }
     out.push({ element: node, animation });
   }

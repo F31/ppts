@@ -344,6 +344,20 @@ python3 scripts/fidelity/mask_preview.py --png tmp/chart/hi-1.png \
 #    边缘羽化 8px（硬边会在网格线上切出一亮一淡的接缝）。
 #    自检 4 项，其中一项是「dim 与 shared/motion.ts 的 FOCUS_DIM_OPACITY 一致」——
 #    产品改了强度而预览没改，两张看起来差不多的图其实对不上。
+
+# 8) 成片端已支持：plan 的 focus 带 rect，渲染器会在**所有层之上**画遮罩。
+#    手写一份最小 plan 就能验（不经过编译链路）：
+#      {"schemaVersion":"compiled-timeline/v1","fps":30,"width":1920,"height":1080,
+#       "background":"#FFFFFF","pages":[{"index":0,"slideId":"slide-0","durationMs":4000,
+#       "baseImage":"hi-1.png","transition":{"type":"none"},
+#       "focus":[{"startMs":1000,"elementId":"p1-s2-b0","endMs":3000,"fadeMs":240,
+#                 "rect":{"x":385,"y":384,"w":173,"h":415}}]}]}
+cd renderer && PPTS_CHROME="$PPTS_CHROME" node render.mjs \
+  --plan ../tmp/mask-e2e/plan.json --out-dir ../tmp/mask-e2e/out
+#    抽 0.5 / 2.0 / 3.2s 三帧量孔内外：
+#      孔外与源图的差 = 0.27（= 恰好 45% 白）、孔内 1.04（H.264 误差）、放手后 0.03。
+#    分享播放器走同一条 `focusMask`，节点定位那一条有 stub 用例守着
+#    （web/animation-check.mjs：删掉 position:absolute 就红）。
 ```
 
 `--show-matrix` 打印每页「元素 × 段落」的相似度，调阈值、看失败原因都从这张表开始，

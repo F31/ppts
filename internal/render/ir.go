@@ -158,8 +158,18 @@ type PageShotInput struct {
 // 画面仍指着上一个对象，而旁白已经在说别的（H 片页 2 有两处，1.54s 与 1.28s）。
 type FocusSpan struct {
 	StartMs int64 `json:"startMs"`
-	// ElementID 必须是本页某个图层的 elementId。
+	// ElementID 是「这一刻讲的是谁」。没有 Rect 时，它必须是本页某个图层的
+	// elementId——没有图层就没有让位的对象。
 	ElementID string `json:"elementId"`
+	// Rect 是焦点的矩形（计划坐标系，与 Layer.Box 同一套）。有它时这一段的
+	// 让位不靠图层压暗，而靠合成器画一层遮罩：整页盖白、矩形处留孔。
+	//
+	// 为什么需要两种：内嵌图表的柱子没有独立图层（图表是一张位图，切不出可合成
+	// 的层——抹掉柱身恢复不了背后的网格线，标签还画在柱 box 之外）。但「指某一根」
+	// 并不需要它是层，只需要一块矩形。
+	//
+	// 有 Rect 时 ElementID 可以不是本页图层；它仍必须是本页**唯一**的（焦点互斥）。
+	Rect *Box `json:"rect,omitempty"`
 	// EndMs 是这份焦点的终点：到此为止「放手」，整页回到全亮，直到下一段焦点开始。
 	// 0 表示不放手（保持到下一段开始或页末）。
 	EndMs int64 `json:"endMs,omitempty"`

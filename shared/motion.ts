@@ -212,6 +212,48 @@ export function focusDim(focus: FocusSpan[] | undefined, tMs: number): Record<st
   return out;
 }
 
+/**
+ * 焦点**矩形**的遮罩：此刻该压暗到什么程度、只留哪一块。
+ *
+ * 为什么需要和 focusDim 并存：focusDim 让「某个图层」退后，前提是那个东西是一层。
+ * 内嵌图表的柱子不是层——图表是一张位图，柱子没法单独拿出来（试过：抹掉柱身恢复
+ * 不了背后的网格线，标签还画在柱 box 之外，见 scripts/fidelity/stagechart）。
+ * 但「指某一根柱」并不需要它是层，只需要一个矩形：整页盖白纱、矩形处不盖。
+ *
+ * 强度与 focusDim 同源：非焦点区最终不透明度 = FOCUS_DIM_OPACITY（0.55），
+ * 也就是盖 1−0.55 = 0.45 的白。这里返回的 alpha 就是这个值乘上「收拢进度」。
+ *
+ * 时间口径：段开始后 fade 内从 0 收到满，endMs 之后 fade 内放回去。
+ * 「放手」必须真的回到 0——否则讲完最后一句画面还压着，正是 V12 抓的那类问题。
+ *
+ * 返回 null 表示「这一刻不该有遮罩」：没有焦点、当前焦点不是矩形焦点（普通图层焦点）、
+ * 或者正处在两端（alpha 为 0）。调用方据此完全不画，而不是画一个 alpha=0 的节点。
+ */
+export function focusMask(
+  focus: FocusSpan[] | undefined,
+  tMs: number
+): { rect: { x: number; y: number; w: number; h: number }; alpha: number } | null {
+  if (!focus || focus.length === 0) return null;
+  let cur: FocusSpan | null = null;
+  for (const f of focus) {
+    if (f.startMs <= tMs) cur = f;
+  }
+  if (!cur || !cur.rect) return null;
+  const fade = cur.fadeMs ?? FOCUS_FADE_MS;
+  let lock: number;
+  if (cur.endMs !== undefined && tMs >= cur.endMs) {
+    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.endMs) / fade));
+    lock = 1 - p;
+  } else {
+    lock = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - cur.startMs) / fade));
+  }
+  const alpha = (1 - FOCUS_DIM_OPACITY) * Math.max(0, Math.min(1, lock));
+  if (alpha <= 1e-6) return null;
+  const r = cur.rect;
+  if (!(r.w > 0) || !(r.h > 0)) return null;
+  return { rect: r, alpha };
+}
+
 /** 把压暗量折成实际不透明度系数：dim=0 → 1，dim=1 → FOCUS_DIM_OPACITY。 */
 export function focusOpacity(dim: number): number {
   if (dim <= 0) return 1;

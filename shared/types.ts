@@ -83,6 +83,14 @@ export type FocusSpan = {
   endMs?: number;
   /** 切换过渡时长，缺省 240ms。 */
   fadeMs?: number;
+  /**
+   * 焦点的**矩形**（画布像素）。有它时这一段的「让位」不靠图层压暗，而靠遮罩：
+   * 整页盖白、只留这个矩形。内嵌图表的柱子没有独立图层（图表是一张位图），
+   * 想让「此刻在讲 174 那根」就只能这么指。
+   *
+   * 缺省时行为不变：elementId 必须是本页的图层。
+   */
+  rect?: { x: number; y: number; w: number; h: number };
 };
 
 /**

@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cubicBezier, evaluateLayer, framesForDuration, IDENTITY } from './motion.ts';
+import { cubicBezier, evaluateLayer, FOCUS_DIM_OPACITY, focusMask, framesForDuration, IDENTITY } from './motion.ts';
 
 const linear = { x1: 0, y1: 0, x2: 1, y2: 1 };
 
@@ -108,4 +108,37 @@ test('帧数口径与 Go 侧 round(durationMs × fps / 1000) 一致', () => {
   assert.equal(framesForDuration(6000, 30), 180);
   assert.equal(framesForDuration(16, 30), 1); // 0.48 → 0，但至少 1 帧
   assert.equal(framesForDuration(50, 30), 2); // 1.5 → 2（四舍五入，不是截断）
+});
+
+// 矩形焦点遮罩：内嵌图表的柱子没有图层，靠一块矩形指「此刻讲的是这根」。
+// 这组用例守三件事：强度与图层压暗同源、放手必须归零、普通焦点不受影响。
+test('focusMask：hold 期压到与图层压暗同强度', () => {
+  const rect = { x: 385, y: 384, w: 173, h: 415 };
+  const focus = [{ startMs: 1000, elementId: 'p1-s2-b0', rect, fadeMs: 240 }];
+  assert.equal(focusMask(focus, 500), null, '段首之前不该有遮罩');
+  assert.equal(focusMask(focus, 1000), null, '刚开始时 alpha=0，不画节点');
+  const m = focusMask(focus, 2000);
+  assert.ok(m);
+  // 0.45：非焦点层此刻 opacity 是 FOCUS_DIM_OPACITY，遮罩要让画面同样淡下去。
+  assert.equal(Math.round(m.alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
+  assert.deepEqual(m.rect, rect);
+});
+
+test('focusMask：放手后必须真的回到 0', () => {
+  const rect = { x: 10, y: 10, w: 100, h: 100 };
+  const focus = [{ startMs: 1000, elementId: 'b0', rect, endMs: 3000, fadeMs: 240 }];
+  assert.ok(focusMask(focus, 3000), '放手那一刻还是满的');
+  assert.equal(focusMask(focus, 3240), null, '淡出结束必须归零');
+});
+
+test('focusMask：没有 rect 的焦点不改变原有行为', () => {
+  const focus = [{ startMs: 1000, elementId: 'e1' }];
+  assert.equal(focusMask(focus, 2000), null);
+  // 混排时也一样：最新一段是普通焦点，就不画遮罩。
+  const mixed = [
+    { startMs: 0, elementId: 'b0', rect: { x: 0, y: 0, w: 10, h: 10 } },
+    { startMs: 1000, elementId: 'e1' }
+  ];
+  assert.equal(focusMask(mixed, 1500), null);
+  assert.ok(focusMask(mixed, 500));
 });

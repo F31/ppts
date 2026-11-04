@@ -123,6 +123,16 @@ func TestValidateRejects(t *testing.T) {
 		{"focus ends beyond page", func(p *Timeline) {
 			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", EndMs: 6001}}
 		}, CodeInvalidPlan, "pages[0].focus[0].endMs"},
+		// 矩形焦点：宽高为 0 时合成器画出一个看不见的孔，画面和「没指」一样，
+		// 而报告里一切正常——所以必须在入口挡住。
+		{"focus rect zero width", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "p1-s2-b0",
+				Rect: &Box{X: 10, Y: 10, W: 0, H: 40}}}
+		}, CodeInvalidPlan, "pages[0].focus[0].rect"},
+		{"focus rect negative origin", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "p1-s2-b0",
+				Rect: &Box{X: -1, Y: 10, W: 10, H: 40}}}
+		}, CodeInvalidPlan, "pages[0].focus[0].rect"},
 		// 终点盖住下一段 = 同时指两个对象：求值器只认最后一段，前一段的终点静默失效。
 		{"focus ends after next", func(p *Timeline) {
 			p.Pages[0].Focus = []FocusSpan{
@@ -199,5 +209,12 @@ func TestFocusPasses(t *testing.T) {
 	p.Pages[0].Focus = []FocusSpan{{StartMs: 1000, ElementID: "e1", EndMs: 2000}}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("带终点的焦点不应报错: %v", err)
+	}
+	// 矩形焦点：内嵌图表的柱子没有图层，elementId 故意取一个「不是本页图层」的值。
+	// 若这里仍要求它是图层，图表页就永远指不了单根柱——这正是加 Rect 的原因。
+	p.Pages[0].Focus = []FocusSpan{{StartMs: 1000, ElementID: "p1-s2-b0",
+		Rect: &Box{X: 385, Y: 384, W: 173, H: 415}}}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("带矩形的焦点不应要求 elementId 是图层: %v", err)
 	}
 }

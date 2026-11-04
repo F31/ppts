@@ -125,6 +125,10 @@ type SlideFocus struct {
 	ElementID string `json:"elementId"`
 	EndMs     int64  `json:"endMs,omitempty"`
 	FadeMs    int64  `json:"fadeMs,omitempty"`
+	// Rect 是焦点的矩形（画布像素）。有它时播放器画遮罩（整页白纱、矩形留孔），
+	// 而不是靠图层压暗——内嵌图表的柱子没有独立图层，只能这么指。
+	// 与 render.FocusSpan.Rect 一一对应，缺省表示沿用图层压暗。
+	Rect *SlideBox `json:"rect,omitempty"`
 }
 
 // SlideTransition 是页间转场。缺省（nil 或 type=none）表示直接切换。

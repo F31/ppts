@@ -287,9 +287,11 @@ test('时长超限：数字缺失时仍走专用文案，不退回「导出失�
 
 // ---- 成品包动画层：关键帧编译（M6-2）----
 //
-// 这里只测纯函数部分（compileKeyframes）。buildLayerNodes 需要 DOM 与 WAAPI，
-// 那部分靠浏览器验收，不在这里假装能测。
-const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+// 这里测纯函数部分（compileKeyframes）。buildLayerNodes 需要 DOM 与 WAAPI，
+// 像素级验收靠浏览器与真片；但**编译结果**（节点定位、关键帧值）可以用最小 stub 测，
+// 而且必须测：矩形焦点遮罩漏写 `position:absolute` 时，静态检查与类型检查全绿，
+// 只有真浏览器里才会变成「整页均匀压暗、孔不存在」。这条用例让它在 CI 就红。
+const { buildLayerNodes, compileKeyframes } = await import('./src/sharePlayer/animation.ts');
 
 const slideInClip = (startMs, durationMs) => ({
   clipId: 'c1',
@@ -536,7 +538,7 @@ test('整页轨道不参与拖动（起点是页边界，没有可调空间）',
 test('焦点切换点必须在关键帧里：否则网页从最后关键帧线性插到页末', async () => {
   // 页级 focus（IR 的 page.focus）在播放器里是「谁让位」，采样只覆盖 clip 活动区间
   // 时，切换点（1390/4500）会落在采样之外，压暗被拉长成整页。
-  const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { buildLayerNodes, compileKeyframes } = await import('./src/sharePlayer/animation.ts');
   const ease = { x1: 0.2, y1: 0, x2: 0, y2: 1 };
   const clips = [
     { effect: 'fadeIn', startMs: 220, durationMs: 520, easing: ease, props: [{ name: 'opacity', from: 0, to: 1 }] }
@@ -560,7 +562,7 @@ test('焦点切换点必须在关键帧里：否则网页从最后关键帧线�
 test('放手时刻也必须在关键帧里：否则「回到全亮」被插值抹成一整页渐变', async () => {
   // 分段之后，a 讲到 4402 就放手，b 到 5938 才开讲。若只采样切换点（5938），
   // 4402→5938 这段会被线性插值填成「从压暗慢慢变亮」——看起来像褪色。
-  const { compileKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { buildLayerNodes, compileKeyframes } = await import('./src/sharePlayer/animation.ts');
   const ease = { x1: 0.2, y1: 0, x2: 0, y2: 1 };
   const clips = [
     { effect: 'fadeIn', startMs: 220, durationMs: 520, easing: ease, props: [{ name: 'opacity', from: 0, to: 1 }] }
@@ -958,4 +960,57 @@ test('等待超时有自己的文案，不并进服务端 timeout', () => {
     prefillModelFallbackKey('client_timeout'),
     prefillModelFallbackKey('timeout')
   );
+});
+
+test('buildLayerNodes：矩形焦点生成遮罩节点，定位与强度都对', () => {
+  const created = [];
+  // 最小 DOM stub：只需要 createElement 的 style/append/animate。
+  globalThis.document = {
+    createElement(tag) {
+      const el = {
+        tag,
+        style: {},
+        children: [],
+        append(child) { this.children.push(child); },
+        animate(frames, opts) {
+          this.frames = frames;
+          this.timing = opts;
+          return { pause() {}, currentTime: 0 };
+        }
+      };
+      created.push(el);
+      return el;
+    }
+  };
+  const container = { children: [], append(el) { this.children.push(el); }, animate() {} };
+  const focus = [{
+    startMs: 1000,
+    elementId: 'p1-s2-b0',
+    endMs: 3000,
+    fadeMs: 240,
+    rect: { x: 385, y: 384, w: 173, h: 415 }
+  }];
+  const out = buildLayerNodes(container, [], 1920, 1080,
+    { pageDurationMs: 4000, fps: 30, focus });
+  assert.equal(out.length, 1, '一段矩形焦点应生成一个遮罩节点');
+  const style = out[0].element.style;
+  // 这一条就是那次 bug：没有定位，left/top 被静默忽略，白纱从左上角铺满全页。
+  assert.equal(style.position, 'absolute', '遮罩节点必须定位，否则 left/top 无效');
+  const near = (got, want) => Math.abs(parseFloat(got) - want) < 0.01;
+  assert.ok(near(style.left, (385 / 1920) * 100), `left=${style.left}`);
+  assert.ok(near(style.top, (384 / 1080) * 100), `top=${style.top}`);
+  assert.ok(near(style.width, (173 / 1920) * 100), `width=${style.width}`);
+  assert.ok(near(style.height, (415 / 1080) * 100), `height=${style.height}`);
+  assert.equal(style.opacity, '0', '初始不压暗：没有动画时只是少一层遮罩');
+
+  const frames = out[0].element.frames ?? [];
+  assert.ok(frames.length >= 2, '应当有关键帧');
+  // 1000–3000ms 是 hold（4000ms 的 0.25–0.75）：这段时间必须稳定在 0.45。
+  const hold = frames.filter((f) => Number(f.offset) > 0.3 && Number(f.offset) < 0.76);
+  assert.ok(hold.length >= 2);
+  for (const f of hold) {
+    assert.ok(Math.abs(Number(f.opacity) - 0.45) < 1e-9, `hold 期 opacity=${f.opacity}`);
+  }
+  assert.equal(Number(frames[0].opacity), 0, '段首之前不压暗');
+  delete globalThis.document;
 });

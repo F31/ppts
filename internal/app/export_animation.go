@@ -457,8 +457,12 @@ func slideFocus(in []render.FocusSpan) []share.SlideFocus {
 	}
 	out := make([]share.SlideFocus, 0, len(in))
 	for _, f := range in {
-		out = append(out, share.SlideFocus{StartMs: f.StartMs, ElementID: f.ElementID,
-			EndMs: f.EndMs, FadeMs: f.FadeMs})
+		sf := share.SlideFocus{StartMs: f.StartMs, ElementID: f.ElementID,
+			EndMs: f.EndMs, FadeMs: f.FadeMs}
+		if f.Rect != nil {
+			sf.Rect = &share.SlideBox{X: f.Rect.X, Y: f.Rect.Y, W: f.Rect.W, H: f.Rect.H}
+		}
+		out = append(out, sf)
 	}
 	return out
 }

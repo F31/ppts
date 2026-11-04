@@ -244,9 +244,13 @@ func validateShots(p *Page, base string, frameMS int64, width, height int) error
 
 // validateFocus 校验页级焦点序列。
 //
-// 三条必须成立：焦点指向本页真实存在的图层（否则「让位」没有对象）、
+// 三条必须成立：焦点有「让位」的对象（是本页图层，或者带一个矩形）、
 // 起点严格递增（同一时刻两个焦点是自相矛盾的状态）、不越过页长
 // （越过意味着后半页没有焦点，非焦点元素会一直压暗着播到页尾）。
+//
+// 带 Rect 的焦点不受「必须是图层」约束：内嵌图表的柱子没有独立图层，
+// 靠一块矩形遮罩来指。但矩形本身要成立——宽高为正、不落在画布左上之外，
+// 否则合成器会画出一块看不见的孔，而报告里一切正常。
 func validateFocus(p *Page, base string) error {
 	layers := make(map[string]struct{}, len(p.Layers))
 	for _, l := range p.Layers {
@@ -258,9 +262,17 @@ func validateFocus(p *Page, base string) error {
 	seen := make(map[string]struct{}, len(p.Focus))
 	for i, f := range p.Focus {
 		fb := fmt.Sprintf("%s.focus[%d]", base, i)
-		if _, ok := layers[f.ElementID]; !ok {
-			return planErr(fb+".elementId", CodeInvalidPlan,
-				"focus element %q is not a layer of this page", f.ElementID)
+		if f.Rect == nil {
+			if _, ok := layers[f.ElementID]; !ok {
+				return planErr(fb+".elementId", CodeInvalidPlan,
+					"focus element %q is not a layer of this page", f.ElementID)
+			}
+		} else if f.Rect.W <= 0 || f.Rect.H <= 0 {
+			return planErr(fb+".rect", CodeInvalidPlan,
+				"focus rect must have positive size, got %dx%d", f.Rect.W, f.Rect.H)
+		} else if f.Rect.X < 0 || f.Rect.Y < 0 {
+			return planErr(fb+".rect", CodeInvalidPlan,
+				"focus rect starts outside the canvas at (%d,%d)", f.Rect.X, f.Rect.Y)
 		}
 		if _, dup := seen[f.ElementID]; dup {
 			// 求值器按 elementId 查压暗量，「甲又亮又暗」无法表达。
