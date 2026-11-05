@@ -33,6 +33,9 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 	mux.Handle("GET /projects/{pid}/slides/render", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorSlideRender(w, r, jobs, objects, projects, members, recorder)
 	})))
+	mux.Handle("GET /projects/{pid}/parse-status", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		projectParseStatus(w, r, jobs, projects, members, recorder)
+	})))
 	mux.Handle("GET /projects/{pid}/revisions/voice-status", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorRevisionVoiceStatus(w, r, jobs, objects, scripts, projects, members, recorder)
 	})))
@@ -583,6 +586,65 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 		renderer = manifest.Renderer
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"slides": out, "renderer": renderer})
+}
+
+// projectParseStatus 暴露「最近一次解析任务」的状态，供前端区分「解析中」与「解析失败」，
+// 避免把两种语义笼统降级成同一空态（此前 GetSlides 对未解析项目返回 not_found，前端只能猜）。
+// 仅当 GetSlides 返回 not_found（当前版本解析文档缺失）时前端才来查它。
+//
+// 状态语义：
+//   none    —— 该项目没有任何 parse 任务（从未导入，或导入未触发解析）。
+//   running —— 最近一次 parse 任务仍在进行，或虽有成功记录但当前版本产物缺失且可能有新导入在进行。
+//   failed  —— 最近一次 parse 任务终态失败（failed/cancel*/unknown），或成功记录存在但当前版本产物缺失（数据不一致，提示重新导入）。
+func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	projectID := r.PathValue("pid")
+	if _, ok := requireProjectAccess(w, r, projects, members, recorder); !ok {
+		return
+	}
+	ctx := r.Context()
+	// 取该项目最近的若干任务，筛选 parse 类，按创建时间取最新（List 返回已按 created_at DESC，这里再防御性排序）。
+	rows, _, err := jobs.List(ctx, principal.TenantID, projectID, "", "", 50)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	var latest *pipeline.Job
+	for _, j := range rows {
+		if j.Kind != pipeline.KindParse {
+			continue
+		}
+		if latest == nil || j.CreatedAt.After(latest.CreatedAt) {
+			latest = j
+		}
+	}
+	if latest == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"status": "none", "message": "尚未导入文档或解析尚未开始"})
+		return
+	}
+	resp := map[string]any{"updatedAtUnix": latest.UpdatedAt.Unix()}
+	switch latest.State {
+	case pipeline.StateQueued, pipeline.StateRunning, pipeline.StateRetryWait, pipeline.StateWaitingReview:
+		resp["status"] = "running"
+		resp["message"] = "文档解析中，请稍候"
+	case pipeline.StateSucceeded:
+		// 已有成功解析记录却取不到当前版本页面：通常是一次新导入正在解析，乐观视为 running 继续等待；
+		// 若确属数据不一致（成功记录存在但产物丢失），不会再出现活跃任务，前端重试上限后停在空态，这里也给可操作提示。
+		resp["status"] = "running"
+		resp["message"] = "文档解析中，请稍候"
+	default: // failed / cancel_requested / canceled / unknown_provider_result
+		resp["status"] = "failed"
+		if latest.LastError != nil && latest.LastError.Message != "" {
+			resp["message"] = latest.LastError.Message
+		} else {
+			resp["message"] = "文档解析失败，请重新导入"
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type revisionVoiceStatus struct {

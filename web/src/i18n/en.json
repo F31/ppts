@@ -780,6 +780,8 @@
   "editor.pages": "Pages",
   "editor.loading": "Loading…",
   "editor.noSlides": "No pages parsed yet: import a PPTX first; the page list appears automatically once processing completes.",
+  "editor.parseRunning": "Document is being parsed, please wait…",
+  "editor.parseFailed": "Document parsing failed, please re-import the document.",
   "editor.hasNotes": "Has notes",
   "editor.notesAria": "Slide notes",
   "editor.notesEyebrow": "Notes",

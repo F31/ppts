@@ -214,3 +214,21 @@ export async function getSlideRenderURLs(
     `/projects/${encodeURIComponent(projectId)}/slides/render${qs}`
   );
 }
+
+// getProjectParseStatus 返回「最近一次解析任务」的状态，用于区分「解析中」与「解析失败」。
+// 仅在 GetSlides 返回 not_found（当前版本解析文档缺失）时调用，避免把两种语义笼统降级成同一空态。
+export type ProjectParseStatus = {
+  status: 'none' | 'running' | 'failed';
+  message?: string;
+  updatedAtUnix?: number;
+};
+
+export async function getProjectParseStatus(
+  identity: ClientIdentity,
+  projectId: string
+): Promise<ProjectParseStatus> {
+  return getJSON<ProjectParseStatus>(
+    identity,
+    `/projects/${encodeURIComponent(projectId)}/parse-status`
+  );
+}

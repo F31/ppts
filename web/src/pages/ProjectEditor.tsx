@@ -29,6 +29,7 @@ import {
   getFocusSuggestions,
   listDictionaries,
   getSlideRenderURLs,
+  getProjectParseStatus,
   getSlideScriptSources,
   listJobsPage,
   listProjectScripts,
@@ -70,7 +71,8 @@ type SlidesState =
   | { mode: 'loading' }
   // A26：empty 是"这个版本确实没有页面"，failed 是"页面列表没读到"。
   // 两者外观必须可区分，否则后端/网络故障会被当成"PPT 是空的"，且不给重试入口。
-  | { mode: 'empty' }
+  // empty 可携带可选 message：默认显示 editor.noSlides；解析中明确显示 editor.parseRunning。
+  | { mode: 'empty'; message?: string }
   | { mode: 'failed'; message: string }
   | { mode: 'real'; slides: SlideSummary[]; revisionNo: number };
 
@@ -476,14 +478,26 @@ export function ProjectEditor({
         setSlidesState(res.slides.length === 0 ? { mode: 'empty' } : { mode: 'real', slides: res.slides, revisionNo: res.revisionNo });
         if (res.slides.length > 0) setActiveSlideID(res.slides[0].slideId);
       })
-      .catch((error: unknown) => {
+      .catch(async (error: unknown) => {
         if (cancelled) return;
-        // GetSlides 在"文档尚未解析 / 解析未完成"时返回应用层 not_found（见 apiError.ts 对
-        // isNotFound 的说明：这是正常业务语义，并非接口缺失）。降级为"暂无页面"空态并复用
-        // editor.noSlides 文案，避免把"解析进度问题"误报成"接口不存在（404）"。真正缺失
-        // 权限/网络/服务的情况仍走下方 describeApiError 正常报错。
+        // GetSlides 在"文档尚未解析 / 解析未完成 / 解析失败"时都返回应用层 not_found（见 apiError.ts 对
+        // isNotFound 的说明：这是正常业务语义，并非接口缺失）。进一步查解析任务状态，区分
+        // 「解析中」（继续等待、自动重试）与「解析失败」（给出可操作提示、停止重试），
+        // 避免把两者笼统降级成同一空态。真正缺失权限/网络/服务的情况仍走下方 describeApiError 正常报错。
         if (isNotFound(error)) {
-          setSlidesState({ mode: 'empty' });
+          try {
+            const st = await getProjectParseStatus(identity, projectId);
+            if (cancelled) return;
+            if (st.status === 'failed') {
+              setSlideEmptyFromNotFound(false);
+              setSlidesState({ mode: 'failed', message: st.message || t('editor.parseFailed') });
+              return;
+            }
+          } catch {
+            if (cancelled) return;
+            // 解析状态接口也失败时，降级为通用空态（不阻塞页面）。
+          }
+          setSlidesState({ mode: 'empty', message: t('editor.parseRunning') });
           setSlideEmptyFromNotFound(true);
           return;
         }
@@ -1941,7 +1955,7 @@ export function ProjectEditor({
                 <button type="button" onClick={() => setSlidesReloadKey((key) => key + 1)}>{t('common.retry')}</button>
               </div>
             ) : (
-              <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : t('editor.noSlides')}</p>
+              <p className="empty-state">{slidesState.mode === 'loading' ? t('editor.loading') : slidesState.mode === 'empty' && slidesState.message ? slidesState.message : t('editor.noSlides')}</p>
             )
           ) : (
             <>

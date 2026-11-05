@@ -780,6 +780,8 @@
   "editor.pages": "页面",
   "editor.loading": "加载中…",
   "editor.noSlides": "尚未解析页面：请先导入 PPTX，处理完成后自动出现页面列表。",
+  "editor.parseRunning": "文档解析中，请稍候…",
+  "editor.parseFailed": "文档解析失败，请重新导入文档。",
   "editor.hasNotes": "有备注",
   "editor.notesAria": "幻灯片备注",
   "editor.notesEyebrow": "备注",
