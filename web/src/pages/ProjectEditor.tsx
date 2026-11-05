@@ -30,6 +30,7 @@ import {
   listDictionaries,
   getSlideRenderURLs,
   getProjectParseStatus,
+  type ProjectParseStatus,
   getSlideScriptSources,
   listJobsPage,
   listProjectScripts,
@@ -128,7 +129,7 @@ export function ProjectEditor({
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   // 页面列表加载失败后的重试计数（与 scriptsRefreshNonce 同款：变化即重跑加载 effect）。
   const [slidesReloadKey, setSlidesReloadKey] = useState(0);
-  // 空态是否源于"文档尚未解析"（GetSlides 返回 not_found）：仅在此情况下对页面列表做有限自动重试。
+  // 空态是否源于"文档尚未解析/解析未完成"：仅在此情况下做有限自动轮询解析状态。
   const [slideEmptyFromNotFound, setSlideEmptyFromNotFound] = useState(false);
   const [slideEmptyRetries, setSlideEmptyRetries] = useState(0);
   // 探测类请求的失败原因（按 ProbeId 归档）。空对象 = 全部正常。
@@ -472,46 +473,57 @@ export function ProjectEditor({
     setDraftStatus({ phase: 'idle', message: '' });
     setNarrationStatus({ phase: 'idle', message: '' });
     setRealManifest(null);
-    getProjectSlides(identity, projectId, initRevisionNo)
-      .then((res) => {
+    (async () => {
+      // 先探测解析状态：只有 ready 才调用 GetSlides。后端用 CodeNotFound（HTTP 404）表达
+      // 「当前版本解析文档缺失」，这属于正常业务态，但未就绪时调用会在浏览器控制台刷出
+      // 并无实际故障的 404 记录。ready 的判定与 GetSlides 共用同一 docKey，故不会出现
+      // 「探测说就绪、实际却 404」的竞态。探测接口本身失败时降级走原路径，不阻塞页面。
+      let st: ProjectParseStatus | null = null;
+      try {
+        st = await getProjectParseStatus(identity, projectId);
+      } catch {
+        // 降级：仍尝试 GetSlides，由下方 catch 正常报错。
+      }
+      if (cancelled) return;
+      if (st && st.status === 'failed') {
+        setSlideEmptyFromNotFound(false);
+        setSlidesState({ mode: 'failed', message: st.message || t('editor.parseFailed') });
+        return;
+      }
+      if (st && st.status !== 'ready') {
+        setSlideEmptyFromNotFound(true);
+        setSlidesState({ mode: 'empty', message: st.status === 'none' ? t('editor.noSlides') : t('editor.parseRunning') });
+        return;
+      }
+      try {
+        const res = await getProjectSlides(identity, projectId, initRevisionNo);
         if (cancelled) return;
+        setSlideEmptyFromNotFound(false);
         setSlidesState(res.slides.length === 0 ? { mode: 'empty' } : { mode: 'real', slides: res.slides, revisionNo: res.revisionNo });
         if (res.slides.length > 0) setActiveSlideID(res.slides[0].slideId);
-      })
-      .catch(async (error: unknown) => {
+      } catch (error: unknown) {
         if (cancelled) return;
-        // GetSlides 在"文档尚未解析 / 解析未完成 / 解析失败"时都返回应用层 not_found（见 apiError.ts 对
-        // isNotFound 的说明：这是正常业务语义，并非接口缺失）。进一步查解析任务状态，区分
-        // 「解析中」（继续等待、自动重试）与「解析失败」（给出可操作提示、停止重试），
-        // 避免把两者笼统降级成同一空态。真正缺失权限/网络/服务的情况仍走下方 describeApiError 正常报错。
+        // 竞态兜底：探测说 ready 但产物恰在此刻消失，或探测不可用降级走到了这里。
+        // GetSlides 的 not_found 仍是良性「未解析」，按空态处理并继续轮询。
         if (isNotFound(error)) {
-          try {
-            const st = await getProjectParseStatus(identity, projectId);
-            if (cancelled) return;
-            if (st.status === 'failed') {
-              setSlideEmptyFromNotFound(false);
-              setSlidesState({ mode: 'failed', message: st.message || t('editor.parseFailed') });
-              return;
-            }
-          } catch {
-            if (cancelled) return;
-            // 解析状态接口也失败时，降级为通用空态（不阻塞页面）。
-          }
           setSlidesState({ mode: 'empty', message: t('editor.parseRunning') });
           setSlideEmptyFromNotFound(true);
           return;
         }
         setSlideEmptyFromNotFound(false);
         setSlidesState({ mode: 'failed', message: describeApiError(error, t('editor.slidesLoadFailed'), t) });
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
   }, [identity, projectId, initRevisionNo, slidesReloadKey, t]);
 
-  // 解析是异步的：导入后立刻打开编辑器时 GetSlides 常返回 not_found（"尚未解析"）。
-  // 仅当空态源于"未解析"时做有限自动重试，解析完成后页面列表自动出现，无需用户手动刷新；
-  // 上限 20 次（约 40s），避免对"确实无页面 / 解析失败"的项目持续空轮询。
+  // 解析是异步的：导入后立刻打开编辑器时解析产物常未就绪。仅当空态源于"未就绪"时做有限
+  // 自动轮询，解析完成后页面列表自动出现，无需用户手动刷新；上限 20 次（约 40s），避免对
+  // "确实无页面 / 解析失败"的项目持续空轮询。每轮只是重跑上面的加载 effect，而该 effect
+  // 先探测 parse-status（HTTP 200）、未就绪就不调 GetSlides，因此不会像旧实现那样每 2s
+  // 在控制台刷一条并无故障的 404。
   useEffect(() => {
     if (!slideEmptyFromNotFound || slidesState.mode !== 'empty') {
       setSlideEmptyFromNotFound(false);

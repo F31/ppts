@@ -215,10 +215,12 @@ export async function getSlideRenderURLs(
   );
 }
 
-// getProjectParseStatus 返回「最近一次解析任务」的状态，用于区分「解析中」与「解析失败」。
-// 仅在 GetSlides 返回 not_found（当前版本解析文档缺失）时调用，避免把两种语义笼统降级成同一空态。
+// getProjectParseStatus 返回项目当前版本的解析状态。编辑器先探测它：只有 ready 时才调用
+// GetSlides，因为后端用 CodeNotFound（HTTP 404）表达「当前版本解析文档缺失」——未就绪时
+// 调用虽属正常业务态，却会在浏览器控制台留下并无故障的 404 记录。轮询也走本端点（200），
+// 避免把「解析中」持续刷成红色错误。
 export type ProjectParseStatus = {
-  status: 'none' | 'running' | 'failed';
+  status: 'none' | 'running' | 'failed' | 'ready';
   message?: string;
   updatedAtUnix?: number;
 };

@@ -34,7 +34,7 @@ func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore
 		editorSlideRender(w, r, jobs, objects, projects, members, recorder)
 	})))
 	mux.Handle("GET /projects/{pid}/parse-status", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		projectParseStatus(w, r, jobs, projects, members, recorder)
+		projectParseStatus(w, r, jobs, objects, projects, members, recorder)
 	})))
 	mux.Handle("GET /projects/{pid}/revisions/voice-status", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorRevisionVoiceStatus(w, r, jobs, objects, scripts, projects, members, recorder)
@@ -588,16 +588,18 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 	writeJSON(w, http.StatusOK, map[string]any{"slides": out, "renderer": renderer})
 }
 
-// projectParseStatus 暴露「最近一次解析任务」的状态，供前端区分「解析中」与「解析失败」，
-// 避免把两种语义笼统降级成同一空态（此前 GetSlides 对未解析项目返回 not_found，前端只能猜）。
-// 仅当 GetSlides 返回 not_found（当前版本解析文档缺失）时前端才来查它。
+// projectParseStatus 暴露项目当前版本的解析状态，供前端决定能否拉取页面列表，并区分
+// 「解析中」与「解析失败」。前端先探测本端点，只有 ready 时才调用 GetSlides：后端用
+// CodeNotFound（HTTP 404）表达「当前版本解析文档缺失」，未就绪时反复调用会在浏览器控制台
+// 刷出并无实际故障的 404，也会把正常业务态误读成接口故障。
 //
 // 状态语义：
 //
+//	ready   —— 当前版本的解析文档对象已存在，GetSlides 可正常返回页面。
 //	none    —— 该项目没有任何 parse 任务（从未导入，或导入未触发解析）。
 //	running —— 最近一次 parse 任务仍在进行，或虽有成功记录但当前版本产物缺失且可能有新导入在进行。
 //	failed  —— 最近一次 parse 任务终态失败（failed/cancel*/unknown），或成功记录存在但当前版本产物缺失（数据不一致，提示重新导入）。
-func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
+func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -608,6 +610,22 @@ func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, p
 		return
 	}
 	ctx := r.Context()
+	// 与 GetSlides 用同一个 docKey 判定产物是否就绪：就绪时前端才会去调 GetSlides，
+	// 因此不会出现「探测说 ready、实际却 404」的竞态。objects 为 nil 时（部分单测夹具）
+	// 跳过该判定，退回按任务状态推断的旧路径。
+	if objects != nil {
+		if projectRow, err := projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); err == nil && projectRow != nil {
+			docKey := objectstore.ObjectKey{
+				TenantID: principal.TenantID, ProjectID: projectID,
+				Revision: srcRevString(projectRow.CurrentRevision), AssetType: "document", AssetID: "extracted", Ext: "json",
+			}
+			if rc, _, err := objects.Get(ctx, docKey); err == nil {
+				rc.Close()
+				writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "message": "解析完成"})
+				return
+			}
+		}
+	}
 	// 取该项目最近的若干任务，筛选 parse 类，按创建时间取最新（List 返回已按 created_at DESC，这里再防御性排序）。
 	rows, _, err := jobs.List(ctx, principal.TenantID, projectID, "", "", 50)
 	if err != nil {
