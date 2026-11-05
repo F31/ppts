@@ -6,6 +6,14 @@
 # - PPTS_OBJECT_SECRET 是对象存储的信封密钥，必须与源实例一致，绝不重新生成；
 # - PPTS_GATEWAY_AES_KEY_BASE64 是模型网关凭据的 AES-256 密钥，缺失/非法时生成，
 #   已存在时原样保留——换密钥会让 DB 里既有的 encrypted_creds 永远解不开。
+#
+# 模型网关配置不会随 DB 复制自动可用：凭据以各实例自己的 AES 密钥加密，AAD 还绑定
+# tenant/name/kind。跨实例搬迁必须用 scripts/gateway-import 解密后重新加密。
+# 可选参数（同时给全才触发，密钥只走环境变量、不落脚本）：
+#   GATEWAY_SRC_DB=/path/other.db GATEWAY_SRC_AES_KEY=<base64> \
+#     GATEWAY_SRC_TENANT_ID=<可选，默认开发租户> bash deploy-wsl-preview.sh
+# 迁移结果落在平台共享租户，租户页面只读可见。工具需先交叉编译到 $ROOT/bin/gateway-import：
+#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o <目标> ./scripts/gateway-import
 set -euo pipefail
 
 ROOT="$HOME/ppts-preview"
@@ -105,7 +113,26 @@ for pid in $(pgrep -f 'bin/ppts (server|worker)' || true); do
 done
 sleep 2
 
+# 单元文件刚重写过，先 reload 再 stop，避免 systemd 报 "changed on disk" 警告。
 systemctl --user daemon-reload
+
+# 可选：从另一实例导入已保存的模型网关（凭据按本实例密钥重新加密，落为平台共享）。
+# 只写 DB，不触碰源实例；密钥全程只经环境变量，不打印、不落盘。
+if [[ -n "${GATEWAY_SRC_DB:-}" && -n "${GATEWAY_SRC_AES_KEY:-}" ]]; then
+  if [[ ! -x "$ROOT/bin/gateway-import" ]]; then
+    echo "缺少 $ROOT/bin/gateway-import：请先交叉编译 scripts/gateway-import" >&2
+    exit 1
+  fi
+  DB_PATH="$(sed -n 's/^PPTS_DATABASE_URL=//p' "$CONFIG" | tail -1)"
+  DST_KEY="$(sed -n 's/^PPTS_GATEWAY_AES_KEY_BASE64=//p' "$CONFIG" | tail -1)"
+  # 迁移期间让 systemd 单元放手，下面的 restart 会重新拉起。
+  systemctl --user stop ppts-preview.service ppts-preview-worker.service || true
+  env SRC_DB="$GATEWAY_SRC_DB" DST_DB="$DB_PATH" \
+      SRC_AES_KEY="$GATEWAY_SRC_AES_KEY" DST_AES_KEY="$DST_KEY" \
+      SRC_TENANT_ID="${GATEWAY_SRC_TENANT_ID:-00000000-0000-0000-0000-000000000001}" \
+      "$ROOT/bin/gateway-import"
+fi
+
 systemctl --user enable --now ppts-preview.service ppts-preview-worker.service
 # enable --now 对已 active 的单元不会重启；改了 EnvironmentFile 必须显式 restart 才生效。
 systemctl --user restart ppts-preview.service ppts-preview-worker.service
