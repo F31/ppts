@@ -593,9 +593,10 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 // 仅当 GetSlides 返回 not_found（当前版本解析文档缺失）时前端才来查它。
 //
 // 状态语义：
-//   none    —— 该项目没有任何 parse 任务（从未导入，或导入未触发解析）。
-//   running —— 最近一次 parse 任务仍在进行，或虽有成功记录但当前版本产物缺失且可能有新导入在进行。
-//   failed  —— 最近一次 parse 任务终态失败（failed/cancel*/unknown），或成功记录存在但当前版本产物缺失（数据不一致，提示重新导入）。
+//
+//	none    —— 该项目没有任何 parse 任务（从未导入，或导入未触发解析）。
+//	running —— 最近一次 parse 任务仍在进行，或虽有成功记录但当前版本产物缺失且可能有新导入在进行。
+//	failed  —— 最近一次 parse 任务终态失败（failed/cancel*/unknown），或成功记录存在但当前版本产物缺失（数据不一致，提示重新导入）。
 func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {

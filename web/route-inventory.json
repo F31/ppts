@@ -107,9 +107,9 @@
   },
   "editor": {
    "name": "编辑器（页面/版本）",
-   "prefixes": ["/projects/{pid}/slides", "/projects/{pid}/revisions", "/projects/archived", "/projects/{pid}/restore"],
+   "prefixes": ["/projects/{pid}/slides", "/projects/{pid}/revisions", "/projects/archived", "/projects/{pid}/restore", "/projects/{pid}/parse-status"],
    "disposition": "keep",
-   "reason": "体量最大的一组（14 条），含渲染图直出（/slides/render 返二进制 PNG）、版本 diff/下载/删除、按版本读导入报告——Connect 侧无等价契约且不便承载文件流。"
+   "reason": "体量最大的一组（条数以 route-inventory-check.mjs --report 为准，不写死以免滞后），含渲染图直出（/slides/render 返二进制 PNG）、版本 diff/下载/删除、按版本读导入报告，以及解析状态探测（/parse-status：GetSlides 命中 not_found 后区分『解析中 / 解析失败』）——Connect 侧无等价契约且不便承载文件流；本环境 buf/protoc 不可用，故解析状态沿用同组 REST 形态而非新增 RPC。"
   },
   "collab": {
    "name": "协作与分享",
