@@ -43,7 +43,7 @@
    "name": "模型网关配置",
    "prefixes": ["/api/model-gateways"],
    "disposition": "keep",
-   "reason": "管理类 CRUD，无 Connect 契约。注意：6 条路径各注册两次是**互斥分支**——未配置 AES 密钥时挂 503 feature_disabled stub，配了才挂真实实现，不是双写。"
+   "reason": "管理类 CRUD，无 Connect 契约。注意：6 条路径各注册两次是**互斥分支**——未配置 AES 密钥时挂 503 feature_disabled stub，配了才挂真实实现，不是双写。POST /{name}/test 支持 source=platform：租户作用域可测试列表中可见的平台共享只读行（后端校验可见性后按平台租户解析凭据），不开放任何写入权限。"
   },
   "channels": {
    "name": "消息通道配置",

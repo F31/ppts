@@ -67,7 +67,7 @@ test('真的一条都没有时仍是 unconfigured', () => {
   assert.equal(m.serviceState([], 'tts', {}), 'unconfigured');
 });
 
-test('列表真的用了来源判定，且平台行不渲染编辑/删除入口', () => {
+test('列表真的用了来源判定，且平台行不渲染编辑/删除入口，但保留测试连接', () => {
   const src = readFileSync(new URL('./src/GatewaySettings.tsx', import.meta.url), 'utf8');
   assert.match(src, /isPlatformShared\(gw\)/, '列表项必须判定来源');
   assert.match(src, /shared \? \(/, '平台行必须走只读分支');
@@ -80,9 +80,22 @@ test('列表真的用了来源判定，且平台行不渲染编辑/删除入口'
   for (const marker of ['startEdit(gw)', 'remove(gw)', 'setDefaultGateway(identity']) {
     assert.ok(!sharedBranch.includes(marker), `只读分支里不应出现写入口：${marker}`);
   }
+  // 只读 ≠ 不可验证：平台共享行必须能点「测试连接」，否则租户只能盲信平台配置。
+  assert.match(sharedBranch, /runTest\(gw\)/, '平台行必须有测试连接入口');
+  assert.match(src, /isPlatformShared\(gw\) \? 'platform' : undefined/, '测试平台行必须带 source=platform');
 });
 
-test('全靠平台共享时，不能建议租户「先测试连接」', () => {
+test('密钥不可读不能被误报成未配置密钥', () => {
+  const gw = tts({ keyUnreadable: true });
+  assert.equal(m.gatewayHealth(gw), 'unreadable');
+  assert.equal(m.serviceState([gw], 'tts', {}), 'unreadable');
+  assert.equal(m.inheritedOnly([gw], 'tts'), false);
+  // 真的没配 key 仍是 unconfigured，两者不能混。
+  assert.equal(m.gatewayHealth(tts({ hasKey: false })), 'noKey');
+  assert.equal(m.serviceState([tts({ hasKey: false })], 'tts', {}), 'unconfigured');
+});
+
+test('全靠平台共享时仍可自行测试连接', () => {
   assert.equal(m.inheritedOnly([tts({ source: 'platform' })], 'tts'), true);
 });
 

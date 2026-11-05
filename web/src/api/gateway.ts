@@ -24,6 +24,8 @@ export type ModelGateway = {
   version: number;
   hasKey: boolean;
   keyMasked: string;
+  // 后端确实存了密文但当前 AES 密钥解不开；与「未配置 key」是两回事，不能引导用户重填。
+  keyUnreadable?: boolean;
   createdAt: number;
   updatedAt: number;
   // source 由管理面列表下发：tenant = 本租户自己的配置；platform = 平台共享（只读）。
@@ -79,6 +81,16 @@ export async function setDefaultGateway(identity: ClientIdentity, name: string, 
   await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/set-default?kind=${kind}&scope=${scope}`);
 }
 
-export async function testGateway(identity: ClientIdentity, name: string, kind: 'tts' | 'llm', scope: GatewayScope = 'tenant'): Promise<GatewayTestResult> {
-  return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}&scope=${scope}`)) as GatewayTestResult;
+// source=platform 让租户作用域能测试「列表里可见的平台共享行」：后端会校验该行确实
+// 可见（平台有、且本租户没有同名行），再用平台租户解析凭据。只读 ≠ 不可验证；
+// 不加该参数时保持原语义，只测本租户自己的行。
+export async function testGateway(
+  identity: ClientIdentity,
+  name: string,
+  kind: 'tts' | 'llm',
+  scope: GatewayScope = 'tenant',
+  source?: 'platform'
+): Promise<GatewayTestResult> {
+  const suffix = source ? `&source=${source}` : '';
+  return (await gatewayPath(identity, 'POST', `/api/model-gateways/${encodeURIComponent(name)}/test?kind=${kind}&scope=${scope}${suffix}`, undefined, 65000)) as GatewayTestResult;
 }

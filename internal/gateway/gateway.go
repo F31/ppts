@@ -96,8 +96,13 @@ type Gateway struct {
 	Version     int    `json:"version"`
 	HasKey      bool   `json:"hasKey"`
 	KeyMasked   string `json:"keyMasked"`
-	CreatedAt   int64  `json:"createdAt"`
-	UpdatedAt   int64  `json:"updatedAt"`
+	// KeyUnreadable 表示这一行确实存了密文，但用当前 AES 密钥解不开（跨实例搬迁、
+	// 轮换密钥、AAD 与 tenant/name/kind 不匹配）。它不是「没配 key」：前者需要管理员
+	// 修复密钥或重新录入凭据，后者只需要用户填一次。管理面必须把两者分开显示，
+	// 否则用户会对着「未配置 key」反复重填，而运行时始终是解密失败。
+	KeyUnreadable bool  `json:"keyUnreadable,omitempty"`
+	CreatedAt     int64 `json:"createdAt"`
+	UpdatedAt     int64 `json:"updatedAt"`
 }
 
 // Config 是运行时解析结果（含解密后的 API key，仅进程内使用，不得外泄）。

@@ -710,8 +710,12 @@ func ttsProviderFromEnv(logger *slog.Logger) (tts.TTSProvider, error) {
 			Voice:   os.Getenv("PPTS_TTS_VOICE"),
 		}), nil
 	case "fake":
-		logger.Warn("TTS fake provider active: generated narration is SILENT audio; this is not suitable for any non-development use",
-			"hint", "set PPTS_TTS_PROVIDER=siliconflow with PPTS_TTS_API_KEY for real synthesis")
+		// 这条日志说的是「env 回退供应商已就绪」，不是「本次任务会用 fake」。
+		// 运行时先按租户→平台解析 DB 网关（logTTSResolution 会打 source=gateway），
+		// 只有解析不到时才落到这条 env 回退。写成 "fake provider active" 会让运维
+		// 误以为平台共享的 TTS 网关没生效，反复去查一个并不存在的问题。
+		logger.Warn("TTS env fallback provider is fake: narration is SILENT only when no tenant/platform gateway resolves; not suitable for any non-development use",
+			"hint", "runtime prefers a model gateway configured in Settings > Model services; otherwise set PPTS_TTS_PROVIDER=siliconflow with PPTS_TTS_API_KEY")
 		observability.SetTTSFakeProviderActive(true)
 		return tts.NewFakeProvider(), nil
 	default:

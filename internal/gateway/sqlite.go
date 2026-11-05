@@ -97,8 +97,11 @@ func (s *SQLiteStore) List(ctx context.Context, tenantID string, kind Kind) ([]*
 		if err != nil {
 			return nil, fmt.Errorf("gateway scan: %w", err)
 		}
-		key, _ := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
-		out = append(out, sqToGateway(r, key))
+		key, decErr := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
+		gw := sqToGateway(r, key)
+		// 只有「存了密文却解不开」才是不可读；空密文就是真的没配 key。
+		gw.KeyUnreadable = decErr != nil && len(r.enc) > 0
+		out = append(out, gw)
 	}
 	return out, rows.Err()
 }
@@ -113,8 +116,10 @@ func (s *SQLiteStore) Get(ctx context.Context, tenantID, name string, kind Kind)
 	if err != nil {
 		return nil, fmt.Errorf("gateway get: %w", err)
 	}
-	key, _ := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
-	return sqToGateway(r, key), nil
+	key, decErr := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
+	gw := sqToGateway(r, key)
+	gw.KeyUnreadable = decErr != nil && len(r.enc) > 0
+	return gw, nil
 }
 
 func (s *SQLiteStore) ResolveNamed(ctx context.Context, tenantID, name string, kind Kind) (*Config, error) {

@@ -335,6 +335,50 @@ func (h *GatewayHandler) setDefault(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// resolveTestTenant 决定连接测试实际读取哪一层配置。
+//
+// 平台共享行对租户是「只用不改」，但「不能改」不等于「不能验证」：管理员需要能确认
+// 平台给的这条到底通不通，否则只能盲信。列表已经把这些行显式展示出来，所以这里允许
+// 租户作用域用 source=platform 测试它，无需 operator 权限。
+//
+// 同时不能让任意 (name,kind) 触发平台侧探活（会真实调用上游、可能产生费用）：
+// 只有该行确实在租户可见列表里——平台有这行、且本租户没有同名行把它影子掉——才放行。
+func (h *GatewayHandler) resolveTestTenant(r *http.Request, p Principal, name string, kind gateway.Kind) (Principal, int, string, string) {
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	switch source {
+	case "", gatewaySourceTenant:
+		return p, 0, "", ""
+	case gatewaySourcePlatform:
+		// 继续校验
+	default:
+		return p, http.StatusBadRequest, "invalid", "invalid gateway source (tenant|platform)"
+	}
+	if p.TenantID == gateway.PlatformTenantID {
+		return p, 0, "", "" // 平台作用域本来就读平台行
+	}
+	ctx := r.Context()
+	own, err := h.store.List(ctx, p.TenantID, kind)
+	if err != nil {
+		return p, http.StatusInternalServerError, "internal", "failed to list gateways"
+	}
+	for _, gw := range own {
+		if gw != nil && gw.Name == name {
+			return p, http.StatusConflict, "conflict", "gateway name is shadowed by a tenant row; test the tenant row instead"
+		}
+	}
+	shared, err := h.store.List(ctx, gateway.PlatformTenantID, kind)
+	if err != nil {
+		return p, http.StatusInternalServerError, "internal", "failed to list platform gateways"
+	}
+	for _, gw := range shared {
+		if gw != nil && gw.Name == name {
+			p.TenantID = gateway.PlatformTenantID
+			return p, 0, "", ""
+		}
+	}
+	return p, http.StatusNotFound, "not_found", "platform gateway not found"
+}
+
 func (h *GatewayHandler) test(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.requireAdmin(w, r)
 	if !ok {
@@ -343,21 +387,43 @@ func (h *GatewayHandler) test(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	kind, _ := parseKind(r.URL.Query().Get("kind"))
 	if kind == "" {
-		http.Error(w, `{"code":"invalid","message":"kind query param is required (tts|llm)"}`, http.StatusBadRequest)
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid", "message": "kind query param is required (tts|llm)"})
 		return
 	}
-	cfg, err := h.store.ResolveNamed(r.Context(), p.TenantID, name, kind)
+	auditPrincipal := p
+	target, status, code, message := h.resolveTestTenant(r, p, name, kind)
+	if status != 0 {
+		writeJSON(w, status, map[string]any{"code": code, "message": message})
+		return
+	}
+	cfg, err := h.store.ResolveNamed(r.Context(), target.TenantID, name, kind)
 	if err != nil {
-		http.Error(w, `{"code":"not_found","message":"gateway not found"}`, http.StatusNotFound)
+		if errors.Is(err, gateway.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"code": "not_found", "message": "gateway not found"})
+			return
+		}
+		// 解密失败是独立的故障，不能伪装成「找不到」：跨实例搬行/密钥轮换后，
+		// 管理员需要知道该修密钥或重录凭据，而不是去查名字有没有写错。
+		msg := "failed to resolve gateway config"
+		if strings.Contains(err.Error(), "decrypt creds") || strings.Contains(err.Error(), "decode creds") || strings.Contains(err.Error(), "cipher not configured") {
+			code = "credential_unreadable"
+			msg = "gateway credential cannot be decrypted with this server's PPTS_GATEWAY_AES_KEY_BASE64; restore the original key or re-enter the API key"
+		} else {
+			code = "internal"
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": code, "message": msg})
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	latency, err := gateway.Probe(ctx, cfg)
-	resp := map[string]any{"ok": err == nil, "latencyMs": latency}
-	if err != nil {
-		resp["error"] = err.Error()
+	latency, probeErr := gateway.Probe(ctx, cfg)
+	resp := map[string]any{"ok": probeErr == nil, "latencyMs": latency}
+	if probeErr != nil {
+		resp["error"] = probeErr.Error()
 	}
+	_ = h.record(r, auditPrincipal, "gateway.test", name, map[string]any{
+		"kind": string(kind), "source": strings.TrimSpace(r.URL.Query().Get("source")), "ok": probeErr == nil,
+	})
 	writeJSON(w, http.StatusOK, resp)
 }
 

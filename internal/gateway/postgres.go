@@ -106,8 +106,10 @@ func (s *PGStore) List(ctx context.Context, tenantID string, kind Kind) ([]*Gate
 		if err := r.scan(rows); err != nil {
 			return nil, fmt.Errorf("gateway scan: %w", err)
 		}
-		key, _ := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
-		out = append(out, s.toGateway(r, key))
+		key, decErr := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
+		gw := s.toGateway(r, key)
+		gw.KeyUnreadable = decErr != nil && len(r.enc) > 0
+		out = append(out, gw)
 	}
 	return out, rows.Err()
 }
@@ -123,8 +125,10 @@ func (s *PGStore) Get(ctx context.Context, tenantID, name string, kind Kind) (*G
 	if err != nil {
 		return nil, fmt.Errorf("gateway get: %w", err)
 	}
-	key, _ := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
-	return s.toGateway(r, key), nil
+	key, decErr := decodeCreds(s.cipher, r.tenantID, r.name, r.kind, r.enc)
+	gw := s.toGateway(r, key)
+	gw.KeyUnreadable = decErr != nil && len(r.enc) > 0
+	return gw, nil
 }
 
 func (s *PGStore) ResolveNamed(ctx context.Context, tenantID, name string, kind Kind) (*Config, error) {

@@ -156,7 +156,9 @@ function ScopedGatewaySettings({
     const key = gatewayKey(gw);
     setTesting(key);
     try {
-      const result = await testGateway(identity, gw.name, gw.kind, scope);
+      // 平台共享行在租户作用域是只读，但「不能改」不等于「不能验证」：
+      // 后端按 source=platform 校验该行确实可见后，用平台租户解析凭据再探活。
+      const result = await testGateway(identity, gw.name, gw.kind, scope, isPlatformShared(gw) ? 'platform' : undefined);
       setTestResult((current) => ({ ...current, [key]: result }));
     } catch (err) {
       setTestResult((current) => ({
@@ -184,8 +186,8 @@ function ScopedGatewaySettings({
   // 列表已含平台共享行，因此「平台配了、租户没配」不会再被误报成 unconfigured。
   const ttsState = serviceState(gateways, 'tts', testResult);
   const sharedCount = gateways.filter(isPlatformShared).length;
-  // 本租户自己一个 TTS 都没有、全靠平台共享时，横幅不能说「建议先测试连接」——
-  // 平台行在租户作用域没有测试入口。
+  // 全靠平台共享时横幅用专用文案说明「无需重复接入」；平台行现在可自行测试连接，
+  // 因此文案不再声称「连通性只能由平台侧检测」。
   const ttsInheritedOnly = inheritedOnly(gateways, 'tts');
 
   // 编辑/新增表单。编辑时内联渲染在被编辑的那一项原位（见下方 list），新增时渲染在列表下方。
@@ -369,7 +371,7 @@ function ScopedGatewaySettings({
                     <span className={`kind-tag ${gw.kind}`}>{gw.kind === 'tts' ? t('gateway.kindTts') : t('gateway.kindLlm')}</span>
                     {shared && <span className="shared-tag">{t('gateway.sharedFromPlatform')}</span>}
                     {gw.isDefault && <span className="default-tag">{t('gateway.default')}</span>}
-                    {!shared && <span className={`health-tag ${health}`}>{t(`gateway.health${healthKeySuffix[health]}`)}</span>}
+                    <span className={`health-tag ${health}`}>{t(`gateway.health${healthKeySuffix[health]}`)}</span>
                     <small>
                       {gw.baseUrl} · {gw.model}
                       {gw.kind === 'llm' && gw.visionModel ? ` · ${gw.visionModel}` : ''}
@@ -377,10 +379,17 @@ function ScopedGatewaySettings({
                     <small>
                       {t('gateway.providerLabel')}: {gw.provider || defaultProvider}
                     </small>
-                    <small>{gw.hasKey ? t('gateway.keyMasked', { masked: gw.keyMasked }) : t('gateway.noKey')}</small>
+                    <small>{gw.keyUnreadable ? t('gateway.keyUnreadable') : gw.hasKey ? t('gateway.keyMasked', { masked: gw.keyMasked }) : t('gateway.noKey')}</small>
                   </div>
                   {shared ? (
+                    <>
                     <p className="test-hint">{t('gateway.platformReadOnly')}</p>
+                    <div className="draft-actions">
+                      <button type="button" disabled={testing === key} onClick={() => void runTest(gw)}>
+                        {testing === key ? t('gateway.testing') : health === 'untested' ? t('gateway.testNow') : t('gateway.test')}
+                      </button>
+                    </div>
+                    </>
                   ) : (
                   <div className="draft-actions">
                     <button type="button" disabled={testing === key} onClick={() => void runTest(gw)}>
@@ -410,15 +419,15 @@ function ScopedGatewaySettings({
                     </button>
                   </div>
                   )}
-                  {!shared && result && (
+                  {result && (
                     <>
                       <p className={`test-result ${result.ok ? 'ok' : 'fail'}`}>
                         {result.ok ? t('gateway.testOk', { ms: result.latencyMs }) : t('gateway.testFail', { error: result.error ?? '' })}
                       </p>
-                      {!result.ok && <p className="test-fix">{t('gateway.fixHint')}</p>}
+                      {!result.ok && <p className="test-fix">{gw.keyUnreadable ? t('gateway.fixHintUnreadable') : t('gateway.fixHint')}</p>}
                     </>
                   )}
-                  {!shared && !result && gw.enabled && gw.hasKey && (
+                  {!result && gw.enabled && gw.hasKey && !gw.keyUnreadable && (
                     <p className="test-hint">{t('gateway.untestedNote')}</p>
                   )}
                     </>

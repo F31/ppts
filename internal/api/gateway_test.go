@@ -116,7 +116,7 @@ func (f *fakeGatewayStore) Invalidate(_ string, _ gateway.Kind) {}
 
 var _ gateway.StoreResolver = (*fakeGatewayStore)(nil)
 
-func gwHandler(t *testing.T, store *fakeGatewayStore, role membership.Role) http.Handler {
+func gwHandler(t *testing.T, store gateway.StoreResolver, role membership.Role) http.Handler {
 	t.Helper()
 	// DevHeaders 必须显式开启：这些测例靠 tenantHeader/userHeader 充当已认证身份。
 	// allowDevHeaders 已不再因 Auth==nil 自动放行——生产漏配 secret 不能再等同于开发模式。
