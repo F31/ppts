@@ -104,7 +104,9 @@ button, textarea, input { font: inherit; }
 .draft-actions button:disabled { opacity: .55; cursor: default; }
 
 .editor-card { display: flex; flex-direction: column; min-height: 560px; padding: 18px; }
-.script-editor { min-height: 0; height: 100%; }
+/* 讲稿栏整体只有**一层**滚动：.script-column-body（见下方 editor-layout 区块）。
+   这里刻意不写 height:100%，让卡片按内容生长，避免内容被固定高度切成内层滚动。 */
+.script-editor { min-height: 0; height: auto; }
 .editor-card header, .editor-card footer { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
 .save-state.dirty { color: #ffd89b; }
 .save-state.saving { color: #a9e7ff; }
@@ -135,9 +137,13 @@ button, textarea, input { font: inherit; }
 .rewrite-note .note-dismiss { margin-left: auto; border: none; background: transparent; color: inherit; cursor: pointer; font-size: 14px; line-height: 1; }
 
 /* M3 ② 分段卡片 */
-.segment-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; overflow: auto; flex: 1; min-height: 0; }
+/* 段落列表不自己滚动：滚动交给 .script-column-body。
+   列表一旦 overflow:auto，就会和下面文本框那条并列成两条竖滚动条，
+   而且哪一层吃滚轮取决于指针落点，用户会觉得"滚不动 / 跳着滚"。 */
+.segment-list { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; flex: 0 0 auto; overflow: visible; }
 .segment-card { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto minmax(0, 1fr); gap: 10px; border: 1px solid rgba(255, 255, 255, .1); border-radius: 12px; padding: 12px; background: rgba(255, 255, 255, .03); }
-.segment-card:only-child { flex: 1; min-height: 0; }
+/* 单段时卡片按内容高度排布（原来是 flex:1 撑满，撑满后文本框拿到确定高度就自己滚，叠出第二条）。 */
+.segment-card:only-child { flex: 0 0 auto; }
 .segment-card.selected { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .14); }
 .segment-card.regenerating { opacity: .7; }
 .segment-head { display: flex; align-items: center; gap: 8px; grid-column: 1 / -1; }
@@ -174,7 +180,9 @@ button, textarea, input { font: inherit; }
 .segment-focus-group { margin: 2px 8px; font-size: 11px; letter-spacing: .04em; color: #9fb1cf; }
 .segment-focus-option.suggested { background: rgba(103, 232, 249, .06); }
 .segment-focus-kind.kind-suggest { color: #67e8f9; border-color: rgba(103, 232, 249, .4); }
-.script-rich-editor { grid-column: 1 / -1; width: 100%; height: 100%; min-height: 160px; overflow: auto; border: 1px solid rgba(255, 255, 255, .12); border-radius: 8px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); white-space: pre-wrap; word-break: break-word; line-height: 1.7; outline: none; }
+/* height/overflow 都必须放开：文本框是内容长度决定的（讲稿越写越长），
+   给它固定高度 + overflow:auto 就会在段落卡片内部再长出一条滚动条。 */
+.script-rich-editor { grid-column: 1 / -1; width: 100%; height: auto; min-height: 160px; overflow: visible; border: 1px solid rgba(255, 255, 255, .12); border-radius: 8px; padding: 12px; color: #edf1f7; background: rgba(5, 10, 20, .7); white-space: pre-wrap; word-break: break-word; line-height: 1.7; outline: none; }
 .script-rich-editor:focus { border-color: #67e8f9; box-shadow: 0 0 0 3px rgba(103, 232, 249, .16); }
 .script-rich-editor[contenteditable="false"] { opacity: .92; }
 .pronunciation-hit { position: relative; border-radius: 5px; padding: 0 2px; color: #eaffff; background: rgba(103, 232, 249, .22); box-shadow: inset 0 -1px 0 rgba(103, 232, 249, .55); pointer-events: auto; cursor: help; }
@@ -649,8 +657,10 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .slide-rail-v2 .thumb-meta { min-width: 0; display: grid; gap: 2px; }
 .slide-rail-v2 .thumb-meta strong { font-size: 13px; }
 .slide-rail-v2 .thumb-meta em { color: #9fb1cf; font-size: 12px; font-style: normal; }
-.script-column-body { min-width: 0; min-height: 0; overflow-y: auto; flex: 1; display: flex; flex-direction: column; }
-.script-column-body > .editor-card { flex: 1; min-height: 0; }
+/* 讲稿栏唯一滚动层。内容比可视区高时由它滚，里面的段落列表与文本框都不再各自滚动。
+   min-height:100% 让内容少时卡片仍然铺满（视觉不塌），内容多时卡片随内容长高、由这里滚。 */
+.script-column-body { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; flex: 1; display: flex; flex-direction: column; }
+.script-column-body > .editor-card { flex: 0 0 auto; min-height: 100%; }
 .slide-preview { background: rgba(17,24,39,.82); border: 1px solid rgba(255,255,255,.1); border-radius: 12px; padding: 14px; min-width: 0; display: grid; grid-template-rows: 1fr auto auto; gap: 10px; }
 .slide-preview-img { width: 100%; height: 100%; max-height: calc(100vh - 220px); object-fit: contain; border-radius: 12px; background: #05080f; }
 .slide-preview-empty { display: grid; place-items: center; min-height: 320px; color: #8aa1c4; text-align: center; padding: 24px; border: 1px dashed rgba(255,255,255,.12); border-radius: 12px; }
@@ -1461,3 +1471,54 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .user-menu-note { margin: 2px 0 0; padding: 9px 12px; border-top: 1px solid var(--border-2); color: var(--text-faint); font-size: 12px; line-height: 1.5; white-space: normal; }
 html[data-theme="light"] .user-menu-note { color: #64748b; }
 .local-entry { display: grid; gap: 10px; margin-top: 4px; }
+
+/* ============ 编辑工作台：整页不滚，滚动只发生在列内 ============ */
+/* 症状：讲稿输入框右侧同时出现两条竖滚动条。
+   原因不是"讲稿栏多了一层"，而是**整页也在滚**：预览列由内容撑高（页图 + 播放条 +
+   说明），把文档顶到 1080px（视口 802px），于是讲稿栏自己的滚动条右侧紧贴着一条
+   页面滚动条，看起来就是两条并排。预览列的播放控件也因此被顶到视口外。
+   办法：从 shell 到 .editor-layout 把高度一路变成确定值，页面不再滚，超出部分由
+   各列内部的滚动层承担（页单 PPT / 讲稿正文各自滚）。
+   只在 >=1200px（设计里的"完整三栏"断点）生效：更窄时缩略图收成横条、可用高度不够
+   同时容纳页图 + 播放条，强行限高会把页图压成 0 高度。那里仍按文档流滚动。 */
+@media (min-width: 1200px) and (min-height: 760px) {
+  body:has(.workspace-v2) { height: 100dvh; overflow: hidden; }
+  /* #root 必须一起给高度：它是 body 的直接子元素，缺这一环下面的百分比全部退化成 auto。 */
+  body:has(.workspace-v2) #root { height: 100%; min-height: 0; }
+  body:has(.workspace-v2) .app-shell { height: 100%; min-height: 0; }
+  body:has(.workspace-v2) .console-main { height: 100%; min-height: 0; }
+  body:has(.workspace-v2) .console-content { height: 100%; min-height: 0; overflow: hidden; }
+  .workspace-v2 { height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+  /* 行也必须显式限高：不写 grid-template-rows 时隐式行按内容撑高，
+     子元素的 max-height:100% 会对着"内容高度"求值，等于没限制。 */
+  .editor-layout { height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+  .editor-layout > * { max-height: 100%; }
+  /* 三列统一用「100% 的可用高度」，不再各自写 calc(100vh - Npx)：那些魔法数
+     与实际外壳高度（顶栏 60 + 内边距 44 + 页头）对不上，正是整页被顶高的来源。 */
+  .script-panel, .slide-rail-v2 { max-height: 100%; }
+  /* 图片行必须 minmax(0,1fr)：裸 1fr 的下限是内容尺寸，页图会撑住行高不肯缩小，
+     结果预览列比可用高度高一截（内容被 body 的 overflow:hidden 裁掉）。 */
+  .slide-preview { min-height: 0; max-height: 100%; grid-template-rows: minmax(0, 1fr) auto auto; }
+  .slide-preview-img { max-height: 100%; }
+  /* 内嵌播放器的舞台原本写死 height: min(58vh, 560px)，列高被限住后它撑破卡片，
+     控制条被挤到视口外、叠在页图/备注上。这里改成"占满卡片剩余高度"，
+     页图自己按 object-fit: contain 缩放，控制条始终留在卡片内。 */
+  .slide-preview .player-card.embedded-player { display: flex; flex-direction: column; min-height: 0; }
+  .slide-preview .viewport { flex: 1 1 auto; height: auto; min-height: 0; }
+  .slide-preview .player-dock { flex: 0 0 auto; }
+}
+
+/* <1200：布局收窄（缩略图横排 / 单列堆叠），讲稿栏不再单独限高。
+   限高 + 内层滚动在这里只会和页面滚动条并排出现（又是两条），而且整页本来就要滚
+   —— 把滚动统一交给文档，页面里只剩一条滚动条。 */
+@media (max-width: 1199px) {
+  .script-panel { max-height: none; }
+  .script-column-body { overflow: visible; }
+}
+
+/* 视口太矮（<760px 高）时不再把工作台压进一屏：页图会被压到一百来像素。
+   同样退回文档滚动，讲稿栏不再单独限高，避免"面板滚动条 + 页面滚动条"并排。 */
+@media (max-height: 759px) {
+  .script-panel { max-height: none; }
+  .script-column-body { overflow: visible; }
+}
