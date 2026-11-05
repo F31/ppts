@@ -1235,6 +1235,7 @@
   "jobs.pageOf": "Page {page}",
   "err.unimplemented": "This capability is not provided by the server yet",
   "err.notFound": "Endpoint not found (404)",
+  "err.resourceNotFound": "Content not found (404)",
   "err.unauthenticated": "Session expired, please sign in again",
   "err.forbidden": "Your role does not have this permission",
   "err.unavailable": "Service temporarily unavailable (503)",

@@ -1235,6 +1235,7 @@
   "jobs.pageOf": "第 {page} 页",
   "err.unimplemented": "服务端尚未提供该能力",
   "err.notFound": "接口不存在（404）",
+  "err.resourceNotFound": "未找到对应内容（404）",
   "err.unauthenticated": "登录已失效，请重新登录",
   "err.forbidden": "当前角色没有该权限",
   "err.unavailable": "服务暂时不可用（503）",

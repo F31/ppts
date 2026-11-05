@@ -29,7 +29,11 @@ export function describeApiError(error: unknown, fallback: string, t?: Translato
       if (isUnimplemented(error)) {
         return t('err.unimplemented');
       }
-      if (error.code === 'http_404' || error.code === 'not_found') return t('err.notFound');
+      // http_404：传输层 404，接口（端点）确实不存在——"接口不存在（404）"是正确文案。
+      // not_found：Connect 应用层 404，表示"请求的资源/操作目标不存在"（如讲解尚未生成、
+      // 项目未解析、成员不在租户内等正常业务语义）。二者语义不同，绝不能都报成"接口不存在"。
+      if (error.code === 'http_404') return t('err.notFound');
+      if (error.code === 'not_found') return t('err.resourceNotFound');
       if (error.code === 'http_401' || error.code === 'unauthenticated') return t('err.unauthenticated');
       if (error.code === 'http_403' || error.code === 'permission_denied') return t('err.forbidden');
       if (error.code === 'http_503' || error.code === 'unavailable') return t('err.unavailable');
