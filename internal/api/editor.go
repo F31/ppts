@@ -168,7 +168,17 @@ type voiceModelItem struct {
 // 音色来自网关配置的 voice 字段（多个逗号分隔）；无可用网关时返回空列表，前端据此降级。
 func editorVoiceModels(w http.ResponseWriter, r *http.Request, gatewayStore gateway.StoreResolver, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	if gatewayStore == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_disabled", "message": "model gateway disabled"})
+		// 未配置模型网关（dev 单租户常见）等价于「当前没有可用语音模型」，与下方
+		// len(gws)==0 的 200 空数组是同一语义。此前返回 503 feature_disabled，把
+		// 「配置缺失」说成「服务不可用」，且浏览器对每个 5xx 都记红色错误，编辑器
+		// 一打开就刷屏。保留 disabled 标记与原因，不静默吞掉诊断信息。
+		// 边界：未挂载的功能路由仍由 featureDisabledHandler 返回 503，本处只针对
+		// 「列出可选模型」这条主路径上的能力探测。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"models":   []voiceModelItem{},
+			"disabled": true,
+			"message":  "model gateway disabled",
+		})
 		return
 	}
 	principal, ok := PrincipalFromContext(r.Context())
