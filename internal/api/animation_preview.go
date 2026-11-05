@@ -66,10 +66,24 @@ const (
 	previewMaxImageBytes = 32 << 20
 )
 
+// 预览能力的原因码。前端按码给可行动文案，运维按码查配置项。
+//
+// 这些值同时出现在 GET .../preview/capability 与 POST 失败时的 503 信封里，
+// 两边必须一致：页面提前置灰的理由和真的点了之后看到的理由不能是两句话。
+const (
+	PreviewReasonOK              = "ok"
+	PreviewReasonDisabled        = "animation_disabled"
+	PreviewReasonRendererMissing = "renderer_not_configured"
+	PreviewReasonAssetDirMissing = "assets_not_configured"
+	PreviewReasonRendererInvalid = "renderer_invalid"
+	PreviewReasonAssetDirInvalid = "assets_invalid"
+)
+
 // AnimationPreviewer 提供单页动画预览。
 //
-// 依赖缺一就不注册路由（与动画规格端点同一约定）：预览不是可选增强，
-// 它要么完整可用，要么不存在——半可用的预览会让用户以为"动效没生效"。
+// 依赖缺一就构造「未启用」降级实例（不再是不注册路由）：预览不是可选增强，
+// 它要么完整可用，要么**明确地**不可用——静默 404 会让用户以为"动效坏了"，
+// 而前端只能显示一句没有原因的"预览失败"，反复重试一个永远不可能成功的按钮。
 type AnimationPreviewer struct {
 	store    animstore.Store
 	objects  objectstore.ObjectStore
@@ -80,9 +94,13 @@ type AnimationPreviewer struct {
 	pages AnimationPageResolver
 	// budget 可覆盖（测试用短预算），0 用 previewBudget。
 	budget time.Duration
+	// unavailableReason 非空时所有预览请求返回 503 preview_unavailable。
+	// 此时其余依赖可以为 nil，Register 依然挂载路由。
+	unavailableReason string
 }
 
-// NewAnimationPreviewer 构造预览器。任一依赖为 nil 时返回 nil，调用方据此不注册路由。
+// NewAnimationPreviewer 构造预览器。任一依赖为 nil 时返回 nil，调用方据此
+// 用 NewAnimationPreviewerUnavailable 换上明确说明原因的降级实例。
 func NewAnimationPreviewer(store animstore.Store, objects objectstore.ObjectStore, jobs JobCreator,
 	assets app.AssetPublisher, renderer *render.Client, pages AnimationPageResolver) *AnimationPreviewer {
 	if store == nil || objects == nil || jobs == nil || assets == nil || renderer == nil || pages == nil {
@@ -93,12 +111,32 @@ func NewAnimationPreviewer(store animstore.Store, objects objectstore.ObjectStor
 	}
 }
 
+// NewAnimationPreviewerUnavailable 构造「这个部署没开预览」的降级处理器。
+//
+// 仍然注册路由是本轮修复的核心：POST 返回 503 JSON 而不是落到 SPA 兜底/404 纯文本，
+// GET capability 让页面在点之前就知道该不该置灰。"接口不存在"不是有效答案。
+func NewAnimationPreviewerUnavailable(reason string, budget time.Duration) *AnimationPreviewer {
+	if strings.TrimSpace(reason) == "" {
+		reason = PreviewReasonRendererMissing
+	}
+	return &AnimationPreviewer{unavailableReason: reason, budget: budget}
+}
+
 // WithBudget 覆盖预览预算（测试用短预算，或部署方按硬件调整）。
 func (p *AnimationPreviewer) WithBudget(d time.Duration) *AnimationPreviewer {
 	if p != nil && d > 0 {
 		p.budget = d
 	}
 	return p
+}
+
+// effectiveBudget 是能力响应里给出的预算：必须与真实提交用的是同一个数，
+// 否则前端按 3s 提示，服务端其实给了 20s，用户会被"太慢"的提示误导。
+func (p *AnimationPreviewer) effectiveBudget() time.Duration {
+	if p == nil || p.budget <= 0 {
+		return previewBudget
+	}
+	return p.budget
 }
 
 // ClampPreviewBudget 把配置来的预算收进 [PreviewBudgetMin, PreviewBudgetMax]。
@@ -125,6 +163,61 @@ func (p *AnimationPreviewer) Register(mux *http.ServeMux, auth func(http.Handler
 	}
 	mux.Handle("POST /api/projects/{projectId}/slides/{slideId}/animation/preview",
 		auth(http.HandlerFunc(p.preview)))
+	// 能力探测始终注册：回答"这一刻该不该让用户点预览"不需要渲染服务，
+	// 未启用时它给出具体缺哪个配置，而不是让页面去猜一个 404。
+	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation/preview/capability",
+		auth(http.HandlerFunc(p.capability)))
+}
+
+// previewCapability 是单页预览的部署级能力快照。
+//
+// Configured 指"依赖齐全、路由可用"，**不是**"渲染服务此刻可达"：
+// 服务临时挂掉由 POST 的 502 renderer_unavailable 回答，两者的修复动作不同
+// （前者找运维配环境，后者稍后重试），合成一个 bool 会把用户指错方向。
+type previewCapability struct {
+	Configured bool   `json:"configured"`
+	Reason     string `json:"reason"`
+	BudgetMs   int64  `json:"budgetMs"`
+	Message    string `json:"message,omitempty"`
+}
+
+func (p *AnimationPreviewer) capability(w http.ResponseWriter, r *http.Request) {
+	if _, ok := PrincipalFromContext(r.Context()); !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "unauthenticated"})
+		return
+	}
+	reason := p.unavailableReason
+	if reason == "" {
+		reason = PreviewReasonOK
+	}
+	resp := previewCapability{
+		Configured: reason == PreviewReasonOK,
+		Reason:     reason,
+		BudgetMs:   p.effectiveBudget().Milliseconds(),
+	}
+	if !resp.Configured {
+		resp.Message = previewUnavailableMessage(reason)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// previewUnavailableMessage 给运维/日志一句能直接照着改的话。
+// 前端不直接展示这句中文（会做本地化），但兜底展示时也必须说清缺哪个配置项。
+func previewUnavailableMessage(reason string) string {
+	switch reason {
+	case PreviewReasonDisabled:
+		return "单页预览未启用：当前部署关闭了动画功能（PPTS_ANIMATION_ENABLED）"
+	case PreviewReasonRendererMissing:
+		return "单页预览未启用：缺少渲染服务地址（PPTS_RENDERER_URL）"
+	case PreviewReasonAssetDirMissing:
+		return "单页预览未启用：缺少页图资产目录（PPTS_ANIMATION_ASSET_DIR）"
+	case PreviewReasonRendererInvalid:
+		return "单页预览未启用：渲染服务地址无效（PPTS_RENDERER_URL）"
+	case PreviewReasonAssetDirInvalid:
+		return "单页预览未启用：页图资产目录不可用（PPTS_ANIMATION_ASSET_DIR）"
+	default:
+		return "单页预览未启用：部署依赖不完整（" + reason + "）"
+	}
 }
 
 type previewRequest struct {
@@ -135,6 +228,16 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "unauthenticated"})
+		return
+	}
+	// 依赖不全时不能落到 404：那会被前端当成"接口不存在"这个 bug 反复重试。
+	// 503 + reason 才是可行动的答案（配置好了会自己变成 200）。
+	if p.unavailableReason != "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"code":    "preview_unavailable",
+			"reason":  p.unavailableReason,
+			"message": previewUnavailableMessage(p.unavailableReason),
+		})
 		return
 	}
 	key, ok := animationKeyFromRequest(w, r, principal.TenantID)
@@ -275,12 +378,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	budget := p.budget
-	if budget <= 0 {
-		budget = previewBudget
-	}
-	// 预算覆盖提交 + 等待 + 下载：只卡等待的话，慢一次提交就能让接口超过 3s。
-	ctx, cancel := context.WithTimeout(r.Context(), budget)
+	ctx, cancel := context.WithTimeout(r.Context(), p.effectiveBudget())
 	defer cancel()
 
 	jobID, err := p.renderer.Submit(ctx, plan)
@@ -288,7 +386,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		p.failBudget(ctx, w, "renderer_unavailable", err)
 		return
 	}
-	status, err := p.renderer.Wait(ctx, jobID, 100*time.Millisecond, budget)
+	status, err := p.renderer.Wait(ctx, jobID, 100*time.Millisecond, p.effectiveBudget())
 	if err != nil {
 		// 超时与网络错误的处理不同：超时必须取消任务（否则渲染服务继续占槽），
 		// 而且要给"稍后重试"的明确提示，不是空转。

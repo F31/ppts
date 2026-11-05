@@ -5,7 +5,8 @@
 // 三个端点的语义差别很重要，别在这里抹平：
 //   GET .../animation            200=有规格 / 404=从没配过（不是错误）
 //   GET .../animation/anchors    总能回答"这一页有什么可以动"（与规格无关）
-//   POST .../animation/preview   只渲这一页，≤3s，超时明确报错
+//   GET  .../animation/preview/capability   部署级能力探测（始终可用，不需要渲染服务）
+//   POST .../animation/preview             只渲这一页，≤预算内给结果，超时明确报错
 
 import { ConnectError, requestRaw } from '../core';
 import type { AnimationAnchors, AnimationSavePayload, AnimationSpec } from '../animationState';
@@ -156,6 +157,26 @@ export async function saveAnimationSpec(
   }
 }
 
+// AnimationPreviewCapability 回答「这个部署有没有开单页预览」。
+//
+// configured 只代表依赖齐全、路由可用，**不是**「渲染服务此刻可达」：
+// 服务临时挂掉由 POST 的 502 renderer_unavailable 回答。两者修复动作不同，
+// 合成一个 bool 会把用户指错方向（找运维配环境 vs. 稍后重试）。
+export type AnimationPreviewCapability = {
+  configured: boolean;
+  /** ok / animation_disabled / renderer_not_configured / assets_not_configured / ... */
+  reason: string;
+  budgetMs: number;
+  message?: string;
+};
+
+export async function getAnimationPreviewCapability(
+  identity: ClientIdentity,
+  scope: AnimationScope
+): Promise<AnimationPreviewCapability> {
+  return getJSON<AnimationPreviewCapability>(identity, `${basePath(scope)}/preview/capability${queryOf(scope)}`);
+}
+
 // previewAnimation 渲染这一页，返回可直接放进 <video> 的 blob URL。
 //
 // 为什么要 revoke：一次编辑会话里预览十次就有十个 blob，不释放会一直占着内存。
@@ -188,7 +209,20 @@ export async function previewAnimation(
     label: 'POST animation preview',
     timeoutMs: 90000
   });
+  // 200 不等于「拿到了视频」：未注册/被 SPA 兜底的路径也可能回 200 + text/html，
+  // 旧实现会把它 createObjectURL 塞进 <video>，画面空白而界面上一句错误都没有——
+  // 用户只看到"预览失败"甚至什么都看不到。这里在生成 blob URL **之前**就拦住。
+  const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
+  if (!contentType.startsWith('video/mp4')) {
+    throw new ConnectError(
+      'unexpected_content_type',
+      `POST animation preview: expected video/mp4, got ${contentType || 'no Content-Type'}`
+    );
+  }
   const blob = await res.blob();
+  if (blob.size === 0) {
+    throw new ConnectError('preview_empty_body', 'POST animation preview: empty response body');
+  }
   const layers = Number(res.headers.get('X-Preview-Layers') ?? '0');
   // 三个头都是可选增强：老服务端不给就没有，前端按 0 处理，
   // 而不是把"没有这个头"当成"这页没有焦点"去提示用户。

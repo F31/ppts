@@ -138,3 +138,8 @@ systemctl --user enable --now ppts-preview.service ppts-preview-worker.service
 systemctl --user restart ppts-preview.service ppts-preview-worker.service
 echo "==> units"
 systemctl --user is-active ppts-preview.service ppts-preview-worker.service
+# 部署结果必须如实说出预览能力：这个实例没有动画渲染服务时，页面会把按钮置灰并说明原因，
+# 而不是让用户点出一个 404 再看到「预览失败」。要真正启用需部署 deploy/renderer 镜像。
+if ! grep -q '^PPTS_RENDERER_URL=' "$CONFIG" || ! grep -q '^PPTS_ANIMATION_ASSET_DIR=' "$CONFIG"; then
+  echo "==> 动效预览未启用（缺 PPTS_RENDERER_URL / PPTS_ANIMATION_ASSET_DIR）；页面会置灰并说明原因"
+fi

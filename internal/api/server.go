@@ -89,10 +89,13 @@ type Options struct {
 	// （不是"端点不存在"——前端要据此把选项置灰并说明原因，而不是当成接口 404）。
 	AnimationProbe AnimationProbe
 	// AnimationRenderer/AnimationAssets 是单页预览的两个硬依赖（渲染客户端与页图投递）。
-	// 任一为 nil 时不注册预览端点：预览要么完整可用，要么不存在——
-	// 半可用的预览会让用户以为"动效没生效"。
+	// 任一为 nil 时预览路由**仍然注册**，但返回 503 preview_unavailable：
+	// 半可用的预览会让用户以为"动效没生效"，而静默 404 只会给出一句没有原因的"预览失败"。
 	AnimationRenderer *render.Client
 	AnimationAssets   app.AssetPublisher
+	// AnimationPreviewReason 是预览依赖不齐全时的原因码（PreviewReason*）。
+	// 由部署层在构造依赖时一并给出，避免 api 层再猜一次缺了哪个环境变量。
+	AnimationPreviewReason string
 	// AnimationPreviewBudget 覆盖单页预览的预算（0 = 默认 3s）。
 	// 渲染耗时随部署硬件差异很大，硬编码会让慢机器上的预览恒定超时；
 	// 具体夹紧规则见 AnimationPreviewer.WithBudget。
@@ -248,9 +251,13 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		WithPrefill(jobs, objects).
 		Register(mux, auth)
 	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
-	NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages).
-		WithBudget(opt.AnimationPreviewBudget).
-		Register(mux, auth)
+	// 依赖不齐时换成"未启用"降级实例：路由照常挂载，POST 明确 503、GET 能力探测说明原因，
+	// 而不是让请求落到 404 后被前端翻成一句无从下手的"预览失败"。
+	previewer := NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages)
+	if previewer == nil {
+		previewer = NewAnimationPreviewerUnavailable(opt.AnimationPreviewReason, opt.AnimationPreviewBudget)
+	}
+	previewer.WithBudget(opt.AnimationPreviewBudget).Register(mux, auth)
 	// 导出选项探测（3.4）：回答"这次导出能不能出动画"以及逐页规格身份。
 	// 与动画规格端点分开挂载：写路径关闭（AnimationEnabled=false）时导出仍应能判定不可用并说明原因，
 	// 所以这里不因 enabled=false 就不注册路由。

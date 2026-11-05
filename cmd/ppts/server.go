@@ -95,36 +95,37 @@ func animationProbeFromEnv(logger *slog.Logger, enabled bool) api.AnimationProbe
 	return client
 }
 
-// animationPreviewFromEnv 构造单页预览的两个硬依赖：渲染客户端与页图投递。
+// animationPreviewFromEnv 构造单页预览的两个硬依赖，并给出「为什么没开」的原因码。
 //
-// 缺任一就整块返回 nil（= 不注册预览路由）。预览刻意不允许"半开"：
-// 只配了渲染地址却没配资产目录时，提交能成功而 baseImage 永远找不到，
-// 用户看到的是"预览失败"而不是"这个部署没开预览"——前者会被当成 bug 反复重试。
-//
-// 会话预算（默认 3s，PPTS_ANIMATION_PREVIEW_BUDGET 可调）在 handler 里，
-// 客户端超时给得比它宽：让 ctx 先到期，这样超时被归因为"这一页渲得慢"，
-// 而不是"渲染服务连不上"。
-func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client, app.AssetPublisher) {
+// 返回 reason 而不是只返回 nil：api 层据此注册一个会明确说 503 preview_unavailable 的
+// 降级处理器，能力探测端点也把同一个码交给页面。此前依赖缺失等于路由不注册，POST 落到
+// 404 纯文本，前端只能显示"预览失败"——用户既不知道原因，也不知道该找谁。
+func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client, app.AssetPublisher, string) {
 	if !enabled {
-		return nil, nil
+		logger.Info("animation: preview disabled by deployment switch", "reason", api.PreviewReasonDisabled)
+		return nil, nil, api.PreviewReasonDisabled
 	}
 	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
 	dir := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ASSET_DIR"))
-	if base == "" || dir == "" {
-		logger.Info("animation: preview disabled (needs both PPTS_RENDERER_URL and PPTS_ANIMATION_ASSET_DIR)")
-		return nil, nil
+	if base == "" {
+		logger.Info("animation: preview disabled (PPTS_RENDERER_URL is empty)", "reason", api.PreviewReasonRendererMissing)
+		return nil, nil, api.PreviewReasonRendererMissing
+	}
+	if dir == "" {
+		logger.Info("animation: preview disabled (PPTS_ANIMATION_ASSET_DIR is empty)", "reason", api.PreviewReasonAssetDirMissing)
+		return nil, nil, api.PreviewReasonAssetDirMissing
 	}
 	client, err := render.NewClient(render.ClientConfig{BaseURL: base, Timeout: 10 * time.Second, Retries: 1})
 	if err != nil {
-		logger.Warn("animation: preview disabled", "error", err)
-		return nil, nil
+		logger.Warn("animation: preview disabled", "error", err, "reason", api.PreviewReasonRendererInvalid)
+		return nil, nil, api.PreviewReasonRendererInvalid
 	}
 	assets, err := app.NewLocalAssetPublisher(dir)
 	if err != nil {
-		logger.Warn("animation: preview disabled", "error", err)
-		return nil, nil
+		logger.Warn("animation: preview disabled", "error", err, "reason", api.PreviewReasonAssetDirInvalid)
+		return nil, nil, api.PreviewReasonAssetDirInvalid
 	}
-	return client, assets
+	return client, assets, ""
 }
 
 // previewBudgetFromEnv 读取单页预览预算 PPTS_ANIMATION_PREVIEW_BUDGET（Go duration，如 "8s"）。
@@ -207,7 +208,7 @@ func runServer() error {
 	// 各自读一遍环境变量就会出现"对话框说能用、预览端点却没注册"这种半开状态。
 	animationOn := animationEnabled(stores.isSQLite())
 	animationRollout := animationRolloutFromEnv(logger)
-	previewRenderer, previewAssets := animationPreviewFromEnv(logger, animationOn)
+	previewRenderer, previewAssets, previewReason := animationPreviewFromEnv(logger, animationOn)
 
 	server := &http.Server{
 		Addr: addr,
@@ -231,6 +232,7 @@ func runServer() error {
 						AnimationRolloutSalt:    animationRolloutSaltFromEnv(),
 						AnimationProbe:          animationProbeFromEnv(logger, animationOn),
 						AnimationRenderer:       previewRenderer, AnimationAssets: previewAssets,
+						AnimationPreviewReason: previewReason,
 						// 预览预算按部署硬件可调（默认 3s）：纯 CPU 渲染器上一页的耗时
 						// 取决于核数与字号，固定值会让慢机器上的预览恒定超时。
 						AnimationPreviewBudget: previewBudgetFromEnv(logger),

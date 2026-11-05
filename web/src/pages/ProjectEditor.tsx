@@ -432,10 +432,13 @@ export function ProjectEditor({
   const canGenerate = roleReady && can(role, 'narration.generate'); // 配音生成：EDITOR+（narration.go:65,167）
   const canExport = roleReady && can(role, 'export.create'); // 导出：EDITOR+（export.go:39）
 
-  // 打开导出对话框时探测一次动画能力。失败不报错：导出本身照常可用，
-  // 只是"动画视频"这一项会置灰并说明原因（ExportDialog 的 animationNote）。
+  // 打开导出对话框**或动效面板**时探测一次动画能力。
+  // 此前只在导出对话框打开时探测，动效面板里的 trackEditor 恒为 undefined→false，
+  // 元素级轨道编辑因此一直被关掉，而面板没有说明原因（又一个「能力没启用却不知道」）。
+  // 失败不报错：导出与规格保存本身照常可用，只是相关选项置灰并说明原因。
   useEffect(() => {
-    if (!exportOpen || !realManifest) return;
+    if (!exportOpen && !animationOpen) return;
+    if (!realManifest) return;
     let cancelled = false;
     setExportAnimationLoading(true);
     getAnimationExportOptions(identity, projectId, realManifest.timelineKey)
@@ -451,7 +454,7 @@ export function ProjectEditor({
     return () => {
       cancelled = true;
     };
-  }, [exportOpen, realManifest, identity, projectId]);
+  }, [exportOpen, animationOpen, realManifest, identity, projectId]);
 
   useEffect(() => {
     if (!openExport || exportQueryHandledRef.current || !canExport || !realManifest) return;
@@ -2267,6 +2270,8 @@ export function ProjectEditor({
             sourceRevisionNo={slidesState.revisionNo || initRevisionNo}
             language={scriptLanguage || 'zh-CN'}
             timelineKey={realManifest?.timelineKey}
+            // 预览能力未启用时用它显示这一页的静态图，别让面板只剩一句失败。
+            pageImageURL={activeRenderURL}
             canEdit={canEditScript}
             // 元素级轨道编辑按租户开通（capabilities.trackEditor）。拿不到导出选项时
             // 一律当作未开通：宁可少显示一个入口，也不要给一个保存后才失败的控件。

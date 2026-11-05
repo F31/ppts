@@ -4,15 +4,24 @@ import {
   AnimationConflictError,
   getAnimationAnchors,
   getAnimationPrefillResult,
+  getAnimationPreviewCapability,
   getAnimationSpec,
   getDefaultAnimationSpec,
   previewAnimation,
   saveAnimationSpec,
   startAnimationPrefill,
+  type AnimationPreviewCapability,
   type AnimationScope,
   type ClientIdentity
 } from './api';
-import { previewFocusNotices, type PreviewFocusNotice } from './animationPreview';
+import {
+  previewButtonState,
+  previewErrorDetail,
+  previewErrorText,
+  previewFocusNotices,
+  type PreviewCapabilityState,
+  type PreviewFocusNotice
+} from './animationPreview';
 import { ConnectError } from './core';
 import {
   TRIGGER_ENTER,
@@ -69,6 +78,8 @@ export function AnimationEditor({
   sourceRevisionNo,
   language,
   timelineKey,
+  /** 当前页的静态渲染图：预览能力未启用时用它兜底，别让面板只剩一句失败。 */
+  pageImageURL,
   canEdit,
   trackEditor,
   onClose
@@ -81,6 +92,8 @@ export function AnimationEditor({
   language: string;
   /** 预览用：时间轴键（页时长与分段偏移都来自它）。空 = 还没配音。 */
   timelineKey?: string;
+  /** 页图签名 URL（编辑器主区域用的那张）。 */
+  pageImageURL?: string;
   canEdit: boolean;
   /** 元素级轨道编辑是否开通（capabilities.trackEditor）。未开通时只显示一句说明。 */
   trackEditor: boolean;
@@ -107,6 +120,15 @@ export function AnimationEditor({
   const [previewURL, setPreviewURL] = useState('');
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  // 技术细节（code / reason / 服务端 message）单独存：默认折叠，用户要反馈给运维时
+  // 一键就能复制，而不是只能截一张写着「预览失败」四个字的图。
+  const [previewDetail, setPreviewDetail] = useState('');
+  // 部署级预览能力：打开面板就探测，据此在点之前置灰并说明原因。
+  // 不探测就只能等点了之后吃一个 404，再把 http_404 翻成「预览失败」。
+  const [previewCapability, setPreviewCapability] = useState<AnimationPreviewCapability | null>(null);
+  const [capabilityState, setCapabilityState] = useState<PreviewCapabilityState>('checking');
+  // +1 即重新探测一次（探测失败时给用户一个「重试」入口，而不是只能关掉面板）。
+  const [capabilityAttempt, setCapabilityAttempt] = useState(0);
   const [previewLayers, setPreviewLayers] = useState(0);
   // 焦点说明与预览一起更新：分开存会让"新预览 + 旧说明"同时出现在屏幕上。
   const [previewFocus, setPreviewFocus] = useState<PreviewFocusNotice[]>([]);
@@ -151,6 +173,7 @@ export function AnimationEditor({
     setConflict(null);
     setSaveError('');
     setPreviewError('');
+    setPreviewDetail('');
     setSavedAt(0);
     setPreviewLayers(0);
     setPrefillInfo(null);
@@ -189,6 +212,28 @@ export function AnimationEditor({
     void load();
   }, [load]);
 
+  // 能力探测与规格读取并行发出：它是只读的轻量端点，不依赖渲染服务，
+  // 未启用时也要能回答「为什么按钮是灰的」。cancelled 防止换页后旧响应盖回新状态。
+  useEffect(() => {
+    let cancelled = false;
+    setCapabilityState('checking');
+    setPreviewCapability(null);
+    getAnimationPreviewCapability(identity, scope)
+      .then((cap) => {
+        if (cancelled) return;
+        setPreviewCapability(cap);
+        setCapabilityState('ready');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setPreviewCapability(null);
+        setCapabilityState('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [identity, scope, capabilityAttempt]);
+
   // blob URL 必须显式释放：一次编辑会话可能预览十几次，不释放就一直占着内存。
   useEffect(() => {
     return () => {
@@ -202,6 +247,21 @@ export function AnimationEditor({
 
   // 面板内所有可编辑控件共用一条禁用判据：锁定 / 无权限 / 正在保存。
   const disabled = state.editDisabled || saving;
+
+  // 预览按钮的状态只由一份纯函数决定：能力探测、部署配置、配音时间轴、已保存规格
+  // 都算进去，任何一个不满足都在点之前给出理由，而不是点完再报「预览失败」。
+  const previewButton = previewButtonState({
+    capability: previewCapability,
+    capabilityState,
+    hasTimeline: Boolean(timelineKey),
+    hasSavedSpec: Boolean(saved),
+    previewing,
+    panelDisabled: disabled
+  });
+  // 未启用时至少让用户看见这一页：静态页图是编辑器主区域已有的那张，
+  // 不额外造一条渲染链路。明确标注它是静态图，避免被误当成「动效生效了」。
+  const showStaticFallback =
+    capabilityState === 'ready' && previewCapability?.configured === false && Boolean(pageImageURL);
 
   // 一次编辑开始前压栈。拖拽只在 pointerdown 调一次——按像素记步会让撤销变成"一次撤 1ms"。
   const beginEdit = useCallback(() => {
@@ -425,8 +485,23 @@ export function AnimationEditor({
     }
   };
 
+  // 一次失败后必须清掉上一次成功的画面：错误文字配着旧视频，用户会以为
+  // "这次其实渲出来了，只是下面多了一行报错"。图层/焦点说明同源，一起清。
+  const clearPreviewResult = useCallback(() => {
+    setPreviewURL((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return '';
+    });
+    setPreviewLayers(0);
+    setPreviewFocus([]);
+  }, []);
+
   const runPreview = async () => {
     setPreviewError('');
+    setPreviewDetail('');
+    // 能力没探明或明确未启用时不要发请求：发过去只会得到一个必然失败的 404/503，
+    // 用户看到「预览失败」四个字，而真实原因是这个部署根本没开预览。
+    if (capabilityState !== 'ready' || !previewCapability?.configured) return;
     if (!timelineKey) {
       setPreviewError(t('editor.animationPreviewNeedsVoice'));
       return;
@@ -446,8 +521,13 @@ export function AnimationEditor({
       });
       setPreviewLayers(result.layers);
       setPreviewFocus(previewFocusNotices(result));
+      setPreviewError('');
+      setPreviewDetail('');
     } catch (err) {
-      setPreviewError(previewErrorText(err, t));
+      const failure = previewFailureOf(err);
+      setPreviewError(previewErrorText(failure, t));
+      setPreviewDetail(previewErrorDetail(failure));
+      clearPreviewResult();
     } finally {
       setPreviewing(false);
     }
@@ -858,7 +938,13 @@ export function AnimationEditor({
                 <button type="button" className="primary" disabled={disabled || !dirty} onClick={() => void save()}>
                   {saving ? t('editor.animationSaving') : t('editor.animationSave')}
                 </button>
-                <button type="button" className="button-ghost" disabled={disabled || previewing || !saved} onClick={() => void runPreview()}>
+                <button
+                  type="button"
+                  className="button-ghost"
+                  disabled={previewButton.disabled}
+                  title={previewButton.hintKey ? t(previewButton.hintKey) : undefined}
+                  onClick={() => void runPreview()}
+                >
                   {previewing ? t('editor.animationPreviewing') : t('editor.animationPreview')}
                 </button>
                 <span className={`animation-status${dirty ? ' dirty' : ''}`} role="status">
@@ -866,11 +952,51 @@ export function AnimationEditor({
                 </span>
               </div>
 
-              {!timelineKey && <p className="form-hint">{t('editor.animationPreviewNeedsVoice')}</p>}
-              {previewError && <p className="form-error" role="alert">{previewError}</p>}
+              {/* 置灰的理由必须可见：按钮灰着却不说话，用户只会反复点击或以为页面卡了。 */}
+              {previewButton.hintKey && <p className="form-hint" role="status">{t(previewButton.hintKey)}</p>}
+              {capabilityState === 'error' && (
+                <div className="draft-actions">
+                  <button type="button" className="button-ghost" onClick={() => setCapabilityAttempt((n) => n + 1)}>
+                    {t('editor.animationPreviewRetryCapability')}
+                  </button>
+                </div>
+              )}
+              {previewError && (
+                <div className="form-error animation-preview-error" role="alert">
+                  <p>{previewError}</p>
+                  <div className="draft-actions">
+                    <button type="button" className="button-ghost" disabled={previewButton.disabled} onClick={() => void runPreview()}>
+                      {t('editor.animationPreviewRetry')}
+                    </button>
+                    {previewDetail && (
+                      <details>
+                        <summary>{t('editor.animationPreviewDetails')}</summary>
+                        <code>{previewDetail}</code>
+                      </details>
+                    )}
+                  </div>
+                </div>
+              )}
               {previewURL && (
                 <section className="animation-preview">
-                  <video src={previewURL} controls autoPlay muted loop playsInline />
+                  <video
+                    src={previewURL}
+                    controls
+                    autoPlay
+                    muted
+                    loop
+                    playsInline
+                    onError={(event) => {
+                      // 浏览器解码不了这个 blob 时 React 层此前毫无动静：
+                      // 一片黑加上没有报错，比「预览失败」更难排查。
+                      const media = event.currentTarget.error;
+                      setPreviewError(previewErrorText({ code: 'playback_failed' }, t));
+                      setPreviewDetail(previewErrorDetail({
+                        code: 'playback_failed',
+                        message: media ? `MediaError ${media.code}: ${media.message}` : ''
+                      }));
+                    }}
+                  />
                   <p className="form-hint">
                     {previewLayers > 0
                       ? t('editor.animationPreviewLayers', { count: previewLayers })
@@ -881,6 +1007,12 @@ export function AnimationEditor({
                       {t(notice.key, notice.params)}
                     </p>
                   ))}
+                </section>
+              )}
+              {showStaticFallback && !previewURL && (
+                <section className="animation-preview">
+                  <img className="animation-preview-still" src={pageImageURL} alt={slideTitle ?? t('editor.animationTitle')} />
+                  <p className="form-hint">{t('editor.animationPreviewStaticFallback')}</p>
                 </section>
               )}
             </>
@@ -908,28 +1040,14 @@ function errorText(err: unknown, t: (key: string) => string): string {
   return err instanceof Error && err.message ? err.message : t('editor.animationSaveFailed');
 }
 
-// previewErrorText 单独一份映射：预览的失败原因与保存完全不同，
-// 混用会让"超时"显示成"保存失败"，用户以为是数据问题。
-function previewErrorText(err: unknown, t: (key: string) => string): string {
+// previewFailureOf 把任意异常压成纯数据，交给 animationPreview.ts 的纯函数映射。
+// 信封里的 reason（preview_unavailable 的部署原因码）藏在 details 里，必须带过去，
+// 否则按钮置灰说的和真的点了之后说的会是两句不同的话。
+function previewFailureOf(err: unknown): { code?: string; message?: string; reason?: string } {
   if (err instanceof ConnectError) {
-    switch (err.code) {
-      case 'preview_timeout':
-      case 'http_504':
-        return t('editor.animationPreviewTimeout');
-      case 'no_animation':
-        return t('editor.animationPreviewNoAnimation');
-      case 'duration_unknown':
-        return t('editor.animationPreviewNeedsVoice');
-      case 'page_image_missing':
-        return t('editor.animationPreviewNoImage');
-      case 'renderer_unavailable':
-      case 'http_502':
-        return t('editor.animationPreviewServiceDown');
-      case 'compile_failed':
-        return `${t('editor.animationPreviewFailed')}: ${err.message}`;
-      default:
-        return t('editor.animationPreviewFailed');
-    }
+    const reason = typeof err.details?.reason === 'string' ? err.details.reason : undefined;
+    return { code: err.code, message: err.message, reason };
   }
-  return t('editor.animationPreviewFailed');
+  if (err instanceof Error) return { message: err.message };
+  return {};
 }
