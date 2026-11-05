@@ -609,6 +609,14 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 //	none    —— 该项目没有任何 parse 任务（从未导入，或导入未触发解析）。
 //	running —— 最近一次 parse 任务仍在进行，或虽有成功记录但当前版本产物缺失且可能有新导入在进行。
 //	failed  —— 最近一次 parse 任务终态失败（failed/cancel*/unknown），或成功记录存在但当前版本产物缺失（数据不一致，提示重新导入）。
+//	stalled —— 排队任务从未被 worker 领取且已超时，典型成因是只启动了 server、没启动 worker。
+//
+// parseQueueStallAfter 是「从未被领取」的排队判定阈值。本地只起 server 不起 worker 时，
+// parse 任务会永远停在 queued、attempt=0、lease_owner 为空，界面却一直显示「文档解析中」——
+// 这既不是解析慢，也不是解析失败。只对这类任务快速判定，已领取（有 attempt/lease）或正在
+// 执行的任务不受影响，避免把大文件正常解析误报成故障。
+const parseQueueStallAfter = 2 * time.Minute
+
 func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
 	if !ok {
@@ -653,6 +661,15 @@ func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, o
 	}
 	if latest == nil {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "none", "message": "尚未导入文档或解析尚未开始"})
+		return
+	}
+	if latest.State == pipeline.StateQueued && latest.Attempt == 0 && latest.LeaseOwner == "" &&
+		time.Since(latest.CreatedAt) > parseQueueStallAfter {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":        "stalled",
+			"message":       "解析任务长时间未被处理，请确认任务执行器（worker）已启动后重新导入",
+			"updatedAtUnix": latest.UpdatedAt.Unix(),
+		})
 		return
 	}
 	resp := map[string]any{"updatedAtUnix": latest.UpdatedAt.Unix()}

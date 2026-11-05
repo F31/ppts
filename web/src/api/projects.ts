@@ -218,9 +218,10 @@ export async function getSlideRenderURLs(
 // getProjectParseStatus 返回项目当前版本的解析状态。编辑器先探测它：只有 ready 时才调用
 // GetSlides，因为后端用 CodeNotFound（HTTP 404）表达「当前版本解析文档缺失」——未就绪时
 // 调用虽属正常业务态，却会在浏览器控制台留下并无故障的 404 记录。轮询也走本端点（200），
-// 避免把「解析中」持续刷成红色错误。
+// 避免把「解析中」持续刷成红色错误。stalled 表示排队任务从未被 worker 领取且已超时
+// （本地常见成因：只起了 server、没起 worker），此时不能再显示「解析中」。
 export type ProjectParseStatus = {
-  status: 'none' | 'running' | 'failed' | 'ready';
+  status: 'none' | 'running' | 'failed' | 'stalled' | 'ready';
   message?: string;
   updatedAtUnix?: number;
 };

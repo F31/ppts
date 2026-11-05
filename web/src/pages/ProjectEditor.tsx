@@ -485,14 +485,19 @@ export function ProjectEditor({
         // 降级：仍尝试 GetSlides，由下方 catch 正常报错。
       }
       if (cancelled) return;
-      if (st && st.status === 'failed') {
+      if (st && (st.status === 'failed' || st.status === 'stalled')) {
         setSlideEmptyFromNotFound(false);
-        setSlidesState({ mode: 'failed', message: st.message || t('editor.parseFailed') });
+        setSlidesState({
+          mode: 'failed',
+          message: st.status === 'stalled' ? t('editor.parseStalled') : st.message || t('editor.parseFailed'),
+        });
         return;
       }
       if (st && st.status !== 'ready') {
-        setSlideEmptyFromNotFound(true);
-        setSlidesState({ mode: 'empty', message: st.status === 'none' ? t('editor.noSlides') : t('editor.parseRunning') });
+        // none 是「从未导入」，没有可等待的解析任务，不启动轮询。
+        const isNone = st.status === 'none';
+        setSlideEmptyFromNotFound(!isNone);
+        setSlidesState({ mode: 'empty', message: isNone ? t('editor.noSlides') : t('editor.parseRunning') });
         return;
       }
       try {
@@ -530,7 +535,11 @@ export function ProjectEditor({
       setSlideEmptyRetries(0);
       return;
     }
-    if (slideEmptyRetries >= 20) return;
+    if (slideEmptyRetries >= 20) {
+      // 20 轮（约 40s）仍未就绪：不能继续挂着「解析中」，换成可操作的超时提示。
+      setSlidesState({ mode: 'empty', message: t('editor.parseTimeout') });
+      return;
+    }
     const timer = setTimeout(() => {
       setSlideEmptyRetries((n) => n + 1);
       setSlidesReloadKey((k) => k + 1);

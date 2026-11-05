@@ -13,7 +13,8 @@ import (
 )
 
 // parse-status 是编辑器的「能否调用 GetSlides」闸门：ready 必须与 GetSlides 的
-// docKey 判定一致，否则前端又会在未解析时打出并无故障的 404。这里锁住四个分支。
+// docKey 判定一致，否则前端又会在未解析时打出并无故障的 404。这里锁住各分支，
+// 尤其是「排队任务从未被 worker 领取」必须如实报 stalled，而不是无限显示解析中。
 func TestProjectParseStatusStates(t *testing.T) {
 	const projectID = "project-1"
 	docKey := objectstore.ObjectKey{
@@ -39,6 +40,19 @@ func TestProjectParseStatusStates(t *testing.T) {
 		}}, "none"},
 		{"无产物且解析进行中", false, parseJob(pipeline.StateRunning), "running"},
 		{"无产物且解析失败", false, parseJob(pipeline.StateFailed), "failed"},
+		{"刚排队仍算进行中", false, []*pipeline.Job{{
+			ID: "job-fresh", Kind: pipeline.KindParse, State: pipeline.StateQueued,
+			CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}}, "running"},
+		{"排队任务长时间无人领取", false, []*pipeline.Job{{
+			ID: "job-stalled", Kind: pipeline.KindParse, State: pipeline.StateQueued,
+			CreatedAt: time.Now().Add(-10 * time.Minute), UpdatedAt: time.Now().Add(-10 * time.Minute),
+		}}, "stalled"},
+		{"已领取的陈旧任务不算卡住", false, []*pipeline.Job{{
+			ID: "job-claimed", Kind: pipeline.KindParse, State: pipeline.StateRunning,
+			Attempt: 1, LeaseOwner: "worker-1",
+			CreatedAt: time.Now().Add(-10 * time.Minute), UpdatedAt: time.Now().Add(-10 * time.Minute),
+		}}, "running"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

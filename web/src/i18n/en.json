@@ -782,6 +782,8 @@
   "editor.noSlides": "No pages parsed yet: import a PPTX first; the page list appears automatically once processing completes.",
   "editor.parseRunning": "Document is being parsed, please wait…",
   "editor.parseFailed": "Document parsing failed, please re-import the document.",
+  "editor.parseStalled": "The parsing job has not run for a long time: the worker may not be running. Check the service, then re-import.",
+  "editor.parseTimeout": "Parsing is taking too long. Check that the worker is running, or refresh and retry later.",
   "editor.hasNotes": "Has notes",
   "editor.notesAria": "Slide notes",
   "editor.notesEyebrow": "Notes",
