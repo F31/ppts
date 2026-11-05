@@ -621,3 +621,9 @@ jobs:
       # 水平条按高度量会得到「厚度」，三根都是同一个数，正确的图被判红。
       - name: 柱高判据自检（数值方向）
         run: python3 scripts/fidelity/check_chart.py --self-test
+      # Q7 真人讲稿重测的输入闸门：绑定器对写错的素材是静默的（compare() 只遍历
+      # elements，金标里拼错一个 elementId 就被整条丢掉，分母变小、召回反而虚高；
+      # main() 用 zip 按位置配对，两份页数不等会静默截断）。自检用离线合成夹具
+      # 逐条注入故障，不需要真人稿，也不需要任何 tmp 产物。
+      - name: 真人讲稿输入契约自检（静默错算）
+        run: python3 scripts/fidelity/human_script_check.py --self-test

@@ -1458,14 +1458,53 @@ python3 scripts/fidelity/bind_elements.py --rules v2 \
    `text` 不要照抄元素文字，也不要主动写「第 N 条」「左边这块」——那正是要验的自证来源。
    `bind` 是**人工标的金标**：每段该带出哪些元素，由人对照页面判定。没有金标就算不出召回，
    这一份不能省；`elementId` 必须与元素清单里的 id 逐字一致。
-2. 该 deck 的元素清单 `elements.json`：`extract_pptx_elements.py --pptx <deck> --slides all --out <elements.json>`。
-   沿用现有 5 页样本时，上面的 q8 夹具直接可用。
+2. 该 deck 的元素清单 `elements.json`：`extract_pptx_elements.py --pptx <deck> --slides <与讲稿相同的页> --out <elements.json>`。
+   沿用现有 5 页样本时，上面的 q8 夹具直接可用。**页数必须与讲稿一致**：讲稿写了几页就抽几页，
+   不要 `--slides all` 抽全本，原因见下面「页数必须对齐」。
 
-**跑法与读法**：把上面命令里的 `--segments` / `--golden` 都换成 `human-script.json`（两份是同一份文件：
-文字作输入、bind 作金标）。看「**仅内容元素**」的召回与精确，不看含装饰元素的总数召回。
+**正式重测跑这一条**（上面那条直接调绑定器的命令只用于复现基线，它不校验输入）：
+
+```bash
+python3 scripts/fidelity/human_script_check.py \
+  --script human-script.json \
+  --elements elements.json \
+  --origin "2026-11-06 由 X 对照 5 页页面逐段标注" \
+  --out tmp/q8/human-bind-report.json
+```
+
+`--script` 同时作 `--segments` 与 `--golden`（文字作输入、`bind` 作金标，**强制同源**）；
+`--origin` 写清「谁标的、看什么标的」，会进报告 `human_check.conclusion.golden_source`，
+写回路线图时不能省。
+
+**为什么中间要过一层闸门**（2026-11-05 补）：`bind_elements.py` 对写错的素材是**静默**的，
+而这里量的是「0.972 有没有自证」，一个被静默改小的分母足以把结论反过来：
+
+| 静默行为 | 后果 | 闸门错误码 |
+|---|---|---|
+| `main()` 用 `zip` 按位置配对 `elements` / `segments` / `golden` | 两份页数不等时静默截断，照样打印一个看起来正常的召回 | `PAGE_COUNT` / `PAGE_ORDER` / `PAGE_INDEX` |
+| `compare()` 只遍历 `elements` | 金标 `p1-s5` 拼成 `p1-s05` 被整条丢掉，分母变小、**召回反而虚高** | `GOLDEN_ID_UNKNOWN` |
+| `golden_binding()` 按 `elementId` 存 dict | 同一元素标到两段时后者覆盖前者，不报错 | `GOLDEN_ID_DUP` |
+| 段里缺 `bind` 时 `recall_content` 为 `None` | 输出「召回 None」，容易被误读成结果 | `BIND_MISSING` / `REPORT_NO_CONTENT_RECALL` |
+
+闸门在评测**前**校验输入，拿到报告**后**再对一次账（页数、元素数、金标总数、逐页金标数、
+`rules=v2`），确保「金标里的每一条都真的进了这次计算」。绑定器本身一行未改，
+q8 的 0.972 / 0.962 逐位不变。`--self-test` 的 23 项离线判据在**本地 `scripts/preflight.sh` 与 CI 的 `fidelity` job 里各有一条**
+（CI 那个 job 不跑 preflight，是逐条 `--self-test`，所以两条都得补）；
+14 种错法变异各自红、恢复后全绿；三份坏素材（金标拼错 / 页数不等 / 缺 `bind`）实测都被拒绝。
+
+**页数必须对齐**：真人稿只写了 5 页，元素清单也只抽那 5 页（`--slides 1,2,4,8,10`）。
+`--slides all` 抽全本会被 `PAGE_COUNT` 直接拒绝——这正是上面那条 `zip` 的坑。
+`--self-test` 用的是离线合成夹具，**只验判据**，不是真人稿、不是实验结果，绝不写回路线图。
+
+**读法与自证提示**：看「**仅内容元素**」的召回与精确，不看含装饰元素的总数召回。
+脚本还会统计讲稿里的结构词（尺子与「结构词消融」那节同源）与照抄元素文字的段数：
+q8 这份实验者稿实测 13/15 段带结构词、1 段照抄，被判 `self_evidence_risk=high`，
+明确警告「接近 0.97 更可能是自证」。这是**提示不是判定**——真人口播也可能自然说
+「第一」「这张表」，不要因为报了 high 就回去改稿凑数字。
+
 按「结构词消融」那节的实测，**合理预期是 0.67–0.75，不是 0.972**；0.972 的前提是讲稿把版面结构念了出来。
 若真人稿仍接近 0.97，要担心的是自证；落在 0.67–0.75，则是把「预填覆盖率按版式分档」钉实的证据。
-两种结论都要把报告与**金标来源、样本页数**一起写回路线图 Q7，不能只搬一个数字。
+两种结论都要把报告与**金标来源、样本页数、自证风险**一起写回路线图 Q7，不能只搬一个数字。
 
 模型通道对照已不缺：「模型通道对照（6.2）」有 5 轮采样、按页路由与门槛判定，结论是模型不能替代规则
 （原稿 5 轮均值 0.739 < 规则 0.972，极差 0.500），故产品里默认关闭。
