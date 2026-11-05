@@ -37,6 +37,13 @@ PPTS_AUTH_DEV_HEADERS=true
 PPTS_TTS_PROVIDER=fake
 PPTS_WEB_ROOT=/mnt/e/projects/ppts/web/dist
 PPTS_HTTP_ADDR=:8077
+# 动效渲染服务（docker 容器 ppts-renderer，镜像 ppts/renderer:verify，映射 127.0.0.1:8091）。
+# 两者缺一时动效预览/导出会如实置灰；目录必须与容器 -v 挂载的宿主目录是同一个。
+PPTS_RENDERER_URL=http://127.0.0.1:8091
+PPTS_ANIMATION_ASSET_DIR=$ROOT/assets
+# 单页预览预算：纯 CPU 渲染吞吐约 2x 实时（帧并发 4），但 staging/下载也占时间，
+# 47s 的页实测全程约 37s。默认 3s 会恒定 504；上限 60s，前端兜底 90s，必须小于它。
+PPTS_ANIMATION_PREVIEW_BUDGET=60s
 TZ=Asia/Shanghai
 ENV
   echo "==> 已创建 $CONFIG"
@@ -139,7 +146,17 @@ systemctl --user restart ppts-preview.service ppts-preview-worker.service
 echo "==> units"
 systemctl --user is-active ppts-preview.service ppts-preview-worker.service
 # 部署结果必须如实说出预览能力：这个实例没有动画渲染服务时，页面会把按钮置灰并说明原因，
-# 而不是让用户点出一个 404 再看到「预览失败」。要真正启用需部署 deploy/renderer 镜像。
+# 而不是让用户点出一个 404 再看到「预览失败」。渲染容器（docker run 手册见 deploy/renderer/README.md）
+# 不归本脚本管，但「配了地址、容器却没跑」和「没配」对用户是同一种失败，这里都要点破。
 if ! grep -q '^PPTS_RENDERER_URL=' "$CONFIG" || ! grep -q '^PPTS_ANIMATION_ASSET_DIR=' "$CONFIG"; then
   echo "==> 动效预览未启用（缺 PPTS_RENDERER_URL / PPTS_ANIMATION_ASSET_DIR）；页面会置灰并说明原因"
+elif ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ppts-renderer$'; then
+  echo "!!> PPTS_RENDERER_URL 已配置，但渲染容器 ppts-renderer 没在运行——预览/动画导出会报渲染服务不可用"
+  echo "    启动（镜像 ppts/renderer:verify，注意 -concurrency 是帧并发，单页预览建议 ≥4）："
+  echo "    docker run -d --name ppts-renderer --restart unless-stopped -p 127.0.0.1:8091:8090 \\"
+  echo "      --read-only --tmpfs /work:size=2g,mode=1777 --tmpfs /tmp:size=512m,mode=1777 \\"
+  echo "      --mount type=bind,src=$ROOT/assets,dst=/assets,readonly \\"
+  echo "      --cpus 4 --memory 6g --pids-limit 2048 --security-opt no-new-privileges:true \\"
+  echo "      ppts/renderer:verify -addr :8090 -backend remotion -workdir /work -renderer-script /app/render.mjs \\"
+  echo "      -assets-dir /assets -concurrency 4 -page-concurrency 1 -max-queued 8 -job-ttl 30m"
 fi
