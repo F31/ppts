@@ -126,6 +126,9 @@ export function ProjectEditor({
   const [slidesState, setSlidesState] = useState<SlidesState>({ mode: 'loading' });
   // 页面列表加载失败后的重试计数（与 scriptsRefreshNonce 同款：变化即重跑加载 effect）。
   const [slidesReloadKey, setSlidesReloadKey] = useState(0);
+  // 空态是否源于"文档尚未解析"（GetSlides 返回 not_found）：仅在此情况下对页面列表做有限自动重试。
+  const [slideEmptyFromNotFound, setSlideEmptyFromNotFound] = useState(false);
+  const [slideEmptyRetries, setSlideEmptyRetries] = useState(0);
   // 探测类请求的失败原因（按 ProbeId 归档）。空对象 = 全部正常。
   const [probeErrors, setProbeErrors] = useState<Partial<Record<ProbeId, string>>>({});
   // 顶层探测的重试计数；变化即重跑全部顶层探测 effect。
@@ -474,12 +477,40 @@ export function ProjectEditor({
         if (res.slides.length > 0) setActiveSlideID(res.slides[0].slideId);
       })
       .catch((error: unknown) => {
-        if (!cancelled) setSlidesState({ mode: 'failed', message: describeApiError(error, t('editor.slidesLoadFailed'), t) });
+        if (cancelled) return;
+        // GetSlides 在"文档尚未解析 / 解析未完成"时返回应用层 not_found（见 apiError.ts 对
+        // isNotFound 的说明：这是正常业务语义，并非接口缺失）。降级为"暂无页面"空态并复用
+        // editor.noSlides 文案，避免把"解析进度问题"误报成"接口不存在（404）"。真正缺失
+        // 权限/网络/服务的情况仍走下方 describeApiError 正常报错。
+        if (isNotFound(error)) {
+          setSlidesState({ mode: 'empty' });
+          setSlideEmptyFromNotFound(true);
+          return;
+        }
+        setSlideEmptyFromNotFound(false);
+        setSlidesState({ mode: 'failed', message: describeApiError(error, t('editor.slidesLoadFailed'), t) });
       });
     return () => {
       cancelled = true;
     };
   }, [identity, projectId, initRevisionNo, slidesReloadKey, t]);
+
+  // 解析是异步的：导入后立刻打开编辑器时 GetSlides 常返回 not_found（"尚未解析"）。
+  // 仅当空态源于"未解析"时做有限自动重试，解析完成后页面列表自动出现，无需用户手动刷新；
+  // 上限 20 次（约 40s），避免对"确实无页面 / 解析失败"的项目持续空轮询。
+  useEffect(() => {
+    if (!slideEmptyFromNotFound || slidesState.mode !== 'empty') {
+      setSlideEmptyFromNotFound(false);
+      setSlideEmptyRetries(0);
+      return;
+    }
+    if (slideEmptyRetries >= 20) return;
+    const timer = setTimeout(() => {
+      setSlideEmptyRetries((n) => n + 1);
+      setSlidesReloadKey((k) => k + 1);
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [slidesState.mode, slideEmptyFromNotFound, slideEmptyRetries]);
 
   // 打开编辑页时加载已有配音：narration 就绪则构建播放清单，供中间预览区播放器直接播放。
   useEffect(() => {
