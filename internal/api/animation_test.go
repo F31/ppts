@@ -158,6 +158,48 @@ func TestAnimationGetMissingThenDefault(t *testing.T) {
 	}
 }
 
+// TestAnimationDefaultRegeneratesAfterSave 守「保存后点风格仍有反应」。
+//
+// 回归背景：GET handler 曾先读已保存规格、命中就短路返回，?default=true&preset=x 的
+// preset 被整个忽略。已保存过规格的页再点风格，前端拿到的还是旧规格，setDraft 后
+// 界面毫无变化——全程 200、零报错，用户看到的就是「点了没反应」。
+func TestAnimationDefaultRegeneratesAfterSave(t *testing.T) {
+	ts, _ := newAnimationTestServer(t, true)
+
+	status, payload := doJSON(t, http.MethodPut, ts.URL+animationURL(), validPutBody(0))
+	if status != http.StatusOK {
+		t.Fatalf("put status = %d, want 200 (%v)", status, payload)
+	}
+
+	// 普通 GET 与不带 preset 的 default=true 仍读已保存的那份：
+	// 预填/自动初始化依赖这层防呆（TestPrefillNeverOverridesSavedSpec 钉住的边界），
+	// 显式换风格不能顺手把它吃掉。
+	status, payload = doJSON(t, http.MethodGet, ts.URL+animationURL(), nil)
+	if status != http.StatusOK || payload["presetId"] != "business-calm" {
+		t.Fatalf("plain get = %d %v，应返回已保存的 business-calm", status, payload["presetId"])
+	}
+	status, payload = doJSON(t, http.MethodGet, ts.URL+animationURL()+"?default=true", nil)
+	if status != http.StatusOK || payload["presetId"] != "business-calm" {
+		t.Fatalf("default-without-preset = %d %v，应返回已保存的 business-calm", status, payload["presetId"])
+	}
+
+	// 换风格：必须按请求的 preset 重新生成，而不是回吐已保存那份。
+	status, payload = doJSON(t, http.MethodGet, ts.URL+animationURL()+"?default=true&preset=tech-dynamic", nil)
+	if status != http.StatusOK {
+		t.Fatalf("default-after-save status = %d (%v)", status, payload)
+	}
+	if payload["presetId"] != "tech-dynamic" {
+		t.Fatalf("presetId = %v, want tech-dynamic（换风格被已保存规格吞掉了）", payload["presetId"])
+	}
+	if got := payload["revision"].(float64); got != 0 {
+		t.Fatalf("新生成的默认规格是未保存草案，revision = %v, want 0", got)
+	}
+	tracks, _ := payload["tracks"].([]any)
+	if len(tracks) == 0 {
+		t.Fatalf("default spec has no tracks: %v", payload)
+	}
+}
+
 func TestAnimationPutLifecycle(t *testing.T) {
 	ts, _ := newAnimationTestServer(t, true)
 

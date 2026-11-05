@@ -277,18 +277,31 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rev, err := h.store.Get(r.Context(), key)
-	if err == nil {
-		writeJSON(w, http.StatusOK, animationDTO(rev, false))
-		return
-	}
-	if !errors.Is(err, animation.ErrNotFound) {
-		writeAnimationError(w, err)
-		return
-	}
-	if r.URL.Query().Get("default") != "true" {
-		writeJSON(w, http.StatusNotFound, map[string]any{"code": "not_found"})
-		return
+	// 「换风格」与「读规格/默认初始化」必须在读存储**之前**分流：
+	//
+	//   default=true & preset=x → 用户显式点了风格 x，按 x 重新生成一份未保存草案。
+	//     此前这里会先读已保存规格、命中就短路返回，preset 被整个忽略——
+	//     保存过动效的页再点风格，前端 setDraft 后界面毫无变化，全程 200 零报错，
+	//     用户看到的就是「点了没反应」。
+	//   default=true（无 preset）→ 保持「有规格读规格、无规格生成」：预填与自动
+	//     初始化依赖这层防呆，人工确认过的绑定不允许被静默替换
+	//     （TestPrefillNeverOverridesSavedSpec 钉住的就是这条边界）。
+	presetParam := r.URL.Query().Get("preset")
+	wantDefault := r.URL.Query().Get("default") == "true"
+	if !(wantDefault && presetParam != "") {
+		rev, err := h.store.Get(r.Context(), key)
+		if err == nil {
+			writeJSON(w, http.StatusOK, animationDTO(rev, false))
+			return
+		}
+		if !errors.Is(err, animation.ErrNotFound) {
+			writeAnimationError(w, err)
+			return
+		}
+		if !wantDefault {
+			writeJSON(w, http.StatusNotFound, map[string]any{"code": "not_found"})
+			return
+		}
 	}
 	if h.pages == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_unavailable"})
