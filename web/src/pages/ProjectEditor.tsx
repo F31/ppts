@@ -2029,6 +2029,9 @@ export function ProjectEditor({
             />
           ) : activeRenderURL ? (
             <img className="slide-preview-img" src={activeRenderURL} alt={activeSlide?.title ?? activeSlideID} />
+          ) : renderUnavailable ? (
+            // 渲染器缺失是能力问题，不会「等一会儿就好」：主区域给出与左侧一致的可操作说明。
+            <div className="slide-preview-empty">{t('editor.rendererUnavailable')}</div>
           ) : slidesState.mode === 'failed' ? (
             // 页面列表没读到 ≠ 还在渲染：此处若沿用 renderPending，故障会被读成"再等等就好"。
             <div className="slide-preview-empty">{slidesState.message}</div>

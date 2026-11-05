@@ -1053,7 +1053,7 @@
   "editor.oneDraftTimeout": "模型服务响应超时。系统已调大超时时间；如仍失败，请稍后重试或选择更短讲稿长度。",
   "editor.unsaved": "未保存",
   "editor.slidePreview": "幻灯片预览",
-  "editor.renderPending": "渲染图就绪后展示当前页预览。",
+  "editor.renderPending": "当前页面还没有渲染图，暂时无法显示预览。",
   "editor.toolbar": "段落工具栏",
   "editor.shorten": "缩短",
   "editor.polish": "润色",

@@ -516,6 +516,48 @@ type editorSlideRenderItem struct {
 	URL     string `json:"url"`
 }
 
+// fallbackPageRenderer 在 job_steps 没有成功步骤引用时，按约定对象键直读页面清单，
+// 只取 renderer 字段用于诊断（如 "unavailable"）。读不到返回空串，调用方维持空列表。
+func fallbackPageRenderer(ctx context.Context, r *http.Request, objects objectstore.ObjectStore, projects project.ProjectStore, tenantID, userID, projectID string) string {
+	revNo := 0
+	if revStr := r.URL.Query().Get("revision_no"); revStr != "" {
+		n, err := strconv.Atoi(revStr)
+		if err != nil || n <= 0 {
+			return ""
+		}
+		revNo = n
+	} else {
+		row, err := projects.GetProject(ctx, tenantID, userID, projectID)
+		if err != nil || row == nil {
+			return ""
+		}
+		revNo = int(row.CurrentRevision)
+	}
+	if revNo <= 0 {
+		return ""
+	}
+	key := objectstore.ObjectKey{
+		TenantID: tenantID, ProjectID: projectID, Revision: srcRevString(revNo),
+		AssetType: "render", AssetID: "pages", Ext: "json",
+	}
+	manifest, err := loadPageManifest(ctx, objects, tenantID, key.String())
+	if err != nil {
+		return ""
+	}
+	return manifest.Renderer
+}
+
+// writePageRenderFallback 在拿不到成功步骤引用时，把清单里的能力缺失原因透出。
+// 返回 false 表示没有可透出的原因，调用方维持原来的空列表响应。
+func writePageRenderFallback(w http.ResponseWriter, r *http.Request, objects objectstore.ObjectStore, projects project.ProjectStore, tenantID, userID, projectID string) bool {
+	renderer := fallbackPageRenderer(r.Context(), r, objects, projects, tenantID, userID, projectID)
+	if renderer == "" {
+		return false
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}, "renderer": renderer})
+	return true
+}
+
 // editorSlideRender 读取最近一次成功解析任务的页面清单（PageManifest），为每页渲染 PNG 签发短期匿名可读 URL。
 // 解析未完成、页面清单缺失或某页渲染图不存在时，对应项跳过；整体缺失时返回空列表，前端优雅降级为序号/标题缩略图。
 func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
@@ -531,7 +573,9 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 	ctx := r.Context()
 	job, err := jobs.LatestSucceededJob(ctx, principal.TenantID, projectID, string(pipeline.KindParse))
 	if errors.Is(err, pipeline.ErrNoSucceededJob) {
-		writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+		if !writePageRenderFallback(w, r, objects, projects, principal.TenantID, principal.UserID, projectID) {
+			writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+		}
 		return
 	}
 	if err != nil {
@@ -546,7 +590,9 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 		}
 		matched, merr := parseJobForRevision(ctx, jobs, principal.TenantID, projectID, revNo)
 		if errors.Is(merr, pipeline.ErrNoSucceededJob) {
-			writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+			if !writePageRenderFallback(w, r, objects, projects, principal.TenantID, principal.UserID, projectID) {
+				writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+			}
 			return
 		}
 		if merr != nil {
@@ -557,7 +603,13 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 	}
 	ref, err := jobs.StepResultRef(tenant.WithContext(ctx, principal.TenantID), job.ID, "pages")
 	if err != nil || ref == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+		// 渲染器缺失时 app.publishPageManifest 会写一份 renderer="unavailable" 的清单，
+		// 但把 pages 步骤标为 failed；StepResultRef 只查 state='success'，于是这里拿不到 ref，
+		// 接口退化成 {"slides":[]}，前端无法区分「能力缺失」与「尚未渲染」，主区域还会
+		// 显示「就绪后展示」误导用户继续等。回退按约定键直读清单，把原因透出去。
+		if !writePageRenderFallback(w, r, objects, projects, principal.TenantID, principal.UserID, projectID) {
+			writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}})
+		}
 		return
 	}
 	manifest, err := loadPageManifest(ctx, objects, principal.TenantID, ref)

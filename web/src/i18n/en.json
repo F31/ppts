@@ -1053,7 +1053,7 @@
   "editor.oneDraftTimeout": "The model service timed out. The request timeout has been increased; if it still fails, retry later or choose a shorter script length.",
   "editor.unsaved": "Unsaved",
   "editor.slidePreview": "Slide preview",
-  "editor.renderPending": "Shown when the page render is ready.",
+  "editor.renderPending": "No page image is available for this slide yet, so the preview cannot be shown.",
   "editor.toolbar": "Paragraph toolbar",
   "editor.shorten": "Shorten",
   "editor.polish": "Polish",
