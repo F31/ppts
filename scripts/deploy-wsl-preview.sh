@@ -14,6 +14,14 @@
 #     GATEWAY_SRC_TENANT_ID=<可选，默认开发租户> bash deploy-wsl-preview.sh
 # 迁移结果落在平台共享租户，租户页面只读可见。工具需先交叉编译到 $ROOT/bin/gateway-import：
 #   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o <目标> ./scripts/gateway-import
+#
+# 出站代理（仅 systemd 主实例 /etc/ppts/config.env）：127.0.0.1:7892 由 wsl-proxy-fwd.py
+# 提供，是 siliconflow / agnes 等外部模型出网的必要通道；缺省直连会 TLS 握手超时，
+# 曾致 TTS/讲稿任务 10 次重试全失败。不要把它当失效残留清掉。
+# 交互式 shell 常带另一套代理：探测本机端口必须加 --noproxy '*'（或 curl -x 明确指定），
+# 否则回环请求会被代理转成 502，看起来像服务挂了；服务端 NO_PROXY 已含 127.0.0.1，不受影响。
+# 主实例用 Postgres、预览实例用 SQLite，两者 AES 密钥不同，本地 TTS 网关要各写一次：
+#   DST_DRIVER=postgres PPTS_CONFIG=/etc/ppts/config.env go run ./scripts/gateway-local-tts
 set -euo pipefail
 
 ROOT="$HOME/ppts-preview"
