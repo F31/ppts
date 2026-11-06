@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,6 +117,44 @@ func probeTTS(ctx context.Context, cfg *Config) error {
 	return err
 }
 
+// ProbeCode 把探活失败归成可行动的类别。管理面据此给本地化提示，而不是把
+// 上游的 30s 静默超时原样丢给用户——真实故障里"凭据有效、模型存在、账户额度耗尽"
+// 只会表现为 chat 挂起，光看超时根本查不到该去充值。
+type ProbeCode string
+
+const (
+	ProbeCodeNone        ProbeCode = ""
+	ProbeCodeQuota       ProbeCode = "quota_exhausted"
+	ProbeCodeCredentials ProbeCode = "credentials_rejected"
+	ProbeCodeModel       ProbeCode = "model_not_in_catalog"
+	ProbeCodeRateLimited ProbeCode = "rate_limited"
+	ProbeCodeNoResponse  ProbeCode = "no_response"
+	ProbeCodeUpstream    ProbeCode = "upstream_error"
+)
+
+type probeError struct {
+	code ProbeCode
+	msg  string
+}
+
+func (e *probeError) Error() string { return e.msg }
+
+// ProbeCodeOf 取出探活错误的类别；非分类错误返回空串。
+func ProbeCodeOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	var pe *probeError
+	if errors.As(err, &pe) {
+		return string(pe.code)
+	}
+	return ""
+}
+
+// 这两个超时做成包级变量，便于回归用例在 httptest 上快速覆盖超时分支。
+var llmProbeTimeout = 30 * time.Second
+var llmCatalogTimeout = 5 * time.Second
+
 func probeLLM(ctx context.Context, cfg *Config) error {
 	payload, err := json.Marshal(map[string]any{
 		"model": cfg.Model,
@@ -127,24 +166,125 @@ func probeLLM(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	chatCtx, cancel := context.WithTimeout(ctx, llmProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(chatCtx, http.MethodPost,
 		strings.TrimRight(cfg.BaseURL, "/")+"/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: llmProbeTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		// 上游不响应时，用同一个凭据查 /v1/models 区分「配置错了」和「账户/服务出问题」。
+		// chatCtx 已经到期，但父 ctx 仍有效，诊断请求用它自己的短超时。
+		return diagnoseLLMNoResponse(ctx, cfg, err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("gateway: llm status %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return classifyLLMStatus(resp.StatusCode, body)
 	}
 	return nil
+}
+
+// classifyLLMStatus 把上游的 4xx/5xx 翻成可行动类别，同时保留原始响应体做技术详情。
+func classifyLLMStatus(status int, body []byte) error {
+	msg := truncate(string(body), 200)
+	lower := strings.ToLower(msg)
+	quota := strings.Contains(lower, "quota") || strings.Contains(lower, "balance") ||
+		strings.Contains(lower, "insufficient") || strings.Contains(lower, "credit")
+	switch {
+	case status == http.StatusPaymentRequired || (quota && (status == http.StatusForbidden || status == http.StatusTooManyRequests)):
+		return &probeError{ProbeCodeQuota,
+			fmt.Sprintf("gateway: upstream quota/balance exhausted (status %d): %s", status, msg)}
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return &probeError{ProbeCodeCredentials,
+			fmt.Sprintf("gateway: upstream rejected credentials or access (status %d): %s", status, msg)}
+	case status == http.StatusTooManyRequests:
+		return &probeError{ProbeCodeRateLimited,
+			fmt.Sprintf("gateway: upstream rate limited (status %d): %s", status, msg)}
+	default:
+		return &probeError{ProbeCodeUpstream,
+			fmt.Sprintf("gateway: llm status %d: %s", status, msg)}
+	}
+}
+
+func diagnoseLLMNoResponse(parent context.Context, cfg *Config, chatErr error) error {
+	ctx, cancel := context.WithTimeout(parent, llmCatalogTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(cfg.BaseURL, "/")+"/v1/models", nil)
+	if err != nil {
+		return &probeError{ProbeCodeNoResponse,
+			fmt.Sprintf("gateway: chat/completions did not respond: %v", chatErr)}
+	}
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	resp, err := (&http.Client{Timeout: llmCatalogTimeout}).Do(req)
+	if err != nil {
+		return &probeError{ProbeCodeNoResponse,
+			fmt.Sprintf("gateway: chat/completions did not respond (%v); /v1/models also unreachable: %v", chatErr, err)}
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return &probeError{ProbeCodeCredentials,
+			fmt.Sprintf("gateway: chat/completions did not respond (%v); upstream rejected credentials while listing models (status %d)", chatErr, resp.StatusCode)}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return &probeError{ProbeCodeUpstream,
+			fmt.Sprintf("gateway: chat/completions did not respond (%v); /v1/models returned status %d: %s", chatErr, resp.StatusCode, truncate(string(body), 200))}
+	}
+	ids, err := parseModelIDs(body)
+	if err != nil {
+		return &probeError{ProbeCodeNoResponse,
+			fmt.Sprintf("gateway: chat/completions did not respond (%v); /v1/models returned unreadable payload: %v", chatErr, err)}
+	}
+	if !containsString(ids, cfg.Model) {
+		return &probeError{ProbeCodeModel,
+			fmt.Sprintf("gateway: configured model %q is not in upstream catalog (available: %s); chat/completions also did not respond: %v",
+				cfg.Model, strings.Join(limitStrings(ids, 8), ", "), chatErr)}
+	}
+	return &probeError{ProbeCodeNoResponse,
+		fmt.Sprintf("gateway: credentials and model %q are valid (/v1/models OK), but chat/completions did not respond within %s; check upstream quota/balance or service status: %v",
+			cfg.Model, llmProbeTimeout, chatErr)}
+}
+
+func parseModelIDs(body []byte) ([]string, error) {
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(parsed.Data))
+	for _, m := range parsed.Data {
+		if id := strings.TrimSpace(m.ID); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func containsString(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func limitStrings(list []string, n int) []string {
+	if len(list) <= n {
+		return list
+	}
+	out := append([]string(nil), list[:n]...)
+	return append(out, "…")
 }
 
 func truncate(s string, n int) string {

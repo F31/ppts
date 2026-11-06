@@ -420,6 +420,9 @@ func (h *GatewayHandler) test(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"ok": probeErr == nil, "latencyMs": latency}
 	if probeErr != nil {
 		resp["error"] = probeErr.Error()
+		// 分类码让管理面能给出「该充值 / 该换凭据 / 该改模型 ID」的可行动提示，
+		// 而不是把上游 30s 静默超时原文丢给用户；原始 error 仍保留做技术详情。
+		resp["probeCode"] = gateway.ProbeCodeOf(probeErr)
 	}
 	_ = h.record(r, auditPrincipal, "gateway.test", name, map[string]any{
 		"kind": string(kind), "source": strings.TrimSpace(r.URL.Query().Get("source")), "ok": probeErr == nil,

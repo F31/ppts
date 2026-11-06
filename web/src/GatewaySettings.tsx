@@ -14,6 +14,7 @@ import {
 import { useDialogA11y } from './a11y';
 import { useConfirmDialog } from './components/ConfirmDialog';
 import { gatewayHealth, gatewayKey, healthKeySuffix, inheritedOnly, isPlatformShared, serviceKeySuffix, serviceState } from './gatewayState';
+import { probeHasSpecificAdvice, probeResultText } from './gatewayProbeError';
 import { useI18n } from './i18n';
 
 type FormState = {
@@ -422,9 +423,20 @@ function ScopedGatewaySettings({
                   {result && (
                     <>
                       <p className={`test-result ${result.ok ? 'ok' : 'fail'}`}>
-                        {result.ok ? t('gateway.testOk', { ms: result.latencyMs }) : t('gateway.testFail', { error: result.error ?? '' })}
+                        {probeResultText(result, t)}
                       </p>
-                      {!result.ok && <p className="test-fix">{gw.keyUnreadable ? t('gateway.fixHintUnreadable') : t('gateway.fixHint')}</p>}
+                      {!result.ok && (
+                        probeHasSpecificAdvice(result.probeCode) ? (
+                          result.error ? (
+                            <details className="test-detail">
+                              <summary>{t('gateway.testFailDetail')}</summary>
+                              <code>{result.error}</code>
+                            </details>
+                          ) : null
+                        ) : (
+                          <p className="test-fix">{gw.keyUnreadable ? t('gateway.fixHintUnreadable') : t('gateway.fixHint')}</p>
+                        )
+                      )}
                     </>
                   )}
                   {!result && gw.enabled && gw.hasKey && !gw.keyUnreadable && (

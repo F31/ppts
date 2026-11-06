@@ -54,6 +54,28 @@ test('只有降级页也要拦住：降级是原文兜底，不是成稿成功',
   assert.equal(out.errorKey, 'editor.oneClickDraftIncomplete');
   assert.equal(out.params.failed, 0);
   assert.equal(out.params.degraded, 2);
+  assert.equal(out.params.generated, 10);
+});
+
+// 真机 2026-11-06：润色讲解 + 覆盖全部真实跑出 {success:20, degraded:2, skipped:1}/23。
+// 旧文案只报「0 页失败、2 页降级」，用户会以为整份白跑；必须同时说清已成功 20 页。
+test('真机降级场景：拦截文案如实带上成功页数与首个原因', () => {
+  const d = detail({ success: 20, degraded: 2, skipped: 1 });
+  d.steps = [
+    { stepType: 'page', state: 'degraded', updatedAtUnix: 0, hasResult: false, reason: '第一版新增「数字 1」；修补版含内部标记或思考过程' }
+  ];
+  const out = m.evaluateDraftJob(d);
+  assert.equal(out.ok, false);
+  assert.equal(out.errorKey, 'editor.oneClickDraftIncompleteWithReason');
+  assert.equal(out.params.generated, 20);
+  assert.equal(out.params.failed, 0);
+  assert.equal(out.params.degraded, 2);
+  const zh = JSON.parse(readFileSync(new URL('./src/i18n/zh.json', import.meta.url), 'utf8'));
+  const text = String(zh[out.errorKey]).replace(/\{(\w+)\}/g, (_, k) => String(out.params[k] ?? ''));
+  assert.match(text, /已成功生成 20 页/);
+  assert.match(text, /0 页失败、2 页降级/);
+  assert.match(text, /复核降级页/);
+  assert.match(text, /第一版新增/);
 });
 
 test('stepsError / 空步骤 / detail 缺失都判为无法核验，不放行', () => {
@@ -119,4 +141,18 @@ test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）'
   // 修复形态必须保留：三个复选框各自先取值。
   const safeAssignments = src.match(/const checked = e\.currentTarget\.checked;/g) || [];
   assert.equal(safeAssignments.length, 3, '三个一键成片复选框都要先同步取出 checked');
+});
+
+// 真机反向验证踩过的坑：一键成片抽屉能选「润色讲解」，覆盖策略却藏在
+// 另一个抽屉里且默认「仅补空」，已有讲稿时 23 页全部 skipped，用户以为
+// 换了生成方式就会重新润色。覆盖策略必须在本抽屉可见并真正传给流水线。
+test('一键成片抽屉可直接改覆盖策略，且流水线真的用这个值', () => {
+  const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const start = src.indexOf('{oneClickOpen && (');
+  const end = src.indexOf('{oneDraftOpen && (');
+  assert.ok(start > 0 && end > start, '定位不到一键成片抽屉源码区间');
+  const drawer = src.slice(start, end);
+  assert.match(drawer, /value=\{oneDraftOverwrite\}/);
+  assert.match(drawer, /editor\.oneClickOverwriteNote/);
+  assert.match(src, /overwrite: oneDraftOverwrite === 'overwrite_all'/);
 });

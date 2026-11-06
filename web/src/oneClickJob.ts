@@ -70,7 +70,7 @@ export function evaluateDraftJob(detail: JobDetail | null | undefined): DraftJob
       ...base,
       ok: false,
       errorKey: reason ? 'editor.oneClickDraftIncompleteWithReason' : 'editor.oneClickDraftIncomplete',
-      params: reason ? { failed, degraded, reason } : { failed, degraded }
+      params: reason ? { generated, failed, degraded, reason } : { generated, failed, degraded }
     };
   }
   return { ...base, ok: true, errorKey: '', params: {} };

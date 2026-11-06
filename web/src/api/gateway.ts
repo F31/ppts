@@ -33,7 +33,7 @@ export type ModelGateway = {
   source?: 'tenant' | 'platform';
 };
 
-export type GatewayTestResult = { ok: boolean; latencyMs: number; error?: string };
+export type GatewayTestResult = { ok: boolean; latencyMs: number; error?: string; probeCode?: string };
 
 export function gatewayPath(identity: ClientIdentity, method: string, path: string, body?: unknown, timeoutMs?: number): Promise<unknown> {
   return requestJSON<unknown>({

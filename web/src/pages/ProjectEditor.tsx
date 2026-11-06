@@ -2716,6 +2716,18 @@ export function ProjectEditor({
                 </select>
               </label>
               <label className="field-label">
+                {t('editor.oneDraftOverwrite')}
+                <select
+                  value={oneDraftOverwrite}
+                  disabled={oneClickRunning || !oneClickSteps.script}
+                  onChange={(e) => setOneDraftOverwrite(e.currentTarget.value as 'fill_empty' | 'overwrite_all')}
+                >
+                  <option value="fill_empty">{t('editor.overwriteFillEmpty')}</option>
+                  <option value="overwrite_all">{t('editor.overwriteAll')}</option>
+                </select>
+              </label>
+              <p className="narration-note">{t('editor.oneClickOverwriteNote')}</p>
+              <label className="field-label">
                 {t('editor.oneClickPreset')}
                 <select
                   value={oneClickPreset}

@@ -282,6 +282,13 @@ button, textarea, input { font: inherit; }
 .service-banner.unavailable, .service-banner.unconfigured { border-color: var(--danger-border); background: var(--danger-bg-soft); }
 .service-banner.unavailable strong, .service-banner.unconfigured strong { color: var(--danger); }
 .test-fix { margin: 4px 0 0; font-size: 12px; color: #fcd34d; }
+.test-detail { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.test-detail summary { cursor: pointer; }
+.test-detail code {
+  display: block; margin-top: 4px; padding: 6px 8px; white-space: pre-wrap;
+  word-break: break-all; border-radius: 6px; border: 1px solid var(--border);
+  background: rgba(255, 255, 255, .03); color: var(--text-muted);
+}
 .test-hint { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
 .player-card { padding: 16px; }
 .player-card.embedded-player { padding: 0; border: 0; box-shadow: none; background: transparent; }
