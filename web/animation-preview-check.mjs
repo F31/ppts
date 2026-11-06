@@ -154,3 +154,34 @@ test('技术详情带上 code / reason / message，便于反馈给运维', () =>
   assert.match(detail, /reason: renderer_not_configured/);
   assert.match(detail, /missing PPTS_RENDERER_URL/);
 });
+
+test('整份应用：跳过原因按种类计数并翻成本地文案，不把原始码丢给用户', () => {
+  const out = m.summarizeApplyAllReasons({
+    results: [
+      { slideId: 'a', status: 'skipped', reason: 'duration_unknown' },
+      { slideId: 'b', status: 'skipped', reason: 'duration_unknown' },
+      { slideId: 'c', status: 'skipped', reason: 'manual_edits' },
+      { slideId: 'd', status: 'applied' }
+    ]
+  }, t);
+  assert.equal(out, 'editor.animationApplyAllReasonNoVoice 2、editor.animationApplyAllReasonManual 1');
+});
+
+test('整份应用：未登记的原因原样显示，applied 页不进统计', () => {
+  const out = m.summarizeApplyAllReasons({
+    results: [
+      { slideId: 'a', status: 'skipped', reason: 'brand_new' },
+      { slideId: 'b', status: 'applied', reason: 'ignored' }
+    ]
+  }, t);
+  assert.equal(out, 'brand_new 1');
+});
+
+test('整份应用：缺 reason 的跳过页归为 unknown，真没有跳过页时返回空串', () => {
+  assert.equal(m.summarizeApplyAllReasons({
+    results: [{ slideId: 'a', status: 'applied' }, { slideId: 'b', status: 'skipped' }]
+  }, t), 'unknown 1');
+  assert.equal(m.summarizeApplyAllReasons({
+    results: [{ slideId: 'a', status: 'applied' }]
+  }, t), '');
+});

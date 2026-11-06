@@ -199,6 +199,22 @@ function normaliseRoute(path) {
   }
 }
 
+// 不变量 5：单页动效的每个 URL 都必须带 scope 查询串。
+//
+// 真实缺陷：previewAnimation 的 POST 少了 queryOf(scope)，服务端按
+// (sourceRevisionNo=0, language=zh-CN) 找**已保存的规格**，而规格存在 rev1 的键下，
+// 于是页面点「预览这一页」恒返回 no_animation；用 curl 手工补上查询串却能渲出 MP4。
+// 这类「前后端各自抄一份复合键」的偏差，类型系统与不变量 4 的路径校验都看不见。
+{
+  const animPath = join(SRC, 'api', 'animation.ts');
+  const animSrc = readFileSync(animPath, 'utf8');
+  for (const m of animSrc.matchAll(/`\$\{basePath\(scope\)\}([^`]*)`/g)) {
+    if (!m[1].includes('queryOf(scope')) {
+      errors.push(`src/api/animation.ts: 单页动效 URL 少了 queryOf(scope)：${m[0]}。服务端按 (sourceRevisionNo, language) 找规格，漏掉会报 no_animation。`);
+    }
+  }
+}
+
 if (errors.length > 0) {
   console.error(`FAIL：API 契约检查未通过（${errors.length} 项）\n`);
   for (const e of errors) console.error(' - ' + e);

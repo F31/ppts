@@ -249,6 +249,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	animationPages := newAnimationResolver(projects, objects, scripts, jobs)
 	NewAnimationHandlerWithGate(opt.Animation, animationPages, animationGate).
 		WithPrefill(jobs, objects).
+		WithDeck(animationPages).
 		Register(mux, auth)
 	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
 	// 依赖不齐时换成"未启用"降级实例：路由照常挂载，POST 明确 503、GET 能力探测说明原因，

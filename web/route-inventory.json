@@ -65,9 +65,9 @@
   },
   "animation-spec": {
    "name": "动画规格（M1）",
-   "prefixes": ["/api/projects/{projectId}/slides/{slideId}/animation"],
+   "prefixes": ["/api/projects/{projectId}/slides/{slideId}/animation", "/api/projects/{projectId}/animation/apply-all"],
    "disposition": "keep",
-   "reason": "动画规格的读写（GET/PUT）走 REST：新增 proto 契约需要 buf/protoc 与重新生成 pb.go，当前构建环境不具备；与 ContextRuleHandler 同一先例。store 为 nil 或开关关闭时规格端点不注册。单页预览 POST 与 GET .../preview/capability 始终注册：依赖不齐全时 POST 返回 503 preview_unavailable、GET 说明原因，避免静默 404 被前端翻成「预览失败」。收敛方向：工具链恢复后并入 Connect，或作为独立 AnimationService 立项。"
+   "reason": "动画规格的读写（GET/PUT）走 REST：新增 proto 契约需要 buf/protoc 与重新生成 pb.go，当前构建环境不具备；与 ContextRuleHandler 同一先例。store 为 nil 或开关关闭时规格端点不注册。单页预览 POST 与 GET .../preview/capability 始终注册：依赖不齐全时 POST 返回 503 preview_unavailable、GET 说明原因，避免静默 404 被前端翻成「预览失败」。POST /animation/apply-all 是整份 deck 一次套用同一预设（一键成片第三步）：一次请求逐页落库并跳过人手改动页，避免前端循环 2N 次请求留下半成品。收敛方向：工具链恢复后并入 Connect，或作为独立 AnimationService 立项。"
   },
   "exports-rest": {
    "name": "扩展产物格式导出",

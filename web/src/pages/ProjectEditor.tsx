@@ -5,6 +5,7 @@ import {
   ConnectError,
   createDictionary,
   animationSpecsOf,
+  applyAnimationToAll,
   createArtifactExport,
   createGeneration,
   getAnimationExportOptions,
@@ -56,6 +57,8 @@ import { describeApiError, isNotFound, isUnimplemented } from '../apiError';
 import { Player } from '../Player';
 import { can } from '../permissions';
 import { AnimationEditor } from '../AnimationEditor';
+import type { AnimationStagePreview } from '../animationPreview';
+import { summarizeApplyAllReasons } from '../animationPreview';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
@@ -67,6 +70,15 @@ import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } fro
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
+
+// 一键成片可选的动效风格。与后端 catalog.json 的预设 id 一一对应；
+// 文案写死成字面量是为了让 i18n 门禁能静态核对（动态拼 key 会漏检）。
+const ONE_CLICK_PRESETS = [
+  { id: 'business-calm', label: 'editor.oneClickPresetCalm' },
+  { id: 'tech-dynamic', label: 'editor.oneClickPresetTech' },
+  { id: 'teaching-clear', label: 'editor.oneClickPresetTeaching' },
+  { id: 'launch-bold', label: 'editor.oneClickPresetLaunch' }
+] as const;
 
 type SlidesState =
   | { mode: 'loading' }
@@ -303,6 +315,54 @@ export function ProjectEditor({
   const [propsOpen, setPropsOpen] = useState(false);
   // 逐页动效抽屉（tasks 3.2）：与配音设置同一个抽屉形态，不额外占一列。
   const [animationOpen, setAnimationOpen] = useState(false);
+  // 单页动效视频统一在中间主舞台播放。抽屉是全屏遮罩，把 <video> 留在抽屉里
+  // 会与主区域的 Player/页图并存成两个画面；预览成功后抽屉自动收起，画面只留一个。
+  // blob URL 的所有权在这里：替换、切页、关闭、卸载都由本组件 revoke。
+  const [stagePreview, setStagePreview] = useState<AnimationStagePreview | null>(null);
+  const [stageError, setStageError] = useState('');
+  const stagePreviewRef = useRef<AnimationStagePreview | null>(null);
+  stagePreviewRef.current = stagePreview;
+  // 一键成片：顶部唯一的主动作，把讲稿 → 配音 → 动效串成一条可跳步的流水线。
+  const [oneClickOpen, setOneClickOpen] = useState(false);
+  const oneClickDialogRef = useDialogA11y<HTMLElement>(() => setOneClickOpen(false));
+  const [oneClickSteps, setOneClickSteps] = useState({ script: true, voice: true, animation: true });
+  const [oneClickPreset, setOneClickPreset] = useState('business-calm');
+  const [oneClickRunning, setOneClickRunning] = useState(false);
+  const [oneClickPhase, setOneClickPhase] = useState('');
+  const [oneClickError, setOneClickError] = useState('');
+  const [oneClickDone, setOneClickDone] = useState<{ script: number; applied: number; skipped: number; reasons: string } | null>(null);
+
+  // 预览 blob 只由本组件释放。动效抽屉刻意不 revoke：它在预览成功后就收起，
+  // 若由它释放，主舞台的视频会立刻失效（又变成「点了预览什么都没发生」）。
+  const clearStagePreview = useCallback(() => {
+    setStageError('');
+    setStagePreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev.url);
+      return null;
+    });
+  }, []);
+
+  const handleStagePreview = useCallback((next: AnimationStagePreview | null) => {
+    setStageError('');
+    setStagePreview((prev) => {
+      if (prev && prev.url !== next?.url) URL.revokeObjectURL(prev.url);
+      return next;
+    });
+    // 预览成功后收起抽屉：全屏遮罩不会再把主舞台挡住。
+    if (next) setAnimationOpen(false);
+  }, []);
+
+  const closeAnimation = useCallback(() => {
+    setAnimationOpen(false);
+    clearStagePreview();
+  }, [clearStagePreview]);
+
+  useEffect(() => {
+    return () => {
+      if (stagePreviewRef.current) URL.revokeObjectURL(stagePreviewRef.current.url);
+    };
+  }, []);
+
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [oneDraftOpen, setOneDraftOpen] = useState(false);
   const oneDraftDialogRef = useDialogA11y<HTMLElement>(() => setOneDraftOpen(false));
@@ -1067,6 +1127,8 @@ export function ProjectEditor({
   const handleSlideSelect = (slideId: string) => {
     if (slideId === activeSlideID) return;
     scriptEditorRef.current?.flush();
+    // 单页动效视频只属于刚才那一页：切页后留着就是「拿上一页的画面判断这一页」。
+    clearStagePreview();
     setActiveSlideID(slideId);
   };
 
@@ -1079,7 +1141,7 @@ export function ProjectEditor({
   const arrowNavRef = useRef<(event: KeyboardEvent) => void>(() => {});
   arrowNavRef.current = (event) => {
     if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (oneDraftOpen || propsOpen || exportOpen) return;
+    if (oneDraftOpen || propsOpen || exportOpen || oneClickOpen || animationOpen) return;
     const active = document.activeElement as HTMLElement | null;
     const tag = active ? active.tagName.toLowerCase() : '';
     const isTextInput =
@@ -1787,6 +1849,84 @@ export function ProjectEditor({
     await generateNarrationFor(ids, override, mode === 'full');
   };
 
+  // 一键成片：把三个已有动作串成一条**真实串行**链。
+  //
+  // 不复用 oneDraft 的轮询 hook：那条 hook 绑在 oneDraftJobId 上、任务终态直接改 UI 状态，
+  // 没法告诉流水线「讲稿好了，可以开始配音」。这里用一次独立的短轮询等 job 终态，
+  // 换来清晰的步边界：任何一步失败就停在这步，不会拿旧讲稿去配音、也不会在没配音时
+  // 去套动效（两者都会静默产出半成品）。
+  const waitForOneClickJob = async (jobId: string) => {
+    const deadline = Date.now() + 300_000;
+    while (Date.now() < deadline) {
+      await sleep(1500);
+      const job = await getJob(identity, jobId);
+      if (job.state === 'JOB_STATE_SUCCEEDED') return;
+      if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
+        throw new Error(job.lastError?.message || t('editor.generateFailed'));
+      }
+    }
+    throw new Error(t('editor.oneClickTimeout'));
+  };
+
+  const runOneClick = async () => {
+    if (oneClickRunning || !isReady) return;
+    setOneClickError('');
+    setOneClickDone(null);
+    setOneClickRunning(true);
+    const slideIds = slidesState.mode === 'real' ? slidesState.slides.map((slide) => slide.slideId) : [];
+    let scriptCount = 0;
+    let applied = 0;
+    let skipped = 0;
+    let reasons = '';
+    try {
+      if (oneClickSteps.script) {
+        setOneClickPhase('script');
+        const targetSeconds = oneDraftLength === 'brief' ? 30 : oneDraftLength === 'detailed' ? 90 : 60;
+        setScriptLanguagePreference(oneDraftLanguage);
+        persistScriptLanguage(oneDraftLanguage);
+        const result = await regenerateScriptDraft(identity, projectId, slideIds, oneDraftMode, {
+          language: oneDraftLanguage,
+          sourceMode: oneDraftSource,
+          audience: oneDraftAudience,
+          style: oneDraftStyle,
+          targetSeconds,
+          overwrite: oneDraftOverwrite === 'overwrite_all'
+        });
+        await waitForOneClickJob(result.jobId);
+        scriptCount = slideIds.length;
+        setScriptsRefreshNonce((n) => n + 1);
+      }
+      if (oneClickSteps.voice) {
+        setOneClickPhase('voice');
+        if (!voiceId) throw new Error(t('editor.voiceModelEmpty'));
+        const ids = allScriptSlideIds(includeHiddenPages);
+        if (ids.length === 0) throw new Error(t('editor.noScriptsInScope'));
+        await generateNarrationFor(ids, {}, false);
+        // generateNarrationFor 失败时只改 narrationStatus、不抛错，所以这里按真实
+        // 配音状态复核一次：没 ready 就停，不能把「没配音」当成功继续套动效。
+        const status = await getRevisionNarration(identity, projectId, Number(slidesState.revisionNo) || 0);
+        if (!status.ready) throw new Error(t('editor.narrationFailed'));
+      }
+      if (oneClickSteps.animation) {
+        setOneClickPhase('animation');
+        const result = await applyAnimationToAll(identity, {
+          projectId,
+          sourceRevisionNo: Number(slidesState.revisionNo) || initRevisionNo,
+          language: scriptLanguage || oneDraftLanguage
+        }, oneClickPreset);
+        applied = result.applied;
+        skipped = result.skipped;
+        reasons = summarizeApplyAllReasons(result, t);
+      }
+      setOneClickDone({ script: scriptCount, applied, skipped, reasons });
+    } catch (err) {
+      setOneClickError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOneClickRunning(false);
+      setOneClickPhase('');
+    }
+  };
+
   // 讲稿栏「重新生成语音」：先落库本页未保存编辑，再生成。
   // 同样是显式"重新生成"意图 → bypassCache=true，真实调用语音合成而非命中缓存。
   const regenerateVoiceActive = async () => {
@@ -1891,6 +2031,20 @@ export function ProjectEditor({
           <span className={`status-marker ${unsaved ? 'unsaved' : ''} ${isReady ? '' : 'muted'}`}>
             {unsaved ? t('editor.unsaved') : statusMarker}
           </span>
+          {/* 主动作只有一个：把讲稿 → 配音 → 动效串成一条链。其余单步入口保留，
+              但降为次级按钮——过去五个并列 ghost 按钮没有主次，用户不知道从哪开始。 */}
+          <button
+            type="button"
+            className="primary"
+            disabled={!isReady || oneClickRunning || draftStatus.phase === 'generating'}
+            onClick={() => {
+              setOneClickError('');
+              setOneClickDone(null);
+              setOneClickOpen(true);
+            }}
+          >
+            {t('editor.oneClick')}
+          </button>
           <button type="button" className="button-ghost" onClick={() => setOneDraftOpen(true)} disabled={!isReady || draftStatus.phase === 'generating'}>
             {t('editor.oneDraft')}
           </button>
@@ -2021,7 +2175,45 @@ export function ProjectEditor({
         </aside>
 
         <section className="slide-preview" aria-label={t('editor.slidePreview')}>
-          {realManifest ? (
+          {stagePreview ? (
+            <div className="slide-stage-video">
+              <video
+                src={stagePreview.url}
+                controls
+                autoPlay
+                muted
+                loop
+                playsInline
+                onError={() => setStageError(t('editor.animationPreviewFailed'))}
+              />
+              <div className="slide-stage-bar">
+                <span className="form-hint nowrap-ellipsis">
+                  {stagePreview.layers > 0
+                    ? t('editor.animationPreviewLayers', { count: stagePreview.layers })
+                    : t('editor.animationPreviewStatic')}
+                </span>
+                <div className="draft-actions">
+                  <button
+                    type="button"
+                    className="button-ghost"
+                    onClick={() => {
+                      clearStagePreview();
+                      setAnimationOpen(true);
+                    }}
+                  >
+                    {t('editor.oneClickBackToAnimation')}
+                  </button>
+                  <button type="button" className="button-ghost" onClick={clearStagePreview}>
+                    {t('editor.animationPreviewClose')}
+                  </button>
+                </div>
+              </div>
+              {stageError && <p className="form-error" role="alert">{stageError}</p>}
+              {stagePreview.focusNotices.map((notice) => (
+                <p className="form-hint" key={notice.key}>{t(notice.key, notice.params)}</p>
+              ))}
+            </div>
+          ) : realManifest ? (
             <Player
               manifest={realManifest}
               activeSlideId={activeSlideID || undefined}
@@ -2261,7 +2453,7 @@ export function ProjectEditor({
 
       {/* 语音属性抽屉：仅语音模型 / 音色 / 语速 + 保存。保存后持久化到数据库。 */}
       {animationOpen && slidesState.mode === 'real' && activeSlideID && (
-        <div className="drawer-backdrop" onClick={() => setAnimationOpen(false)}>
+        <div className="drawer-backdrop" onClick={closeAnimation}>
           <AnimationEditor
             identity={identity}
             projectId={projectId}
@@ -2270,13 +2462,13 @@ export function ProjectEditor({
             sourceRevisionNo={slidesState.revisionNo || initRevisionNo}
             language={scriptLanguage || 'zh-CN'}
             timelineKey={realManifest?.timelineKey}
-            // 预览能力未启用时用它显示这一页的静态图，别让面板只剩一句失败。
-            pageImageURL={activeRenderURL}
             canEdit={canEditScript}
             // 元素级轨道编辑按租户开通（capabilities.trackEditor）。拿不到导出选项时
             // 一律当作未开通：宁可少显示一个入口，也不要给一个保存后才失败的控件。
             trackEditor={exportAnimation?.capabilities?.trackEditor === true}
-            onClose={() => setAnimationOpen(false)}
+            // 预览结果进主舞台；父组件持有 blob URL 并在收起抽屉后继续播放。
+            onPreview={handleStagePreview}
+            onClose={closeAnimation}
           />
         </div>
       )}
@@ -2440,6 +2632,108 @@ export function ProjectEditor({
         </div>
       )}
 
+      {oneClickOpen && (
+        <div className="drawer-backdrop" onClick={() => { if (!oneClickRunning) setOneClickOpen(false); }}>
+          <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.oneClick')} onClick={(event) => event.stopPropagation()} ref={oneClickDialogRef}>
+            <header>
+              <div>
+                <span className="eyebrow">{t('editor.oneClickEyebrow')}</span>
+                <h2>{t('editor.oneClick')}</h2>
+              </div>
+              <button
+                type="button"
+                className="dialog-close-icon"
+                disabled={oneClickRunning}
+                onClick={() => setOneClickOpen(false)}
+                aria-label={t('common.close')}
+                title={t('common.close')}
+              >
+                ×
+              </button>
+            </header>
+            <section className="panel nested">
+              <p className="narration-note">{t('editor.oneClickNote')}</p>
+              <div className="one-click-steps">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={oneClickSteps.script}
+                    disabled={oneClickRunning}
+                    onChange={(e) => setOneClickSteps((s) => ({ ...s, script: e.currentTarget.checked }))}
+                  />
+                  {t('editor.oneClickStepScript')}
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={oneClickSteps.voice}
+                    disabled={oneClickRunning}
+                    onChange={(e) => setOneClickSteps((s) => ({ ...s, voice: e.currentTarget.checked }))}
+                  />
+                  {t('editor.oneClickStepVoice')}
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={oneClickSteps.animation}
+                    disabled={oneClickRunning}
+                    onChange={(e) => setOneClickSteps((s) => ({ ...s, animation: e.currentTarget.checked }))}
+                  />
+                  {t('editor.oneClickStepAnimation')}
+                </label>
+              </div>
+              <label className="field-label">
+                {t('editor.oneClickPreset')}
+                <select
+                  value={oneClickPreset}
+                  disabled={oneClickRunning || !oneClickSteps.animation}
+                  onChange={(e) => setOneClickPreset(e.currentTarget.value)}
+                >
+                  <option value="business-calm">{t('editor.oneClickPresetCalm')}</option>
+                  <option value="tech-dynamic">{t('editor.oneClickPresetTech')}</option>
+                  <option value="teaching-clear">{t('editor.oneClickPresetTeaching')}</option>
+                  <option value="launch-bold">{t('editor.oneClickPresetLaunch')}</option>
+                </select>
+              </label>
+              <p className="narration-note">{t('editor.oneClickAdvancedNote')}</p>
+              {oneClickPhase === 'script' && <p className="narration-note" role="status">{t('editor.oneClickPhaseScript')}</p>}
+              {oneClickPhase === 'voice' && <p className="narration-note" role="status">{t('editor.oneClickPhaseVoice')}</p>}
+              {oneClickPhase === 'animation' && <p className="narration-note" role="status">{t('editor.oneClickPhaseAnimation')}</p>}
+              <div className="draft-actions">
+                <button
+                  type="button"
+                  className="primary"
+                  disabled={oneClickRunning || !canEditScript || !(oneClickSteps.script || oneClickSteps.voice || oneClickSteps.animation)}
+                  onClick={() => void runOneClick()}
+                >
+                  {oneClickRunning ? t('editor.oneClickRunning') : t('editor.oneClickSubmit')}
+                </button>
+                <button type="button" className="button-ghost" disabled={oneClickRunning} onClick={() => setOneClickOpen(false)}>
+                  {t('common.cancel')}
+                </button>
+              </div>
+              {oneClickError && <p className="form-error" role="alert">{oneClickError}</p>}
+              {oneClickDone && (
+                <>
+                  <p className="narration-note" role="status">
+                    {t('editor.oneClickDone', {
+                      script: oneClickDone.script,
+                      applied: oneClickDone.applied,
+                      skipped: oneClickDone.skipped
+                    })}
+                  </p>
+                  {oneClickDone.skipped > 0 && oneClickDone.reasons && (
+                    <p className="narration-note">
+                      {t('editor.oneClickSkippedReasons', { reasons: oneClickDone.reasons })}
+                    </p>
+                  )}
+                </>
+              )}
+            </section>
+          </aside>
+        </div>
+      )}
+
       {oneDraftOpen && (
         <div className="drawer-backdrop" onClick={() => setOneDraftOpen(false)}>
           <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.oneDraft')} onClick={(event) => event.stopPropagation()} ref={oneDraftDialogRef}>
@@ -2454,6 +2748,10 @@ export function ProjectEditor({
             </header>
             <section className="panel nested">
               <p className="narration-note">{t('editor.oneDraftNote')}</p>
+              {/* 8 项配置收进「高级设置」：默认 0 配置即可提交。
+                  过去它们全部摊开，点「一键成稿」先要读一屏下拉框，与「一键」的名字相反。 */}
+              <details className="one-draft-advanced">
+                <summary>{t('editor.oneDraftAdvanced')}</summary>
               <label className="field-label">
                 {t('editor.oneDraftLanguage')}
                 <select value={oneDraftLanguage} disabled={oneDraftRunning} onChange={(e) => setOneDraftLanguage(e.currentTarget.value as 'zh-CN' | 'en-US')}>
@@ -2511,6 +2809,7 @@ export function ProjectEditor({
                   <option value="overwrite_all">{t('editor.overwriteAll')}</option>
                 </select>
               </label>
+              </details>
               <p className="narration-note">{t('editor.oneDraftGuardrails')}</p>
               {oneDraftPlan && (
                 <p className="narration-note">

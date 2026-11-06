@@ -1522,3 +1522,19 @@ html[data-theme="light"] .user-menu-note { color: #64748b; }
   .script-panel { max-height: none; }
   .script-column-body { overflow: visible; }
 }
+
+/* ============ 一键成片 / 主舞台动效预览 ============ */
+/* 画布型交互：动效编辑在右侧抽屉，观看统一在中间主舞台。抽屉预览成功后自动收起，
+   避免全屏遮罩挡住画面、也避免抽屉与主区域同时出现两个画面。 */
+.slide-stage-video { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.slide-stage-video video {
+  flex: 1 1 auto; width: 100%; min-height: 0; object-fit: contain;
+  border-radius: 10px; background: #05080f; border: 1px solid var(--border);
+}
+.slide-stage-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.slide-stage-bar .draft-actions { margin: 0; }
+.one-click-steps { display: grid; gap: 8px; margin: 4px 0 12px; }
+.one-click-steps label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.one-draft-advanced { margin: 10px 0; border: 1px solid rgba(255, 255, 255, .1); border-radius: 8px; padding: 8px 12px; }
+.one-draft-advanced > summary { cursor: pointer; font-size: 13px; }
+.one-draft-advanced > .field-label { margin-top: 10px; }

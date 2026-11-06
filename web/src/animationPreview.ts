@@ -1,7 +1,21 @@
-import type { AnimationPreview, AnimationPreviewCapability } from './api/animation';
+import type { AnimationApplyAllResponse, AnimationPreview, AnimationPreviewCapability } from './api/animation';
 
 /** 预览下方的一条说明：i18n 键 + 插值参数。 */
 export type PreviewFocusNotice = { key: string; params: Record<string, number> };
+
+/**
+ * 主舞台上的单页动效预览。
+ *
+ * 视频实际渲染在编辑页**中间主区域**，不在动效抽屉里：抽屉是全屏遮罩，
+ * 放在里面的视频会与主区域已有的 Player/页图并存成两个画面。
+ * url 是 blob URL，所有权归持有它的 ProjectEditor（负责替换/关闭/卸载时 revoke），
+ * 动效抽屉只负责生成与上报，不 revoke —— 否则抽屉一收起，主区域的视频就失效了。
+ */
+export type AnimationStagePreview = {
+  url: string;
+  layers: number;
+  focusNotices: PreviewFocusNotice[];
+};
 
 /**
  * previewFocusNotices 决定预览下面要说明什么。
@@ -165,4 +179,36 @@ export function previewErrorText(err: PreviewFailure, t: PreviewTranslator): str
     default:
       return withMessage();
   }
+}
+
+// 整份应用的跳过原因必须能读懂：把 manual_edits 这样的码直接丢给用户，
+// 等于没给复核线索。未登记的码原样显示——服务端新增原因时宁可让人看到标识，
+// 也不要错配到另一条文案让人改错地方。
+const APPLY_ALL_REASON_KEYS: Record<string, string> = {
+  locked: 'editor.animationApplyAllReasonLocked',
+  approved: 'editor.animationApplyAllReasonApproved',
+  manual_edits: 'editor.animationApplyAllReasonManual',
+  duration_unknown: 'editor.animationApplyAllReasonNoVoice',
+  page_unavailable: 'editor.animationApplyAllReasonPage',
+  conflict: 'editor.animationApplyAllReasonConflict',
+  store_failed: 'editor.animationApplyAllReasonStore'
+};
+
+/** summarizeApplyAllReasons 把逐页 skipped 结果聚成一句「尚未配音 13、有人工微调 2」。 */
+export function summarizeApplyAllReasons(
+  result: Pick<AnimationApplyAllResponse, 'results'>,
+  t: (key: string) => string
+): string {
+  const counts = new Map<string, number>();
+  for (const item of result.results) {
+    if (item.status !== 'skipped') continue;
+    const reason = item.reason || 'unknown';
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([reason, count]) => {
+      const key = APPLY_ALL_REASON_KEYS[reason];
+      return `${key ? t(key) : reason} ${count}`;
+    })
+    .join('、');
 }

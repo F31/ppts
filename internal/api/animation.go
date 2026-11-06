@@ -150,10 +150,19 @@ type AnimationHandler struct {
 	store animstore.Store
 	pages AnimationPageResolver
 	gate  AnimationGate
+	// deck 提供整份 deck 的页序（「一键应用」用）。与 pages 分开是为了让逐页端点
+	// 不必具备「列举全部页」的能力：测试里一个只实现 Resolve 的假 resolver 就够。
+	deck AnimationDeckResolver
 	// jobs/objects 只在异步预填（script 档问模型）时用到。二者与 pages 同时具备才注册预填路由的
 	// 完整能力；缺任一时预填端点返回 feature_unavailable，而不是退化成一个同步的慢请求。
 	jobs    prefillJobs
 	objects objectstore.ObjectStore
+}
+
+// WithDeck 注入整份 deck 的页序解析器（「一键应用到全部页面」用）。
+func (h *AnimationHandler) WithDeck(deck AnimationDeckResolver) *AnimationHandler {
+	h.deck = deck
+	return h
 }
 
 // WithPrefill 注入异步预填所需的任务与对象存储。
@@ -197,6 +206,9 @@ func (h *AnimationHandler) Register(mux *http.ServeMux, auth func(http.Handler) 
 	// 那一步要十几秒，不能挂在「打开编辑器」的同步请求上。
 	mux.Handle("POST /api/projects/{projectId}/slides/{slideId}/animation/prefill", auth(http.HandlerFunc(h.prefillPost)))
 	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation/prefill", auth(http.HandlerFunc(h.prefillGet)))
+	// 整份 deck 一次套用同一预设（「一键成片」第三步）。依赖不齐时端点照常注册并返回
+	// 503 feature_unavailable，不落到 SPA 兜底变成 200 + HTML。
+	mux.Handle("POST /api/projects/{projectId}/animation/apply-all", auth(http.HandlerFunc(h.applyAll)))
 }
 
 type animationSpecDTO struct {

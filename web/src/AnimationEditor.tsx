@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   AnimationConflictError,
+  applyAnimationToAll,
   getAnimationAnchors,
   getAnimationPrefillResult,
   getAnimationPreviewCapability,
@@ -10,6 +11,7 @@ import {
   previewAnimation,
   saveAnimationSpec,
   startAnimationPrefill,
+  type AnimationApplyAllResponse,
   type AnimationPreviewCapability,
   type AnimationScope,
   type ClientIdentity
@@ -19,6 +21,8 @@ import {
   previewErrorDetail,
   previewErrorText,
   previewFocusNotices,
+  summarizeApplyAllReasons,
+  type AnimationStagePreview,
   type PreviewCapabilityState,
   type PreviewFocusNotice
 } from './animationPreview';
@@ -78,10 +82,10 @@ export function AnimationEditor({
   sourceRevisionNo,
   language,
   timelineKey,
-  /** 当前页的静态渲染图：预览能力未启用时用它兜底，别让面板只剩一句失败。 */
-  pageImageURL,
   canEdit,
   trackEditor,
+  /** 预览结果上报给编辑页主舞台。父组件持有 blob URL 并负责释放。 */
+  onPreview,
   onClose
 }: {
   identity: ClientIdentity;
@@ -92,11 +96,10 @@ export function AnimationEditor({
   language: string;
   /** 预览用：时间轴键（页时长与分段偏移都来自它）。空 = 还没配音。 */
   timelineKey?: string;
-  /** 页图签名 URL（编辑器主区域用的那张）。 */
-  pageImageURL?: string;
   canEdit: boolean;
   /** 元素级轨道编辑是否开通（capabilities.trackEditor）。未开通时只显示一句说明。 */
   trackEditor: boolean;
+  onPreview: (preview: AnimationStagePreview | null) => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -117,7 +120,9 @@ export function AnimationEditor({
   const [conflict, setConflict] = useState<AnimationSpec | null>(null);
   // 每次成功保存 +1：顶上那句"已保存"要能让人看见，而不是靠猜按钮有没有灰。
   const [savedAt, setSavedAt] = useState(0);
-  const [previewURL, setPreviewURL] = useState('');
+  // 视频本体在编辑页主舞台，这里只记「这次预览成没成」以及图层/焦点说明。
+  // blob URL 的所有权已上移到 ProjectEditor：抽屉收起时不能把主区域的视频 revoke 掉。
+  const [previewReady, setPreviewReady] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState('');
   // 技术细节（code / reason / 服务端 message）单独存：默认折叠，用户要反馈给运维时
@@ -132,6 +137,14 @@ export function AnimationEditor({
   const [previewLayers, setPreviewLayers] = useState(0);
   // 焦点说明与预览一起更新：分开存会让"新预览 + 旧说明"同时出现在屏幕上。
   const [previewFocus, setPreviewFocus] = useState<PreviewFocusNotice[]>([]);
+  // 整份应用的状态：一次动作覆盖所有页，结果要能列出「跳过几页、为什么」。
+  const [applyingAll, setApplyingAll] = useState(false);
+  const [applyAllError, setApplyAllError] = useState('');
+  const [applyAllResult, setApplyAllResult] = useState<AnimationApplyAllResponse | null>(null);
+  // 回调走 ref：父组件常常内联传函数，把它放进 load 的 deps 会让每次 render
+  // 都重新拉一次规格（甚至形成加载循环）。
+  const onPreviewRef = useRef(onPreview);
+  onPreviewRef.current = onPreview;
   // 预设生成请求在途：连点两个预设会发出两个默认规格请求，后到的那个赢——
   // 结果是用户点了 A 却拿到 B。用序号丢弃过期响应。
   const generateSeq = useRef(0);
@@ -189,10 +202,10 @@ export function AnimationEditor({
     // 而那个任务已经不会被轮询了。
     setPrefilling(false);
     prefillBaselineRef.current = null;
-    setPreviewURL((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return '';
-    });
+    // 换页时通知主舞台清掉旧画面。blob URL 由父组件释放，这里不 revoke。
+    setPreviewReady(false);
+    setPreviewFocus([]);
+    onPreviewRef.current(null);
     try {
       const [nextAnchors, nextSpec] = await Promise.all([
         getAnimationAnchors(identity, scope),
@@ -234,12 +247,9 @@ export function AnimationEditor({
     };
   }, [identity, scope, capabilityAttempt]);
 
-  // blob URL 必须显式释放：一次编辑会话可能预览十几次，不释放就一直占着内存。
-  useEffect(() => {
-    return () => {
-      if (previewURL) URL.revokeObjectURL(previewURL);
-    };
-  }, [previewURL]);
+  // 预览 blob URL 的所有权在 ProjectEditor（见 AnimationStagePreview 注释）。
+  // 这里刻意不写卸载 revoke：抽屉在预览成功后会收起，若它 revoke 掉自己刚交出去的
+  // URL，主区域的 <video> 立刻变黑——正好回到「点了预览什么都没发生」。
 
   const state = editorStateOf(saved, canEdit);
   const dirty = isDirty(draft, saved);
@@ -258,10 +268,9 @@ export function AnimationEditor({
     previewing,
     panelDisabled: disabled
   });
-  // 未启用时至少让用户看见这一页：静态页图是编辑器主区域已有的那张，
-  // 不额外造一条渲染链路。明确标注它是静态图，避免被误当成「动效生效了」。
-  const showStaticFallback =
-    capabilityState === 'ready' && previewCapability?.configured === false && Boolean(pageImageURL);
+  // 未启用预览时，中间主区域本来就在显示这一页的静态图：面板只需说清
+  // 「那不是动效结果」，不再重复塞一张图（那正是「两个画面并存」的来源）。
+  const showStaticFallback = capabilityState === 'ready' && previewCapability?.configured === false;
 
   // 一次编辑开始前压栈。拖拽只在 pointerdown 调一次——按像素记步会让撤销变成"一次撤 1ms"。
   const beginEdit = useCallback(() => {
@@ -487,14 +496,38 @@ export function AnimationEditor({
 
   // 一次失败后必须清掉上一次成功的画面：错误文字配着旧视频，用户会以为
   // "这次其实渲出来了，只是下面多了一行报错"。图层/焦点说明同源，一起清。
+  // 视频在父组件手里，所以这里只是通知它清，不 revoke。
   const clearPreviewResult = useCallback(() => {
-    setPreviewURL((prev) => {
-      if (prev) URL.revokeObjectURL(prev);
-      return '';
-    });
+    setPreviewReady(false);
     setPreviewLayers(0);
     setPreviewFocus([]);
+    onPreviewRef.current(null);
   }, []);
+
+  // 整份应用：一次请求把当前预设套到所有页，逐页结果留下复核线索。
+  // 画布型定位下逐页精修仍然保留，只是不再是「每页都必须走一遍」的必经路径。
+  const runApplyAll = async () => {
+    const presetId = draft?.presetId || anchors?.presets[0]?.id || 'business-calm';
+    setApplyingAll(true);
+    setApplyAllError('');
+    setApplyAllResult(null);
+    try {
+      const result = await applyAnimationToAll(
+        identity,
+        { projectId, sourceRevisionNo, language },
+        presetId
+      );
+      setApplyAllResult(result);
+      // 当前页被改写后要重读规格，否则面板里还挂着旧草案（保存时必冲突）。
+      if (result.results.some((item) => item.slideId === slideId && item.status === 'applied')) {
+        await load();
+      }
+    } catch (err) {
+      setApplyAllError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setApplyingAll(false);
+    }
+  };
 
   const runPreview = async () => {
     setPreviewError('');
@@ -515,14 +548,15 @@ export function AnimationEditor({
     setPreviewing(true);
     try {
       const result = await previewAnimation(identity, scope, timelineKey);
-      setPreviewURL((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return result.url;
-      });
+      const notices = previewFocusNotices(result);
+      setPreviewReady(true);
       setPreviewLayers(result.layers);
-      setPreviewFocus(previewFocusNotices(result));
+      setPreviewFocus(notices);
       setPreviewError('');
       setPreviewDetail('');
+      // 最后上报：父组件会收起抽屉并在中间主舞台播放。放在末尾是因为这一步
+      // 之后本组件就卸载了，剩下的 setState 没有意义。
+      onPreviewRef.current({ url: result.url, layers: result.layers, focusNotices: notices });
     } catch (err) {
       const failure = previewFailureOf(err);
       setPreviewError(previewErrorText(failure, t));
@@ -633,6 +667,40 @@ export function AnimationEditor({
               })}
             </div>
             {!draft && <p className="form-hint">{t('editor.animationNoSpec')}</p>}
+          </section>
+
+          {/* 整份应用：主流做法是「一次套用 + 例外微调」，逐页精修保留在下面，
+              但不再要求每页都把这段流程走一遍。 */}
+          <section className="animation-block">
+            <span className="eyebrow">{t('editor.animationApplyAllTitle')}</span>
+            <p className="form-hint">{t('editor.animationApplyAllNote')}</p>
+            <div className="draft-actions">
+              <button
+                type="button"
+                className="button-ghost"
+                disabled={disabled || applyingAll || !draft}
+                onClick={() => void runApplyAll()}
+              >
+                {applyingAll ? t('editor.animationApplyAllRunning') : t('editor.animationApplyAll')}
+              </button>
+            </div>
+            {applyAllError && <p className="form-error" role="alert">{applyAllError}</p>}
+            {applyAllResult && (
+              <div role="status">
+                <p className="form-hint">
+                  {t('editor.animationApplyAllResult', {
+                    applied: applyAllResult.applied,
+                    skipped: applyAllResult.skipped,
+                    total: applyAllResult.total
+                  })}
+                </p>
+                {applyAllResult.skipped > 0 && (
+                  <p className="form-hint">
+                    {t('editor.animationApplyAllSkipped', { reasons: summarizeApplyAllReasons(applyAllResult, t) })}
+                  </p>
+                )}
+              </div>
+            )}
           </section>
 
           {/* 讲稿绑定预填的入口（tasks 4.1）。单独一段而不是塞在风格里：
@@ -977,26 +1045,9 @@ export function AnimationEditor({
                   </div>
                 </div>
               )}
-              {previewURL && (
+              {previewReady && (
                 <section className="animation-preview">
-                  <video
-                    src={previewURL}
-                    controls
-                    autoPlay
-                    muted
-                    loop
-                    playsInline
-                    onError={(event) => {
-                      // 浏览器解码不了这个 blob 时 React 层此前毫无动静：
-                      // 一片黑加上没有报错，比「预览失败」更难排查。
-                      const media = event.currentTarget.error;
-                      setPreviewError(previewErrorText({ code: 'playback_failed' }, t));
-                      setPreviewDetail(previewErrorDetail({
-                        code: 'playback_failed',
-                        message: media ? `MediaError ${media.code}: ${media.message}` : ''
-                      }));
-                    }}
-                  />
+                  <p className="form-hint" role="status">{t('editor.animationPreviewOnStage')}</p>
                   <p className="form-hint">
                     {previewLayers > 0
                       ? t('editor.animationPreviewLayers', { count: previewLayers })
@@ -1009,11 +1060,8 @@ export function AnimationEditor({
                   ))}
                 </section>
               )}
-              {showStaticFallback && !previewURL && (
-                <section className="animation-preview">
-                  <img className="animation-preview-still" src={pageImageURL} alt={slideTitle ?? t('editor.animationTitle')} />
-                  <p className="form-hint">{t('editor.animationPreviewStaticFallback')}</p>
-                </section>
+              {showStaticFallback && !previewReady && (
+                <p className="form-hint" role="status">{t('editor.animationPreviewStaticFallback')}</p>
               )}
             </>
           )}

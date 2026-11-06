@@ -203,7 +203,10 @@ export async function previewAnimation(
   // 而不是本地超时（看起来像网络断了）。两个数必须保持这个先后关系。
   const res = await requestRaw({
     method: 'POST',
-    url: `${basePath(scope)}/preview`,
+    // 必须带 queryOf(scope)：服务端按 (sourceRevisionNo, language) 这个复合键取**已保存的规格**。
+    // 少了它就会按 rev0 去找，规格明明存在却报 no_animation（curl 手工带参数能成功、
+    // 页面点预览永远失败，正是这个差异）。
+    url: `${basePath(scope)}/preview${queryOf(scope)}`,
     headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
     body: { timelineKey },
     label: 'POST animation preview',
@@ -235,4 +238,54 @@ export async function previewAnimation(
     focusSkipped: Number.isFinite(focusSkipped) ? focusSkipped : 0,
     focusSkipReason: res.headers.get('X-Preview-Focus-Skip-Reason') ?? ''
   };
+}
+
+// ---- 整份应用（一键动效）----------------------------------------------------
+//
+// 不让前端循环调「GET 默认规格 + PUT」：N 页就是 2N 次请求，中途失败会留下
+// 半份换过风格的 deck，而「跳过人手改过的页」是存储侧判据（TriggerSource=manual /
+// approved / locked），在前端判断等于把业务规则复制一份。
+// 一次请求、一次响应，逐页结果可列出复核清单。
+
+export type AnimationApplyAllScope = {
+  projectId: string;
+  /** 0/undefined = 当前源版本。 */
+  sourceRevisionNo?: number;
+  language?: string;
+};
+
+export type AnimationApplyAllSlide = {
+  slideId: string;
+  status: 'applied' | 'skipped';
+  /** locked / approved / manual_edits / duration_unknown / page_unavailable / ... */
+  reason?: string;
+  revision?: number;
+};
+
+export type AnimationApplyAllResponse = {
+  presetId: string;
+  total: number;
+  applied: number;
+  skipped: number;
+  results: AnimationApplyAllSlide[];
+};
+
+/** applyAnimationToAll 把同一预设套用到整份 deck；默认跳过已有人手改动的页。 */
+export async function applyAnimationToAll(
+  identity: ClientIdentity,
+  scope: AnimationApplyAllScope,
+  presetId: string,
+  overwrite = false
+): Promise<AnimationApplyAllResponse> {
+  const params = new URLSearchParams();
+  if (scope.sourceRevisionNo && scope.sourceRevisionNo > 0) {
+    params.set('sourceRevisionNo', String(scope.sourceRevisionNo));
+  }
+  if (scope.language) params.set('language', scope.language);
+  const qs = params.toString();
+  // 保持成单个简单插值：api-contract-check 的路由归一化用 [^}]* 匹配 ${...}，
+  // 嵌套模板会让路径尾部残留字符，被误判成「后端没有这条路由」。
+  const query = qs ? `?${qs}` : '';
+  const path = `/api/projects/${encodeURIComponent(scope.projectId)}/animation/apply-all${query}`;
+  return postJSON<AnimationApplyAllResponse>(identity, path, { presetId, overwrite });
 }
