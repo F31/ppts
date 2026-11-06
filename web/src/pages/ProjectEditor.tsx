@@ -58,6 +58,7 @@ import { Player } from '../Player';
 import { can } from '../permissions';
 import { AnimationEditor } from '../AnimationEditor';
 import type { AnimationStagePreview } from '../animationPreview';
+import { evaluateDraftJob, type DraftJobOutcome } from '../oneClickJob';
 import { summarizeApplyAllReasons } from '../animationPreview';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
@@ -330,7 +331,7 @@ export function ProjectEditor({
   const [oneClickRunning, setOneClickRunning] = useState(false);
   const [oneClickPhase, setOneClickPhase] = useState('');
   const [oneClickError, setOneClickError] = useState('');
-  const [oneClickDone, setOneClickDone] = useState<{ script: number; applied: number; skipped: number; reasons: string } | null>(null);
+  const [oneClickDone, setOneClickDone] = useState<{ script: number; applied: number; skipped: number; reasons: string; voiceRan: boolean } | null>(null);
 
   // 预览 blob 只由本组件释放。动效抽屉刻意不 revoke：它在预览成功后就收起，
   // 若由它释放，主舞台的视频会立刻失效（又变成「点了预览什么都没发生」）。
@@ -1855,12 +1856,19 @@ export function ProjectEditor({
   // 没法告诉流水线「讲稿好了，可以开始配音」。这里用一次独立的短轮询等 job 终态，
   // 换来清晰的步边界：任何一步失败就停在这步，不会拿旧讲稿去配音、也不会在没配音时
   // 去套动效（两者都会静默产出半成品）。
-  const waitForOneClickJob = async (jobId: string) => {
+  const waitForOneClickJob = async (jobId: string): Promise<DraftJobOutcome> => {
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline) {
       await sleep(1500);
       const job = await getJob(identity, jobId);
-      if (job.state === 'JOB_STATE_SUCCEEDED') return;
+      if (job.state === 'JOB_STATE_SUCCEEDED') {
+        // job 终态不等于逐页成功：script_draft handler 允许单页 failed / degraded
+        // 而任务整体仍记 succeeded（真机 job dbec0b01：12 failed + 3 degraded + 7 success）。
+        // 必须读 job detail 复核 stepCounts，否则会拿半成品继续配音，界面还报「完成」。
+        const outcome = evaluateDraftJob(await getJobDetail(identity, jobId));
+        if (!outcome.ok) throw new Error(t(outcome.errorKey, outcome.params));
+        return outcome;
+      }
       if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
         throw new Error(job.lastError?.message || t('editor.generateFailed'));
       }
@@ -1892,8 +1900,9 @@ export function ProjectEditor({
           targetSeconds,
           overwrite: oneDraftOverwrite === 'overwrite_all'
         });
-        await waitForOneClickJob(result.jobId);
-        scriptCount = slideIds.length;
+        const outcome = await waitForOneClickJob(result.jobId);
+        // 只报真实写出讲稿的页数：不能用请求的 slideIds.length 冒充（含跳过/失败页）。
+        scriptCount = outcome.generated;
         setScriptsRefreshNonce((n) => n + 1);
       }
       if (oneClickSteps.voice) {
@@ -1918,7 +1927,7 @@ export function ProjectEditor({
         skipped = result.skipped;
         reasons = summarizeApplyAllReasons(result, t);
       }
-      setOneClickDone({ script: scriptCount, applied, skipped, reasons });
+      setOneClickDone({ script: scriptCount, applied, skipped, reasons, voiceRan: oneClickSteps.voice });
     } catch (err) {
       setOneClickError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -2653,13 +2662,19 @@ export function ProjectEditor({
             </header>
             <section className="panel nested">
               <p className="narration-note">{t('editor.oneClickNote')}</p>
+              {/* React 19 合成事件的 currentTarget 在回调结束后会被重置为 null，
+                  而 setState 的更新函数可能延迟执行：必须先同步取出 checked，
+                  否则勾选任意一步都会抛 "reading 'checked' of null" 让整页崩掉。 */}
               <div className="one-click-steps">
                 <label>
                   <input
                     type="checkbox"
                     checked={oneClickSteps.script}
                     disabled={oneClickRunning}
-                    onChange={(e) => setOneClickSteps((s) => ({ ...s, script: e.currentTarget.checked }))}
+                    onChange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      setOneClickSteps((s) => ({ ...s, script: checked }));
+                    }}
                   />
                   {t('editor.oneClickStepScript')}
                 </label>
@@ -2668,7 +2683,10 @@ export function ProjectEditor({
                     type="checkbox"
                     checked={oneClickSteps.voice}
                     disabled={oneClickRunning}
-                    onChange={(e) => setOneClickSteps((s) => ({ ...s, voice: e.currentTarget.checked }))}
+                    onChange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      setOneClickSteps((s) => ({ ...s, voice: checked }));
+                    }}
                   />
                   {t('editor.oneClickStepVoice')}
                 </label>
@@ -2677,11 +2695,26 @@ export function ProjectEditor({
                     type="checkbox"
                     checked={oneClickSteps.animation}
                     disabled={oneClickRunning}
-                    onChange={(e) => setOneClickSteps((s) => ({ ...s, animation: e.currentTarget.checked }))}
+                    onChange={(e) => {
+                      const checked = e.currentTarget.checked;
+                      setOneClickSteps((s) => ({ ...s, animation: checked }));
+                    }}
                   />
                   {t('editor.oneClickStepAnimation')}
                 </label>
               </div>
+              <label className="field-label">
+                {t('editor.oneDraftMode')}
+                <select
+                  value={oneDraftMode}
+                  disabled={oneClickRunning || !oneClickSteps.script}
+                  onChange={(e) => setOneDraftMode(e.currentTarget.value as ScriptMode)}
+                >
+                  <option value="SCRIPT_MODE_ORIGINAL">{t('editor.mode.original')}</option>
+                  <option value="SCRIPT_MODE_POLISH">{t('editor.mode.polish')}</option>
+                  <option value="SCRIPT_MODE_AI_GENERATED">{t('editor.mode.ai')}</option>
+                </select>
+              </label>
               <label className="field-label">
                 {t('editor.oneClickPreset')}
                 <select
@@ -2724,7 +2757,12 @@ export function ProjectEditor({
                   </p>
                   {oneClickDone.skipped > 0 && oneClickDone.reasons && (
                     <p className="narration-note">
-                      {t('editor.oneClickSkippedReasons', { reasons: oneClickDone.reasons })}
+                      {t(
+                        oneClickDone.voiceRan
+                          ? 'editor.oneClickSkippedReasonsNoSource'
+                          : 'editor.oneClickSkippedReasons',
+                        { reasons: oneClickDone.reasons }
+                      )}
                     </p>
                   )}
                 </>
