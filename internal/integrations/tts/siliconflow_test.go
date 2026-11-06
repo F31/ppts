@@ -294,3 +294,90 @@ func TestSiliconFlowOtherErrorsCarryNoVoiceHint(t *testing.T) {
 		})
 	}
 }
+
+// 本地语音模型（Qwen3-TTS / liteaig 一类）不校验 API Key。空 key 只对
+// http + loopback 放行，且不能伪造一个 "Bearer " 头出去。
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestIsLoopbackBaseURL(t *testing.T) {
+	cases := []struct {
+		url  string
+		want bool
+	}{
+		{"http://127.0.0.1:8000", true},
+		{"http://127.0.0.2:18080", true},
+		{"http://localhost:8000/v1", true},
+		{"http://[::1]:8000", true},
+		{"https://127.0.0.1:8000", false},
+		{"https://api.siliconflow.cn", false},
+		{"http://192.168.1.10:8000", false},
+		{"http://host.docker.internal:8000", false},
+		{"", false},
+		{"not a url", false},
+	}
+	for _, tc := range cases {
+		if got := IsLoopbackBaseURL(tc.url); got != tc.want {
+			t.Errorf("IsLoopbackBaseURL(%q) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestSiliconFlowAnonymousLocalSynthesize(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(smallWAV(t))
+	}))
+	defer srv.Close()
+
+	p := NewSiliconFlowProvider(SiliconFlowConfig{BaseURL: srv.URL, Model: "qwen3-tts-1.7b-customvoice", Voice: "vivian"})
+	res, err := p.Synthesize(context.Background(), SynthesisRequest{Text: "本地语音模型", VoiceID: ""})
+	if err != nil {
+		t.Fatalf("本地免鉴权网关合成失败: %v", err)
+	}
+	if len(res.Audio) == 0 {
+		t.Fatal("返回音频为空")
+	}
+	if gotAuth != "" {
+		t.Fatalf("空 key 不应发送 Authorization，实际 %q", gotAuth)
+	}
+}
+
+func TestSiliconFlowEmptyKeyStillRejectedForRemote(t *testing.T) {
+	calls := 0
+	p := NewSiliconFlowProvider(SiliconFlowConfig{
+		BaseURL: "https://api.siliconflow.cn", Model: "m",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		})},
+	})
+	_, err := p.Synthesize(context.Background(), SynthesisRequest{Text: "hi", VoiceID: "v"})
+	if err == nil || !strings.Contains(err.Error(), "api key not configured") {
+		t.Fatalf("远程网关空 key 必须报错，实际 %v", err)
+	}
+	if calls != 0 {
+		t.Fatalf("空 key 不应发出请求，实际发出 %d 次", calls)
+	}
+}
+
+func TestSiliconFlowLocalWithKeyStillSendsAuth(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "audio/wav")
+		_, _ = w.Write(smallWAV(t))
+	}))
+	defer srv.Close()
+
+	p := NewSiliconFlowProvider(SiliconFlowConfig{BaseURL: srv.URL, APIKey: "local-token", Model: "m"})
+	if _, err := p.Synthesize(context.Background(), SynthesisRequest{Text: "hi", VoiceID: "v"}); err != nil {
+		t.Fatalf("Synthesize: %v", err)
+	}
+	if gotAuth != "Bearer local-token" {
+		t.Fatalf("本地网关若配了 key 仍应带 Authorization，实际 %q", gotAuth)
+	}
+}

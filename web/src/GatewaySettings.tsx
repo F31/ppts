@@ -13,7 +13,7 @@ import {
 } from './api';
 import { useDialogA11y } from './a11y';
 import { useConfirmDialog } from './components/ConfirmDialog';
-import { gatewayHealth, gatewayKey, healthKeySuffix, inheritedOnly, isPlatformShared, serviceKeySuffix, serviceState } from './gatewayState';
+import { gatewayHealth, gatewayKey, hasUsableCredential, healthKeySuffix, inheritedOnly, isLoopbackBaseURL, isPlatformShared, serviceKeySuffix, serviceState } from './gatewayState';
 import { probeHasSpecificAdvice, probeResultText } from './gatewayProbeError';
 import { useI18n } from './i18n';
 
@@ -380,7 +380,7 @@ function ScopedGatewaySettings({
                     <small>
                       {t('gateway.providerLabel')}: {gw.provider || defaultProvider}
                     </small>
-                    <small>{gw.keyUnreadable ? t('gateway.keyUnreadable') : gw.hasKey ? t('gateway.keyMasked', { masked: gw.keyMasked }) : t('gateway.noKey')}</small>
+                    <small>{gw.keyUnreadable ? t('gateway.keyUnreadable') : gw.hasKey ? t('gateway.keyMasked', { masked: gw.keyMasked }) : isLoopbackBaseURL(gw.baseUrl) ? t('gateway.localNoAuth') : t('gateway.noKey')}</small>
                   </div>
                   {shared ? (
                     <>
@@ -439,7 +439,7 @@ function ScopedGatewaySettings({
                       )}
                     </>
                   )}
-                  {!result && gw.enabled && gw.hasKey && !gw.keyUnreadable && (
+                  {!result && gw.enabled && hasUsableCredential(gw) && !gw.keyUnreadable && (
                     <p className="test-hint">{t('gateway.untestedNote')}</p>
                   )}
                     </>

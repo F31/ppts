@@ -110,3 +110,31 @@ test('横幅真的按「全靠共享」切换文案', () => {
   assert.match(src, /inheritedOnly\(gateways, 'tts'\)/, '横幅必须区分「全靠共享」');
   assert.match(src, /t\('gateway\.serviceInherited'\)/, '全靠共享时要用专用文案');
 });
+
+// 本地语音模型（Qwen3-TTS）不校验 API Key：管理面不能因为 hasKey=false
+// 就把「已可用」的本机服务标成「未配置 key / 服务未接入」。
+test('本机回环 HTTP 网关免 key 仍按真实探活判定', () => {
+  for (const url of ['http://127.0.0.1:8000', 'http://localhost:18080/v1', 'http://127.0.0.2:8000']) {
+    assert.equal(m.isLoopbackBaseURL(url), true, `${url} 应判为本机`);
+  }
+  for (const url of ['https://127.0.0.1:8000', 'https://api.siliconflow.cn', 'http://192.168.1.5:8000', '', 'not a url']) {
+    assert.equal(m.isLoopbackBaseURL(url), false, `${url} 不应判为本机`);
+  }
+  const local = tts({ hasKey: false, keyMasked: '', baseUrl: 'http://127.0.0.1:8000' });
+  assert.equal(m.hasUsableCredential(local), true);
+  assert.equal(m.gatewayHealth(local), 'untested');
+  assert.equal(m.gatewayHealth(local, { ok: true, latencyMs: 12 }), 'ok');
+  assert.equal(m.gatewayHealth(local, { ok: false, latencyMs: 12 }), 'unavailable');
+  assert.equal(m.serviceState([local], 'tts', {}), 'untested');
+  assert.equal(m.serviceState([local], 'tts', { 'tts:plat-tts': { ok: true, latencyMs: 12 } }), 'ready');
+  assert.equal(m.inheritedOnly([tts({ source: 'platform', hasKey: false, keyMasked: '', baseUrl: 'http://127.0.0.1:8000' })], 'tts'), true);
+  // 远程无 key 仍是「未配置」，不能被放宽成免鉴权。
+  assert.equal(m.gatewayHealth(tts({ hasKey: false })), 'noKey');
+  assert.equal(m.serviceState([tts({ hasKey: false })], 'tts', {}), 'unconfigured');
+});
+
+test('管理面真的区分「本机免鉴权」与「未配置 key」', () => {
+  const src = readFileSync(new URL('./src/GatewaySettings.tsx', import.meta.url), 'utf8');
+  assert.match(src, /isLoopbackBaseURL\(gw\.baseUrl\) \? t\('gateway\.localNoAuth'\)/, '空 key 的本机行要显示免鉴权文案');
+  assert.match(src, /hasUsableCredential\(gw\)/, '未检测提示要覆盖免鉴权网关');
+});

@@ -206,8 +206,9 @@ func voicePreviewProvider(ctx context.Context, tenantID, model string, deps voic
 	if err != nil {
 		return nil, "", http.StatusInternalServerError, "internal", "resolve tts gateway failed"
 	}
-	if strings.TrimSpace(cfg.APIKey) == "" {
+	if strings.TrimSpace(cfg.APIKey) == "" && !tts.IsLoopbackBaseURL(cfg.BaseURL) {
 		// 网关存在但没配密钥：这是配置缺项，不是供应商故障。
+		// 本机回环语音模型（Qwen3-TTS 等）本来就免鉴权，不能一律判成没配。
 		return nil, "", http.StatusServiceUnavailable, "tts_not_configured", "TTS gateway has no API key"
 	}
 	return deps.buildProvider(cfg), cfg.Model, http.StatusOK, "", ""

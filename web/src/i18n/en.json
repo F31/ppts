@@ -614,6 +614,7 @@
   "gateway.kindLlmFull": "LLM text/vision",
   "gateway.default": "Default",
   "gateway.noKey": "No key configured",
+  "gateway.localNoAuth": "Local service, no authentication required",
   "gateway.keyUnreadable": "Key unreadable: the server cannot decrypt the stored credential",
   "gateway.keyMasked": "key: {masked}",
   "gateway.test": "Test connection",

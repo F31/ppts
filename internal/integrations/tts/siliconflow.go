@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -21,6 +23,24 @@ type SiliconFlowConfig struct {
 	Voice      string // 缺省读取请求 voice；此处为兜底
 	SampleRate int
 	HTTPClient *http.Client
+}
+
+// IsLoopbackBaseURL 判断网关是否指向本机回环的 HTTP 服务。
+//
+// 本地语音模型（例如 WSL 里的 Qwen3-TTS）通常不校验 API Key。只给 http + loopback
+// 开「免 key」这个口子：远程供应商忘了填 key 必须继续报错，不能被静默当成匿名请求，
+// 否则任务会带着 401 失败，而配置页还显示「已配置」。
+func IsLoopbackBaseURL(baseURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // SiliconFlowProvider 以 OpenAI 兼容 /v1/audio/speech 实现 TTSProvider。
@@ -39,7 +59,12 @@ func NewSiliconFlowProvider(cfg SiliconFlowConfig) *SiliconFlowProvider {
 		cfg.Model = "FunAudioLLM/CosyVoice2-0.5B"
 	}
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 60 * time.Second}
+		timeout := 60 * time.Second
+		// 本机模型单次 100 字约 40s，留一倍余量；远程供应商仍保持 60s 快失败。
+		if IsLoopbackBaseURL(cfg.BaseURL) {
+			timeout = 120 * time.Second
+		}
+		cfg.HTTPClient = &http.Client{Timeout: timeout}
 	}
 	return &SiliconFlowProvider{cfg: cfg}
 }
@@ -61,8 +86,17 @@ func (p *SiliconFlowProvider) Capabilities(_ context.Context, voiceID string) (V
 	}, nil
 }
 
+// localTTSChunkRunes 是本机回环语音模型单次合成的文本上限（按 rune 计）。
+//
+// 实测 Qwen3-TTS 1.7B CustomVoice：28 字 13s、110 字 42s、200 字 102s、
+// 809 字 >240s 且会把推理服务拖到连短句都不响应（只能重启 unit 恢复）。
+// 切到 100 字以内后单块稳定落在客户端 HTTP 预算内；再把多段 WAV 拼回一段，
+// 避免「超时 → 任务重试 → 服务端旧请求仍在算 → 请求堆积打挂服务」的循环。
+// 远程供应商保持单次请求，不改其行为。
+const localTTSChunkRunes = 100
+
 func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisRequest) (SynthesisResult, error) {
-	if strings.TrimSpace(p.cfg.APIKey) == "" {
+	if strings.TrimSpace(p.cfg.APIKey) == "" && !IsLoopbackBaseURL(p.cfg.BaseURL) {
 		return SynthesisResult{}, errors.New("tts: siliconflow api key not configured")
 	}
 	voice := req.VoiceID
@@ -72,44 +106,31 @@ func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisReque
 	if strings.TrimSpace(voice) == "" {
 		voice = DefaultSiliconFlowVoice(p.cfg.Model)
 	}
-	payload := map[string]any{
-		"model":           p.cfg.Model,
-		"input":           req.Text,
-		"voice":           voice,
-		"response_format": "wav",
+	chunks := []string{req.Text}
+	if IsLoopbackBaseURL(p.cfg.BaseURL) {
+		chunks = splitTTSChunks(req.Text, localTTSChunkRunes)
 	}
-	if req.SpeechControl.RatePercent > 0 && req.SpeechControl.RatePercent != 100 {
-		payload["speed"] = float64(req.SpeechControl.RatePercent) / 100.0
-	}
-	if p.cfg.SampleRate > 0 {
-		payload["sample_rate"] = p.cfg.SampleRate
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return SynthesisResult{}, err
-	}
-	endpoint := strings.TrimSuffix(p.cfg.BaseURL, "/") + "/v1/audio/speech"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return SynthesisResult{}, err
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+p.cfg.APIKey)
-	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := p.cfg.HTTPClient.Do(httpReq)
+	var audio []byte
+	var err error
+	if len(chunks) == 1 {
+		audio, err = p.synthesizeOnce(ctx, chunks[0], voice, req.SpeechControl.RatePercent)
+	} else {
+		parts := make([][]byte, 0, len(chunks))
+		for _, chunk := range chunks {
+			part, partErr := p.synthesizeOnce(ctx, chunk, voice, req.SpeechControl.RatePercent)
+			if partErr != nil {
+				return SynthesisResult{}, partErr
+			}
+			parts = append(parts, part)
+		}
+		audio, err = concatWAV16(parts)
+		if err != nil {
+			return SynthesisResult{}, fmt.Errorf("tts: concat local chunks: %w", err)
+		}
+	}
 	if err != nil {
-		return SynthesisResult{}, &RetryableError{Err: err}
-	}
-	defer resp.Body.Close()
-	audio, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return SynthesisResult{}, &RetryableError{Err: err}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return SynthesisResult{}, siliconFlowError(resp.StatusCode, audio, voice)
-	}
-	if len(audio) == 0 {
-		return SynthesisResult{}, &RetryableError{Err: errors.New("tts: siliconflow returned empty audio")}
+		return SynthesisResult{}, err
 	}
 	durationMS, err := wavDurationMSFromRIFF(audio)
 	if err != nil {
@@ -132,6 +153,133 @@ func (p *SiliconFlowProvider) Synthesize(ctx context.Context, req SynthesisReque
 		BillingUnit:     "char",
 		BillingQuantity: int64(chars),
 	}, nil
+}
+
+// synthesizeOnce 发一次 /v1/audio/speech，返回原始（未规范化）WAV 字节。
+func (p *SiliconFlowProvider) synthesizeOnce(ctx context.Context, text, voice string, ratePercent int) ([]byte, error) {
+	payload := map[string]any{
+		"model":           p.cfg.Model,
+		"input":           text,
+		"voice":           voice,
+		"response_format": "wav",
+	}
+	if ratePercent > 0 && ratePercent != 100 {
+		payload["speed"] = float64(ratePercent) / 100.0
+	}
+	if p.cfg.SampleRate > 0 {
+		payload["sample_rate"] = p.cfg.SampleRate
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := strings.TrimSuffix(p.cfg.BaseURL, "/") + "/v1/audio/speech"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if key := strings.TrimSpace(p.cfg.APIKey); key != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+key)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.cfg.HTTPClient.Do(httpReq)
+	if err != nil {
+		return nil, &RetryableError{Err: err}
+	}
+	defer resp.Body.Close()
+	audio, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, &RetryableError{Err: err}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, siliconFlowError(resp.StatusCode, audio, voice)
+	}
+	if len(audio) == 0 {
+		return nil, &RetryableError{Err: errors.New("tts: siliconflow returned empty audio")}
+	}
+	return audio, nil
+}
+
+// splitTTSChunks 按句读把长文本切成不超过 limit 个 rune 的片段。
+// 优先在后半段找最近的标点，实在没有才硬切；空白会被 TrimSpace 去掉
+// （空白本来也不发音），其余字符一个不丢。
+func splitTTSChunks(text string, limit int) []string {
+	runes := []rune(text)
+	if limit < 1 || len(runes) <= limit {
+		return []string{text}
+	}
+	out := make([]string, 0, (len(runes)+limit-1)/limit)
+	for len(runes) > limit {
+		cut := limit
+		for i := limit; i > limit/2; i-- {
+			if isTTSBoundary(runes[i-1]) {
+				cut = i
+				break
+			}
+		}
+		chunk := strings.TrimSpace(string(runes[:cut]))
+		if chunk != "" {
+			out = append(out, chunk)
+		}
+		runes = runes[cut:]
+	}
+	if tail := strings.TrimSpace(string(runes)); tail != "" {
+		out = append(out, tail)
+	}
+	if len(out) == 0 {
+		return []string{text}
+	}
+	return out
+}
+
+func isTTSBoundary(r rune) bool {
+	switch r {
+	case '。', '！', '？', '；', '，', '、', '\n', '.', '!', '?', ';', ',':
+		return true
+	}
+	return false
+}
+
+// concatWAV16 把同一采样率/声道的 PCM16 WAV 顺序拼成一段标准 WAV。
+// 只拼 data 区，不引入额外静音；下游 normalizeWAV16 会再规范化一次。
+func concatWAV16(parts [][]byte) ([]byte, error) {
+	if len(parts) == 0 {
+		return nil, errors.New("no wav parts")
+	}
+	var all []int16
+	var sampleRate, channels int
+	for i, part := range parts {
+		samples, sr, ch, ok := wavPCM16(part)
+		if !ok {
+			return nil, fmt.Errorf("part %d is not PCM16 WAV", i)
+		}
+		if i == 0 {
+			sampleRate, channels = sr, ch
+		} else if sr != sampleRate || ch != channels {
+			return nil, fmt.Errorf("part %d format mismatch: %dHz/%dch, expected %dHz/%dch", i, sr, ch, sampleRate, channels)
+		}
+		all = append(all, samples...)
+	}
+	pcmLen := len(all) * 2
+	out := make([]byte, 44+pcmLen)
+	copy(out[0:4], "RIFF")
+	putU32(out[4:8], uint32(36+pcmLen))
+	copy(out[8:12], "WAVE")
+	copy(out[12:16], "fmt ")
+	putU32(out[16:20], 16)
+	putU16(out[20:22], 1) // PCM
+	putU16(out[22:24], uint16(channels))
+	putU32(out[24:28], uint32(sampleRate))
+	putU32(out[28:32], uint32(sampleRate*channels*2))
+	putU16(out[32:34], uint16(channels*2))
+	putU16(out[34:36], 16)
+	copy(out[36:40], "data")
+	putU32(out[40:44], uint32(pcmLen))
+	for i, s := range all {
+		putU16(out[44+i*2:44+i*2+2], uint16(s))
+	}
+	return out, nil
 }
 
 // siliconFlowError 把非 2xx 响应映射为错误；429/5xx 为可重试。

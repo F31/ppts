@@ -614,6 +614,7 @@
   "gateway.kindLlmFull": "LLM 文本/视觉",
   "gateway.default": "默认",
   "gateway.noKey": "未配置 key",
+  "gateway.localNoAuth": "本机服务免鉴权（无需 key）",
   "gateway.keyUnreadable": "密钥不可读：服务端无法解密已保存的凭据",
   "gateway.keyMasked": "key: {masked}",
   "gateway.test": "测试连接",

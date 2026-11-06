@@ -240,7 +240,13 @@ func configuredTTSVoices(gw *gateway.Gateway) []string {
 
 func remoteTTSVoices(ctx context.Context, store gateway.StoreResolver, tenantID string, gw *gateway.Gateway) []string {
 	cfg, err := store.ResolveNamed(ctx, tenantID, gw.Name, gateway.KindTTS)
-	if err != nil || cfg == nil || strings.TrimSpace(cfg.APIKey) == "" || strings.TrimSpace(cfg.BaseURL) == "" {
+	if err != nil || cfg == nil || strings.TrimSpace(cfg.BaseURL) == "" {
+		return nil
+	}
+	// 本地语音模型一般不校验 API Key；此前这里一律跳过空 key 网关，
+	// 结果本地 9 个音色一个都列不出来，只能拿配置里的兜底音色。
+	// 远程网关仍必须带 key，避免把「没配凭据」当成可匿名访问。
+	if strings.TrimSpace(cfg.APIKey) == "" && !tts.IsLoopbackBaseURL(cfg.BaseURL) {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -259,7 +265,9 @@ func fetchTTSVoices(ctx context.Context, cfg *gateway.Config, path string) []str
 	if err != nil {
 		return nil
 	}
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	if key := strings.TrimSpace(cfg.APIKey); key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil

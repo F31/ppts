@@ -265,6 +265,39 @@ func TestVoicePreviewUsesResolvedGatewayModel(t *testing.T) {
 	}
 }
 
+// 本机语音模型（Qwen3-TTS）不校验 API Key。修复前试听一律以「没配密钥」拒绝，
+// 用户在下拉里能看到 9 个本地音色、却一个都试听不了，只能盲选后整篇生成。
+func TestVoicePreviewAllowsAnonymousLocalGateway(t *testing.T) {
+	store := &previewGatewayStore{cfg: &gateway.Config{
+		Name: "local_qwen_tts", Model: "qwen3-tts-1.7b-customvoice",
+		BaseURL: "http://127.0.0.1:8000", APIKey: "",
+	}}
+	projects := &fakeProjectStore{projects: []*project.Project{{ID: "project-1", TenantID: "tenant-1", OwnerUser: "user-1"}}}
+	var built *gateway.Config
+	deps := voicePreviewDeps{
+		gateways: store,
+		projects: projects,
+		buildProvider: func(cfg *gateway.Config) tts.TTSProvider {
+			built = cfg
+			return &fakePreviewTTS{result: tts.SynthesisResult{Audio: []byte("x"), Format: "audio/wav", RealDurationMS: 700}}
+		},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/projects/project-1/voice-preview", strings.NewReader(`{"voice":"vivian"}`))
+	req.SetPathValue("pid", "project-1")
+	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{TenantID: "tenant-1", UserID: "user-1"}))
+	rec := httptest.NewRecorder()
+	voicePreview(rec, req, deps)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("本机免鉴权网关试听被拒绝：status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if built == nil || built.BaseURL != "http://127.0.0.1:8000" {
+		t.Fatalf("未使用本地网关配置构建供应商: %+v", built)
+	}
+	if got := rec.Header().Get("X-PPTS-Preview-Model"); got != "qwen3-tts-1.7b-customvoice" {
+		t.Errorf("模型头 = %q，期望本地模型 ID", got)
+	}
+}
+
 func TestVoicePreviewMapsProviderFailuresToBadGateway(t *testing.T) {
 	cases := []struct {
 		name string

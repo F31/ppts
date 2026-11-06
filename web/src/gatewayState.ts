@@ -19,14 +19,36 @@ export function gatewayKey(gw: Pick<ModelGateway, 'kind' | 'name'>): string {
 }
 
 /**
+ * 本地回环 HTTP 网关可以免 API Key：Qwen3-TTS / liteaig 这类本机语音模型不校验凭据。
+ * 只认 http + 127/8、localhost、::1，远程地址缺 key 仍必须报「未配置」，
+ * 否则配置页会把一次必然 401 的请求显示成「已就绪」。
+ */
+export function isLoopbackBaseURL(baseUrl: string): boolean {
+  try {
+    const u = new URL(String(baseUrl ?? '').trim());
+    if (u.protocol !== 'http:') return false;
+    const host = u.hostname.toLowerCase();
+    return host === 'localhost' || host === '[::1]' || host === '::1' || /^127\.\d+\.\d+\.\d+$/.test(host);
+  } catch {
+    return false;
+  }
+}
+
+/** 该网关是否具备可用凭据：显式 key，或本机免鉴权服务。 */
+export function hasUsableCredential(gw: ModelGateway): boolean {
+  return gw.hasKey || isLoopbackBaseURL(gw.baseUrl);
+}
+
+/**
  * 计算单个网关的健康态。优先级：已禁用 → 密钥不可读 → 无密钥 → 未检测 → 检测通过 / 当前不可用。
  * 「密钥不可读」是服务端密钥与密文不匹配，用户重填 API Key 才能修（或管理员恢复原密钥），
  * 必须与「未配置 key」分开显示，否则会把人引向错误的操作。
+ * 本机回环服务免 key 是合法配置，不进 noKey 分支，改由真实探活结果判定。
  */
 export function gatewayHealth(gw: ModelGateway, result?: GatewayTestResult): GatewayHealth {
   if (!gw.enabled) return 'disabled';
   if (gw.keyUnreadable) return 'unreadable';
-  if (!gw.hasKey) return 'noKey';
+  if (!hasUsableCredential(gw)) return 'noKey';
   if (!result) return 'untested';
   return result.ok ? 'ok' : 'unavailable';
 }
@@ -56,7 +78,7 @@ export function isPlatformShared(gw: { source?: string }): boolean {
  * 只是不允许修改。所以文案不能再暗示「连通性只能由平台侧检测」。
  */
 export function inheritedOnly(gateways: ModelGateway[], kind: 'tts' | 'llm'): boolean {
-  const usable = gateways.filter((gw) => gw.kind === kind && gw.enabled && gw.hasKey && !gw.keyUnreadable);
+  const usable = gateways.filter((gw) => gw.kind === kind && gw.enabled && hasUsableCredential(gw) && !gw.keyUnreadable);
   return usable.length > 0 && usable.every(isPlatformShared);
 }
 
@@ -73,7 +95,7 @@ export function serviceState(
   kind: 'tts' | 'llm',
   results: Record<string, GatewayTestResult>
 ): ServiceState {
-  const usable = gateways.filter((gw) => gw.kind === kind && gw.enabled && gw.hasKey && !gw.keyUnreadable);
+  const usable = gateways.filter((gw) => gw.kind === kind && gw.enabled && hasUsableCredential(gw) && !gw.keyUnreadable);
   if (usable.length === 0) {
     const unreadable = gateways.some((gw) => gw.kind === kind && gw.enabled && gw.keyUnreadable);
     return unreadable ? 'unreadable' : 'unconfigured';
