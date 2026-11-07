@@ -2,9 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -178,6 +181,50 @@ func TestProbeCodeOfNilAndPlainError(t *testing.T) {
 	}
 	if ProbeCodeOf(fmt.Errorf("plain error")) != "" {
 		t.Fatal("普通错误不该有分类码")
+	}
+}
+
+func TestProbeTTSCosyVoiceZeroShot(t *testing.T) {
+	// CosyVoice 的 provider 由数据库里的 provider 字段决定，而不是靠 base_url 猜。
+	// 参考音频来自进程环境（部署资产），探活必须能走完整条链路。
+	prompt := filepath.Join(t.TempDir(), "prompt.wav")
+	pcm := make([]byte, 24000) // 0.5s 24kHz 静音
+	wav := make([]byte, 44+len(pcm))
+	copy(wav[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(wav[4:8], uint32(36+len(pcm)))
+	copy(wav[8:12], "WAVE")
+	copy(wav[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(wav[16:20], 16)
+	binary.LittleEndian.PutUint16(wav[20:22], 1)
+	binary.LittleEndian.PutUint16(wav[22:24], 1)
+	binary.LittleEndian.PutUint32(wav[24:28], 24000)
+	binary.LittleEndian.PutUint32(wav[28:32], 48000)
+	binary.LittleEndian.PutUint16(wav[32:34], 2)
+	binary.LittleEndian.PutUint16(wav[34:36], 16)
+	copy(wav[36:40], "data")
+	binary.LittleEndian.PutUint32(wav[40:44], uint32(len(pcm)))
+	copy(wav[44:], pcm)
+	if err := os.WriteFile(prompt, wav, 0o644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+	t.Setenv("PPTS_COSYVOICE_PROMPT_WAV", prompt)
+	t.Setenv("PPTS_COSYVOICE_PROMPT_TEXT", "希望你以后能够做的比我还好呦。")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/inference_zero_shot" {
+			t.Errorf("path = %q, want /inference_zero_shot", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("X-Sample-Rate", "24000")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(make([]byte, 24000))
+	}))
+	defer srv.Close()
+
+	cfg := &Config{Name: "local_cosyvoice", Kind: KindTTS, Provider: ProviderCosyVoice, BaseURL: srv.URL}
+	if _, err := Probe(context.Background(), cfg); err != nil {
+		t.Fatalf("cosyvoice 探活应成功: %v", err)
 	}
 }
 

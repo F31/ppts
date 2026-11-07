@@ -137,7 +137,7 @@ func (s *SQLiteStore) ResolveNamed(ctx context.Context, tenantID, name string, k
 		return nil, err
 	}
 	return &Config{
-		Name: r.name, Kind: Kind(r.kind), BaseURL: r.baseURL, APIKey: apiKey,
+		Name: r.name, Kind: Kind(r.kind), Provider: r.provider, BaseURL: r.baseURL, APIKey: apiKey,
 		Model: r.model, VisionModel: r.visionModel, Voice: r.voice,
 		SampleRate: r.sampleRate, Version: r.version,
 	}, nil
@@ -389,7 +389,7 @@ func (s *SQLiteStore) lookupDefault(ctx context.Context, tenantID string, kind K
 		return nil, false, err
 	}
 	return &Config{
-		Name: r.name, Kind: Kind(r.kind), BaseURL: r.baseURL, APIKey: apiKey,
+		Name: r.name, Kind: Kind(r.kind), Provider: r.provider, BaseURL: r.baseURL, APIKey: apiKey,
 		Model: r.model, VisionModel: r.visionModel, Voice: r.voice,
 		SampleRate: r.sampleRate, Version: r.version,
 	}, true, nil

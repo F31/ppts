@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,8 +19,22 @@ import (
 	"github.com/F31/ppts/internal/integrations/tts"
 )
 
-// NewTTSProvider 从运行时配置构建 OpenAI 兼容 TTS 供应商。
+// ProviderCosyVoice 是本地 CosyVoice runtime 的 provider 标识。
+//
+// 它的接口形态与 OpenAI 兼容通道不同（表单接口 + 裸 PCM16 + 零样本参考音频），
+// 不能只靠 base_url 猜：同一个 50000 端口换一个镜像就可能变成别的协议。
+const ProviderCosyVoice = "cosyvoice"
+
+// NewTTSProvider 从运行时配置构建 TTS 供应商。
 func NewTTSProvider(cfg *Config) tts.TTSProvider {
+	if strings.EqualFold(strings.TrimSpace(cfg.Provider), ProviderCosyVoice) {
+		return tts.NewCosyVoiceProvider(tts.CosyVoiceConfig{
+			BaseURL:    cfg.BaseURL,
+			PromptWAV:  cosyVoicePromptWAV(),
+			PromptText: os.Getenv("PPTS_COSYVOICE_PROMPT_TEXT"),
+			SampleRate: cfg.SampleRate,
+		})
+	}
 	return tts.NewSiliconFlowProvider(tts.SiliconFlowConfig{
 		BaseURL:    cfg.BaseURL,
 		APIKey:     cfg.APIKey,
@@ -27,6 +42,34 @@ func NewTTSProvider(cfg *Config) tts.TTSProvider {
 		Voice:      cfg.Voice,
 		SampleRate: cfg.SampleRate,
 	})
+}
+
+// cosyVoicePromptWAV 读取零样本参考音频（部署资产，按路径缓存一次）。
+//
+// 读不到返回 nil，让 Synthesize 在真正需要时给出「未配置参考音频」的具体错误——
+// 构造 provider 时静默返回一个坏实例，只会在配音任务里变成难查的失败。
+var cosyVoicePromptCache struct {
+	mu   sync.Mutex
+	path string
+	data []byte
+}
+
+func cosyVoicePromptWAV() []byte {
+	path := strings.TrimSpace(os.Getenv("PPTS_COSYVOICE_PROMPT_WAV"))
+	if path == "" {
+		return nil
+	}
+	cosyVoicePromptCache.mu.Lock()
+	defer cosyVoicePromptCache.mu.Unlock()
+	if cosyVoicePromptCache.path == path && cosyVoicePromptCache.data != nil {
+		return cosyVoicePromptCache.data
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	cosyVoicePromptCache.path, cosyVoicePromptCache.data = path, data
+	return data
 }
 
 // NewLLMProvider 从运行时配置构建 OpenAI 兼容 LLM 供应商（文本改写 + 视觉锚点）。

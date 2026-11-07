@@ -21,6 +21,7 @@
 //
 // 可选：PPTS_LOCAL_TTS_NAME（默认 local_qwen_tts）、PPTS_LOCAL_TTS_BASE_URL
 // （默认 http://127.0.0.1:8000）、PPTS_LOCAL_TTS_MODEL、PPTS_LOCAL_TTS_VOICE、
+// PPTS_LOCAL_TTS_PROVIDER（默认 openai_compatible；本地 CosyVoice 运行时填 cosyvoice）、
 // PPTS_LOCAL_TTS_SET_DEFAULT=0（不抢占现有默认网关）、DRY_RUN=1（只打印计划）。
 // 变量名一律带前缀：裸 NAME / MODEL 会和宿主机的系统环境变量撞车
 // （实测 WSL 里 NAME=<hostname>），曾把网关行名预演成主机名。
@@ -176,6 +177,7 @@ func main() {
 	baseURL := strings.TrimRight(env("PPTS_LOCAL_TTS_BASE_URL", "http://127.0.0.1:8000"), "/")
 	model := env("PPTS_LOCAL_TTS_MODEL", "qwen3-tts-1.7b-customvoice")
 	voice := env("PPTS_LOCAL_TTS_VOICE", "vivian")
+	provider := env("PPTS_LOCAL_TTS_PROVIDER", "openai_compatible")
 	setDefault := env("PPTS_LOCAL_TTS_SET_DEFAULT", "1") != "0"
 	dryRun := env("DRY_RUN", "") != ""
 
@@ -192,7 +194,7 @@ func main() {
 		TenantID:  gateway.PlatformTenantID,
 		Name:      name,
 		Kind:      gateway.KindTTS,
-		Provider:  "openai_compatible",
+		Provider:  provider,
 		BaseURL:   baseURL,
 		Model:     model,
 		Voice:     voice,

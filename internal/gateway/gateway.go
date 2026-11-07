@@ -109,6 +109,7 @@ type Gateway struct {
 type Config struct {
 	Name        string
 	Kind        Kind
+	Provider    string
 	BaseURL     string
 	APIKey      string
 	Model       string
