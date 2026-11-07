@@ -28,7 +28,17 @@ import (
 	"github.com/F31/ppts/internal/usage"
 )
 
-const ttsAdapterVersion = "v1"
+// ttsAdapterVersion 是合成配方的版本号，参与 configHash（见 synthesisHash）。
+//
+// 只要"同样的文本会得到不同波形"就必须升版：分块大小、prompt、拼接方式、
+// 适配器内部的语速/重采样处理都算配方。不升版的后果不是"音频旧一点"，而是
+// 同一 configHash 键下的音频对象与 manifest（含 durationMS）来自不同配方——
+// 时间轴按 manifest 记时长，导出按真实文件校验，最终表现为
+// "audio clip ... duration differs from timeline"（2026-11-07 实测：分块 40→80
+// 后，10 页缓存命中、12 页新合成，混用导致整份成片导出被拒）。
+//
+// v2：CosyVoice 适配器单次请求分块 40→80 字。
+const ttsAdapterVersion = "v2"
 
 // sharedCacheProject 是租户级共享缓存的伪项目段（G2-7 内容哈希去重），
 // 音频与分段清单按内容寻址存放，跨项目复用同一对象；仍受租户前缀隔离。
@@ -72,6 +82,31 @@ type NarrationSnapshot struct {
 	// 把用户刚刚强制重做的成果悄悄换回去——那比不绕过更糟。代价是同一 configHash 键下的字节被
 	// 刷新（内容寻址键此前假定"同配置=同字节"，TTS 非严格确定性时才会有毫秒级时长漂移）。
 	BypassCache bool `json:"bypassCache,omitempty"`
+	// RegenerateSlideIDs 限定"强制重生成"的页范围：任务仍覆盖整份 deck（否则发布会把
+	// 时间轴截断成只含被重配的页——2026-11-07 实测 22 页被一次单页重配覆盖成 1 页），
+	// 但只有这些页的段落跳过缓存真实合成，其余页命中缓存，代价与耗时都只按被点名的页算。
+	//
+	// 为空且 BypassCache 为真 = 全部页重生成（"整份重配"）。
+	RegenerateSlideIDs []string `json:"regenerateSlideIds,omitempty"`
+}
+
+// bypassForSlide 判断某一页是否要跳过缓存。
+//
+// “整份重配”由 BypassCache 表达；BypassCache 与 RegenerateSlideIDs 同时出现时按页收窄，
+// 这样单页重配既能把新音频写进时间轴，又不必把其他 20 多页重新合成一遍。
+func (s NarrationSnapshot) bypassForSlide(slideID string) bool {
+	if !s.BypassCache {
+		return false
+	}
+	if len(s.RegenerateSlideIDs) == 0 {
+		return true
+	}
+	for _, id := range s.RegenerateSlideIDs {
+		if id == slideID {
+			return true
+		}
+	}
+	return false
 }
 
 // NarrationSlideSnapshot binds one slide to the script revision being voiced.
@@ -605,7 +640,8 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 
 	// 用户显式要求重新生成时跳过缓存读取（见 NarrationSnapshot.BypassCache），
 	// 直接进入真实合成分支；写回路径不变，因此新音频覆盖同一 configHash 键。
-	if !snapshot.BypassCache {
+	bypassCache := snapshot.bypassForSlide(slide.SlideID)
+	if !bypassCache {
 		if manifest, ok, err := h.loadPublishedSegment(ctx, manifestKey); err != nil {
 			return nil, false, err
 		} else if ok {
@@ -626,7 +662,7 @@ func (h *NarrationHandler) synthesizeSegment(ctx context.Context, job *pipeline.
 		TenantID: job.TenantID, ProjectID: sharedCacheProject, Revision: "cache",
 		AssetType: "segments", AssetID: configHash, Ext: "json",
 	}
-	if !snapshot.BypassCache {
+	if !bypassCache {
 		if shared, ok, err := h.loadSharedSegment(ctx, sharedKey); err != nil {
 			return nil, false, err
 		} else if ok {

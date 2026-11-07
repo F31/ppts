@@ -12,6 +12,7 @@ import (
 
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/tts"
+	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 )
@@ -143,6 +144,36 @@ func narrationJobWith(t *testing.T, jobID string, revision int64, bypass bool) *
 func publishedAudioKey(t *testing.T, objects objectstore.ObjectStore, steps *stepRecorder) string {
 	t.Helper()
 	return readPublishedSegmentManifest(t, objects, steps).AudioKey
+}
+
+// readPublishedTimeline 取本次任务发布的播放时间轴（步骤类型 timeline）。
+func readPublishedTimeline(t *testing.T, objects objectstore.ObjectStore, steps *stepRecorder) media.Timeline {
+	t.Helper()
+	for _, step := range steps.latest {
+		if step.StepType != "timeline" || step.ResultRef == "" {
+			continue
+		}
+		key, err := objectstore.Parse(step.ResultRef)
+		if err != nil {
+			t.Fatalf("parse timeline key: %v", err)
+		}
+		r, _, err := objects.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("timeline get: %v", err)
+		}
+		raw, _ := io.ReadAll(r)
+		r.Close()
+		// 对象里是 {"timeline": {...}} 的包装，直接解到 media.Timeline 会得到空结构。
+		var bundle struct {
+			Timeline media.Timeline `json:"timeline"`
+		}
+		if err := json.Unmarshal(raw, &bundle); err != nil {
+			t.Fatalf("timeline decode: %v", err)
+		}
+		return bundle.Timeline
+	}
+	t.Fatalf("no timeline step recorded")
+	return media.Timeline{}
 }
 
 func readSynthesisStats(t *testing.T, objects objectstore.ObjectStore, tenantID, projectID, jobID string) SynthesisStats {
@@ -305,6 +336,122 @@ func TestNarrationHandlerDedupsAcrossProjects(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("project-2 manifest not written: %+v", steps.latest)
+	}
+}
+
+// multiSlideStore 按 slideID 返回不同讲稿，供"只重配某一页"的用例使用。
+type multiSlideStore struct {
+	bySlide map[string]*narration.Revision
+}
+
+func (s *multiSlideStore) Get(_ context.Context, _, _ string, _ int, slideID, _ string) (*narration.Revision, error) {
+	if rev, ok := s.bySlide[slideID]; ok {
+		return rev, nil
+	}
+	return nil, narration.ErrNotFound
+}
+
+func (*multiSlideStore) Update(context.Context, string, string, int, string, string, int64, []*narration.Segment) (*narration.Revision, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (*multiSlideStore) SetStatus(context.Context, string, string, int, string, string, narration.ScriptStatus) (*narration.Revision, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (*multiSlideStore) EnsureExists(context.Context, string, string, int, string, string, narration.ScriptMode) (*narration.Revision, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (*multiSlideStore) CountDraftSegments(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+
+func (*multiSlideStore) MarkAudioRevision(context.Context, string, string, int, string, string, int64) error {
+	return nil
+}
+
+func (*multiSlideStore) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
+	return nil, nil
+}
+
+func snapshotJob(t *testing.T, jobID string, snap NarrationSnapshot) *pipeline.Job {
+	t.Helper()
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &pipeline.Job{
+		ID: jobID, TenantID: "tenant-1", ProjectID: "project-1",
+		Kind: pipeline.KindNarration, InputSnapshot: string(raw),
+	}
+}
+
+func TestNarrationSnapshotBypassForSlide(t *testing.T) {
+	all := NarrationSnapshot{BypassCache: true}
+	if !all.bypassForSlide("any") {
+		t.Fatal("BypassCache 且没限定页 = 整份重配，任意页都应绕过缓存")
+	}
+	scoped := NarrationSnapshot{BypassCache: true, RegenerateSlideIDs: []string{"slide-1"}}
+	if !scoped.bypassForSlide("slide-1") || scoped.bypassForSlide("slide-2") {
+		t.Fatal("限定页时必须只对点名的页绕过缓存")
+	}
+	off := NarrationSnapshot{}
+	if off.bypassForSlide("slide-1") {
+		t.Fatal("没有 BypassCache 时不应绕过缓存")
+	}
+}
+
+// TestNarrationPartialRegenerationKeepsDeckAndOnlyRebuildsNamedSlide 守住两件事：
+//   - 单页重配不会把整份 deck 的时间轴缩成那一页（2026-11-07 实测 22 页 → 1 页）；
+//   - 未被点名的页不重复调用 TTS，代价只按点名页算。
+func TestNarrationPartialRegenerationKeepsDeckAndOnlyRebuildsNamedSlide(t *testing.T) {
+	store := &multiSlideStore{bySlide: map[string]*narration.Revision{
+		"slide-a": {ProjectID: "project-1", SlideID: "slide-a", Language: "zh-CN",
+			Status: narration.StatusApproved, Revision: 2,
+			Segments: []*narration.Segment{{SegmentID: "seg-1", DisplayText: "A", SpokenText: "甲页的讲稿"}}},
+		"slide-b": {ProjectID: "project-1", SlideID: "slide-b", Language: "zh-CN",
+			Status: narration.StatusApproved, Revision: 2,
+			Segments: []*narration.Segment{{SegmentID: "seg-1", DisplayText: "B", SpokenText: "乙页的讲稿"}}},
+	}}
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := providerForTests()
+	handler := NewNarrationHandler(store, steps, objects, provider)
+	ctx := context.Background()
+
+	base := NarrationSnapshot{
+		Slides: []NarrationSlideSnapshot{
+			{SlideID: "slide-a", ScriptRevision: 2},
+			{SlideID: "slide-b", ScriptRevision: 2},
+		},
+		Language: "zh-CN", VoiceID: "voice-1", SampleRate: 16000,
+	}
+	if err := handler.Handle(ctx, snapshotJob(t, "job-1", base)); err != nil {
+		t.Fatalf("first Handle: %v", err)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("首轮应合成两页: calls=%d", provider.calls)
+	}
+
+	// 只重配 slide-b：快照仍是整份 deck（API 侧会补齐），只有 slide-b 跳过缓存。
+	partial := base
+	partial.BypassCache = true
+	partial.RegenerateSlideIDs = []string{"slide-b"}
+	if err := handler.Handle(ctx, snapshotJob(t, "job-2", partial)); err != nil {
+		t.Fatalf("partial Handle: %v", err)
+	}
+	if provider.calls != 3 {
+		t.Fatalf("单页重配只应多合成 1 段，实际 calls=%d", provider.calls)
+	}
+	stats := readSynthesisStats(t, objects, "tenant-1", "project-1", "job-2")
+	if stats.Segments != 2 || stats.Synthesized != 1 || stats.Cached != 1 {
+		t.Fatalf("stats 应体现 1 合成 + 1 缓存: %+v", stats)
+	}
+	// 时间轴仍然覆盖两页：截断就说明部分任务又覆盖了整份。
+	timeline := readPublishedTimeline(t, objects, steps)
+	if len(timeline.Slides) != 2 {
+		t.Fatalf("时间轴页数 = %d, want 2（部分重配不能截断整份）", len(timeline.Slides))
 	}
 }
 

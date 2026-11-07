@@ -97,29 +97,16 @@ func (s *NarrationGenerationService) resolveNarrationModel(ctx context.Context, 
 // 引入按版本隔离后，编辑旧版本只能对旧版本的页配音；旧版页不属于当前版本是正常现象，
 // 不能再用"必须属于当前版本"来拒绝。此处按请求的源版本校验，防止版本与页表错配。
 func (s *NarrationGenerationService) validateSlidesInRevision(ctx context.Context, tenantID, userID, projectID string, revisionNo int, slideIDs []string) error {
-	if s.projects == nil || s.objects == nil {
-		return nil
-	}
-	proj, err := s.projects.GetProject(ctx, tenantID, userID, projectID)
-	if err != nil || proj == nil || proj.CurrentRevision == 0 {
-		return nil
-	}
-	if revisionNo <= 0 {
-		revisionNo = int(proj.CurrentRevision)
-	}
-	docs, err := loadProjectDocuments(ctx, s.projects, s.objects, tenantID, projectID, revisionNo, revisionNo)
+	pages, err := s.revisionPageIDs(ctx, tenantID, userID, projectID, revisionNo)
 	if err != nil {
+		return err
+	}
+	if pages == nil {
 		return nil
 	}
-	doc := docs[revisionNo]
-	if doc == nil || len(doc.Pages) == 0 {
-		return nil
-	}
-	allowed := make(map[string]struct{}, len(doc.Pages))
-	for _, pg := range doc.Pages {
-		if pg != nil && pg.SlideID != "" {
-			allowed[pg.SlideID] = struct{}{}
-		}
+	allowed := make(map[string]struct{}, len(pages))
+	for _, id := range pages {
+		allowed[id] = struct{}{}
 	}
 	for _, slideID := range slideIDs {
 		if _, ok := allowed[slideID]; !ok {
@@ -128,6 +115,84 @@ func (s *NarrationGenerationService) validateSlidesInRevision(ctx context.Contex
 		}
 	}
 	return nil
+}
+
+// revisionPageIDs 返回该源版本的页序（用于校验，也用于把部分页配音补成整份 deck）。
+// 返回 nil 表示读不到页表（projects/objects 未注入或没有页）——调用方按"不校验"处理。
+func (s *NarrationGenerationService) revisionPageIDs(ctx context.Context, tenantID, userID, projectID string, revisionNo int) ([]string, error) {
+	if s.projects == nil || s.objects == nil {
+		return nil, nil
+	}
+	proj, err := s.projects.GetProject(ctx, tenantID, userID, projectID)
+	if err != nil || proj == nil || proj.CurrentRevision == 0 {
+		return nil, nil
+	}
+	if revisionNo <= 0 {
+		revisionNo = int(proj.CurrentRevision)
+	}
+	docs, err := loadProjectDocuments(ctx, s.projects, s.objects, tenantID, projectID, revisionNo, revisionNo)
+	if err != nil {
+		return nil, err
+	}
+	doc := docs[revisionNo]
+	if doc == nil || len(doc.Pages) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(doc.Pages))
+	for _, pg := range doc.Pages {
+		if pg != nil && pg.SlideID != "" {
+			ids = append(ids, pg.SlideID)
+		}
+	}
+	return ids, nil
+}
+
+// expandToFullDeck 把"只重配几页"补成整份 deck 的快照。
+//
+// 为什么必须补：播放与导出取的是**最新一次成功配音任务**的时间轴。只覆盖被点名页的
+// 任务会把 22 页的时间轴发布成 1 页（2026-11-07 实测），整份成片被悄悄截断，
+// 而界面上只显示"这一页重新生成了"。
+//
+// 代价控制：补进来的页带上 RegenerateSlideIDs 之外的身份，worker 只对点名页跳过缓存，
+// 其余页命中缓存，不产生额外 TTS 调用；配额估算仍只按点名页字数计。
+func (s *NarrationGenerationService) expandToFullDeck(
+	ctx context.Context, tenantID, userID, projectID string, revisionNo int, language string,
+	snapshot *app.NarrationSnapshot, requested []string,
+) {
+	if snapshot == nil || s.scripts == nil || len(snapshot.SegmentIDs) > 0 {
+		return
+	}
+	pages, err := s.revisionPageIDs(ctx, tenantID, userID, projectID, revisionNo)
+	if err != nil || len(pages) <= len(requested) {
+		return
+	}
+	bySlide := make(map[string]app.NarrationSlideSnapshot, len(pages))
+	for _, sl := range snapshot.Slides {
+		bySlide[sl.SlideID] = sl
+	}
+	full := make([]app.NarrationSlideSnapshot, 0, len(pages))
+	added := 0
+	for _, pid := range pages {
+		if sl, ok := bySlide[pid]; ok {
+			full = append(full, sl)
+			continue
+		}
+		rev, rerr := s.scripts.Get(ctx, tenantID, projectID, revisionNo, pid, language)
+		if rerr != nil {
+			// 没有讲稿的页不参与配音：整份 deck 里允许存在未写讲稿的页。
+			continue
+		}
+		if snapshot.RequireConfirmed && rev.Status != narration.StatusApproved && rev.Status != narration.StatusLocked {
+			continue
+		}
+		full = append(full, app.NarrationSlideSnapshot{SlideID: pid, ScriptRevision: rev.Revision})
+		added++
+	}
+	if added == 0 {
+		return
+	}
+	snapshot.Slides = full
+	snapshot.RegenerateSlideIDs = append([]string(nil), requested...)
 }
 
 type activeJobCounter interface {
@@ -218,6 +283,7 @@ func (s *NarrationGenerationService) CreateGeneration(ctx context.Context, req *
 	if err := s.validateSlidesInRevision(ctx, principal.TenantID, principal.UserID, projectID, sourceRevision, slideOrder); err != nil {
 		return nil, err
 	}
+	s.expandToFullDeck(ctx, principal.TenantID, principal.UserID, projectID, sourceRevision, language, &snapshot, slideOrder)
 	snapshotBytes, err := json.Marshal(snapshot)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, err)
