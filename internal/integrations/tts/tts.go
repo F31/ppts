@@ -126,6 +126,18 @@ type SynthesisResult struct {
 	Warnings          []string
 }
 
+// HTTPError 是供应商返回非 200 时的错误，保留状态码。
+//
+// 只把状态码塞进字符串（"http 401: ..."）会让上层只能靠正则猜类别：网关的
+// 探活分类要把 401/403/429/5xx 分成"凭据错/限流/上游故障"，猜错的代价是把
+// 用户引向错误的修复动作。这里显式带出 Status，上层用 errors.As 取。
+type HTTPError struct {
+	Status  int
+	Message string
+}
+
+func (e *HTTPError) Error() string { return e.Message }
+
 // RetryableError 供应商可重试错误（超时/429/临时5xx），携带退避提示。
 type RetryableError struct {
 	Err        error

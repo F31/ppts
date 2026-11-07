@@ -23,10 +23,11 @@ const CODES = {
   credentials_rejected: 'gateway.testFailCredentials',
   model_not_in_catalog: 'gateway.testFailModel',
   rate_limited: 'gateway.testFailRateLimited',
-  no_response: 'gateway.testFailNoResponse'
+  no_response: 'gateway.testFailNoResponse',
+  service_unreachable: 'gateway.testFailUnreachable'
 };
 
-test('五类上游故障各有专属可行动文案', () => {
+test('六类故障各有专属可行动文案', () => {
   for (const [code, key] of Object.entries(CODES)) {
     assert.equal(m.probeAdviceKey(code), key, code);
     assert.equal(m.probeHasSpecificAdvice(code), true, code);

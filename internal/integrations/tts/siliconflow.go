@@ -296,7 +296,10 @@ func siliconFlowError(status int, body []byte, voice string) error {
 	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Error.Message != "" {
 		msg = parsed.Error.Message
 	}
-	base := fmt.Errorf("tts: siliconflow http %d: %s%s", status, msg, voiceFormatHint(status, body, voice))
+	base := &HTTPError{
+		Status:  status,
+		Message: fmt.Sprintf("tts: siliconflow http %d: %s%s", status, msg, voiceFormatHint(status, body, voice)),
+	}
 	if status == http.StatusTooManyRequests || status >= 500 {
 		return &RetryableError{Err: base}
 	}

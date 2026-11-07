@@ -12,7 +12,8 @@ const ADVICE_KEYS: Record<string, string> = {
   credentials_rejected: 'gateway.testFailCredentials',
   model_not_in_catalog: 'gateway.testFailModel',
   rate_limited: 'gateway.testFailRateLimited',
-  no_response: 'gateway.testFailNoResponse'
+  no_response: 'gateway.testFailNoResponse',
+  service_unreachable: 'gateway.testFailUnreachable'
 };
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;

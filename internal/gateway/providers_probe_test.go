@@ -187,3 +187,96 @@ func assertKeyNotLeaked(t *testing.T, err error) {
 		t.Fatalf("错误信息泄露了 API Key: %v", err)
 	}
 }
+
+// ---- 语音网关探活分类 ----
+//
+// 真实故障（2026-11-07）：本机 Qwen3-TTS 服务被移除后，`local_qwen_tts` 仍是
+// 默认语音网关。探活只回了一句 "dial tcp 127.0.0.1:8000: i/o timeout"、probeCode
+// 为空，管理面无法给出「服务未启动」这类可行动提示，还会干等 30 秒。
+// 下面五条守住「语音侧也要有分类」这件事。
+
+func probeTTSConfig(baseURL string) *Config {
+	// httptest 的地址是 127.0.0.1，属于回环地址：TTS 供应商对回环地址免鉴权。
+	return &Config{Name: "local_qwen_tts", Kind: KindTTS, BaseURL: baseURL, Voice: "vivian"}
+}
+
+// newTTSProbeServer 模拟 /v1/audio/speech 的失败响应。
+func newTTSProbeServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/audio/speech" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func runTTSProbe(t *testing.T, srvURL string) error {
+	t.Helper()
+	_, err := Probe(context.Background(), probeTTSConfig(srvURL))
+	if err == nil {
+		t.Fatal("失败场景必须报错")
+	}
+	return err
+}
+
+func TestProbeTTSUnreachableReportsServiceUnreachable(t *testing.T) {
+	// 先起再关，拿一个「已经有地址、但没人监听」的回环端口：连接被拒，
+	// 这正是本地语音服务被停掉/删掉时的形态。
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	deadURL := srv.URL
+	srv.Close()
+
+	err := runTTSProbe(t, deadURL)
+	if got := ProbeCodeOf(err); got != string(ProbeCodeUnreachable) {
+		t.Fatalf("分类码 = %q, want %q (err=%v)", got, ProbeCodeUnreachable, err)
+	}
+	if !strings.Contains(err.Error(), "unreachable") || !strings.Contains(err.Error(), "/v1/audio/speech") {
+		t.Fatalf("应指出端点不可达并给出实际地址: %v", err)
+	}
+}
+
+func TestProbeTTSCredentialsRejected(t *testing.T) {
+	srv := newTTSProbeServer(t, http.StatusUnauthorized, `{"error":{"message":"invalid token"}}`)
+	err := runTTSProbe(t, srv.URL)
+	if got := ProbeCodeOf(err); got != string(ProbeCodeCredentials) {
+		t.Fatalf("分类码 = %q, want %q (err=%v)", got, ProbeCodeCredentials, err)
+	}
+}
+
+func TestProbeTTSRateLimited(t *testing.T) {
+	srv := newTTSProbeServer(t, http.StatusTooManyRequests, `{"error":{"message":"too many requests"}}`)
+	err := runTTSProbe(t, srv.URL)
+	if got := ProbeCodeOf(err); got != string(ProbeCodeRateLimited) {
+		t.Fatalf("分类码 = %q, want %q (err=%v)", got, ProbeCodeRateLimited, err)
+	}
+}
+
+func TestProbeTTSModelMissingReportsModelCode(t *testing.T) {
+	srv := newTTSProbeServer(t, http.StatusNotFound, `{"error":{"message":"model not found"}}`)
+	err := runTTSProbe(t, srv.URL)
+	if got := ProbeCodeOf(err); got != string(ProbeCodeModel) {
+		t.Fatalf("分类码 = %q, want %q (err=%v)", got, ProbeCodeModel, err)
+	}
+}
+
+func TestProbeTTSUpstreamFailureReportsUpstreamCode(t *testing.T) {
+	srv := newTTSProbeServer(t, http.StatusBadGateway, `bad gateway`)
+	err := runTTSProbe(t, srv.URL)
+	if got := ProbeCodeOf(err); got != string(ProbeCodeUpstream) {
+		t.Fatalf("分类码 = %q, want %q (err=%v)", got, ProbeCodeUpstream, err)
+	}
+}
+
+func TestProbeTTSQuotaOnPaymentRequired(t *testing.T) {
+	srv := newTTSProbeServer(t, http.StatusPaymentRequired, `{"error":{"message":"insufficient balance"}}`)
+	err := runTTSProbe(t, srv.URL)
+	if got := ProbeCodeOf(err); got != string(ProbeCodeQuota) {
+		t.Fatalf("分类码 = %q, want %q (err=%v)", got, ProbeCodeQuota, err)
+	}
+}

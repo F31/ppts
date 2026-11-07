@@ -627,6 +627,7 @@
   "gateway.testFailModel": "连通失败：数据库里配置的模型 ID 不在上游模型目录中。请在模型服务里更新「模型」字段后重试。",
   "gateway.testFailRateLimited": "连通失败：上游触发限流，请稍后再试。",
   "gateway.testFailNoResponse": "连通失败：凭据与模型 ID 均已通过上游校验，但对话接口超时无响应。常见原因是上游额度耗尽、限流或服务异常，请查看技术详情并核对账户余额。",
+  "gateway.testFailUnreachable": "连通失败：目标地址不可达（连接被拒绝或超时）。若这是本地服务，请确认它已启动并监听该端口；远程地址请检查网络、代理与防火墙。",
   "gateway.testFailDetail": "技术详情",
   "gateway.new": "接入模型",
   "gateway.typeLabel": "类型",

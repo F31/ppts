@@ -627,6 +627,7 @@
   "gateway.testFailModel": "Connection failed: the model ID stored in the database is not in the upstream model catalog. Update the Model field in model services and retry.",
   "gateway.testFailRateLimited": "Connection failed: the upstream rate-limited this request. Try again later.",
   "gateway.testFailNoResponse": "Connection failed: credentials and model ID passed upstream validation, but the chat endpoint timed out. This usually means exhausted upstream quota, throttling, or a service incident. Open the technical details and check the account balance.",
+  "gateway.testFailUnreachable": "Connection failed: the endpoint is unreachable (connection refused or timed out). For a local service, confirm it is running and listening on that port; for a remote one, check the network, proxy, and firewall.",
   "gateway.testFailDetail": "Technical details",
   "gateway.new": "Add model",
   "gateway.typeLabel": "Type",

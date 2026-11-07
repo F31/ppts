@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -114,7 +116,64 @@ func probeTTS(ctx context.Context, cfg *Config) error {
 	_, err := provider.Synthesize(ctx, tts.SynthesisRequest{
 		LogicalOpID: "gateway-probe:llm-tts", VoiceID: cfg.Voice, Text: "网关连通性测试。", Language: "zh-CN",
 	})
-	return err
+	if err != nil {
+		return classifyTTSProbeError(cfg, err)
+	}
+	return nil
+}
+
+// classifyTTSProbeError 把语音探活失败归成可行动类别。
+//
+// 真实故障（2026-11-07）：本机 Qwen3-TTS 服务被移除后，`local_qwen_tts` 这一行
+// 仍是默认网关，探活表现为 30s 的 "dial tcp 127.0.0.1:8000: i/o timeout"。
+// 旧实现把这段 Go 原文直接交给管理面：用户看不出「服务没起」和「配置写错」的
+// 区别，也没有任何分类码可供前端本地化。LLM 侧早已分类，TTS 侧却漏了。
+func classifyTTSProbeError(cfg *Config, err error) error {
+	endpoint := strings.TrimSuffix(cfg.BaseURL, "/") + "/v1/audio/speech"
+	// transport 层失败（端口不通、DNS 解析失败、超时）没有 HTTP 状态码，
+	// 这是本地语音服务最常见的故障形态，必须单独成一类。
+	if isTransportError(err) {
+		return &probeError{ProbeCodeUnreachable,
+			fmt.Sprintf("gateway: tts endpoint %s is unreachable (connection refused or timed out): %v", endpoint, err)}
+	}
+	var httpErr *tts.HTTPError
+	if errors.As(err, &httpErr) {
+		lower := strings.ToLower(httpErr.Message)
+		quota := strings.Contains(lower, "quota") || strings.Contains(lower, "balance") ||
+			strings.Contains(lower, "insufficient") || strings.Contains(lower, "credit")
+		switch {
+		case httpErr.Status == http.StatusPaymentRequired ||
+			(quota && (httpErr.Status == http.StatusForbidden || httpErr.Status == http.StatusTooManyRequests)):
+			return &probeError{ProbeCodeQuota, httpErr.Error()}
+		case httpErr.Status == http.StatusUnauthorized || httpErr.Status == http.StatusForbidden:
+			return &probeError{ProbeCodeCredentials, httpErr.Error()}
+		case httpErr.Status == http.StatusTooManyRequests:
+			return &probeError{ProbeCodeRateLimited, httpErr.Error()}
+		case httpErr.Status == http.StatusNotFound:
+			return &probeError{ProbeCodeModel, httpErr.Error()}
+		default:
+			return &probeError{ProbeCodeUpstream, httpErr.Error()}
+		}
+	}
+	// 无法归类的失败仍要给码：否则前端只能显示原始字符串，而"没有分类"在
+	// 界面上和"分类失败"无法区分。
+	return &probeError{ProbeCodeUpstream, err.Error()}
+}
+
+// isTransportError 判断错误是否发生在拿到 HTTP 响应之前。
+//
+// url.Error 覆盖连接被拒、DNS、TLS 握手与客户端超时；net.Error 覆盖更底层的
+// 网络错误。context 超时/取消同样属于"对端没回话"，按不可达处理。
+func isTransportError(err error) bool {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
 // ProbeCode 把探活失败归成可行动的类别。管理面据此给本地化提示，而不是把
@@ -130,6 +189,10 @@ const (
 	ProbeCodeRateLimited ProbeCode = "rate_limited"
 	ProbeCodeNoResponse  ProbeCode = "no_response"
 	ProbeCodeUpstream    ProbeCode = "upstream_error"
+	// ProbeCodeUnreachable 表示连接阶段就失败：端口不通、DNS 解析失败、连接超时。
+	// 与 no_response 的区别是「有没有拿到过 HTTP 响应」——前者要去看服务是否在跑，
+	// 后者是服务活着但对具体请求不吭声。
+	ProbeCodeUnreachable ProbeCode = "service_unreachable"
 )
 
 type probeError struct {
