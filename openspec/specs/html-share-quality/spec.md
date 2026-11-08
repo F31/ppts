@@ -99,18 +99,25 @@
 
 ### Requirement: 体积构成可测量
 
-打包器 MUST 能给出成品包按类别（页图、层图、音频、播放器、字幕、清单）的字节数与动画页数。门禁 MUST 按 `3 MiB + 0.5625 MiB/分钟` 判定预算，超预算时 MUST 告警并列出构成明细，MUST NOT 静默通过。
+打包器 MUST 能给出成品包按类别（页图、层图、音频、播放器、字体、字幕、清单）的字节数与动画页数。门禁 MUST 按 `0.35 MiB + 页数×每页单价 + 层数×每层单价 + 分钟数×每分钟单价` 判定预算，单价 MUST 按包内**实际编码**取档（页图 webp / jpeg / png，音频 aac / wav，见 ADR-035），超预算 MUST 阻断并列出构成明细，MUST NOT 静默通过或只告警。时长 MUST 只在包内有音频时计价：无旁白的包体积不随时长增长，按分钟给预算等于白送。
 
 混音轨 MUST 转成 AAC 64kbps 单声道（`audio/mix.m4a`）；编码器不可用、编码失败或产出不比 WAV 更小时 MUST 退回 `audio/mix.wav` 并继续导出——「更小的包」MUST NOT 以「导不出来」为代价。
 
-门禁报告 MUST 给出混音轨的**实际编码**（aac / pcm / none），MUST NOT 只报总体积：同一份代码在装与不装 ffmpeg 的机器上产出的包差 6 倍，只报体积会让人误以为这一版变好了。
+门禁报告 MUST 给出混音轨的**实际编码**（aac / pcm / none）与预算所取的**编码档位**（如 `webp+aac`），MUST NOT 只报总体积：同一份代码在装与不装 ffmpeg 的机器上产出的包差一个数量级，档位是唯一能区分「包变大」与「这台机器没转码」的线索。
 
-门禁报告 MUST 明确标注仍未实现的项（WebP 图像编码），MUST NOT 对未实现项给出「通过」；字体子集与音频转码已实现，报告 MUST 按**实际产物**判定，MUST NOT 照抄「已实现」当结论。
+门禁报告 MUST 按**实际产物**判定已实现项（字体是否内嵌、页图与音频的实际编码），MUST NOT 照抄「已实现」当结论；仍未实现的项 MUST 标注为 `not_applicable`，MUST NOT 记为 `pass`。
 
 #### Scenario: 报告可定位超标项
 
 - **WHEN** 包体积超预算
 - **THEN** 报告 MUST 给出各类别字节数与占比，使人能判断是音频大、页图大还是层图未合并
+
+#### Scenario: 预算按实际编码分档
+
+- **WHEN** 机器上没有 ffmpeg，包内是 `slides/*.jpg` 与 `audio/mix.wav`
+- **THEN** 预算 MUST 按未转码档（每页 0.13 MiB、每层 0.26 MiB、每分钟 3.00 MiB）判定，MUST NOT 套用 webp+aac 档
+- **AND** 报告 MUST 写明档位 `jpeg+wav`
+- **AND** 反过来说，同一份素材在装了 ffmpeg 的机器上产出的包 MUST 按 `webp+aac` 档判定，其体积 MUST 低于未转码档预算的三分之一
 
 #### Scenario: 未实现项不得伪装通过
 

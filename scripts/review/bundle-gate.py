@@ -84,9 +84,33 @@ class StructureError(Exception):
     """包结构不自洽（清单引用的条目缺失等）。这比"画面看起来还行"更早也更准地拦住问题。"""
 
 
+_VERIFY_BIN = None
+
+
+def share_verify_bin():
+    """编译一次 share-verify 再执行，不要用 `go run`。
+
+    `go run` 会把子进程的退出码统一成 1：超预算（3）、缺字（4）全都变成「结构错误」，
+    门禁文案于是指着「包结构不自洽」——查半天才发现只是体积超了。自己 build 一次
+    能拿到真实退出码，代价是一次增量编译（有构建缓存时几乎为零）。
+    """
+    global _VERIFY_BIN
+    if _VERIFY_BIN:
+        return _VERIFY_BIN
+    out = os.path.join(tempfile.mkdtemp(prefix="ppts-verify-"), "share-verify")
+    if os.name == "nt":
+        out += ".exe"
+    proc = subprocess.run(["go", "build", "-o", out, "./cmd/share-verify"],
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"go build share-verify 失败：{proc.stderr.strip()[:400]}")
+    _VERIFY_BIN = out
+    return out
+
+
 def run_share_verify(pkg):
     """调用 Go 侧校验，拿结构、外链与体积构成。"""
-    cmd = ["go", "run", "./cmd/share-verify", "-json", "-budget", pkg]
+    cmd = [share_verify_bin(), "-json", "-budget", pkg]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode == 1:
         raise StructureError(proc.stderr.strip() or proc.stdout.strip())
@@ -100,7 +124,7 @@ def run_share_verify(pkg):
 
 def run_share_verify_single(path):
     """单文件形态：只拿外链与体积（没有 manifest.json 可读，见 share-verify -single）。"""
-    cmd = ["go", "run", "./cmd/share-verify", "-single", "-json", path]
+    cmd = [share_verify_bin(), "-single", "-json", path]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode not in (0, 2):
         raise StructureError(proc.stderr.strip() or proc.stdout.strip())
@@ -373,11 +397,13 @@ def main():
     else:
         budget_mib = measure.get("budgetBytes", 0) / (1 << 20)
         over = bool(measure.get("overBudget"))
-        # 超预算仍只告警：阈值里还有两项没兑现（WebP、AAC），此时阻断等于用门禁
-        # 替产品做决定（design ADR-6）。注意字体子集这轮已经做了，所以「字体让体积
-        # 变轻」这条理由已经消失——真要收紧阈值，先看实测基线。参见 measure.go 的注释。
+        tier = measure.get("codecTier") or "未知"
+        # 阻断而不是告警：阈值已按真实素材实测重订（见 internal/share/measure.go 与
+        # ADR-035），并**按实际编码分档**——没有 ffmpeg 的机器走 JPEG/WAV 档，预算同步
+        # 放宽到能装下实测的 15.1 MiB。既然两种产出各有各的尺子，超尺子就是真回归，
+        # 没有「替产品做决定」的余地了。
         checks.append(Check("V15", "体积在预算内", not over,
-                            f"{total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB", blocking=False))
+                            f"{total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB（{tier}）"))
     # ---- V15 字体子集覆盖 ----
     #
     # 判据来自 share-verify（Go 侧唯一实现）：它从**包内实际文件**重建字集

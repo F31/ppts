@@ -123,8 +123,10 @@ func main() {
 		}
 	}
 	if *checkBudget && measure.OverBudget {
-		fmt.Fprintf(os.Stderr, "share-verify: 失败：体积 %.2f MiB 超出预算 %.2f MiB\n",
-			float64(measure.TotalBytes)/(1<<20), float64(measure.BudgetBytes)/(1<<20))
+		// 档位一起打出来：超预算时先要能分清「包变大」还是「这台机器没转码」——
+		// 前者要查回归，后者要装 ffmpeg（或确认降级档的单价值不值）。
+		fmt.Fprintf(os.Stderr, "share-verify: 失败：体积 %.2f MiB 超出预算 %.2f MiB（编码档位 %s）\n",
+			float64(measure.TotalBytes)/(1<<20), float64(measure.BudgetBytes)/(1<<20), measure.CodecTier)
 		os.Exit(3)
 	}
 	if *checkFont && res.Font.Embedded && len(res.Font.Missing) > 0 {
@@ -278,8 +280,8 @@ func printResult(r result) {
 	if m.OverBudget {
 		budgetState = "超预算"
 	}
-	fmt.Printf("体积：%d 个条目，%.2f MiB（预算 %.2f MiB，%s）\n",
-		r.Entries, float64(m.TotalBytes)/(1<<20), float64(m.BudgetBytes)/(1<<20), budgetState)
+	fmt.Printf("体积：%d 个条目，%.2f MiB（预算 %.2f MiB，%s），编码档位 %s\n",
+		r.Entries, float64(m.TotalBytes)/(1<<20), float64(m.BudgetBytes)/(1<<20), budgetState, m.CodecTier)
 	fmt.Printf("外链：%d 处\n\n", r.ExternalRefs)
 
 	fmt.Println("| 类别 | 体积 | 占比 |")

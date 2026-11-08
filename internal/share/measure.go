@@ -1,6 +1,7 @@
 package share
 
 import (
+	"path"
 	"sort"
 	"strings"
 )
@@ -18,28 +19,72 @@ const (
 	KindOther     = "other"
 )
 
-// 预算基数与每分钟增量（design ADR-6）。
+// 体积预算模型：base + 每页 + 每层 + 每分钟音频（design ADR-6，2026-11 重订）。
 //
-// 基数 3 MiB 覆盖播放器 + 20 页图 + 清单；每分钟 0.5625 MiB 覆盖 AAC 64kbps 单声道
-// （≈0.48 MiB/min）再留 15% 余量。5 分钟 → 5.81 MiB，比方案 §20.6 的 4.2 MB 目标宽 38%。
+// 旧模型是「3 MiB 基数 + 0.5625 MiB/分钟」，两个数都是估的：基数按「20 页图」估，
+// 增量按「AAC 64kbps 再留 15%」估。三项体积手段（字体子集 ADR-028 / AAC ADR-032 /
+// WebP ADR-034）陆续落地后，这份预算比实测宽 2.7 倍——14 页 / 2 分 20 秒的真实包
+// 实测 1.62 MiB，旧预算 4.31 MiB。阈值宽不是「安全」，是「失效」：包膨胀到 3.5 MiB
+// 也不会红，等发现时已经在用户手机上下不动了。
 //
-// 三项体积手段现已全部落地：字体按片字符裁到约 87 KB（ADR-028）；混音轨 5 分钟
-// 14.4 MB WAV → 2.4 MB m4a（ADR-032）；页图 JPEG q82 → WebP q75，真实素材实测
-// 体积 41.4% 且质量指标更优（ADR-034）。5 分钟包 15.1 → 3.7 MiB，页图类回到 1 MiB 量级。
+// 现在的单价全部来自真实素材实测（`sample-customer-deck.pptx` 14 页，经 WSL
+// LibreOffice → PDF → pdftoppm 200 DPI 渲染，与产品渲染链同源；时长 140 秒、14 段旁白）：
 //
-// 为什么**仍然**不收紧阈值：收紧要用真实素材的分布做基线，而当前夹具里的页图是
-// 程序合成的（大面积纯色 + 色条），WebP 在它上面的收益与真实页面不具可比性。
-// 先让真实导出的包跑一段，拿到「页图类」的实际分布再整体重订；在那之前收紧，
-// 门禁只会在真实素材上永久红，然后被人加 `--skip` 绕过——那比阈值宽更糟。
+//	固定开销　播放器 27.7 KB + 字体 87 KB + 清单/字幕/杂项 20 KB ≈ 134 KB
+//	　　　　　→ 取 0.35 MiB（2.7× 余量，留给播放器长功能、多字体家族）
+//	页图　　　WebP q75 均值 35.3 KB、最大 42.6 KB（长边 1600）
+//	　　　　　→ 取 0.06 MiB/页（1.7× 余量）
+//	音频　　　AAC 64k 单声道实测 0.467 MiB/min → 取 0.55 MiB/min（1.18× 余量）
 //
-// 注意音频与页图这两条的「已落地」都是有条件的：机器上没有 ffmpeg（或该 ffmpeg
-// 不带 libwebp）时打包器退回 WAV / JPEG，包照样能播，只是体积回到数倍。所以报告
-// 必须给出实际编码（share-verify 的 audioCodec / pageCodec），否则同一份代码在不同
-// 机器上产出两个量级的包，而报告只显示「体积」。
-const (
-	budgetBaseBytes   int64 = 3 << 20
-	budgetBytesPerMin int64 = 589824 // 0.5625 MiB，取整便于核对
-)
+// 按此模型：14 页 / 2 分 20 秒 → 2.47 MiB（实测占 65%）；20 页 / 5 分钟 → 4.30 MiB，
+// 与方案 §20.6 的 4.2 MB 目标同量级（旧模型 5.81 MiB，宽 44%）。
+//
+// 为什么必须分档：同一条链路在「有 ffmpeg + libwebp」与「没有」时产出的包差一个数量级
+// （同一份 30 页 5 分钟素材：15.1 MiB 的 WAV/JPEG 包 vs 3.7 MiB 的 AAC/WebP 包）。
+// 一套阈值套两种产出，降级环境会永久红，然后被人用 `--skip` 绕过——那比阈值宽更糟。
+// 所以预算按包内**实际编码**取档（档位从条目扩展名推断，share-verify 会打印），
+// 降级档的单价按未转码实测值给：JPEG q82 86.2 KB/页、WAV 2.75 MiB/min。
+//
+// 层图单价是这张表里唯一没有真实样本的：share 侧只原样写入上层裁好的 PNG，而手头
+// 没有带元素动画的真实导出包（夹具里的层图是合成的纯色块，0.8 KB/层，毫无参考价值）。
+// 暂按页图单价的 2 倍占位（透明 PNG 比同尺寸 WebP 大）。**首次真实动画导出后必须复核**：
+// 那时若红，先量层图再改这里，不要直接放宽阈值。
+const budgetBaseBytes int64 = (1 << 20) * 35 / 100 // 0.35 MiB
+
+// pctMiB 把 MiB 的百分比写成整数，便于与注释里的数字逐个对齐。
+func pctMiB(percent int64) int64 { return (1 << 20) * percent / 100 }
+
+// CodecTier 是这份包的编码档位。空字段按最坏档处理：读不出编码时宁可给宽预算，
+// 也不要因为推断失败把一个正常包判红。
+type CodecTier struct {
+	Page  string `json:"page"`  // webp | jpeg | png
+	Audio string `json:"audio"` // aac | mp3 | opus | wav | none
+}
+
+func (t CodecTier) String() string { return t.Page + "+" + t.Audio }
+
+// pageRates 返回每页页图与每层层图的预算。
+func (t CodecTier) pageRates() (page, layer int64) {
+	switch t.Page {
+	case "webp":
+		return pctMiB(6), pctMiB(12)
+	case "jpeg":
+		return pctMiB(13), pctMiB(26)
+	default: // png 或推断不出：按未转码实测值
+		return pctMiB(35), pctMiB(70)
+	}
+}
+
+// minuteRate 返回每分钟音频预算。只有 wav 走未转码档：它的体积是常数，
+// 不需要留余量；有损档（aac/mp3/opus）统一按 AAC 实测值 + 18%。
+func (t CodecTier) minuteRate() int64 {
+	switch t.Audio {
+	case "aac", "mp3", "opus":
+		return pctMiB(55)
+	default:
+		return pctMiB(300)
+	}
+}
 
 // Measurement 是一份成品包的体积构成。
 type Measurement struct {
@@ -52,8 +97,11 @@ type Measurement struct {
 	AudioSegments  int   `json:"audioSegments"`
 	DurationUS     int64 `json:"durationUs"`
 
-	BudgetBytes int64 `json:"budgetBytes"`
-	OverBudget  bool  `json:"overBudget"`
+	// CodecTier 是预算取的档位；报告里必须给出来，否则同一份代码在不同机器上
+	// 产出两个量级的包，而报告只显示「体积」，看不出是阈值变了还是包坏了。
+	CodecTier   string `json:"codecTier"`
+	BudgetBytes int64  `json:"budgetBytes"`
+	OverBudget  bool   `json:"overBudget"`
 }
 
 // MeasureFiles 按类别统计包内字节。
@@ -75,18 +123,104 @@ func MeasureFiles(files map[string][]byte, manifest *Manifest) Measurement {
 		m.AudioSegments = len(manifest.Audio)
 		m.DurationUS = manifest.Artifact.DurationUS
 	}
-	m.BudgetBytes = BudgetBytes(m.DurationUS)
-	m.OverBudget = m.BudgetBytes > 0 && m.TotalBytes > m.BudgetBytes
+	tier := detectCodecTier(files)
+	m.CodecTier = tier.String()
+	m.BudgetBytes = tier.Budget(m.Pages, m.Layers, m.DurationUS, m.AudioSegments)
+	m.OverBudget = m.TotalBytes > m.BudgetBytes
 	return m
 }
 
-// BudgetBytes 按片长给出预算；片长未知（0）时只用基数，避免把未知当成"很短"。
-func BudgetBytes(durationUS int64) int64 {
-	if durationUS <= 0 {
-		return budgetBaseBytes
+// Budget 按页数、层数、时长与编码档位给出预算。
+//
+// 时长只在**有音频**时计价：纯图文包（无旁白）的体积不随时长增长，按分钟给它预算
+// 等于白送，会让真正的回归藏进余量里。
+func (t CodecTier) Budget(pages, layers int, durationUS int64, audioSegments int) int64 {
+	page, layer := t.pageRates()
+	budget := budgetBaseBytes + int64(pages)*page + int64(layers)*layer
+	if audioSegments > 0 && durationUS > 0 {
+		minutes := float64(durationUS) / 60e6
+		budget += int64(minutes * float64(t.minuteRate()))
 	}
-	minutes := float64(durationUS) / 60e6
-	return budgetBaseBytes + int64(minutes*float64(budgetBytesPerMin))
+	return budget
+}
+
+// detectCodecTier 从条目扩展名推断编码档位。
+//
+// 页图取「多数」而不是「任一」：WebP 逐页退回 JPEG 是允许的（大图 WebP 反而更大时），
+// 少量退回不该把整包降到 JPEG 档。音频取字节最多的那个：混音轨是大头，分段音频是备份。
+func detectCodecTier(files map[string][]byte) CodecTier {
+	pageCount := map[string]int{}
+	audioBytes := map[string]int64{}
+	for name, data := range files {
+		switch {
+		case isPageEntry(name):
+			pageCount[pageCodecOf(name)]++
+		case strings.HasPrefix(name, "audio/"):
+			audioBytes[audioCodecOf(name)] += int64(len(data))
+		}
+	}
+	tier := CodecTier{Page: "png", Audio: "none"}
+	if codec, n := majority(pageCount); n > 0 {
+		tier.Page = codec
+	}
+	if codec, n := majorityBytes(audioBytes); n > 0 {
+		tier.Audio = codec
+	}
+	return tier
+}
+
+func isPageEntry(name string) bool {
+	if !strings.HasPrefix(name, "slides/") {
+		return false
+	}
+	// 层图与镜头图是同一页的额外出图，不计入「页数」那一档。
+	return !strings.Contains(name, "-layer-") && !strings.Contains(name, "-shot-")
+}
+
+func pageCodecOf(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".webp":
+		return "webp"
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	default:
+		return "png"
+	}
+}
+
+func audioCodecOf(name string) string {
+	switch strings.ToLower(path.Ext(name)) {
+	case ".m4a", ".aac", ".mp4":
+		return "aac"
+	case ".mp3":
+		return "mp3"
+	case ".opus", ".ogg":
+		return "opus"
+	case ".wav":
+		return "wav"
+	default:
+		return "other"
+	}
+}
+
+func majority(counts map[string]int) (string, int) {
+	best, bestN := "", 0
+	for codec, n := range counts {
+		if n > bestN || (n == bestN && codec < best) {
+			best, bestN = codec, n
+		}
+	}
+	return best, bestN
+}
+
+func majorityBytes(sizes map[string]int64) (string, int64) {
+	best, bestN := "", int64(0)
+	for codec, n := range sizes {
+		if n > bestN || (n == bestN && codec < best) {
+			best, bestN = codec, n
+		}
+	}
+	return best, bestN
 }
 
 // SortedKinds 按字节数降序返回类别，便于输出「从大到小」的构成表。
@@ -119,8 +253,10 @@ func classifyEntry(name string) string {
 	case name == FileSubtitlesVTT || name == FileSubtitlesSRT || name == FileSubtitlesJS:
 		return KindSubtitles
 	case strings.HasPrefix(name, "slides/"):
-		// 层图命名是 slides/NNN-layer-MM.png（layerEntryPattern），与页图同目录。
-		if strings.Contains(name, "-layer-") {
+		// 层图 slides/NNN-layer-MM.png（layerEntryPattern）与镜头图 slides/NNN-shot-MM.png
+		// 都是「同一页的额外出图」。漏掉 shot 会让多镜头包的页图字节虚高，
+		// 而预算的每页单价是按页数给的——两边口径必须一致。
+		if strings.Contains(name, "-layer-") || strings.Contains(name, "-shot-") {
 			return KindLayers
 		}
 		return KindPages
