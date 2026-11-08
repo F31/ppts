@@ -78,6 +78,11 @@ func orgError(err error) error {
 	case errors.Is(err, project.ErrTagNameExists),
 		errors.Is(err, project.ErrFolderNameExists):
 		return connect.NewError(connect.CodeAlreadyExists, err)
+	// 空名此前在 PG 上是裸 errors.New → 500、在 SQLite 上是「建出一个空名标签」，
+	// 都不是参数错误的正确表达。
+	case errors.Is(err, project.ErrTagNameRequired),
+		errors.Is(err, project.ErrFolderNameRequired):
+		return connect.NewError(connect.CodeInvalidArgument, err)
 	case errors.Is(err, project.ErrFolderNotEmpty):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	}

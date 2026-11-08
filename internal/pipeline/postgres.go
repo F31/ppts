@@ -24,6 +24,9 @@ type PGStore struct {
 	pool *pgxpool.Pool
 }
 
+// 编译断言：PG 实现必须与端口同步（SQLite 侧在 sqlite.go 已有）。
+var _ Store = (*PGStore)(nil)
+
 // NewPGStore 创建连接池并 ping。
 func NewPGStore(ctx context.Context, dsn string) (*PGStore, error) {
 	pool, err := pgxpool.New(ctx, dsn)
@@ -544,16 +547,24 @@ func (s *PGStore) List(ctx context.Context, tenantID, projectID, state, cursor s
 			args = append(args, state)
 			where += " AND state=$" + strconv.Itoa(len(args))
 		}
+		// 与 ListPage 共用 (created_at, id) keyset 游标编码；只比时间会丢同毫秒的批量任务。
 		if cursor != "" {
-			createdBefore, perr := time.Parse(time.RFC3339Nano, cursor)
-			if perr != nil {
-				return perr
+			key, id, cerr := decodeJobCursor(cursor)
+			if cerr != nil {
+				return cerr
 			}
-			args = append(args, createdBefore)
-			where += " AND created_at < $" + strconv.Itoa(len(args))
+			before, perr := time.Parse(time.RFC3339Nano, key)
+			if perr != nil {
+				return ErrBadJobCursor
+			}
+			args = append(args, before)
+			tsPH := "$" + strconv.Itoa(len(args))
+			args = append(args, id)
+			idPH := "$" + strconv.Itoa(len(args))
+			where += " AND (created_at < " + tsPH + " OR (created_at = " + tsPH + " AND id < " + idPH + "::uuid))"
 		}
 		rows, err := tx.Query(ctx,
-			"SELECT "+jobSelectColumns+" FROM jobs WHERE "+where+" ORDER BY created_at DESC LIMIT "+limit, args...)
+			"SELECT "+jobSelectColumns+" FROM jobs WHERE "+where+" ORDER BY created_at DESC, id DESC LIMIT "+limit, args...)
 		if err != nil {
 			return err
 		}
@@ -570,7 +581,8 @@ func (s *PGStore) List(ctx context.Context, tenantID, projectID, state, cursor s
 			return err
 		}
 		if len(out) > pageSize {
-			next = out[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
+			last := out[pageSize-1]
+			next = encodeJobCursor(last.CreatedAt.Format(time.RFC3339Nano), last.ID)
 			out = out[:pageSize]
 		}
 		return nil
@@ -924,10 +936,10 @@ func (s *PGStore) PhaseCounts(ctx context.Context, tenantID, projectID string) (
 func (s *PGStore) QueueDepthByKind(ctx context.Context, tenantID string) ([]QueueDepthStat, error) {
 	const q = `
 SELECT kind,
-       SUM(CASE WHEN state IN ('queued','retry_wait') AND (run_at IS NULL OR run_at <= now()) THEN 1 ELSE 0 END),
+       SUM(CASE WHEN state IN ('queued','retry_wait') AND COALESCE(run_at, created_at) <= now() THEN 1 ELSE 0 END),
        SUM(CASE WHEN state = 'running' THEN 1 ELSE 0 END),
-       SUM(CASE WHEN state IN ('queued','retry_wait') AND (run_at IS NULL OR run_at > now()) THEN 1 ELSE 0 END),
-       MIN(CASE WHEN state IN ('queued','retry_wait') AND (run_at IS NULL OR run_at <= now()) THEN COALESCE(run_at, created_at) END)
+       SUM(CASE WHEN state IN ('queued','retry_wait') AND COALESCE(run_at, created_at) > now() THEN 1 ELSE 0 END),
+       MIN(CASE WHEN state IN ('queued','retry_wait') AND COALESCE(run_at, created_at) <= now() THEN COALESCE(run_at, created_at) END)
 FROM jobs WHERE tenant_id = $1 GROUP BY kind`
 	var out []QueueDepthStat
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {

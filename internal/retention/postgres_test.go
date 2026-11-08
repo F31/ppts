@@ -46,8 +46,10 @@ func setupRetention(t *testing.T) (*PGStore, objectstore.ObjectStore) {
 	}
 	t.Cleanup(pool.Close)
 	ctx := context.Background()
+	// artifacts / object_inventory 没有指向 projects 的外键，CASCADE 带不走它们：
+	// 上一次失败的运行会把固定 ID 的行留下，下次 seed 直接撞主键。显式清掉。
 	if _, err := pool.Exec(ctx,
-		"TRUNCATE quota_reservations, tenant_quotas, source_revisions, uploads, jobs, job_steps, projects, tenants CASCADE"); err != nil {
+		"TRUNCATE artifacts, object_inventory, quota_reservations, tenant_quotas, source_revisions, uploads, jobs, job_steps, projects, tenants CASCADE"); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if _, err := pool.Exec(ctx, "INSERT INTO tenants(id,name) VALUES ($1,'retention')", rTenant); err != nil {
@@ -182,8 +184,11 @@ func TestSweeperKeepsFreshSource(t *testing.T) {
 	if err := NewSweeper(store, objects, 24*time.Hour, nil).Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if _, _, err := objects.Get(ctx, key); err != nil {
+	if rc, _, err := objects.Get(ctx, key); err != nil {
 		t.Fatalf("fresh source should remain, got %v", err)
+	} else {
+		// 必须关掉：Windows 上没关的句柄会让 t.TempDir 的清理失败（Linux 上 unlink 不看句柄）。
+		_ = rc.Close()
 	}
 }
 
@@ -332,8 +337,10 @@ func TestSweeperDeletesExpiredDerivedTiers(t *testing.T) {
 	if _, _, err := objects.Get(ctx, oldKey); !errors.Is(err, objectstore.ErrObjectNotFound) {
 		t.Fatalf("expired artifact object should be deleted, got %v", err)
 	}
-	if _, _, err := objects.Get(ctx, freshKey); err != nil {
+	if rc, _, err := objects.Get(ctx, freshKey); err != nil {
 		t.Fatalf("fresh artifact object should remain, got %v", err)
+	} else {
+		_ = rc.Close()
 	}
 	if err := tenant.Run(ctx, store.pool, rTenant, func(ctx context.Context, tx pgx.Tx) error {
 		var count int

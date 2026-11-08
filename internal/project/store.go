@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/tenant"
@@ -145,11 +146,19 @@ var ErrTagNotFound = errors.New("project: tag not found")
 // ErrTagNameExists 表示租户内标签名已存在（唯一约束冲突）。
 var ErrTagNameExists = errors.New("project: tag name already exists")
 
+// ErrTagNameRequired 表示标签名为空（trim 之后）。两个实现都必须在写库前拒绝：
+// 空名在 SQLite 上会被唯一约束拦成「已存在」，在 PG 上以前是裸 errors.New → 500，
+// 同一个空输入得到两种错误，前端的错误分支只能各写一套。
+var ErrTagNameRequired = errors.New("project: tag name required")
+
 // ErrFolderNotFound 表示分组不存在或越权。
 var ErrFolderNotFound = errors.New("project: folder not found")
 
 // ErrFolderNameExists 表示租户内分组名已存在（唯一约束冲突）。
 var ErrFolderNameExists = errors.New("project: folder name already exists")
+
+// ErrFolderNameRequired 表示分组名为空（trim 之后），语义同 ErrTagNameRequired。
+var ErrFolderNameRequired = errors.New("project: folder name required")
 
 // ErrFolderNotEmpty 表示分组下还有项目，不允许删除。
 var ErrFolderNotEmpty = errors.New("project: folder is not empty")
@@ -159,6 +168,11 @@ var ErrProjectNotFound = errors.New("project: project not found")
 
 // ErrInvalidProjectID 表示项目 ID 不是合法 UUID（防止落入 PG uuid 解析错误转成 500）。
 var ErrInvalidProjectID = errors.New("project: invalid project id")
+
+// ErrInvalidCursor 表示分页游标无法解析。
+// 此前两侧都把解析错误原样往上抛（PG 是 time.Parse 的错、SQLite 会静默当成零值时间），
+// 于是「回传了一个坏游标」在一边是 500、在另一边是从头开始翻页。
+var ErrInvalidCursor = errors.New("project: invalid cursor")
 
 // ErrSourceRevisionNotFound 表示源版本不存在。
 var ErrSourceRevisionNotFound = errors.New("project: source revision not found")
@@ -174,6 +188,11 @@ var ErrShareLinkExpired = errors.New("project: share link expired")
 
 // ErrInvalidCollaboratorRole 表示项目级角色取值不在 viewer/reviewer/editor/admin 内。
 var ErrInvalidCollaboratorRole = errors.New("project: invalid collaborator role")
+
+// ErrInvalidShareAccessMode 表示分享访问模式取值非法。
+// SQLite 侧以前复用 ErrShareLinkNotFound（链接还没建就报「找不到」，语义完全错位），
+// PG 侧是裸 errors.New（→ 500）。两边都改成这个哨兵，API 层才能统一映射成参数错误。
+var ErrInvalidShareAccessMode = errors.New("project: invalid share access mode")
 
 // ProjectStore 项目与源版本存储端口。
 type ProjectStore interface {
@@ -254,6 +273,10 @@ func NewPGProjectStore(pool *pgxpool.Pool) *PGProjectStore {
 	return &PGProjectStore{pool: pool}
 }
 
+// 编译断言：PG 实现与端口同步演化。SQLite 侧一直有（sqlite_test.go），
+// PG 侧此前没有——方法签名改动时，SQLite 编译失败、PG 却只在使用方报错。
+var _ ProjectStore = (*PGProjectStore)(nil)
+
 func (s *PGProjectStore) CreateProject(ctx context.Context, tenantID, owner, title string) (*Project, error) {
 	var p *Project
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -261,7 +284,7 @@ func (s *PGProjectStore) CreateProject(ctx context.Context, tenantID, owner, tit
 		p, e = scanProject(tx.QueryRow(ctx,
 			`INSERT INTO projects (id, tenant_id, owner_user, title)
 			 VALUES (gen_random_uuid(), $1, $2, $3) RETURNING id, tenant_id, owner_user, title,
-			   current_revision, policy, archived, delete_source_after, created_at, updated_at`,
+			   current_revision, policy, archived, delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')`,
 			tenantID, owner, title))
 		if e != nil {
 			return e
@@ -291,7 +314,7 @@ func (s *PGProjectStore) GetProject(ctx context.Context, tenantID, userID, id st
 		var e error
 		p, e = scanProject(tx.QueryRow(ctx,
 			`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
-			   delete_source_after, created_at, updated_at
+			   delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')
 			 FROM projects WHERE id=$3 AND tenant_id=$2
 			  AND ($1 = '' OR owner_user = $1 OR EXISTS (
 			    SELECT 1 FROM project_collaborators pc
@@ -310,16 +333,19 @@ func (s *PGProjectStore) ListProjects(ctx context.Context, tenantID, userID, cur
 }
 
 // ListArchivedProjects 列出已归档项目（含归档时间与归档人展示名），供恢复抽屉。
+//
+// 排序键与 active 列表一样带 id 次键：归档是逐个发生的动作，但脚本化归档（批量清理）
+// 完全可能落在同一毫秒，只按时间分页会丢行。归档时间为 NULL 的历史行按 updated_at 排，
+// 与 SQL 里的 COALESCE 保持一致——两处只要有一处不同，游标就会指到一个不存在的位置。
 func (s *PGProjectStore) ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
 	if pageSize <= 0 || pageSize > 200 {
 		pageSize = 100
 	}
 	var out []*Project
+	next := ""
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx,
-			`SELECT p.id, p.tenant_id, p.owner_user, p.title, p.current_revision, p.policy, p.archived,
-			        p.delete_source_after, p.created_at, p.updated_at,
-			        COALESCE(EXTRACT(EPOCH FROM p.archived_at)::bigint, 0),
+		const selectCols = `SELECT p.id, p.tenant_id, p.owner_user, p.title, p.current_revision, p.policy, p.archived,
+			        p.delete_source_after, p.created_at, p.updated_at, p.archived_at,
 			        COALESCE(p.archived_by, ''),
 			        COALESCE(up.username, ''), COALESCE(up.full_name, ''), COALESCE(u.email, '')
 			 FROM projects p
@@ -328,34 +354,63 @@ func (s *PGProjectStore) ListArchivedProjects(ctx context.Context, tenantID, use
 			 WHERE p.tenant_id=$1 AND p.archived=true
 			   AND ($2 = '' OR p.owner_user = $2 OR EXISTS (
 			     SELECT 1 FROM project_collaborators pc
-			      WHERE pc.project_id = p.id AND pc.user_id = $2))
-			 ORDER BY COALESCE(p.archived_at, p.updated_at) DESC
-			 LIMIT $3`, tenantID, userID, pageSize)
+			      WHERE pc.project_id = p.id AND pc.user_id = $2))`
+		const orderLimit = ` ORDER BY COALESCE(p.archived_at, p.updated_at) DESC, p.id DESC LIMIT $3`
+
+		var rows pgx.Rows
+		var err error
+		if cursor == "" {
+			rows, err = tx.Query(ctx, selectCols+orderLimit, tenantID, userID, pageSize+1)
+		} else {
+			before, beforeID, parseErr := decodeProjectCursor(cursor)
+			if parseErr != nil {
+				return parseErr
+			}
+			if beforeID == "" {
+				rows, err = tx.Query(ctx,
+					selectCols+` AND COALESCE(p.archived_at, p.updated_at) < $4`+orderLimit,
+					tenantID, userID, pageSize+1, before)
+			} else {
+				rows, err = tx.Query(ctx,
+					selectCols+` AND (COALESCE(p.archived_at, p.updated_at) < $4
+					   OR (COALESCE(p.archived_at, p.updated_at) = $4 AND p.id < $5::uuid))`+
+						` ORDER BY COALESCE(p.archived_at, p.updated_at) DESC, p.id DESC LIMIT $3`,
+					tenantID, userID, pageSize+1, before, beforeID)
+			}
+		}
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var p Project
-			var archivedAtUnix int64
+			var archivedAt *time.Time
 			var username, fullName string
 			if err := rows.Scan(&p.ID, &p.TenantID, &p.OwnerUser, &p.Title, &p.CurrentRevision,
 				&p.Policy, &p.Archived, &p.DeleteSourceAfter, &p.CreatedAt, &p.UpdatedAt,
-				&archivedAtUnix, &p.ArchivedBy, &username, &fullName, &p.ArchivedByEmail); err != nil {
+				&archivedAt, &p.ArchivedBy, &username, &fullName, &p.ArchivedByEmail); err != nil {
 				return err
 			}
-			if archivedAtUnix > 0 {
-				p.ArchivedAt = time.Unix(archivedAtUnix, 0)
+			if archivedAt != nil {
+				p.ArchivedAt = *archivedAt
 			}
 			p.ArchivedByName = firstNonEmpty(fullName, username, p.ArchivedByEmail)
 			out = append(out, &p)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if len(out) > pageSize {
+			last := out[pageSize-1]
+			next = encodeProjectCursor(projectCursorFrom(last, true), last.ID)
+			out = out[:pageSize]
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, "", err
 	}
-	return out, "", nil
+	return out, next, nil
 }
 
 func firstNonEmpty(vals ...string) string {
@@ -387,19 +442,29 @@ func (s *PGProjectStore) listProjects(ctx context.Context, tenantID, userID, cur
 		if cursor == "" {
 			rows, err = tx.Query(ctx,
 				`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
-				   delete_source_after, created_at, updated_at
+				   delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')
 				 FROM projects WHERE `+baseWhere+`
-				 ORDER BY created_at DESC LIMIT $3`, tenantID, userID, pageSize+1)
+				 ORDER BY created_at DESC, id DESC LIMIT $3`, tenantID, userID, pageSize+1)
 		} else {
-			createdBefore, parseErr := time.Parse(time.RFC3339Nano, cursor)
+			before, beforeID, parseErr := decodeProjectCursor(cursor)
 			if parseErr != nil {
 				return parseErr
 			}
-			rows, err = tx.Query(ctx,
-				`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
-				   delete_source_after, created_at, updated_at
-				 FROM projects WHERE `+baseWhere+` AND created_at < $4
-				 ORDER BY created_at DESC LIMIT $5`, tenantID, userID, createdBefore, pageSize+1)
+			if beforeID == "" {
+				// 旧格式游标（只有时间）：保持升级前的行为。
+				rows, err = tx.Query(ctx,
+					`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
+					   delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')
+					 FROM projects WHERE `+baseWhere+` AND created_at < $4
+					 ORDER BY created_at DESC, id DESC LIMIT $3`, tenantID, userID, pageSize+1, before)
+			} else {
+				rows, err = tx.Query(ctx,
+					`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived,
+					   delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')
+					 FROM projects WHERE `+baseWhere+`
+					   AND (created_at < $4 OR (created_at = $4 AND id < $5::uuid))
+					 ORDER BY created_at DESC, id DESC LIMIT $3`, tenantID, userID, pageSize+1, before, beforeID)
+			}
 		}
 		if err != nil {
 			return err
@@ -417,7 +482,8 @@ func (s *PGProjectStore) listProjects(ctx context.Context, tenantID, userID, cur
 			return err
 		}
 		if len(projects) > pageSize {
-			next = projects[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
+			last := projects[pageSize-1]
+			next = encodeProjectCursor(projectCursorFrom(last, archived), last.ID)
 			projects = projects[:pageSize]
 		}
 		return nil
@@ -439,7 +505,7 @@ func (s *PGProjectStore) ArchiveProject(ctx context.Context, tenantID, userID, a
 			    SELECT 1 FROM project_collaborators pc
 			     WHERE pc.project_id = projects.id AND pc.user_id = $1))
 			 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
-			   delete_source_after, created_at, updated_at`,
+			   delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')`,
 			userID, tenantID, id, actorID))
 		return e
 	})
@@ -461,7 +527,7 @@ func (s *PGProjectStore) UnarchiveProject(ctx context.Context, tenantID, userID,
 			    SELECT 1 FROM project_collaborators pc
 			     WHERE pc.project_id = projects.id AND pc.user_id = $1))
 			 RETURNING id, tenant_id, owner_user, title, current_revision, policy, archived,
-			   delete_source_after, created_at, updated_at`,
+			   delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')`,
 			userID, tenantID, id))
 		return e
 	})
@@ -644,13 +710,24 @@ func nullIfEmpty(s string) interface{} {
 	return s
 }
 
+// isPGUniqueViolation 判断 PG 唯一约束冲突（SQLSTATE 23505）。
+//
+// 「先 SELECT 再 INSERT」只是为了让常见路径给出干净的「已存在」，它挡不住并发：
+// 两个请求同时通过 SELECT 后，后插入的那个拿到的是 23505。不映射的话它会一路
+// 变成 500，而 SQLite 侧靠约束 + isUniqueViolation 一直返回 ErrXxxNameExists——
+// 同一次冲突，两种结果，前端只能按最坏情况写。
+func isPGUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // ---- 标签与分组（#94 标签+分组体系） ----
 
 func (s *PGProjectStore) ListTags(ctx context.Context, tenantID string) ([]*Tag, error) {
 	var tags []*Tag
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
-			`SELECT id, tenant_id, name, color, created_at FROM tags WHERE tenant_id=$1 ORDER BY name`,
+			`SELECT id, tenant_id, name, COALESCE(color, ''), created_at FROM tags WHERE tenant_id=$1 ORDER BY name`,
 			tenantID)
 		if e != nil {
 			return e
@@ -671,7 +748,7 @@ func (s *PGProjectStore) ListTags(ctx context.Context, tenantID string) ([]*Tag,
 func (s *PGProjectStore) CreateTag(ctx context.Context, tenantID, name, color string) (*Tag, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("project: tag name required")
+		return nil, ErrTagNameRequired
 	}
 	var t *Tag
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -682,9 +759,14 @@ func (s *PGProjectStore) CreateTag(ctx context.Context, tenantID, name, color st
 			return e
 		}
 		t = &Tag{}
-		return tx.QueryRow(ctx,
-			`INSERT INTO tags (tenant_id, name, color) VALUES ($1,$2,$3) RETURNING id, tenant_id, name, color, created_at`,
+		e := tx.QueryRow(ctx,
+			`INSERT INTO tags (tenant_id, name, color) VALUES ($1,$2,$3) RETURNING id, tenant_id, name, COALESCE(color, ''), created_at`,
 			tenantID, name, nullIfEmpty(color)).Scan(&t.ID, &t.TenantID, &t.Name, &t.Color, &t.CreatedAt)
+		if isPGUniqueViolation(e) {
+			// 上面的 SELECT 只为了让常见路径报出干净的「已存在」；并发下仍会撞约束。
+			return ErrTagNameExists
+		}
+		return e
 	})
 	return t, err
 }
@@ -692,7 +774,7 @@ func (s *PGProjectStore) CreateTag(ctx context.Context, tenantID, name, color st
 func (s *PGProjectStore) RenameTag(ctx context.Context, tenantID, tagID, name, color string) (*Tag, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("project: tag name required")
+		return nil, ErrTagNameRequired
 	}
 	var t *Tag
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -704,10 +786,13 @@ func (s *PGProjectStore) RenameTag(ctx context.Context, tenantID, tagID, name, c
 		}
 		t = &Tag{}
 		e := tx.QueryRow(ctx,
-			`UPDATE tags SET name=$3, color=$4 WHERE id=$2 AND tenant_id=$1 RETURNING id, tenant_id, name, color, created_at`,
+			`UPDATE tags SET name=$3, color=$4 WHERE id=$2 AND tenant_id=$1 RETURNING id, tenant_id, name, COALESCE(color, ''), created_at`,
 			tenantID, tagID, name, nullIfEmpty(color)).Scan(&t.ID, &t.TenantID, &t.Name, &t.Color, &t.CreatedAt)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return ErrTagNotFound
+		}
+		if isPGUniqueViolation(e) {
+			return ErrTagNameExists
 		}
 		return e
 	})
@@ -759,7 +844,7 @@ func (s *PGProjectStore) ListFolders(ctx context.Context, tenantID string) ([]*F
 	var folders []*Folder
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		rows, e := tx.Query(ctx,
-			`SELECT id, tenant_id, name, created_by, sort_order, created_at FROM folders WHERE tenant_id=$1 ORDER BY sort_order, name`,
+			`SELECT id, tenant_id, name, COALESCE(created_by::text, ''), sort_order, created_at FROM folders WHERE tenant_id=$1 ORDER BY sort_order, name`,
 			tenantID)
 		if e != nil {
 			return e
@@ -780,7 +865,7 @@ func (s *PGProjectStore) ListFolders(ctx context.Context, tenantID string) ([]*F
 func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, createdBy, afterFolderID string) (*Folder, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("project: folder name required")
+		return nil, ErrFolderNameRequired
 	}
 	var f *Folder
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -807,7 +892,7 @@ func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, creat
 		}
 		f = &Folder{}
 		return tx.QueryRow(ctx,
-			`INSERT INTO folders (tenant_id, name, created_by, sort_order) VALUES ($1,$2,$3,$4) RETURNING id, tenant_id, name, created_by, sort_order, created_at`,
+			`INSERT INTO folders (tenant_id, name, created_by, sort_order) VALUES ($1,$2,$3,$4) RETURNING id, tenant_id, name, COALESCE(created_by::text, ''), sort_order, created_at`,
 			tenantID, name, nullIfEmpty(createdBy), sortOrder).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &f.CreatedAt)
 	})
 	return f, err
@@ -816,7 +901,7 @@ func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, creat
 func (s *PGProjectStore) RenameFolder(ctx context.Context, tenantID, folderID, name string) (*Folder, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return nil, errors.New("project: folder name required")
+		return nil, ErrFolderNameRequired
 	}
 	var f *Folder
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
@@ -828,10 +913,13 @@ func (s *PGProjectStore) RenameFolder(ctx context.Context, tenantID, folderID, n
 		}
 		f = &Folder{}
 		e := tx.QueryRow(ctx,
-			`UPDATE folders SET name=$3 WHERE id=$2 AND tenant_id=$1 RETURNING id, tenant_id, name, created_by, sort_order, created_at`,
+			`UPDATE folders SET name=$3 WHERE id=$2 AND tenant_id=$1 RETURNING id, tenant_id, name, COALESCE(created_by::text, ''), sort_order, created_at`,
 			tenantID, folderID, name).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &f.CreatedAt)
 		if errors.Is(e, pgx.ErrNoRows) {
 			return ErrFolderNotFound
+		}
+		if isPGUniqueViolation(e) {
+			return ErrFolderNameExists
 		}
 		return e
 	})
@@ -848,8 +936,14 @@ func (s *PGProjectStore) DeleteFolder(ctx context.Context, tenantID, folderID st
 		if count > 0 {
 			return ErrFolderNotEmpty
 		}
-		if _, e := tx.Exec(ctx, `DELETE FROM folders WHERE id=$1 AND tenant_id=$2`, folderID, tenantID); e != nil {
+		tag, e := tx.Exec(ctx, `DELETE FROM folders WHERE id=$1 AND tenant_id=$2`, folderID, tenantID)
+		if e != nil {
 			return e
+		}
+		// 删一个不存在的分组要报「找不到」，不能静默成功：此前只判了「非空」，
+		// 于是重复点删除永远返回 200，界面停在旧列表上，而 SQLite 侧一直是 404。
+		if tag.RowsAffected() == 0 {
+			return ErrFolderNotFound
 		}
 		return nil
 	})
@@ -879,7 +973,7 @@ func (s *PGProjectStore) MoveProject(ctx context.Context, tenantID, projectID, f
 // getProjectRow 在事务内按租户+id 取项目行，不存在返回 ErrProjectNotFound（供标签/分组写操作校验归属）。
 func (s *PGProjectStore) getProjectRow(ctx context.Context, tx pgx.Tx, tenantID, projectID string) (*Project, error) {
 	p, e := scanProject(tx.QueryRow(ctx,
-		`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived, delete_source_after, created_at, updated_at
+		`SELECT id, tenant_id, owner_user, title, current_revision, policy, archived, delete_source_after, created_at, updated_at, archived_at, COALESCE(archived_by, '')
 		 FROM projects WHERE id=$1 AND tenant_id=$2`, projectID, tenantID))
 	if errors.Is(e, ErrProjectNotFound) {
 		return nil, ErrProjectNotFound
@@ -931,14 +1025,21 @@ func (s *PGProjectStore) ListProjectOrganization(ctx context.Context, tenantID, 
 
 func scanProject(row pgx.Row) (*Project, error) {
 	var p Project
+	var archivedAt *time.Time
+	var archivedBy string
 	err := row.Scan(&p.ID, &p.TenantID, &p.OwnerUser, &p.Title, &p.CurrentRevision,
-		&p.Policy, &p.Archived, &p.DeleteSourceAfter, &p.CreatedAt, &p.UpdatedAt)
+		&p.Policy, &p.Archived, &p.DeleteSourceAfter, &p.CreatedAt, &p.UpdatedAt,
+		&archivedAt, &archivedBy)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProjectNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	if archivedAt != nil {
+		p.ArchivedAt = *archivedAt
+	}
+	p.ArchivedBy = archivedBy
 	return &p, nil
 }
 
@@ -1098,7 +1199,7 @@ func (s *PGProjectStore) RemoveCollaborator(ctx context.Context, tenantID, proje
 
 func (s *PGProjectStore) CreateShareLink(ctx context.Context, tenantID, projectID, accessMode, passwordHash, createdBy string, expiresAt *time.Time) (*ShareLink, error) {
 	if !ValidShareAccessMode(accessMode) {
-		return nil, errors.New("project: invalid share access mode")
+		return nil, ErrInvalidShareAccessMode
 	}
 	var l *ShareLink
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {

@@ -555,13 +555,20 @@ func (s *SQLiteStore) List(ctx context.Context, tenantID, projectID, state, curs
 		where += " AND state = ?"
 		args = append(args, state)
 	}
+	// 游标复用 ListPage 的 (created_at, id) keyset 格式：只按时间截断时，
+	// 同一毫秒创建的一批任务（一键导出 40 页就是一秒内几十条）会整批被跳过。
 	if cursor != "" {
-		where += " AND created_at < ?"
-		args = append(args, db.FormatTime(db.ParseTime(cursor)))
+		key, id, cerr := decodeJobCursor(cursor)
+		if cerr != nil {
+			return nil, "", cerr
+		}
+		where += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+		ts := db.FormatTime(db.ParseTime(key))
+		args = append(args, ts, ts, id)
 	}
 	args = append(args, pageSize+1)
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+jobSelectColumns+` FROM jobs WHERE `+where+` ORDER BY created_at DESC LIMIT ?`, args...)
+		`SELECT `+jobSelectColumns+` FROM jobs WHERE `+where+` ORDER BY created_at DESC, id DESC LIMIT ?`, args...)
 	if err != nil {
 		return nil, "", err
 	}
@@ -579,7 +586,8 @@ func (s *SQLiteStore) List(ctx context.Context, tenantID, projectID, state, curs
 	}
 	next := ""
 	if len(out) > pageSize {
-		next = out[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
+		last := out[pageSize-1]
+		next = encodeJobCursor(last.CreatedAt.Format(time.RFC3339Nano), last.ID)
 		out = out[:pageSize]
 	}
 	return out, next, nil

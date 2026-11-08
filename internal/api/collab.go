@@ -88,7 +88,8 @@ func collabError(err error) error {
 		errors.Is(err, project.ErrShareLinkNotFound),
 		errors.Is(err, project.ErrProjectNotFound):
 		return connect.NewError(connect.CodeNotFound, err)
-	case errors.Is(err, project.ErrInvalidCollaboratorRole):
+	case errors.Is(err, project.ErrInvalidCollaboratorRole),
+		errors.Is(err, project.ErrInvalidShareAccessMode):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	return connect.NewError(connect.CodeInternal, err)

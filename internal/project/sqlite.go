@@ -36,21 +36,28 @@ type rowScanner interface {
 
 func sqScanProject(row rowScanner) (*Project, error) {
 	var p Project
-	var createdAt, updatedAt string
+	var createdAt, updatedAt, archivedAt, archivedBy string
 	var archived, deleteSource int
 	if err := row.Scan(&p.ID, &p.TenantID, &p.OwnerUser, &p.Title, &p.CurrentRevision,
-		&p.Policy, &archived, &deleteSource, &createdAt, &updatedAt); err != nil {
+		&p.Policy, &archived, &deleteSource, &createdAt, &updatedAt, &archivedAt, &archivedBy); err != nil {
 		return nil, err
 	}
 	p.Archived = archived != 0
 	p.DeleteSourceAfter = deleteSource != 0
 	p.CreatedAt = db.ParseTime(createdAt)
 	p.UpdatedAt = db.ParseTime(updatedAt)
+	if archivedAt != "" {
+		p.ArchivedAt = db.ParseTime(archivedAt)
+	}
+	p.ArchivedBy = archivedBy
 	return &p, nil
 }
 
+// sqProjectColumns 带上归档元信息：ArchiveProject 复用 GetProject 回读结果行，
+// 列清单里少了这两列，接口返回的「刚归档的项目」就没有 archived_at / archived_by，
+// 前端拿到的是半份数据（列表刷新后才补上）。两个实现统一在公共列里带上。
 const sqProjectColumns = `id, tenant_id, owner_user, title, current_revision, policy, archived,
-	delete_source_after, created_at, updated_at`
+	delete_source_after, created_at, updated_at, COALESCE(archived_at, ''), COALESCE(archived_by, '')`
 
 func sqScanSourceRevision(row rowScanner) (*SourceRevision, error) {
 	var r SourceRevision
@@ -104,6 +111,12 @@ func (s *SQLiteStore) CreateProject(ctx context.Context, tenantID, owner, title 
 }
 
 func (s *SQLiteStore) GetProject(ctx context.Context, tenantID, userID, id string) (*Project, error) {
+	// 与 PG 对齐：非法 UUID 是参数错误（400），不是「不存在」（404）。
+	// 单租户形态下 id 是 TEXT，拼错也能查、查不到就是 404 看起来无害，
+	// 但同一段前端代码在两种部署下会走两个分支——契约测试要求两边返回同一个哨兵。
+	if _, err := uuid.Parse(id); err != nil {
+		return nil, ErrInvalidProjectID
+	}
 	p, err := sqScanProject(s.db.QueryRowContext(ctx,
 		`SELECT `+sqProjectColumns+` FROM projects
 		 WHERE id = ? AND tenant_id = ?
@@ -119,12 +132,14 @@ func (s *SQLiteStore) ListProjects(ctx context.Context, tenantID, userID, cursor
 }
 
 // ListArchivedProjects 列出已归档项目（含归档时间与归档人展示名），供恢复抽屉。
+//
+// 分页与 active 列表同样按 (排序时间, id) 两段式游标：归档时间是毫秒精度的
+// COALESCE(archived_at, updated_at)，批量归档必然撞同一毫秒，只按时间截断会丢行。
 func (s *SQLiteStore) ListArchivedProjects(ctx context.Context, tenantID, userID, cursor string, pageSize int) ([]*Project, string, error) {
 	if pageSize <= 0 || pageSize > 200 {
 		pageSize = 100
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT p.id, p.tenant_id, p.owner_user, p.title, p.current_revision, p.policy, p.archived,
+	const q = `SELECT p.id, p.tenant_id, p.owner_user, p.title, p.current_revision, p.policy, p.archived,
 		        p.delete_source_after, p.created_at, p.updated_at,
 		        COALESCE(p.archived_at, ''), COALESCE(p.archived_by, ''),
 		        COALESCE(up.username, ''), COALESCE(up.full_name, ''), COALESCE(u.email, '')
@@ -134,10 +149,29 @@ func (s *SQLiteStore) ListArchivedProjects(ctx context.Context, tenantID, userID
 		 WHERE p.tenant_id = ? AND p.archived = 1
 		   AND (? = '' OR p.owner_user = ? OR EXISTS (
 		     SELECT 1 FROM project_collaborators pc
-		      WHERE pc.project_id = p.id AND pc.user_id = ?))
-		 ORDER BY COALESCE(NULLIF(p.archived_at,''), p.updated_at) DESC
-		 LIMIT ?`,
-		tenantID, userID, userID, userID, pageSize)
+		      WHERE pc.project_id = p.id AND pc.user_id = ?))`
+	const order = ` ORDER BY COALESCE(NULLIF(p.archived_at,''), p.updated_at) DESC, p.id DESC LIMIT ?`
+
+	var rows *sql.Rows
+	var err error
+	if cursor == "" {
+		rows, err = s.db.QueryContext(ctx, q+order, tenantID, userID, userID, userID, pageSize+1)
+	} else {
+		before, beforeID, parseErr := decodeProjectCursor(cursor)
+		if parseErr != nil {
+			return nil, "", parseErr
+		}
+		if beforeID == "" {
+			rows, err = s.db.QueryContext(ctx,
+				q+` AND COALESCE(NULLIF(p.archived_at,''), p.updated_at) < ?`+order,
+				tenantID, userID, userID, userID, db.FormatTime(before), pageSize+1)
+		} else {
+			rows, err = s.db.QueryContext(ctx,
+				q+` AND (COALESCE(NULLIF(p.archived_at,''), p.updated_at) < ?
+				   OR (COALESCE(NULLIF(p.archived_at,''), p.updated_at) = ? AND p.id < ?))`+order,
+				tenantID, userID, userID, userID, db.FormatTime(before), db.FormatTime(before), beforeID, pageSize+1)
+		}
+	}
 	if err != nil {
 		return nil, "", err
 	}
@@ -163,7 +197,13 @@ func (s *SQLiteStore) ListArchivedProjects(ctx context.Context, tenantID, userID
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	return out, "", nil
+	next := ""
+	if len(out) > pageSize {
+		last := out[pageSize-1]
+		next = encodeProjectCursor(projectCursorFrom(last, true), last.ID)
+		out = out[:pageSize]
+	}
+	return out, next, nil
 }
 
 func (s *SQLiteStore) listProjects(ctx context.Context, tenantID, userID, cursor string, pageSize, archived int) ([]*Project, string, error) {
@@ -179,15 +219,28 @@ func (s *SQLiteStore) listProjects(ctx context.Context, tenantID, userID, cursor
 		rows, err = s.db.QueryContext(ctx,
 			`SELECT `+sqProjectColumns+` FROM projects
 			 WHERE tenant_id = ? AND archived = ? AND `+acl+`
-			 ORDER BY created_at DESC LIMIT ?`,
+			 ORDER BY created_at DESC, id DESC LIMIT ?`,
 			tenantID, archived, userID, userID, userID, pageSize+1)
 	} else {
-		before := db.FormatTime(db.ParseTime(cursor))
-		rows, err = s.db.QueryContext(ctx,
-			`SELECT `+sqProjectColumns+` FROM projects
-			 WHERE tenant_id = ? AND archived = ? AND `+acl+` AND created_at < ?
-			 ORDER BY created_at DESC LIMIT ?`,
-			tenantID, archived, userID, userID, userID, before, pageSize+1)
+		before, beforeID, parseErr := decodeProjectCursor(cursor)
+		if parseErr != nil {
+			return nil, "", parseErr
+		}
+		if beforeID == "" {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT `+sqProjectColumns+` FROM projects
+				 WHERE tenant_id = ? AND archived = ? AND `+acl+` AND created_at < ?
+				 ORDER BY created_at DESC, id DESC LIMIT ?`,
+				tenantID, archived, userID, userID, userID, db.FormatTime(before), pageSize+1)
+		} else {
+			rows, err = s.db.QueryContext(ctx,
+				`SELECT `+sqProjectColumns+` FROM projects
+				 WHERE tenant_id = ? AND archived = ? AND `+acl+`
+				   AND (created_at < ? OR (created_at = ? AND id < ?))
+				 ORDER BY created_at DESC, id DESC LIMIT ?`,
+				tenantID, archived, userID, userID, userID,
+				db.FormatTime(before), db.FormatTime(before), beforeID, pageSize+1)
+		}
 	}
 	if err != nil {
 		return nil, "", err
@@ -207,7 +260,8 @@ func (s *SQLiteStore) listProjects(ctx context.Context, tenantID, userID, cursor
 	}
 	next := ""
 	if len(out) > pageSize {
-		next = out[pageSize-1].CreatedAt.Format(time.RFC3339Nano)
+		last := out[pageSize-1]
+		next = encodeProjectCursor(projectCursorFrom(last, false), last.ID)
 		out = out[:pageSize]
 	}
 	return out, next, nil
@@ -443,6 +497,9 @@ func (s *SQLiteStore) ListTags(ctx context.Context, tenantID string) ([]*Tag, er
 
 func (s *SQLiteStore) CreateTag(ctx context.Context, tenantID, name, color string) (*Tag, error) {
 	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrTagNameRequired
+	}
 	id := uuid.New().String()
 	now := sqNow()
 	if _, err := s.db.ExecContext(ctx,
@@ -458,6 +515,9 @@ func (s *SQLiteStore) CreateTag(ctx context.Context, tenantID, name, color strin
 
 func (s *SQLiteStore) RenameTag(ctx context.Context, tenantID, tagID, name, color string) (*Tag, error) {
 	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrTagNameRequired
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE tags SET name = ?, color = ? WHERE id = ? AND tenant_id = ?`,
 		name, sqNullIfEmpty(color), tagID, tenantID)
@@ -493,6 +553,18 @@ func (s *SQLiteStore) DeleteTag(ctx context.Context, tenantID, tagID string) err
 }
 
 func (s *SQLiteStore) AttachTag(ctx context.Context, tenantID, projectID, tagID string) error {
+	// 与 PG 对齐：先校验项目与标签都属于当前租户。
+	// 此前这里直接 INSERT，SQLite 只对 project_id 建了外键、对 tag_id 没有，
+	// 于是「把别的租户的标签贴到自己的项目上」能写成功，而 PG 上必然失败——
+	// 同一段调用在两种部署下一个成功一个报错。
+	if err := sqRequireRow(ctx, s.db, ErrProjectNotFound,
+		`SELECT 1 FROM projects WHERE id = ? AND tenant_id = ?`, projectID, tenantID); err != nil {
+		return err
+	}
+	if err := sqRequireRow(ctx, s.db, ErrTagNotFound,
+		`SELECT 1 FROM tags WHERE id = ? AND tenant_id = ?`, tagID, tenantID); err != nil {
+		return err
+	}
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO project_tags (tenant_id, project_id, tag_id) VALUES (?, ?, ?)
 		 ON CONFLICT(project_id, tag_id) DO NOTHING`, tenantID, projectID, tagID); err != nil {
@@ -533,6 +605,9 @@ func (s *SQLiteStore) ListFolders(ctx context.Context, tenantID string) ([]*Fold
 
 func (s *SQLiteStore) CreateFolder(ctx context.Context, tenantID, name, createdBy, afterFolderID string) (*Folder, error) {
 	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrFolderNameRequired
+	}
 	id := uuid.New().String()
 	now := sqNow()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -540,6 +615,15 @@ func (s *SQLiteStore) CreateFolder(ctx context.Context, tenantID, name, createdB
 		return nil, err
 	}
 	defer tx.Rollback()
+	// folders 表没有 (tenant_id, name) 唯一约束（tags 有），所以 isUniqueViolation
+	// 那条路在这里永远不会触发——重名分组会被真的写进去。改成与 PG 一样先查后插。
+	var exists int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT 1 FROM folders WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&exists); err == nil {
+		return nil, ErrFolderNameExists
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	sortOrder := 0
 	if strings.TrimSpace(afterFolderID) == "" {
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sort_order) + 1, 0) FROM folders WHERE tenant_id = ?`, tenantID).Scan(&sortOrder); err != nil {
@@ -572,9 +656,25 @@ func (s *SQLiteStore) CreateFolder(ctx context.Context, tenantID, name, createdB
 
 func (s *SQLiteStore) RenameFolder(ctx context.Context, tenantID, folderID, name string) (*Folder, error) {
 	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ErrFolderNameRequired
+	}
+	// 同 CreateFolder：没有唯一约束兜底，重名只能在这里拦。
+	var exists int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT 1 FROM folders WHERE tenant_id = ? AND name = ? AND id <> ?`,
+		tenantID, name, folderID).Scan(&exists); err == nil {
+		return nil, ErrFolderNameExists
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE folders SET name = ? WHERE id = ? AND tenant_id = ?`, name, folderID, tenantID)
 	if err != nil {
+		// 重命名撞上同租户已存在的名字：Create 早就映射了，Rename 一直漏着。
+		if isUniqueViolation(err) {
+			return nil, ErrFolderNameExists
+		}
 		return nil, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
@@ -611,18 +711,24 @@ func (s *SQLiteStore) DeleteFolder(ctx context.Context, tenantID, folderID strin
 }
 
 func (s *SQLiteStore) MoveProject(ctx context.Context, tenantID, projectID, folderID string) error {
-	var folder any
-	if folderID != "" {
-		folder = folderID
-	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE projects SET folder_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
-		folder, sqNow(), projectID, tenantID)
-	if err != nil {
+	if err := sqRequireRow(ctx, s.db, ErrProjectNotFound,
+		`SELECT 1 FROM projects WHERE id = ? AND tenant_id = ?`, projectID, tenantID); err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrProjectNotFound
+	var folder any
+	if folderID != "" {
+		// 分组必须属于当前租户：projects.folder_id 的外键只看「这个分组存在」，
+		// 别的租户的分组同样能挂上去。PG 侧一直有这道校验。
+		if err := sqRequireRow(ctx, s.db, ErrFolderNotFound,
+			`SELECT 1 FROM folders WHERE id = ? AND tenant_id = ?`, folderID, tenantID); err != nil {
+			return err
+		}
+		folder = folderID
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`UPDATE projects SET folder_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?`,
+		folder, sqNow(), projectID, tenantID); err != nil {
+		return err
 	}
 	return nil
 }
@@ -693,6 +799,13 @@ func (s *SQLiteStore) InviteCollaborator(ctx context.Context, tenantID, projectI
 	if !ValidCollaboratorRole(role) {
 		return nil, ErrInvalidCollaboratorRole
 	}
+	// 项目不存在时给 ErrProjectNotFound，而不是让外键报错：SQLite 的
+	// project_collaborators.project_id 有外键，缺失项目会得到 "FOREIGN KEY constraint failed"，
+	// 那是 500；PG 侧一直先查项目再插。
+	if err := sqRequireRow(ctx, s.db, ErrProjectNotFound,
+		`SELECT 1 FROM projects WHERE id = ? AND tenant_id = ?`, projectID, tenantID); err != nil {
+		return nil, err
+	}
 	now := sqNow()
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO project_collaborators (tenant_id, project_id, user_id, role, invited_by, created_at)
@@ -761,7 +874,11 @@ func sqScanShareLink(row rowScanner) (*ShareLink, error) {
 
 func (s *SQLiteStore) CreateShareLink(ctx context.Context, tenantID, projectID, accessMode, passwordHash, createdBy string, expiresAt *time.Time) (*ShareLink, error) {
 	if !ValidShareAccessMode(accessMode) {
-		return nil, ErrShareLinkNotFound
+		return nil, ErrInvalidShareAccessMode
+	}
+	if err := sqRequireRow(ctx, s.db, ErrProjectNotFound,
+		`SELECT 1 FROM projects WHERE id = ? AND tenant_id = ?`, projectID, tenantID); err != nil {
+		return nil, err
 	}
 	id := uuid.New().String()
 	token := strings.ReplaceAll(uuid.New().String(), "-", "")
@@ -859,4 +976,18 @@ func sqNullIfEmpty(s string) any {
 // isUniqueViolation 判断 SQLite 唯一约束冲突（modernc 返回错误串含 "UNIQUE constraint failed"）。
 func isUniqueViolation(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+// sqRequireRow 断言查询至少命中一行，否则返回 missing 指定的哨兵。
+//
+// 外键不是万能的：project_tags.tag_id、projects.folder_id 在 SQLite 上没有跨租户保护，
+// PG 靠 RLS + 前置查询拦住「贴/挂到别的租户」。写操作前统一走这一道，
+// 让两个实现的失败语义一致（都是 typed sentinel，而不是「FK constraint failed」）。
+func sqRequireRow(ctx context.Context, q *sql.DB, missing error, query string, args ...any) error {
+	var one int
+	err := q.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return missing
+	}
+	return err
 }
