@@ -105,6 +105,10 @@ func main() {
 		textCopy     = flag.Bool("text-copy", false, "可选：清单标记讲稿可复制（ADR-029 ⑥），用于对比两种形态")
 		watermark    = flag.String("watermark", "", "可选：清单写入水印文案（ADR-029 ②），用于核对成品观感")
 		asJSON       = flag.Bool("json", false, "以 JSON 输出")
+		// 峰值内存是成品包组装的另一半账单：体积门禁管"包大不大"，这一项管
+		// "服务端撑不撑得住"。混音轨是唯一会随成片时长线性增长的条目，
+		// 所以这里默认按 WAV 才看得见它的真实分量（-aac=false）。
+		withRSS = flag.Bool("rss", false, "报构建前后的进程峰值内存（Windows 工作集 / Linux VmHWM）")
 		// 内嵌字体（M6-4）：直接塞给定字体文件，不做裁剪——这个工具的职责是造夹具，
 		// 裁剪属于渲染服务。想造「覆盖率达标」的夹具，就先按夹具字幕裁一份再传进来。
 		fontPath = flag.String("font", "", "可选：内嵌该字体文件（OTF/TTF）")
@@ -223,6 +227,11 @@ func main() {
 		}
 	}
 
+	var rssBefore uint64
+	rssOK := false
+	if *withRSS {
+		rssBefore, rssOK = peakMemory()
+	}
 	var buf bytes.Buffer
 	start := time.Now()
 	var font *share.FontAsset
@@ -268,6 +277,12 @@ func main() {
 		log.Fatalf("share-baseline: verify: %v", err)
 	}
 	report := summarize(source, manifest, files, buf.Len(), *pages, *pageSecs, elapsed)
+	if rssOK {
+		if peak, ok := peakMemory(); ok {
+			report.PeakMemoryBytes = int64(peak)
+			report.BaselineMemoryBytes = int64(rssBefore)
+		}
+	}
 
 	if *zipPath != "" {
 		if err := os.WriteFile(*zipPath, buf.Bytes(), 0o644); err != nil {
@@ -345,6 +360,10 @@ type report struct {
 	// 随音频可压缩性剧烈变化（静音夹具实测 36 倍），换算值只会骗人。
 	SingleBytes int64  `json:"singleBytes,omitempty"`
 	SinglePath  string `json:"singlePath,omitempty"`
+	// PeakMemoryBytes 是构建结束时的进程峰值内存；0 表示本次没开 -rss 或平台不支持。
+	// BaselineMemoryBytes 是构建**之前**的峰值（进程启动 + 造夹具），是同一张表里的参照。
+	PeakMemoryBytes     int64 `json:"peakMemoryBytes,omitempty"`
+	BaselineMemoryBytes int64 `json:"baselineMemoryBytes,omitempty"`
 }
 
 func summarize(source string, m *share.Manifest, files map[string][]byte, zipBytes, pages, pageSecs int, elapsed time.Duration) report {
@@ -414,6 +433,9 @@ func printReport(r report) {
 	fmt.Println()
 	fmt.Println("注：合成页图是纯色渐变，JPEG 体积远小于真实 PPT 截图（后者通常 150–400 KB/页）；")
 	fmt.Println("要得到可对标的绝对值，用 -pages-dir 指向真实导出的页图目录重跑。")
+	if r.PeakMemoryBytes > 0 {
+		fmt.Printf("组装峰值内存：%.1f MB（构建前 %.1f MB）\n", mb(r.PeakMemoryBytes), mb(r.BaselineMemoryBytes))
+	}
 	if r.OutputDir != "" {
 		fmt.Printf("目录产物：%s\n", r.OutputDir)
 	}

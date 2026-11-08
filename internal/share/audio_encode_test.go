@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -12,6 +13,9 @@ import (
 
 // fakeEncoder 是可控的编码器桩：用它验证「转码成功/失败/反而更大」三条分支，
 // 不需要机器上真有 ffmpeg。真实编码路径由 m4a_test.go 的集成用例覆盖。
+//
+// 与真实编码器一样按**路径**工作（见 M4AEncoder）：桩若收字节，被测代码就会
+// 为了喂它而先把混音轨读进内存，这条用例也就量不到真实的内存行为。
 type fakeEncoder struct {
 	out []byte
 	err error
@@ -19,12 +23,20 @@ type fakeEncoder struct {
 	seen int
 }
 
-func (f *fakeEncoder) EncodeM4A(_ context.Context, wav []byte) ([]byte, error) {
-	f.seen = len(wav)
-	if f.err != nil {
-		return nil, f.err
+func (f *fakeEncoder) EncodeM4AFile(_ context.Context, srcPath, dstPath string) error {
+	src, err := os.ReadFile(srcPath)
+	if err != nil {
+		return err
 	}
-	return f.out, nil
+	f.seen = len(src)
+	if f.err != nil {
+		return f.err
+	}
+	if len(f.out) == 0 {
+		// 「编码器什么都没产出」：不落 dst，让打包器按「产物缺失」退回 WAV。
+		return nil
+	}
+	return os.WriteFile(dstPath, f.out, 0o600)
 }
 
 // audioMixOf 跑一次打包，返回清单与包内条目字节。

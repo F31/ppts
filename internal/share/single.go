@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path"
 	"regexp"
 	"sort"
@@ -51,6 +52,35 @@ var (
 	scriptJSRe = regexp.MustCompile(`(?i)<script\s+src="([^"]+)"\s*>\s*</script>`)
 )
 
+// singleEntry 是内联前的一份条目字节。
+type singleEntry struct {
+	name string
+	data []byte
+}
+
+// singleSink 收齐条目再做内联。
+//
+// 单文件形态**必须**整段持有全部条目：内联就是 base64 进正文，没有「边读边写」的余地。
+// 所以这里没有省内存的空间，只有一条容易写错的拷贝规则（见 writeEntry）。
+type singleSink struct{ entries []singleEntry }
+
+func (s *singleSink) writeEntry(name string, data []byte) error {
+	// 必须拷贝：buildInto 里同一份字节可能被复用（页图同时用于挖空与写入），
+	// 而内联阶段会就地改写文本条目。
+	s.entries = append(s.entries, singleEntry{name: name, data: append([]byte(nil), data...)})
+	return nil
+}
+
+// writeStream 读全：data URI 要先知道长度才能编码，这里没有第二条路。
+func (s *singleSink) writeStream(name string, r io.Reader) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("share: read entry %q: %w", name, err)
+	}
+	s.entries = append(s.entries, singleEntry{name: name, data: data})
+	return nil
+}
+
 // BuildSingle 打包并把全部条目内联成一个 HTML 文档。
 //
 // 返回的 manifest 与目录包完全一致（同一次 buildInto 产出）：调用方用它落日志、
@@ -59,20 +89,12 @@ func (b *BundleBuilder) BuildSingle(ctx context.Context, in BundleInput) ([]byte
 	// 单文件形态的首页提示要改口（不存在"同目录文件"）；条目集合与清单不变，
 	// 所以仍然只调一次 buildInto（见 BundleInput.singleFile）。
 	in.singleFile = true
-	type entry struct {
-		name string
-		data []byte
-	}
-	var entries []entry
-	manifest, _, err := b.buildInto(ctx, in, func(name string, data []byte) error {
-		// 必须拷贝：buildInto 里同一份字节可能被复用（页图同时用于挖空与写入），
-		// 而内联阶段会就地改写文本条目。
-		entries = append(entries, entry{name: name, data: append([]byte(nil), data...)})
-		return nil
-	})
+	sink := &singleSink{}
+	manifest, _, err := b.buildInto(ctx, in, sink)
 	if err != nil {
 		return nil, nil, err
 	}
+	entries := sink.entries
 
 	byName := make(map[string]int, len(entries))
 	for i, e := range entries {

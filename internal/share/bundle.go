@@ -21,6 +21,8 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -178,14 +180,21 @@ type BundleBuilder struct {
 	pageEncoder PageImageEncoder
 }
 
-// M4AEncoder 把整段混音 WAV 转成 AAC（.m4a）。
+// M4AEncoder 把一段**已落盘**的混音 WAV 转成 AAC（.m4a）。
 //
 // 做成接口而不是在包里直接调 ffmpeg：share 的定位是纯装配，它不该知道音频是
 // 用什么编的；隐私模式（用户机器上可能没有 ffmpeg）与云端必须共用同一条装配
 // 路径，差别只在「有没有注入编码器」。没有注入或编码失败时退回 WAV——
 // 包照样能播，只是更大，这条降级由 writeAudio 保证。
+//
+// 参数是**路径**不是字节：混音轨动辄几十上百 MB，接口只要收 []byte，调用方就得
+// 先把它整段读进内存——而产物最终也是落盘再流进包里，这一读一写全是白付的
+// （改前实测 5 分钟混音轨一次打包共分配 63.98 MB，见 mix_memory_test.go）。
+// src 由打包器负责创建与删除，编码器只读；dst 由编码器创建，同名的旧文件可覆盖。
+// 编码器**不报告**产物大小：大小由打包器自己 stat，比「信任编码器的返回值」少一处
+// 可漂移的口径——「产物是否真的落盘」本来也只有文件系统说了算。
 type M4AEncoder interface {
-	EncodeM4A(ctx context.Context, wav []byte) ([]byte, error)
+	EncodeM4AFile(ctx context.Context, srcPath, dstPath string) error
 }
 
 // SetAudioEncoder 注入 AAC 编码器；传 nil 表示不压缩。返回自身便于链式调用。
@@ -213,20 +222,92 @@ func NewBundleBuilder(reader ResourceReader, logger *slog.Logger) *BundleBuilder
 	return &BundleBuilder{reader: reader, logger: logger, maxLongEdge: MaxPageLongEdge}
 }
 
+// bundleSink 是 buildInto 的落地方式：zip（Build）、目录（BuildDir）、单文件（BuildSingle）
+// 三种形态各一个实现。分两条路而不是一条，是因为**体积的答案不一样**：
+// 混音轨可能上百 MB，写 zip 时它该从磁盘直接流进去，而单文件必须把它 base64 进正文——
+// 后者留不下流式，只能收进内存。把这条差别放在实现里，组装逻辑就不必知道自己在写给谁。
+type bundleSink interface {
+	writeEntry(name string, data []byte) error
+	// writeStream 写一个体积可能很大的二进制条目：r 读到 EOF 即条目结束。
+	writeStream(name string, r io.Reader) error
+}
+
+// zipSink 把条目写进 zip。流式条目靠 data descriptor 收尾，不必先知道长度——
+// 这正是能一边写 WAV 一边压缩的前提（archive/zip 的 Create 返回的就是流）。
+type zipSink struct{ zw *zip.Writer }
+
+func (s zipSink) writeEntry(name string, data []byte) error {
+	w, err := s.zw.Create(name)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(data)
+	return err
+}
+
+func (s zipSink) writeStream(name string, r io.Reader) error {
+	w, err := s.zw.Create(name)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(w, r)
+	return err
+}
+
+// bundleOut 是 buildInto 的唯一出口：所有条目都要过同一组门禁（路径白名单 + 自包含）。
+//
+// 门禁挂在这里而不是各个 sink 里：新增一种产物形态时，没人会记得再去补一次校验，
+// 而漏掉的现场是「某个形态的包能带着外链出去」。
+type bundleOut struct {
+	sink  bundleSink
+	files map[string]struct{}
+}
+
+func (o *bundleOut) entry(name string, data []byte) error {
+	if err := checkBundlePath(name); err != nil {
+		return err
+	}
+	// 自包含自检（V14）：外链必须在打包时失败，而不是等断网的客户看到白屏。
+	if err := checkExternalRefs(name, data); err != nil {
+		return err
+	}
+	if err := o.sink.writeEntry(name, data); err != nil {
+		return err
+	}
+	o.files[name] = struct{}{}
+	return nil
+}
+
+// file 把一个已落盘的条目流进包。
+//
+// 只允许二进制条目：文本条目要先扫外链，而扫描必须先有完整字节——真需要流式写
+// 文本时，得先把「增量扫外链」做出来，而不是在这里悄悄跳过校验。
+func (o *bundleOut) file(name, path string) error {
+	if err := checkBundlePath(name); err != nil {
+		return err
+	}
+	if isTextEntry(name) {
+		return fmt.Errorf("share: entry %q must be written from memory (text entries are scanned for external references)", name)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("share: open entry %q: %w", name, err)
+	}
+	defer f.Close()
+	if err := o.sink.writeStream(name, f); err != nil {
+		return fmt.Errorf("share: stream entry %q: %w", name, err)
+	}
+	o.files[name] = struct{}{}
+	return nil
+}
+
 // Build 写出 zip 并返回已校验的清单。
 //
 // 流式策略：页面图逐页转码后立刻写 entry（内存中只保留当前页与"上一页"），
-// 音频片段逐个写 entry，但会保留一份引用供混音轨拼接（与 MP4 路径的 clips 同量级）。
+// 音频片段逐个写 entry，混音轨在临时文件里拼好后**直接流进 zip**，不整段驻留内存。
 func (b *BundleBuilder) Build(ctx context.Context, in BundleInput, out io.Writer) (*Manifest, error) {
 	zw := zip.NewWriter(out)
-	manifest, files, err := b.buildInto(ctx, in, func(name string, data []byte) error {
-		w, createErr := zw.Create(name)
-		if createErr != nil {
-			return createErr
-		}
-		_, writeErr := w.Write(data)
-		return writeErr
-	})
+	manifest, files, err := b.buildInto(ctx, in, zipSink{zw: zw})
 	if err != nil {
 		return nil, err
 	}
@@ -240,14 +321,14 @@ func (b *BundleBuilder) Build(ctx context.Context, in BundleInput, out io.Writer
 	return manifest, nil
 }
 
-// buildInto 是打包的唯一定义：把清单、字幕、底图、音频与播放器按固定顺序交给 write。
+// buildInto 是打包的唯一定义：把清单、字幕、底图、音频与播放器按固定顺序交给 sink。
 //
-// 只依赖「写一个条目」这一个动作，因此 zip（Build）与目录（BuildDir）共用同一份
-// 组装逻辑与降级语义——这是隐私模式与云端产物结构一致的实现基础（tasks 5.3）。
+// 只依赖「写一个条目」这一个动作，因此 zip（Build）、目录（BuildDir）与单文件
+// （BuildSingle）共用同一份组装逻辑与降级语义——这是三类产物结构一致的实现基础（tasks 5.3）。
 func (b *BundleBuilder) buildInto(
 	ctx context.Context,
 	in BundleInput,
-	write func(name string, data []byte) error,
+	sink bundleSink,
 ) (*Manifest, map[string]struct{}, error) {
 	if b == nil || b.reader == nil {
 		return nil, nil, errors.New("share: resource reader is required")
@@ -265,21 +346,8 @@ func (b *BundleBuilder) buildInto(
 	manifest.Watermark = in.Watermark
 
 	files := make(map[string]struct{}, len(timeline.Slides)+8)
-	emit := func(name string, data []byte) error {
-		if err := checkBundlePath(name); err != nil {
-			return err
-		}
-		// 自包含自检（V14）：外链必须在打包时失败，而不是等断网的客户看到白屏。
-		// 挂在唯一出口上，新增条目类型自动被覆盖。
-		if err := checkExternalRefs(name, data); err != nil {
-			return err
-		}
-		if err := write(name, data); err != nil {
-			return err
-		}
-		files[name] = struct{}{}
-		return nil
-	}
+	out := &bundleOut{sink: sink, files: files}
+	emit := out.entry
 
 	// ---- 时间轴（与旧 web_project 同名条目，便于下游平滑迁移解析）----
 	timelineJSON, err := json.Marshal(timeline)
@@ -326,7 +394,7 @@ func (b *BundleBuilder) buildInto(
 	manifest.Slides = slides
 
 	// ---- 音频 ----
-	audioEntries, mixName, err := b.writeAudio(ctx, emit, timeline)
+	audioEntries, mixName, err := b.writeAudio(ctx, out, timeline)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -646,10 +714,15 @@ func (b *BundleBuilder) encodePage(ctx context.Context, data []byte, longEdge in
 // 拼不成（素材非 PCM16、时长不符）时退回逐段文件 + 逐段播放：此时体积换可用性，
 // 因为"有声音但多一份"显然好过"没声音"。
 //
+// 混音轨**只在临时目录里存在**：它是包里唯一会随时长线性增长的条目（30 分钟 ≈ 86 MB），
+// 拼在 bytes.Buffer 里等于让导出的峰值内存跟成片时长成正比，而它最终也只是
+// 一个要流进 zip 的文件。临时目录不可用时同样退回逐段——不能让"没地方拼混音轨"
+// 升级成"导不出包"。
+//
 // 音频缺失必须失败：没有声音的"讲解成品"没有意义（design D8）。
 func (b *BundleBuilder) writeAudio(
 	ctx context.Context,
-	write func(string, []byte) error,
+	out *bundleOut,
 	timeline *media.Timeline,
 ) ([]AudioEntry, string, error) {
 	// 先读齐：能不能拼成混音轨，决定了要不要写逐段文件。
@@ -678,12 +751,11 @@ func (b *BundleBuilder) writeAudio(
 	names := make(map[string]string, len(order))
 	mixName := ""
 	if len(order) > 0 {
-		if name, data := b.packMix(ctx, timeline, clips); name != "" {
-			if err := write(name, data); err != nil {
-				return nil, "", err
-			}
-			mixName = name
+		name, mixErr := b.writeMixTrack(ctx, out, timeline, clips)
+		if mixErr != nil {
+			return nil, "", mixErr
 		}
+		mixName = name
 	}
 
 	if mixName != "" {
@@ -693,7 +765,7 @@ func (b *BundleBuilder) writeAudio(
 	} else {
 		for i, key := range order {
 			name := fmt.Sprintf(audioEntryPattern, i+1)
-			if err := write(name, clips[key]); err != nil {
+			if err := out.entry(name, clips[key]); err != nil {
 				return nil, "", err
 			}
 			names[key] = name
@@ -712,46 +784,111 @@ func (b *BundleBuilder) writeAudio(
 	return entries, mixName, nil
 }
 
-// packMix 组装整段混音轨，并在注入了编码器时转成 AAC。
+// mixFile 是一条已落盘的混音轨：name 是包内条目名，path 是临时文件。
+type mixFile struct {
+	name string
+	path string
+}
+
+// writeMixTrack 在临时目录里拼出混音轨（必要时转码），流进包后删掉临时目录。
+//
+// 临时目录由这里建、也由这里删：返回值只有包内条目名，调用方拿不到任何
+// 「需要记得清理」的东西——混音轨目录里躺着与成片等长的 WAV，漏一次就是几十 MB。
+func (b *BundleBuilder) writeMixTrack(
+	ctx context.Context,
+	out *bundleOut,
+	timeline *media.Timeline,
+	clips map[string][]byte,
+) (string, error) {
+	dir, err := os.MkdirTemp("", "ppts-mix-*")
+	if err != nil {
+		b.logf(slog.LevelWarn, "share: create audio mix temp dir failed, falling back to per-segment playback", "error", err)
+		return "", nil
+	}
+	defer os.RemoveAll(dir)
+
+	mix := b.packMix(ctx, dir, timeline, clips)
+	if mix == nil {
+		return "", nil
+	}
+	if err := out.file(mix.name, mix.path); err != nil {
+		return "", err
+	}
+	return mix.name, nil
+}
+
+// packMix 组装整段混音轨（写入 dir 下的 mix.wav），并在注入了编码器时转成 AAC。
 //
 // 返回的条目名是**实际**要写进包的名字：转码成功是 audio/mix.m4a，其余情况是
 // audio/mix.wav。清单与 <noscript> 提示都要用这个返回值，不能各自写死——
 // 写死的现场是「提示让你去找 mix.wav，包里只有 mix.m4a」。
-// 返回空名表示拿不到可用混音轨，调用方退回逐段音频。
-func (b *BundleBuilder) packMix(ctx context.Context, timeline *media.Timeline, clips map[string][]byte) (string, []byte) {
-	var mix bytes.Buffer
-	if err := media.WriteTimelineWAV(&mix, timeline, clips); err != nil {
-		b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", err)
-		return "", nil
+// 返回 nil 表示拿不到可用混音轨，调用方退回逐段音频。
+//
+// 为什么要落盘：media.WriteTimelineWAV 对 io.WriteSeeker 走的是「按 clip 偏移写」，
+// 全程只留一个 copy 缓冲区；用 bytes.Buffer 则要先拼出整段（还会因扩容翻倍）。
+// 改前 5 分钟混音轨一次打包共分配 63.98 MB，其中 43 MB 是这条 buffer 的扩容。
+func (b *BundleBuilder) packMix(ctx context.Context, dir string, timeline *media.Timeline, clips map[string][]byte) *mixFile {
+	wavPath := filepath.Join(dir, "mix.wav")
+	f, err := os.Create(wavPath)
+	if err != nil {
+		b.logf(slog.LevelWarn, "share: create audio mix file failed, falling back to per-segment playback", "error", err)
+		return nil
 	}
-	wav := mix.Bytes()
-	// 编码成功也把 wav 交出去：bytes.Buffer 的底层数组由这里持有，
-	// 而 write 会立刻消费掉，不必为「可能要回退」再复制一份 14MB。
-	keep := func(reason string, err error) (string, []byte) {
+	// *os.File 实现 io.WriteSeeker：media 按 clip 的精确偏移写，不整段驻留内存。
+	writeErr := media.WriteTimelineWAV(f, timeline, clips)
+	closeErr := f.Close()
+	if writeErr != nil {
+		b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", writeErr)
+		return nil
+	}
+	if closeErr != nil {
+		b.logf(slog.LevelWarn, "share: close audio mix failed, falling back to per-segment playback", "error", closeErr)
+		return nil
+	}
+	wavSize, err := fileSize(wavPath)
+	if err != nil {
+		b.logf(slog.LevelWarn, "share: stat audio mix failed, falling back to per-segment playback", "error", err)
+		return nil
+	}
+	wav := mixFile{name: FileAudioMix, path: wavPath}
+	keep := func(reason string, err error) *mixFile {
 		if err != nil {
-			b.logf(slog.LevelWarn, "share: transcode audio mix to aac failed, keeping wav", "reason", reason, "error", err, "wavBytes", len(wav))
+			b.logf(slog.LevelWarn, "share: transcode audio mix to aac failed, keeping wav", "reason", reason, "error", err, "wavBytes", wavSize)
 		} else {
-			b.logf(slog.LevelInfo, "share: keeping wav audio mix", "reason", reason, "wavBytes", len(wav))
+			b.logf(slog.LevelInfo, "share: keeping wav audio mix", "reason", reason, "wavBytes", wavSize)
 		}
-		return FileAudioMix, wav
+		return &wav
 	}
 	if b.audioEncoder == nil {
-		return FileAudioMix, wav
+		return &wav
 	}
-	m4a, err := b.audioEncoder.EncodeM4A(ctx, wav)
-	if err != nil {
+	m4aPath := filepath.Join(dir, "mix.m4a")
+	if err := b.audioEncoder.EncodeM4AFile(ctx, wavPath, m4aPath); err != nil {
 		return keep("encode_error", err)
 	}
-	if len(m4a) == 0 {
+	m4aSize, err := fileSize(m4aPath)
+	if err != nil {
+		return keep("missing_output", err)
+	}
+	if m4aSize == 0 {
 		return keep("empty_output", nil)
 	}
 	// 极短的混音轨上 AAC 的头与帧开销可能反超 WAV（几秒的样本就会撞上）。
 	// 目标始终是「更小」，不是为了在清单里写 aac。
-	if len(m4a) >= len(wav) {
+	if m4aSize >= wavSize {
 		return keep("not_smaller", nil)
 	}
-	b.logf(slog.LevelInfo, "share: audio mix transcoded", "codec", "aac", "wavBytes", len(wav), "m4aBytes", len(m4a))
-	return FileAudioMixM4A, m4a
+	b.logf(slog.LevelInfo, "share: audio mix transcoded", "codec", "aac", "wavBytes", wavSize, "m4aBytes", m4aSize)
+	return &mixFile{name: FileAudioMixM4A, path: m4aPath}
+}
+
+// fileSize 取文件字节数；大小由文件系统说了算，不采信编码器的自报。
+func fileSize(path string) (int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 func (b *BundleBuilder) readPagePNG(ctx context.Context, key string) ([]byte, error) {

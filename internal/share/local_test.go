@@ -158,6 +158,17 @@ func TestLocalBundleMatchesZipStructure(t *testing.T) {
 	if CountExternalRefs(zipFiles) != 0 {
 		t.Fatalf("bundle must not reference external resources")
 	}
+
+	// 混音轨走的是**流式**写入（dirSink.writeStream），与其它条目不是同一条代码路径。
+	// 只 stat 存在性的话，「建了文件却一个字节没写」照样绿——而那是包里唯一的音频。
+	dirMix, readErr := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(FileAudioMix)))
+	if readErr != nil {
+		t.Fatalf("read local mix: %v", readErr)
+	}
+	if !bytes.Equal(dirMix, zipFiles[FileAudioMix]) {
+		t.Fatalf("local mix is %d bytes, zip mix is %d bytes: they must be byte-identical",
+			len(dirMix), len(zipFiles[FileAudioMix]))
+	}
 }
 
 func TestBuildDirRejectsNonEmptyOutput(t *testing.T) {

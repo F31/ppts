@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // AACBitrateKbps 是成品包混音轨的目标码率。
@@ -18,10 +19,8 @@ const AACBitrateKbps = 64
 
 // EncodeM4A 把整段 WAV 转成 AAC，封装在 m4a（本质就是只含音轨的 MP4）里。
 //
-// 为什么落临时文件而不走管道：MP4 的 moov 需要回填才能写 `-movflags +faststart`
-// （索引前置，浏览器可以边下边播）。管道上退而求其次只能写 fragmented mp4，
-// 而它在部分浏览器的 `<audio>` 直连播放里不被支持——现场表现为"没声音"，
-// 排查成本远高于一次临时文件。
+// 入参出参都是字节，只为「手上已经有一份内存副本」的调用方保留（测试与门禁）；
+// 成品包那条路走 EncodeM4AFile——混音轨动辄几十 MB，从文件到文件才是它的常态。
 func (e *MP4Encoder) EncodeM4A(ctx context.Context, wav []byte) ([]byte, error) {
 	if e == nil || e.ffmpeg == "" {
 		return nil, ErrFFmpegUnavailable
@@ -39,9 +38,8 @@ func (e *MP4Encoder) EncodeM4A(ctx context.Context, wav []byte) ([]byte, error) 
 	if err := os.WriteFile(src, wav, 0o600); err != nil {
 		return nil, fmt.Errorf("media: write wav for transcode: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, e.ffmpeg, m4aArgs(src, dst, AACBitrateKbps)...)
-	if out, runErr := cmd.CombinedOutput(); runErr != nil {
-		return nil, fmt.Errorf("media: aac encode failed: %w\n%s", runErr, truncateOutput(out))
+	if err := e.EncodeM4AFile(ctx, src, dst); err != nil {
+		return nil, err
 	}
 	data, err := os.ReadFile(dst)
 	if err != nil {
@@ -51,6 +49,36 @@ func (e *MP4Encoder) EncodeM4A(ctx context.Context, wav []byte) ([]byte, error) 
 		return nil, errors.New("media: aac encode produced no bytes")
 	}
 	return data, nil
+}
+
+// EncodeM4AFile 把 srcPath 的 WAV 转码到 dstPath，返回产物大小由调用方自行 stat。
+//
+// 为什么落临时文件而不走管道：MP4 的 moov 需要回填才能写 `-movflags +faststart`
+// （索引前置，浏览器可以边下边播）。管道上退而求其次只能写 fragmented mp4，
+// 而它在部分浏览器的 `<audio>` 直连播放里不被支持——现场表现为"没声音"，
+// 排查成本远高于一次临时文件。
+//
+// 入参是**路径**：调用方（成品包打包器）本来就把混音轨拼在临时文件里，
+// 再经 []byte 中转等于把整段 WAV 读进内存又写回磁盘。
+func (e *MP4Encoder) EncodeM4AFile(ctx context.Context, srcPath, dstPath string) error {
+	if e == nil || e.ffmpeg == "" {
+		return ErrFFmpegUnavailable
+	}
+	if strings.TrimSpace(srcPath) == "" || strings.TrimSpace(dstPath) == "" {
+		return errors.New("media: source and destination paths are required")
+	}
+	cmd := exec.CommandContext(ctx, e.ffmpeg, m4aArgs(srcPath, dstPath, AACBitrateKbps)...)
+	if out, runErr := cmd.CombinedOutput(); runErr != nil {
+		return fmt.Errorf("media: aac encode failed: %w\n%s", runErr, truncateOutput(out))
+	}
+	info, err := os.Stat(dstPath)
+	if err != nil {
+		return fmt.Errorf("media: stat encoded m4a: %w", err)
+	}
+	if info.Size() == 0 {
+		return errors.New("media: aac encode produced no bytes")
+	}
+	return nil
 }
 
 // m4aArgs 构造转码参数。纯函数，便于在**没有 ffmpeg 的机器上**断言参数形态

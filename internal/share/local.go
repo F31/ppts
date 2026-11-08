@@ -166,6 +166,58 @@ func ReadLocalTimeline(root, key string) (*media.Timeline, error) {
 	return &timeline, nil
 }
 
+// dirSink 把条目写进目录。written 记录本次写出的路径，失败时要按它回收半成品。
+type dirSink struct {
+	base    string
+	written []string
+}
+
+func (s *dirSink) target(name string) (string, error) {
+	target, err := safeJoin(s.base, name)
+	if err != nil {
+		return "", err
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
+		return "", fmt.Errorf("share: create entry directory: %w", mkErr)
+	}
+	return target, nil
+}
+
+func (s *dirSink) writeEntry(name string, data []byte) error {
+	target, err := s.target(name)
+	if err != nil {
+		return err
+	}
+	if writeErr := os.WriteFile(target, data, 0o644); writeErr != nil {
+		return fmt.Errorf("share: write entry %q: %w", name, writeErr)
+	}
+	s.written = append(s.written, target)
+	return nil
+}
+
+// writeStream 逐块拷贝而不是先读进内存：混音轨可能上百 MB，目录形态没有任何
+// 「必须整段拿到」的理由（zip 与目录都只是搬运字节）。
+func (s *dirSink) writeStream(name string, r io.Reader) error {
+	target, err := s.target(name)
+	if err != nil {
+		return err
+	}
+	f, err := os.Create(target)
+	if err != nil {
+		return fmt.Errorf("share: create entry %q: %w", name, err)
+	}
+	_, copyErr := io.Copy(f, r)
+	closeErr := f.Close()
+	if copyErr != nil {
+		return fmt.Errorf("share: write entry %q: %w", name, copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("share: write entry %q: %w", name, closeErr)
+	}
+	s.written = append(s.written, target)
+	return nil
+}
+
 // BuildDir 把成品包写成目录（解压后的形态），结构与 Build 产出的 zip 完全一致。
 //
 // 目录形态在隐私模式下更实用：用户直接双击 outDir/index.html 就能播，不必先解压。
@@ -182,28 +234,15 @@ func (b *BundleBuilder) BuildDir(ctx context.Context, in BundleInput, outDir str
 		return nil, err
 	}
 
-	var written []string
-	manifest, files, buildErr := b.buildInto(ctx, in, func(name string, data []byte) error {
-		target, joinErr := safeJoin(absDir, name)
-		if joinErr != nil {
-			return joinErr
-		}
-		if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
-			return fmt.Errorf("share: create entry directory: %w", mkErr)
-		}
-		if writeErr := os.WriteFile(target, data, 0o644); writeErr != nil {
-			return fmt.Errorf("share: write entry %q: %w", name, writeErr)
-		}
-		written = append(written, target)
-		return nil
-	})
+	sink := &dirSink{base: absDir}
+	manifest, files, buildErr := b.buildInto(ctx, in, sink)
 	if buildErr != nil {
 		// 失败时清理本次写入：留着半成品目录会让下一次导出撞上 ErrOutDirNotEmpty。
-		cleanupWritten(absDir, written, created)
+		cleanupWritten(absDir, sink.written, created)
 		return nil, buildErr
 	}
 	if err := manifest.Validate(files); err != nil {
-		cleanupWritten(absDir, written, created)
+		cleanupWritten(absDir, sink.written, created)
 		return nil, err
 	}
 	return manifest, nil
