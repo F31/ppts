@@ -10,6 +10,8 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +35,9 @@ func (s *artifactStoreStub) Create(_ context.Context, tenantID string, in artifa
 		ID: "artifact-1", TenantID: tenantID, ProjectID: in.ProjectID, SnapshotHash: in.SnapshotHash,
 		Format: in.Format, ObjectKey: in.ObjectKey, ContentHash: in.ContentHash,
 		SizeBytes: in.SizeBytes, DurationMS: in.DurationMS, CreatedAt: time.Unix(100, 0),
+		// 冗余来源字段必须一起透传：成品库按「PPT 名称 + 版本」展示就靠这两列，
+		// 桩不映射的话，导出侧漏写它们不会有任何用例变红。
+		TimelineKey: in.TimelineKey, SourceRevisionNo: in.SourceRevisionNo, SourceDisplayName: in.SourceDisplayName,
 	}
 	return s.created, nil
 }
@@ -91,6 +96,10 @@ func seedTimelineBundle(t *testing.T, objects objectstore.ObjectStore) (Timeline
 	putObject(t, objects, srtKey, []byte("1\r\n00:00:00,000 --> 00:00:00,100\r\n字幕\r\n"), "application/x-subrip")
 	putObject(t, objects, vttKey, []byte("WEBVTT\n\n00:00:00.000 --> 00:00:00.100\n字幕\n"), "text/vtt")
 	bundle := TimelineAsset{Timeline: timeline, SRTKey: srtKey.String(), VTTKey: vttKey.String()}
+	// 来源信息由 narration 写入时间轴，export 负责把它冗余落到成品行（迁移 0040 之后的产品要求：
+	// 成品库按「PPT 名称 vN」展示）。这里固定成非零值，让"导出是否透传"能被断言。
+	bundle.Timeline.SourceRevisionNo = 3
+	bundle.Timeline.SourceDisplayName = "季度汇报"
 	b, _ := json.Marshal(bundle)
 	putObject(t, objects, bundleKey, b, "application/json")
 	return bundle, bundleKey
@@ -118,6 +127,9 @@ func TestExportHandlerPublishesSRTArtifact(t *testing.T) {
 	if artifacts.created.DurationMS != wantMS {
 		t.Fatalf("duration = %d ms, want %d ms (from timeline)", artifacts.created.DurationMS, wantMS)
 	}
+	// 内存产物路径：成品行必须带全绑定时间轴与来源信息（与 mp4 等临时文件路径共用同一段发布代码，
+	// 这两条断言就是在守"两条路径不许各写一份 Create"）。
+	assertArtifactSourceFields(t, artifacts.created, bundleKey.String())
 	// 最终成功步骤改为随任务终态原子提交（outbox，G3-5），由 PG 测试覆盖原子性。
 	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
 	r, _, err := objects.Get(context.Background(), key)
@@ -150,6 +162,24 @@ func TestExportHandlerPublishesMP4Artifact(t *testing.T) {
 	if artifacts.created == nil || artifacts.created.Format != artifact.FormatMP4 || artifacts.created.SizeBytes <= 0 {
 		t.Fatalf("artifact = %+v", artifacts.created)
 	}
+	// 临时文件产物路径：与 srt 走同一段发布代码，字段断言一致。
+	assertArtifactSourceFields(t, artifacts.created, bundleKey.String())
+	// 发布完成后临时文件必须被清掉：fileExportOutput 在失败路径自己收尾、成功路径由
+	// exportOutput.Close 负责，两处都不在了就会往系统临时目录泄漏整份 mp4。
+	if _, statErr := os.Stat(filepath.Join(os.TempDir(), "ppts-export-job-export.mp4")); !os.IsNotExist(statErr) {
+		t.Fatalf("mp4 temp file should be removed after publish, stat err = %v", statErr)
+	}
+}
+
+// assertArtifactSourceFields 断言成品行写全了「绑定时间轴 + 来源版本」三列。
+func assertArtifactSourceFields(t *testing.T, got *artifact.Artifact, wantTimelineKey string) {
+	t.Helper()
+	if got.TimelineKey != wantTimelineKey {
+		t.Fatalf("timeline_key = %q, want %q", got.TimelineKey, wantTimelineKey)
+	}
+	if got.SourceRevisionNo != 3 || got.SourceDisplayName != "季度汇报" {
+		t.Fatalf("source = %d / %q, want 3 / 季度汇报", got.SourceRevisionNo, got.SourceDisplayName)
+	}
 }
 
 func TestExportHandlerPublishesWebProjectArtifact(t *testing.T) {
@@ -161,12 +191,18 @@ func TestExportHandlerPublishesWebProjectArtifact(t *testing.T) {
 	steps := &stepRecorder{}
 	handler := NewExportHandler(artifacts, steps, objects, nil)
 
+	// 这条用例覆盖**临时文件产物**路径（不需要 ffmpeg，本机可跑）：发布后字段要齐、临时包要清掉。
+	staleZips, _ := filepath.Glob(filepath.Join(os.TempDir(), "ppts-webproject-*.zip"))
 	err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{Format: artifact.FormatWebProject, TimelineKey: bundleKey.String()}))
 	if err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	if artifacts.created == nil || artifacts.created.Format != artifact.FormatWebProject || artifacts.created.SizeBytes <= 0 {
 		t.Fatalf("artifact = %+v", artifacts.created)
+	}
+	assertArtifactSourceFields(t, artifacts.created, bundleKey.String())
+	if leaked, _ := filepath.Glob(filepath.Join(os.TempDir(), "ppts-webproject-*.zip")); len(leaked) > len(staleZips) {
+		t.Fatalf("web project temp zip leaked after publish: %v", leaked)
 	}
 	key, _ := objectstore.Parse(artifacts.created.ObjectKey)
 	data := readAll(t, objects, key)

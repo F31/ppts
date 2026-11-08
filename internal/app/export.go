@@ -258,90 +258,156 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		return failStep(fmt.Errorf("export job: timeline duration %s exceeds limit %s",
 			time.Duration(bundle.Timeline.DurationUS)*time.Microsecond, h.maxDuration))
 	}
-	// 产物数据来源：小文件（srt/vtt）读入内存；zip/mp4 走临时文件流式化，避免峰值内存随
-	// 音频总量/编码产物线性增长。file != nil 时 data 为 nil，由下方流式上传。
-	var data []byte
-	var file *os.File
-	var contentType, ext string
+	// 产物数据来源：小文件（srt/vtt/pptx）读入内存；zip/mp4 走临时文件流式化，避免峰值内存随
+	// 音频总量/编码产物线性增长。两种来源在 produce 内归一成 exportOutput，发布阶段只有一条路径。
+	out, err := h.produce(ctx, job, snapshot, bundle, snapshotHash)
+	if err != nil {
+		return failStep(err)
+	}
+	defer out.Close()
+	a, err := h.storeArtifact(ctx, job, snapshot, snapshotHash, durationMS, sourceRevisionNo, sourceDisplayName, out)
+	if err != nil {
+		return failStep(err)
+	}
+	step.State, step.ResultRef = pipeline.StepSuccess, a.ID
+	// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
+	pipeline.SetCommitStep(ctx, step)
+	return nil
+}
+
+// exportOutput 是「待发布的成品内容」，把内存产物与临时文件产物归一。
+//
+// 归一之前，Handle 里有两段几乎逐行重复的「写对象 + 建成品行」——文件分支一份、内存分支
+// 一份，连注释都是复制的。那种重复不会立刻出错，但下一次给成品行加字段时只要漏改一处，
+// 就会出现「mp4 有来源版本、srt 没有」这种只在部分格式上成立的字段，且没有任何断言会红。
+type exportOutput struct {
+	reader      io.Reader
+	size        int64
+	contentHash string
+	contentType string
+	ext         string
+	// file 非 nil 表示产物落在临时文件上，发布完成后需要关闭并删除。
+	file *os.File
+}
+
+// Close 释放临时文件产物（内存产物是空操作）。
+func (o *exportOutput) Close() {
+	if o.file == nil {
+		return
+	}
+	name := o.file.Name()
+	_ = o.file.Close()
+	_ = os.Remove(name)
+}
+
+// bytesExportOutput 把内存产物包成 exportOutput（srt/vtt/pptx）。
+func bytesExportOutput(data []byte, contentType, ext string) exportOutput {
+	return exportOutput{
+		reader: bytes.NewReader(data), size: int64(len(data)),
+		contentHash: hashBytes(data), contentType: contentType, ext: ext,
+	}
+}
+
+// fileExportOutput 把临时文件产物包成 exportOutput：回卷 → 哈希/计长 → 再回卷，供流式上传。
+// 任何一步失败都会关掉并删除临时文件——调用方拿不到 output 时不会再有 defer 兜底。
+func fileExportOutput(f *os.File, contentType, ext string) (exportOutput, error) {
+	discard := func() {
+		name := f.Name()
+		_ = f.Close()
+		_ = os.Remove(name)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		discard()
+		return exportOutput{}, err
+	}
+	contentHash, size, err := hashReader(f)
+	if err != nil {
+		discard()
+		return exportOutput{}, fmt.Errorf("export job: hash artifact: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		discard()
+		return exportOutput{}, err
+	}
+	return exportOutput{reader: f, size: size, contentHash: contentHash, contentType: contentType, ext: ext, file: f}, nil
+}
+
+// produce 按格式产出成品内容；这里只做「快照格式 → 具体打包器」的分发，
+// 各格式的实现见 export_format_*.go。
+func (h *ExportHandler) produce(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
+	bundle *TimelineAsset, snapshotHash string) (exportOutput, error) {
 	switch snapshot.Format {
 	case artifact.FormatSRT:
-		data, err = h.readTenantObject(ctx, job.TenantID, bundle.SRTKey)
-		contentType, ext = "application/x-subrip", "srt"
+		data, err := h.readTenantObject(ctx, job.TenantID, bundle.SRTKey)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return bytesExportOutput(data, "application/x-subrip", "srt"), nil
 	case artifact.FormatVTT:
-		data, err = h.readTenantObject(ctx, job.TenantID, bundle.VTTKey)
-		contentType, ext = "text/vtt; charset=utf-8", "vtt"
+		data, err := h.readTenantObject(ctx, job.TenantID, bundle.VTTKey)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return bytesExportOutput(data, "text/vtt; charset=utf-8", "vtt"), nil
 	case artifact.FormatMP4:
-		file, err = h.renderMP4(ctx, job, snapshot, bundle)
-		contentType, ext = "video/mp4", "mp4"
+		f, err := h.renderMP4(ctx, job, snapshot, bundle)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return fileExportOutput(f, "video/mp4", "mp4")
 	case artifact.FormatWebProject:
-		file, err = h.packWebProject(ctx, job.TenantID, bundle)
-		contentType, ext = "application/zip", "zip"
+		f, err := h.packWebProject(ctx, job.TenantID, bundle)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return fileExportOutput(f, "application/zip", "zip")
 	case artifact.FormatHTMLBundle:
 		// 成品包（M6-1）：与 web_project 并列、互不影响。web_project 保持"数据包"语义，
 		// 因为已有下游按"zip 内含 timeline.json"解析，原地改内容属于隐性破坏。
-		file, err = h.packHTMLBundle(ctx, job, snapshot, bundle, snapshotHash)
-		contentType, ext = "application/zip", "zip"
+		f, err := h.packHTMLBundle(ctx, job, snapshot, bundle, snapshotHash)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return fileExportOutput(f, "application/zip", "zip")
 	case artifact.FormatHTMLSingle:
 		// 单文件成品（ADR-029 ⑤）：与成品包同一份组装，只是内联成一个文件。
 		// Content-Type 用 text/html 而不是 application/octet-stream：用户的浏览器
 		// 点开链接就能看，不必先存盘再拖进浏览器。
-		file, err = h.packHTMLSingle(ctx, job, snapshot, bundle, snapshotHash)
-		contentType, ext = "text/html; charset=utf-8", "html"
+		f, err := h.packHTMLSingle(ctx, job, snapshot, bundle, snapshotHash)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return fileExportOutput(f, "text/html; charset=utf-8", "html")
 	case artifact.FormatAudioPPTX:
-		data, err = h.renderAudioPPTX(ctx, job, bundle)
-		contentType, ext = "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"
+		data, err := h.renderAudioPPTX(ctx, job, bundle)
+		if err != nil {
+			return exportOutput{}, err
+		}
+		return bytesExportOutput(data, "application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"), nil
 	default:
-		err = fmt.Errorf("export job: unsupported format %q", snapshot.Format)
+		return exportOutput{}, fmt.Errorf("export job: unsupported format %q", snapshot.Format)
 	}
-	if err != nil {
-		return failStep(err)
+}
+
+// storeArtifact 把成品内容发布到对象存储并落成品行。
+//
+// 两种数据来源（内存 / 临时文件）走同一段代码，字段一次性写全：成品行里的 timeline_key、
+// 来源版本号与展示名是"成品库按 PPT 名称 + 版本展示"的依据，任何格式漏写都只会在那个
+// 格式的成品上表现为空白，不会有错误浮出来。
+func (h *ExportHandler) storeArtifact(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
+	snapshotHash string, durationMS int64, sourceRevisionNo int, sourceDisplayName string, out exportOutput) (*artifact.Artifact, error) {
+	key := objectstore.ObjectKey{
+		TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact",
+		AssetType: "artifact", AssetID: out.contentHash, Ext: out.ext,
 	}
-	// 统一流式上传：文件产物先回卷再哈希/统计，随后 io.Copy 进对象存储。
-	if file != nil {
-		defer file.Close()
-		defer os.Remove(file.Name())
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			return failStep(err)
-		}
-		contentHash, size, herr := hashReader(file)
-		if herr != nil {
-			return failStep(fmt.Errorf("export job: hash artifact: %w", herr))
-		}
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
-			return failStep(err)
-		}
-		key := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact", AssetType: "artifact", AssetID: contentHash, Ext: ext}
-		if err := h.objects.Put(ctx, key, file, objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: size}); err != nil {
-			return failStep(fmt.Errorf("export job: publish artifact: %w", err))
-		}
-		a, aerr := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
-			ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
-			ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: size,
-			DurationMS: durationMS,
-			// 记录本成品绑定的时间轴（迁移 0040）：成品库内嵌预览据此构建播放清单，
-			// 保证预览内容与下载文件同源（而不是"项目最新讲解"的另一个版本）。
-			TimelineKey: snapshot.TimelineKey,
-			// 冗余来源信息（源版本号 + 展示名）：成品库按"PPT 名称 + 版本"精确展示，
-			// 见 internal/media/timeline.go 与 internal/app/narration.go。
-			SourceRevisionNo:  sourceRevisionNo,
-			SourceDisplayName: sourceDisplayName,
-		})
-		if aerr != nil {
-			return failStep(aerr)
-		}
-		step.State, step.ResultRef = pipeline.StepSuccess, a.ID
-		// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
-		pipeline.SetCommitStep(ctx, step)
-		return nil
-	}
-	contentHash := hashBytes(data)
-	key := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact", AssetType: "artifact", AssetID: contentHash, Ext: ext}
-	if err := h.objects.Put(ctx, key, bytes.NewReader(data), objectstore.ObjectMeta{ContentType: contentType, ContentHash: contentHash, Size: int64(len(data))}); err != nil {
-		return failStep(fmt.Errorf("export job: publish artifact: %w", err))
+	if err := h.objects.Put(ctx, key, out.reader, objectstore.ObjectMeta{
+		ContentType: out.contentType, ContentHash: out.contentHash, Size: out.size,
+	}); err != nil {
+		return nil, fmt.Errorf("export job: publish artifact: %w", err)
 	}
 	a, err := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
 		ProjectID: job.ProjectID, SnapshotHash: snapshotHash, Format: snapshot.Format,
-		ObjectKey: key.String(), ContentHash: contentHash, SizeBytes: int64(len(data)),
+		ObjectKey: key.String(), ContentHash: out.contentHash, SizeBytes: out.size,
 		DurationMS: durationMS,
 		// 记录本成品绑定的时间轴（迁移 0040）：成品库内嵌预览据此构建播放清单，
 		// 保证预览内容与下载文件同源（而不是"项目最新讲解"的另一个版本）。
@@ -352,12 +418,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		SourceDisplayName: sourceDisplayName,
 	})
 	if err != nil {
-		return failStep(err)
+		return nil, err
 	}
-	step.State, step.ResultRef = pipeline.StepSuccess, a.ID
-	// 最终步骤随任务终态原子提交（outbox，G3-5），避免"步骤成功但任务未终态"的崩溃窗口。
-	pipeline.SetCommitStep(ctx, step)
-	return nil
+	return a, nil
 }
 
 // renderAudioPPTX 在源 PPTX 副本上按页嵌入音频并设置自动切页。
