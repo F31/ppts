@@ -112,7 +112,7 @@ func (s *PGStore) Create(ctx context.Context, tenantID, projectID, kind, idemKey
 			VALUES (gen_random_uuid(),$1,$2,$3,'queued',$4,$5,$6,$7,$8::jsonb)
 			ON CONFLICT (tenant_id, idempotency_key, kind) DO NOTHING
 			RETURNING `+jobSelectColumns,
-			tenantID, projectID, kind, idemKey, snapshot, nullableTime(&runAt), traceprop.FromContext(ctx),
+			tenantID, projectID, kind, idemKey, snapshot, nullableRunAt(runAt), traceprop.FromContext(ctx),
 			mustJSONArray(AffectedPagesOf(JobKind(kind), snapshot)))
 		got, err := scanJob(row)
 		if err == nil {
@@ -966,11 +966,18 @@ FROM jobs WHERE tenant_id = $1 GROUP BY kind`
 	return out, nil
 }
 
-func nullableTime(t *time.Time) any {
-	if t == nil {
+// nullableRunAt 把「零值 = 立即可领取」翻译成 SQL NULL。
+//
+// jobs.run_at 的语义是「早于此刻不可领取」，NULL 就是立刻可领；SQLite 侧一直用
+// sqNullableTime 做这件事，PG 侧却把 time.Time 的地址直接交给驱动，于是零值变成
+// 公元 1 年。调度本身没坏（run_at <= now() 仍然成立），坏的是读侧：QueueDepthByKind
+// 用 COALESCE(run_at, created_at) 报「最老的待领取任务」，对即时任务会给出 0001-01-01，
+// 让「队列等了多久」这个判据失去意义。可空列的零值语义必须只定义一次。
+func nullableRunAt(runAt time.Time) any {
+	if runAt.IsZero() {
 		return nil
 	}
-	return *t
+	return runAt
 }
 
 func nullableBytes(b []byte) any {

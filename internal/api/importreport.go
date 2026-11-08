@@ -62,10 +62,7 @@ func editorImportReport(w http.ResponseWriter, r *http.Request, projects project
 		return
 	}
 
-	key := objectstore.ObjectKey{
-		TenantID: principal.TenantID, ProjectID: projectID,
-		Revision: srcRevString(revNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	key := objectstore.DocumentKey(principal.TenantID, projectID, srcRevString(revNo))
 	rc, _, err := objects.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrObjectNotFound) {

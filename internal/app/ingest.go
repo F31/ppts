@@ -116,10 +116,7 @@ func (h *ParseHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if err != nil {
 		return err
 	}
-	outKey := objectstore.ObjectKey{
-		TenantID: key.TenantID, ProjectID: snap.ProjectID,
-		Revision: srcRevString(snap.RevisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	outKey := objectstore.DocumentKey(key.TenantID, snap.ProjectID, srcRevString(snap.RevisionNo))
 	if err := h.objects.Put(ctx, outKey, bytes.NewReader(docBytes), objectstore.ObjectMeta{
 		ContentType: "application/json", ContentHash: meta.ContentHash,
 	}); err != nil {

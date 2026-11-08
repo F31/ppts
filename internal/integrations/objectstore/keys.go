@@ -97,3 +97,29 @@ func (k ObjectKey) EnsureTenant(authorizedTenant string) error {
 	}
 	return nil
 }
+
+// 解析产物的资产类型与 ID。这对取值是 ingest 的写路径与编辑器/讲稿/对比的读路径
+// 之间的隐式契约：曾经以 (AssetType: "document", AssetID: "extracted", Ext: "json")
+// 的字面量形式散落在 api 与 app 的九处调用点，任何一处拼错都能编译通过，只在运行时
+// 表现为「页面打得开但内容为空」——读不到就当成没有内容，不报错。
+const (
+	AssetTypeDocument = "document"
+	AssetIDExtracted  = "extracted"
+	extJSON           = "json"
+)
+
+// DocumentKey 返回某源版本的解析产物对象键（{tenant}/{project}/{revision}/document/extracted.json）。
+//
+// 读写两侧都必须经由它构造键：键的规范化形式（keys.go 顶部注释）是跨包契约，
+// 手拼字符串或手填 ObjectKey 一旦与写路径错位，错误不会以"键不存在"的形式暴露，
+// 而是以"内容为空"的形式出现。
+func DocumentKey(tenantID, projectID, revision string) ObjectKey {
+	return ObjectKey{
+		TenantID:  tenantID,
+		ProjectID: projectID,
+		Revision:  revision,
+		AssetType: AssetTypeDocument,
+		AssetID:   AssetIDExtracted,
+		Ext:       extJSON,
+	}
+}

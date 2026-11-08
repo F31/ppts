@@ -229,10 +229,7 @@ func (g *DocumentGeometry) load(ctx context.Context, scope PageGeometryScope) (*
 		// 也就是一个可能与当前讲稿毫无关系的旧文档——宁可不给几何。
 		return nil, fmt.Errorf("animation: geometry scope has no source revision (project %q)", scope.ProjectID)
 	}
-	key := objectstore.ObjectKey{
-		TenantID: scope.TenantID, ProjectID: scope.ProjectID,
-		Revision: srcRevString(scope.SourceRevisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	key := objectstore.DocumentKey(scope.TenantID, scope.ProjectID, srcRevString(scope.SourceRevisionNo))
 	rc, _, err := g.objects.Get(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("animation: read extracted document: %w", err)

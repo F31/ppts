@@ -135,10 +135,7 @@ func (s *ProjectService) GetSlides(ctx context.Context, req *connect.Request[ppt
 	if revisionNo == 0 {
 		revisionNo = projectRow.CurrentRevision
 	}
-	docKey := objectstore.ObjectKey{
-		TenantID: p.TenantID, ProjectID: projectID,
-		Revision: srcRevString(revisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	docKey := objectstore.DocumentKey(p.TenantID, projectID, srcRevString(revisionNo))
 	rc, _, err := s.objects.Get(ctx, docKey)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrObjectNotFound) {

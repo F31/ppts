@@ -84,10 +84,7 @@ func (h *ScriptDraftHandler) loadPages(ctx context.Context, tenantID, projectID 
 	if revisionNo == 0 {
 		revisionNo = 1 // G1：脚本生成跟随首个完成的解析版本；后续版本接入时改为查当前版本。
 	}
-	key := objectstore.ObjectKey{
-		TenantID: tenantID, ProjectID: projectID,
-		Revision: srcRevString(revisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	key := objectstore.DocumentKey(tenantID, projectID, srcRevString(revisionNo))
 	rc, _, err := h.objects.Get(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("script_draft: read parsed document: %w", err)

@@ -57,6 +57,25 @@ func TestParseRejectsMalformed(t *testing.T) {
 	}
 }
 
+// 解析产物的键形状是 ingest 写、编辑器/讲稿/对比读之间的契约。这个用例把它钉成
+// 字面量：键段或扩展名一旦变化，读写两侧必须同时改，而这里会先红。
+func TestDocumentKeyShape(t *testing.T) {
+	k := DocumentKey("t-0001", "p-0007", "src-03")
+	if want := "t-0001/p-0007/src-03/document/extracted.json"; k.String() != want {
+		t.Fatalf("DocumentKey: got %q want %q", k.String(), want)
+	}
+	if err := k.Validate(); err != nil {
+		t.Fatalf("DocumentKey 生成的键不合法: %v", err)
+	}
+	back, err := Parse(k.String())
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if back != k {
+		t.Fatalf("往返不一致: got %+v want %+v", back, k)
+	}
+}
+
 func TestEnsureTenant(t *testing.T) {
 	k := testKey()
 	if err := k.EnsureTenant("t-0001"); err != nil {

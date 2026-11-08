@@ -82,6 +82,26 @@ func TestCreateIdempotent(t *testing.T) {
 	if j1.State != StateQueued || j1.Attempt != 0 {
 		t.Fatalf("job: %+v", j1)
 	}
+	// 零值 runAt 必须落成 NULL，而不是 0001-01-01：读侧用 COALESCE(run_at, created_at)
+	// 报「最老待领取任务」，写成零值会让这个判据永远指向公元 1 年（见 nullableRunAt）。
+	var isNull bool
+	if err := tenant.Run(ctx, s.pool, testTenant, func(ctx context.Context, tx pgx.Tx) error {
+		return tx.QueryRow(ctx, `SELECT run_at IS NULL FROM jobs WHERE id=$1`, j1.ID).Scan(&isNull)
+	}); err != nil {
+		t.Fatalf("read run_at: %v", err)
+	}
+	if !isNull {
+		t.Fatal("零值 runAt 应写 NULL，实际写入了非空时刻")
+	}
+	// 非零 runAt 必须原样保留（延迟任务靠它决定何时可领取）。
+	delayed := time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond)
+	jd, err := s.Create(ctx, testTenant, testProject, string(KindParse), "idem-delayed", "snap", delayed)
+	if err != nil {
+		t.Fatalf("Create delayed: %v", err)
+	}
+	if !jd.RunAt.Equal(delayed) {
+		t.Fatalf("延迟任务 run_at 丢失: got %s want %s", jd.RunAt, delayed)
+	}
 }
 
 func validSpanContext() trace.SpanContext {

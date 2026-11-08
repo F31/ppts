@@ -72,3 +72,23 @@ func TestTextNormBuildSelectsRulesByLanguage(t *testing.T) {
 		t.Fatal("zh and en engines produced identical config hashes")
 	}
 }
+
+// PPTS_TEXT_NORM_ENABLED 曾手写 switch 只认 "true"/"1"：运维写 yes 时引擎静默关着，
+// 词表与规则全部不生效，导出的音频听起来"跟以前一样"而没人知道为什么。
+// 现在统一走 config.Bool，这里把两类取值钉死。
+func TestTextNormEnabledAcceptsDocumentedTruthyValues(t *testing.T) {
+	for _, v := range []string{"1", "true", "TRUE", "True", "yes", "YES", "on", " On "} {
+		t.Setenv("PPTS_TEXT_NORM_ENABLED", v)
+		if !textNormEnabled() {
+			t.Errorf("%q 应视为启用", v)
+		}
+	}
+	// "enabled" 不在约定集合里，按非法值处理并回退到默认关闭——宁可关着，
+	// 也不能把没约定过的写法猜成启用。
+	for _, v := range []string{"", "0", "false", "no", "off", "enabled"} {
+		t.Setenv("PPTS_TEXT_NORM_ENABLED", v)
+		if textNormEnabled() {
+			t.Errorf("%q 应视为关闭", v)
+		}
+	}
+}

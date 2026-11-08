@@ -148,10 +148,7 @@ func editorScriptCompare(w http.ResponseWriter, r *http.Request, objects objects
 // （internal/app/scriptdraft.go 的 WithSlideNotes 段），对照若只读解析原件，
 // 用户改过备注的页会出现"原文是旧的、讲稿是按新备注写的"。
 func loadComparePage(ctx context.Context, objects objectstore.ObjectStore, tenantID, projectID string, revisionNo int, slideID string) (*project.Page, error) {
-	key := objectstore.ObjectKey{
-		TenantID: tenantID, ProjectID: projectID,
-		Revision: srcRevString(revisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	key := objectstore.DocumentKey(tenantID, projectID, srcRevString(revisionNo))
 	rc, _, err := objects.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrObjectNotFound) {

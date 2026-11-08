@@ -693,10 +693,7 @@ func projectParseStatus(w http.ResponseWriter, r *http.Request, jobs JobStore, o
 	// 跳过该判定，退回按任务状态推断的旧路径。
 	if objects != nil {
 		if projectRow, err := projects.GetProject(ctx, principal.TenantID, principal.UserID, projectID); err == nil && projectRow != nil {
-			docKey := objectstore.ObjectKey{
-				TenantID: principal.TenantID, ProjectID: projectID,
-				Revision: srcRevString(projectRow.CurrentRevision), AssetType: "document", AssetID: "extracted", Ext: "json",
-			}
+			docKey := objectstore.DocumentKey(principal.TenantID, projectID, srcRevString(projectRow.CurrentRevision))
 			if rc, _, err := objects.Get(ctx, docKey); err == nil {
 				rc.Close()
 				writeJSON(w, http.StatusOK, map[string]any{"status": "ready", "message": "解析完成"})
@@ -1334,10 +1331,7 @@ func loadProjectDocuments(ctx context.Context, projects project.ProjectStore, ob
 			out[rev] = nil
 			continue
 		}
-		key := objectstore.ObjectKey{
-			TenantID: tenantID, ProjectID: projectID,
-			Revision: srcRevString(rev), AssetType: "document", AssetID: "extracted", Ext: "json",
-		}
+		key := objectstore.DocumentKey(tenantID, projectID, srcRevString(rev))
 		rc, _, err := objects.Get(ctx, key)
 		if err != nil {
 			out[rev] = nil
@@ -1464,10 +1458,7 @@ func editorGetSlideNotes(w http.ResponseWriter, r *http.Request, notesStore proj
 
 // docSlideNotes 从解析产物中读取指定页的原始备注；读取失败或无该页时返回空串。
 func docSlideNotes(ctx context.Context, objects objectstore.ObjectStore, tenantID, projectID string, revisionNo int, slideID string) string {
-	docKey := objectstore.ObjectKey{
-		TenantID: tenantID, ProjectID: projectID,
-		Revision: srcRevString(revisionNo), AssetType: "document", AssetID: "extracted", Ext: "json",
-	}
+	docKey := objectstore.DocumentKey(tenantID, projectID, srcRevString(revisionNo))
 	rc, _, err := objects.Get(ctx, docKey)
 	if err != nil {
 		return ""

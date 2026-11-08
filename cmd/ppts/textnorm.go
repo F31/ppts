@@ -15,14 +15,14 @@ import (
 )
 
 // textNormEnabled 是 TTS 文本规范化引擎的显式开关（V2.8 §5/§7.4）。
-// 默认关闭（零行为回退）；置 true 才启用。启用遵循 A26：非默认能力必须显式声明。
+// 默认关闭（零行为回退）；启用遵循 A26：非默认能力必须显式声明。
+//
+// 取值集合交由 config.Bool 定义（1/true/yes/on 与 0/false/no/off，大小写不敏感）。
+// 这里曾经手写过只认 "true"/"1" 的 switch：同一份 .env 里 PPTS_PPROF=yes 开了、
+// PPTS_TEXT_NORM_ENABLED=yes 却静默关着，且没有任何提示——ADR-030 修过同款回归，
+// 手写解析一旦留在装配层就会复发。
 func textNormEnabled() bool {
-	switch config.String("PPTS_TEXT_NORM_ENABLED", "") {
-	case "true", "1":
-		return true
-	default:
-		return false
-	}
+	return config.Bool("PPTS_TEXT_NORM_ENABLED", false)
 }
 
 // appTextNorm 实现 app.NarrationTextNorm：按 (租户, 语言) 构建引擎。

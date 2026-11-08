@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -328,5 +329,58 @@ func TestSQLiteListSucceededByKind(t *testing.T) {
 	empty, err := s.ListSucceededByKind(ctx, tenant, project, "")
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("empty kind: len=%d err=%v, want 0/nil", len(empty), err)
+	}
+}
+
+// TestSQLiteJobIndexes 钉住读侧索引的存在与被使用。
+//
+// 索引缺失的症状是「查询照常返回、只是越来越慢」，任何功能断言都发现不了；
+// 而这两条查询分别是任务进度订阅与列表页筛选，是前端最长走的路。用 EXPLAIN QUERY PLAN
+// 而不是 PRAGMA index_list：前者验证的是规划器真的会走这个索引，后者只验证 DDL 生效。
+func TestSQLiteJobIndexes(t *testing.T) {
+	ctx := context.Background()
+	s := newPipelineStore(t)
+	cases := []struct{ name, query, index string }{
+		{
+			name:  "事件订阅按 seq 递增取",
+			query: `SELECT seq, snapshot FROM job_events WHERE tenant_id='t' AND project_id='p' AND seq > 0 ORDER BY seq ASC LIMIT 200`,
+			index: "idx_job_events_watch",
+		},
+		{
+			name:  "阶段计数",
+			query: `SELECT phase, count(*) FROM jobs WHERE tenant_id='t' AND project_id='p' GROUP BY phase`,
+			index: "idx_jobs_phase",
+		},
+		{
+			name:  "按阶段筛选并分页",
+			query: `SELECT id FROM jobs WHERE tenant_id='t' AND project_id='p' AND phase='render' ORDER BY created_at DESC LIMIT 21`,
+			index: "idx_jobs_phase",
+		},
+	}
+	for _, c := range cases {
+		rows, err := s.db.QueryContext(ctx, "EXPLAIN QUERY PLAN "+c.query)
+		if err != nil {
+			t.Fatalf("%s: explain: %v", c.name, err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, notUsed int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+				rows.Close()
+				t.Fatalf("%s: scan: %v", c.name, err)
+			}
+			plan = append(plan, detail)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: rows: %v", c.name, err)
+		}
+		joined := strings.Join(plan, "\n")
+		// 计划里可能是 "USING INDEX" 也可能是 "USING COVERING INDEX"（列全在索引里时
+		// 规划器会选后者），两者都算命中；只认字面 "USING INDEX" 会把好事判成坏事。
+		if !strings.Contains(joined, "INDEX "+c.index) {
+			t.Fatalf("%s 未走索引 %s，计划：\n%s", c.name, c.index, joined)
+		}
 	}
 }
