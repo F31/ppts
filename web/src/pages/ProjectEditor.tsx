@@ -88,6 +88,8 @@ import { computeOneDraftPlan } from './projectEditor/oneClickPlan';
 import { useFocusAssist } from './projectEditor/useFocusAssist';
 import { useProbes } from './projectEditor/useProbes';
 import { useScriptPanelResize } from './projectEditor/useScriptPanelResize';
+import { OneDraftDrawer } from './projectEditor/OneDraftDrawer';
+import { useOneDraftForm } from './projectEditor/useOneDraftForm';
 import { useSlideNotes } from './projectEditor/useSlideNotes';
 import { useVoicePreview } from './projectEditor/useVoicePreview';
 import { animationDroppedText, exportFailureText } from '../animationText';
@@ -309,19 +311,15 @@ export function ProjectEditor({
   });
   // 一键成稿完成后强制重载讲稿（语言未变时也要刷新）。
   const [scriptsRefreshNonce, setScriptsRefreshNonce] = useState(0);
-  const [oneDraftLanguage, setOneDraftLanguage] = useState<'zh-CN' | 'en-US'>(() => {
-    try {
-      return window.localStorage.getItem(`ppts:script-language:${projectId}`) === 'en-US' ? 'en-US' : 'zh-CN';
-    } catch {
-      return 'zh-CN';
-    }
-  });
-  const [oneDraftSource, setOneDraftSource] = useState<'notes_first' | 'page_content' | 'notes_only'>('notes_first');
-  const [oneDraftMode, setOneDraftMode] = useState<ScriptMode>('SCRIPT_MODE_POLISH');
-  const [oneDraftLength, setOneDraftLength] = useState<'brief' | 'standard' | 'detailed'>('standard');
-  const [oneDraftStyle, setOneDraftStyle] = useState('专业正式');
-  const [oneDraftAudience, setOneDraftAudience] = useState('通用听众');
-  const [oneDraftOverwrite, setOneDraftOverwrite] = useState<'fill_empty' | 'overwrite_all'>('fill_empty');
+  // 成稿表单（语言/来源/模式/篇幅/风格/听众/覆盖策略）集中成一份，两个入口共用。
+  const { form: draftForm, patch: patchDraftForm } = useOneDraftForm(projectId);
+  const oneDraftLanguage = draftForm.language;
+  const oneDraftSource = draftForm.source;
+  const oneDraftMode = draftForm.mode;
+  const oneDraftLength = draftForm.length;
+  const oneDraftStyle = draftForm.style;
+  const oneDraftAudience = draftForm.audience;
+  const oneDraftOverwrite = draftForm.overwrite;
   const [oneDraftRunning, setOneDraftRunning] = useState(false);
   const [oneDraftProgress, setOneDraftProgress] = useState({ done: 0, total: 0, message: '' });
   const [oneDraftJobId, setOneDraftJobId] = useState('');
@@ -2530,150 +2528,30 @@ export function ProjectEditor({
           canRun={canEditScript}
           onClose={() => setOneClickOpen(false)}
           onStepsChange={setOneClickSteps}
-          onModeChange={setOneDraftMode}
-          onOverwriteChange={setOneDraftOverwrite}
+          onModeChange={(mode) => patchDraftForm({ mode })}
+          onOverwriteChange={(overwrite) => patchDraftForm({ overwrite })}
           onPresetChange={setOneClickPreset}
           onRun={() => void runOneClick()}
         />
       )}
 
       {oneDraftOpen && (
-        <div className="drawer-backdrop" onClick={() => setOneDraftOpen(false)}>
-          <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.oneDraft')} onClick={(event) => event.stopPropagation()} ref={oneDraftDialogRef}>
-            <header>
-              <div>
-                <span className="eyebrow">{t('editor.oneDraftEyebrow')}</span>
-                <h2>{t('editor.oneDraft')}</h2>
-              </div>
-              <button type="button" className="dialog-close-icon" onClick={() => setOneDraftOpen(false)} aria-label={t('common.close')} title={t('common.close')}>
-                ×
-              </button>
-            </header>
-            <section className="panel nested">
-              <p className="narration-note">{t('editor.oneDraftNote')}</p>
-              {/* 8 项配置收进「高级设置」：默认 0 配置即可提交。
-                  过去它们全部摊开，点「一键成稿」先要读一屏下拉框，与「一键」的名字相反。 */}
-              <details className="one-draft-advanced">
-                <summary>{t('editor.oneDraftAdvanced')}</summary>
-              <label className="field-label">
-                {t('editor.oneDraftLanguage')}
-                <select value={oneDraftLanguage} disabled={oneDraftRunning} onChange={(e) => setOneDraftLanguage(e.currentTarget.value as 'zh-CN' | 'en-US')}>
-                  <option value="zh-CN">{t('editor.languageChinese')}</option>
-                  <option value="en-US">{t('editor.languageEnglish')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftSource')}
-                <select value={oneDraftSource} disabled={oneDraftRunning} onChange={(e) => setOneDraftSource(e.currentTarget.value as 'notes_first' | 'page_content' | 'notes_only')}>
-                  <option value="notes_first">{t('editor.sourceNotesFirst')}</option>
-                  <option value="notes_only">{t('editor.sourceNotesOnly')}</option>
-                  <option value="page_content">{t('editor.sourcePageContent')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftMode')}
-                <select value={oneDraftMode} disabled={oneDraftRunning} onChange={(e) => setOneDraftMode(e.currentTarget.value as ScriptMode)}>
-                  <option value="SCRIPT_MODE_ORIGINAL">{t('editor.mode.original')}</option>
-                  <option value="SCRIPT_MODE_POLISH">{t('editor.mode.polish')}</option>
-                  <option value="SCRIPT_MODE_AI_GENERATED">{t('editor.mode.ai')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftLength')}
-                <select value={oneDraftLength} disabled={oneDraftRunning} onChange={(e) => setOneDraftLength(e.currentTarget.value as 'brief' | 'standard' | 'detailed')}>
-                  <option value="brief">{t('editor.lengthBrief')}</option>
-                  <option value="standard">{t('editor.lengthStandard')}</option>
-                  <option value="detailed">{t('editor.lengthDetailed')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftStyle')}
-                <select value={oneDraftStyle} disabled={oneDraftRunning} onChange={(e) => setOneDraftStyle(e.currentTarget.value)}>
-                  <option value="专业正式">{t('editor.styleFormal')}</option>
-                  <option value="销售演示">{t('editor.styleSales')}</option>
-                  <option value="培训讲解">{t('editor.styleTraining')}</option>
-                  <option value="口语自然">{t('editor.styleCasual')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftAudience')}
-                <select value={oneDraftAudience} disabled={oneDraftRunning} onChange={(e) => setOneDraftAudience(e.currentTarget.value)}>
-                  <option value="通用听众">{t('editor.audienceGeneral')}</option>
-                  <option value="客户/甲方">{t('editor.audienceClient')}</option>
-                  <option value="内部汇报">{t('editor.audienceInternal')}</option>
-                  <option value="技术团队">{t('editor.audienceTechnical')}</option>
-                  <option value="管理层/投资人">{t('editor.audienceExecutive')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftOverwrite')}
-                <select value={oneDraftOverwrite} disabled={oneDraftRunning} onChange={(e) => setOneDraftOverwrite(e.currentTarget.value as 'fill_empty' | 'overwrite_all')}>
-                  <option value="fill_empty">{t('editor.overwriteFillEmpty')}</option>
-                  <option value="overwrite_all">{t('editor.overwriteAll')}</option>
-                </select>
-              </label>
-              </details>
-              <p className="narration-note">{t('editor.oneDraftGuardrails')}</p>
-              {oneDraftPlan && (
-                <p className="narration-note">
-                  {t('editor.oneDraftPlan', { generate: oneDraftPlan.generate, skip: oneDraftPlan.skippedExisting })}
-                  {oneDraftPlan.reliable ? '' : ` ${t('editor.oneDraftPlanEstimate')}`}
-                </p>
-              )}
-              {oneDraftPlan && oneDraftPlan.noText > 0 && (
-                <p className="narration-note warn">{t('editor.oneDraftPlanNoText', { count: oneDraftPlan.noText })}</p>
-              )}
-              {oneDraftSource === 'page_content' && oneDraftMode === 'SCRIPT_MODE_ORIGINAL' && (
-                <p className="narration-note warn">{t('editor.oneDraftPageContentOriginalHint')}</p>
-              )}
-              {oneDraftOverwrite === 'fill_empty' && (oneDraftPlan?.withNotes ?? 0) > 0 && (
-                <p className="narration-note warn">{t('editor.oneDraftAutoNotesNote')}</p>
-              )}
-              <div className="draft-actions">
-                <button type="button" className="primary" disabled={!canEditScript || oneDraftRunning || draftStatus.phase === 'generating'} onClick={() => void submitOneDraft()}>
-                  {oneDraftRunning ? t('editor.scriptRegenerating') : t('editor.oneDraftSubmit')}
-                </button>
-                <button type="button" className="button-ghost" onClick={() => setOneDraftOpen(false)}>
-                  {t('common.cancel')}
-                </button>
-              </div>
-              {oneDraftProgress.total > 0 && (
-                <div className="one-draft-progress" role="status" aria-live="polite">
-                  <div className="one-draft-progress-bar" aria-hidden="true">
-                    <span style={{ width: `${Math.round((oneDraftProgress.done / Math.max(1, oneDraftProgress.total)) * 100)}%` }} />
-                  </div>
-                  <span>{oneDraftProgress.message}</span>
-                </div>
-              )}
-              {oneDraftResult && (
-                <p className="narration-note" role="status">
-                  {t('editor.oneDraftResult', { generated: oneDraftResult.generated, skipped: oneDraftResult.skipped })}
-                </p>
-              )}
-              {oneDraftResult && oneDraftResult.degraded > 0 && (
-                <p className="narration-note warn" role="status">
-                  {t('editor.oneDraftDegraded', { degraded: oneDraftResult.degraded })}
-                </p>
-              )}
-              {oneDraftResult && oneDraftResult.failed > 0 && (
-                <p className="narration-note warn" role="status">
-                  {t('editor.oneDraftFailed', { failed: oneDraftResult.failed })}
-                </p>
-              )}
-              {oneDraftResult && oneDraftReasons.length > 0 && (
-                <ul className="narration-note warn" role="status">
-                  {oneDraftReasons.map((reason, i) => (
-                    <li key={`${i}-${reason}`}>{reason}</li>
-                  ))}
-                </ul>
-              )}
-              {!oneDraftResult && oneDraftResultUnavailable && (
-                <p className="narration-note warn" role="status">{t('editor.oneDraftResultUnknown')}</p>
-              )}
-              {!canEditScript && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
-            </section>
-          </aside>
-        </div>
+        <OneDraftDrawer
+          dialogRef={oneDraftDialogRef}
+          t={t}
+          form={draftForm}
+          onFormChange={patchDraftForm}
+          plan={oneDraftPlan}
+          progress={oneDraftProgress}
+          result={oneDraftResult}
+          resultUnavailable={oneDraftResultUnavailable}
+          reasons={oneDraftReasons}
+          running={oneDraftRunning}
+          busy={draftStatus.phase === 'generating'}
+          canSubmit={canEditScript}
+          onClose={() => setOneDraftOpen(false)}
+          onSubmit={() => void submitOneDraft()}
+        />
       )}
 
       <section className="playback-column">

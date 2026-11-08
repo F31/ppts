@@ -219,3 +219,21 @@ test('生成语言与面板语言不一致时，跳过数只能标为估算', ()
   assert.equal(plan.computeOneDraftPlan({ ...base, panelLanguage: 'zh-CN' }).reliable, false);
   assert.equal(plan.computeOneDraftPlan({ ...base, panelLanguage: 'en-US' }).reliable, true);
 });
+
+// 成稿表单已集中到 useOneDraftForm：两个入口必须绑同一份值。
+// 真机踩过的坑是「一键成片改了覆盖策略，另一个抽屉还是默认仅补空」——
+// 那时的根因是两处各读一份 state，集中后要防止有人再各存一份。
+test('一键成片与单独成稿共用同一份表单', () => {
+  const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const drawer = readFileSync(new URL('./src/pages/projectEditor/OneDraftDrawer.tsx', import.meta.url), 'utf8');
+  assert.match(src, /const \{ form: draftForm, patch: patchDraftForm \} = useOneDraftForm\(projectId\)/);
+  assert.match(src, /form=\{draftForm\}/, '成稿抽屉必须读这份表单');
+  assert.match(src, /onFormChange=\{patchDraftForm\}/, '成稿抽屉的改动必须写回同一份表单');
+  assert.match(src, /onModeChange=\{\(mode\) => patchDraftForm\(\{ mode \}\)\}/, '一键成片的模式要写同一份表单');
+  assert.match(src, /onOverwriteChange=\{\(overwrite\) => patchDraftForm\(\{ overwrite \}\)\}/);
+  // 注意：draftMode 是「单页生成」的模式，与成稿表单不是同一件事，不能一并禁掉。
+  assert.doesNotMatch(src, /const \[oneDraftMode,/, '页面不得再为成稿模式单存一份 state');
+  assert.doesNotMatch(src, /const \[oneDraftOverwrite,/, '覆盖策略不得再单存一份');
+  // 提交按钮的闸门仍要同时看权限、运行态与讲稿生成态。
+  assert.match(drawer, /disabled=\{!canSubmit \|\| running \|\| busy\}/);
+});
