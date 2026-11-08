@@ -99,7 +99,7 @@ func newCompareServer(t *testing.T, objects *compareObjectStore, scripts narrati
 			LocalPrincipal: &Principal{TenantID: compareTenant, UserID: db.LocalUserID},
 		})
 	}
-	registerEditorRoutes(mux, nil, objects, scripts, sources, nil, nil, projects, nil, nil, auth)
+	registerEditorRoutes(mux, &editorDeps{objects: objects, scripts: scripts, scriptSources: sources, projects: projects, auth: auth})
 	ts := httptest.NewServer(mux)
 	t.Cleanup(ts.Close)
 	return ts

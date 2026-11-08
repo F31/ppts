@@ -25,11 +25,36 @@ import (
 	"github.com/F31/ppts/internal/tenant"
 )
 
+// editorDeps 是编辑器辅助端点族的依赖集合。
+//
+// 这里用结构体而不是位置参数，有两个具体理由：
+//  1. 端点族按文件拆开后，每个文件只从 deps 取自己需要的那几个字段，
+//     不必为新增字段改动所有注册函数的签名；
+//  2. 回调参数里 `nil, nil, nil` 这种写法无法自证"哪个依赖被置空"，
+//     具名字段至少读起来是 `&editorDeps{objects: objects}`。
+//
+// 字段语义与位置参数时期完全一致，未做任何取值或校验上的改动。
+type editorDeps struct {
+	jobs          JobStore
+	objects       objectstore.ObjectStore
+	scripts       narration.Store
+	scriptSources app.ScriptSourceStore
+	voiceSettings app.VoiceSettingsStore
+	gateways      gateway.StoreResolver
+	projects      project.ProjectStore
+	members       membership.Reader
+	recorder      audit.Recorder
+	auth          func(http.Handler) http.Handler
+}
+
 // registerEditorRoutes 挂载核心创作辅助的 HTTP 端点（B2 M2 真实渲染缩略图；B2 M3 ⑥ 无备注页来源）。
 // GET /projects/{pid}/slides/render 返回每页渲染 PNG 的短期签名可读 URL，按 slideId 对齐，供编辑器缩略图与 PPT 预览。
 // PUT /projects/{pid}/slides/{sid}/source + GET /projects/{pid}/slides/sources 管理"无备注页讲稿来源"选择。
 // 均受 auth 中间件保护（仅项目所属租户成员可访问）。
-func registerEditorRoutes(mux *http.ServeMux, jobs JobStore, objects objectstore.ObjectStore, scripts narration.Store, srcStore app.ScriptSourceStore, voiceStore app.VoiceSettingsStore, gatewayStore gateway.StoreResolver, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder, auth func(http.Handler) http.Handler) {
+func registerEditorRoutes(mux *http.ServeMux, d *editorDeps) {
+	jobs, objects, scripts, srcStore := d.jobs, d.objects, d.scripts, d.scriptSources
+	voiceStore, gatewayStore := d.voiceSettings, d.gateways
+	projects, members, recorder, auth := d.projects, d.members, d.recorder, d.auth
 	mux.Handle("GET /projects/{pid}/slides/render", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		editorSlideRender(w, r, jobs, objects, projects, members, recorder)
 	})))

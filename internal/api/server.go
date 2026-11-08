@@ -349,7 +349,11 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 	// 扩展产物格式导出（html_bundle，M6-1）：REST，绕过 proto enum（本机无 buf/protoc）。
 	NewBundleExportHandler(jobs, opt.Members, opt.Audit, opt.Animation, animationGate, opt.AnimationProbe, objects, opt.UsageStore).Register(mux, auth)
 	// 核心创作编辑器辅助路由（真实渲染缩略图/预览 + 无备注页来源，B2 M2/M3）。
-	registerEditorRoutes(mux, jobs, objects, scripts, scriptSources, opt.VoiceSettings, opt.Gateway, projects, opt.Members, opt.Audit, auth)
+	registerEditorRoutes(mux, &editorDeps{
+		jobs: jobs, objects: objects, scripts: scripts, scriptSources: scriptSources,
+		voiceSettings: opt.VoiceSettings, gateways: opt.Gateway,
+		projects: projects, members: opt.Members, recorder: opt.Audit, auth: auth,
+	})
 	// 音色试听：一次性合成 120 字以内的样音，不落对象存储、不建任务。
 	registerVoicePreviewRoutes(mux, voicePreviewDeps{
 		gateways: opt.Gateway, provider: opt.VoicePreviewProvider,
