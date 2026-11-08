@@ -37,7 +37,6 @@ import {
   listJobsPage,
   listProjectScripts,
   listVoiceModels,
-  previewVoice,
   regenerateScriptDraft,
   rewriteScriptText,
   saveVoiceSettings,
@@ -74,7 +73,6 @@ import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
 import type { Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
-import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } from '../voicePreview';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import {
   ONE_CLICK_PRESETS,
@@ -85,11 +83,13 @@ import {
   type DraftStatus,
   type SlidesState
 } from './projectEditor/model';
+import { OneClickDrawer } from './projectEditor/OneClickDrawer';
 import { computeOneDraftPlan } from './projectEditor/oneClickPlan';
 import { useFocusAssist } from './projectEditor/useFocusAssist';
 import { useProbes } from './projectEditor/useProbes';
 import { useScriptPanelResize } from './projectEditor/useScriptPanelResize';
 import { useSlideNotes } from './projectEditor/useSlideNotes';
+import { useVoicePreview } from './projectEditor/useVoicePreview';
 import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
 
@@ -159,13 +159,6 @@ export function ProjectEditor({
   const [voiceDraftRate, setVoiceDraftRate] = useState(100);
   const [voiceSaving, setVoiceSaving] = useState(false);
   const [voiceSaveError, setVoiceSaveError] = useState('');
-  // 音色试听：只返回一次性 Blob，不落对象存储。URL 的生命周期由本组件负责 revoke。
-  const [voicePreviewLoading, setVoicePreviewLoading] = useState(false);
-  const [voicePreviewURL, setVoicePreviewURL] = useState('');
-  const [voicePreviewError, setVoicePreviewError] = useState('');
-  const [voicePreviewModel, setVoicePreviewModel] = useState('');
-  const [voicePreviewDuration, setVoicePreviewDuration] = useState(0);
-  const voicePreviewSeq = useRef(new VoicePreviewSequencer());
   // 配音生成方式：incremental=只补未配音/讲稿已更新的页；full=全部重新生成并覆盖。
   const [voiceGenMode, setVoiceGenMode] = useState<'incremental' | 'full'>('incremental');
   // 隐藏页默认不参与成片（放映与 PDF 导出都会跳过），因此“全部生成”默认也跳过它们；
@@ -1252,70 +1245,24 @@ export function ProjectEditor({
     setVoiceDraftVoice(voices[0] ?? '');
   };
 
-  // 换音色/语速、或关掉弹窗后立即丢弃上一次样音：
-  // 留着它只会让用户以为"刚选的音色就是这个声音"（串音的另一种形态）。
-  useEffect(() => {
-    voicePreviewSeq.current.cancel();
-    setVoicePreviewURL('');
-    setVoicePreviewError('');
-    setVoicePreviewModel('');
-    setVoicePreviewDuration(0);
-    setVoicePreviewLoading(false);
-  }, [voiceDraftModel, voiceDraftVoice, voiceDraftRate, propsOpen]);
-
-  // Blob URL 必须在替换或卸载时释放，否则每试听一次就留下一个不可回收的音频对象。
-  useEffect(() => {
-    if (!voicePreviewURL) return undefined;
-    return () => URL.revokeObjectURL(voicePreviewURL);
-  }, [voicePreviewURL]);
-
-  // playVoicePreview：用**草稿**音色/语速合成一段样音，用户不必先保存再听。
-  // 结果按 (音色, 语速) 键校验后才落地：上一次请求晚到不会覆盖当前选择。
-  const playVoicePreview = async () => {
-    if (!voiceDraftVoice) {
-      setVoicePreviewError(t('editor.voiceModelEmpty'));
-      return;
-    }
-    const request = { voice: voiceDraftVoice, ratePercent: voiceDraftRate, model: voiceDraftModel };
-    const key = voicePreviewKey(request);
-    const token = voicePreviewSeq.current.begin(key);
-    setVoicePreviewLoading(true);
-    setVoicePreviewError('');
-    try {
-      const result = await previewVoice(identity, projectId, request);
-      if (!voicePreviewSeq.current.isCurrent(token, key)) return;
-      setVoicePreviewURL(URL.createObjectURL(result.blob));
-      setVoicePreviewModel(result.model);
-      setVoicePreviewDuration(result.durationMs);
-    } catch (error) {
-      if (!voicePreviewSeq.current.isCurrent(token, key)) return;
-      if (error instanceof ConnectError) {
-        // 四种失败的处置不同：去配模型 / 稍后重试 / 改短文本 / 其它。
-        switch (classifyVoicePreviewError(error.code)) {
-          case 'not_configured':
-            setVoicePreviewError(t('editor.voicePreviewNoGateway'));
-            break;
-          case 'model_missing':
-            // 与"没配任何模型"分开：模型清单可能只是那一行被停用了，
-            // 提示用户重选即可，不必去查网关是否可用。
-            setVoicePreviewError(t('editor.voicePreviewModelMissing', { model: voiceDraftModel }));
-            break;
-          case 'timeout':
-            setVoicePreviewError(t('editor.voicePreviewTimeout'));
-            break;
-          case 'too_long':
-            setVoicePreviewError(t('editor.voicePreviewTooLong'));
-            break;
-          default:
-            setVoicePreviewError(describeApiError(error, t('editor.voicePreviewFailed'), t));
-        }
-      } else {
-        setVoicePreviewError(describeApiError(error, t('editor.voicePreviewFailed'), t));
-      }
-    } finally {
-      if (voicePreviewSeq.current.isCurrent(token, key)) setVoicePreviewLoading(false);
-    }
-  };
+  // 音色试听：草稿值 → 一次性 Blob。串音（换档/关窗即清）与泄漏（替换/卸载 revoke）
+  // 都封在 hook 里，见 ./projectEditor/useVoicePreview。
+  const {
+    loading: voicePreviewLoading,
+    url: voicePreviewURL,
+    error: voicePreviewError,
+    model: voicePreviewModel,
+    durationMs: voicePreviewDuration,
+    play: playVoicePreview
+  } = useVoicePreview({
+    identity,
+    projectId,
+    t,
+    model: voiceDraftModel,
+    voice: voiceDraftVoice,
+    ratePercent: voiceDraftRate,
+    panelOpen: propsOpen
+  });
 
   // 「配音」：先保存语音配置，再按所选生成方式发起配音任务。
   const voiceDialogGenerate = async () => {
@@ -2569,146 +2516,25 @@ export function ProjectEditor({
       )}
 
       {oneClickOpen && (
-        <div className="drawer-backdrop" onClick={() => { if (!oneClickRunning) setOneClickOpen(false); }}>
-          <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.oneClick')} onClick={(event) => event.stopPropagation()} ref={oneClickDialogRef}>
-            <header>
-              <div>
-                <span className="eyebrow">{t('editor.oneClickEyebrow')}</span>
-                <h2>{t('editor.oneClick')}</h2>
-              </div>
-              <button
-                type="button"
-                className="dialog-close-icon"
-                disabled={oneClickRunning}
-                onClick={() => setOneClickOpen(false)}
-                aria-label={t('common.close')}
-                title={t('common.close')}
-              >
-                ×
-              </button>
-            </header>
-            <section className="panel nested">
-              <p className="narration-note">{t('editor.oneClickNote')}</p>
-              {/* React 19 合成事件的 currentTarget 在回调结束后会被重置为 null，
-                  而 setState 的更新函数可能延迟执行：必须先同步取出 checked，
-                  否则勾选任意一步都会抛 "reading 'checked' of null" 让整页崩掉。 */}
-              <div className="one-click-steps">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={oneClickSteps.script}
-                    disabled={oneClickRunning}
-                    onChange={(e) => {
-                      const checked = e.currentTarget.checked;
-                      setOneClickSteps((s) => ({ ...s, script: checked }));
-                    }}
-                  />
-                  {t('editor.oneClickStepScript')}
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={oneClickSteps.voice}
-                    disabled={oneClickRunning}
-                    onChange={(e) => {
-                      const checked = e.currentTarget.checked;
-                      setOneClickSteps((s) => ({ ...s, voice: checked }));
-                    }}
-                  />
-                  {t('editor.oneClickStepVoice')}
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={oneClickSteps.animation}
-                    disabled={oneClickRunning}
-                    onChange={(e) => {
-                      const checked = e.currentTarget.checked;
-                      setOneClickSteps((s) => ({ ...s, animation: checked }));
-                    }}
-                  />
-                  {t('editor.oneClickStepAnimation')}
-                </label>
-              </div>
-              <label className="field-label">
-                {t('editor.oneDraftMode')}
-                <select
-                  value={oneDraftMode}
-                  disabled={oneClickRunning || !oneClickSteps.script}
-                  onChange={(e) => setOneDraftMode(e.currentTarget.value as ScriptMode)}
-                >
-                  <option value="SCRIPT_MODE_ORIGINAL">{t('editor.mode.original')}</option>
-                  <option value="SCRIPT_MODE_POLISH">{t('editor.mode.polish')}</option>
-                  <option value="SCRIPT_MODE_AI_GENERATED">{t('editor.mode.ai')}</option>
-                </select>
-              </label>
-              <label className="field-label">
-                {t('editor.oneDraftOverwrite')}
-                <select
-                  value={oneDraftOverwrite}
-                  disabled={oneClickRunning || !oneClickSteps.script}
-                  onChange={(e) => setOneDraftOverwrite(e.currentTarget.value as 'fill_empty' | 'overwrite_all')}
-                >
-                  <option value="fill_empty">{t('editor.overwriteFillEmpty')}</option>
-                  <option value="overwrite_all">{t('editor.overwriteAll')}</option>
-                </select>
-              </label>
-              <p className="narration-note">{t('editor.oneClickOverwriteNote')}</p>
-              <label className="field-label">
-                {t('editor.oneClickPreset')}
-                <select
-                  value={oneClickPreset}
-                  disabled={oneClickRunning || !oneClickSteps.animation}
-                  onChange={(e) => setOneClickPreset(e.currentTarget.value)}
-                >
-                  <option value="business-calm">{t('editor.oneClickPresetCalm')}</option>
-                  <option value="tech-dynamic">{t('editor.oneClickPresetTech')}</option>
-                  <option value="teaching-clear">{t('editor.oneClickPresetTeaching')}</option>
-                  <option value="launch-bold">{t('editor.oneClickPresetLaunch')}</option>
-                </select>
-              </label>
-              <p className="narration-note">{t('editor.oneClickAdvancedNote')}</p>
-              {oneClickPhase === 'script' && <p className="narration-note" role="status">{t('editor.oneClickPhaseScript')}</p>}
-              {oneClickPhase === 'voice' && <p className="narration-note" role="status">{t('editor.oneClickPhaseVoice')}</p>}
-              {oneClickPhase === 'animation' && <p className="narration-note" role="status">{t('editor.oneClickPhaseAnimation')}</p>}
-              <div className="draft-actions">
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={oneClickRunning || !canEditScript || !(oneClickSteps.script || oneClickSteps.voice || oneClickSteps.animation)}
-                  onClick={() => void runOneClick()}
-                >
-                  {oneClickRunning ? t('editor.oneClickRunning') : t('editor.oneClickSubmit')}
-                </button>
-                <button type="button" className="button-ghost" disabled={oneClickRunning} onClick={() => setOneClickOpen(false)}>
-                  {t('common.cancel')}
-                </button>
-              </div>
-              {oneClickError && <p className="form-error" role="alert">{oneClickError}</p>}
-              {oneClickDone && (
-                <>
-                  <p className="narration-note" role="status">
-                    {t('editor.oneClickDone', {
-                      script: oneClickDone.script,
-                      applied: oneClickDone.applied,
-                      skipped: oneClickDone.skipped
-                    })}
-                  </p>
-                  {oneClickDone.skipped > 0 && oneClickDone.reasons && (
-                    <p className="narration-note">
-                      {t(
-                        oneClickDone.voiceRan
-                          ? 'editor.oneClickSkippedReasonsNoSource'
-                          : 'editor.oneClickSkippedReasons',
-                        { reasons: oneClickDone.reasons }
-                      )}
-                    </p>
-                  )}
-                </>
-              )}
-            </section>
-          </aside>
-        </div>
+        <OneClickDrawer
+          dialogRef={oneClickDialogRef}
+          t={t}
+          running={oneClickRunning}
+          steps={oneClickSteps}
+          mode={oneDraftMode}
+          overwrite={oneDraftOverwrite}
+          preset={oneClickPreset}
+          phase={oneClickPhase}
+          error={oneClickError}
+          done={oneClickDone}
+          canRun={canEditScript}
+          onClose={() => setOneClickOpen(false)}
+          onStepsChange={setOneClickSteps}
+          onModeChange={setOneDraftMode}
+          onOverwriteChange={setOneDraftOverwrite}
+          onPresetChange={setOneClickPreset}
+          onRun={() => void runOneClick()}
+        />
       )}
 
       {oneDraftOpen && (

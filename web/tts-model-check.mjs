@@ -18,6 +18,8 @@ const m = await import('./src/voicePreview.ts');
 const voiceAPI = readFileSync(new URL('./src/api/voice.ts', import.meta.url), 'utf8');
 const narrationAPI = readFileSync(new URL('./src/api/narration.ts', import.meta.url), 'utf8');
 const editor = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+// 试听的请求构造与样音清理已抽到 hook；断言跟随搬家，约束不变。
+const previewHook = readFileSync(new URL('./src/pages/projectEditor/useVoicePreview.ts', import.meta.url), 'utf8');
 
 test('试听请求键含模型：换模型后旧样音不能落到新选择上', () => {
   const base = { voice: 'v1', ratePercent: 100 };
@@ -69,15 +71,17 @@ test('编辑器生成路径传的是「本次生效」的模型', () => {
 });
 
 test('编辑器试听路径传的是草稿里选的模型', () => {
+  // 页面把草稿值交给 hook（而不是已保存的 voiceModelName）。
   assert.match(
     editor,
-    /const request = \{[^}]*model:\s*voiceDraftModel[^}]*\}/,
+    /useVoicePreview\(\{[\s\S]{0,300}?model:\s*voiceDraftModel[\s\S]{0,200}?\}\)/,
     '试听必须用草稿模型，而不是已保存的旧值'
   );
+  assert.match(previewHook, /const request = \{ voice, ratePercent, model \};/, '请求体必须真的带模型');
   // 换模型后要丢弃上一条样音，否则界面显示"模型 B"却还在播模型 A 的声音。
   assert.match(
-    editor,
-    /useEffect\(\(\) => \{[\s\S]{0,400}?\}, \[voiceDraftModel, voiceDraftVoice, voiceDraftRate, propsOpen\]\);/,
+    previewHook,
+    /useEffect\(\(\) => \{[\s\S]{0,400}?\}, \[model, voice, ratePercent, panelOpen\]\);/,
     '模型变化必须触发样音清理'
   );
 });
@@ -87,7 +91,7 @@ test('模型不可用时的提示能指导用户改选', () => {
   // 用户会去查供应商，而真正该做的是重新选一个模型。
   assert.equal(m.classifyVoicePreviewError('model_not_configured'), 'model_missing');
   assert.match(
-    editor,
+    previewHook,
     /case 'model_missing':[\s\S]{0,240}?voicePreviewModelMissing/,
     'model_missing 必须有专门提示，不能落到通用失败'
   );

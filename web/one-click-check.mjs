@@ -132,15 +132,19 @@ test('全部跳过：如实说「没有生成新讲稿」，不冒充无法核�
 });
 
 test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）', () => {
-  const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
-  const unsafe = /setOneClickSteps\(\s*\(s\)\s*=>\s*\(\{[^}]*e\.currentTarget/g;
-  assert.equal(
-    unsafe.test(src),
-    false,
-    'setState 的更新函数里读 e.currentTarget 会在 React 19 下崩溃；必须先同步取出 checked'
-  );
+  // 复选框已搬进独立抽屉组件；约束仍覆盖页面与组件两处，避免有人把旧写法加回来。
+  const pageSrc = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const drawerSrc = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
+  const unsafe = /(?:setOneClickSteps|onStepsChange)\(\s*\(s\)\s*=>\s*\(\{[^}]*e\.currentTarget/g;
+  for (const [name, src] of [['页面', pageSrc], ['抽屉', drawerSrc]]) {
+    assert.equal(
+      unsafe.test(src),
+      false,
+      `${name}：setState 的更新函数里读 e.currentTarget 会在 React 19 下崩溃；必须先同步取出 checked`
+    );
+  }
   // 修复形态必须保留：三个复选框各自先取值。
-  const safeAssignments = src.match(/const checked = e\.currentTarget\.checked;/g) || [];
+  const safeAssignments = (pageSrc + drawerSrc).match(/const checked = e\.currentTarget\.checked;/g) || [];
   assert.equal(safeAssignments.length, 3, '三个一键成片复选框都要先同步取出 checked');
 });
 
@@ -149,13 +153,11 @@ test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）'
 // 换了生成方式就会重新润色。覆盖策略必须在本抽屉可见并真正传给流水线。
 test('一键成片抽屉可直接改覆盖策略，且流水线真的用这个值', () => {
   const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
-  const start = src.indexOf('{oneClickOpen && (');
-  const end = src.indexOf('{oneDraftOpen && (');
-  assert.ok(start > 0 && end > start, '定位不到一键成片抽屉源码区间');
-  const drawer = src.slice(start, end);
-  assert.match(drawer, /value=\{oneDraftOverwrite\}/);
-  assert.match(drawer, /editor\.oneClickOverwriteNote/);
-  assert.match(src, /overwrite: oneDraftOverwrite === 'overwrite_all'/);
+  const drawer = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
+  assert.match(drawer, /value=\{overwrite\}/, '覆盖策略下拉要在本抽屉里');
+  assert.match(drawer, /editor\.oneClickOverwriteNote/, '抽屉里要说明覆盖策略的影响');
+  assert.match(src, /overwrite=\{oneDraftOverwrite\}/, '页面必须把覆盖策略传给抽屉');
+  assert.match(src, /overwrite: oneDraftOverwrite === 'overwrite_all'/, '流水线必须真的用这个值');
 });
 
 // 成稿预估（跳过/无可生成材料）是从编辑器里抽出来的纯函数，口径必须守住：
