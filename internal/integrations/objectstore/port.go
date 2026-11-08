@@ -70,6 +70,23 @@ type ObjectStore interface {
 	ApplyLifecyclePolicy(ctx context.Context, bucket string, policy LifecyclePolicy) error
 }
 
+// FilePublisher 是可选能力：后端支持「从本地文件路径发布对象」。
+//
+// 与 Put(reader) 的差别只在传输方式——同盘后端可以 rename（零读零写），跨盘退回拷贝；
+// 最终状态必须与 Put 完全一致（原子替换、权限、幂等覆盖）。调用方约定：
+//   - 成功返回后不得再读取 path 上的内容（可能已被移走）；
+//   - 对 path 做 os.Remove 在两种实现下都必须安全：rename 后路径不存在
+//     （幂等报 ENOENT），拷贝后文件仍在（正常删除）；
+//   - meta 里的 ContentHash/Size 是调用方已算好的内容身份，后端可不校验，
+//     但必须原样交给登记方（如 inventory）。
+//
+// 谁不该实现它：S3（本来就要把字节读出来上传，文件接口没有增益）与加密包装
+// （encryptionStore——文件路径上是明文，实现它等于绕过信封加密把明文落盘）。
+// 这两类后端由调用方按「未实现」回退 reader 路径。
+type FilePublisher interface {
+	PutFile(ctx context.Context, key ObjectKey, path string, meta ObjectMeta) error
+}
+
 // 错误哨兵：稳定错误语义，供上层分类处理。
 var (
 	// ErrKeyInvalid 表示 ObjectKey 不合法（空段、非法字符、路径穿越等）。

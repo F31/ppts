@@ -92,6 +92,23 @@ func (r *Registry) Put(ctx context.Context, key ObjectKey, reader io.Reader, met
 	return store.Put(ctx, key, reader, meta)
 }
 
+// PutFile 把文件发布路由到租户的后端；后端不支持文件发布时退回 reader 路径。
+// 路由层必须转发这个能力，否则生产接线（Registry 外面还包着 inventory）里
+// 本地后端的 rename 发布永远到不了 LocalFS。
+func (r *Registry) PutFile(ctx context.Context, key ObjectKey, path string, meta ObjectMeta) error {
+	if err := key.Validate(); err != nil {
+		return err
+	}
+	store, err := r.storeFor(ctx, key.TenantID)
+	if err != nil {
+		return err
+	}
+	if fp, ok := store.(FilePublisher); ok {
+		return fp.PutFile(ctx, key, path, meta)
+	}
+	return putFileFallback(ctx, store, key, path, meta)
+}
+
 func (r *Registry) Get(ctx context.Context, key ObjectKey) (io.ReadCloser, ObjectMeta, error) {
 	if err := key.Validate(); err != nil {
 		return nil, ObjectMeta{}, err

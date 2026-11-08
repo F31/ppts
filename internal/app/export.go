@@ -394,9 +394,10 @@ func (h *ExportHandler) storeArtifact(ctx context.Context, job *pipeline.Job, sn
 		TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: "artifact",
 		AssetType: "artifact", AssetID: out.contentHash, Ext: out.ext,
 	}
-	if err := h.objects.Put(ctx, key, out.reader, objectstore.ObjectMeta{
+	meta := objectstore.ObjectMeta{
 		ContentType: out.contentType, ContentHash: out.contentHash, Size: out.size,
-	}); err != nil {
+	}
+	if err := h.publish(ctx, key, out, meta); err != nil {
 		return nil, fmt.Errorf("export job: publish artifact: %w", err)
 	}
 	a, err := h.artifacts.Create(ctx, job.TenantID, artifact.NewArtifact{
@@ -415,6 +416,19 @@ func (h *ExportHandler) storeArtifact(ctx context.Context, job *pipeline.Job, sn
 		return nil, err
 	}
 	return a, nil
+}
+
+// publish 发布成品内容：文件产物优先走文件发布（objectstore.FilePublisher），
+// 大成品的发布从「哈希读一遍 + 上传再读一遍写一遍」变成只付哈希那一遍
+// （本地后端同盘 rename）。后端不支持文件发布（S3、加密包装）或产物在内存里
+// （srt/vtt/pptx）时走 reader 路径，发布语义不变。
+func (h *ExportHandler) publish(ctx context.Context, key objectstore.ObjectKey, out exportOutput, meta objectstore.ObjectMeta) error {
+	if out.file != nil {
+		if fp, ok := h.objects.(objectstore.FilePublisher); ok {
+			return fp.PutFile(ctx, key, out.file.Name(), meta)
+		}
+	}
+	return h.objects.Put(ctx, key, out.reader, meta)
 }
 
 func (h *ExportHandler) warnExport(msg string, job *pipeline.Job, err error) {

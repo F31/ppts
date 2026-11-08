@@ -21,6 +21,9 @@ const localScheme = "local"
 type LocalFS struct {
 	root   string
 	signer *Signer
+	// renameHook 只给测试用：模拟 rename 失败（跨盘 EXDEV、目标被独占句柄占用），
+	// 验证拷贝回退。nil 时用 os.Rename。
+	renameHook func(oldname, newname string) error
 }
 
 // NewLocal 创建本地适配器。secret 为空时 SignedURL 显式返回不支持。
@@ -108,6 +111,43 @@ func (l *LocalFS) Put(_ context.Context, key ObjectKey, r io.Reader, meta Object
 		return err
 	}
 	return nil
+}
+
+// PutFile 从本地文件路径发布对象（可选能力 FilePublisher）：同盘直接
+// rename 发布；跨盘或 rename 被拒时退回与 Put 相同的拷贝路径。
+//
+// 同一盘上 rename 只动目录项：发布一个大成品从「读一遍 + 写一遍」变成零字节搬运。
+// rename 失败的典型原因是跨盘（EXDEV / ERROR_NOT_SAME_DEVICE——产物临时目录与
+// 对象根不在一个卷）或目标被无 share-delete 的句柄占用；这两种情况拷贝都仍然可行，
+// 所以统一退回 Put，语义（临时文件 + rename 原子替换、0644 权限）不变。
+//
+// 成功走 rename 时调用方磁盘上的原路径已不存在；调用方对 path 的清理（os.Remove）
+// 依接口约定是幂等的，无需感知走了哪条路。
+func (l *LocalFS) PutFile(_ context.Context, key ObjectKey, path string, meta ObjectMeta) error {
+	full, err := l.pathFor(key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	// 权限对齐 Put：产物临时文件是 0600，直接 rename 会把这个权限带进对象根。
+	if err := os.Chmod(path, 0o644); err != nil {
+		return err
+	}
+	rename := os.Rename
+	if l.renameHook != nil {
+		rename = l.renameHook
+	}
+	if err := rename(path, full); err == nil {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return l.Put(context.Background(), key, f, meta)
 }
 
 // Get 读对象。对象不存在返回 ErrObjectNotFound。

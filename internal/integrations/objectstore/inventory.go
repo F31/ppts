@@ -33,6 +33,22 @@ func (s *inventoryStore) Put(ctx context.Context, key ObjectKey, r io.Reader, me
 	return s.recorder.RecordObject(ctx, key, meta)
 }
 
+// PutFile 文件发布同样要登记：跳过它的话，rename 上架的对象在用量账本里不存在，
+// 周级孤儿扫描会把仍被成品引用的对象误判成孤儿。内层不支持文件发布时退回 reader
+// 路径（putFileFallback），登记口径不变。
+func (s *inventoryStore) PutFile(ctx context.Context, key ObjectKey, path string, meta ObjectMeta) error {
+	if fp, ok := s.store.(FilePublisher); ok {
+		if err := fp.PutFile(ctx, key, path, meta); err != nil {
+			return err
+		}
+		return s.recorder.RecordObject(ctx, key, meta)
+	}
+	if err := putFileFallback(ctx, s.store, key, path, meta); err != nil {
+		return err
+	}
+	return s.recorder.RecordObject(ctx, key, meta)
+}
+
 func (s *inventoryStore) Get(ctx context.Context, key ObjectKey) (io.ReadCloser, ObjectMeta, error) {
 	return s.store.Get(ctx, key)
 }
