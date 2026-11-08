@@ -12,6 +12,11 @@
 --
 -- SQLite profile 不需要对齐：那一侧一直走 sqNullableTime，从未写入零值。
 --
+-- 执行身份：与 0026 等数据迁移一致，走发布用的 superuser 连接（README：
+-- PPTS_MIGRATE_DATABASE_URL）。jobs 是 FORCE ROW LEVEL SECURITY 的表，owner
+-- （ppts_migrator）也受策略约束，而这里没有 app.tenant_id 上下文——用普通角色跑
+-- 会静默更新 0 行，看起来"成功"，实际上什么都没做。
+--
 -- 幂等：第二次执行匹配 0 行。条件列上没有可用索引（run_at 是
 -- idx_jobs_claim 的第三列），但这是迁移期一次性扫描，可以接受；之后 Create
 -- 已经不会再产生这类行。
