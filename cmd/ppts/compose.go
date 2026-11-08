@@ -13,6 +13,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/db"
 	"github.com/F31/ppts/internal/gateway"
@@ -106,6 +107,13 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		return nil, err
 	}
 	set := &storeSet{cfg: cfg}
+	// 租户策略在对象读写的热路径上（每次操作读两次：信封加密开关 + 后端路由），
+	// 进程内 TTL 缓存把「每个对象操作一次 SELECT」降成「每个租户一个 TTL 一次 SELECT」。
+	// 关掉用 PPTS_TENANT_POLICY_CACHE=false，TTL 用 PPTS_TENANT_POLICY_CACHE_TTL 调。
+	policyCacheTTL := time.Duration(0)
+	if config.Bool("PPTS_TENANT_POLICY_CACHE", true) {
+		policyCacheTTL = config.Duration("PPTS_TENANT_POLICY_CACHE_TTL", tenant.DefaultPolicyCacheTTL)
+	}
 
 	switch cfg.Driver {
 	case db.DriverPostgres:
@@ -131,7 +139,7 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		set.artifacts = artifact.NewPGStore(pool)
 		set.members = membership.NewPGStore(pool)
 		set.audit = audit.NewPGStore(pool)
-		set.tenant = tenant.NewPGStore(pool)
+		set.tenant = tenant.NewPGStore(pool).WithPolicyCache(policyCacheTTL)
 		set.usage = usage.NewPGStore(pool)
 		set.pronunciation = pronunciation.NewPGStore(pool)
 		set.contextRule = contextrule.NewPGStore(pool)
@@ -165,7 +173,7 @@ func openStores(ctx context.Context) (*storeSet, error) {
 		set.artifacts = artifact.NewSQLiteStore(sqldb)
 		set.members = membership.NewSQLiteStore(sqldb)
 		set.audit = audit.NewSQLiteStore(sqldb)
-		set.tenant = tenant.NewSQLiteStore(sqldb)
+		set.tenant = tenant.NewSQLiteStore(sqldb).WithPolicyCache(policyCacheTTL)
 		set.usage = usage.NewSQLiteStore(sqldb)
 		set.pronunciation = pronunciation.NewSQLiteStore(sqldb)
 		set.contextRule = contextrule.NewSQLiteStore(sqldb)

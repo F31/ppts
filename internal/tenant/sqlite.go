@@ -18,14 +18,29 @@ var ErrNotSupported = errors.New("tenant: not supported in sqlite single-tenant 
 // 与 PGStore 同方法集，供 cmd 按驱动选择；本地租户由 db.EnsureLocalIdentity 播种。
 type SQLiteStore struct {
 	db *sql.DB
+	// cache 为 nil 表示直读（默认）。语义与 PGStore.cache 完全一致。
+	cache *policyCache
 }
 
 // NewSQLiteStore 创建 SQLite 租户存储。
 func NewSQLiteStore(sqldb *sql.DB) *SQLiteStore { return &SQLiteStore{db: sqldb} }
 
+// WithPolicyCache 让策略读走进程内 TTL 缓存；ttl<=0 表示不缓存。
+func (s *SQLiteStore) WithPolicyCache(ttl time.Duration) *SQLiteStore {
+	if ttl > 0 {
+		s.cache = newPolicyCache(ttl)
+	}
+	return s
+}
+
 // ─── 策略 ────────────────────────────────────────────────────────────────────
 
+// GetPolicy 读取租户策略。启用缓存时返回值是进程内共享值，只读。
 func (s *SQLiteStore) GetPolicy(ctx context.Context, tenantID string) (*Policy, error) {
+	return s.cache.load(ctx, tenantID, s.fetchPolicy)
+}
+
+func (s *SQLiteStore) fetchPolicy(ctx context.Context, tenantID string) (*Policy, error) {
 	var raw string
 	err := s.db.QueryRowContext(ctx, `SELECT policy FROM tenants WHERE id = ?`, tenantID).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -56,6 +71,8 @@ func (s *SQLiteStore) SetPolicy(ctx context.Context, tenantID string, policy Pol
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrTenantNotFound
 	}
+	// 写后失效：本地单进程部署下这就是强一致，不必等 TTL。
+	s.cache.invalidate(tenantID)
 	return nil
 }
 

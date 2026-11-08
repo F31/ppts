@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/F31/ppts/internal/animation"
 	"github.com/jackc/pgx/v5"
@@ -45,13 +46,34 @@ type LifecyclePolicySetting struct {
 // PGStore 读取控制面租户策略（tenants 表不在 RLS 保护范围）。
 type PGStore struct {
 	pool *pgxpool.Pool
+	// cache 为 nil 表示直读（默认）。是否缓存由装配层按 PPTS_TENANT_POLICY_CACHE_TTL 决定。
+	cache *policyCache
 }
 
 // NewPGStore 创建存储。
 func NewPGStore(pool *pgxpool.Pool) *PGStore { return &PGStore{pool: pool} }
 
+// WithPolicyCache 让策略读走进程内 TTL 缓存；ttl<=0 表示不缓存（保持直读）。
+//
+// 缓存挂在 store 上而不是另包一层装饰器：策略读有四种入口（GetPolicy /
+// ObjectStoreBackend / StorageRegion / ObjectEnvelopeEncryption），装饰器要么四处转发，
+// 要么被调用方绕过（比如把原始 store 直接塞进 objectstore.Registry）。挂在 store 里，
+// 四个入口天然共用一份缓存。
+func (s *PGStore) WithPolicyCache(ttl time.Duration) *PGStore {
+	if ttl > 0 {
+		s.cache = newPolicyCache(ttl)
+	}
+	return s
+}
+
 // GetPolicy 读取租户策略；不存在返回 ErrTenantNotFound。
+// 启用缓存时返回值是进程内共享值，只读；要改策略请构造新值调 SetPolicy。
 func (s *PGStore) GetPolicy(ctx context.Context, tenantID string) (*Policy, error) {
+	return s.cache.load(ctx, tenantID, s.fetchPolicy)
+}
+
+// fetchPolicy 是未命中时真正查库的那一次。
+func (s *PGStore) fetchPolicy(ctx context.Context, tenantID string) (*Policy, error) {
 	var raw []byte
 	err := s.pool.QueryRow(ctx, "SELECT policy FROM tenants WHERE id=$1", tenantID).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -133,5 +155,7 @@ func (s *PGStore) SetPolicy(ctx context.Context, tenantID string, policy Policy)
 	if tag.RowsAffected() == 0 {
 		return ErrTenantNotFound
 	}
+	// 写后失效：同一进程内的下一次读必须看到新策略，不能等 TTL 到期。
+	s.cache.invalidate(tenantID)
 	return nil
 }
