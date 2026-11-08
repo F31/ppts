@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -64,6 +65,10 @@ func auditSites(t *testing.T) []auditcoverage.Site {
 //
 // 覆盖矩阵本身由 `go run ./scripts/audit_coverage` 渲染，与这里共用 auditcoverage.Scan，
 // 不存在第二份清单。
+//
+// file 是该 action 的**登记归属文件**，不是行号：拆文件后需要同步改这一列。为了让"拆文件导致
+// 位置变化"和"埋点真的没了"在 CI 里可区分，断言分两种报错——前者叫位置漂移（并打印实际文件），
+// 后者才叫缺失。否则一次纯粹的结构重构会被读成安全回归。
 var requiredAudit = []struct {
 	file   string
 	action string
@@ -71,7 +76,7 @@ var requiredAudit = []struct {
 }{
 	// 删除类：对象被消掉之后，"谁干的"就没第二个地方问了。
 	{"internal/api/artifact.go", "artifact.delete", "成品删除"},
-	{"internal/api/editor.go", "project.source_revision.delete", "源版本软删"},
+	{"internal/api/editor_revision.go", "project.source_revision.delete", "源版本软删"},
 	{"internal/api/project.go", "project.archive", "项目归档（本系统里最接近删除的操作）"},
 	{"internal/api/public.go", "publication.delete", "公开作品下架"},
 	{"internal/api/tenant.go", "tenant.purge", "租户数据擦除"},
@@ -96,18 +101,25 @@ var requiredAudit = []struct {
 }
 
 func TestAuditCoverageRequiredActions(t *testing.T) {
+	root := repoRoot(t)
 	sites := auditSites(t)
+	// 先按 action 建索引：一个 action 可能出现在多个文件（如匿名访问的两条链路），
+	// 登记文件只要命中其中之一即视为通过。
+	locations := make(map[string][]string, len(sites))
+	for _, s := range sites {
+		locations[s.Action] = append(locations[s.Action], relFile(root, s.File))
+	}
 	for _, req := range requiredAudit {
-		var found bool
-		for _, s := range sites {
-			if relFile(repoRoot(t), s.File) == req.file && s.Action == req.action {
-				found = true
-				break
-			}
+		found := locations[req.action]
+		if len(found) == 0 {
+			t.Errorf("missing audit %q（%s）：全包内没有该 action", req.action, req.why)
+			continue
 		}
-		if !found {
-			t.Errorf("missing audit %q in %s（%s）", req.action, req.file, req.why)
+		if slices.Contains(found, req.file) {
+			continue
 		}
+		t.Errorf("audit %q 位置漂移（%s）：登记 %s，实际在 %v；若为拆文件所致，请更新 requiredAudit",
+			req.action, req.why, req.file, found)
 	}
 }
 
