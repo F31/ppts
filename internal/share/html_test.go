@@ -24,7 +24,7 @@ func noscriptFixture() ([]SlideEntry, []media.SubtitleCue) {
 // 只写一句"请启用 JavaScript"在 V17 的「可读」判据下是不合格的。
 func TestIndexHTMLNoscriptCarriesPagesAndScript(t *testing.T) {
 	slides, subtitles := noscriptFixture()
-	data, err := renderIndexHTML("季度复盘", slides, subtitles, false)
+	data, err := renderIndexHTML("季度复盘", slides, subtitles, false, FileAudioMix)
 	if err != nil {
 		t.Fatalf("renderIndexHTML: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestIndexHTMLNoscriptCarriesPagesAndScript(t *testing.T) {
 // 门禁「每张图都真的加载了」的判据会因此假红，所以模板里不能出现 loading="lazy"。
 func TestIndexHTMLEagerLoadsNoscriptImages(t *testing.T) {
 	slides, subtitles := noscriptFixture()
-	data, err := renderIndexHTML("t", slides, subtitles, false)
+	data, err := renderIndexHTML("t", slides, subtitles, false, FileAudioMix)
 	if err != nil {
 		t.Fatalf("renderIndexHTML: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestIndexHTMLEagerLoadsNoscriptImages(t *testing.T) {
 
 func TestIndexHTMLFallsBackWhenSlideHasNoScript(t *testing.T) {
 	slides := []SlideEntry{{SlideID: "slide-0", Image: "slides/001.jpg"}}
-	data, err := renderIndexHTML("t", slides, nil, false)
+	data, err := renderIndexHTML("t", slides, nil, false, "")
 	if err != nil {
 		t.Fatalf("renderIndexHTML: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestIndexHTMLFallsBackWhenSlideHasNoScript(t *testing.T) {
 
 // 标题是 PPT 里的不可信输入：必须被转义，不能因为进了 noscript 就漏掉。
 func TestIndexHTMLEscapesTitleInsideNoscript(t *testing.T) {
-	data, err := renderIndexHTML(`季度 <script>alert(1)</script>`, nil, nil, false)
+	data, err := renderIndexHTML(`季度 <script>alert(1)</script>`, nil, nil, false, "")
 	if err != nil {
 		t.Fatalf("renderIndexHTML: %v", err)
 	}

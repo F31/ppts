@@ -8,12 +8,34 @@ import (
 	"io/fs"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/share"
 )
 
 // MethodExportBundle 是隐私模式下的本地打包方法。
 const MethodExportBundle = "export_bundle"
+
+// audioEncoder 是本机可用的 AAC 编码器；nil 表示混音轨保持 WAV。
+//
+// 只探一次：这台机器有没有 ffmpeg 在一次进程生命周期内不会变，而每个导出请求
+// 都做两次 LookPath 只会让"导出慢"多一个可疑点。
+//
+// 探测失败**不是错误**：隐私模式的承诺是"不联网也能导出"，ffmpeg 缺失时产出的
+// 包照样能播，只是音频从 AAC 变回 WAV（体积大 6–12 倍）。把它做成硬失败等于
+// 用"更小的包"换掉了"能导出"。
+var localAudioOnce sync.Once
+var localAudio share.M4AEncoder
+
+func localAudioEncoder() share.M4AEncoder {
+	localAudioOnce.Do(func() {
+		if enc, err := media.NewMP4Encoder(); err == nil {
+			localAudio = enc
+		}
+	})
+	return localAudio
+}
 
 // ExportBundleRequest 是本地打包请求。
 //
@@ -67,7 +89,8 @@ func methodExportBundle(ctx context.Context, req *Request) (any, error) {
 	}
 
 	manifest, err := share.BuildLocalToDir(ctx, share.LocalBundle{
-		Root: in.Root,
+		Root:    in.Root,
+		Encoder: localAudioEncoder(),
 		Input: share.BundleInput{
 			Timeline:    timeline,
 			PagePNGKeys: in.PagePNGKeys,

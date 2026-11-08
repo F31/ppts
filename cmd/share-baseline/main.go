@@ -52,6 +52,23 @@ func cyclePages(src [][]byte, pages int) [][]byte {
 	return src
 }
 
+// audioEncoder 返回可用的 AAC 编码器；nil 表示混音轨保持 WAV。
+//
+// 返回值刻意声明成接口：若写 `*media.MP4Encoder` 再返回，失败时的 nil 指针装进
+// 接口会变成「非 nil 的接口」，打包器据此认为有编码器，于是每次导出都多一条
+// 本不该出现的「转码失败」——而真实原因是这台机器没装 ffmpeg。
+func audioEncoder(enabled bool) share.M4AEncoder {
+	if !enabled {
+		return nil
+	}
+	enc, err := media.NewMP4Encoder()
+	if err != nil {
+		log.Printf("share-baseline: ffmpeg 不可用，混音轨保持 WAV（体积约是 AAC 的 6–12 倍）：%v", err)
+		return nil
+	}
+	return enc
+}
+
 func main() {
 	var (
 		pages    = flag.Int("pages", 30, "页数")
@@ -75,6 +92,9 @@ func main() {
 		// 内嵌字体（M6-4）：直接塞给定字体文件，不做裁剪——这个工具的职责是造夹具，
 		// 裁剪属于渲染服务。想造「覆盖率达标」的夹具，就先按夹具字幕裁一份再传进来。
 		fontPath = flag.String("font", "", "可选：内嵌该字体文件（OTF/TTF）")
+		// 混音轨转码是成品包体积的主要来源（WAV→AAC 约 1/6）；做成开关是为了
+		// 让「转与不转」的对照能在同一条命令上做出来，而不是靠改代码比大小。
+		aac = flag.Bool("aac", true, "混音轨转 AAC（需 ffmpeg；不可用时自动退回 WAV）")
 	)
 	flag.Parse()
 
@@ -217,7 +237,9 @@ func main() {
 		TextCopy:     *textCopy,
 		Watermark:    *watermark,
 	}
-	manifest, err := share.NewBundleBuilder(reader, nil).Build(context.Background(), bundleIn, &buf)
+	encoder := audioEncoder(*aac)
+	manifest, err := share.NewBundleBuilder(reader, nil).SetAudioEncoder(encoder).
+		Build(context.Background(), bundleIn, &buf)
 	if err != nil {
 		log.Fatalf("share-baseline: %v", err)
 	}
@@ -238,7 +260,8 @@ func main() {
 
 	if *singlePath != "" {
 		// 单文件与目录包同源（同一个 bundleIn）：这里只是换一种写法。
-		single, _, serr := share.NewBundleBuilder(reader, nil).BuildSingle(context.Background(), bundleIn)
+		single, _, serr := share.NewBundleBuilder(reader, nil).SetAudioEncoder(encoder).
+			BuildSingle(context.Background(), bundleIn)
 		if serr != nil {
 			log.Fatalf("share-baseline: build single: %v", serr)
 		}
@@ -253,7 +276,7 @@ func main() {
 		// 目录形态也用同一份 bundleIn：此前这里另写了一个字面量，于是 -text-copy
 		// 只对 zip 生效、目录包静默退回默认值——两种形态的清单开始不一致。
 		if _, err := share.BuildLocalToDir(context.Background(), share.LocalBundle{
-			Root: writeStagingDir(pageBytes, timeline), Input: bundleIn,
+			Root: writeStagingDir(pageBytes, timeline), Input: bundleIn, Encoder: encoder,
 		}, *outDir); err != nil {
 			log.Fatalf("share-baseline: write dir: %v", err)
 		}
@@ -309,14 +332,14 @@ func summarize(source string, m *share.Manifest, files map[string][]byte, zipByt
 	buckets := map[string]*bucket{
 		"底图（slides/NNN.*）":       {Name: "底图（slides/NNN.*）"},
 		"层图（slides/*-layer-*）":   {Name: "层图（slides/*-layer-*）"},
-		"逐段音频（audio/NNN.wav）":    {Name: "逐段音频（audio/NNN.wav）"},
-		"混音轨（audio/mix.wav）":     {Name: "混音轨（audio/mix.wav）"},
+		"逐段音频（audio/NNN.*）":      {Name: "逐段音频（audio/NNN.*）"},
+		"混音轨（audio/mix.*）":       {Name: "混音轨（audio/mix.*）"},
 		"播放器（app.js/app.css）":    {Name: "播放器（app.js/app.css）"},
 		"字幕（subtitles.*）":        {Name: "字幕（subtitles.*）"},
 		"其他（index/manifest/时间轴）": {Name: "其他（index/manifest/时间轴）"},
 	}
 	order := []string{
-		"底图（slides/NNN.*）", "层图（slides/*-layer-*）", "逐段音频（audio/NNN.wav）", "混音轨（audio/mix.wav）",
+		"底图（slides/NNN.*）", "层图（slides/*-layer-*）", "逐段音频（audio/NNN.*）", "混音轨（audio/mix.*）",
 		"播放器（app.js/app.css）", "字幕（subtitles.*）", "其他（index/manifest/时间轴）",
 	}
 	var total int64
@@ -329,10 +352,12 @@ func summarize(source string, m *share.Manifest, files map[string][]byte, zipByt
 			key = "层图（slides/*-layer-*）"
 		case strings.HasPrefix(name, "slides/"):
 			key = "底图（slides/NNN.*）"
-		case name == share.FileAudioMix:
-			key = "混音轨（audio/mix.wav）"
+		case name == share.FileAudioMix || name == share.FileAudioMixM4A:
+			// 混音轨可能是 WAV 也可能是转码后的 m4a：按前缀判会把混音轨算进
+			// 「逐段音频」，于是「音频到底占多少」这个结论随是否装 ffmpeg 而变。
+			key = "混音轨（audio/mix.*）"
 		case strings.HasPrefix(name, "audio/"):
-			key = "逐段音频（audio/NNN.wav）"
+			key = "逐段音频（audio/NNN.*）"
 		case name == share.FileAppJS || name == share.FileAppCSS:
 			key = "播放器（app.js/app.css）"
 		case strings.HasPrefix(name, "subtitles."):
@@ -346,7 +371,7 @@ func summarize(source string, m *share.Manifest, files map[string][]byte, zipByt
 		Source: source, Pages: pages, PageSeconds: pageSecs,
 		DurationUS: m.Artifact.DurationUS, ZipBytes: int64(zipBytes), Uncompressed: total,
 		BuildMillis:   elapsed.Milliseconds(),
-		AudioMixBytes: int64(len(files[share.FileAudioMix])),
+		AudioMixBytes: int64(len(files[m.AudioMix])),
 	}
 	for _, name := range order {
 		out.Buckets = append(out.Buckets, *buckets[name])

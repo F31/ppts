@@ -21,6 +21,7 @@
 | [029](./ADR-029-product-decisions-animation-html.md) | 动画与 HTML 成品的六项产品决策（全片预览/免费层/竖屏/Lottie/成品形态/文本复制） | 已采纳（②③⑥ 分阶段实现） | 独立记录 |
 | [030](./ADR-030-config-reading-policy.md) | 环境读取统一走 `internal/config`，装配层不直读 env、不自建解析器 | 已实现 | 独立记录 |
 | [031](./ADR-031-measured-fps-degradation.md) | 成品包实测帧率降级：2s 窗口 × 连续 2 窗，只拆动画层、单向不回退 | 已实现 | 独立记录 |
+| [032](./ADR-032-bundle-audio-aac.md) | 成品包混音轨转 AAC 64k 单声道：编码器注入、失败退回 WAV、强制 bitexact | 已实现 | 独立记录 |
 
 ## 为什么 001–016 没有独立文件
 

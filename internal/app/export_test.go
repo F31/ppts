@@ -239,6 +239,50 @@ func TestExportHandlerPublishesHTMLBundle(t *testing.T) {
 	}
 }
 
+// TestExportHandlerTranscodesBundleAudio 守护「导出器真的把编码器交给了打包器」。
+//
+// 上一条用例传的是 nil 编码器，走的是退回 WAV 的分支——它能证明包可用，但证明不了
+// 接线存在。接线一旦被删掉，产物只是默默变回 6 倍大，没有任何用例会红。
+func TestExportHandlerTranscodesBundleAudio(t *testing.T) {
+	encoder, err := media.NewMP4Encoder()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	// 夹具音频必须与时间轴声明等长：混音器按 2ms 容差核对片段时长，
+	// 给一段 1 秒的音频配 100ms 的时间轴会让混音直接失败、audioMix 变空。
+	putObject(t, objects, audioKey, pcmWAVForExportTest(24000, 2400), "audio/wav")
+	pageKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "render", AssetType: "page", AssetID: "p1", Ext: "png",
+	}
+	putObject(t, objects, pageKey, pngForExportTest(), "image/png")
+
+	artifacts := &artifactStoreStub{}
+	handler := NewExportHandler(artifacts, &stepRecorder{}, objects, encoder)
+	if err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatHTMLBundle, TimelineKey: bundleKey.String(),
+		PagePNGKeys: []string{pageKey.String()}, Width: 1920, Height: 1080, FPS: 30,
+	})); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	key, err := objectstore.Parse(artifacts.created.ObjectKey)
+	if err != nil {
+		t.Fatalf("artifact key: %v", err)
+	}
+	manifest, files, err := share.VerifyBundle(readAll(t, objects, key))
+	if err != nil {
+		t.Fatalf("VerifyBundle: %v", err)
+	}
+	if manifest.AudioMix != share.FileAudioMixM4A {
+		t.Fatalf("audioMix = %q, want %q：导出器没有把编码器交给打包器", manifest.AudioMix, share.FileAudioMixM4A)
+	}
+	if _, ok := files[share.FileAudioMix]; ok {
+		t.Fatal("bundle still carries the wav mix alongside the m4a one")
+	}
+}
+
 // TestExportHandlerWebProjectUnchanged 守护「新增 html_bundle 不改旧包」的承诺：
 // web_project 仍只含 timeline.json + 字幕 + 音频，不应出现 index.html/清单/播放器。
 func TestExportHandlerWebProjectUnchanged(t *testing.T) {

@@ -151,10 +151,23 @@ func TestExportBundleWritesPlayableDirectory(t *testing.T) {
 	if result.DurationUS != 200_000 {
 		t.Fatalf("durationUs = %d", result.DurationUS)
 	}
-	for _, name := range []string{share.FileIndexHTML, share.FileManifestJSON, "slides/001.jpg", "audio/mix.wav", share.FileAppJS} {
+	for _, name := range []string{share.FileIndexHTML, share.FileManifestJSON, "slides/001.jpg", share.FileAppJS} {
 		if _, err := os.Stat(filepath.Join(req.OutDir, filepath.FromSlash(name))); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
 		}
+	}
+	// 混音轨的名字取决于本机有没有 ffmpeg：装了是 mix.m4a，没装退回 mix.wav。
+	// 写死其中一个会让这条用例在 CI 绿、在开发机红（或反过来），
+	// 而它真正要验证的是「音频真的落进了目录」。
+	mix := ""
+	for _, name := range []string{share.FileAudioMixM4A, share.FileAudioMix} {
+		if _, err := os.Stat(filepath.Join(req.OutDir, filepath.FromSlash(name))); err == nil {
+			mix = name
+			break
+		}
+	}
+	if mix == "" {
+		t.Fatalf("目录里没有混音轨（%s 或 %s）", share.FileAudioMixM4A, share.FileAudioMix)
 	}
 	if result.Bytes <= 0 {
 		t.Fatalf("bytes = %d, want positive", result.Bytes)

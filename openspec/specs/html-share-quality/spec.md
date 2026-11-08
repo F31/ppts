@@ -98,9 +98,13 @@
 
 ### Requirement: 体积构成可测量
 
-打包器 MUST 能给出成品包按类别（页图、层图、音频、播放器、字幕、清单）的字节数与动画页数。门禁 MUST 按 `3 MiB + 0.55 MiB/分钟` 判定预算，超预算时 MUST 告警并列出构成明细，MUST NOT 静默通过。
+打包器 MUST 能给出成品包按类别（页图、层图、音频、播放器、字幕、清单）的字节数与动画页数。门禁 MUST 按 `3 MiB + 0.5625 MiB/分钟` 判定预算，超预算时 MUST 告警并列出构成明细，MUST NOT 静默通过。
 
-门禁报告 MUST 明确标注未实现项（字体子集、WebP、AAC），MUST NOT 对未实现项给出「通过」。
+混音轨 MUST 转成 AAC 64kbps 单声道（`audio/mix.m4a`）；编码器不可用、编码失败或产出不比 WAV 更小时 MUST 退回 `audio/mix.wav` 并继续导出——「更小的包」MUST NOT 以「导不出来」为代价。
+
+门禁报告 MUST 给出混音轨的**实际编码**（aac / pcm / none），MUST NOT 只报总体积：同一份代码在装与不装 ffmpeg 的机器上产出的包差 6 倍，只报体积会让人误以为这一版变好了。
+
+门禁报告 MUST 明确标注仍未实现的项（WebP 图像编码），MUST NOT 对未实现项给出「通过」；字体子集与音频转码已实现，报告 MUST 按**实际产物**判定，MUST NOT 照抄「已实现」当结论。
 
 #### Scenario: 报告可定位超标项
 
@@ -109,8 +113,15 @@
 
 #### Scenario: 未实现项不得伪装通过
 
-- **WHEN** 包内没有内嵌字体（当前实现的常态）
+- **WHEN** 包内没有内嵌字体（未传字体的包）
 - **THEN** 「字体子集覆盖率」MUST 标注为 `not_applicable`，MUST NOT 记为 `pass`
+
+#### Scenario: 音频转码失败不阻断导出
+
+- **WHEN** 机器上没有 ffmpeg，或编码器报错、产出为空、产出比 WAV 还大
+- **THEN** 包内 MUST 是 `audio/mix.wav`，清单 `audioMix` MUST 指向它，`audio[].src` MUST 全部指向它
+- **AND** 导出 MUST 成功，MUST NOT 因为「压不小」而失败
+- **AND** 报告 MUST 写明 `pcm（audio/mix.wav，未转码）`
 
 ### Requirement: 门禁报告的引擎可追溯
 

@@ -113,6 +113,11 @@ func normalizeLocalKey(key string) (string, error) {
 type LocalBundle struct {
 	Root  string
 	Input BundleInput
+	// Encoder 可选：把混音轨转成 AAC。nil = 保持 WAV（包能播，只是大 6–12 倍）。
+	//
+	// 放在这里而不是写进 BundleInput：BundleInput 描述「打什么」，编码器描述
+	// 「用什么打」。隐私模式下有没有 ffmpeg 取决于用户机器，能力必须由调用方给。
+	Encoder M4AEncoder
 }
 
 // BuildLocalToDir 在本地生成成品包并写到 outDir（tasks 5.1/5.2）。
@@ -123,7 +128,7 @@ func BuildLocalToDir(ctx context.Context, in LocalBundle, outDir string) (*Manif
 	if err != nil {
 		return nil, err
 	}
-	return NewBundleBuilder(reader, nil).BuildDir(ctx, in.Input, outDir)
+	return NewBundleBuilder(reader, nil).SetAudioEncoder(in.Encoder).BuildDir(ctx, in.Input, outDir)
 }
 
 // BuildLocalToZip 与 BuildLocalToDir 同源，只是落成可分发的 zip（测试与 CLI 用）。
@@ -132,7 +137,7 @@ func BuildLocalToZip(ctx context.Context, in LocalBundle, out io.Writer) (*Manif
 	if err != nil {
 		return nil, err
 	}
-	return NewBundleBuilder(reader, nil).Build(ctx, in.Input, out)
+	return NewBundleBuilder(reader, nil).SetAudioEncoder(in.Encoder).Build(ctx, in.Input, out)
 }
 
 // ReadLocalTimeline 从本地目录读取时间轴，作为隐私模式的时间来源。

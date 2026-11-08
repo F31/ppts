@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/F31/ppts/internal/share"
@@ -25,10 +26,13 @@ type result struct {
 	Slides        int    `json:"slides"`
 	AudioSegments int    `json:"audioSegments"`
 	AudioMix      bool   `json:"audioMix"`
-	DurationUS    int64  `json:"durationUs"`
-	Entries       int    `json:"entries"`
-	TotalBytes    int64  `json:"totalBytes"`
-	ExternalRefs  int    `json:"externalRefs"`
+	// AudioCodec 是混音轨的实际编码（aac / pcm / none）。体积结论随它而变：
+	// 同样的包在装了 ffmpeg 的机器上小 6 倍，只报一个总体积会让人以为「这版变好了」。
+	AudioCodec   string `json:"audioCodec"`
+	DurationUS   int64  `json:"durationUs"`
+	Entries      int    `json:"entries"`
+	TotalBytes   int64  `json:"totalBytes"`
+	ExternalRefs int    `json:"externalRefs"`
 	// ExternalRefSamples 给出「哪个条目里的哪一段」。只报数量的话排查要从头 grep。
 	ExternalRefSamples map[string][]string `json:"externalRefSamples,omitempty"`
 	Measure            share.Measurement   `json:"measure"`
@@ -66,6 +70,7 @@ func main() {
 		Slides:             len(manifest.Slides),
 		AudioSegments:      len(manifest.Audio),
 		AudioMix:           manifest.AudioMix != "",
+		AudioCodec:         audioCodec(manifest.AudioMix),
 		DurationUS:         manifest.Artifact.DurationUS,
 		Entries:            len(files),
 		TotalBytes:         measure.TotalBytes,
@@ -136,11 +141,28 @@ var kindLabels = map[string]string{
 	share.KindOther:     "其它",
 }
 
+// audioCodec 由混音轨的文件名给出实际编码。
+//
+// 不读文件头：清单里的 audioMix 就是播放器用它去请求的那条路径，二者必须一致；
+// 用扩展名判断也让「清单说 m4a、包里却是 wav」这类不一致在报告里直接可见。
+func audioCodec(mix string) string {
+	switch {
+	case mix == "":
+		return "none"
+	case strings.HasSuffix(strings.ToLower(mix), ".m4a"):
+		return "aac（" + mix + "）"
+	case strings.HasSuffix(strings.ToLower(mix), ".wav"):
+		return "pcm（" + mix + "，未转码）"
+	default:
+		return mix
+	}
+}
+
 func printResult(r result) {
 	m := r.Measure
 	fmt.Printf("目标：%s（%s）\n", r.Target, r.Kind)
-	fmt.Printf("清单：schema v%d，%d 页（含动画 %d 页 / %d 层），%d 段音频，混音轨=%v，时长 %s\n",
-		r.SchemaVersion, r.Slides, m.AnimatedSlides, m.Layers, r.AudioSegments, r.AudioMix,
+	fmt.Printf("清单：schema v%d，%d 页（含动画 %d 页 / %d 层），%d 段音频，混音轨=%s，时长 %s\n",
+		r.SchemaVersion, r.Slides, m.AnimatedSlides, m.Layers, r.AudioSegments, r.AudioCodec,
 		formatDuration(r.DurationUS))
 	budgetState := "在预算内"
 	if m.OverBudget {

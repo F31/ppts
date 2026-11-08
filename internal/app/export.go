@@ -578,6 +578,18 @@ func (h *ExportHandler) htmlBundleInput(ctx context.Context, job *pipeline.Job, 
 	}, pages, nil
 }
 
+// audioEncoder 返回可用的 AAC 编码器；nil 表示成品包退回 WAV。
+//
+// 返回接口而不是 *media.MP4Encoder：把 nil 指针装进接口会得到「非 nil 的接口」，
+// 打包器据此判断"有编码器"就会对一个空壳调用，最后在日志里看到一条本不该出现的
+// 编码失败——把类型转换收在这一个地方，判断才可靠。
+func (h *ExportHandler) audioEncoder() share.M4AEncoder {
+	if h.encoder == nil {
+		return nil
+	}
+	return h.encoder
+}
+
 // packHTMLBundle 打包「静态讲解成品包」（html_bundle，M6-1）：解压双击 index.html 即可播放。
 func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
 	bundle *TimelineAsset, snapshotHash string) (*os.File, error) {
@@ -593,7 +605,8 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		tmp.Close()
 		os.Remove(tmp.Name())
 	}
-	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
+	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger).
+		SetAudioEncoder(h.audioEncoder())
 	manifest, err := builder.Build(ctx, in, tmp)
 	if err != nil {
 		cleanup()
@@ -620,7 +633,8 @@ func (h *ExportHandler) packHTMLSingle(ctx context.Context, job *pipeline.Job, s
 	if err != nil {
 		return nil, err
 	}
-	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger)
+	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger).
+		SetAudioEncoder(h.audioEncoder())
 	data, manifest, err := builder.BuildSingle(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("export job: pack single-file html: %w", err)

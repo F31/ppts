@@ -30,16 +30,19 @@ import (
 
 // 包内固定条目名。全部由本包生成，绝不采用用户输入拼接路径。
 const (
-	FileIndexHTML     = "index.html"
-	FileManifestJSON  = "manifest.json"
-	FileManifestJS    = "manifest.js"
-	FileSubtitlesVTT  = "subtitles.vtt"
-	FileSubtitlesSRT  = "subtitles.srt"
-	FileSubtitlesJS   = "subtitles.js"
-	FileTimelineJSON  = "timeline.json"
-	FileAppJS         = "app.js"
-	FileAppCSS        = "app.css"
-	FileAudioMix      = "audio/mix.wav"
+	FileIndexHTML    = "index.html"
+	FileManifestJSON = "manifest.json"
+	FileManifestJS   = "manifest.js"
+	FileSubtitlesVTT = "subtitles.vtt"
+	FileSubtitlesSRT = "subtitles.srt"
+	FileSubtitlesJS  = "subtitles.js"
+	FileTimelineJSON = "timeline.json"
+	FileAppJS        = "app.js"
+	FileAppCSS       = "app.css"
+	FileAudioMix     = "audio/mix.wav"
+	// FileAudioMixM4A 是混音轨转码后的落点；与 FileAudioMix **互斥**——
+	// 包里只有一条混音轨，清单的 audioMix 指向实际存在的那条。
+	FileAudioMixM4A   = "audio/mix.m4a"
 	slideEntryPattern = "slides/%03d%s"
 	// layerEntryPattern 用「页号-layer-层序」，层序与清单 layers 下标一致：
 	// 排查时能直接从文件名定位到清单第几项，不必反查。
@@ -163,6 +166,26 @@ type BundleBuilder struct {
 	reader      ResourceReader
 	logger      *slog.Logger
 	maxLongEdge int
+	// audioEncoder 为 nil 时混音轨保持 WAV（体积是 AAC 的 6–12 倍）。
+	audioEncoder M4AEncoder
+}
+
+// M4AEncoder 把整段混音 WAV 转成 AAC（.m4a）。
+//
+// 做成接口而不是在包里直接调 ffmpeg：share 的定位是纯装配，它不该知道音频是
+// 用什么编的；隐私模式（用户机器上可能没有 ffmpeg）与云端必须共用同一条装配
+// 路径，差别只在「有没有注入编码器」。没有注入或编码失败时退回 WAV——
+// 包照样能播，只是更大，这条降级由 writeAudio 保证。
+type M4AEncoder interface {
+	EncodeM4A(ctx context.Context, wav []byte) ([]byte, error)
+}
+
+// SetAudioEncoder 注入 AAC 编码器；传 nil 表示不压缩。返回自身便于链式调用。
+func (b *BundleBuilder) SetAudioEncoder(enc M4AEncoder) *BundleBuilder {
+	if b != nil {
+		b.audioEncoder = enc
+	}
+	return b
 }
 
 // NewBundleBuilder 构造打包器。logger 可为 nil（打包是纯函数式流程，日志只用于降级告警）。
@@ -336,7 +359,7 @@ func (b *BundleBuilder) buildInto(
 	if err := emit(FileAppCSS, appCSS); err != nil {
 		return nil, nil, err
 	}
-	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles, in.Font != nil)
+	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles, in.Font != nil, manifest.AudioMix)
 	if err != nil {
 		return nil, nil, fmt.Errorf("share: render index.html: %w", err)
 	}
@@ -586,14 +609,12 @@ func (b *BundleBuilder) writeAudio(
 
 	names := make(map[string]string, len(order))
 	mixName := ""
-	var mix bytes.Buffer
 	if len(order) > 0 {
-		if mixErr := media.WriteTimelineWAV(&mix, timeline, clips); mixErr != nil {
-			b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", mixErr)
-		} else if err := write(FileAudioMix, mix.Bytes()); err != nil {
-			return nil, "", err
-		} else {
-			mixName = FileAudioMix
+		if name, data := b.packMix(ctx, timeline, clips); name != "" {
+			if err := write(name, data); err != nil {
+				return nil, "", err
+			}
+			mixName = name
 		}
 	}
 
@@ -621,6 +642,48 @@ func (b *BundleBuilder) writeAudio(
 		}
 	}
 	return entries, mixName, nil
+}
+
+// packMix 组装整段混音轨，并在注入了编码器时转成 AAC。
+//
+// 返回的条目名是**实际**要写进包的名字：转码成功是 audio/mix.m4a，其余情况是
+// audio/mix.wav。清单与 <noscript> 提示都要用这个返回值，不能各自写死——
+// 写死的现场是「提示让你去找 mix.wav，包里只有 mix.m4a」。
+// 返回空名表示拿不到可用混音轨，调用方退回逐段音频。
+func (b *BundleBuilder) packMix(ctx context.Context, timeline *media.Timeline, clips map[string][]byte) (string, []byte) {
+	var mix bytes.Buffer
+	if err := media.WriteTimelineWAV(&mix, timeline, clips); err != nil {
+		b.logf(slog.LevelWarn, "share: assemble audio mix failed, falling back to per-segment playback", "error", err)
+		return "", nil
+	}
+	wav := mix.Bytes()
+	// 编码成功也把 wav 交出去：bytes.Buffer 的底层数组由这里持有，
+	// 而 write 会立刻消费掉，不必为「可能要回退」再复制一份 14MB。
+	keep := func(reason string, err error) (string, []byte) {
+		if err != nil {
+			b.logf(slog.LevelWarn, "share: transcode audio mix to aac failed, keeping wav", "reason", reason, "error", err, "wavBytes", len(wav))
+		} else {
+			b.logf(slog.LevelInfo, "share: keeping wav audio mix", "reason", reason, "wavBytes", len(wav))
+		}
+		return FileAudioMix, wav
+	}
+	if b.audioEncoder == nil {
+		return FileAudioMix, wav
+	}
+	m4a, err := b.audioEncoder.EncodeM4A(ctx, wav)
+	if err != nil {
+		return keep("encode_error", err)
+	}
+	if len(m4a) == 0 {
+		return keep("empty_output", nil)
+	}
+	// 极短的混音轨上 AAC 的头与帧开销可能反超 WAV（几秒的样本就会撞上）。
+	// 目标始终是「更小」，不是为了在清单里写 aac。
+	if len(m4a) >= len(wav) {
+		return keep("not_smaller", nil)
+	}
+	b.logf(slog.LevelInfo, "share: audio mix transcoded", "codec", "aac", "wavBytes", len(wav), "m4aBytes", len(m4a))
+	return FileAudioMixM4A, m4a
 }
 
 func (b *BundleBuilder) readPagePNG(ctx context.Context, key string) ([]byte, error) {

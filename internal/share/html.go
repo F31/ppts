@@ -48,7 +48,7 @@ var indexTemplate = template.Must(template.New("index.html").Parse(`<!doctype ht
 <noscript><div class="ppts-noscript">
 <div class="ppts-noscript-inner">
 <h1 class="ppts-noscript-title">{{.Title}}</h1>
-<p class="ppts-noscript-note">当前环境未启用 JavaScript，无法播放音视频。下面按页列出全部画面与讲稿：音频为同目录 <code>audio/mix.wav</code>，字幕为 <code>subtitles.vtt</code>。</p>
+<p class="ppts-noscript-note">当前环境未启用 JavaScript，无法播放音视频。下面按页列出全部画面与讲稿：{{if .AudioName}}音频为同目录 <code>{{.AudioName}}</code>，{{end}}字幕为 <code>subtitles.vtt</code>。</p>
 {{range .Pages}}<figure class="ppts-noscript-page">
 <img class="ppts-noscript-image" src="{{.Image}}" alt="第 {{.Index}} 页">
 <figcaption class="ppts-noscript-text">{{.Text}}</figcaption>
@@ -83,7 +83,11 @@ type indexData struct {
 	// HasFont 决定是否引用 fonts.css。没有内嵌字体时不写这个 <link>：
 	// 引用一个不存在的文件会让控制台多一条 404，而它对排障毫无帮助。
 	HasFont bool
-	Pages   []noscriptPage
+	// AudioName 是包内混音轨的**实际**路径（混音轨转码后是 audio/mix.m4a）。
+	// 空表示这个包没有混音轨，提示里就不提音频——让用户去找一个不存在的文件
+	// 比不告诉他更糟。
+	AudioName string
+	Pages     []noscriptPage
 }
 
 // renderIndexHTML 生成成品首页。
@@ -93,7 +97,10 @@ type indexData struct {
 //
 // pages / subtitles 只用于 <noscript> 分支：禁用 JS 时没有任何脚本能补内容，
 // 「封面 + 逐页静态图 + 讲稿」必须在打包时写死（design ADR-4）。
-func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.SubtitleCue, hasFont bool) ([]byte, error) {
+//
+// audioName 必须是清单里那个实际文件名（见 packMix）：转码后是 .m4a，
+// 退回 WAV 时是 .wav。这里不接受"猜"——猜错的代价是用户按提示找不到文件。
+func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.SubtitleCue, hasFont bool, audioName string) ([]byte, error) {
 	if title == "" {
 		title = "讲解视频"
 	}
@@ -114,7 +121,7 @@ func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.Subtitl
 
 	var buf bytes.Buffer
 	attr := template.HTMLAttr(`http-equiv="Content-Security-Policy" content="` + indexCSP + `"`)
-	data := indexData{Title: title, CSPAttr: attr, HasFont: hasFont, Pages: items}
+	data := indexData{Title: title, CSPAttr: attr, HasFont: hasFont, AudioName: audioName, Pages: items}
 	if err := indexTemplate.Execute(&buf, data); err != nil {
 		return nil, err
 	}
