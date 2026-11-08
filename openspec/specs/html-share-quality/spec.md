@@ -69,7 +69,7 @@
 
 ### Requirement: 降级矩阵逐条可执行
 
-以下四种条件 MUST 各有自动化用例，且判据为「页面可读」而不是「没有抛错」：
+以下五种条件 MUST 各有自动化用例，且判据为「页面可读」而不是「没有抛错」：
 
 | 条件 | 判据 |
 |---|---|
@@ -77,11 +77,19 @@
 | 无 WAAPI | 层元素 `transform` 为 `none`、`opacity` 为 `1`（终态可见） |
 | `prefers-reduced-motion: reduce` | 层 `opacity` 仍随时间变化、无位移/缩放、动画时长与默认态一致 |
 | 低内存（`deviceMemory < 4`） | 不创建层元素，页面仍渲染当前页与字幕 |
+| 实测低帧率（连续窗口 fps < 24） | 先看到层、后看到层数为 0；`stage` 与字幕文本仍在 |
 
 #### Scenario: 禁用 JavaScript 仍可读
 
 - **WHEN** 以禁用脚本的方式打开成品包
 - **THEN** 页面 MUST 呈现标题、逐页静态图与对应讲稿文本，MUST NOT 只显示一句「需要启用 JavaScript」
+
+#### Scenario: 实测低帧率按「跑起来之后」判
+
+- **WHEN** 主线程/GPU 跟不上（`deviceMemory` 正常，但实测帧率连续低于阈值）
+- **THEN** 播放器 MUST 退成「静态页 + 音频 + 字幕」，已建的元素层 MUST 当场释放，后续页 MUST NOT 再建层
+- **AND** 该降级 MUST 是单向的（MUST NOT 在中途恢复动效，画面突然开始动比一直不动更像故障）
+- **AND** 判据 MUST 是「曾经建过层 → 现在为 0」，MUST NOT 只断言最终层数为 0——页面本来就没有层时那条断言永远绿
 
 #### Scenario: reduced-motion 不改时长
 

@@ -14,6 +14,7 @@ import type { FocusSpan, Shot } from '../../../shared/types';
 import { buildLayerNodes, pickStageLayers, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
+import { FpsMeter, nextFpsStreak, shouldDegradeFps } from './fps';
 import {
   crossedBuckets,
   markSkippedBuckets,
@@ -417,6 +418,11 @@ function mount(): void {
   // 注意与 reduceMotion 的差别：后者保留 opacity 动画，这里连 opacity 都不做。
   const deviceMemory = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   const lowPower = typeof deviceMemory === 'number' && deviceMemory < 4;
+  // 实测帧率降级（设计 §20.10）：deviceMemory 判不出"内存够但 GPU/主线程跟不上"的机器。
+  // 与 lowPower 的区别只在**何时**判定：这个要跑起来才知道，因此单向后置、不回头。
+  let degraded = false;
+  let fpsStreak = 0;
+  const fpsMeter = new FpsMeter();
   let activeLayers: CompiledLayer[] = [];
   let activeSlideStartUs = 0;
   // 转场中的「前一页末帧」。MP4 的 PageEntry 不是只换图，而是把前一页的最后一帧
@@ -448,7 +454,7 @@ function mount(): void {
     // 同一份清单，MP4 在指、网页版全亮。
     //
     // 低电量也只省元素层、不省遮罩，取舍写在 pickStageLayers 里（那里能被 CI 测到）。
-    const stageLayers = pickStageLayers(layers, slide.focus, lowPower);
+    const stageLayers = pickStageLayers(layers, slide.focus, lowPower || degraded);
     if (stageLayers === null) return;
     activeLayers = buildLayerNodes(layersBox, stageLayers as ManifestLayer[], videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
@@ -462,6 +468,16 @@ function mount(): void {
     if (activeLayers.length === 0) return;
     const localMs = (us - activeSlideStartUs) / 1000;
     for (const layer of activeLayers) seekLayer(layer, localMs);
+  };
+
+  // 跑不动就退成「静态页 + 音频 + 字幕」：拆掉已建的层，之后的页也不再建。
+  // 单向不回退——中途恢复动效会让画面突然"开始动"，比一直不动更像故障。
+  const degradeForFps = (fps: number): void => {
+    degraded = true;
+    // 已建的层要当场拆：低端机上"下一帧再拆"会继续掉帧，而层本身就是成本。
+    releaseLayers(activeLayers);
+    // 留一条可诊断的日志：用户只会说"卡"，不会说"没降级"。
+    console.info(`[ppts] 实测帧率 ${fps.toFixed(1)}fps，已降级为静态页 + 音频 + 字幕`);
   };
 
   // ---- 页内镜头（换底图）----
@@ -747,6 +763,12 @@ function mount(): void {
     if (!playing) return;
     const us = positionUs();
     render(us);
+    // 采样放在 render 之后：这一帧的成本已经付过，统计到的才是"刚才那帧贵不贵"。
+    const fps = fpsMeter.frame(performance.now());
+    if (!degraded && fps !== null) {
+      fpsStreak = nextFpsStreak(fpsStreak, fps);
+      if (shouldDegradeFps(fpsStreak)) degradeForFps(fps);
+    }
     // 进度桶只认真实播放推进的位置：seek 里已把跳过的桶标成「不再上报」。
     telemetry?.tick(progress(us, durationUs));
     if (us >= durationUs && durationUs > 0) {
@@ -758,6 +780,8 @@ function mount(): void {
 
   const startLoop = (): void => {
     stopLoop();
+    // 暂停/拖动/换段后重新开窗：停顿期间的间隔不代表渲染能力（fps 模块另有长间隔兜底）。
+    fpsMeter.reset();
     if (playing) raf = requestAnimationFrame(tick);
   };
 

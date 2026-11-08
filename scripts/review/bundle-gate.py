@@ -7,7 +7,8 @@
   * **V15 体积**：翻倍是渐进的——某次把层图从 PNG 换成未压缩、或音频存了两份，
     单看代码完全正常。实测这一项当场抓到「混音轨 + 逐段音频双份」，占 80% 体积。
   * **V16 可播放性**：删掉一个清单引用的层图，页面照样"看起来正常"，只是那一层没了。
-  * **V17 降级**：三条降级路径平时没人走，坏掉也不会有人报 bug。
+  * **V17 降级**：四条降级路径（reduced-motion / 无 WAAPI / 低内存 / 实测低帧率）平时没人走，
+    坏掉也不会有人报 bug。
   * **V15 字体覆盖**：缺字在浏览器里是方框，不报错、不拦页面——字幕上少几个字，
     只有恰好认识那个字的人才会发现。
 
@@ -255,6 +256,19 @@ def check_degrade(reports, slides):
     checks.append(Check("V17", "低内存不建动画层", total_layers == 0,
                         f"仍创建了 {total_layers} 层" if total_layers else "层数为 0"))
     checks.append(Check("V17", "低内存仍渲染页面", bool(lowmem.get("hasStage")), "stage 存在"))
+
+    # 实测低帧率：跑起来才知道，因此判据是「曾经有层 → 现在没有」。
+    # 只要求最终层数为 0 是不够的——那一页本来就没层的话，这条会永远绿。
+    lowfps = (reports.get("lowfps") or {}).get("result") or {}
+    seen = bool(lowfps.get("seenLayers"))
+    degraded_ms = int(lowfps.get("degradedAfterMs") or -1)
+    checks.append(Check("V17", "实测低帧率触发降级",
+                        seen and int(lowfps.get("layers") or 0) == 0 and degraded_ms > 0,
+                        f"{degraded_ms}ms 后层数归零" if seen and degraded_ms > 0 else
+                        ("从未建过层，无法判定" if not seen else f"仍有 {lowfps.get('layers')} 层")))
+    checks.append(Check("V17", "降级后仍有画面与字幕",
+                        bool(lowfps.get("hasStage")) and bool(str(lowfps.get("subtitleText") or "").strip()),
+                        "stage 存在且字幕有文字" if bool(lowfps.get("hasStage")) else "stage 消失"))
     return checks
 
 
@@ -341,7 +355,7 @@ def main():
         if not env_error:
             try:
                 reports["play"] = run_probe(args.pkg, "play", engine, args.image)
-                for mode in ("nojs", "default", "reduced", "nowaapi", "lowmem"):
+                for mode in ("nojs", "default", "reduced", "nowaapi", "lowmem", "lowfps"):
                     reports[mode] = run_probe(args.pkg, mode, engine, args.image)
             except (RuntimeError, FileNotFoundError) as exc:
                 env_error = str(exc)

@@ -19,6 +19,8 @@
 | [027](./ADR-027-number-form-boundary.md) | 数字形态判定留在 `internal/validation`，不迁入 textnorm | 已采纳 | 独立记录（021–026 属动画扩展方案，本地文档占用） |
 | [028](./ADR-028-html-bundle-embedded-font.md) | HTML 成品包内嵌字体用「渲染服务二次子集」，按片中字符裁剪 | 已实现 | 独立记录 |
 | [029](./ADR-029-product-decisions-animation-html.md) | 动画与 HTML 成品的六项产品决策（全片预览/免费层/竖屏/Lottie/成品形态/文本复制） | 已采纳（②③⑥ 分阶段实现） | 独立记录 |
+| [030](./ADR-030-config-reading-policy.md) | 环境读取统一走 `internal/config`，装配层不直读 env、不自建解析器 | 已实现 | 独立记录 |
+| [031](./ADR-031-measured-fps-degradation.md) | 成品包实测帧率降级：2s 窗口 × 连续 2 窗，只拆动画层、单向不回退 | 已实现 | 独立记录 |
 
 ## 为什么 001–016 没有独立文件
 

@@ -10,7 +10,7 @@
 //   - 注入的脚本走 DevTools 特权上下文，不受产物 CSP 限制（CSP 是 `script-src 'self' file:`，
 //     往 index.html 里塞内联 <script> 会被直接拒绝）。
 //
-// 用法：node bundle-probe.mjs --pkg /pkg --mode play|nojs|nowaapi|reduced|lowmem
+// 用法：node bundle-probe.mjs --pkg /pkg --mode play|nojs|nowaapi|reduced|lowmem|lowfps
 //       node bundle-probe.mjs --print-chrome        # 只打印解析到的浏览器路径，供门禁选引擎
 // 输出：单行 `PROBE_JSON {...}`，由 bundle-gate.py 解析判定。
 import fs from 'node:fs';
@@ -69,6 +69,27 @@ const HOOK_LOWMEM = `
   try {
     Object.defineProperty(Navigator.prototype, 'deviceMemory', { configurable: true, get: function () { return 2; } });
   } catch (e) { window.__probeLowMemFailed = String(e); }
+})();
+`;
+
+// 低帧率：把 rAF 拖到 ~8fps，模拟「内存够但主线程/GPU 跟不上」的机器——
+// deviceMemory 判不出这类机器（一台 8GB 但核显孱弱、还开着会议的电脑同样是 8GB）。
+// 必须保留 cancel 语义：直接替换成 setTimeout 而不管 cancel，会让播放器 pause 之后
+// 循环继续跑，探针测到的就不是真实行为了。
+const HOOK_LOWFPS = `
+(function () {
+  var raf = window.requestAnimationFrame.bind(window);
+  var cancel = window.cancelAnimationFrame.bind(window);
+  var timers = {};
+  window.requestAnimationFrame = function (cb) {
+    var id = window.setTimeout(function () { delete timers[id]; raf(cb); }, 120);
+    timers[id] = 1;
+    return id;
+  };
+  window.cancelAnimationFrame = function (id) {
+    if (timers[id]) { delete timers[id]; window.clearTimeout(id); return; }
+    cancel(id);
+  };
 })();
 `;
 
@@ -226,6 +247,31 @@ const LAYER_EXPR = `(async () => {
   return out;
 })()`;
 
+// 实测帧率降级：这条与上面几条不同——它不能拖进度条，必须**真的播一会儿**。
+// 判据是「曾经有层 → 现在没有」：只看最终层数会把「这一页本来就没有层」误判成降级成功。
+// 同时要确认画面与字幕还在（降级是退成有声幻灯，不是黑屏）。
+const LOWFPS_EXPR = `(async () => {
+  const out = { seenLayers: false, layers: -1, degradedAfterMs: -1, hasStage: false, subtitleText: '', coverHidden: true };
+  // 自动播放被拦时点一下封面，播起来才有帧可测。
+  const cover = document.querySelector('.ppts-cover');
+  if (cover && !cover.hidden) { try { cover.click(); } catch (e) { /* 点不动就按未播放处理 */ } }
+  const started = performance.now();
+  const layersNow = () => document.querySelectorAll('.ppts-layer').length;
+  for (let i = 0; i < 140; i++) {
+    const n = layersNow();
+    if (n > 0) out.seenLayers = true;
+    if (out.seenLayers && n === 0) { out.degradedAfterMs = Math.round(performance.now() - started); break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  out.layers = layersNow();
+  out.hasStage = !!document.querySelector('.ppts-stage');
+  const sub = document.querySelector('.ppts-subtitle');
+  out.subtitleText = sub ? (sub.textContent || '').trim().slice(0, 40) : '';
+  const coverNow = document.querySelector('.ppts-cover');
+  out.coverHidden = !coverNow || coverNow.hidden;
+  return out;
+})()`;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // 失败路径也要收摊：探针被门禁调用时，留下一个 Chrome 进程会让下一次运行抢不到端口。
@@ -243,6 +289,7 @@ async function main() {
   const hooks = [HOOK];
   if (mode === 'nowaapi') hooks.push(HOOK_NO_WAAPI);
   if (mode === 'lowmem') hooks.push(HOOK_LOWMEM);
+  if (mode === 'lowfps') hooks.push(HOOK_LOWFPS);
   if (mode !== 'nojs') {
     await S('Page.addScriptToEvaluateOnNewDocument', { source: hooks.join('\n') });
   }
@@ -267,6 +314,7 @@ async function main() {
 
   let expr = PLAY_EXPR;
   if (mode === 'nojs') expr = NOJS_EXPR;
+  else if (mode === 'lowfps') expr = LOWFPS_EXPR;
   else if (mode === 'default' || mode === 'nowaapi' || mode === 'reduced' || mode === 'lowmem') expr = LAYER_EXPR;
 
   const evaluated = await S('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
