@@ -22,9 +22,15 @@ import (
 // `font-src` 必须显式写：`default-src 'none'` 会一并封掉字体，而被 CSP 拦下的字体
 // **不会报错、也不会拦页面**——它只是回退到系统字体。缺了这一条，内嵌字体等于没做，
 // 唯一的现场是开发者工具控制台里的一行违规记录。
+//
+// `connect-src 'self'` 只为**在线分享**的同源观看埋点（§20.8 V20）而加：在线时
+// 响应头 CSP（artifact_share_serve.go）与这里的 meta CSP 同时生效、取交集，缺一条
+// 就会让同源 fetch 被拦。它不放宽任何远程来源，也不改变「零外链」——V14 扫的是
+// src/href/url() 的**引用目标**，CSP 指令不是引用。离线包（file://）里播放器通过
+// 运行时判据直接关闭上报，所以这条指令在离线形态下不会产生任何请求。
 const indexCSP = "default-src 'none'; img-src 'self' file: data:; media-src 'self' file:; " +
 	"font-src 'self' file:; style-src 'self' file: 'unsafe-inline'; script-src 'self' file:; " +
-	"base-uri 'none'; form-action 'none'"
+	"connect-src 'self'; base-uri 'none'; form-action 'none'"
 
 var indexTemplate = template.Must(template.New("index.html").Parse(`<!doctype html>
 <html lang="zh-CN">

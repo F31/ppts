@@ -85,7 +85,7 @@
    "name": "成品分享页匿名访问（M6-3）",
    "prefixes": ["/s/"],
    "disposition": "keep",
-   "reason": "**匿名**读：GET /s/{token} 302 到 /s/{token}/，GET /s/{token}/{path...} 出静态包，POST /s/{token}/unlock 校验口令。Connect 所有方法都要求鉴权主体，没有匿名入口可收敛；且必须原生写响应头才能给每个响应打 CSP/nosniff/Referrer-Policy（design ADR-7）。仅在 artifacts 实现 ShareLinkStore 时整段挂载。M6-3 第 2 段新增时漏登记，本次补登。"
+   "reason": "**匿名**读：GET /s/{token} 302 到 /s/{token}/，GET /s/{token}/{path...} 出静态包，POST /s/{token}/unlock 校验口令；V20 新增 POST /s/{token}/events 为在线观看埋点（首帧曝光/25-50-75-100% 进度/来源），与静态条目按方法分开注册，避免被 GET 通配吃掉。Connect 所有方法都要求鉴权主体，没有匿名入口可收敛；且必须原生写响应头才能给每个响应打 CSP/nosniff/Referrer-Policy（design ADR-7）。仅在 artifacts 实现 ShareLinkStore 时整段挂载。M6-3 第 2 段新增时漏登记，本次补登。"
   },
   "jobs": {
    "name": "任务查询",

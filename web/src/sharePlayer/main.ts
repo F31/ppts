@@ -14,7 +14,98 @@ import type { FocusSpan, Shot } from '../../../shared/types';
 import { buildLayerNodes, pickStageLayers, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
+import {
+  crossedBuckets,
+  markSkippedBuckets,
+  newSessionId,
+  readTelemetryEnv,
+  shareSource,
+  shouldReportTelemetry,
+  telemetryEndpoint
+} from './telemetry';
+import type { ShareViewEvent } from './telemetry';
 import './player.css';
+
+/**
+ * 在线观看埋点的副作用层（V20）。纯判据在 ./telemetry，这里只负责排队与发送。
+ *
+ * 关键不变量：**不启用时连 fetch 都不构造**。成品包在 file:// 下双击、在门禁的
+ * 静态服务器里加载，都会走 `shouldReportTelemetry === false`，因此 V16 的
+ * 「无 404 / 无 console error」不受影响，V14 的零外链也保持不变。
+ *
+ * 发送失败一律静默：埋点是旁路观测，不能让网络抖动变成播放故障。
+ */
+type ShareTelemetry = {
+  reportView(): void;
+  tick(ratio: number): void;
+  seek(ratio: number): void;
+  finish(): void;
+};
+
+function startShareTelemetry(): ShareTelemetry | null {
+  const env = readTelemetryEnv();
+  if (!shouldReportTelemetry(env)) return null;
+  const endpoint = telemetryEndpoint(env.pathname);
+  if (!endpoint) return null;
+
+  const sessionId = newSessionId();
+  const source = shareSource(env);
+  const reported = new Set<number>();
+  let queue: ShareViewEvent[] = [];
+  let timer: number | null = null;
+
+  const flush = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (queue.length === 0) return;
+    const events = queue;
+    queue = [];
+    // fetch-ok: 成品包是独立 IIFE 构建，不能复用站内 core.ts 的请求出口；
+    // 这一处是 V20 在线观看埋点，失败一律静默（不产生 console error、不影响播放）。
+    try {
+      void fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, source, events }),
+        credentials: 'same-origin',
+        keepalive: true
+      }).catch(() => undefined);
+    } catch {
+      // 无 fetch / CSP 拦截 / 断网：都是「这次没观测到」，不是播放故障。
+    }
+  };
+  const enqueue = (event: ShareViewEvent): void => {
+    queue.push(event);
+    if (queue.length >= 8) {
+      flush();
+      return;
+    }
+    // 微批：一次播放的进度事件尽量合并成少数几个请求，减少匿名端写放大。
+    if (timer === null) timer = window.setTimeout(flush, 400);
+  };
+  // 页面被关闭/切走时把队列送出去；keepalive 让请求不随文档卸载被取消。
+  window.addEventListener('pagehide', flush);
+
+  return {
+    reportView: () => enqueue({ kind: 'view' }),
+    tick: (ratio) => {
+      for (const bucket of crossedBuckets(ratio, reported)) {
+        reported.add(bucket);
+        enqueue({ kind: 'progress', bucket });
+      }
+    },
+    seek: (ratio) => markSkippedBuckets(ratio, reported),
+    finish: () => {
+      for (const bucket of crossedBuckets(1, reported)) {
+        reported.add(bucket);
+        enqueue({ kind: 'progress', bucket });
+      }
+      flush();
+    }
+  };
+}
 
 /** 播放器认识的清单版本。读到更高版本必须拒绝——猜着播比不播更糟。 */
 const MAX_SCHEMA_VERSION = 2;
@@ -136,6 +227,9 @@ function mount(): void {
 
   const subtitles = Array.isArray(window.__PPT_SUBTITLES__) ? window.__PPT_SUBTITLES__ : [];
   const durationUs = Math.max(0, manifest.artifact.durationUs);
+  // 首帧曝光、进度、来源都挂在这次观看的会话上；离线/隐私形态下这里是 null，
+  // 后面所有 telemetry?. 调用都退化成 no-op，不产生任何请求。
+  const telemetry = startShareTelemetry();
   const timeline: Timeline = {
     schemaVersion: '1.0',
     durationUs,
@@ -653,6 +747,8 @@ function mount(): void {
     if (!playing) return;
     const us = positionUs();
     render(us);
+    // 进度桶只认真实播放推进的位置：seek 里已把跳过的桶标成「不再上报」。
+    telemetry?.tick(progress(us, durationUs));
     if (us >= durationUs && durationUs > 0) {
       finish();
       return;
@@ -690,6 +786,9 @@ function mount(): void {
     setIcon(playBtn, 'replay');
     playBtn.setAttribute('aria-label', '重播');
     render(durationUs);
+    // 音频提前结束、或最后一帧没跨过 1.0 时，在这里补齐 100% 并立即冲刷：
+    // 「埋点齐全」不能依赖 rAF 恰好落在终点那一帧。
+    telemetry?.finish();
     showCover('已播完，点击重播');
   };
 
@@ -743,6 +842,9 @@ function mount(): void {
 
   const seek = (us: number): void => {
     const target = clamp(Math.round(us), 0, durationUs || 0);
+    // 拖动是「跳过了中间内容」，不是「看过了」：把这些桶标记掉，避免凭空
+    // 生成 25/50/75 三条从未播放过的进度。
+    telemetry?.seek(progress(target, durationUs));
     if (hasAudio) {
       if (mixMode) {
         try {
@@ -862,6 +964,8 @@ function mount(): void {
   });
 
   render(0);
+  // 首帧已经画到 DOM 之后才算「曝光」：mount 成功但清单损坏提前 return 时不应上报。
+  telemetry?.reportView();
   prevBtn.disabled = true;
   nextBtn.disabled = manifest.slides.length <= 1;
 

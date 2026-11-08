@@ -46,6 +46,15 @@ function apiDirFiles() {
 }
 const ALLOWED_API_PATHS = new Set(apiDirFiles());
 
+// 分享播放器（src/sharePlayer/）是**独立 IIFE 构建**的产物：vite.share.config.ts 把它
+// 打成 file:// 下可直接双击播放的经典脚本，不能 import 站内 core.ts/api.ts（会引入
+// Connect、鉴权与站内运行时，直接破坏 V14 自包含与「断网可播」）。
+//
+// 因此它有且仅允许有一处自带 fetch——V20 在线观看埋点。白名单按**具体文件**给，
+// 不按目录放宽：新增文件仍会被拦。错误处理契约没有被豁免：下面仍要求逐处
+// `// fetch-ok: 理由`，且 share-telemetry-check.mjs 静态钉住「只有一处 + 失败静默」。
+const SHARE_PLAYER_FETCH_FILES = new Set(['sharePlayer/main.ts']);
+
 function walk(dir) {
   const out = [];
   for (const name of readdirSync(dir)) {
@@ -89,8 +98,14 @@ for (const file of files) {
   });
   if (fetchLines.length === 0) continue;
 
-  // 不变量 1：只允许在请求层（core.ts / api.ts / api/<domain>.ts / auth.ts）发起请求
-  const isApiLayer = ALLOWED_API_PATHS.has(rel) || ALLOWED_FILES.has(rel);
+  // 不变量 1：只允许在请求层（core.ts / api.ts / api/<domain>.ts / auth.ts）发起请求，
+  // 外加分享播放器那一处显式白名单（见 SHARE_PLAYER_FETCH_FILES 的理由）。
+  const sharePlayerFetch = SHARE_PLAYER_FETCH_FILES.has(rel);
+  if (sharePlayerFetch && fetchLines.length !== 1) {
+    errors.push(`${rel}: 分享播放器只允许一处埋点 fetch，实际 ${fetchLines.length} 处（第 ${fetchLines.map((i) => i + 1).join(', ')} 行）。`);
+    continue;
+  }
+  const isApiLayer = ALLOWED_API_PATHS.has(rel) || ALLOWED_FILES.has(rel) || sharePlayerFetch;
   if (!isApiLayer) {
     errors.push(`${rel}: 不允许在组件/页面里直接调用 fetch（第 ${fetchLines.map((i) => i + 1).join(', ')} 行）。所有网络请求必须走 core.ts/api.ts，以保证错误处理契约一致（参见 httpConnectError）。`);
     continue;

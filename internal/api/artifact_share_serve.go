@@ -30,6 +30,7 @@ import (
 //   - GET  /s/{token}/             → index.html（或口令门）
 //   - GET  /s/{token}/{path...}    → 包内单条目
 //   - POST /s/{token}/unlock       → 校验口令，种会话 cookie
+//   - POST /s/{token}/events       → 在线观看埋点（V20，仅在线分享形态启用）
 //
 // 为什么必须重定向到带尾斜杠的形式：index.html 里的资源引用全是相对路径
 // （slides/001.png、app.js）。若停在 /s/{token}，浏览器会把它们解析到 /s/ 下，
@@ -84,6 +85,12 @@ func registerArtifactShareAnonRoutes(
 	mux.HandleFunc("POST /s/{token}/unlock", func(w http.ResponseWriter, r *http.Request) {
 		unlockArtifactShare(w, r, links, pepper, recorder)
 	})
+	// 观看埋点与静态条目刻意分开：GET 通配会吃掉包内任意路径，POST 单独注册
+	// 才不会让一次事件上报落到「找不到包内条目」的 404 分支里。
+	events := &shareEventHandler{
+		links: links, pepper: pepper, recorder: recorder, throttle: newShareEventThrottle(),
+	}
+	mux.HandleFunc("POST /s/{token}/events", events.serve)
 	mux.HandleFunc("GET /s/{token}/{path...}", func(w http.ResponseWriter, r *http.Request) {
 		serveArtifactShareEntry(w, r, links, source, pepper, recorder)
 	})

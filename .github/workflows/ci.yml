@@ -147,6 +147,16 @@ jobs:
       - name: 切图门禁（V18）
         run: python3 scripts/review/shot-gate.py --pkg /tmp/fixture-shots/pkg
 
+      # V20 埋点完整性（设计 §20.8）：编号刻意跳过 V18/V19——那两个已被切图与页缝
+      # 门禁占用。编号仅在本 M6-4 门禁体系内唯一：保真链 scripts/fidelity/verify.py
+      # 另有一组 V20（矩形焦点遮罩），两者不共用命名空间，引用时须带体系名。
+      # 这里验的是**客户拿到的成品包**：埋点符号有没有编译进去、四个进度桶
+      # 和隐私开关齐不齐、meta CSP 有没有 connect-src 'self'（在线时与响应头 CSP 取交集，
+      # 缺这条同源上报会被静默拦下），以及 V14 零外链有没有被埋点破坏。
+      # 行为判据在 web/share-telemetry-check.mjs 与 Go 侧 events 单测；本步守产物漂移。
+      - name: 埋点完整性门禁（V20）
+        run: node scripts/review/telemetry-gate.mjs --pkg /tmp/pkg
+
       # V13（包端 vs 成片）以前是自证的：夹具按 30fps 把包自己的 DOM 截出来编码成「成片」，
       # 所以那一步只能验「截图落点 / 抽帧 / 解码 / 阈值」这条管线，验不了「两端是否一致」——
       # 两端本来就是同一张图。现在成片走产品真正的渲染路径（RemotionBackend → render.mjs →
