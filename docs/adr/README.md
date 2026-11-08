@@ -27,6 +27,7 @@
 | [035](./ADR-035-bundle-size-budget-recalibration.md) | V15 体积预算按实测重订为「基数 + 页 + 层 + 分钟」，按实际编码分档，超即阻断 | 已实现 | 独立记录（含实测基线） |
 | [036](./ADR-036-dual-store-conformance-and-keyset-cursor.md) | SQLite / PG 共用一套行为契约测试；分页游标改为 (时间, id) 两段式 | 已实现 | 独立记录（含 10 条实测差异） |
 | [037](./ADR-037-tenant-policy-cache.md) | 租户策略走进程内 TTL 缓存，写路径同进程强失效 | 已实现 | 独立记录（含前后基准与存活变异） |
+| [038](./ADR-038-request-scoped-read-cache.md) | document.json 与配音时间轴按 HTTP 请求缓存，批处理端点的对象读与页数无关 | 已实现 | 独立记录（含读次数前后对比） |
 
 ## 为什么 001–016 没有独立文件
 

@@ -104,6 +104,10 @@ func (h *AnimationHandler) applyBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 逐页 Resolve 会各自读一份 document.json 与时间轴；两份数据在一次请求里不变，
+	// 挂上请求级缓存后整批只读一次（见 requestcache.go）。
+	ctx := withRequestCache(r.Context())
+
 	var req applyBatchRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxApplyBatchBodyBytes))
 	dec.DisallowUnknownFields()
@@ -117,7 +121,7 @@ func (h *AnimationHandler) applyBatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	deckIDs, err := h.deck.SlideIDs(r.Context(), principal.TenantID, principal.UserID, projectID, revNo)
+	deckIDs, err := h.deck.SlideIDs(ctx, principal.TenantID, principal.UserID, projectID, revNo)
 	if err != nil {
 		writeAnimationError(w, err)
 		return
@@ -213,7 +217,7 @@ func (h *AnimationHandler) applyBatch(w http.ResponseWriter, r *http.Request) {
 			ineligible++
 			continue
 		}
-		page, pc, err := h.pages.Resolve(r.Context(), principal.TenantID, principal.UserID, projectID, revNo, slideID, language)
+		page, pc, err := h.pages.Resolve(ctx, principal.TenantID, principal.UserID, projectID, revNo, slideID, language)
 		if err != nil || page == nil {
 			res.Reason = batchReasonNoPage
 			results = append(results, res)
@@ -320,6 +324,9 @@ func (h *AnimationHandler) restoreBatch(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"code": "feature_unavailable"})
 		return
 	}
+	// 撤销同样逐页 Resolve，同样挂请求级缓存。
+	ctx := withRequestCache(r.Context())
+
 	var req restoreBatchRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxApplyBatchBodyBytes))
 	dec.DisallowUnknownFields()
@@ -331,7 +338,7 @@ func (h *AnimationHandler) restoreBatch(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_body", "message": "快照数量不合法"})
 		return
 	}
-	deckIDs, err := h.deck.SlideIDs(r.Context(), principal.TenantID, principal.UserID, projectID, revNo)
+	deckIDs, err := h.deck.SlideIDs(ctx, principal.TenantID, principal.UserID, projectID, revNo)
 	if err != nil {
 		writeAnimationError(w, err)
 		return
@@ -371,7 +378,7 @@ func (h *AnimationHandler) restoreBatch(w http.ResponseWriter, r *http.Request) 
 			results = append(results, res)
 			continue
 		}
-		page, pc, err := h.pages.Resolve(r.Context(), principal.TenantID, principal.UserID, projectID, revNo, id, language)
+		page, pc, err := h.pages.Resolve(ctx, principal.TenantID, principal.UserID, projectID, revNo, id, language)
 		if err != nil || page == nil || pc.DurationMS <= 0 {
 			res.Status, res.Reason = "skipped", batchReasonNoPage
 			results = append(results, res)

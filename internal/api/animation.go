@@ -114,19 +114,8 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 // 而失败——那会把一次存储抖动变成"用户改不动动效"。0 的语义本就表示未知，
 // 上层据此跳过上界校验并标记 needsDurationRecheck。
 func (r *animationResolver) pageDurationMS(ctx context.Context, tenantID, projectID, slideID string) int64 {
-	if r.jobs == nil || r.objects == nil {
-		return 0
-	}
-	job, err := r.jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindNarration))
-	if err != nil || job == nil {
-		return 0
-	}
-	ref, err := r.jobs.StepResultRef(tenant.WithContext(ctx, tenantID), job.ID, "timeline")
-	if err != nil || ref == "" {
-		return 0
-	}
-	bundle, _, err := loadBundle(ctx, r.objects, tenantID, ref)
-	if err != nil || bundle == nil || bundle.Timeline == nil {
+	bundle := r.timelineBundle(ctx, tenantID, projectID)
+	if bundle == nil || bundle.Timeline == nil {
 		return 0
 	}
 	for _, cue := range bundle.Timeline.Slides {
@@ -139,6 +128,47 @@ func (r *animationResolver) pageDurationMS(ctx context.Context, tenantID, projec
 		return 0
 	}
 	return 0
+}
+
+// timelineBundle 取本项目最近一次成功配音的时间轴；取不到返回 nil。
+//
+// 「一键套用」对每页都问一次页时长，而整份 deck 只有一份时间轴：23 页本来会读
+// 23 次，每次还带 2 条 SQL（查最近成功任务、查步骤引用）。请求作用域内只算一次。
+//
+// 取不到也写进缓存：一次存储抖动不该让同一请求的后续页各自再超时一遍——
+// 与 AnimationPageAssembler.elements 对几何失败的取舍同源。
+func (r *animationResolver) timelineBundle(ctx context.Context, tenantID, projectID string) *app.TimelineAsset {
+	if r.jobs == nil || r.objects == nil {
+		return nil
+	}
+	key := timelineCacheKey{tenantID: tenantID, projectID: projectID}
+	cache := requestCacheFrom(ctx)
+	if cache != nil {
+		if bundle, ok := cache.timelines.load(key); ok {
+			return bundle
+		}
+	}
+	bundle := r.loadTimelineBundle(ctx, tenantID, projectID)
+	if cache != nil {
+		cache.timelines.store(key, bundle)
+	}
+	return bundle
+}
+
+func (r *animationResolver) loadTimelineBundle(ctx context.Context, tenantID, projectID string) *app.TimelineAsset {
+	job, err := r.jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindNarration))
+	if err != nil || job == nil {
+		return nil
+	}
+	ref, err := r.jobs.StepResultRef(tenant.WithContext(ctx, tenantID), job.ID, "timeline")
+	if err != nil || ref == "" {
+		return nil
+	}
+	bundle, _, err := loadBundle(ctx, r.objects, tenantID, ref)
+	if err != nil || bundle == nil || bundle.Timeline == nil {
+		return nil
+	}
+	return bundle
 }
 
 // AnimationHandler 提供单页动画规格的读写（REST，与 /api/context-rules 同一约定）。

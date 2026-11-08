@@ -139,7 +139,11 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 		prefill = *req.Prefill
 	}
 
-	slideIDs, err := h.deck.SlideIDs(r.Context(), principal.TenantID, principal.UserID, projectID, revNo)
+	// 整份 deck 的页序与逐页 Resolve 读的是同一份 document.json、同一份时间轴；
+	// 这两份数据在一次请求里不变，挂上请求级缓存后整份 deck 只读一次
+	// （见 requestcache.go）。页序必须在缓存挂好之后再取，否则那次读落在缓存外。
+	ctx := withRequestCache(r.Context())
+	slideIDs, err := h.deck.SlideIDs(ctx, principal.TenantID, principal.UserID, projectID, revNo)
 	if err != nil {
 		writeAnimationError(w, err)
 		return
@@ -160,7 +164,7 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 			TenantID: principal.TenantID, ProjectID: projectID, SlideID: slideID,
 			Language: language, SourceRevisionNo: revNo,
 		}
-		res := h.applyOneSlide(r.Context(), principal.UserID, key, req.PresetID, req.Overwrite, prefill)
+		res := h.applyOneSlide(ctx, principal.UserID, key, req.PresetID, req.Overwrite, prefill)
 		resp.Results = append(resp.Results, res)
 		if res.Status == "applied" {
 			resp.Applied++

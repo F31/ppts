@@ -58,35 +58,56 @@ func editorDiffRevisions(w http.ResponseWriter, r *http.Request, projects projec
 
 // loadProjectDocuments 按 revision_no 顺序读取两个版本的 extracted document.json。
 // 返回 map[revisionNo]*project.Document；缺失版本为 nil。
+//
+// 命中请求级缓存时不再读对象存储：同一请求里 document.json 是只读且不变的，
+// 而批处理端点会为每一页问一次同一个版本（见 requestcache.go）。
 func loadProjectDocuments(ctx context.Context, projects project.ProjectStore, objects objectstore.ObjectStore, tenantID, projectID string, revA, revB int) (map[int]*project.Document, error) {
 	out := make(map[int]*project.Document, 2)
-	for _, rev := range [...]int{revA, revB} {
-		_, err := projects.GetSourceRevision(ctx, tenantID, projectID, rev)
-		if err != nil {
-			out[rev] = nil
-			continue
+	cache := requestCacheFrom(ctx)
+	// 同一个版本只读一次：调用方几乎都传 revA == revB（单页解析、页序、备注），
+	// 按 [revA, revB] 逐个取会在没有缓存的时代就白读一遍整份 document.json。
+	revs := []int{revA}
+	if revB != revA {
+		revs = append(revs, revB)
+	}
+	for _, rev := range revs {
+		key := documentCacheKey{tenantID: tenantID, projectID: projectID, revision: rev}
+		if cache != nil {
+			if doc, ok := cache.documents.load(key); ok {
+				out[rev] = doc
+				continue
+			}
 		}
-		key := objectstore.DocumentKey(tenantID, projectID, srcRevString(rev))
-		rc, _, err := objects.Get(ctx, key)
-		if err != nil {
-			out[rev] = nil
-			continue
+		doc := loadProjectDocument(ctx, projects, objects, tenantID, projectID, rev)
+		if cache != nil {
+			cache.documents.store(key, doc)
 		}
-		var data []byte
-		data, err = io.ReadAll(rc)
-		_ = rc.Close()
-		if err != nil {
-			out[rev] = nil
-			continue
-		}
-		var doc project.Document
-		if err := json.Unmarshal(data, &doc); err != nil {
-			out[rev] = nil
-			continue
-		}
-		out[rev] = &doc
+		out[rev] = doc
 	}
 	return out, nil
+}
+
+// loadProjectDocument 读一个源版本的 document.json；任何一步失败都返回 nil，
+// 由调用方按「该版本缺失」处理（原实现就是逐段 continue 到 nil）。
+func loadProjectDocument(ctx context.Context, projects project.ProjectStore, objects objectstore.ObjectStore, tenantID, projectID string, rev int) *project.Document {
+	if _, err := projects.GetSourceRevision(ctx, tenantID, projectID, rev); err != nil {
+		return nil
+	}
+	key := objectstore.DocumentKey(tenantID, projectID, srcRevString(rev))
+	rc, _, err := objects.Get(ctx, key)
+	if err != nil {
+		return nil
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		return nil
+	}
+	var doc project.Document
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+	return &doc
 }
 
 // diffDocuments 比较两个 Document，返回页级差异。
