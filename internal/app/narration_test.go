@@ -46,8 +46,16 @@ func (*narrationStoreStub) MarkAudioRevision(context.Context, string, string, in
 	return nil
 }
 
-func (*narrationStoreStub) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
-	return nil, nil
+// ListByProject 是配音任务读取讲稿的唯一入口（逐页 Get 已合并成一次列表读），
+// 所以替身必须把 revision/err 从这里交出去，而不是只实现 Get。
+func (s *narrationStoreStub) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.revision == nil {
+		return nil, nil
+	}
+	return []*narration.Revision{s.revision}, nil
 }
 
 type stepRecorder struct {
@@ -371,8 +379,12 @@ func (*multiSlideStore) MarkAudioRevision(context.Context, string, string, int, 
 	return nil
 }
 
-func (*multiSlideStore) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
-	return nil, nil
+func (s *multiSlideStore) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
+	out := make([]*narration.Revision, 0, len(s.bySlide))
+	for _, rev := range s.bySlide {
+		out = append(out, rev)
+	}
+	return out, nil
 }
 
 func snapshotJob(t *testing.T, jobID string, snap NarrationSnapshot) *pipeline.Job {
@@ -565,6 +577,78 @@ func TestNarrationHandlerRecordsTTSMetrics(t *testing.T) {
 	}
 	if metrics.total != 1 || metrics.failed != 1 || !metrics.retryable || !metrics.throttled {
 		t.Fatalf("429 metrics = %+v", metrics)
+	}
+}
+
+// countingScriptStore 记录讲稿读取走了哪个入口：逐页 Get 还是一次 ListByProject。
+// 配音任务已把逐页 Get 合并成一次列表读，这个替身就是为了让「改回逐页读」会红。
+type countingScriptStore struct {
+	*multiSlideStore
+	gets  int
+	lists int
+}
+
+func (s *countingScriptStore) Get(ctx context.Context, tenantID, projectID string, revNo int, slideID, language string) (*narration.Revision, error) {
+	s.gets++
+	return s.multiSlideStore.Get(ctx, tenantID, projectID, revNo, slideID, language)
+}
+
+func (s *countingScriptStore) ListByProject(ctx context.Context, tenantID, projectID string, revNo int, language string) ([]*narration.Revision, error) {
+	s.lists++
+	return s.multiSlideStore.ListByProject(ctx, tenantID, projectID, revNo, language)
+}
+
+func twoSlideStore() *countingScriptStore {
+	return &countingScriptStore{multiSlideStore: &multiSlideStore{bySlide: map[string]*narration.Revision{
+		"slide-a": {ProjectID: "project-1", SlideID: "slide-a", Language: "zh-CN",
+			Status: narration.StatusApproved, Revision: 2,
+			Segments: []*narration.Segment{{SegmentID: "seg-1", DisplayText: "A", SpokenText: "甲页的讲稿"}}},
+		"slide-b": {ProjectID: "project-1", SlideID: "slide-b", Language: "zh-CN",
+			Status: narration.StatusApproved, Revision: 2,
+			Segments: []*narration.Segment{{SegmentID: "seg-1", DisplayText: "B", SpokenText: "乙页的讲稿"}}},
+	}}}
+}
+
+func twoSlideJob(t *testing.T, jobID string) *pipeline.Job {
+	t.Helper()
+	return snapshotJob(t, jobID, NarrationSnapshot{
+		Slides: []NarrationSlideSnapshot{
+			{SlideID: "slide-a", ScriptRevision: 2},
+			{SlideID: "slide-b", ScriptRevision: 2},
+		},
+		RevisionNo: 5, Language: "zh-CN", VoiceID: "voice-1", SampleRate: 16000,
+	})
+}
+
+// 讲稿读取必须是一次列表读，不是逐页 Get：30 页的任务否则就是 30 × (脚本 + 分段) 两跳。
+func TestNarrationHandlerLoadsScriptsInOneList(t *testing.T) {
+	store := twoSlideStore()
+	handler := NewNarrationHandler(store, &stepRecorder{}, objectstore.NewLocal(t.TempDir(), nil), providerForTests())
+
+	if err := handler.Handle(context.Background(), twoSlideJob(t, "job-1")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if store.gets != 0 {
+		t.Fatalf("逐页 Get 被调用 %d 次，应为 0（讲稿一次读完）", store.gets)
+	}
+	if store.lists != 1 {
+		t.Fatalf("ListByProject 调用 %d 次，应为 1", store.lists)
+	}
+}
+
+// 列表里没有这一页时，必须仍是「load script: not found」——错误语义不能因为换成批量读而变化。
+func TestNarrationHandlerReportsMissingScript(t *testing.T) {
+	store := twoSlideStore()
+	delete(store.bySlide, "slide-b")
+	provider := providerForTests()
+	handler := NewNarrationHandler(store, &stepRecorder{}, objectstore.NewLocal(t.TempDir(), nil), provider)
+
+	err := handler.Handle(context.Background(), twoSlideJob(t, "job-1"))
+	if !errors.Is(err, narration.ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("缺讲稿时不该调用供应商: calls=%d", provider.calls)
 	}
 }
 

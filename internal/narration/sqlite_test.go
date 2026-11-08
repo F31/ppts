@@ -3,6 +3,7 @@ package narration
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -176,6 +177,45 @@ func TestSQLiteScriptsIsolatedBySourceRevision(t *testing.T) {
 	list4, err := s.ListByProject(ctx, tenant, project, 4, lang)
 	if err != nil || len(list4) != 1 || list4[0].SourceRevisionNo != 4 {
 		t.Fatalf("list rev=4 should return the version row, got %+v err=%v", list4, err)
+	}
+}
+
+// 一次列表读要为每页取回**它自己的**分段：批量查询把多页的分段一次捞回来，
+// 归组写错（比如每页都拿到全部）在单页数据上完全看不出来。
+func TestSQLiteListByProjectGroupsSegmentsPerSlide(t *testing.T) {
+	ctx := context.Background()
+	s := newNarrationStore(t)
+	const tenant = db.LocalTenantID
+	const project, lang = "p1", "zh-CN"
+	slides := []string{"slide-a", "slide-b", "slide-c"}
+	for _, slide := range slides {
+		if _, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModeOriginal); err != nil {
+			t.Fatalf("EnsureExists %s: %v", slide, err)
+		}
+		if _, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, []*Segment{
+			{SegmentID: "seg-01", DisplayText: slide + "-1", SpokenText: slide + "-1"},
+			{SegmentID: "seg-02", DisplayText: slide + "-2", SpokenText: slide + "-2"},
+		}); err != nil {
+			t.Fatalf("Update %s: %v", slide, err)
+		}
+	}
+	list, err := s.ListByProject(ctx, tenant, project, 0, lang)
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	if len(list) != len(slides) {
+		t.Fatalf("list len = %d, want %d", len(list), len(slides))
+	}
+	for _, r := range list {
+		if len(r.Segments) != 2 {
+			t.Fatalf("slide %s 拿到 %d 段，应为 2（归组串页）", r.SlideID, len(r.Segments))
+		}
+		for i, seg := range r.Segments {
+			want := fmt.Sprintf("%s-%d", r.SlideID, i+1)
+			if seg.DisplayText != want {
+				t.Fatalf("slide %s 第 %d 段 = %q, want %q", r.SlideID, i+1, seg.DisplayText, want)
+			}
+		}
 	}
 }
 

@@ -170,6 +170,16 @@ func (s *NarrationGenerationService) expandToFullDeck(
 	for _, sl := range snapshot.Slides {
 		bySlide[sl.SlideID] = sl
 	}
+	// 一次读全该版本讲稿，而不是逐页 Get：补齐走的是整份 deck（22 页 = 22 个事务），
+	// 而这里只用得上「脚本修订号 + 审批状态」两个字段。
+	scripts, lerr := s.scripts.ListByProject(ctx, tenantID, projectID, revisionNo, language)
+	if lerr != nil {
+		return
+	}
+	scriptBySlide := make(map[string]*narration.Revision, len(scripts))
+	for _, rev := range scripts {
+		scriptBySlide[rev.SlideID] = rev
+	}
 	full := make([]app.NarrationSlideSnapshot, 0, len(pages))
 	added := 0
 	for _, pid := range pages {
@@ -177,8 +187,8 @@ func (s *NarrationGenerationService) expandToFullDeck(
 			full = append(full, sl)
 			continue
 		}
-		rev, rerr := s.scripts.Get(ctx, tenantID, projectID, revisionNo, pid, language)
-		if rerr != nil {
+		rev := scriptBySlide[pid]
+		if rev == nil {
 			// 没有讲稿的页不参与配音：整份 deck 里允许存在未写讲稿的页。
 			continue
 		}

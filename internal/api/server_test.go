@@ -505,8 +505,14 @@ func (*fakeScriptStore) MarkAudioRevision(context.Context, string, string, int, 
 	return nil
 }
 
-func (*fakeScriptStore) ListByProject(context.Context, string, string, int, string) ([]*narration.Revision, error) {
-	return nil, nil
+// ListByProject 与 Get 保持同一份数据：整份 deck 补齐已改成一次列表读，
+// 替身若只实现 Get，补齐路径会静默变成「一页都不补」而用例照样通过。
+func (s *fakeScriptStore) ListByProject(_ context.Context, tenantID, _ string, _ int, language string) ([]*narration.Revision, error) {
+	s.lastTenantID, s.lastLanguage = tenantID, language
+	if s.revision == nil {
+		return nil, nil
+	}
+	return []*narration.Revision{s.revision}, nil
 }
 
 func newTestRevision() *narration.Revision {

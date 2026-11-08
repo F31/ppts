@@ -496,6 +496,20 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 	planned := make([]plannedSlide, 0, len(snapshot.Slides))
 	seenSlides := make(map[string]struct{}, len(snapshot.Slides))
 	seenSegments := make(map[string]struct{})
+	// 一次读全该源版本的讲稿（含分段），而不是逐页 Get：30 页的任务原本是
+	// 30 × (读脚本 + 读分段) 两跳，且每跳各自开一个事务。
+	// 语义与 Get 一致：同一源版本优先、缺失回落 legacy(0)，ListByProject 内部就是这套规则。
+	// 代价：本次快照之外的页也会被读（列表没有页过滤）。若某页的分段 JSON 坏了，
+	// 旧写法只有在它被配音时才失败，现在会让整个任务失败——这类行只能由 Update 写入
+	// （写入前已 marshal），且编辑器列同一批数据时本来就会失败，故接受。
+	scripts, err := h.scripts.ListByProject(ctx, job.TenantID, job.ProjectID, snapshot.RevisionNo, snapshot.Language)
+	if err != nil {
+		return fmt.Errorf("narration job: load scripts: %w", err)
+	}
+	scriptBySlide := make(map[string]*narration.Revision, len(scripts))
+	for _, rev := range scripts {
+		scriptBySlide[rev.SlideID] = rev
+	}
 	for _, slide := range snapshot.Slides {
 		if slide.SlideID == "" || slide.ScriptRevision < 0 {
 			return errors.New("narration job: incomplete slide snapshot")
@@ -504,9 +518,9 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 			return fmt.Errorf("narration job: duplicate slide %s", slide.SlideID)
 		}
 		seenSlides[slide.SlideID] = struct{}{}
-		revision, err := h.scripts.Get(ctx, job.TenantID, job.ProjectID, snapshot.RevisionNo, slide.SlideID, snapshot.Language)
-		if err != nil {
-			return fmt.Errorf("narration job: load script: %w", err)
+		revision, ok := scriptBySlide[slide.SlideID]
+		if !ok {
+			return fmt.Errorf("narration job: load script: %w", narration.ErrNotFound)
 		}
 		if revision.Revision != slide.ScriptRevision {
 			return fmt.Errorf("narration job: script revision changed: expected %d, got %d", slide.ScriptRevision, revision.Revision)

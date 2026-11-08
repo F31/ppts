@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -281,12 +283,16 @@ func (s *PGStore) ListByProject(ctx context.Context, tenantID, projectID string,
 		}
 		// pgx 单连接不允许在结果集未关闭时发起新查询（否则 "conn busy"）；先关闭游标再加载分段。
 		rows.Close()
+		ids := make([]string, len(collected))
+		for i, r := range collected {
+			ids[i] = r.ID
+		}
+		byScript, serr := loadSegmentsManyTx(ctx, tx, ids)
+		if serr != nil {
+			return serr
+		}
 		for _, r := range collected {
-			segs, serr := loadSegmentsTx(ctx, tx, r.ID)
-			if serr != nil {
-				return serr
-			}
-			r.Segments = segs
+			r.Segments = byScript[r.ID]
 			revs = append(revs, r)
 		}
 		return nil
@@ -344,38 +350,74 @@ func forkLegacyTx(ctx context.Context, tx pgx.Tx, tenantID, projectID string, so
 	return loadScriptExactTx(ctx, tx, tenantID, projectID, sourceRevisionNo, slideID, language)
 }
 
+// decodeSegment 还原分段上的三个 JSON 列（source_refs / source_anchors / focus）。
+func decodeSegment(seg *Segment, refs []string, anchorBytes, focusBytes []byte) error {
+	seg.SourceRefs = refs
+	if len(anchorBytes) > 0 {
+		if err := json.Unmarshal(anchorBytes, &seg.SourceAnchors); err != nil {
+			return err
+		}
+	}
+	if len(focusBytes) > 0 {
+		var f FocusTarget
+		if err := json.Unmarshal(focusBytes, &f); err != nil {
+			return err
+		}
+		seg.Focus = &f
+	}
+	return nil
+}
+
+// loadSegmentsTx 读取一份讲稿的全部分段（按 segment_id 升序）。
+// 走批量版而不是自己写一份查询：解析逻辑只有一处，单份场景多出来的只是一次 map 分配。
 func loadSegmentsTx(ctx context.Context, tx pgx.Tx, scriptID string) ([]*Segment, error) {
+	byScript, err := loadSegmentsManyTx(ctx, tx, []string{scriptID})
+	if err != nil {
+		return nil, err
+	}
+	return byScript[scriptID], nil
+}
+
+// loadSegmentsManyTx 一次读完多份讲稿的分段，按 script_id 归组。
+//
+// 为什么要有批量版：列表场景（`ListByProject`）原本对每一页单独查一次分段，
+// 一次 30 页的编辑器加载就是 1 + 30 次往返；批量版把分段读取固定成 1 次。
+// 占位符按数量拼而不是 `= ANY($1)`：script_id 是 uuid，pgx 不会把 []string
+// 隐式编成 uuid[]，逐个占位符既避开类型转换，也保证走 script_id 索引。
+func loadSegmentsManyTx(ctx context.Context, tx pgx.Tx, scriptIDs []string) (map[string][]*Segment, error) {
+	out := make(map[string][]*Segment, len(scriptIDs))
+	if len(scriptIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(scriptIDs))
+	args := make([]any, len(scriptIDs))
+	for i, id := range scriptIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
 	rows, err := tx.Query(ctx,
-		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status
-		 FROM narration_segments WHERE script_id=$1 ORDER BY segment_id`, scriptID)
+		`SELECT script_id, segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status
+		 FROM narration_segments WHERE script_id IN (`+strings.Join(placeholders, ",")+`)
+		 ORDER BY script_id, segment_id`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var segs []*Segment
 	for rows.Next() {
+		var scriptID string
 		var seg Segment
 		var refs []string
 		var anchorBytes, focusBytes []byte
-		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refs, &anchorBytes, &focusBytes, &seg.Status); err != nil {
+		if err := rows.Scan(&scriptID, &seg.SegmentID, &seg.DisplayText, &seg.SpokenText,
+			&refs, &anchorBytes, &focusBytes, &seg.Status); err != nil {
 			return nil, err
 		}
-		seg.SourceRefs = refs
-		if len(anchorBytes) > 0 {
-			if err := json.Unmarshal(anchorBytes, &seg.SourceAnchors); err != nil {
-				return nil, err
-			}
+		if err := decodeSegment(&seg, refs, anchorBytes, focusBytes); err != nil {
+			return nil, err
 		}
-		if len(focusBytes) > 0 {
-			var f FocusTarget
-			if err := json.Unmarshal(focusBytes, &f); err != nil {
-				return nil, err
-			}
-			seg.Focus = &f
-		}
-		segs = append(segs, &seg)
+		out[scriptID] = append(out[scriptID], &seg)
 	}
-	return segs, rows.Err()
+	return out, rows.Err()
 }
 
 // segmentMeta 是更新时需要的"旧值"：调用方传 nil 表示保留，这里就是保留的来源。

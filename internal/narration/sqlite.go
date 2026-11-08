@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -124,19 +125,43 @@ func (s *SQLiteStore) sqForkSegments(ctx context.Context, tx *sql.Tx, fromScript
 }
 
 func (s *SQLiteStore) sqLoadSegments(ctx context.Context, q queryer, scriptID string) ([]*Segment, error) {
+	byScript, err := s.sqLoadSegmentsMany(ctx, q, []string{scriptID})
+	if err != nil {
+		return nil, err
+	}
+	return byScript[scriptID], nil
+}
+
+// sqLoadSegmentsMany 一次读完多份讲稿的分段，按 script_id 归组。
+//
+// 与 PG 侧同理：列表场景逐页查分段会退化成 N+1（30 页 = 1 + 30 次查询）。
+// 分段解析只有这一处，单份读走批量版包装。
+func (s *SQLiteStore) sqLoadSegmentsMany(ctx context.Context, q queryer, scriptIDs []string) (map[string][]*Segment, error) {
+	out := make(map[string][]*Segment, len(scriptIDs))
+	if len(scriptIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(scriptIDs))
+	args := make([]any, len(scriptIDs))
+	for i, id := range scriptIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
 	rows, err := q.QueryContext(ctx,
-		`SELECT segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status
-		 FROM narration_segments WHERE script_id = ? ORDER BY segment_id`, scriptID)
+		`SELECT script_id, segment_id, display_text, spoken_text, source_refs, source_anchors, focus, status
+		 FROM narration_segments WHERE script_id IN (`+strings.Join(placeholders, ",")+`)
+		 ORDER BY script_id, segment_id`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var segs []*Segment
 	for rows.Next() {
+		var scriptID string
 		var seg Segment
 		var refsRaw, anchorsRaw string
 		var focusRaw sql.NullString
-		if err := rows.Scan(&seg.SegmentID, &seg.DisplayText, &seg.SpokenText, &refsRaw, &anchorsRaw, &focusRaw, &seg.Status); err != nil {
+		if err := rows.Scan(&scriptID, &seg.SegmentID, &seg.DisplayText, &seg.SpokenText,
+			&refsRaw, &anchorsRaw, &focusRaw, &seg.Status); err != nil {
 			return nil, err
 		}
 		if refsRaw != "" && refsRaw != "[]" {
@@ -151,9 +176,9 @@ func (s *SQLiteStore) sqLoadSegments(ctx context.Context, q queryer, scriptID st
 				seg.Focus = &f
 			}
 		}
-		segs = append(segs, &seg)
+		out[scriptID] = append(out[scriptID], &seg)
 	}
-	return segs, rows.Err()
+	return out, rows.Err()
 }
 
 // sqSegmentMeta 与 PG 侧 loadSegmentMetaTx 同义：更新时 nil 字段的保留来源。
@@ -429,10 +454,16 @@ func (s *SQLiteStore) ListByProject(ctx context.Context, tenantID, projectID str
 	}
 	// 先关闭游标再加载分段，避免在结果集未关闭时发起新查询（部分驱动会报错）。
 	rows.Close()
+	ids := make([]string, len(collected))
+	for i, r := range collected {
+		ids[i] = r.ID
+	}
+	byScript, err := s.sqLoadSegmentsMany(ctx, s.db, ids)
+	if err != nil {
+		return nil, err
+	}
 	for _, r := range collected {
-		if _, err := s.sqWithSegments(ctx, s.db, r); err != nil {
-			return nil, err
-		}
+		r.Segments = byScript[r.ID]
 		revs = append(revs, r)
 	}
 	return revs, nil
