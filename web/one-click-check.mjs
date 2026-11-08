@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const m = await import('./src/oneClickJob.ts');
+const plan = await import('./src/pages/projectEditor/oneClickPlan.ts');
 
 const detail = (stepCounts, extra = {}) => ({
   jobId: 'j1',
@@ -155,4 +156,64 @@ test('一键成片抽屉可直接改覆盖策略，且流水线真的用这个�
   assert.match(drawer, /value=\{oneDraftOverwrite\}/);
   assert.match(drawer, /editor\.oneClickOverwriteNote/);
   assert.match(src, /overwrite: oneDraftOverwrite === 'overwrite_all'/);
+});
+
+// 成稿预估（跳过/无可生成材料）是从编辑器里抽出来的纯函数，口径必须守住：
+// 它给的是"估算"，但只要口径错了，用户会在点下成稿前就做出错误决定。
+const slide = (id, preview, hasNotes) => ({ slideId: id, preview, hasNotes });
+const scriptOf = (id) => ({ slideId: id, segments: [{ segmentId: 's1' }] });
+
+test('notes_only：有备注即可成稿，preview 不参与判据', () => {
+  const out = plan.computeOneDraftPlan({
+    slides: [slide('a', '', true), slide('b', '有文字但没备注', false), slide('c', '  ', false)],
+    scripts: {},
+    source: 'notes_only',
+    overwrite: 'fill_empty',
+    language: 'zh-CN',
+    panelLanguage: 'zh-CN'
+  });
+  assert.equal(out.generate, 1);
+  assert.equal(out.noText, 2);
+  assert.equal(out.withNotes, 1);
+  assert.equal(out.total, 3);
+});
+
+test('page_content + 仅补空：已有讲稿的页算跳过，不算生成', () => {
+  const out = plan.computeOneDraftPlan({
+    slides: [slide('a', '第一页文字', false), slide('b', '第二页文字', true)],
+    scripts: { a: scriptOf('a') },
+    source: 'page_content',
+    overwrite: 'fill_empty',
+    language: 'zh-CN',
+    panelLanguage: 'zh-CN'
+  });
+  assert.equal(out.generate, 1);
+  assert.equal(out.skippedExisting, 1);
+  assert.equal(out.reliable, true);
+});
+
+test('覆盖全部：已有讲稿也要重算，不产生跳过', () => {
+  const out = plan.computeOneDraftPlan({
+    slides: [slide('a', '第一页文字', false), slide('b', '第二页文字', true)],
+    scripts: { a: scriptOf('a'), b: scriptOf('b') },
+    source: 'page_content',
+    overwrite: 'overwrite_all',
+    language: 'zh-CN',
+    panelLanguage: 'zh-CN'
+  });
+  assert.equal(out.generate, 2);
+  assert.equal(out.skippedExisting, 0);
+});
+
+test('生成语言与面板语言不一致时，跳过数只能标为估算', () => {
+  const base = {
+    slides: [slide('a', '文字', false)],
+    scripts: {},
+    source: 'page_content',
+    overwrite: 'fill_empty',
+    language: 'en-US'
+  };
+  assert.equal(plan.computeOneDraftPlan({ ...base, panelLanguage: '' }).reliable, false);
+  assert.equal(plan.computeOneDraftPlan({ ...base, panelLanguage: 'zh-CN' }).reliable, false);
+  assert.equal(plan.computeOneDraftPlan({ ...base, panelLanguage: 'en-US' }).reliable, true);
 });

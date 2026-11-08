@@ -29,8 +29,6 @@ import {
   type SourceRevisionSummary,
   getScript,
   getScriptCompare,
-  getFocusTargets,
-  getFocusSuggestions,
   listDictionaries,
   getSlideRenderURLs,
   getProjectParseStatus,
@@ -74,58 +72,29 @@ import { ExportDialog, type ExportFormat, type ExportOptions } from '../componen
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
 import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
-import type { FocusSuggestion, FocusTarget, Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment, SlideSummary } from '../types';
+import type { Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
 import { VoicePreviewSequencer, classifyVoicePreviewError, voicePreviewKey } from '../voicePreview';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
+import {
+  ONE_CLICK_PRESETS,
+  genActiveStates,
+  genJobKinds,
+  topProbeIds,
+  type ConflictState,
+  type DraftStatus,
+  type SlidesState
+} from './projectEditor/model';
+import { computeOneDraftPlan } from './projectEditor/oneClickPlan';
+import { useFocusAssist } from './projectEditor/useFocusAssist';
+import { useProbes } from './projectEditor/useProbes';
+import { useScriptPanelResize } from './projectEditor/useScriptPanelResize';
+import { useSlideNotes } from './projectEditor/useSlideNotes';
 import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
 
-// 一键成片可选的动效风格。与后端 catalog.json 的预设 id 一一对应；
-// 文案写死成字面量是为了让 i18n 门禁能静态核对（动态拼 key 会漏检）。
-const ONE_CLICK_PRESETS = [
-  { id: 'business-calm', label: 'editor.oneClickPresetCalm' },
-  { id: 'tech-dynamic', label: 'editor.oneClickPresetTech' },
-  { id: 'teaching-clear', label: 'editor.oneClickPresetTeaching' },
-  { id: 'launch-bold', label: 'editor.oneClickPresetLaunch' }
-] as const;
-
-type SlidesState =
-  | { mode: 'loading' }
-  // A26：empty 是"这个版本确实没有页面"，failed 是"页面列表没读到"。
-  // 两者外观必须可区分，否则后端/网络故障会被当成"PPT 是空的"，且不给重试入口。
-  // empty 可携带可选 message：默认显示 editor.noSlides；解析中明确显示 editor.parseRunning。
-  | { mode: 'empty'; message?: string }
-  | { mode: 'failed'; message: string }
-  | { mode: 'real'; slides: SlideSummary[]; revisionNo: number };
-
-// 编辑器内的"探测类"请求（版本列表/项目信息/配音状态/缩略图/讲稿来源/语音属性）。
-// 这些请求失败后原先只是"保持空态"，界面与"确实没有"完全同貌（A26 禁止的形态）。
-// 统一收进 probeErrors，并按渲染位置分两组：顶部失败带 / 语音抽屉内。
-type ProbeId =
-  | 'revisions'
-  | 'project'
-  | 'narration'
-  | 'thumbnails'
-  | 'scriptSources'
-  | 'voiceModels'
-  | 'voiceSettings'
-  | 'voiceStale';
-// 顶部失败带覆盖的探测项（其余在语音抽屉内就地渲染）。
-const topProbeIds: ProbeId[] = ['revisions', 'project', 'narration', 'thumbnails', 'scriptSources'];
-
-type DraftStatus = { phase: 'idle' | 'generating' | 'ready' | 'error'; message: string };
-type ConflictState = { slideId: string; localText: string; latest: ScriptRevision } | null;
-
-// B3-M5：生成类任务（配音生成 / 讲稿生成）的活跃态判定，用于"生成中继续编辑"顶部快照提示。
-const genJobKinds = ['narration', 'script_draft'];
-const genActiveStates = [
-  'JOB_STATE_QUEUED',
-  'JOB_STATE_RUNNING',
-  'JOB_STATE_RETRY_WAIT',
-  'JOB_STATE_CANCEL_REQUESTED',
-  'JOB_STATE_UNKNOWN_PROVIDER_RESULT'
-];
+// 类型与常量见 ./projectEditor/model；探测失败归档见 ./projectEditor/useProbes；
+// 备注、焦点取数与讲稿栏拖拽各自成 hook——编辑器主文件只保留编排与渲染。
 
 // 纯函数助手（manifestMatchesSlides / jobRevisionNo / modeLabel / scriptModeOptions / sleep）
 // 抽到 ./projectEditor/helpers，避免编辑器主文件膨胀、便于单测。
@@ -162,32 +131,8 @@ export function ProjectEditor({
   const [batchError, setBatchError] = useState('');
   const [batchMessage, setBatchMessage] = useState('');
   const [batchUndo, setBatchUndo] = useState<AnimationBatchSnapshot[] | null>(null);
-  // 探测类请求的失败原因（按 ProbeId 归档）。空对象 = 全部正常。
-  const [probeErrors, setProbeErrors] = useState<Partial<Record<ProbeId, string>>>({});
-  // 顶层探测的重试计数；变化即重跑全部顶层探测 effect。
-  const [probesReloadKey, setProbesReloadKey] = useState(0);
-  const clearProbe = useCallback((id: ProbeId) => {
-    setProbeErrors((cur) => {
-      if (!(id in cur)) return cur;
-      const next = { ...cur };
-      delete next[id];
-      return next;
-    });
-  }, []);
-  // reportProbe 是探测失败的统一入口。两类"非故障"必须放行、不得报错：
-  //   ① isNotFound —— 资源确实不存在（如"尚未生成配音"）是正常业务语义；
-  //   ② isUnimplemented —— 本部署未提供该能力（503 feature_disabled / 501），
-  //      按 A26 应隐藏入口，而不是把部署差异渲染成故障。
-  const reportProbe = useCallback(
-    (id: ProbeId, err: unknown, fallbackKey: string) => {
-      if (isNotFound(err) || isUnimplemented(err)) {
-        clearProbe(id);
-        return;
-      }
-      setProbeErrors((cur) => ({ ...cur, [id]: describeApiError(err, t(fallbackKey), t) }));
-    },
-    [clearProbe, t]
-  );
+  // 探测类请求的失败归档（按 ProbeId 分位置渲染）与统一重试入口。
+  const { probeErrors, probesReloadKey, clearProbe, reportProbe, reloadProbes } = useProbes(t);
   const [activeSlideID, setActiveSlideID] = useState('');
   // 右侧讲稿栏：可折叠为抽屉（默认展开）。
   const [scriptOpen, setScriptOpen] = useState(true);
@@ -240,12 +185,16 @@ export function ProjectEditor({
   const [currentRevision, setCurrentRevision] = useState(0);
   // 项目标题（用于回退链接）
   const [projectTitle, setProjectTitle] = useState('');
-  // 当前幻灯片备注编辑
-  const [slideNotesText, setSlideNotesText] = useState('');
-  const [notesSlideID, setNotesSlideID] = useState('');
-  const [notesSaving, setNotesSaving] = useState(false);
-  const [notesError, setNotesError] = useState('');
-  const notesSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 当前页备注：随页/修订切换重新加载，编辑后失焦延迟保存（见 ./projectEditor/useSlideNotes）。
+  const {
+    text: slideNotesText,
+    slideID: notesSlideID,
+    saving: notesSaving,
+    error: notesError,
+    setText: setSlideNotesText,
+    load: loadSlideNotes,
+    scheduleSave: scheduleSaveNotes
+  } = useSlideNotes(identity, projectId, t);
 
   useEffect(() => {
     let cancelled = false;
@@ -274,33 +223,6 @@ export function ProjectEditor({
       cancelled = true;
     };
   }, [identity, projectId, probesReloadKey, reportProbe, clearProbe]);
-
-  // 加载/保存当前幻灯片备注（切换幻灯片或修订号时自动加载，失焦时延迟保存）。
-  const loadSlideNotes = useCallback(async (sid: string, revNo: number) => {
-    setNotesError('');
-    try {
-      const notes = await getSlideNotes(identity, projectId, sid, revNo);
-      setSlideNotesText(notes ?? '');
-      setNotesSlideID(sid);
-    } catch (err) {
-      setNotesError(err instanceof Error ? err.message : '');
-    }
-  }, [identity, projectId]);
-
-  const scheduleSaveNotes = useCallback((text: string, sid: string, revNo: number) => {
-    if (notesSaveTimer.current) clearTimeout(notesSaveTimer.current);
-    setNotesSaving(true);
-    notesSaveTimer.current = setTimeout(async () => {
-      try {
-        await setSlideNotes(identity, projectId, sid, revNo, text);
-        setNotesError('');
-      } catch (err) {
-        setNotesError(err instanceof Error ? err.message : t('editor.notesSaveFailed'));
-      } finally {
-        setNotesSaving(false);
-      }
-    }, 600);
-  }, [identity, projectId, t]);
 
   // M4 ⑦：生成范围 + 待确认稿数（C-5 前置检查）。
   // 讲稿改动后是否待重新生成语音（用于讲稿栏提示）。
@@ -418,87 +340,20 @@ export function ProjectEditor({
   // 逐页失败/降级原因（后端 job_steps.reason）。只展示前几条：面板是提示，不是日志。
   const [oneDraftReasons, setOneDraftReasons] = useState<string[]>([]);
   const [unsaved, setUnsaved] = useState(false);
-  // 编辑区网格容器 + 讲稿栏宽度拖拽（CSS 变量 --script-panel-width，仅当前会话生效）。
-  const editorLayoutRef = useRef<HTMLDivElement>(null);
-  const [scriptResizing, setScriptResizing] = useState(false);
+  // 编辑区网格容器 + 讲稿栏拖拽（宽度只写 CSS 变量，见 ./projectEditor/useScriptPanelResize）。
+  const { layoutRef: editorLayoutRef, resizing: scriptResizing, startResize: startScriptResize } = useScriptPanelResize();
   const scriptEditorRef = useRef<ScriptEditorHandle>(null);
-  // 焦点候选：编辑器要告诉用户"这一段能指谁"（形状文字 / 图片 / 图表的每根柱子）。
-  // 按当前页加载；slideId 对不上就按"加载中"处理——切页瞬间不能把上一页的柱子列出来。
-  const [focusTargets, setFocusTargets] = useState<{ slideId: string; targets: FocusTarget[]; note: string } | null>(null);
-  const [focusTargetsError, setFocusTargetsError] = useState<string | null>(null);
   const activeSourceRevision = slidesState.mode === 'real' ? slidesState.revisionNo : 0;
 
-  useEffect(() => {
-    if (!activeSlideID) {
-      setFocusTargets(null);
-      setFocusTargetsError(null);
-      return;
-    }
-    let cancelled = false;
-    setFocusTargetsError(null);
-    getFocusTargets(identity, projectId, activeSlideID, activeSourceRevision)
-      .then((res) => {
-        if (cancelled) return;
-        setFocusTargets({ slideId: res.slideId, targets: res.targets ?? [], note: res.note ?? '' });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setFocusTargets(null);
-        // 读取失败只影响"能不能选"，不影响已有焦点与讲稿保存；但界面必须说"读失败"，
-        // 不能显示成"这一页没有可指的目标"——那是两件事。
-        setFocusTargetsError(describeApiError(error, t('editor.focusLoadFailed'), t));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [identity, projectId, activeSlideID, activeSourceRevision, t]);
-
-  // 焦点规则建议：**按需**拉取，切页/换版本不会自动在后台算，更不会自动落库。
-  // 采纳写的是讲稿段落 focus，走 ScriptEditor 既有的自动保存通道；这里只负责取数。
-  // 服务端 note/reason 是给 API 消费者排查用的中文说明，界面不直接渲染，
-  // 而是按 band + 建议条数走本地化文案（英文界面不能混进中文）。
-  const [focusSuggestions, setFocusSuggestions] = useState<{
-    slideId: string;
-    band: string;
-    suggestions: FocusSuggestion[];
-  } | null>(null);
-  const [focusSuggestionsStatus, setFocusSuggestionsStatus] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
-  const [focusSuggestionsError, setFocusSuggestionsError] = useState<string | null>(null);
-  // 请求序号：切页后上一页的在途响应必须作废，否则建议会串到新页讲稿上。
-  const suggestionReqRef = useRef(0);
-
-  useEffect(() => {
-    suggestionReqRef.current += 1;
-    setFocusSuggestions(null);
-    setFocusSuggestionsStatus('idle');
-    setFocusSuggestionsError(null);
-  }, [identity, projectId, activeSlideID, activeSourceRevision]);
-
-  const loadFocusSuggestions = useCallback(() => {
-    if (!activeSlideID) return;
-    const slideId = activeSlideID;
-    const seq = ++suggestionReqRef.current;
-    setFocusSuggestionsStatus('loading');
-    setFocusSuggestionsError(null);
-    // 与 focus-targets 用同一个源版本号：建议里的 shapeId 必须能在候选清单里找到。
-    getFocusSuggestions(identity, projectId, slideId, activeSourceRevision)
-      .then((res) => {
-        if (seq !== suggestionReqRef.current) return;
-        setFocusSuggestions({
-          slideId,
-          band: res.band ?? '',
-          suggestions: res.suggestions ?? []
-        });
-        setFocusSuggestionsStatus('ready');
-      })
-      .catch((error) => {
-        if (seq !== suggestionReqRef.current) return;
-        setFocusSuggestions(null);
-        setFocusSuggestionsStatus('failed');
-        // 读取失败只影响"有没有建议"，绝不能把已有焦点说成"没有可指的"。
-        setFocusSuggestionsError(describeApiError(error, t('editor.focusSuggestLoadFailed'), t));
-      });
-  }, [identity, projectId, activeSlideID, activeSourceRevision, t]);
+  // 焦点候选与焦点建议：按当前页 + 源版本取数，读失败与"没有"严格区分。
+  const {
+    focusTargets,
+    focusTargetsError,
+    focusSuggestions,
+    focusSuggestionsStatus,
+    focusSuggestionsError,
+    loadFocusSuggestions
+  } = useFocusAssist(identity, projectId, activeSlideID, activeSourceRevision, t);
 
   // 配音任务活跃标志（供 5s 轮询判断"配音任务刚结束"→ 重建播放清单，见 refreshActiveGenJobs）。
   const narrationActiveRef = useRef(false);
@@ -958,47 +813,21 @@ export function ProjectEditor({
 
   const oneDraftStorageKey = `ppts:one-draft:${projectId}`;
 
-  // 成稿前的跳过预估（**估算**，非承诺值；后端逐页结果以任务步骤为准）。
-  // slide.preview 由后端按「备注优先，其次首个非空形状文字」生成：
-  //  - notes_only：「有备注」即可成稿，preview 不作判据；
-  //  - 其余来源：preview 为空 ⇒ 备注与形状文字皆空 ⇒ 必然跳过；
-  //    但 preview 非空**不保证**页面文字可抽取（仅备注页在 page_content 下仍会被后端跳过），
-  //    故这类漏计只会让预估偏乐观，不会漏报真正会生成的页。
-  // realScripts 只含**当前讲稿语言**的讲稿，故仅当生成语言与面板语言一致时跳过数才精确，
-  // 否则标注为按目标语言的估算。
-  const oneDraftPlan = useMemo(() => {
-    if (slidesState.mode !== 'real') return null;
-    const slides = slidesState.slides;
-    let generate = 0;
-    let skippedExisting = 0;
-    let noText = 0;
-    // withNotes 用于说明「打开有备注的页面会自动用备注建一版原文稿」——
-    // 这会让「仅补空」在后续成稿时把这些页判为已有讲稿而跳过。
-    let withNotes = 0;
-    for (const slide of slides) {
-      if (slide.hasNotes) withNotes += 1;
-      const hasMaterial =
-        oneDraftSource === 'notes_only' ? Boolean(slide.hasNotes) : Boolean((slide.preview ?? '').trim());
-      if (!hasMaterial) {
-        noText += 1;
-        continue;
-      }
-      const hasScript = (realScripts[slide.slideId]?.segments.length ?? 0) > 0;
-      if (hasScript && oneDraftOverwrite === 'fill_empty') {
-        skippedExisting += 1;
-        continue;
-      }
-      generate += 1;
-    }
-    return {
-      generate,
-      skippedExisting,
-      noText,
-      withNotes,
-      total: slides.length,
-      reliable: oneDraftLanguage === (scriptLanguage || 'zh-CN')
-    };
-  }, [slidesState, realScripts, oneDraftSource, oneDraftOverwrite, oneDraftLanguage, scriptLanguage]);
+  // 成稿前的跳过预估（估算，非承诺值；口径与边界见 ./projectEditor/oneClickPlan）。
+  const oneDraftPlan = useMemo(
+    () =>
+      slidesState.mode === 'real'
+        ? computeOneDraftPlan({
+            slides: slidesState.slides,
+            scripts: realScripts,
+            source: oneDraftSource,
+            overwrite: oneDraftOverwrite,
+            language: oneDraftLanguage,
+            panelLanguage: scriptLanguage
+          })
+        : null,
+    [slidesState, realScripts, oneDraftSource, oneDraftOverwrite, oneDraftLanguage, scriptLanguage]
+  );
 
   useEffect(() => {
     const saved = window.localStorage.getItem(oneDraftStorageKey);
@@ -1194,7 +1023,7 @@ export function ProjectEditor({
       setBatchUndo(restorableSnapshots(result.previous));
       setBatchMessage(t('editor.animationBatchResult', { applied: result.applied }));
       setBatchSelected([]);
-      setProbesReloadKey((key) => key + 1);
+      reloadProbes();
     } catch (error) {
       setBatchUndo(null);
       const details = error instanceof ConnectError ? error.details : undefined;
@@ -1219,7 +1048,7 @@ export function ProjectEditor({
       const result = await restoreAnimationBatch(identity, batchScope, batchUndo);
       setBatchMessage(t('editor.animationBatchUndone', { count: result.restored }));
       setBatchUndo(null);
-      setProbesReloadKey((key) => key + 1);
+      reloadProbes();
     } catch (error) {
       setBatchError(describeApiError(error, t('editor.animationBatchFailed'), t));
     } finally {
@@ -1549,34 +1378,6 @@ export function ProjectEditor({
 
   const commitError = (message: string) => {
     setDraftStatus({ phase: 'error', message });
-  };
-
-  // 拖拽预览区与讲稿栏之间的竖条，实时改写 --script-panel-width。
-  const startScriptResize = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const layout = editorLayoutRef.current;
-    if (!layout) return;
-    event.preventDefault();
-    const handle = event.currentTarget;
-    const pointerId = event.pointerId;
-    handle.setPointerCapture?.(pointerId);
-    setScriptResizing(true);
-    const rect = layout.getBoundingClientRect();
-    const onMove = (moveEvent: PointerEvent) => {
-      // 上限 = 容器宽 - 左栏 200 - 预览最小 300 - 三处间距 30，保证预览区不被压塌。
-      const max = Math.max(280, rect.width - 530);
-      const width = Math.min(Math.max(rect.right - moveEvent.clientX, 280), max);
-      layout.style.setProperty('--script-panel-width', `${Math.round(width)}px`);
-    };
-    const onEnd = () => {
-      setScriptResizing(false);
-      handle.releasePointerCapture?.(pointerId);
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onEnd);
-      window.removeEventListener('pointercancel', onEnd);
-    };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onEnd);
-    window.addEventListener('pointercancel', onEnd);
   };
 
   // 生成/重新生成讲稿：按模式对指定页生成，轮询直到 revision 变化（避免读到旧稿）。
@@ -2218,7 +2019,7 @@ export function ProjectEditor({
               </p>
             ) : null
           )}
-          <button type="button" onClick={() => setProbesReloadKey((key) => key + 1)}>
+          <button type="button" onClick={() => reloadProbes()}>
             {t('common.retry')}
           </button>
         </div>
@@ -2744,7 +2545,7 @@ export function ProjectEditor({
                 <div className="load-failure load-failure-stack" role="alert">
                   {probeErrors.voiceModels && <p className="form-error">{probeErrors.voiceModels}</p>}
                   {probeErrors.voiceSettings && <p className="form-error">{probeErrors.voiceSettings}</p>}
-                  <button type="button" onClick={() => setProbesReloadKey((key) => key + 1)}>
+                  <button type="button" onClick={() => reloadProbes()}>
                     {t('common.retry')}
                   </button>
                 </div>

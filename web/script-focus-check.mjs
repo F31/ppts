@@ -202,6 +202,9 @@ test('建议是只读的：没有采纳写端点，界面也不自己发请求',
   const { readFileSync } = await import('node:fs');
   const editor = readFileSync(new URL('./src/ScriptEditor.tsx', import.meta.url), 'utf8');
   const page = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  // 焦点取数已抽到 hooks 模块（编辑器只做编排）；计数与"谁在调用"跟着搬家，
+  // 但约束不变：全仓只能有一处调用，且由用户动作触发。
+  const focusHook = readFileSync(new URL('./src/pages/projectEditor/useFocusAssist.ts', import.meta.url), 'utf8');
   const api = readFileSync(new URL('./src/api/scripts.ts', import.meta.url), 'utf8');
   const go = readFileSync(new URL('../internal/api/editor.go', import.meta.url), 'utf8');
 
@@ -212,8 +215,10 @@ test('建议是只读的：没有采纳写端点，界面也不自己发请求',
   assert.match(suggestFn, /return getJSON<FocusSuggestions>\(/, '建议只能通过 GET 取数');
   assert.doesNotMatch(suggestFn, /\b(?:postJSON|putJSON|patchJSON|deleteJSON|connectJSON)\s*\(/, '前端不能给建议配写请求');
 
-  assert.match(page, /getFocusSuggestions\(/, '页面要真的调用只读端点');
-  assert.equal((page.match(/getFocusSuggestions\(/g) || []).length, 1, '只允许一处调用，防止有人在 effect 里又自动拉一次');
+  assert.match(focusHook, /getFocusSuggestions\(/, '焦点 hook 要真的调用只读端点');
+  assert.equal((focusHook.match(/getFocusSuggestions\(/g) || []).length, 1, '只允许一处调用，防止有人在 effect 里又自动拉一次');
+  assert.equal((page.match(/getFocusSuggestions\(/g) || []).length, 0, '页面不得绕过 hook 自行取数（否则会有第二个调用点）');
+  assert.match(page, /useFocusAssist\(/, '页面必须通过焦点 hook 取数');
   assert.match(page, /onNeedFocusSuggestions=/, '必须由用户动作触发，不能自动预填');
   assert.doesNotMatch(editor, /\bfetch\s*\(|getJSON\s*\(|['"`]\/projects\//, '组件不直接发请求，取数只在 api 层');
   assert.match(editor, /acceptUniqueSuggestions\(/, '批量采纳要经纯函数判据');
