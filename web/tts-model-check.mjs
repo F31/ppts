@@ -20,6 +20,9 @@ const narrationAPI = readFileSync(new URL('./src/api/narration.ts', import.meta.
 const editor = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
 // 试听的请求构造与样音清理已抽到 hook；断言跟随搬家，约束不变。
 const previewHook = readFileSync(new URL('./src/pages/projectEditor/useVoicePreview.ts', import.meta.url), 'utf8');
+// 语音属性抽屉也搬了家：模型/音色下拉在组件里，草稿值与保存动作在 useVoiceDraft。
+const propsDrawer = readFileSync(new URL('./src/pages/projectEditor/VoicePropsDrawer.tsx', import.meta.url), 'utf8');
+const voiceDraftHook = readFileSync(new URL('./src/pages/projectEditor/useVoiceDraft.ts', import.meta.url), 'utf8');
 
 test('试听请求键含模型：换模型后旧样音不能落到新选择上', () => {
   const base = { voice: 'v1', ratePercent: 100 };
@@ -65,7 +68,7 @@ test('编辑器生成路径传的是「本次生效」的模型', () => {
   );
   assert.match(
     editor,
-    /model:\s*saved\.model \|\| voiceDraftModel/,
+    /model:\s*saved\.model \|\| voiceDraft\.draft\.model/,
     '弹窗保存后应把 saved.model 作为本次生成的模型'
   );
 });
@@ -74,7 +77,7 @@ test('编辑器试听路径传的是草稿里选的模型', () => {
   // 页面把草稿值交给 hook（而不是已保存的 voiceModelName）。
   assert.match(
     editor,
-    /useVoicePreview\(\{[\s\S]{0,300}?model:\s*voiceDraftModel[\s\S]{0,200}?\}\)/,
+    /useVoicePreview\(\{[\s\S]{0,300}?model:\s*voiceDraft\.draft\.model[\s\S]{0,200}?\}\)/,
     '试听必须用草稿模型，而不是已保存的旧值'
   );
   assert.match(previewHook, /const request = \{ voice, ratePercent, model \};/, '请求体必须真的带模型');
@@ -95,4 +98,35 @@ test('模型不可用时的提示能指导用户改选', () => {
     /case 'model_missing':[\s\S]{0,240}?voicePreviewModelMissing/,
     'model_missing 必须有专门提示，不能落到通用失败'
   );
+});
+
+test('语音属性抽屉：模型与音色必须绑同一份草稿值', () => {
+  // 抽屉改成纯展示组件后，最容易出的错是「模型显示草稿值、音色还读已保存值」——
+  // 那样用户看到的是 A 模型的音色、保存下去的是 B，试听和成片都不是眼前这档。
+  assert.match(
+    editor,
+    /draftModel=\{voiceDraft\.draft\.model\}/,
+    '抽屉的模型必须读草稿值'
+  );
+  assert.match(editor, /draftVoice=\{voiceDraft\.draft\.voice\}/, '音色必须读同一份草稿值');
+  assert.match(editor, /draftRate=\{voiceDraft\.draft\.ratePercent\}/, '语速也要跟着草稿值走');
+  // 音色列表按所选模型过滤，换模型必须回落该模型的第一档，不能留着上一个模型的音色。
+  assert.match(propsDrawer, /models\.find\(\(model\) => model\.name === draftModel\)\?\.voices \?\? \[\]/);
+  assert.match(
+    voiceDraftHook,
+    /model: name, voice: voiceOptions\(name\)\[0\] \?\? ''/,
+    '换模型后音色要换成该模型的第一档'
+  );
+});
+
+test('保存失败不得关窗，草稿值要留在界面上', () => {
+  // 保存失败还关窗，用户会以为存上了：下次生成用的仍是旧音色，且没有任何提示。
+  assert.match(voiceDraftHook, /if \(!draft\.voice\) \{[\s\S]{0,160}?return null;/, '空音色必须拦住');
+  assert.match(voiceDraftHook, /catch \(err\) \{[\s\S]{0,160}?return null;/, '保存异常要落到 error 并返回 null');
+  // 页面必须"没拿到保存结果就提前返回"，不能无条件关窗。
+  const gate = editor.indexOf('const saved = await voiceDraft.save();');
+  const close = editor.indexOf('setPropsOpen(false);', gate);
+  const bail = editor.indexOf('if (!saved) return;', gate);
+  assert.ok(gate > 0, '页面要真的调用 voiceDraft.save()');
+  assert.ok(bail > gate && bail < close, '保存失败必须在关窗之前返回');
 });

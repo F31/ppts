@@ -39,7 +39,6 @@ import {
   listVoiceModels,
   regenerateScriptDraft,
   rewriteScriptText,
-  saveVoiceSettings,
   setScriptLanguagePreference,
   setSourceRevisionPreference,
   setSlideScriptSource,
@@ -89,8 +88,10 @@ import { useFocusAssist } from './projectEditor/useFocusAssist';
 import { useProbes } from './projectEditor/useProbes';
 import { useScriptPanelResize } from './projectEditor/useScriptPanelResize';
 import { OneDraftDrawer } from './projectEditor/OneDraftDrawer';
+import { VoicePropsDrawer } from './projectEditor/VoicePropsDrawer';
 import { useOneDraftForm } from './projectEditor/useOneDraftForm';
 import { useSlideNotes } from './projectEditor/useSlideNotes';
+import { useVoiceDraft } from './projectEditor/useVoiceDraft';
 import { useVoicePreview } from './projectEditor/useVoicePreview';
 import { animationDroppedText, exportFailureText } from '../animationText';
 import { useDialogA11y } from '../a11y';
@@ -153,16 +154,11 @@ export function ProjectEditor({
   const [narrationEstimate, setNarrationEstimate] = useState<NarrationEstimate | null>(null);
   const [voiceId, setVoiceId] = useState('');
   const [ratePercent, setRatePercent] = useState(100);
-  // 语音属性弹窗：可选模型（TTS 网关）与当前模型名，以及编辑中的草稿值。
+  // 语音属性弹窗：可选模型（TTS 网关）与已保存的模型名；草稿值在 useVoiceDraft。
   const [voiceModels, setVoiceModels] = useState<VoiceModel[]>([]);
   const [voiceModelName, setVoiceModelName] = useState('');
-  const [voiceDraftModel, setVoiceDraftModel] = useState('');
-  const [voiceDraftVoice, setVoiceDraftVoice] = useState('');
-  const [voiceDraftRate, setVoiceDraftRate] = useState(100);
-  const [voiceSaving, setVoiceSaving] = useState(false);
-  const [voiceSaveError, setVoiceSaveError] = useState('');
-  // 配音生成方式：incremental=只补未配音/讲稿已更新的页；full=全部重新生成并覆盖。
-  const [voiceGenMode, setVoiceGenMode] = useState<'incremental' | 'full'>('incremental');
+  // 抽屉里的草稿值（模型/音色/语速）、生成方式与保存态由 useVoiceDraft 持有；
+  // 这里只留已保存值（voiceModelName / voiceId / ratePercent）与待配音范围。
   // 隐藏页默认不参与成片（放映与 PDF 导出都会跳过），因此“全部生成”默认也跳过它们；
   // 勾上这个才纳入——把花钱的事交给显式选择，而不是默认替用户做。
   const [includeHiddenPages, setIncludeHiddenPages] = useState(false);
@@ -1198,11 +1194,9 @@ export function ProjectEditor({
 
   // 语音属性弹窗：可用音色（来自所选模型的网关配置）。
   const voicesForModel = (name: string): string[] => voiceModels.find((m) => m.name === name)?.voices ?? [];
-  const voiceDisplayName = (voice: string): string => {
-    const raw = voice.trim();
-    const suffix = raw.includes(':') ? raw.split(':').pop() || raw : raw;
-    return suffix || raw;
-  };
+
+  // 草稿值 + 保存动作（见 ./projectEditor/useVoiceDraft）；配音流水线仍留在编辑器。
+  const voiceDraft = useVoiceDraft({ identity, projectId, t, voiceOptions: voicesForModel });
 
   const friendlyOneDraftError = (message: string): string => {
     if (/context deadline exceeded|Client\.Timeout|awaiting headers/i.test(message)) {
@@ -1228,19 +1222,10 @@ export function ProjectEditor({
   };
 
   const openVoiceDialog = () => {
-    setVoiceSaveError('');
-    setVoiceDraftModel(voiceModelName);
-    setVoiceDraftVoice(voiceId);
-    setVoiceDraftRate(ratePercent);
-    setVoiceGenMode('incremental');
+    // 草稿回到已保存值、生成方式回到增量、清掉上次失败提示，再拉一次待配音范围。
+    voiceDraft.reset({ model: voiceModelName, voice: voiceId, ratePercent });
     setPropsOpen(true);
     void refreshVoiceStale();
-  };
-
-  const selectVoiceModel = (name: string) => {
-    setVoiceDraftModel(name);
-    const voices = voicesForModel(name);
-    setVoiceDraftVoice(voices[0] ?? '');
   };
 
   // 音色试听：草稿值 → 一次性 Blob。串音（换档/关窗即清）与泄漏（替换/卸载 revoke）
@@ -1256,43 +1241,29 @@ export function ProjectEditor({
     identity,
     projectId,
     t,
-    model: voiceDraftModel,
-    voice: voiceDraftVoice,
-    ratePercent: voiceDraftRate,
+    model: voiceDraft.draft.model,
+    voice: voiceDraft.draft.voice,
+    ratePercent: voiceDraft.draft.ratePercent,
     panelOpen: propsOpen
   });
 
   // 「配音」：先保存语音配置，再按所选生成方式发起配音任务。
+  // 保存失败时抽屉保持打开、草稿值不丢——用户能直接改完再点一次。
   const voiceDialogGenerate = async () => {
-    if (!voiceDraftVoice) {
-      setVoiceSaveError(t('editor.voiceModelEmpty'));
-      return;
-    }
-    setVoiceSaving(true);
-    setVoiceSaveError('');
-    try {
-      const saved = await saveVoiceSettings(identity, projectId, {
-        model: voiceDraftModel,
-        voice: voiceDraftVoice,
-        ratePercent: voiceDraftRate
-      });
-      setVoiceModelName(saved.model);
-      setRatePercent(saved.ratePercent || 100);
-      if (saved.voice) setVoiceId(saved.voice);
-      setPropsOpen(false);
-      setVoiceSaving(false);
-      // 生成在弹窗关闭后继续；进度显示在讲稿栏与顶部任务提示。
-      void runVoiceGeneration(voiceGenMode, {
-        voiceId: saved.voice || voiceDraftVoice,
-        ratePercent: saved.ratePercent || voiceDraftRate,
-        // 传刚保存的模型而不是 state：setVoiceModelName 是异步的，这一行紧随其后执行时
-        // state 还没更新，用 state 会让"刚选的模型"丢掉一次。
-        model: saved.model || voiceDraftModel
-      });
-    } catch (error) {
-      setVoiceSaveError(error instanceof Error ? error.message : t('editor.voiceSaveFailed'));
-      setVoiceSaving(false);
-    }
+    const saved = await voiceDraft.save();
+    if (!saved) return;
+    setVoiceModelName(saved.model);
+    setRatePercent(saved.ratePercent || 100);
+    if (saved.voice) setVoiceId(saved.voice);
+    setPropsOpen(false);
+    // 生成在弹窗关闭后继续；进度显示在讲稿栏与顶部任务提示。
+    void runVoiceGeneration(voiceDraft.genMode, {
+      voiceId: saved.voice || voiceDraft.draft.voice,
+      ratePercent: saved.ratePercent || voiceDraft.draft.ratePercent,
+      // 传刚保存的模型而不是 state：setVoiceModelName 是异步的，这一行紧随其后执行时
+      // state 还没更新，用 state 会让"刚选的模型"丢掉一次。
+      model: saved.model || voiceDraft.draft.model
+    });
   };
 
   const acceptLatest = () => {
@@ -2355,162 +2326,42 @@ export function ProjectEditor({
       )}
 
       {propsOpen && (
-        <div className="drawer-backdrop" onClick={() => setPropsOpen(false)}>
-          <aside className="properties-drawer" role="dialog" aria-modal="true" aria-label={t('editor.properties')} onClick={(event) => event.stopPropagation()} ref={propsDialogRef}>
-            <header>
-              <div>
-                <span className="eyebrow">{t('editor.properties')}</span>
-                <h2>{t('editor.properties')}</h2>
-              </div>
-              <button type="button" className="dialog-close-icon" onClick={() => setPropsOpen(false)} aria-label={t('common.close')} title={t('common.close')}>
-                ×
-              </button>
-            </header>
-            <section className="panel nested">
-              <label className="field-label">
-                {t('editor.voiceModel')}
-                <select
-                  value={voiceDraftModel}
-                  onChange={(e) => selectVoiceModel(e.currentTarget.value)}
-                  disabled={voiceModels.length === 0}
-                >
-                  {voiceModels.length === 0 && (
-                    // 读取失败时不能说"无可用语音模型"——那是把故障说成"平台没这个能力"。
-                    <option value="">{probeErrors.voiceModels ? t('err.unavailable') : t('editor.voiceModelEmpty')}</option>
-                  )}
-                  {voiceModels.map((model) => (
-                    <option key={model.name} value={model.name}>
-                      {model.model || model.name}
-                      {model.isDefault ? ` · ${t('editor.voiceModelDefault')}` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field-label">
-                {t('editor.voice')}
-                <select
-                  value={voiceDraftVoice}
-                  onChange={(e) => setVoiceDraftVoice(e.currentTarget.value)}
-                  disabled={voicesForModel(voiceDraftModel).length === 0}
-                >
-                  {voicesForModel(voiceDraftModel).map((voice) => (
-                    <option key={voice} value={voice}>
-                      {voiceDisplayName(voice)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              {/* 先试听再确认：不必等整篇生成，也不必先保存草稿。
-                  用的是草稿音色/语速，因此"听到的"就是点击「配音」后会用的参数。 */}
-              <div className="voice-preview">
-                <button
-                  type="button"
-                  className="button-ghost"
-                  disabled={!voiceDraftVoice || voicePreviewLoading || !canEditScript}
-                  onClick={() => void playVoicePreview()}
-                >
-                  {voicePreviewLoading ? t('editor.voicePreviewLoading') : t('editor.voicePreview')}
-                </button>
-                {voicePreviewURL && (
-                  <audio controls autoPlay src={voicePreviewURL} aria-label={t('editor.voicePreview')} />
-                )}
-                {voicePreviewModel && (
-                  <p className="narration-note">{t('editor.voicePreviewModel', { model: voicePreviewModel })}</p>
-                )}
-                {voicePreviewDuration > 0 && (
-                  <p className="narration-note">
-                    {t('editor.voicePreviewDuration', { seconds: (voicePreviewDuration / 1000).toFixed(1) })}
-                  </p>
-                )}
-                {voicePreviewError && (
-                  <p className="form-error" role="alert">
-                    {voicePreviewError}
-                  </p>
-                )}
-              </div>
-
-              <label className="field-label">
-                {t('editor.rate', { percent: voiceDraftRate })}
-                <select value={voiceDraftRate} onChange={(e) => setVoiceDraftRate(Number(e.currentTarget.value))}>
-                  {[75, 90, 100, 110, 125, 150].map((rate) => (
-                    <option key={rate} value={rate}>
-                      {rate === 100 ? t('editor.rateStandard') : `${rate}%`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field-label">
-                {t('editor.voiceGenerateMode')}
-                <select value={voiceGenMode} onChange={(e) => setVoiceGenMode(e.currentTarget.value as 'incremental' | 'full')}>
-                  <option value="incremental">{t('editor.voiceModeIncremental')}</option>
-                  <option value="full">{t('editor.voiceModeFull')}</option>
-                </select>
-              </label>
-
-              {/* 隐藏页默认不参与成片：放映与 PDF 导出都会跳过它。默认不配音，
-                  要纳入得显式勾选——否则用户会在成品里发现"多了一段没人看的内容"。 */}
-              <label className="field-check">
-                <input
-                  type="checkbox"
-                  checked={includeHiddenPages}
-                  onChange={(e) => setIncludeHiddenPages(e.currentTarget.checked)}
-                />
-                {t('editor.includeHiddenPages', { count: hiddenCount(slidesState.mode === 'real' ? slidesState.slides : []) })}
-              </label>
-
-              {probeErrors.voiceStale ? (
-                // 原实现失败即置空数组，这里会显示"语音全部最新"——与"确实无需更新"完全同貌（A26）。
-                <div className="load-failure" role="alert">
-                  <p className="form-error">{probeErrors.voiceStale}</p>
-                  <button type="button" onClick={() => void refreshVoiceStale()}>
-                    {t('common.retry')}
-                  </button>
-                </div>
-              ) : (
-                <p className="narration-note">
-                  {voiceStaleLoading
-                    ? t('editor.voiceStaleLoading')
-                    : voiceGenMode === 'full'
-                      ? t('editor.voiceFullHint', { total: scriptReadyCount })
-                      : t('editor.voiceStaleHint', { stale: voiceStaleIds.length, total: scriptReadyCount })}
-                </p>
-              )}
-              {!includeHiddenPages && hiddenScriptCount > 0 && (
-                <p className="narration-note">
-                  {t('editor.hiddenPagesSkipped', { count: hiddenScriptCount })}
-                </p>
-              )}
-
-              {(probeErrors.voiceModels || probeErrors.voiceSettings) && (
-                // 已存音色读取失败时下面会退回缺省（语速 100% / 开发音色），
-                // 不说明的话用户会以为"我保存的音色被清空了"。
-                <div className="load-failure load-failure-stack" role="alert">
-                  {probeErrors.voiceModels && <p className="form-error">{probeErrors.voiceModels}</p>}
-                  {probeErrors.voiceSettings && <p className="form-error">{probeErrors.voiceSettings}</p>}
-                  <button type="button" onClick={() => reloadProbes()}>
-                    {t('common.retry')}
-                  </button>
-                </div>
-              )}
-              {!probeErrors.voiceModels && voiceModels.length === 0 && <p className="narration-note">{t('editor.voiceModelEmpty')}</p>}
-              {voiceModels.length > 0 && <p className="narration-note">{t('editor.voiceModelNote')}</p>}
-              {voiceSaveError && <p className="form-error" role="alert">{voiceSaveError}</p>}
-
-              <div className="draft-actions">
-                <button type="button" className="primary" disabled={voiceSaving || !canEditScript} onClick={() => void voiceDialogGenerate()}>
-                  {voiceSaving ? t('editor.saving') : t('editor.voiceSubmit')}
-                </button>
-                <button type="button" className="button-ghost" onClick={() => setPropsOpen(false)}>
-                  {t('common.cancel')}
-                </button>
-              </div>
-              {!canEditScript && <p className="perm-hint">{t('perm.needEditorExport')}</p>}
-            </section>
-          </aside>
-        </div>
+        <VoicePropsDrawer
+          dialogRef={propsDialogRef}
+          t={t}
+          models={voiceModels}
+          draftModel={voiceDraft.draft.model}
+          draftVoice={voiceDraft.draft.voice}
+          draftRate={voiceDraft.draft.ratePercent}
+          genMode={voiceDraft.genMode}
+          includeHiddenPages={includeHiddenPages}
+          hiddenPageCount={hiddenCount(slidesState.mode === 'real' ? slidesState.slides : [])}
+          hiddenScriptCount={hiddenScriptCount}
+          scriptReadyCount={scriptReadyCount}
+          staleCount={voiceStaleIds.length}
+          staleLoading={voiceStaleLoading}
+          preview={{
+            loading: voicePreviewLoading,
+            url: voicePreviewURL,
+            error: voicePreviewError,
+            model: voicePreviewModel,
+            durationMs: voicePreviewDuration
+          }}
+          probeErrors={probeErrors}
+          saveError={voiceDraft.error}
+          saving={voiceDraft.saving}
+          canEdit={canEditScript}
+          onClose={() => setPropsOpen(false)}
+          onSelectModel={voiceDraft.selectModel}
+          onVoiceChange={voiceDraft.setVoice}
+          onRateChange={voiceDraft.setRate}
+          onGenModeChange={voiceDraft.setGenMode}
+          onToggleHiddenPages={setIncludeHiddenPages}
+          onPreview={() => void playVoicePreview()}
+          onRetryStale={() => void refreshVoiceStale()}
+          onRetryProbes={() => reloadProbes()}
+          onSubmit={() => void voiceDialogGenerate()}
+        />
       )}
 
       {oneClickOpen && (
