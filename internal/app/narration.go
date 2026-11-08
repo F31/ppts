@@ -3,13 +3,10 @@ package app
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -27,18 +24,6 @@ import (
 	"github.com/F31/ppts/internal/pronunciation"
 	"github.com/F31/ppts/internal/usage"
 )
-
-// ttsAdapterVersion 是合成配方的版本号，参与 configHash（见 synthesisHash）。
-//
-// 只要"同样的文本会得到不同波形"就必须升版：分块大小、prompt、拼接方式、
-// 适配器内部的语速/重采样处理都算配方。不升版的后果不是"音频旧一点"，而是
-// 同一 configHash 键下的音频对象与 manifest（含 durationMS）来自不同配方——
-// 时间轴按 manifest 记时长，导出按真实文件校验，最终表现为
-// "audio clip ... duration differs from timeline"（2026-11-07 实测：分块 40→80
-// 后，10 页缓存命中、12 页新合成，混用导致整份成片导出被拒）。
-//
-// v2：CosyVoice 适配器单次请求分块 40→80 字。
-const ttsAdapterVersion = "v2"
 
 // sharedCacheProject 是租户级共享缓存的伪项目段（G2-7 内容哈希去重），
 // 音频与分段清单按内容寻址存放，跨项目复用同一对象；仍受租户前缀隔离。
@@ -932,8 +917,23 @@ func (h *NarrationHandler) objectsExist(ctx context.Context, keys ...objectstore
 	return true, nil
 }
 
-// loadPublishedSegment returns ok only when both the manifest and its audio exist.
-func (h *NarrationHandler) loadPublishedSegment(ctx context.Context, key objectstore.ObjectKey) (*SegmentAsset, bool, error) {
+// segmentManifestMode 决定「清单存在但不可用」时怎么上报。
+//
+// 两个调用点此前是两份逐行重复的函数，唯一差别就在这里，而这个差别是有意的：
+// 项目级发布清单是本项目自己的产物，坏了说明数据不一致，静默重算会把问题藏起来；
+// 租户级共享缓存只是加速手段，坏了就该当未命中重算，不能拦死导出。
+type segmentManifestMode int
+
+const (
+	// segmentManifestStrict：把已解析的清单（可能只有部分字段）交回调用方去报错。
+	segmentManifestStrict segmentManifestMode = iota
+	// segmentManifestLenient：一律按未命中处理（返回 nil 清单）。
+	segmentManifestLenient
+)
+
+// loadSegmentManifest 读分段清单并确认它引用的音频确实存在。
+// ok=false 且 err=nil 时：strict 会带回已解析的 manifest，lenient 恒为 nil。
+func (h *NarrationHandler) loadSegmentManifest(ctx context.Context, key objectstore.ObjectKey, mode segmentManifestMode) (*SegmentAsset, bool, error) {
 	r, _, err := h.objects.Get(ctx, key)
 	if errors.Is(err, objectstore.ErrObjectNotFound) {
 		return nil, false, nil
@@ -950,13 +950,21 @@ func (h *NarrationHandler) loadPublishedSegment(ctx context.Context, key objects
 		return nil, false, closeErr
 	}
 	var manifest SegmentAsset
+	// unusable 处理所有「清单读到了但用不了」的出口。音频对象本身缺失不走这里：
+	// 那是"缓存没做完"，两种情况都算未命中，调用方都不该报错。
+	unusable := func() (*SegmentAsset, bool, error) {
+		if mode == segmentManifestStrict {
+			return &manifest, false, nil
+		}
+		return nil, false, nil
+	}
 	if err := json.Unmarshal(data, &manifest); err != nil || manifest.AudioKey == "" || manifest.DurationMS <= 0 {
-		return &manifest, false, nil
+		return unusable()
 	}
 	audioKey, err := objectstore.Parse(manifest.AudioKey)
 	// G2-7 音频存放在租户级共享路径（shared 伪项目），清单跨项目引用时仅校验租户一致。
 	if err != nil || audioKey.TenantID != key.TenantID {
-		return &manifest, false, nil
+		return unusable()
 	}
 	audio, _, err := h.objects.Get(ctx, audioKey)
 	if errors.Is(err, objectstore.ErrObjectNotFound) {
@@ -971,43 +979,15 @@ func (h *NarrationHandler) loadPublishedSegment(ctx context.Context, key objects
 	return &manifest, true, nil
 }
 
+// loadPublishedSegment 加载项目级分段清单：清单和音频都在时 ok=true。
+func (h *NarrationHandler) loadPublishedSegment(ctx context.Context, key objectstore.ObjectKey) (*SegmentAsset, bool, error) {
+	return h.loadSegmentManifest(ctx, key, segmentManifestStrict)
+}
+
 // loadSharedSegment 加载租户级共享分段清单（G2-7 内容哈希去重）。
 // 清单有效且音频存在时返回 true；跨项目复用同一音频对象，零 TTS 调用。
 func (h *NarrationHandler) loadSharedSegment(ctx context.Context, key objectstore.ObjectKey) (*SegmentAsset, bool, error) {
-	r, _, err := h.objects.Get(ctx, key)
-	if errors.Is(err, objectstore.ErrObjectNotFound) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	data, readErr := io.ReadAll(r)
-	closeErr := r.Close()
-	if readErr != nil {
-		return nil, false, readErr
-	}
-	if closeErr != nil {
-		return nil, false, closeErr
-	}
-	var manifest SegmentAsset
-	if err := json.Unmarshal(data, &manifest); err != nil || manifest.AudioKey == "" || manifest.DurationMS <= 0 {
-		return nil, false, nil
-	}
-	audioKey, err := objectstore.Parse(manifest.AudioKey)
-	if err != nil || audioKey.TenantID != key.TenantID {
-		return nil, false, nil
-	}
-	audio, _, err := h.objects.Get(ctx, audioKey)
-	if errors.Is(err, objectstore.ErrObjectNotFound) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	if err := audio.Close(); err != nil {
-		return nil, false, err
-	}
-	return &manifest, true, nil
+	return h.loadSegmentManifest(ctx, key, segmentManifestLenient)
 }
 
 // realignSharedSegment 复用已缓存音频，用当前对齐算法重算字级时间戳（不重新合成、不额外计费）。
@@ -1107,109 +1087,4 @@ func (h *NarrationHandler) storeCachedAlignment(ctx context.Context, key objects
 	return h.objects.Put(ctx, key, bytes.NewReader(payload), objectstore.ObjectMeta{
 		ContentType: "application/json", ContentHash: hashBytes(payload), Size: int64(len(payload)),
 	})
-}
-
-func synthesisHash(snapshot NarrationSnapshot, capabilities tts.VoiceCapabilities, text string, sc tts.SpeechControl) (string, error) {
-	input := struct {
-		AdapterVersion string            `json:"adapterVersion"`
-		Text           string            `json:"text"`
-		Language       string            `json:"language"`
-		VoiceID        string            `json:"voiceId"`
-		ModelID        string            `json:"modelId"`
-		Region         string            `json:"region"`
-		SampleRate     int               `json:"sampleRate"`
-		SpeechControl  tts.SpeechControl `json:"speechControl"`
-	}{ttsAdapterVersion, text, snapshot.Language, snapshot.VoiceID, capabilities.ModelID, capabilities.Region, snapshot.SampleRate, sc}
-	b, err := json.Marshal(input)
-	if err != nil {
-		return "", err
-	}
-	return hashBytes(b), nil
-}
-
-func validateSynthesisResult(text string, result tts.SynthesisResult) error {
-	if len(result.Audio) == 0 || result.RealDurationMS <= 0 {
-		return errors.New("narration job: provider returned empty audio or duration")
-	}
-	if result.Alignment == nil || result.Alignment.Text != text {
-		return errors.New("narration job: provider returned missing or mismatched alignment")
-	}
-	limitUS := result.RealDurationMS * 1000
-	var previousEnd int64
-	for _, token := range result.Alignment.Tokens {
-		if token.StartUS < previousEnd || token.EndUS <= token.StartUS || token.EndUS > limitUS {
-			return errors.New("narration job: provider returned invalid alignment offsets")
-		}
-		previousEnd = token.EndUS
-	}
-	return nil
-}
-
-func audioExtension(format string) (string, error) {
-	switch format {
-	case "audio/wav":
-		return "wav", nil
-	case "audio/mpeg":
-		return "mp3", nil
-	default:
-		return "", fmt.Errorf("narration job: unsupported audio format %q", format)
-	}
-}
-
-func classifyTTSError(err error) error {
-	var retryable *tts.RetryableError
-	if !errors.As(err, &retryable) {
-		return err
-	}
-	retry := &pipeline.RetryError{Err: err}
-	if retryable.RetryAfter > 0 {
-		retry.At = time.Now().Add(retryable.RetryAfter)
-	}
-	return retry
-}
-
-func ttsErrorFlags(err error) (retryable bool, throttled bool) {
-	if err == nil {
-		return false, false
-	}
-	var retry *tts.RetryableError
-	retryable = errors.As(err, &retry)
-	var status interface{ HTTPStatus() int }
-	if errors.As(err, &status) && status.HTTPStatus() == http.StatusTooManyRequests {
-		throttled = true
-	}
-	return retryable, throttled
-}
-
-func hashBytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
-}
-
-// hashReader 流式计算 reader 内容的 SHA-256 与字节数，供导出等大文件路径在不上浮内存的前提下
-// 得到内容寻址键与元数据尺寸。
-func hashReader(r io.Reader) (string, int64, error) {
-	h := sha256.New()
-	n, err := io.Copy(h, r)
-	if err != nil {
-		return "", 0, err
-	}
-	return hex.EncodeToString(h.Sum(nil)), n, nil
-}
-
-// scopedSegmentID 生成时间轴使用的全局分段键：分段 id 只需页内唯一，
-// 但时间轴/字幕/播放清单要求全局唯一，因此统一以「页:段」作为键。
-func scopedSegmentID(slideID, segmentID string) string {
-	return slideID + ":" + segmentID
-}
-
-// timelineFocus 把讲稿的焦点目标搬进时间轴。空目标（ShapeID 为空）= 不指。
-//
-// 这一跳是刻意的拷贝而不是共享类型：时间轴是播放与导出的时钟模型，它只需要
-// "指哪"，不需要讲稿包的存储语义（见 media.SegmentFocus 的注释）。
-func timelineFocus(in *narration.FocusTarget) *media.SegmentFocus {
-	if !in.Valid() {
-		return nil
-	}
-	return &media.SegmentFocus{ShapeID: in.ShapeID, BarID: in.BarID}
 }
