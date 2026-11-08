@@ -44,10 +44,17 @@ const mode = arg('mode', 'play');
 
 const HOOK = `
 window.__probe = { errors: [], media: [] };
+// 单文件形态里资源 src 是 data URI（可达十几 MB），直接拼进报错会让输出爆掉。
+// 截前 24 字符 + 总长度足够定位"是哪一份数据"，又不至于把 JSON 撑爆。
+function __probeShortRef(u) {
+  var s = String(u || '');
+  if (s.slice(0, 5) === 'data:') return s.slice(0, 24) + '…(' + s.length + 'B)';
+  return s.split('/').pop();
+}
 addEventListener('error', function (e) {
   var t = e.target;
   if (t && t.tagName) {
-    __probe.errors.push('RES:' + t.tagName + ':' + String(t.src || t.href || '').split('/').pop());
+    __probe.errors.push('RES:' + t.tagName + ':' + __probeShortRef(t.src || t.href || ''));
   } else {
     __probe.errors.push('JS:' + (e.message || ''));
   }
@@ -116,7 +123,9 @@ const PLAY_EXPR = `(async () => {
   (man.audio || []).forEach((a) => push(a.src));
 
   const loadOne = (url) => new Promise((resolve) => {
-    const isAudio = /\\.(wav|mp3|m4a|aac|ogg)$/i.test(url);
+    // 单文件形态的音频是 data:audio/wav;base64,… —— 没有扩展名可看，按 MIME 判；
+    // 只按扩展名判会拿 <img> 去加载音频，得到一条假的"资源加载失败"。
+    const isAudio = /^data:(?:audio|video)\\//i.test(url) || /\\.(wav|mp3|m4a|aac|ogg)$/i.test(url);
     const node = isAudio ? document.createElement('audio') : new Image();
     const timer = setTimeout(() => resolve({ url, ok: false, why: 'timeout' }), 8000);
     const done = (ok, why) => { clearTimeout(timer); resolve({ url, ok, why }); };
@@ -131,12 +140,15 @@ const PLAY_EXPR = `(async () => {
 
   const results = await Promise.all(urls.map(loadOne));
   out.resources.checked = results.length;
-  out.resources.failed = results.filter((r) => !r.ok).map((r) => r.url + (r.why === 'timeout' ? ' (timeout)' : ''));
+  // 失败项必须截断：单文件里 url 就是十几 MB 的 data URI，原样回传会让 CDP 消息
+  // 大到传不回来（现场表现是 probe 卡死，而不是"资源加载失败"）。
+  out.resources.failed = results.filter((r) => !r.ok)
+    .map((r) => __probeShortRef(r.url) + (r.why === 'timeout' ? ' (timeout)' : ''));
 
   const a = (window.__probe && __probe.media && __probe.media[0]) || null;
   if (a) {
     out.audio = {
-      src: String(a.currentSrc || a.src || '').split('/').pop(),
+      src: __probeShortRef(a.currentSrc || a.src || ''),
       durationSec: isFinite(a.duration) ? a.duration : -1,
       readyState: a.readyState,
       manifestSec: (man.artifact && man.artifact.durationUs ? man.artifact.durationUs : 0) / 1e6
@@ -174,9 +186,12 @@ const PLAY_EXPR = `(async () => {
 })()`;
 
 const NOJS_EXPR = `(() => {
+  // 禁 JS 模式下注入的 HOOK 不会执行，截断函数只能在这里就地定义。
+  // 单文件的页图是十几 MB 的 data URI，原样回传会让输出爆掉。
+  const short = (s) => { s = String(s || ''); return s.slice(0, 5) === 'data:' ? s.slice(0, 24) + '…(' + s.length + 'B)' : s; };
   const box = document.querySelector('.ppts-noscript');
   const images = [].map.call(document.querySelectorAll('.ppts-noscript-image'), (img) => ({
-    src: String(img.getAttribute('src') || ''),
+    src: short(img.getAttribute('src')),
     width: img.naturalWidth
   }));
   const texts = [].map.call(document.querySelectorAll('.ppts-noscript-text'), (n) => (n.textContent || '').trim());
@@ -243,7 +258,7 @@ const LAYER_EXPR = `(async () => {
     }
     out.samples.push({ at: stop.at, layers: snap() });
   }
-  out.slideSrc = ((document.querySelector('.ppts-slide') || {}).currentSrc || '').split('/').pop();
+  out.slideSrc = __probeShortRef((document.querySelector('.ppts-slide') || {}).currentSrc || '');
   return out;
 })()`;
 

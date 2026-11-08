@@ -48,7 +48,7 @@ var indexTemplate = template.Must(template.New("index.html").Parse(`<!doctype ht
 <noscript><div class="ppts-noscript">
 <div class="ppts-noscript-inner">
 <h1 class="ppts-noscript-title">{{.Title}}</h1>
-<p class="ppts-noscript-note">当前环境未启用 JavaScript，无法播放音视频。下面按页列出全部画面与讲稿：{{if .AudioName}}音频为同目录 <code>{{.AudioName}}</code>，{{end}}字幕为 <code>subtitles.vtt</code>。</p>
+<p class="ppts-noscript-note">当前环境未启用 JavaScript，无法播放音视频。下面按页列出全部画面与讲稿：{{if .SingleFile}}音频与字幕已内嵌在本文件里，无需其它文件。{{else}}{{if .AudioName}}音频为同目录 <code>{{.AudioName}}</code>，{{end}}字幕为 <code>subtitles.vtt</code>。{{end}}</p>
 {{range .Pages}}<figure class="ppts-noscript-page">
 <img class="ppts-noscript-image" src="{{.Image}}" alt="第 {{.Index}} 页">
 <figcaption class="ppts-noscript-text">{{.Text}}</figcaption>
@@ -87,7 +87,11 @@ type indexData struct {
 	// 空表示这个包没有混音轨，提示里就不提音频——让用户去找一个不存在的文件
 	// 比不告诉他更糟。
 	AudioName string
-	Pages     []noscriptPage
+	// SingleFile 表示这份 HTML 将被内联成**单个文件**：此时提示不能再写
+	// 「音频为同目录 xxx」「字幕为 subtitles.vtt」——单文件里这些文件并不存在，
+	// 照着找只会扑空。除此之外两种形态的首页逐字节相同。
+	SingleFile bool
+	Pages      []noscriptPage
 }
 
 // renderIndexHTML 生成成品首页。
@@ -100,7 +104,11 @@ type indexData struct {
 //
 // audioName 必须是清单里那个实际文件名（见 packMix）：转码后是 .m4a，
 // 退回 WAV 时是 .wav。这里不接受"猜"——猜错的代价是用户按提示找不到文件。
-func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.SubtitleCue, hasFont bool, audioName string) ([]byte, error) {
+//
+// singleFile 只影响 <noscript> 那一句提示：单文件形态里没有"同目录文件"可指
+// （见 single.go 的 token 化），提示必须改口，否则用户会照着一个不存在的
+// 文件名去找。
+func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.SubtitleCue, hasFont bool, audioName string, singleFile bool) ([]byte, error) {
 	if title == "" {
 		title = "讲解视频"
 	}
@@ -121,7 +129,8 @@ func renderIndexHTML(title string, pages []SlideEntry, subtitles []media.Subtitl
 
 	var buf bytes.Buffer
 	attr := template.HTMLAttr(`http-equiv="Content-Security-Policy" content="` + indexCSP + `"`)
-	data := indexData{Title: title, CSPAttr: attr, HasFont: hasFont, AudioName: audioName, Pages: items}
+	data := indexData{Title: title, CSPAttr: attr, HasFont: hasFont, AudioName: audioName,
+		SingleFile: singleFile, Pages: items}
 	if err := indexTemplate.Execute(&buf, data); err != nil {
 		return nil, err
 	}

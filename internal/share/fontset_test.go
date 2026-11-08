@@ -80,7 +80,7 @@ func TestTemplateTextCoveredByCharset(t *testing.T) {
 		{SlideID: "s2", Image: "slides/002.png"}, // 无讲稿 → 触发「（本页无讲稿）」
 	}
 	subtitles := []media.SubtitleCue{{SlideID: "s1", Text: "第一页讲数据"}}
-	html, err := renderIndexHTML(title, slides, subtitles, false, FileAudioMix)
+	html, err := renderIndexHTML(title, slides, subtitles, false, FileAudioMix, false)
 	if err != nil {
 		t.Fatalf("renderIndexHTML: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestBundleFixedTextHasNoPhantomCharacters(t *testing.T) {
 	// 刻意留一个无讲稿的页：模板里的「（本页无讲稿）」只有那个分支才会渲染出来。
 	// 混音轨名按实际值传入：禁 JS 提示里的「同目录 …」是条件分支，传空会让那段
 	// 文案整段消失，于是字集里那几个字被误判成虚增。
-	html, err := renderIndexHTML("季度复盘", slides, nil, false, FileAudioMix)
+	html, err := renderIndexHTML("季度复盘", slides, nil, false, FileAudioMix, false)
 	if err != nil {
 		t.Fatalf("renderIndexHTML: %v", err)
 	}

@@ -107,6 +107,109 @@ func TestDataURIMimeIsExplicit(t *testing.T) {
 	}
 }
 
+// 同一个资源被引用 N 次时，单文件里只能有**一份**数据。
+//
+// 回归对象：混音轨模式下 `audio[].src` 的每一段都指向同一条 mix（30 段就是 30 次
+// 引用），而早先的实现直接在清单脚本上 ReplaceAll，每次引用各展开一份完整 data URI。
+// 5 分钟 / 30 段样本实测 618 MB（zip 1.1 MB，549 倍），按"每份资源一份数据"只需 22 MB。
+// 夹具只有 2 段，所以这个坑在单元测试里长期是绿的——判据必须按"引用次数"写，
+// 不能按"有没有内联"写。
+func TestBuildSingleInlinesSharedResourceOnce(t *testing.T) {
+	single, manifest := mustBuildSingle(t)
+	html := string(single)
+
+	if manifest.AudioMix == "" || len(manifest.Audio) < 2 {
+		t.Fatalf("夹具没有形成多段共用混音轨：audio=%d mix=%q", len(manifest.Audio), manifest.AudioMix)
+	}
+	for _, a := range manifest.Audio {
+		if a.Src != manifest.AudioMix {
+			t.Fatalf("段 %s 未指向混音轨（%s）", a.SegmentID, a.Src)
+		}
+	}
+	// 整个文件里只该有一份音频数据：它的唯一来源是清单尾部的资源表。
+	if n := strings.Count(html, "data:audio/"); n != 1 {
+		t.Fatalf("单文件里有 %d 份音频数据，want 1（同一份 mix 只内联一次）", n)
+	}
+	// 页图仍然两份：一份给清单（播放器），一份给 <noscript>（禁 JS 时没有脚本能还原
+	// token，那里必须是可直接加载的完整引用）。这两份是**不同用途**，不是重复内联。
+	if n := strings.Count(html, "data:image/"); n != 2*len(manifest.Slides) {
+		t.Fatalf("页图数据 = %d 份，want %d（清单一份 + noscript 一份）", n, 2*len(manifest.Slides))
+	}
+}
+
+// 清单里的引用点写成短 token，资源表与还原创紧跟在同一个 <script> 里。
+//
+// 为什么卡得这么死：还原必须发生在 app.js **之前**。app.js 是后加载的独立脚本，
+// 只认 window.__PPT_MANIFEST__；还原要是挪到 app.js 里（或挪到另一个 <script>），
+// 第一帧就会拿 "@@ppts-res-0@@" 当资源路径去加载，现场是黑屏 + 控制台几个 404。
+func TestBuildSingleManifestUsesTokenTableInSameScript(t *testing.T) {
+	single, _ := mustBuildSingle(t)
+	html := string(single)
+
+	if !strings.Contains(html, "@@ppts-res-0@@") {
+		t.Fatal("清单里没有资源 token：同一资源会被重复内联")
+	}
+	token := strings.Index(html, "@@ppts-res-0@@")
+	table := strings.Index(html, "var T={")
+	restore := strings.Index(html, "window.__PPT_MANIFEST__;if(!M)return")
+	if table < 0 || restore < 0 {
+		t.Fatalf("缺少资源表或还原步骤：table=%d restore=%d", table, restore)
+	}
+	if !(token < table) || !(table < restore) {
+		t.Fatalf("资源表/引用点/还原的顺序不对：token=%d table=%d restore=%d", token, table, restore)
+	}
+	// 三者必须在同一个 <script> 块内：取 token 与 restore 之间的片段，若跨块
+	// 必然出现 </script>（脚本没有被内联，而是仍然外链）。
+	if strings.Contains(html[token:restore], "</script>") {
+		t.Fatal("还原创没有和清单赋值放在同一个 <script> 里")
+	}
+	// 还原之后不能再有 token 残留的"结构说明"：表里的键是 token 本身，这是对的；
+	// 但引用点全部落在表之前，所以表之后到 </script> 之间不该再出现 token。
+	tail := html[restore:]
+	if end := strings.Index(tail, "</script>"); end >= 0 {
+		if strings.Contains(tail[:end], "@@ppts-res-") {
+			t.Fatal("还原步骤之后仍有 token 引用")
+		}
+	}
+}
+
+// 禁 JS 时没有任何脚本能还原 token，<noscript> 必须自带可加载的引用，
+// 而且提示文案不能再指向单文件里并不存在的"同目录文件"。
+func TestBuildSingleNoscriptStaysReadable(t *testing.T) {
+	single, manifest := mustBuildSingle(t)
+	html := string(single)
+
+	if n := strings.Count(html, `class="ppts-noscript-image"`); n != len(manifest.Slides) {
+		t.Fatalf("noscript 页图 = %d，want %d", n, len(manifest.Slides))
+	}
+	// 只看 <noscript> 里那段提示：清单的 subtitles.src 仍写着 "subtitles.vtt"
+	// （机读字段，播放器不加载它，见 single.go 的残留检查注释），那不是提示文案。
+	start, end := strings.Index(html, "<noscript>"), strings.Index(html, "</noscript>")
+	if start < 0 || end < start {
+		t.Fatal("单文件里没有 <noscript> 分支")
+	}
+	note := html[start:end]
+	for _, bad := range []string{"同目录", FileSubtitlesVTT, "audio/"} {
+		if strings.Contains(note, bad) {
+			t.Fatalf("单文件的禁 JS 提示仍指向不存在的文件（%q）", bad)
+		}
+	}
+	if !strings.Contains(note, "已内嵌在本文件") {
+		t.Fatal("单文件应说明音视频已内嵌")
+	}
+
+	// 目录包保持原样：那里真有同目录文件，提示必须给得出文件名。
+	zipBytes, zipManifest := buildBundleZip(t)
+	_, files, err := VerifyBundle(zipBytes)
+	if err != nil {
+		t.Fatalf("verify zip: %v", err)
+	}
+	index := string(files[FileIndexHTML])
+	if !strings.Contains(index, "同目录") || !strings.Contains(index, zipManifest.AudioMix) {
+		t.Fatal("目录包的禁 JS 提示应给同目录文件名")
+	}
+}
+
 func mustBuildSingle(t *testing.T) ([]byte, *Manifest) {
 	t.Helper()
 	out, manifest, err := NewBundleBuilder(baseReader(t), nil).BuildSingle(context.Background(), buildInput())

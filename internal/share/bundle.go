@@ -103,6 +103,12 @@ type BundleInput struct {
 	// Watermark 是成品画面上的水印文案（ADR-029 ②）；空 = 不加。
 	// 同样由调用方给出：打包器不该去读租户策略，否则离线打包（夹具/CLI）会需要一整套租户上下文。
 	Watermark string
+	// singleFile 表示本次组装服务于单文件形态（BuildSingle 内部置位）。
+	//
+	// 刻意不导出：它不是调用方的选择，而是"这一次组装会被内联成单个 HTML"
+	// 这一事实。影响面只有 <noscript> 的一句提示（单文件里不存在"同目录文件"），
+	// 条目集合、清单、降级语义一律不变——两种形态仍然同源。
+	singleFile bool
 }
 
 // PageAnimation 是一页的动画素材。
@@ -359,7 +365,7 @@ func (b *BundleBuilder) buildInto(
 	if err := emit(FileAppCSS, appCSS); err != nil {
 		return nil, nil, err
 	}
-	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles, in.Font != nil, manifest.AudioMix)
+	indexHTML, err := renderIndexHTML(in.Title, manifest.Slides, timeline.Subtitles, in.Font != nil, manifest.AudioMix, in.singleFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("share: render index.html: %w", err)
 	}

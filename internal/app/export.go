@@ -656,8 +656,9 @@ func (h *ExportHandler) packHTMLSingle(ctx context.Context, job *pipeline.Job, s
 		return nil, err
 	}
 	if h.logger != nil {
-		// 体积如实记：单文件是 base64 内联，约为目录包的 1.37 倍。用户抱怨
-		// 「附件太大」时，这条日志是唯一能对上账的数字。
+		// 体积如实记：单文件是 base64 内联，约为目录包的 1.45 倍（1.33 的编码膨胀
+		// + 页图在 <noscript> 里还有一份完整的 data URI，禁 JS 时没有脚本能还原）。
+		// 用户抱怨「附件太大」时，这条日志是唯一能对上账的数字。
 		h.logger.Info("export: html single file assembled", "job", job.ID, "bytes", len(data),
 			"slides", len(manifest.Slides), "audio_segments", len(manifest.Audio),
 			"animated_slides", animatedPageCount(pages))
