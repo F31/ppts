@@ -174,6 +174,8 @@ type BundleBuilder struct {
 	maxLongEdge int
 	// audioEncoder 为 nil 时混音轨保持 WAV（体积是 AAC 的 6–12 倍）。
 	audioEncoder M4AEncoder
+	// pageEncoder 为 nil 时页图保持 JPEG q82；注入后只有**确实更小**才采用它的产物。
+	pageEncoder PageImageEncoder
 }
 
 // M4AEncoder 把整段混音 WAV 转成 AAC（.m4a）。
@@ -190,6 +192,18 @@ type M4AEncoder interface {
 func (b *BundleBuilder) SetAudioEncoder(enc M4AEncoder) *BundleBuilder {
 	if b != nil {
 		b.audioEncoder = enc
+	}
+	return b
+}
+
+// SetPageImageEncoder 注入页图编码器（当前是 WebP，ADR-034）；nil 表示保持 JPEG q82。
+//
+// 与 SetAudioEncoder 的区别在**什么时候用**：音频是"替换"，页图是"择优"——
+// 小图或纯色页上 WebP 的容器开销可能反超 JPEG，所以注入后仍逐页比大小，
+// 只有更小才采用（见 encodePage）。
+func (b *BundleBuilder) SetPageImageEncoder(enc PageImageEncoder) *BundleBuilder {
+	if b != nil {
+		b.pageEncoder = enc
 	}
 	return b
 }
@@ -526,7 +540,7 @@ func (b *BundleBuilder) writeSlides(
 				b.logf(slog.LevelWarn, "share: read page image failed, reusing previous frame",
 					"slide", slide.SlideID, "index", i, "error", readErr)
 			} else {
-				encoded, ext, encodeErr := EncodePage(raw, b.maxLongEdge)
+				encoded, ext, encodeErr := b.encodePage(ctx, raw, b.maxLongEdge)
 				if encodeErr != nil {
 					// 解码/编码失败：原样放原始字节，扩展名随之改为 .png（必须与内容一致）。
 					b.logf(slog.LevelWarn, "share: transcode page image failed, keeping original bytes",
@@ -572,6 +586,54 @@ func (b *BundleBuilder) writeSlides(
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// encodePage 把一页原始位图转成包内页图，返回**实际**写入的字节与扩展名。
+//
+// 三条退路，顺序固定：注入的编码器（WebP）→ 内置 JPEG q82 → 调用方保留原始字节
+// （后者在 writeSlides 里，只发生在连解码都失败的极端情况）。
+//
+// 选择依据只有一条：谁更小。小图上 WebP 的容器开销可能反超 JPEG，此时留 JPEG
+// 不是降级，而是选对了——目标始终是"包更小"，不是在产物里写 webp。
+// 这与 packMix 的 not_smaller 判据同构：两个产出点用同一条规则，报告才对得上。
+func (b *BundleBuilder) encodePage(ctx context.Context, data []byte, longEdge int) ([]byte, string, error) {
+	img, err := preparePage(data, longEdge)
+	if err != nil {
+		return nil, "", err
+	}
+	// JPEG 一定要编：它是基线，也是所有降级路径的终点。多花的一次编码（~20ms/页）
+	// 换的是"比大小"这个判断能成立，比事后发现某页反而变大划算。
+	jpg, _, err := jpegPageEncoder{}.EncodePage(ctx, img)
+	if err != nil {
+		return nil, "", err
+	}
+	if b.pageEncoder == nil {
+		return jpg, ".jpg", nil
+	}
+	alt, ext, err := b.pageEncoder.EncodePage(ctx, img)
+	if err != nil {
+		b.logf(slog.LevelWarn, "share: transcode page image failed, keeping jpeg",
+			"error", err, "jpegBytes", len(jpg))
+		return jpg, ".jpg", nil
+	}
+	if len(alt) == 0 {
+		b.logf(slog.LevelWarn, "share: page image encoder produced no bytes, keeping jpeg",
+			"jpegBytes", len(jpg))
+		return jpg, ".jpg", nil
+	}
+	// 扩展名是契约的一部分：清单靠它写文件名，空扩展名会得到 "slides/001" 这种
+	// 没有后缀的条目——浏览器仍能按内容 sniff 出来，但包内命名从此不可预测。
+	if ext == "" || !strings.HasPrefix(ext, ".") {
+		b.logf(slog.LevelWarn, "share: page image encoder returned invalid extension, keeping jpeg",
+			"ext", ext, "encodedBytes", len(alt))
+		return jpg, ".jpg", nil
+	}
+	if len(alt) >= len(jpg) {
+		b.logf(slog.LevelInfo, "share: page image encoder is not smaller, keeping jpeg",
+			"ext", ext, "encodedBytes", len(alt), "jpegBytes", len(jpg))
+		return jpg, ".jpg", nil
+	}
+	return alt, ext, nil
 }
 
 // writeAudio 写音频条目，返回清单条目与混音轨条目名（空表示没拼成）。

@@ -1,6 +1,6 @@
 # ADR-034：成品包页图改用有损 WebP（q75），编码走外部 ffmpeg，失败退回 JPEG
 
-- 状态：**提议**（2026-11-08，实验已完成，待批准实施）
+- 状态：**已采纳**（2026-11-08 实验完成并落地）
 - 关联：`internal/share/images.go`（EncodePage）、`internal/share/measure.go`（体积类别与预算注释）、
   ADR-032（AAC 转码——本决策复用其「外部编码器注入 + 失败降级」架构）、ADR-029 ⑤（成品形态）
 
@@ -58,39 +58,54 @@ ffmpeg/cwebp 编码得到 73 KB，误判「ffmpeg 比 PIL 大 76%」；缩到 16
 （ffmpeg 42.6 KB / cwebp 41.7 KB / PIL 41.7 KB，page-03）。ffmpeg 仅比官方工具大 ~2%，
 来自默认 compression_level 4（可调 6，耗时基本不变）。
 
-## 拟实施方案
+## 实施（2026-11-08 已落地）
 
-1. `internal/share` 新增 `PageImageEncoder` 接口（与 `M4Encoder` 同构）：
-   `Encode(img image.Image, longEdge int) (data []byte, ext string, err error)`。
-   默认实现 `jpegEncoder` 保持现状（JPEG q82）；`ffmpegWebpEncoder` 调
-   `ffmpeg -c:v libwebp -quality 75 -compression_level 6`，输入缩放后的 RGBA 管道输出。
-2. 探测与降级照抄 ADR-032：`BundleBuilder.SetPageImageEncoder` 注入；`internal/app/export.go`
-   与 sidecar 各自装配（sidecar 走 `sync.Once` 探测）；ffmpeg 缺失 / 编码失败 / 空输出 /
-   **产物反而更大**（≤100 KB 的小图 WebP 可能不占优）任一命中 → 退回 JPEG q82。
-   逐页独立降级：一页失败只影响该页，不让整包失败（与「转码失败不阻断导出」一致）。
-3. `measure.go` 体积类别按**实际**扩展名分桶（`.webp` 进页图类），V15 报告如实反映；
-   预算基数**暂不收紧**——先让 WebP 落地拿真实分布，再议 4.2 MB 目标（与字体子集/AAC
-   的顺序相同：先落地、再收口）。
-4. `EncodePage` 需支持 WebP 输入透传：renderer 侧将来可能直接产出 WebP，
-   `image.Decode` 标准库不认 webp，需检测 RIFF 头直接放行（扩展名 `.webp`），
-   避免被当「解码失败回退 PNG」误标扩展名。
-5. 清单/播放器/门禁无需改动：`single.go` 的 data URI MIME 表已含 `image/webp`；
-   播放器按清单文件名加载；浏览器门禁的资源判据是「能取到」，与格式无关。
-   兼容性：WebP 有损解码覆盖所有现代浏览器（Safari 14+，2020）。
+与原方案的三处偏差，都是实测逼出来的：
 
-## 收益估算
+1. **接口吃的是像素，不是字节**：`EncodePage(ctx, img *image.NRGBA)`。解码与缩放留在
+   share（`preparePage`），编码器只回答「压成什么格式」。这样两条编码路径吃的是**同一份**
+   像素——实验期那个「一边吃原图一边吃缩图」的假结论，从结构上就不会再出现。
+   同时 media 不需要 import share（接口隐式满足），不存在分层倒挂。
+2. **产物必须落临时文件，不能走 stdout**：WebP 的 RIFF 头要回填总长度，而管道不可 seek。
+   ffmpeg 对 ≤32 KB 的输出能在内部缓冲后回填，超过就写 **0**——头仍合法（`RIFF....WEBP`），
+   解码器一律拒绝。实测 14 页里 10 页中招，**而单张编码的单测是绿的**（合成小图恰好没过阈值）。
+   这正是浏览器门禁抓到的：`V16 清单资源全部可加载 FAIL` 列出 10 个 `.webp`。
+   修法照 ADR-032 的 m4a（faststart 同样要回填）。
+3. **「反而更大就退 JPEG」放在装配层**（`BundleBuilder.encodePage`），不放在编码器里：
+   编码器只知道自己压了多少字节，不知道基线是多少。顺序固定为「先编 JPEG（基线）→ 再编
+   WebP → 比大小」，与 `packMix` 的 `not_smaller` 判据同构。扩展名非法（空/无点）也在此退回。
 
-- 5 分钟 / 30 页目录包：页图 1.32 MiB → ~0.55 MiB，总包 3.72 → **~2.95 MiB**（-21%）；
-- 单文件（ADR-033 后剩余成本主要就是页图 ×2：清单 + noscript）：WAV 21.9 → ~18.7 MB，
-  AAC 6.68 → **~5.9 MB**（转发场景的直接收益）；
-- 20 页真实素材的包（150–400 KB/页 JPEG）：WebP 后页图部分降到 40–45%。
+`checkWebP` 因此不看头就完事，还要断言 `RIFF 声明长度 == len(data)-8`：只查头会放过上面
+那类静默损坏。
+
+`share-verify` 新增 `pageCodec`（如 `webp×27 + jpeg×3`）：逐页择优**本来就会**产生混合包，
+只报一个 "webp" 会掩盖「体积为什么没到预期」。
+
+## 实测（14 页真实渲染页图，140 秒片长）
+
+| 形态 | 页图类 | 整包 |
+|---|---:|---:|
+| JPEG q82 | 1.18 MB | 7.63 MB（WAV 音频） |
+| WebP q75 | **0.48 MB（40.7%）** | 6.94 MB |
+| WebP q75 + AAC | 0.48 MB | **1.62 MiB**（预算 4.31 MiB） |
+
+与实验的 41.4% 一致。浏览器证据：
+
+- 目录包：V16 七项全 PASS（15 个资源全部加载、音频 140s 播到结尾、0 console error），
+  `V17 禁 JS 逐页静态图 14/14`；
+- 带图层包（3 页 / 2 层）：24 项全 PASS，层路径未受影响；
+- 单文件：15 个资源全部加载、0 失败、音频 140s `ended`——`data:image/webp` 的 MIME 分支有效。
+
+**边界**：有元素动画的页走的是「底板 PNG + 层图 PNG」分支（`writeSlides` 的第一条路径），
+不进 `encodePage`。这不是遗漏——层图与底板要挖空对齐，JPEG 会在文字边缘糊出毛边
+（design ADR-5 实测只省 29%）。所以动画包的 WebP 收益只覆盖**无动画页**；本轮的 14 页样本
+全无图层，是最有利的情形。真实包里若动画页占比高，页图类的降幅会按比例缩水。
 
 ## 风险与重估条件
 
 - ffmpeg 在部署环境的可得性与 AAC 相同（同一二进制、同一探测逻辑），风险已由 ADR-032
-  的降级路径覆盖；本机 Windows 无 ffmpeg 时门禁样本仍是 JPEG——门禁的体积判据不能
-  假定格式，须按 measure 实际输出断言。
-- 编码耗时 +0.3s/页（30 页约 +8s），对导出任务（分钟级）不显著；若将来页数上限提高，
-  可并行化（与渲染页级并行同构）。
-- 重估条件：出现纯 Go 有损 WebP 编码器（届时可去掉外部依赖）；或页图改为 SVG/矢量
-  交付（届时报废本决策）。
+  的降级路径覆盖；本机 Windows 无 ffmpeg 时页图仍是 JPEG——门禁的体积判据不能假定格式，
+  须按 `measure` 与实际 `pageCodec` 断言（这次就是靠 `pageCodec` 读出来的）。
+- 编码耗时：实测 0.2–0.3s/页（含一次 JPEG 基线对照）。30 页 +8s，对分钟级导出不显著。
+- 重估条件：出现纯 Go 有损 WebP 编码器（届时可去掉外部依赖）；或页图改为 SVG/矢量交付；
+  或动画页底板也改用有损编码（需先解决挖空边缘的糊边问题）。

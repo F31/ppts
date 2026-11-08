@@ -33,6 +33,7 @@ import (
 	"github.com/F31/ppts/internal/project"
 	animrender "github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/retention"
+	"github.com/F31/ppts/internal/share"
 	"github.com/F31/ppts/internal/storagelifecycle"
 	"github.com/F31/ppts/internal/usage"
 )
@@ -160,12 +161,24 @@ func runWorker() error {
 	if err != nil {
 		logger.Info("mp4 encoder unavailable", "error", err)
 	}
+	// 页图 WebP（ADR-034）：与 mp4Encoder 同一个 ffmpeg，但"有 ffmpeg"≠"带 libwebp"
+	// （精简构建可能没有），所以单独探测；失败只是成品包页图退回 JPEG q82。
+	//
+	// 必须显式转成接口再判空：把 (*WebPPageEncoder)(nil) 直接塞进接口会得到
+	// 「非 nil 的接口」，打包器据此对空壳调用，表现是每页一条假失败日志。
+	var pageImageEncoder share.PageImageEncoder
+	if enc, werr := media.NewWebPPageEncoder(); werr != nil {
+		logger.Info("webp page encoder unavailable; bundle pages stay jpeg", "error", werr)
+	} else {
+		pageImageEncoder = enc
+	}
 	maxExportMinutes := config.Int("PPTS_MAX_EXPORT_DURATION_MINUTES", 60)
 	if maxExportMinutes < 0 {
 		maxExportMinutes = 0
 	}
 	exportHandler := app.NewExportHandler(stores.artifacts, jobs, objects, mp4Encoder).
 		WithSubtitleFont(subtitleFontName()).
+		WithPageImageEncoder(pageImageEncoder).
 		WithNarrationWriter(integrations.NewGoPPTXNarrationWriter()).
 		WithSourceRevisions(stores.projects).
 		WithMaxDuration(time.Duration(maxExportMinutes) * time.Minute).

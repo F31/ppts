@@ -16,6 +16,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,7 +32,11 @@ type result struct {
 	AudioMix      bool   `json:"audioMix"`
 	// AudioCodec 是混音轨的实际编码（aac / pcm / none）。体积结论随它而变：
 	// 同样的包在装了 ffmpeg 的机器上小 6 倍，只报一个总体积会让人以为「这版变好了」。
-	AudioCodec   string `json:"audioCodec"`
+	AudioCodec string `json:"audioCodec"`
+	// PageCodec 是页图的实际编码分布（jpg / webp，混合时分列计数）。
+	// 逐页择优会产生混合包：少数纯色页上 WebP 反而更大，那几页就留 JPEG。
+	// 只报一个 "webp" 会掩盖这件事，而它正是「体积为什么没到预期」的答案。
+	PageCodec    string `json:"pageCodec"`
 	DurationUS   int64  `json:"durationUs"`
 	Entries      int    `json:"entries"`
 	TotalBytes   int64  `json:"totalBytes"`
@@ -86,6 +91,7 @@ func main() {
 		AudioSegments:      len(manifest.Audio),
 		AudioMix:           manifest.AudioMix != "",
 		AudioCodec:         audioCodec(manifest.AudioMix),
+		PageCodec:          pageCodec(manifest),
 		DurationUS:         manifest.Artifact.DurationUS,
 		Entries:            len(files),
 		TotalBytes:         measure.TotalBytes,
@@ -227,11 +233,46 @@ func audioCodec(mix string) string {
 	}
 }
 
+// pageCodec 由清单里每页的文件名统计实际编码分布。
+//
+// 与 audioCodec 同一个理由：读文件名而不是文件头，因为文件名就是播放器要去
+// 请求的那条路径——「清单说 webp、包里是 jpg」这类不一致会直接在报告里现形。
+// 混合包必须如实分列：逐页择优本来就是允许几页留在 JPEG 的（小图/纯色页）。
+func pageCodec(m *share.Manifest) string {
+	if m == nil || len(m.Slides) == 0 {
+		return "none"
+	}
+	counts := map[string]int{}
+	order := make([]string, 0, 2)
+	for _, s := range m.Slides {
+		ext := strings.ToLower(filepath.Ext(s.Image))
+		if ext == "" {
+			ext = "(无扩展名)"
+		}
+		if counts[ext] == 0 {
+			order = append(order, ext)
+		}
+		counts[ext]++
+	}
+	parts := make([]string, 0, len(order))
+	for _, ext := range order {
+		name := strings.TrimPrefix(ext, ".")
+		switch name {
+		case "jpg", "jpeg":
+			name = "jpeg"
+		case "webp":
+			name = "webp"
+		}
+		parts = append(parts, fmt.Sprintf("%s×%d", name, counts[ext]))
+	}
+	return strings.Join(parts, " + ")
+}
+
 func printResult(r result) {
 	m := r.Measure
 	fmt.Printf("目标：%s（%s）\n", r.Target, r.Kind)
-	fmt.Printf("清单：schema v%d，%d 页（含动画 %d 页 / %d 层），%d 段音频，混音轨=%s，时长 %s\n",
-		r.SchemaVersion, r.Slides, m.AnimatedSlides, m.Layers, r.AudioSegments, r.AudioCodec,
+	fmt.Printf("清单：schema v%d，%d 页（含动画 %d 页 / %d 层），页图=%s，%d 段音频，混音轨=%s，时长 %s\n",
+		r.SchemaVersion, r.Slides, m.AnimatedSlides, m.Layers, r.PageCodec, r.AudioSegments, r.AudioCodec,
 		formatDuration(r.DurationUS))
 	budgetState := "在预算内"
 	if m.OverBudget {

@@ -37,6 +37,24 @@ func localAudioEncoder() share.M4AEncoder {
 	return localAudio
 }
 
+// pageEncoder 是本机可用的页图编码器（WebP）；nil 表示页图保持 JPEG q82。
+//
+// 与音频同理：隐私模式的承诺是"不联网也能导出"，压不出 WebP 只是包更大，
+// 不是导出失败。单独一次 sync.Once 而不是复用音频的探测结果——两者依赖的
+// 是同一个 ffmpeg，但"有 ffmpeg"不等于"这个 ffmpeg 带 libwebp"，后者可能在
+// 自编译的精简版上不成立（那时 encodePage 会逐页退回 JPEG 并留日志）。
+var localPageOnce sync.Once
+var localPage share.PageImageEncoder
+
+func localPageEncoder() share.PageImageEncoder {
+	localPageOnce.Do(func() {
+		if enc, err := media.NewWebPPageEncoder(); err == nil {
+			localPage = enc
+		}
+	})
+	return localPage
+}
+
 // ExportBundleRequest 是本地打包请求。
 //
 // 所有路径必须是绝对路径：sidecar 由 Tauri 拉起，工作目录不受调用方控制，
@@ -89,8 +107,9 @@ func methodExportBundle(ctx context.Context, req *Request) (any, error) {
 	}
 
 	manifest, err := share.BuildLocalToDir(ctx, share.LocalBundle{
-		Root:    in.Root,
-		Encoder: localAudioEncoder(),
+		Root:        in.Root,
+		Encoder:     localAudioEncoder(),
+		PageEncoder: localPageEncoder(),
 		Input: share.BundleInput{
 			Timeline:    timeline,
 			PagePNGKeys: in.PagePNGKeys,

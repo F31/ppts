@@ -22,6 +22,8 @@
 | [030](./ADR-030-config-reading-policy.md) | 环境读取统一走 `internal/config`，装配层不直读 env、不自建解析器 | 已实现 | 独立记录 |
 | [031](./ADR-031-measured-fps-degradation.md) | 成品包实测帧率降级：2s 窗口 × 连续 2 窗，只拆动画层、单向不回退 | 已实现 | 独立记录 |
 | [032](./ADR-032-bundle-audio-aac.md) | 成品包混音轨转 AAC 64k 单声道：编码器注入、失败退回 WAV、强制 bitexact | 已实现 | 独立记录 |
+| [033](./ADR-033-single-file-resource-dedup.md) | 单文件形态按资源去重内联：短 token + 一份资源表 + 同脚本深遍历还原 | 已实现 | 独立记录 |
+| [034](./ADR-034-bundle-page-image-webp.md) | 成品包页图转有损 WebP q75：外部 ffmpeg 编码、逐页择优、失败退回 JPEG | 已实现 | 独立记录（含对比实验） |
 
 ## 为什么 001–016 没有独立文件
 

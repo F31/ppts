@@ -148,6 +148,9 @@ type ExportHandler struct {
 	// usage 是动画渲染分钟的结算账本（M4 §7.5）。nil = 不结算（本地/单测），
 	// 额度不是导出路径的必需依赖。
 	usage UsageSettler
+	// pageImageEncoder 压页图为 WebP（ADR-034）。nil = 保持 JPEG q82。
+	// 与 encoder 无关：那条是音频/视频，这条只影响成品包里的 pages/ 条目。
+	pageImageEncoder share.PageImageEncoder
 }
 
 func NewExportHandler(artifacts artifact.Store, steps interface {
@@ -160,6 +163,15 @@ func NewExportHandler(artifacts artifact.Store, steps interface {
 // 用于与部署镜像安装的字体保持一致，保证中文渲染在各环境一致可复现（V1_6 §338）。
 func (h *ExportHandler) WithSubtitleFont(name string) *ExportHandler {
 	h.subtitleFontName = name
+	return h
+}
+
+// WithPageImageEncoder 注入页图编码器（WebP，ADR-034）；传 nil 表示保持 JPEG q82。
+//
+// 与 WithSubtitleFont 一样是"能力注入"而非配置：机器上有没有 ffmpeg 决定了它
+// 能不能压，而"没有"不是错误——页图退回 JPEG，包照样能播，只是更大。
+func (h *ExportHandler) WithPageImageEncoder(enc share.PageImageEncoder) *ExportHandler {
+	h.pageImageEncoder = enc
 	return h
 }
 
@@ -606,7 +618,8 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 		os.Remove(tmp.Name())
 	}
 	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger).
-		SetAudioEncoder(h.audioEncoder())
+		SetAudioEncoder(h.audioEncoder()).
+		SetPageImageEncoder(h.pageImageEncoder)
 	manifest, err := builder.Build(ctx, in, tmp)
 	if err != nil {
 		cleanup()
@@ -634,7 +647,8 @@ func (h *ExportHandler) packHTMLSingle(ctx context.Context, job *pipeline.Job, s
 		return nil, err
 	}
 	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger).
-		SetAudioEncoder(h.audioEncoder())
+		SetAudioEncoder(h.audioEncoder()).
+		SetPageImageEncoder(h.pageImageEncoder)
 	data, manifest, err := builder.BuildSingle(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("export job: pack single-file html: %w", err)

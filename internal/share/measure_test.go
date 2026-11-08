@@ -39,7 +39,9 @@ func TestBudgetGrowsWithDuration(t *testing.T) {
 	if !(half > budgetBaseBytes && five > half) {
 		t.Fatalf("budget must grow with duration: 30s=%d, 5min=%d", half, five)
 	}
-	// 5 分钟 ≈ 3 MiB + 2.8 MiB。比方案 §20.6 的 4.2 MB 目标宽，因为字体子集与 WebP 还没做。
+	// 5 分钟 ≈ 3 MiB + 2.8 MiB。比方案 §20.6 的 4.2 MB 目标宽：三项体积手段都已落地
+	// （字体子集 / AAC / WebP，见 ADR-028/032/034），但收紧阈值要以真实素材的分布做基线，
+	// 而夹具页图是合成的——理由见 measure.go 的注释。
 	if five < 5<<20 || five > 7<<20 {
 		t.Fatalf("5min budget = %.2f MiB, want within 5–7 MiB", float64(five)/(1<<20))
 	}

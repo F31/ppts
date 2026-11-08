@@ -69,6 +69,22 @@ func audioEncoder(enabled bool) share.M4AEncoder {
 	return enc
 }
 
+// pageEncoder 返回可用的页图编码器（WebP）；nil 表示页图保持 JPEG q82。
+//
+// 同 audioEncoder：返回接口而不是具体指针，避免 nil 指针装进接口后变成
+// 「非 nil 的接口」，让打包器对空壳调用、每页留一条假失败。
+func pageEncoder(enabled bool) share.PageImageEncoder {
+	if !enabled {
+		return nil
+	}
+	enc, err := media.NewWebPPageEncoder()
+	if err != nil {
+		log.Printf("share-baseline: ffmpeg 不可用，页图保持 JPEG q82（体积约为 WebP 的 2.4 倍）：%v", err)
+		return nil
+	}
+	return enc
+}
+
 func main() {
 	var (
 		pages    = flag.Int("pages", 30, "页数")
@@ -94,7 +110,8 @@ func main() {
 		fontPath = flag.String("font", "", "可选：内嵌该字体文件（OTF/TTF）")
 		// 混音轨转码是成品包体积的主要来源（WAV→AAC 约 1/6）；做成开关是为了
 		// 让「转与不转」的对照能在同一条命令上做出来，而不是靠改代码比大小。
-		aac = flag.Bool("aac", true, "混音轨转 AAC（需 ffmpeg；不可用时自动退回 WAV）")
+		aac  = flag.Bool("aac", true, "混音轨转 AAC（需 ffmpeg；不可用时自动退回 WAV）")
+		webp = flag.Bool("webp", true, "页图转 WebP q75（需 ffmpeg 带 libwebp；不可用或反而更大时逐页退回 JPEG）")
 	)
 	flag.Parse()
 
@@ -239,6 +256,7 @@ func main() {
 	}
 	encoder := audioEncoder(*aac)
 	manifest, err := share.NewBundleBuilder(reader, nil).SetAudioEncoder(encoder).
+		SetPageImageEncoder(pageEncoder(*webp)).
 		Build(context.Background(), bundleIn, &buf)
 	if err != nil {
 		log.Fatalf("share-baseline: %v", err)
@@ -261,6 +279,7 @@ func main() {
 	if *singlePath != "" {
 		// 单文件与目录包同源（同一个 bundleIn）：这里只是换一种写法。
 		single, _, serr := share.NewBundleBuilder(reader, nil).SetAudioEncoder(encoder).
+			SetPageImageEncoder(pageEncoder(*webp)).
 			BuildSingle(context.Background(), bundleIn)
 		if serr != nil {
 			log.Fatalf("share-baseline: build single: %v", serr)

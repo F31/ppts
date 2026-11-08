@@ -118,6 +118,9 @@ type LocalBundle struct {
 	// 放在这里而不是写进 BundleInput：BundleInput 描述「打什么」，编码器描述
 	// 「用什么打」。隐私模式下有没有 ffmpeg 取决于用户机器，能力必须由调用方给。
 	Encoder M4AEncoder
+	// PageEncoder 可选：把页图压成 WebP（ADR-034）。nil = 保持 JPEG q82。
+	// 与 Encoder 同一个道理：本机压不出 WebP 只是包更大，不是导出失败。
+	PageEncoder PageImageEncoder
 }
 
 // BuildLocalToDir 在本地生成成品包并写到 outDir（tasks 5.1/5.2）。
@@ -128,7 +131,10 @@ func BuildLocalToDir(ctx context.Context, in LocalBundle, outDir string) (*Manif
 	if err != nil {
 		return nil, err
 	}
-	return NewBundleBuilder(reader, nil).SetAudioEncoder(in.Encoder).BuildDir(ctx, in.Input, outDir)
+	return NewBundleBuilder(reader, nil).
+		SetAudioEncoder(in.Encoder).
+		SetPageImageEncoder(in.PageEncoder).
+		BuildDir(ctx, in.Input, outDir)
 }
 
 // BuildLocalToZip 与 BuildLocalToDir 同源，只是落成可分发的 zip（测试与 CLI 用）。
