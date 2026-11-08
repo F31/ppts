@@ -209,6 +209,10 @@ func (h *AnimationHandler) Register(mux *http.ServeMux, auth func(http.Handler) 
 	// 整份 deck 一次套用同一预设（「一键成片」第三步）。依赖不齐时端点照常注册并返回
 	// 503 feature_unavailable，不落到 SPA 兜底变成 200 + HTML。
 	mux.Handle("POST /api/projects/{projectId}/animation/apply-all", auth(http.HandlerFunc(h.applyAll)))
+	// 页列表多选 → 把某一页的规格复制到选中页（§7.6）。与 apply-all 不同，它要求
+	// 全成或全不成；restore 用 apply-batch 返回的快照做一次性撤销，同样单事务。
+	mux.Handle("POST /api/projects/{projectId}/animation/apply-batch", auth(http.HandlerFunc(h.applyBatch)))
+	mux.Handle("POST /api/projects/{projectId}/animation/apply-batch/restore", auth(http.HandlerFunc(h.restoreBatch)))
 }
 
 type animationSpecDTO struct {

@@ -184,14 +184,18 @@ export function previewErrorText(err: PreviewFailure, t: PreviewTranslator): str
 // 整份应用的跳过原因必须能读懂：把 manual_edits 这样的码直接丢给用户，
 // 等于没给复核线索。未登记的码原样显示——服务端新增原因时宁可让人看到标识，
 // 也不要错配到另一条文案让人改错地方。
-const APPLY_ALL_REASON_KEYS: Record<string, string> = {
+export const APPLY_ALL_REASON_KEYS: Record<string, string> = {
   locked: 'editor.animationApplyAllReasonLocked',
   approved: 'editor.animationApplyAllReasonApproved',
   manual_edits: 'editor.animationApplyAllReasonManual',
   duration_unknown: 'editor.animationApplyAllReasonNoVoice',
   page_unavailable: 'editor.animationApplyAllReasonPage',
   conflict: 'editor.animationApplyAllReasonConflict',
-  store_failed: 'editor.animationApplyAllReasonStore'
+  store_failed: 'editor.animationApplyAllReasonStore',
+  validation_failed: 'editor.animationApplyAllReasonValidation',
+  spec_failed: 'editor.animationApplyAllReasonSpec',
+  batch_rejected: 'editor.animationApplyAllReasonBatchRejected',
+  invalid_snapshot: 'editor.animationApplyAllReasonSnapshot'
 };
 
 /** summarizeApplyAllReasons 把逐页 skipped 结果聚成一句「尚未配音 13、有人工微调 2」。 */

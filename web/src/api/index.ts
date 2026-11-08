@@ -31,8 +31,8 @@ export { listMembers, updateMemberProfile, getMyProfile, saveMyProfile, listTags
 export type { MyProfile } from './tenant';
 export { createExport, createDownload, createArtifactExport, getAnimationExportOptions, animationSpecsOf } from './export';
 export type { AnimationExportOptions, AnimationExportPage, AnimationExportSpec, ExportJobResult } from './export';
-export { getAnimationAnchors, getAnimationSpec, getDefaultAnimationSpec, saveAnimationSpec, previewAnimation, getAnimationPreviewCapability, startAnimationPrefill, getAnimationPrefillResult, applyAnimationToAll, AnimationConflictError } from './animation';
-export type { AnimationScope, AnimationPreview, AnimationPreviewCapability, AnimationPrefillResponse, AnimationPrefillStatus, AnimationApplyAllScope, AnimationApplyAllSlide, AnimationApplyAllResponse } from './animation';
+export { getAnimationAnchors, getAnimationSpec, getDefaultAnimationSpec, saveAnimationSpec, previewAnimation, getAnimationPreviewCapability, startAnimationPrefill, getAnimationPrefillResult, applyAnimationToAll, applyAnimationBatch, restoreAnimationBatch, AnimationConflictError } from './animation';
+export type { AnimationScope, AnimationPreview, AnimationPreviewCapability, AnimationPrefillResponse, AnimationPrefillStatus, AnimationApplyAllScope, AnimationApplyAllSlide, AnimationApplyAllResponse, AnimationBatchSnapshot, AnimationBatchResponse, AnimationBatchRestoreResponse } from './animation';
 export { listDictionaries, createDictionary, updateDictionary, deleteDictionary } from './pronunciation';
 export { listContextRules, createContextRule, updateContextRule, deleteContextRule } from './contextrules';
 export { listPublicWorks, getShowcaseWork, getShowcaseManifest, publishWork, featureWork, reviewWork, deleteWork, recallWork, listMyPublications, listReviewQueue } from './public';

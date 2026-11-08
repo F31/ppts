@@ -104,61 +104,9 @@ func (s *PGStore) Put(ctx context.Context, rev *animation.Revision, expected int
 	if err := key.Validate(); err != nil {
 		return nil, err
 	}
-	tracks, err := marshalTracks(rev.Tracks)
-	if err != nil {
-		return nil, err
-	}
-
 	var saved *animation.Revision
-	err = tenant.Run(ctx, s.pool, key.TenantID, func(ctx context.Context, tx pgx.Tx) error {
-		cur, err := pgLoadExact(ctx, tx, key)
-		switch {
-		case errors.Is(err, animation.ErrNotFound):
-			if expected != 0 {
-				return &animation.ErrConflict{}
-			}
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO animation_revisions (tenant_id, project_id, slide_id, language,
-					source_revision_no, revision, status, preset_id, intensity, tracks)
-				 VALUES ($1::uuid,$2::uuid,$3,$4,$5,1,$6,$7,$8,$9::jsonb)`,
-				key.TenantID, key.ProjectID, key.SlideID, key.Language, key.SourceRevisionNo,
-				string(animation.StatusDraft), rev.PresetID, rev.Intensity, string(tracks)); err != nil {
-				return err
-			}
-			out, err := pgLoadExact(ctx, tx, key)
-			if err != nil {
-				return err
-			}
-			saved = out
-			return nil
-		case err != nil:
-			return err
-		}
-
-		if cur.Status == animation.StatusLocked {
-			return animation.ErrLocked
-		}
-		if cur.Revision != expected {
-			return &animation.ErrConflict{Latest: cur}
-		}
-
-		tag, err := tx.Exec(ctx,
-			`UPDATE animation_revisions
-			 SET revision = revision + 1, preset_id = $1, intensity = $2, tracks = $3::jsonb, updated_at = now()
-			 WHERE id = $4::uuid AND revision = $5`,
-			rev.PresetID, rev.Intensity, string(tracks), cur.ID, expected)
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
-			latest, lerr := pgLoadExact(ctx, tx, key)
-			if lerr != nil {
-				return lerr
-			}
-			return &animation.ErrConflict{Latest: latest}
-		}
-
-		out, err := pgLoadExact(ctx, tx, key)
+	err := tenant.Run(ctx, s.pool, key.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		out, err := pgPutInTx(ctx, tx, rev, expected)
 		if err != nil {
 			return err
 		}
@@ -169,6 +117,135 @@ func (s *PGStore) Put(ctx context.Context, rev *animation.Revision, expected int
 		return nil, err
 	}
 	return saved, nil
+}
+
+// pgPutInTx 是 Put / ApplyBatch 共用的单页写入；调用方持有事务。
+func pgPutInTx(ctx context.Context, tx pgx.Tx, rev *animation.Revision, expected int64) (*animation.Revision, error) {
+	if rev == nil {
+		return nil, fmt.Errorf("%w: nil revision", animation.ErrInvalidKey)
+	}
+	rev.Normalize()
+	key := rev.Key()
+	if err := key.Validate(); err != nil {
+		return nil, err
+	}
+	tracks, err := marshalTracks(rev.Tracks)
+	if err != nil {
+		return nil, err
+	}
+
+	cur, err := pgLoadExact(ctx, tx, key)
+	switch {
+	case errors.Is(err, animation.ErrNotFound):
+		if expected != 0 {
+			return nil, &animation.ErrConflict{}
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO animation_revisions (tenant_id, project_id, slide_id, language,
+				source_revision_no, revision, status, preset_id, intensity, tracks)
+			 VALUES ($1::uuid,$2::uuid,$3,$4,$5,1,$6,$7,$8,$9::jsonb)`,
+			key.TenantID, key.ProjectID, key.SlideID, key.Language, key.SourceRevisionNo,
+			string(animation.StatusDraft), rev.PresetID, rev.Intensity, string(tracks)); err != nil {
+			return nil, err
+		}
+		return pgLoadExact(ctx, tx, key)
+	case err != nil:
+		return nil, err
+	}
+
+	if cur.Status == animation.StatusLocked {
+		return nil, animation.ErrLocked
+	}
+	if cur.Revision != expected {
+		return nil, &animation.ErrConflict{Latest: cur}
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE animation_revisions
+		 SET revision = revision + 1, preset_id = $1, intensity = $2, tracks = $3::jsonb, updated_at = now()
+		 WHERE id = $4::uuid AND revision = $5`,
+		rev.PresetID, rev.Intensity, string(tracks), cur.ID, expected)
+	if err != nil {
+		return nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		latest, lerr := pgLoadExact(ctx, tx, key)
+		if lerr != nil {
+			return nil, lerr
+		}
+		return nil, &animation.ErrConflict{Latest: latest}
+	}
+	return pgLoadExact(ctx, tx, key)
+}
+
+// pgDeleteInTx 删除一页规格，仍守 locked 与乐观并发。
+func pgDeleteInTx(ctx context.Context, tx pgx.Tx, key animation.Key, expected int64) error {
+	cur, err := pgLoadExact(ctx, tx, key)
+	if errors.Is(err, animation.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if cur.Status == animation.StatusLocked {
+		return animation.ErrLocked
+	}
+	if cur.Revision != expected {
+		return &animation.ErrConflict{Latest: cur}
+	}
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM animation_revisions WHERE id = $1::uuid AND revision = $2`, cur.ID, expected)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return &animation.ErrConflict{}
+	}
+	return nil
+}
+
+// ApplyBatch 实现 Store：单事务执行全部操作，任一失败整批回滚。
+func (s *PGStore) ApplyBatch(ctx context.Context, ops []BatchOp) ([]*animation.Revision, error) {
+	if len(ops) == 0 {
+		return nil, nil
+	}
+	tenantID := ops[0].Key.Normalize().TenantID
+	for i, op := range ops {
+		key := op.Key.Normalize()
+		if err := key.Validate(); err != nil {
+			return nil, fmt.Errorf("animation: batch op %d: %w", i, err)
+		}
+		if key.TenantID != tenantID {
+			return nil, fmt.Errorf("animation: batch op %d: cross-tenant write rejected", i)
+		}
+		if op.Rev != nil {
+			if err := op.Rev.Key().Validate(); err != nil {
+				return nil, fmt.Errorf("animation: batch op %d: %w", i, err)
+			}
+		}
+	}
+	out := make([]*animation.Revision, len(ops))
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		for i, op := range ops {
+			key := op.Key.Normalize()
+			if op.Rev == nil {
+				if err := pgDeleteInTx(ctx, tx, key, op.Expected); err != nil {
+					return fmt.Errorf("animation: batch op %d (%s): %w", i, key.SlideID, err)
+				}
+				continue
+			}
+			saved, err := pgPutInTx(ctx, tx, op.Rev, op.Expected)
+			if err != nil {
+				return fmt.Errorf("animation: batch op %d (%s): %w", i, key.SlideID, err)
+			}
+			out[i] = saved
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // SetStatus 实现 Store。

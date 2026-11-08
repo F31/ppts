@@ -289,3 +289,71 @@ export async function applyAnimationToAll(
   const path = `/api/projects/${encodeURIComponent(scope.projectId)}/animation/apply-all${query}`;
   return postJSON<AnimationApplyAllResponse>(identity, path, { presetId, overwrite });
 }
+
+// 批量套用：把某一页已调好的规格复制到选中的页。后端要求全成或全不成，
+// 预检不通过时返回 422 + 逐页原因，且一页都不写；客户端必须如实显示这个结果。
+
+export type AnimationBatchSnapshot = {
+  slideId: string;
+  existed: boolean;
+  revision?: number;
+  presetId?: string;
+  intensity?: number;
+  tracks?: unknown[];
+};
+
+/** 后端逐页结果只有两种终态；用字面量联合，避免 UI 把字符串当成功判定。 */
+export type AnimationBatchSlideResult = {
+  slideId: string;
+  status: 'applied' | 'skipped';
+  reason?: string;
+  revision?: number;
+};
+
+export type AnimationBatchResponse = {
+  sourceSlideId: string;
+  total: number;
+  applied: number;
+  results: AnimationBatchSlideResult[];
+  previous: AnimationBatchSnapshot[];
+};
+
+export type AnimationBatchRestoreResponse = {
+  total: number;
+  restored: number;
+  results: AnimationBatchSlideResult[];
+};
+
+function batchQuery(scope: AnimationApplyAllScope): string {
+  const params = new URLSearchParams();
+  if (scope.sourceRevisionNo && scope.sourceRevisionNo > 0) {
+    params.set('sourceRevisionNo', String(scope.sourceRevisionNo));
+  }
+  if (scope.language) params.set('language', scope.language);
+  const qs = params.toString();
+  return qs ? `?${qs}` : '';
+}
+
+/** applyAnimationBatch 以 sourceSlideId 为模板，一次性套用到 slideIds。 */
+export async function applyAnimationBatch(
+  identity: ClientIdentity,
+  scope: AnimationApplyAllScope,
+  sourceSlideId: string,
+  slideIds: string[],
+  overwrite = false
+): Promise<AnimationBatchResponse> {
+  const query = batchQuery(scope);
+  const path = `/api/projects/${encodeURIComponent(scope.projectId)}/animation/apply-batch${query}`;
+  return postJSON<AnimationBatchResponse>(identity, path, { sourceSlideId, slideIds, overwrite });
+}
+
+/** restoreAnimationBatch 用套用时返回的快照一次性撤销。 */
+export async function restoreAnimationBatch(
+  identity: ClientIdentity,
+  scope: AnimationApplyAllScope,
+  snapshots: AnimationBatchSnapshot[]
+): Promise<AnimationBatchRestoreResponse> {
+  const query = batchQuery(scope);
+  const path = `/api/projects/${encodeURIComponent(scope.projectId)}/animation/apply-batch/restore${query}`;
+  return postJSON<AnimationBatchRestoreResponse>(identity, path, { snapshots });
+}

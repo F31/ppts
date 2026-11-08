@@ -96,6 +96,30 @@ func (s *SQLiteStore) Put(ctx context.Context, rev *animation.Revision, expected
 		return nil, fmt.Errorf("%w: nil revision", animation.ErrInvalidKey)
 	}
 	rev.Normalize()
+	if err := rev.Key().Validate(); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	saved, err := s.sqPutInTx(ctx, tx, rev, expected)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return saved, nil
+}
+
+// sqPutInTx 是 Put / ApplyBatch 共用的单页写入；调用方持有事务。
+func (s *SQLiteStore) sqPutInTx(ctx context.Context, tx *sql.Tx, rev *animation.Revision, expected int64) (*animation.Revision, error) {
+	if rev == nil {
+		return nil, fmt.Errorf("%w: nil revision", animation.ErrInvalidKey)
+	}
+	rev.Normalize()
 	key := rev.Key()
 	if err := key.Validate(); err != nil {
 		return nil, err
@@ -104,12 +128,6 @@ func (s *SQLiteStore) Put(ctx context.Context, rev *animation.Revision, expected
 	if err != nil {
 		return nil, err
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback() }()
 
 	cur, err := s.sqLoadExact(ctx, tx, key)
 	switch {
@@ -127,14 +145,7 @@ func (s *SQLiteStore) Put(ctx context.Context, rev *animation.Revision, expected
 			1, string(animation.StatusDraft), rev.PresetID, rev.Intensity, string(tracks), 0, db.Now(), db.Now()); err != nil {
 			return nil, err
 		}
-		saved, err := s.sqLoadExact(ctx, tx, key)
-		if err != nil {
-			return nil, err
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		return saved, nil
+		return s.sqLoadExact(ctx, tx, key)
 	case err != nil:
 		return nil, err
 	}
@@ -161,15 +172,75 @@ func (s *SQLiteStore) Put(ctx context.Context, rev *animation.Revision, expected
 		}
 		return nil, &animation.ErrConflict{Latest: latest}
 	}
+	return s.sqLoadExact(ctx, tx, key)
+}
 
-	saved, err := s.sqLoadExact(ctx, tx, key)
+// sqDeleteInTx 删除一页规格，仍守 locked 与乐观并发。
+func (s *SQLiteStore) sqDeleteInTx(ctx context.Context, tx *sql.Tx, key animation.Key, expected int64) error {
+	cur, err := s.sqLoadExact(ctx, tx, key)
+	if errors.Is(err, animation.ErrNotFound) {
+		return nil // 已经不在了，撤销是幂等的
+	}
+	if err != nil {
+		return err
+	}
+	if cur.Status == animation.StatusLocked {
+		return animation.ErrLocked
+	}
+	if cur.Revision != expected {
+		return &animation.ErrConflict{Latest: cur}
+	}
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM animation_revisions WHERE id = ? AND revision = ?`, cur.ID, expected)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return &animation.ErrConflict{}
+	}
+	return nil
+}
+
+// ApplyBatch 实现 Store：单事务执行全部操作，任一失败整批回滚。
+func (s *SQLiteStore) ApplyBatch(ctx context.Context, ops []BatchOp) ([]*animation.Revision, error) {
+	if len(ops) == 0 {
+		return nil, nil
+	}
+	for i, op := range ops {
+		key := op.Key.Normalize()
+		if err := key.Validate(); err != nil {
+			return nil, fmt.Errorf("animation: batch op %d: %w", i, err)
+		}
+		if op.Rev != nil {
+			if err := op.Rev.Key().Validate(); err != nil {
+				return nil, fmt.Errorf("animation: batch op %d: %w", i, err)
+			}
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	out := make([]*animation.Revision, len(ops))
+	for i, op := range ops {
+		key := op.Key.Normalize()
+		if op.Rev == nil {
+			if err := s.sqDeleteInTx(ctx, tx, key, op.Expected); err != nil {
+				return nil, fmt.Errorf("animation: batch op %d (%s): %w", i, key.SlideID, err)
+			}
+			continue
+		}
+		saved, err := s.sqPutInTx(ctx, tx, op.Rev, op.Expected)
+		if err != nil {
+			return nil, fmt.Errorf("animation: batch op %d (%s): %w", i, key.SlideID, err)
+		}
+		out[i] = saved
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return saved, nil
+	return out, nil
 }
 
 // SetStatus 实现 Store。用条件 UPDATE 表达状态机，避免"先读后判再写"的竞态。

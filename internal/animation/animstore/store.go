@@ -36,6 +36,23 @@ type Store interface {
 	// SetStatus 迁移审批状态，不允许跨级（draft→approved→locked，locked 可回 approved）。
 	// 状态变更不递增 revision：内容没变，前端不必因此重新拉取对比。
 	SetStatus(ctx context.Context, key animation.Key, status animation.Status) (*animation.Revision, error)
+
+	// ApplyBatch 在**一个事务**里执行所有操作：任意一页冲突/锁定/失败则整批回滚。
+	// 批量套用与它的一次性撤销都走这里——没有它，"N 页写入"只能靠补偿式回滚，
+	// 而原本没有规格的页在补偿时无处可退（Store 没有就地删除单页的语义）。
+	// 返回的切片与 ops 等长；删除操作对应位置为 nil。
+	ApplyBatch(ctx context.Context, ops []BatchOp) ([]*animation.Revision, error)
+}
+
+// BatchOp 是批量事务里的单页操作。
+//
+// Rev 为 nil 表示删除该页规格：撤销"套用前没有规格"的页时必须真的删掉行，
+// 写一个空草稿会让下次 Get 读到一份并不存在过的规格（假数据比失败更难查）。
+// Expected 仍是乐观并发版本；删除时它是要被删掉的那一行的当前 revision。
+type BatchOp struct {
+	Key      animation.Key
+	Rev      *animation.Revision
+	Expected int64
 }
 
 // marshalTracks / unmarshalTracks 是列编码细节：tracks 存成 JSON 文本，

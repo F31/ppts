@@ -6,6 +6,9 @@ import {
   createDictionary,
   animationSpecsOf,
   applyAnimationToAll,
+  applyAnimationBatch,
+  restoreAnimationBatch,
+  type AnimationBatchSnapshot,
   createArtifactExport,
   createGeneration,
   getAnimationExportOptions,
@@ -59,7 +62,13 @@ import { can } from '../permissions';
 import { AnimationEditor } from '../AnimationEditor';
 import type { AnimationStagePreview } from '../animationPreview';
 import { evaluateDraftJob, type DraftJobOutcome } from '../oneClickJob';
-import { summarizeApplyAllReasons } from '../animationPreview';
+import { summarizeApplyAllReasons, APPLY_ALL_REASON_KEYS } from '../animationPreview';
+import {
+  batchTargets,
+  batchApplyConsistent,
+  summarizeBatchReasons,
+  restorableSnapshots
+} from '../animationBatch';
 import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type ScriptEditorStatus } from '../ScriptEditor';
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
@@ -145,6 +154,14 @@ export function ProjectEditor({
   // 空态是否源于"文档尚未解析/解析未完成"：仅在此情况下做有限自动轮询解析状态。
   const [slideEmptyFromNotFound, setSlideEmptyFromNotFound] = useState(false);
   const [slideEmptyRetries, setSlideEmptyRetries] = useState(0);
+  // 批量套用：多选态只影响左侧页轨，不改单页编辑器。退出多选时清掉勾选，
+  // 但保留 undo 快照——用户可能先退出多选再决定撤销。
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchSelected, setBatchSelected] = useState<string[]>([]);
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [batchError, setBatchError] = useState('');
+  const [batchMessage, setBatchMessage] = useState('');
+  const [batchUndo, setBatchUndo] = useState<AnimationBatchSnapshot[] | null>(null);
   // 探测类请求的失败原因（按 ProbeId 归档）。空对象 = 全部正常。
   const [probeErrors, setProbeErrors] = useState<Partial<Record<ProbeId, string>>>({});
   // 顶层探测的重试计数；变化即重跑全部顶层探测 effect。
@@ -1131,6 +1148,83 @@ export function ProjectEditor({
     // 单页动效视频只属于刚才那一页：切页后留着就是「拿上一页的画面判断这一页」。
     clearStagePreview();
     setActiveSlideID(slideId);
+  };
+
+  // 批量套用：左侧页轨进入多选态后，点页 = 勾选/取消，不再切页。
+  // 模板固定为进入多选时的当前页；切页需先退出多选，避免"模板悄悄换了"。
+  const batchScope = {
+    projectId,
+    sourceRevisionNo: Number(slidesState.mode === 'real' ? slidesState.revisionNo : 0) || initRevisionNo || 0,
+    language: scriptLanguage || undefined
+  };
+  const toggleBatchMode = () => {
+    setBatchMode((on) => {
+      if (on) setBatchSelected([]);
+      setBatchError('');
+      return !on;
+    });
+  };
+  const onBatchRowClick = (slideId: string) => {
+    if (!batchMode) {
+      handleSlideSelect(slideId);
+      return;
+    }
+    setBatchSelected((prev) => prev.includes(slideId) ? prev.filter((id) => id !== slideId) : [...prev, slideId]);
+    setBatchMessage('');
+    setBatchError('');
+  };
+  const runBatchApply = async () => {
+    if (!activeSlideID || batchBusy || slidesState.mode !== 'real') return;
+    const targets = batchTargets(batchSelected, activeSlideID);
+    if (targets.length === 0) {
+      setBatchError(t('editor.animationBatchNoTarget'));
+      return;
+    }
+    setBatchBusy(true);
+    setBatchError('');
+    setBatchMessage('');
+    try {
+      const result = await applyAnimationBatch(identity, batchScope, activeSlideID, targets);
+      // 汇总与逐页结果必须自洽，否则"已套用"就是假反馈。
+      if (!batchApplyConsistent(result)) {
+        setBatchError(t('editor.animationBatchInconsistent'));
+        setBatchUndo(null);
+        return;
+      }
+      setBatchUndo(restorableSnapshots(result.previous));
+      setBatchMessage(t('editor.animationBatchResult', { applied: result.applied }));
+      setBatchSelected([]);
+      setProbesReloadKey((key) => key + 1);
+    } catch (error) {
+      setBatchUndo(null);
+      const details = error instanceof ConnectError ? error.details : undefined;
+      const results = details?.results;
+      if (error instanceof ConnectError && error.code === 'batch_ineligible' && Array.isArray(results)) {
+        const reasons = summarizeBatchReasons(results as never, (reason) =>
+          t(APPLY_ALL_REASON_KEYS[reason] ?? 'editor.animationApplyAllReasonStore'));
+        setBatchError(t('editor.animationBatchRejected', { reasons }));
+      } else {
+        setBatchError(describeApiError(error, t('editor.animationBatchFailed'), t));
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+  const runBatchUndo = async () => {
+    if (batchBusy || !batchUndo) return;
+    setBatchBusy(true);
+    setBatchError('');
+    setBatchMessage('');
+    try {
+      const result = await restoreAnimationBatch(identity, batchScope, batchUndo);
+      setBatchMessage(t('editor.animationBatchUndone', { count: result.restored }));
+      setBatchUndo(null);
+      setProbesReloadKey((key) => key + 1);
+    } catch (error) {
+      setBatchError(describeApiError(error, t('editor.animationBatchFailed'), t));
+    } finally {
+      setBatchBusy(false);
+    }
   };
 
   // 方向键翻页：基于真实页面列表（非配音时间轴），缩略图轨 / 阅览区 / 讲稿栏随
@@ -2133,8 +2227,36 @@ export function ProjectEditor({
       <div className={`editor-layout${scriptOpen ? '' : ' script-collapsed'}${scriptResizing ? ' script-resizing' : ''}`} ref={editorLayoutRef}>
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
           <div className="rail-title">
-            {t('editor.pages')} <span className="muted-count">{pageCount || ''}</span>
+            <span>{t('editor.pages')} <span className="muted-count">{pageCount || ''}</span></span>
+            {isReady && (
+              <button
+                type="button"
+                className="rail-batch-toggle"
+                onClick={toggleBatchMode}
+                aria-pressed={batchMode}
+              >
+                {batchMode ? t('editor.animationBatchExit') : t('editor.animationBatchMode')}
+              </button>
+            )}
           </div>
+          {batchMode && isReady && (
+            <div className="batch-panel">
+              <p className="form-hint">{t('editor.animationBatchNote')}</p>
+              <p className="form-hint">
+                {t('editor.animationBatchSelected', { count: batchTargets(batchSelected, activeSlideID || '').length })}
+              </p>
+              <div className="batch-actions">
+                <button type="button" disabled={!activeSlideID || batchBusy} onClick={() => void runBatchApply()}>
+                  {batchBusy ? t('editor.animationBatchApplying') : t('editor.animationBatchApply')}
+                </button>
+                <button type="button" disabled={!batchUndo || batchBusy} onClick={() => void runBatchUndo()}>
+                  {batchBusy ? t('editor.animationBatchUndoing') : t('editor.animationBatchUndo')}
+                </button>
+              </div>
+              {batchError && <p className="form-error" role="alert">{batchError}</p>}
+              {batchMessage && <p className="form-hint" role="status">{batchMessage}</p>}
+            </div>
+          )}
           {!isReady ? (
             slidesState.mode === 'failed' ? (
               <div className="load-failure load-failure-stack" role="alert">
@@ -2157,8 +2279,12 @@ export function ProjectEditor({
                 <button
                   key={slide.slideId}
                   type="button"
-                  className={slide.slideId === activeSlideID ? 'selected' : ''}
-                  onClick={() => handleSlideSelect(slide.slideId)}
+                  className={[
+                    slide.slideId === activeSlideID ? 'selected' : '',
+                    batchMode && batchSelected.includes(slide.slideId) ? 'batch-selected' : ''
+                  ].filter(Boolean).join(' ')}
+                  onClick={() => onBatchRowClick(slide.slideId)}
+                  aria-pressed={batchMode ? batchSelected.includes(slide.slideId) : undefined}
                 >
                   <span className="thumb">
                     {thumb ? (

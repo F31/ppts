@@ -65,9 +65,9 @@
   },
   "animation-spec": {
    "name": "动画规格（M1）",
-   "prefixes": ["/api/projects/{projectId}/slides/{slideId}/animation", "/api/projects/{projectId}/animation/apply-all"],
+   "prefixes": ["/api/projects/{projectId}/slides/{slideId}/animation", "/api/projects/{projectId}/animation/apply-all", "/api/projects/{projectId}/animation/apply-batch", "/api/projects/{projectId}/animation/apply-batch/restore"],
    "disposition": "keep",
-   "reason": "动画规格的读写（GET/PUT）走 REST：新增 proto 契约需要 buf/protoc 与重新生成 pb.go，当前构建环境不具备；与 ContextRuleHandler 同一先例。store 为 nil 或开关关闭时规格端点不注册。单页预览 POST 与 GET .../preview/capability 始终注册：依赖不齐全时 POST 返回 503 preview_unavailable、GET 说明原因，避免静默 404 被前端翻成「预览失败」。POST /animation/apply-all 是整份 deck 一次套用同一预设（一键成片第三步）：一次请求逐页落库并跳过人手改动页，避免前端循环 2N 次请求留下半成品。收敛方向：工具链恢复后并入 Connect，或作为独立 AnimationService 立项。"
+   "reason": "动画规格的读写（GET/PUT）走 REST：新增 proto 契约需要 buf/protoc 与重新生成 pb.go，当前构建环境不具备；与 ContextRuleHandler 同一先例。store 为 nil 或开关关闭时规格端点不注册。单页预览 POST 与 GET .../preview/capability 始终注册：依赖不齐全时 POST 返回 503 preview_unavailable、GET 说明原因，避免静默 404 被前端翻成「预览失败」。POST /animation/apply-all 是整份 deck 一次套用同一预设（一键成片第三步）：一次请求逐页落库并跳过人手改动页，避免前端循环 2N 次请求留下半成品。POST /animation/apply-batch 与 /animation/apply-batch/restore 是「把当前页的动效风格（presetId + intensity）套用到选中页」的原子写入/撤销端点：源页只贡献风格，目标页按自身元素与讲稿走 animdefault 生成链重算轨道（Track.ElementID 是页内形状 ID，跨页复制无定义，V2 会全数拒绝）；与 apply-all 的逐页尽力而为不同，apply-batch 先预检全部目标页（locked、未配音、页面不可用、规格不适配等一律整单 422 batch_ineligible 且零写入），再由 animstore.ApplyBatch 单事务提交并返回 previous 快照供前端一次撤销；restore 对套用前无规格的页以 Rev=nil 删除行。契约上不存在部分成功，因此不引入批量 RPC 契约。收敛方向：工具链恢复后并入 Connect，或作为独立 AnimationService 立项。"
   },
   "exports-rest": {
    "name": "扩展产物格式导出",
