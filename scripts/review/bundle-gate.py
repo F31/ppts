@@ -20,6 +20,11 @@
 用法：
     python3 scripts/review/bundle-gate.py --pkg tmp/m64/pkg
     python3 scripts/review/bundle-gate.py --pkg tmp/m64/pkg --skip-browser   # 只跑 V14/V15
+    python3 scripts/review/bundle-gate.py --single tmp/m64/index.html        # 单文件形态（ADR-033）
+
+单文件形态（`--single`）判据的差别：V14 与 V16/V17 逐条同判；V15 的体积预算**不套用**
+（单文件 = 解压后 × 1.33 + noscript 页图，ADR-033 有实测），只报体积。清单字段
+（页数/时长/音频段数）由探针从还原后的 `window.__PPT_MANIFEST__` 取。
 
 退出码：0 全过；1 有阻断失败；2 环境缺失（既没有本地 Chrome，也没有可用的渲染镜像）。
 依赖：go；浏览器侧二选一——本机 Node ≥22 + Chrome（`--engine native`，自动探测），
@@ -32,6 +37,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 DEFAULT_IMAGE = "ppts/renderer:dev"
 REVIEW_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -90,6 +96,30 @@ def run_share_verify(pkg):
         return json.loads(proc.stdout), proc.returncode
     except json.JSONDecodeError as exc:
         raise RuntimeError(f"share-verify did not emit JSON: {proc.stdout[:300]}") from exc
+
+
+def run_share_verify_single(path):
+    """单文件形态：只拿外链与体积（没有 manifest.json 可读，见 share-verify -single）。"""
+    cmd = ["go", "run", "./cmd/share-verify", "-single", "-json", path]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode not in (0, 2):
+        raise StructureError(proc.stderr.strip() or proc.stdout.strip())
+    try:
+        return json.loads(proc.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"share-verify -single did not emit JSON: {proc.stdout[:300]}") from exc
+
+
+def stage_single(path):
+    """把单文件摊成一个只有 index.html 的目录。
+
+    为什么非要摊：探针按目录约定找 index.html（`--pkg DIR`），而单文件的"包"
+    就是一个文件。摊成临时目录能让 V16/V17 复用同一套探针与判据，不必为单文件
+    写第二条探测路径——两条路径迟早会分叉。
+    """
+    tmp = tempfile.mkdtemp(prefix="ppts-single-gate-")
+    shutil.copyfile(path, os.path.join(tmp, "index.html"))
+    return tmp
 
 
 def native_chrome():
@@ -274,7 +304,9 @@ def check_degrade(reports, slides):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pkg", required=True, help="成品包目录（含 index.html）")
+    ap.add_argument("--pkg", help="成品包目录（含 index.html）")
+    ap.add_argument("--single", metavar="HTML",
+                    help="内联单文件（ADR-033）：V14/V16/V17 同判，V15 只报体积")
     ap.add_argument("--image", default=DEFAULT_IMAGE, help="含 chrome 与 ws 的渲染镜像")
     ap.add_argument("--engine", choices=["auto", "native", "docker"], default="auto",
                     help="浏览器从哪来：本机 Chrome（native）还是渲染镜像（docker）；auto 先试本机")
@@ -282,21 +314,45 @@ def main():
     ap.add_argument("--json", action="store_true", help="输出 JSON 报告")
     args = ap.parse_args()
 
-    if not os.path.isdir(args.pkg):
-        print(f"bundle-gate: 不是目录：{args.pkg}", file=sys.stderr)
+    if args.single and args.pkg:
+        print("bundle-gate: --pkg 与 --single 只能二选一", file=sys.stderr)
+        return 1
+    if not args.single and not args.pkg:
+        print("bundle-gate: 需要 --pkg（目录）或 --single（单文件）", file=sys.stderr)
         return 1
 
-    try:
-        verify, verify_code = run_share_verify(args.pkg)
-    except StructureError as exc:
-        # 结构不自洽时后面的判据都没有意义：直接给一条可读的失败，
-        # 而不是让人在 traceback 里找"哪张图没了"。
-        print(f"FAIL：包结构不自洽\n  {exc}", file=sys.stderr)
-        return 1
-    manifest = {
-        "audioMix": verify.get("audioMix"),
-        "audio": [{}] * verify.get("audioSegments", 0),
-    }
+    # pkg_dir 是**探针**要吃的目录；单文件先摊成"只有 index.html 的临时目录"。
+    pkg_dir = args.pkg
+    if args.single:
+        if not os.path.isfile(args.single):
+            print(f"bundle-gate: --single 要的是一个 .html 文件：{args.single}", file=sys.stderr)
+            return 1
+        try:
+            verify = run_share_verify_single(args.single)
+        except StructureError as exc:
+            print(f"FAIL：单文件检查未通过\n  {exc}", file=sys.stderr)
+            return 1
+        pkg_dir = stage_single(args.single)
+    else:
+        if not os.path.isdir(args.pkg):
+            print(f"bundle-gate: 不是目录：{args.pkg}", file=sys.stderr)
+            return 1
+        try:
+            verify, _ = run_share_verify(args.pkg)
+        except StructureError as exc:
+            # 结构不自洽时后面的判据都没有意义：直接给一条可读的失败，
+            # 而不是让人在 traceback 里找"哪张图没了"。
+            print(f"FAIL：包结构不自洽\n  {exc}", file=sys.stderr)
+            return 1
+
+    # 单文件没有可读的清单：manifest 由探针从还原后的 window.__PPT_MANIFEST__ 取，
+    # 所以这里先留空，等 play 探针跑完再补（见下面 reports["play"] 之后）。
+    manifest = None
+    if not args.single:
+        manifest = {
+            "audioMix": verify.get("audioMix"),
+            "audio": [{}] * verify.get("audioSegments", 0),
+        }
     measure = verify.get("measure", {})
     checks = []
 
@@ -308,14 +364,20 @@ def main():
     checks.append(Check("V14", "外部引用数为 0", refs == 0, detail))
 
     # ---- V15 体积 ----
-    total_mib = measure.get("totalBytes", 0) / (1 << 20)
-    budget_mib = measure.get("budgetBytes", 0) / (1 << 20)
-    over = bool(measure.get("overBudget"))
-    # 超预算仍只告警：阈值里还有两项没兑现（WebP、AAC），此时阻断等于用门禁
-    # 替产品做决定（design ADR-6）。注意字体子集这轮已经做了，所以「字体让体积
-    # 变轻」这条理由已经消失——真要收紧阈值，先看实测基线。参见 measure.go 的注释。
-    checks.append(Check("V15", "体积在预算内", not over,
-                        f"{total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB", blocking=False))
+    total_mib = verify.get("totalBytes", 0) / (1 << 20)
+    if args.single:
+        # 单文件不套用 zip 预算：它的体积天然是解压后 × 1.33（base64）+ noscript 页图
+        # （ADR-033 实测 1.45×）。拿 zip 预算卡它只会天天红，然后被人关掉。
+        checks.append(Check("V15", "体积（单文件形态）", True,
+                            f"{total_mib:.2f} MiB（不套用 zip 预算，见 ADR-033）", blocking=False))
+    else:
+        budget_mib = measure.get("budgetBytes", 0) / (1 << 20)
+        over = bool(measure.get("overBudget"))
+        # 超预算仍只告警：阈值里还有两项没兑现（WebP、AAC），此时阻断等于用门禁
+        # 替产品做决定（design ADR-6）。注意字体子集这轮已经做了，所以「字体让体积
+        # 变轻」这条理由已经消失——真要收紧阈值，先看实测基线。参见 measure.go 的注释。
+        checks.append(Check("V15", "体积在预算内", not over,
+                            f"{total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB", blocking=False))
     # ---- V15 字体子集覆盖 ----
     #
     # 判据来自 share-verify（Go 侧唯一实现）：它从**包内实际文件**重建字集
@@ -323,8 +385,13 @@ def main():
     # 不采信清单里自己写的 fontMissing——被测系统的账本不能同时当门禁的账本。
     #
     # 没内嵌字体时是 not_applicable 而不是 pass：这份包没做这件事，不该打勾。
+    # 单文件形态同样跳过：字体已经 base64 内联进 <style>，Go 侧没有独立条目可解析。
     font = verify.get("font") or {}
-    if not font.get("Embedded"):
+    if args.single:
+        checks.append(Check("V15", "字体子集覆盖", True,
+                            "not_applicable（单文件里字体已内联，覆盖率以打包时校验为准）",
+                            blocking=False))
+    elif not font.get("Embedded"):
         checks.append(Check("V15", "字体子集覆盖", True,
                             "not_applicable（未内嵌字体，使用系统字体栈）", blocking=False))
     else:
@@ -339,6 +406,9 @@ def main():
     env_error = None
     engine = args.engine
     chrome = ""
+    # 单文件的这几项只能从页面上取（还原后的清单），先把 zip 形态的值放好。
+    slides = 0 if args.single else verify.get("slides", 0)
+    duration_us = 0 if args.single else verify.get("durationUs", 0)
     if not args.skip_browser:
         if engine == "auto":
             found, why = native_chrome()
@@ -354,9 +424,9 @@ def main():
                 env_error = why
         if not env_error:
             try:
-                reports["play"] = run_probe(args.pkg, "play", engine, args.image)
+                reports["play"] = run_probe(pkg_dir, "play", engine, args.image)
                 for mode in ("nojs", "default", "reduced", "nowaapi", "lowmem", "lowfps"):
-                    reports[mode] = run_probe(args.pkg, mode, engine, args.image)
+                    reports[mode] = run_probe(pkg_dir, mode, engine, args.image)
             except (RuntimeError, FileNotFoundError) as exc:
                 env_error = str(exc)
 
@@ -364,21 +434,41 @@ def main():
         checks.append(Check("V16", "浏览器探针可执行", False, env_error))
         checks.append(Check("V17", "降级矩阵可执行", False, env_error))
     elif not args.skip_browser:
+        summary = (reports["play"].get("result") or {}).get("manifest") or {}
+        if args.single:
+            # 单文件没有 manifest.json：这几项来自页面里还原后的 window.__PPT_MANIFEST__。
+            # 取不到（summary 为空）就按"没有音频、没有页"处理——check_playable 会随
+            # 探针结果给红，而不是在这里猜一个让它变绿的值。
+            manifest = {
+                "audioMix": "inline" if summary.get("audioMix") else None,
+                "audio": [{}] * int(summary.get("audioSegments") or 0),
+            }
+            slides = int(summary.get("slides") or 0)
+            duration_us = int(summary.get("durationUs") or 0)
         checks.extend(check_playable(reports["play"], manifest))
-        checks.extend(check_degrade(reports, verify.get("slides", 0)))
+        checks.extend(check_degrade(reports, slides))
 
     if args.json:
         print(json.dumps({
-            "package": args.pkg,
+            "package": args.single or args.pkg,
+            "kind": "single" if args.single else "dir",
             "engine": engine if not args.skip_browser else "skipped",
             "chrome": chrome,
             "checks": [{"code": c.code, "name": c.name, "status": c.status, "detail": c.detail} for c in checks],
             "measure": measure,
         }, ensure_ascii=False, indent=2))
     else:
-        print(f"成品包：{args.pkg}")
-        print(f"清单：{verify.get('slides')} 页，{verify.get('durationUs', 0) / 1e6:.1f} 秒，"
-              f"体积 {total_mib:.2f} MiB / 预算 {budget_mib:.2f} MiB")
+        if args.single:
+            print(f"成品包：{args.single}（单文件）")
+            if args.skip_browser:
+                print(f"体积 {total_mib:.2f} MiB（未启动浏览器，页数/时长未取）")
+            else:
+                print(f"清单：{slides} 页，{duration_us / 1e6:.1f} 秒（取自页面内还原后的清单），"
+                      f"体积 {total_mib:.2f} MiB")
+        else:
+            print(f"成品包：{args.pkg}")
+            print(f"清单：{verify.get('slides')} 页，{verify.get('durationUs', 0) / 1e6:.1f} 秒，"
+                  f"体积 {total_mib:.2f} MiB / 预算 {measure.get('budgetBytes', 0) / (1 << 20):.2f} MiB")
         if not args.skip_browser:
             print(f"浏览器：{engine} · {chrome or args.image}")
         print()
@@ -394,10 +484,14 @@ def main():
         else:
             print("PASS：全部阻断项通过" + (f"（{len(warned)} 项告警）" if warned else ""))
 
+    # 单文件摊出来的临时目录用完即删：里面只有一份 index.html 的拷贝，
+    # 留着只会在跑多次后堆出几个几十 MB 的目录。
+    if args.single:
+        shutil.rmtree(pkg_dir, ignore_errors=True)
+
     if env_error:
         return 2
     return 1 if any(not c.ok and c.blocking for c in checks) else 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

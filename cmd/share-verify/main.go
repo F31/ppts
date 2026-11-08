@@ -4,6 +4,9 @@
 // ScanExternalRefs——CI 里对构建出的样例包跑一遍，就能拦住"有人给播放器加了
 // CDN 字体/遥测脚本"这类回归。
 //
+// `-single` 是另一种目标：内联单文件（html_single）。它没有 manifest.json 可读，
+// 所以只做不需要清单的判据（外链、体积），理由见 runSingle 的注释。
+//
 // 退出码：0 通过；1 结构不合规；2 检出外链（可用 -allow-external 降级为警告）；
 // 3 超体积预算（仅 -budget 时）。
 package main
@@ -46,8 +49,10 @@ func main() {
 	allowExternal := flag.Bool("allow-external", false, "检出外链时只警告，不返回失败")
 	checkBudget := flag.Bool("budget", false, "超体积预算时返回失败（默认只报告）")
 	checkFont := flag.Bool("font", false, "内嵌字体覆盖率不足时返回失败（默认只报告）")
+	singleFile := flag.Bool("single", false, "目标是内联单文件（html_single）：只做外链与体积，不校验清单结构")
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), "用法：share-verify [-json] [-allow-external] [-budget] [-font] <bundle.zip|bundle-dir>\n")
+		fmt.Fprintf(flag.CommandLine.Output(), "      share-verify -single [-json] [-allow-external] <bundle.html>\n")
 	}
 	flag.Parse()
 	if flag.NArg() != 1 {
@@ -55,6 +60,16 @@ func main() {
 		os.Exit(1)
 	}
 	target := flag.Arg(0)
+
+	if *singleFile {
+		// -budget / -font 都需要清单（片长、字体声明），单文件里没有可读的那一份。
+		// 与其静默给出一个"在预算内"，不如拒绝这组参数：门禁报告不该为没做的事打勾。
+		if *checkBudget || *checkFont {
+			fmt.Fprintln(os.Stderr, "share-verify: -single 不支持 -budget / -font（单文件没有可读的清单）")
+			os.Exit(1)
+		}
+		os.Exit(runSingle(target, *jsonOut, *allowExternal))
+	}
 
 	manifest, files, kind, err := load(target)
 	if err != nil {
@@ -111,6 +126,60 @@ func main() {
 			len(res.Font.Missing), string(res.Font.Missing[:min(len(res.Font.Missing), 8)]))
 		os.Exit(4)
 	}
+}
+
+// runSingle 校验单文件形态（html_single，ADR-029 ⑤ / ADR-033）。
+//
+// 单文件里没有 manifest.json 可读：清单被内联进 <script> 且资源引用换成了 token，
+// token 的还原只发生在浏览器里（ADR-033）。所以这里只做**不需要清单**的两件事：
+// 外链扫描与体积。页数/段数/时长由 bundle-gate 的浏览器探针在还原后的清单上取
+// （window.__PPT_MANIFEST__）——在被测页面里读数，比在 Go 侧再写一个 token 反解器
+// 更接近"用户真正拿到的东西"，也少一处会与打包器一起漂移的实现。
+func runSingle(target string, jsonOut, allowExternal bool) int {
+	data, err := os.ReadFile(target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "share-verify: %v\n", err)
+		return 1
+	}
+	if len(data) == 0 {
+		fmt.Fprintf(os.Stderr, "share-verify: %s 是空文件\n", target)
+		return 1
+	}
+	refs := share.ScanExternalRefs(share.FileIndexHTML, data)
+	res := result{
+		Target: target, Kind: "single",
+		Entries: 1, TotalBytes: int64(len(data)),
+		ExternalRefs: len(refs),
+	}
+	if len(refs) > 0 {
+		res.ExternalRefSamples = map[string][]string{share.FileIndexHTML: refs}
+	}
+
+	if jsonOut {
+		raw, _ := json.MarshalIndent(res, "", "  ")
+		fmt.Println(string(raw))
+	} else {
+		fmt.Printf("目标：%s（single）\n", res.Target)
+		fmt.Printf("体积：%.2f MiB（单文件不套用 zip 预算：体积 = 解压后 × 1.33 + noscript 页图，见 ADR-033）\n",
+			float64(res.TotalBytes)/(1<<20))
+		fmt.Printf("外链：%d 处\n", res.ExternalRefs)
+		if len(res.ExternalRefSamples) > 0 {
+			fmt.Println("\n外链明细：")
+			for _, ref := range refs {
+				fmt.Printf("  %s → %s\n", share.FileIndexHTML, ref)
+			}
+		}
+	}
+
+	if res.ExternalRefs > 0 {
+		if allowExternal {
+			fmt.Fprintf(os.Stderr, "share-verify: 警告：检出 %d 处外链（-allow-external 已放行）\n", res.ExternalRefs)
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "share-verify: 失败：检出 %d 处外链，单文件必须可离线双击播放\n", res.ExternalRefs)
+		return 2
+	}
+	return 0
 }
 
 func load(target string) (*share.Manifest, map[string][]byte, string, error) {

@@ -111,6 +111,15 @@ const PLAY_EXPR = `(async () => {
   const man = window.__PPT_MANIFEST__;
   if (!man) { out.missing.push('manifest'); return out; }
 
+  // 清单摘要：单文件形态没有 manifest.json 可读（清单内联在脚本里、资源引用是 token），
+  // 门禁要的「几页 / 多长 / 有没有音频」只能从**还原后的**清单里取。
+  out.manifest = {
+    slides: (man.slides || []).length,
+    durationUs: (man.artifact && man.artifact.durationUs) || 0,
+    audioMix: !!man.audioMix,
+    audioSegments: (man.audio || []).length
+  };
+
   // 清单里被播放器引用的全部资源：页图、层图、音频。播放器只会加载当前页与当前段，
   // 其余的 404 平时永远发现不了，所以这里逐个预加载。
   const urls = [];

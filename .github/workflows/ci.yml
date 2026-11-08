@@ -111,6 +111,17 @@ jobs:
           go run ./cmd/share-baseline -pages 3 -page-secs 4 -layers 2 -zip /tmp/pkg.zip -out /tmp/pkg >/dev/null
       - name: 浏览器门禁（V14–V17）
         run: python3 scripts/review/bundle-gate.py --pkg /tmp/pkg --engine native
+      # 单文件形态（ADR-029 ⑤ / ADR-033）：与目录包同一批判据，区别只有清单来源——
+      # 探针从**还原后**的 window.__PPT_MANIFEST__ 读，而不是读 manifest.json。
+      # 这条以前是手工跑的；而它恰好守着 zip 形态看不见的一类故障：token 没还原成
+      # data URI（清单里 30 段音频各指同一条 mix，逐处内联会得到 618 MB 的包）、
+      # 或还原步骤被挪到 app.js 之后（第一帧就拿 token 当路径，黑屏）。
+      - name: 造一个单文件样例
+        run: |
+          rm -f /tmp/single.html
+          go run ./cmd/share-baseline -pages 3 -page-secs 4 -layers 2 -single /tmp/single.html >/dev/null
+      - name: 单文件门禁（V14/V16/V17）
+        run: python3 scripts/review/bundle-gate.py --single /tmp/single.html --engine native
       # 跨页延续（G8）：夹具必须显式 -continuation（默认注入会让 V13b 的末帧比对假红，
       # 因为延续元素在页尾本就是中途态），且页长要大于 offset（6s > 3s）才溢得出去。
       # 判据在 seam-gate（V19）：读成品包清单 + shared/motion.ts 在页缝两侧求值，
