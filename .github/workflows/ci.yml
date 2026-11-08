@@ -577,13 +577,52 @@ jobs:
   # 契约门禁：Buf lint + 兼容性（breaking）检查。
   proto:
     runs-on: ubuntu-latest
+    env:
+      # 版本只在这里写一次：主路径（官方 action）与备份路径（模块代理）必须装同一版，
+      # 否则「本地过、CI 红」会因为 lint 规则随版本变化而重新出现。
+      BUF_VERSION: "1.50.0"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # 2026-11-08：这一步红过一次，原因是 **GitHub 发布资源 CDN 返回 504**：
+      #   buf-setup-action 去 releases/download 拉 tar.gz，连续两次 504（间隔 15s）后放弃。
+      # 与本仓库代码无关，但 action 自带的重试只有 2 次、间隔固定，覆盖不了一次持续几分钟的
+      # 网关抖动；而这一步一红，lint/breaking 两条契约门禁根本没跑，等于整条 job 白跑。
+      #
+      # 所以主路径保持官方 action（它自带 sha 校验与 tool-cache），失败则**换一条网络路径**：
+      # 走 Go 模块代理 `go install` 同一个版本。两条路径的失败原因基本不相关（GitHub 发布
+      # CDN vs proxy.golang.org），代价是备份路径要现场编译（约 2–4 分钟），只在主路径失败时发生。
+      # 不接受「把版本写死在镜像里」：那会让 proto job 依赖一个我们并不发布的自建镜像。
       - uses: bufbuild/buf-setup-action@v1
+        id: buf_setup
+        continue-on-error: true
         with:
+          # 显式钉版本：action 的默认版本会随 @v1 浮动，而下面的版本校验要求两条路径
+          # 装同一版；不钉的话，哪天默认版本变了，这里会红在"版本不符"而不是真问题。
+          version: ${{ env.BUF_VERSION }}
           github_token: ${{ github.token }}
+      - name: setup go (buf fallback)
+        if: steps.buf_setup.outcome != 'success'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: install buf via module proxy
+        if: steps.buf_setup.outcome != 'success'
+        run: |
+          echo "buf-setup-action 失败，改走模块代理安装 buf ${BUF_VERSION}" >&2
+          go install "github.com/bufbuild/buf/cmd/buf@v${BUF_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      # 版本必须对得上：备份路径装错版本时，lint 规则差异会表现成"莫名其妙的规则报错"。
+      - name: buf version
+        run: |
+          got=$(buf --version)
+          echo "buf ${got}"
+          if [ "$got" != "${BUF_VERSION}" ]; then
+            echo "buf 版本不符：期望 ${BUF_VERSION}，实际 ${got}" >&2
+            exit 1
+          fi
       - name: buf lint
         working-directory: proto
         run: buf lint
