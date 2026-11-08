@@ -1555,3 +1555,39 @@ html[data-theme="light"] .user-menu-note { color: #64748b; }
 .one-draft-advanced { margin: 10px 0; border: 1px solid rgba(255, 255, 255, .1); border-radius: 8px; padding: 8px 12px; }
 .one-draft-advanced > summary { cursor: pointer; font-size: 13px; }
 .one-draft-advanced > .field-label { margin-top: 10px; }
+
+/* ============ 作者侧成品分享控制台（M6-3 前端接线 / V20 数据出口） ============ */
+.artifact-share-dialog { width: min(760px, 100%); max-height: min(86vh, 900px); overflow-y: auto; }
+.artifact-share-notes {
+  display: grid; gap: 4px; margin: 0 0 14px; padding: 10px 12px;
+  border: 1px solid var(--border, rgba(255, 255, 255, .14)); border-radius: 8px;
+  background: var(--accent-soft, rgba(96, 165, 250, .10));
+}
+.artifact-share-notes p { margin: 0; font-size: 12px; line-height: 1.5; opacity: .9; }
+.artifact-share-toolbar { display: flex; align-items: end; justify-content: flex-end; margin-bottom: 8px; }
+.artifact-share-list li { align-items: flex-start; }
+.artifact-share-link-main { display: grid; gap: 10px; width: 100%; }
+.artifact-share-stats-note { margin: 0; padding: 8px 10px; border-radius: 8px; }
+.artifact-share-stats { display: grid; gap: 10px; width: 100%; }
+.artifact-share-stats > .cell-sub { margin: 0; }
+.artifact-share-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.artifact-share-metrics > div {
+  padding: 8px 10px; border: 1px solid var(--border, rgba(255, 255, 255, .14)); border-radius: 8px;
+}
+.artifact-share-metrics dt { font-size: 11px; opacity: .75; }
+.artifact-share-metrics dd { margin: 4px 0 0; font-size: 18px; font-weight: 600; }
+.artifact-share-funnel { display: grid; gap: 6px; }
+.artifact-share-funnel-row { display: grid; grid-template-columns: 88px 1fr 40px; align-items: center; gap: 8px; font-size: 12px; }
+.artifact-share-funnel-row strong { text-align: right; }
+.artifact-share-funnel-track {
+  height: 10px; border-radius: 5px; overflow: hidden;
+  background: var(--border, rgba(255, 255, 255, .12));
+}
+.artifact-share-funnel-track > div {
+  height: 100%; border-radius: 5px;
+  background: var(--accent, #60a5fa); transition: width .2s ease;
+}
+@media (max-width: 640px) {
+  .artifact-share-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .artifact-share-funnel-row { grid-template-columns: 72px 1fr 32px; }
+}

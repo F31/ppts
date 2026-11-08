@@ -37,6 +37,9 @@ import (
 
 const (
 	artifactShareActionViewEvent = "artifact_share.view_event"
+	// 写入与聚合必须共用同一个资源类型：两处各写一个字符串，改一处就会让
+	// 看板静默查不到数据（而事件仍照常写，所有写入测试都是绿的）。
+	artifactShareLinkResourceType = "artifact_share_link"
 
 	shareEventKindView     = "view"
 	shareEventKindProgress = "progress"
@@ -284,7 +287,7 @@ func recordShareViewEvent(ctx context.Context, recorder audit.Recorder, link *ar
 		TenantID:     link.TenantID,
 		ActorUser:    "anonymous",
 		Action:       artifactShareActionViewEvent,
-		ResourceType: "artifact_share_link",
+		ResourceType: artifactShareLinkResourceType,
 		ResourceID:   link.ID,
 		Metadata: map[string]any{
 			"surface":     "shared.bundle.online",

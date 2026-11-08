@@ -22,7 +22,11 @@ import (
 // 受保护（auth 中间件，editor 及以上）：
 //   - GET  /projects/{pid}/artifacts/{aid}/shares                列出该成品的分享链接
 //   - POST /projects/{pid}/artifacts/{aid}/shares                新建 {accessMode?, password?, expiresInDays?}
-//   - POST /projects/{pid}/artifacts/{aid}/shares/{linkId}/revoke 撤销
+//   - GET  /projects/{pid}/artifacts/{aid}/shares/{linkId}/stats   该链接的在线观看统计
+//   - POST /projects/{pid}/artifacts/{aid}/shares/{linkId}/revoke  撤销
+//
+// auditStore 必须是完整 Store 而不只是 Recorder：stats 端点要在存储层聚合，
+// 不能用有 500 条上限的 List 在应用层数事件（会静默低报）。
 func registerArtifactShareRoutes(
 	mux *http.ServeMux,
 	artifacts artifact.Store,
@@ -30,17 +34,20 @@ func registerArtifactShareRoutes(
 	projects project.ProjectStore,
 	members membership.Reader,
 	pepper string,
-	recorder audit.Recorder,
+	auditStore audit.Store,
 	auth func(http.Handler) http.Handler,
 ) {
 	mux.Handle("GET /projects/{pid}/artifacts/{aid}/shares", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		listArtifactShares(w, r, artifacts, links, projects, members, recorder)
+		listArtifactShares(w, r, artifacts, links, projects, members, auditStore)
 	})))
 	mux.Handle("POST /projects/{pid}/artifacts/{aid}/shares", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		createArtifactShare(w, r, artifacts, links, projects, members, pepper, recorder)
+		createArtifactShare(w, r, artifacts, links, projects, members, pepper, auditStore)
+	})))
+	mux.Handle("GET /projects/{pid}/artifacts/{aid}/shares/{linkId}/stats", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		artifactShareStats(w, r, artifacts, links, projects, members, auditStore, r.PathValue("linkId"))
 	})))
 	mux.Handle("POST /projects/{pid}/artifacts/{aid}/shares/{linkId}/revoke", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		revokeArtifactShare(w, r, artifacts, links, projects, members, recorder, r.PathValue("linkId"))
+		revokeArtifactShare(w, r, artifacts, links, projects, members, auditStore, r.PathValue("linkId"))
 	})))
 }
 

@@ -117,6 +117,52 @@ func scanEvent(row pgx.Row) (*Event, error) {
 	return &e, nil
 }
 
+// ViewStats 在 PG 侧聚合观看事件；与 List 一样整段包在 tenant.Run 里，
+// 由 RLS 兜住租户隔离，不在 SQL 里另写一套「看起来等价」的租户条件。
+func (s *PGStore) ViewStats(ctx context.Context, tenantID string, q ViewStatsQuery) (ViewStats, error) {
+	if err := q.validate(tenantID); err != nil {
+		return ViewStats{}, err
+	}
+	const where = `tenant_id=$1 AND action=$2 AND resource_type=$3 AND resource_id=$4 AND created_at >= $5`
+	args := []any{tenantID, q.Action, q.ResourceType, q.ResourceID, q.Since}
+
+	out := ViewStats{ByEvent: make(map[string]int64)}
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		var first, last *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT COUNT(DISTINCT metadata->>'session'), MIN(created_at), MAX(created_at)
+			 FROM audit_events WHERE `+where, args...).Scan(&out.Sessions, &first, &last); err != nil {
+			return err
+		}
+		if first != nil {
+			out.FirstEventAt = *first
+		}
+		if last != nil {
+			out.LastEventAt = *last
+		}
+		rows, err := tx.Query(ctx,
+			`SELECT COALESCE(metadata->>'event',''), COUNT(DISTINCT metadata->>'session')
+			 FROM audit_events WHERE `+where+` GROUP BY 1`, args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var n int64
+			if err := rows.Scan(&name, &n); err != nil {
+				return err
+			}
+			out.ByEvent[name] = n
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return ViewStats{}, err
+	}
+	return out, nil
+}
+
 // DeleteBefore 删除 before 之前（排他）的审计事件，返回删除行数。
 func (s *PGStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
 	if strings.TrimSpace(tenantID) == "" {

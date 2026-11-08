@@ -111,6 +111,57 @@ func sqScanEvent(row rowScanner) (*Event, error) {
 	return &e, nil
 }
 
+// ViewStats 在 SQLite 侧聚合观看事件（modernc.org/sqlite 自带 JSON1）。
+//
+// 两条 SQL 分工：第一条给「窗口内总独立会话数」与首末事件时间，第二条按
+// metadata.event 分组给每个桶的独立会话数。分组计数不能相加得到总会话数——
+// 同一次观看会落 view 与多个 progress 桶，相加会重复计数。
+func (s *SQLiteStore) ViewStats(ctx context.Context, tenantID string, q ViewStatsQuery) (ViewStats, error) {
+	if err := q.validate(tenantID); err != nil {
+		return ViewStats{}, err
+	}
+	// json_valid 兜住历史行里可能存在的非 JSON metadata：json_extract 遇到坏行会
+	// 让整条聚合报错，而看板宁可少算这几行，也不该因为一条脏数据整个打不开。
+	const where = `tenant_id = ? AND action = ? AND resource_type = ? AND resource_id = ?
+		AND created_at >= ? AND json_valid(metadata)`
+	args := []any{tenantID, q.Action, q.ResourceType, q.ResourceID, db.FormatTime(q.Since)}
+
+	out := ViewStats{ByEvent: make(map[string]int64)}
+	var first, last sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(DISTINCT json_extract(metadata,'$.session')), MIN(created_at), MAX(created_at)
+		 FROM audit_events WHERE `+where, args...).Scan(&out.Sessions, &first, &last); err != nil {
+		return ViewStats{}, err
+	}
+	if first.Valid {
+		out.FirstEventAt = db.ParseTime(first.String)
+	}
+	if last.Valid {
+		out.LastEventAt = db.ParseTime(last.String)
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT COALESCE(json_extract(metadata,'$.event'),''),
+		        COUNT(DISTINCT json_extract(metadata,'$.session'))
+		 FROM audit_events WHERE `+where+` GROUP BY 1`, args...)
+	if err != nil {
+		return ViewStats{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var n int64
+		if err := rows.Scan(&name, &n); err != nil {
+			return ViewStats{}, err
+		}
+		out.ByEvent[name] = n
+	}
+	if err := rows.Err(); err != nil {
+		return ViewStats{}, err
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return 0, ErrTenantRequired

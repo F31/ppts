@@ -269,6 +269,12 @@ jobs:
       - name: build
         working-directory: web
         run: npm run build
+      # 作者侧成品分享控制台：build 链里已跑静态判据（含四条诚实口径与早退分支），
+      # 这里再跑一次变异自测，证明那些判据不是恒真的摆设——删掉采集关闭分支、
+      # 在组件里私加 fetch、放开 html_single 守卫、抹掉留存窗口说明，各自必须打红。
+      - name: artifact share console gate self-test
+        working-directory: web
+        run: npm run artifact-share:self-test
       # 分享播放器产物入库（go:embed 依赖），必须保证「源码改了但没重新生成」在 CI 就失败，
       # 否则用户下载到的成品包会带着旧播放器（与 catalog 生成物同一纪律）。
       - name: share player build (drift check)

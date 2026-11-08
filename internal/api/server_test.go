@@ -278,9 +278,12 @@ type fakeArtifactStore struct {
 }
 
 type fakeAuditStore struct {
-	events []audit.Event
-	err    error
-	filter audit.Filter
+	events        []audit.Event
+	err           error
+	filter        audit.Filter
+	viewStats     audit.ViewStats
+	viewStatsErr  error
+	viewStatsCall audit.ViewStatsQuery
 }
 
 func (f *fakeAuditStore) Record(context.Context, audit.Event) error {
@@ -297,6 +300,14 @@ func (f *fakeAuditStore) List(_ context.Context, _ string, filter audit.Filter) 
 
 func (f *fakeAuditStore) DeleteBefore(context.Context, string, time.Time) (int64, error) {
 	return 0, f.err
+}
+
+func (f *fakeAuditStore) ViewStats(_ context.Context, _ string, q audit.ViewStatsQuery) (audit.ViewStats, error) {
+	f.viewStatsCall = q
+	if f.viewStatsErr != nil {
+		return audit.ViewStats{}, f.viewStatsErr
+	}
+	return f.viewStats, nil
 }
 
 type fakeTenantStatusChecker struct {
@@ -897,6 +908,10 @@ func (f *fakeAuditRecorder) List(context.Context, string, audit.Filter) ([]audit
 
 func (f *fakeAuditRecorder) DeleteBefore(context.Context, string, time.Time) (int64, error) {
 	return 0, nil
+}
+
+func (f *fakeAuditRecorder) ViewStats(_ context.Context, _ string, _ audit.ViewStatsQuery) (audit.ViewStats, error) {
+	return audit.ViewStats{}, nil
 }
 
 func TestJobServiceCancelWritesAudit(t *testing.T) {

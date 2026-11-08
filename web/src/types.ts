@@ -448,3 +448,40 @@ export type SharedMeta = {
   passwordProtected: boolean;
   expiresAtUnix: number;
 };
+
+// 成品级分享链接（M6-3）：锚点是成品而不是项目，客户手里的链接永远指向那一版成片。
+// 与上面的项目级 ShareLink 是两套端点，字段相似但不可混用。
+export type ArtifactShareLink = {
+  id: string;
+  artifactId: string;
+  projectId: string;
+  token: string;
+  url: string;
+  accessMode: ShareAccessMode | string;
+  passwordProtected: boolean;
+  expiresAt: string;
+  revoked: boolean;
+  createdBy: string;
+  createdAt: string;
+  lastAccessedAt: string;
+};
+
+// 作者侧在线观看统计。所有数字都是「窗口内独立会话数」，不是事件条数。
+// telemetryEnabled=false 时前端必须显示说明而不是把 0 渲染成观看数据。
+export type ArtifactShareStatsResponse = {
+  linkId: string;
+  artifactId: string;
+  projectId: string;
+  telemetryEnabled: boolean;
+  retentionNote: string;
+  window: { days: number; since: string; until: string };
+  stats: {
+    views: number;
+    sessions: number;
+    completed: number;
+    completionRate: number;
+    progress: { bucket: number; sessions: number }[];
+    firstEventAt: string | null;
+    lastEventAt: string | null;
+  };
+};

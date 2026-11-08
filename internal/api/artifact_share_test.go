@@ -23,16 +23,20 @@ import (
 
 const shareTestPepper = "test-pepper"
 
+// shareAuditStub 同时是内存断言桩和**真实 SQLite 审计库**：匿名端写进来的事件
+// 会真的落库，stats 端点因此读的是真 SQL 的聚合结果，而不是另一份手写的假聚合。
+// 少了这一层，「聚合正确」只能证明桩按我理解的方式数数，证明不了 SQL。
 type shareAuditStub struct {
 	mu     sync.Mutex
 	events []audit.Event
+	*audit.SQLiteStore
 }
 
-func (s *shareAuditStub) Record(_ context.Context, e audit.Event) error {
+func (s *shareAuditStub) Record(ctx context.Context, e audit.Event) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.events = append(s.events, e)
-	return nil
+	s.mu.Unlock()
+	return s.SQLiteStore.Record(ctx, e)
 }
 
 func (s *shareAuditStub) snapshot() []audit.Event {
@@ -70,7 +74,7 @@ func newShareTestEnv(t *testing.T) *shareTestEnv {
 
 	store := artifact.NewSQLiteStore(sqldb)
 	objects := objectstore.NewLocal(t.TempDir(), []byte("download-secret"))
-	recorder := &shareAuditStub{}
+	recorder := &shareAuditStub{SQLiteStore: audit.NewSQLiteStore(sqldb)}
 
 	projects := &fakeProjectStore{projects: []*project.Project{
 		{ID: "p1", TenantID: db.LocalTenantID, OwnerUser: db.LocalUserID, Title: "项目一"},

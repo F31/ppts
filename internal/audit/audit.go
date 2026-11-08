@@ -65,4 +65,7 @@ type Store interface {
 	List(ctx context.Context, tenantID string, filter Filter) ([]Event, error)
 	// DeleteBefore 删除 before 之前（排他）的审计事件，返回删除行数。供保留/归档清理。
 	DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error)
+	// ViewStats 在存储层聚合观看事件。不能用 List 代替：List 有 500 条上限，
+	// 用它统计会静默截断长尾，看板会低报而不报错。
+	ViewStats(ctx context.Context, tenantID string, q ViewStatsQuery) (ViewStats, error)
 }

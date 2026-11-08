@@ -38,6 +38,7 @@ export { listContextRules, createContextRule, updateContextRule, deleteContextRu
 export { listPublicWorks, getShowcaseWork, getShowcaseManifest, publishWork, featureWork, reviewWork, deleteWork, recallWork, listMyPublications, listReviewQueue } from './public';
 export type { PublicationKind, PublicationStatus, PublicWork, PublicWorkPage } from './public';
 export { listCollaborators, inviteCollaborator, updateCollaboratorRole, removeCollaborator, listShareLinks, createShareLink, revokeShareLink, getSharedMeta, getSharedManifest, shareUrl } from './share';
+export { listArtifactShareLinks, createArtifactShareLink, revokeArtifactShareLink, getArtifactShareStats } from './artifactShare';
 export { listAdminTenants, suspendTenant, resumeTenant } from './admin';
 export type { AdminTenantQuota, AdminTenant, AdminTenantsPage } from './admin';
 export { getMessageChannels, saveEmailChannel, testEmailChannel, saveSmsChannel } from './messages';

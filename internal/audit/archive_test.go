@@ -44,6 +44,41 @@ func (s *fakeArchiveStore) List(_ context.Context, tenantID string, filter Filte
 	return out, nil
 }
 
+// ViewStats 按与 SQL 相同的语义在内存里聚合：按会话去重、按事件名分桶。
+// 归档测试本身不读它，但 Store 接口要求实现；写成真语义而不是空壳，避免
+// 以后有人拿这个 fake 验证统计时得到「永远为 0」的假绿。
+func (s *fakeArchiveStore) ViewStats(_ context.Context, tenantID string, q ViewStatsQuery) (ViewStats, error) {
+	if err := q.validate(tenantID); err != nil {
+		return ViewStats{}, err
+	}
+	out := ViewStats{ByEvent: map[string]int64{}}
+	byEvent := map[string]map[string]bool{}
+	all := map[string]bool{}
+	for _, e := range s.events[tenantID] {
+		if e.Action != q.Action || e.ResourceType != q.ResourceType || e.ResourceID != q.ResourceID || e.CreatedAt.Before(q.Since) {
+			continue
+		}
+		ev, _ := e.Metadata["event"].(string)
+		sess, _ := e.Metadata["session"].(string)
+		if byEvent[ev] == nil {
+			byEvent[ev] = map[string]bool{}
+		}
+		byEvent[ev][sess] = true
+		all[sess] = true
+		if out.FirstEventAt.IsZero() || e.CreatedAt.Before(out.FirstEventAt) {
+			out.FirstEventAt = e.CreatedAt
+		}
+		if e.CreatedAt.After(out.LastEventAt) {
+			out.LastEventAt = e.CreatedAt
+		}
+	}
+	out.Sessions = int64(len(all))
+	for ev, sessions := range byEvent {
+		out.ByEvent[ev] = int64(len(sessions))
+	}
+	return out, nil
+}
+
 func (s *fakeArchiveStore) DeleteBefore(_ context.Context, tenantID string, before time.Time) (int64, error) {
 	var kept []Event
 	for _, e := range s.events[tenantID] {

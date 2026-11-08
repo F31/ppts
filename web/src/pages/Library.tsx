@@ -12,6 +12,7 @@ import { useI18n } from '../i18n';
 import { Link } from '../router';
 import { Player } from '../Player';
 import { useConfirmDialog } from '../components/ConfirmDialog';
+import { ArtifactSharePanel } from '../components/ArtifactSharePanel';
 import { can } from '../permissions';
 
 const FORMAT_KEY: Record<string, string> = {
@@ -195,6 +196,17 @@ function IconDownload() {
   );
 }
 
+function IconShare() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4" />
+    </svg>
+  );
+}
+
 function IconTrash() {
   return (
     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -210,6 +222,10 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
   const confirmDialog = useConfirmDialog();
   const { ask: confirmAsk, dialog: confirmDialogEl } = confirmDialog;
   const canDelete = can(role, 'artifact.delete');
+  // 在线分享与观看统计都要求 editor 及以上（后端 loadShareableArtifact / stats 同一把锁）。
+  // 低权限角色不给按钮，避免「点开才看到只读说明」的假入口。
+  const canShare = can(role, 'project.share');
+  const [shareArtifact, setShareArtifact] = useState<LibraryArtifact | null>(null);
   const [artifacts, setArtifacts] = useState<LibraryArtifact[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -462,6 +478,19 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
                       >
                         <IconDownload />
                       </button>
+                      {/* 只有 html_bundle 能建在线 /s/ 链接（后端 loadShareableArtifact 明确拒绝其它格式），
+                          html_single 虽同源也不能分享——不给它一个点了才报错的按钮。 */}
+                      {canShare && a.format === 'html_bundle' && (
+                        <button
+                          type="button"
+                          className="icon-btn artifact-share"
+                          title={t('library.shareHint')}
+                          aria-label={t('library.share')}
+                          onClick={() => setShareArtifact(a)}
+                        >
+                          <IconShare />
+                        </button>
+                      )}
                       {canDelete && (
                         <button
                           type="button"
@@ -550,6 +579,15 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
             )}
           </section>
         </div>
+      )}
+
+      {shareArtifact && (
+        <ArtifactSharePanel
+          identity={identity}
+          artifact={shareArtifact}
+          role={role}
+          onClose={() => setShareArtifact(null)}
+        />
       )}
 
       {confirmDialogEl}
