@@ -283,6 +283,7 @@ internal/project    源文件版本 / 页面 / 元素 / 导入报告 + go-pptx �
 internal/narration  讲稿 / 分段 / 来源锚点 / 术语 / 审核
 internal/pipeline   任务状态 / 重试 / 租约 / 取消 / 事件 / outbox
 internal/media      音轨 / 字幕 / 时间轴 / 导出
+internal/config     环境变量读取的唯一入口（装配层不得直接读 os.Getenv）
 internal/tenant     身份 / 角色 / 策略 / RLS
 internal/usage      额度 / 结算 / 账本 / 成本
 internal/integrations  LLM / TTS / 渲染 / 存储适配

@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/migrate"
 	"github.com/F31/ppts/migrations"
 )
@@ -65,9 +66,9 @@ func printUsage() {
 // runMigrate 应用全部内嵌 SQL 迁移（幂等）。迁移含建角色/扩展，需要 superuser 连接：
 // 优先取 PPTS_MIGRATE_DATABASE_URL，回退 PPTS_DATABASE_URL。
 func runMigrate() error {
-	dsn := os.Getenv("PPTS_MIGRATE_DATABASE_URL")
+	dsn := config.String("PPTS_MIGRATE_DATABASE_URL", "")
 	if dsn == "" {
-		dsn = os.Getenv("PPTS_DATABASE_URL")
+		dsn = config.String("PPTS_DATABASE_URL", "")
 	}
 	if dsn == "" {
 		return errors.New("PPTS_MIGRATE_DATABASE_URL or PPTS_DATABASE_URL is required")

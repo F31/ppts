@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 
 	"github.com/F31/ppts/internal/api"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/messaging"
@@ -34,7 +34,7 @@ import (
 // 而不是任何一条提示。更要紧的是，本地 profile 因此没有任何办法关掉动画，
 // 验收里"关掉开关再导出"这一步根本做不出来。
 func animationEnabled(isSQLite bool) bool {
-	return envBool("PPTS_ANIMATION_ENABLED", isSQLite)
+	return config.Bool("PPTS_ANIMATION_ENABLED", isSQLite)
 }
 
 // animationRolloutFromEnv 读取「租户未配置策略时」的默认灰度百分比。
@@ -44,7 +44,7 @@ func animationEnabled(isSQLite bool) bool {
 // 但一次发版就把现网所有客户的动画关掉，比"默认值不够严格"严重得多。
 // 生产收口请显式设 PPTS_ANIMATION_ROLLOUT=0 再逐个开租户（design ADR-3）。
 func animationRolloutFromEnv(logger *slog.Logger) int {
-	raw := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ROLLOUT"))
+	raw := config.String("PPTS_ANIMATION_ROLLOUT", "")
 	if raw == "" {
 		return 100
 	}
@@ -62,7 +62,7 @@ func animationRolloutFromEnv(logger *slog.Logger) int {
 // 这是一份"写进部署配置后不要再动"的值：改 salt 等于重新洗牌，会把已经吃到灰度的租户
 // 踢回未开放状态，而它可能正在用这个功能交付（design ADR-4）。
 func animationRolloutSaltFromEnv() string {
-	return strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ROLLOUT_SALT"))
+	return config.String("PPTS_ANIMATION_ROLLOUT_SALT", "")
 }
 
 // animationProbeFromEnv 构造导出选项端点的渲染服务探测。
@@ -77,7 +77,7 @@ func animationProbeFromEnv(logger *slog.Logger, enabled bool) api.AnimationProbe
 	if !enabled {
 		return nil
 	}
-	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
+	base := config.String("PPTS_RENDERER_URL", "")
 	if base == "" {
 		logger.Warn("animation: PPTS_ANIMATION_ENABLED is set but PPTS_RENDERER_URL is empty; export options will report unavailable")
 		return nil
@@ -105,8 +105,8 @@ func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client,
 		logger.Info("animation: preview disabled by deployment switch", "reason", api.PreviewReasonDisabled)
 		return nil, nil, api.PreviewReasonDisabled
 	}
-	base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL"))
-	dir := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ASSET_DIR"))
+	base := config.String("PPTS_RENDERER_URL", "")
+	dir := config.String("PPTS_ANIMATION_ASSET_DIR", "")
 	if base == "" {
 		logger.Info("animation: preview disabled (PPTS_RENDERER_URL is empty)", "reason", api.PreviewReasonRendererMissing)
 		return nil, nil, api.PreviewReasonRendererMissing
@@ -134,7 +134,7 @@ func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client,
 // 一个写错的环境变量不该让整个 API 起不来。上下限夹紧交给 api.ClampPreviewBudget，
 // 保证服务端预算始终小于前端 90s 的兜底超时（否则超时会被误判成网络故障）。
 func previewBudgetFromEnv(logger *slog.Logger) time.Duration {
-	raw := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_PREVIEW_BUDGET"))
+	raw := config.String("PPTS_ANIMATION_PREVIEW_BUDGET", "")
 	if raw == "" {
 		return 0
 	}
@@ -155,7 +155,7 @@ func previewBudgetFromEnv(logger *slog.Logger) time.Duration {
 // runServer 启动 API + 前端控制台（原 cmd/api 的 run）。
 // 数据库由 PPTS_DB_DRIVER 选择：sqlite（默认，单租户本地模式，无登录）或 postgres（多租户全功能）。
 func runServer() error {
-	addr := os.Getenv("PPTS_HTTP_ADDR")
+	addr := config.String("PPTS_HTTP_ADDR", "")
 	if addr == "" {
 		addr = ":8080"
 	}
@@ -222,7 +222,7 @@ func runServer() error {
 						Lifecycle: stores.tenant, Storage: stores.tenant,
 						Archive: stores.tenant, TenantStatus: stores.tenant,
 						Auth:           authenticator,
-						DevHeaders:     os.Getenv("PPTS_AUTH_DEV_HEADERS") == "true",
+						DevHeaders:     config.Bool("PPTS_AUTH_DEV_HEADERS", false),
 						LocalPrincipal: localPrincipal,
 						Pronunciation:  stores.pronunciation, ContextRule: stores.contextRule, Gateway: gatewayStore, ScriptSources: scriptSources, VoiceSettings: voiceSettings,
 						// 动画：部署闸 + 租户策略 + 灰度，判定收敛在 internal/animation.Resolve。
@@ -236,14 +236,14 @@ func runServer() error {
 						// 预览预算按部署硬件可调（默认 3s）：纯 CPU 渲染器上一页的耗时
 						// 取决于核数与字号，固定值会让慢机器上的预览恒定超时。
 						AnimationPreviewBudget: previewBudgetFromEnv(logger),
-						JWTSecret:              os.Getenv("PPTS_JWT_SECRET"), PasswordPepper: os.Getenv("PPTS_PASSWORD_PEPPER"),
+						JWTSecret:              config.String("PPTS_JWT_SECRET", ""), PasswordPepper: config.String("PPTS_PASSWORD_PEPPER", ""),
 						Mailer:               mailer,
-						TrustProxy:           os.Getenv("PPTS_TRUST_PROXY") == "true",
-						RequireEmailVerified: os.Getenv("PPTS_REQUIRE_EMAIL_VERIFIED") == "true",
+						TrustProxy:           config.Bool("PPTS_TRUST_PROXY", false),
+						RequireEmailVerified: config.Bool("PPTS_REQUIRE_EMAIL_VERIFIED", false),
 						Logger:               stdLogger,
 						PriceVersion:         priceBook.Version,
 						Messages:             messagingStore,
-						WebRoot:              os.Getenv("PPTS_WEB_ROOT"), WebFS: web.DistFS(),
+						WebRoot:              config.String("PPTS_WEB_ROOT", ""), WebFS: web.DistFS(),
 					}),
 			),
 			logger),
@@ -297,15 +297,15 @@ func messagingStoreFromEnv(logger *slog.Logger, stores *storeSet) messaging.Stor
 }
 
 func oidcAuthenticatorFromEnv(ctx context.Context) (*api.OIDCAuthenticator, error) {
-	issuer := os.Getenv("PPTS_OIDC_ISSUER")
+	issuer := config.String("PPTS_OIDC_ISSUER", "")
 	if issuer == "" {
 		return nil, nil
 	}
 	return api.NewOIDCAuthenticator(ctx, api.OIDCConfig{
 		Issuer:      issuer,
-		ClientID:    os.Getenv("PPTS_OIDC_CLIENT_ID"),
-		TenantClaim: os.Getenv("PPTS_OIDC_TENANT_CLAIM"),
-		UserClaim:   os.Getenv("PPTS_OIDC_USER_CLAIM"),
+		ClientID:    config.String("PPTS_OIDC_CLIENT_ID", ""),
+		TenantClaim: config.String("PPTS_OIDC_TENANT_CLAIM", ""),
+		UserClaim:   config.String("PPTS_OIDC_USER_CLAIM", ""),
 	})
 }
 
@@ -317,7 +317,7 @@ func authFromEnv(ctx context.Context, pool *pgxpool.Pool) (api.Authenticator, er
 	if err != nil {
 		return nil, err
 	}
-	secret := os.Getenv("PPTS_JWT_SECRET")
+	secret := config.String("PPTS_JWT_SECRET", "")
 	var jwtAuth *api.JWTAuthenticator
 	if secret != "" {
 		jwtAuth = api.NewJWTAuthenticator(secret)
@@ -330,7 +330,7 @@ func authFromEnv(ctx context.Context, pool *pgxpool.Pool) (api.Authenticator, er
 		// 此前这里直接 return nil,nil，下游 (api/server.go) 又以 auth==nil 为由自动开启
 		// dev headers，于是生产环境漏配 PPTS_JWT_SECRET 时，任意请求带上
 		// X-PPTS-Tenant-ID + X-PPTS-User-ID 即可冒充任意租户的任意用户，且无任何告警。
-		if !envBool("PPTS_AUTH_DEV_HEADERS", false) {
+		if !config.Bool("PPTS_AUTH_DEV_HEADERS", false) {
 			return nil, errors.New("no authenticator configured: set PPTS_JWT_SECRET (or PPTS_OIDC_ISSUER); " +
 				"set PPTS_AUTH_DEV_HEADERS=true only for local development (it accepts unsigned tenant/user headers)")
 		}
@@ -341,7 +341,7 @@ func authFromEnv(ctx context.Context, pool *pgxpool.Pool) (api.Authenticator, er
 
 // configureJWTTTLFromEnv 从 PPTS_JWT_TTL 解析会话有效期（如 "24h"）；非法/缺失用默认 24h。
 func configureJWTTTLFromEnv() {
-	raw := strings.TrimSpace(os.Getenv("PPTS_JWT_TTL"))
+	raw := config.String("PPTS_JWT_TTL", "")
 	if raw == "" {
 		return
 	}

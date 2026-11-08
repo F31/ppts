@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/F31/ppts/internal/observability"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/F31/ppts/internal/config"
+	"github.com/F31/ppts/internal/observability"
 )
 
 // errBackendUnavailable 表示后端本身不可用（区别于"超限"）。
@@ -295,14 +296,23 @@ func rateLimitBackend(pool *pgxpool.Pool, logger *log.Logger) limiterBackend {
 	return newFailoverBackend(newPGBackend(pool), newMemoryBackend(), logger)
 }
 
+// 限流后端名。写成常量是因为它们同时出现在日志、指标标签与运维文档里，
+// 手写字符串迟早会出现 "shared "（带空格）这种只在线上才炸的差异。
+const (
+	rateLimitBackendShared = "shared"
+	rateLimitBackendMemory = "memory"
+)
+
 // rateLimitBackendName 读取期望的后端类型（shared 默认，memory 为显式退回进程内）。
 // 与 PPTS_AUTH_DEV_HEADERS 同构：只允许显式取值，未识别的取值按默认处理而不是静默降级。
 func rateLimitBackendName() string {
-	switch v := strings.ToLower(strings.TrimSpace(os.Getenv("PPTS_RATELIMIT_BACKEND"))); v {
+	switch strings.ToLower(config.String("PPTS_RATELIMIT_BACKEND", rateLimitBackendShared)) {
 	case "memory", "local", "process":
-		return "memory"
+		return rateLimitBackendMemory
 	default:
-		return "shared"
+		// 未识别的取值按默认处理而不是静默降级：拼错的 "memroy" 不该悄悄变成
+		// 进程内计数——多副本下那等于每个副本各限一份额度。
+		return rateLimitBackendShared
 	}
 }
 

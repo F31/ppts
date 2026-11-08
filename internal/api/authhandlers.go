@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/mail"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/usage"
@@ -119,7 +119,7 @@ func requestIsHTTPS(r *http.Request, trustProxy bool) bool {
 			return strings.EqualFold(strings.TrimSpace(proto), "https")
 		}
 	}
-	return strings.EqualFold(strings.TrimSpace(os.Getenv("PPTS_COOKIE_SECURE")), "true")
+	return config.Bool("PPTS_COOKIE_SECURE", false)
 }
 
 func (d *authDeps) publicBase(r *http.Request) string {

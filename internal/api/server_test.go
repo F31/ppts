@@ -286,8 +286,14 @@ type fakeAuditStore struct {
 	viewStatsCall audit.ViewStatsQuery
 }
 
-func (f *fakeAuditStore) Record(context.Context, audit.Event) error {
-	return f.err
+// Record 同时承担「断言写入内容」的职责：先落进 events 再返回错误，
+// 这样「写失败时调用方必须不崩」与「写成功时字段对不对」都能用同一个 fake 验。
+func (f *fakeAuditStore) Record(_ context.Context, e audit.Event) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.events = append(f.events, e)
+	return nil
 }
 
 func (f *fakeAuditStore) List(_ context.Context, _ string, filter audit.Filter) ([]audit.Event, error) {
@@ -892,34 +898,12 @@ func TestCreateGenerationAllowsIdempotentReplayWhenTenantConcurrentLimitReached(
 	}
 }
 
-// fakeAuditRecorder 记录审计事件，验证 G3-4 接线。
-type fakeAuditRecorder struct {
-	events []audit.Event
-}
-
-func (f *fakeAuditRecorder) Record(_ context.Context, e audit.Event) error {
-	f.events = append(f.events, e)
-	return nil
-}
-
-func (f *fakeAuditRecorder) List(context.Context, string, audit.Filter) ([]audit.Event, error) {
-	return f.events, nil
-}
-
-func (f *fakeAuditRecorder) DeleteBefore(context.Context, string, time.Time) (int64, error) {
-	return 0, nil
-}
-
-func (f *fakeAuditRecorder) ViewStats(_ context.Context, _ string, _ audit.ViewStatsQuery) (audit.ViewStats, error) {
-	return audit.ViewStats{}, nil
-}
-
 func TestJobServiceCancelWritesAudit(t *testing.T) {
 	job := &pipeline.Job{
 		ID: "job-1", TenantID: "tenant-1", ProjectID: "project-1", Kind: pipeline.KindNarration,
 		State: pipeline.StateCanceled, IDempotencyKey: "idem-1",
 	}
-	recorder := &fakeAuditRecorder{}
+	recorder := &fakeAuditStore{}
 	jobs := &jobCreatorStub{job: job}
 	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, testObjects(t), nil, Options{DevHeaders: true, Audit: recorder}))
 	t.Cleanup(server.Close)

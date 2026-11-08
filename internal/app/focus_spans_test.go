@@ -16,8 +16,6 @@ import (
 // 测试里直接用整倍数，读数就是人手算得出来的那种，不必对着浮点结果反推。
 const emuPerPxAt1080 = 6350
 
-func emuToPx1080() float64 { return 1.0 / emuPerPxAt1080 }
-
 // canvasAt 按页高给一个 16:9 画布。焦点换算的唯一自变量是画布高（EMU→px），
 // 而「框在不在画布内」还要宽——所以测试传的是画布，不是一个系数。
 func canvasAt(height int) design.Canvas {

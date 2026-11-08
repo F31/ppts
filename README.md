@@ -302,6 +302,7 @@ internal/project    Source file revisions / slides / elements / import report + 
 internal/narration  Scripts / segments / source anchors / terminology / approval
 internal/pipeline   Job state / retry / lease / cancel / events / outbox
 internal/media      Audio tracks / subtitles / timeline / export
+internal/config     Single entry point for environment reads (assembly layers must not call os.Getenv)
 internal/tenant     Identity / roles / policy / RLS
 internal/usage      Quota / settlement / ledger / cost
 internal/integrations  LLM / TTS / rendering / storage adapters

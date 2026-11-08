@@ -120,9 +120,6 @@ func NewCompiler(opt Options) (*Compiler, error) {
 	}, nil
 }
 
-// Options 返回生效后的环境参数（已补齐缺省值）。
-func (c *Compiler) Options() Options { return c.opt }
-
 // Compile 编译整片。
 func (c *Compiler) Compile(pages []PageInput) (*Timeline, error) {
 	if len(pages) == 0 {

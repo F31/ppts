@@ -2,8 +2,9 @@ package api
 
 import (
 	"net/http"
-	"os"
 	"strings"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // SecurityHeadersConfig 控制安全响应头。CSP 默认启用；通过环境变量可扩展 connect-src
@@ -20,11 +21,13 @@ type SecurityHeadersConfig struct {
 //   - PPTS_HSTS=true 追加 Strict-Transport-Security（仅在 TLS 终止后开启）；
 //   - PPTS_CSP_CONNECT_EXTRA="https://idp.example.com https://api.example.com" 扩展 connect-src。
 func securityHeadersFromEnv() SecurityHeadersConfig {
-	cfg := SecurityHeadersConfig{Enabled: true, HSTS: envBoolValue("PPTS_HSTS", false)}
-	if envBoolValue("PPTS_SECURITY_HEADERS", true) == false {
-		cfg.Enabled = false
+	cfg := SecurityHeadersConfig{
+		Enabled: config.Bool("PPTS_SECURITY_HEADERS", true),
+		HSTS:    config.Bool("PPTS_HSTS", false),
 	}
-	if extra := strings.TrimSpace(os.Getenv("PPTS_CSP_CONNECT_EXTRA")); extra != "" {
+	// 用空白分隔而不是逗号：CSP 源列表在白名单里本来就是空格分隔的，
+	// 让人把同一段值从 nginx 配置抄过来时不必换写法。
+	if extra := config.String("PPTS_CSP_CONNECT_EXTRA", ""); extra != "" {
 		cfg.ConnectExtra = strings.Fields(extra)
 	}
 	cfg.CSP = buildCSP(cfg.ConnectExtra)
@@ -75,22 +78,6 @@ func securityHeaders(next http.Handler, cfg SecurityHeadersConfig) http.Handler 
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// envBoolValue 读取布尔环境变量（1/true/yes/on）。
-func envBoolValue(key string, fallback bool) bool {
-	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	if raw == "" {
-		return fallback
-	}
-	switch raw {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
-	}
 }
 
 // SecurityHeaders 以环境变量配置包装 handler（cmd/ppts 装配用）。

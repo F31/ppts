@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"log/slog"
-	"os"
 	"strings"
 	"time"
 
 	newtn "github.com/F31/textnorm"
 
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pronunciation"
 )
@@ -17,7 +17,7 @@ import (
 // textNormEnabled 是 TTS 文本规范化引擎的显式开关（V2.8 §5/§7.4）。
 // 默认关闭（零行为回退）；置 true 才启用。启用遵循 A26：非默认能力必须显式声明。
 func textNormEnabled() bool {
-	switch os.Getenv("PPTS_TEXT_NORM_ENABLED") {
+	switch config.String("PPTS_TEXT_NORM_ENABLED", "") {
 	case "true", "1":
 		return true
 	default:
@@ -54,7 +54,7 @@ func (a appTextNorm) Build(ctx context.Context, tenantID, lang string) (*newtn.E
 // TTL 限制跨进程规则编辑后的陈旧窗口；设为 0 可保持逐任务读取。
 func cachedAppTextNorm(a appTextNorm) app.NarrationTextNorm {
 	ttl := 5 * time.Minute
-	if raw := os.Getenv("PPTS_TEXT_NORM_ENGINE_TTL"); raw != "" {
+	if raw := config.String("PPTS_TEXT_NORM_ENGINE_TTL", ""); raw != "" {
 		parsed, err := time.ParseDuration(raw)
 		if err != nil || parsed < 0 {
 			if a.logger != nil {
@@ -65,14 +65,14 @@ func cachedAppTextNorm(a appTextNorm) app.NarrationTextNorm {
 			ttl = parsed
 		}
 	}
-	return app.NewCachedTextNorm(a, ttl, envInt("PPTS_TEXT_NORM_ENGINE_MAX", 256), func() string {
-		return os.Getenv("PPTS_TEXT_NORM_NUMBERS") + "\x00" + os.Getenv("PPTS_TEXT_NORM_CLASSES")
+	return app.NewCachedTextNorm(a, ttl, config.Int("PPTS_TEXT_NORM_ENGINE_MAX", 256), func() string {
+		return config.String("PPTS_TEXT_NORM_NUMBERS", "") + "\x00" + config.String("PPTS_TEXT_NORM_CLASSES", "")
 	}, observability.TextNormCacheEvent)
 }
 
 // numberModeOption 依据环境变量返回数值规则装配选项；未设置或非法时返回零值（不注册）。
 func numberModeOption() app.TextNormOptions {
-	switch os.Getenv("PPTS_TEXT_NORM_NUMBERS") {
+	switch config.String("PPTS_TEXT_NORM_NUMBERS", "") {
 	case "quantity":
 		return app.TextNormOptions{NumberMode: ptr(newtn.NumberModeQuantity)}
 	case "year":
@@ -85,7 +85,7 @@ func numberModeOption() app.TextNormOptions {
 // classesOption 依据环境变量返回 PPT 高频类别装配选项（V3.0 §2.2 独立开关）。
 // 逗号分隔；未设置或空时返回零值（不注册，零回退）。
 func classesOption() app.TextNormOptions {
-	raw := os.Getenv("PPTS_TEXT_NORM_CLASSES")
+	raw := config.String("PPTS_TEXT_NORM_CLASSES", "")
 	if strings.TrimSpace(raw) == "" {
 		return app.TextNormOptions{}
 	}

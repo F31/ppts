@@ -115,7 +115,7 @@
    "name": "协作与分享",
    "prefixes": ["/projects/{pid}/collaborators", "/projects/{pid}/shares", "/shared/"],
    "disposition": "keep",
-   "reason": "/shared/{token} 是**免登录凭链接访问**，签名令牌即授权，不能套会话认证，故无法走 Connect（Connect 路由统一套 auth）。"
+   "reason": "/shared/{token} 是**免登录凭链接访问**，签名令牌即授权，不能套会话认证，故无法走 Connect（Connect 路由统一套 auth）。另两组（/projects/{pid}/collaborators 与 /projects/{pid}/shares）是项目级私密分享的管理端：后端仍在、既有链接继续可播，但**前端入口已随账号分叉（c460bf2）下线**——这里登记的是「服务端保留、前端零调用」的现存路由，不是漏记；恢复入口需重建 ShareDialog 并接回路由树。"
   },
   "organize": {
    "name": "标签与文件夹",

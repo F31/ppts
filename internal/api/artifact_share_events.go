@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/config"
 )
 
 // 在线分享观看埋点（设计 §20.8 V20）。
@@ -62,8 +62,8 @@ var (
 // shareTelemetryEnabled 是服务端总闸。默认开启，显式设为 0/false/off 才关闭。
 // 「默认开启」只作用于在线分享形态；隐私与离线由浏览器侧判据兜住。
 func shareTelemetryEnabled() bool {
-	v := strings.ToLower(strings.TrimSpace(os.Getenv("PPTS_SHARE_TELEMETRY")))
-	return v != "0" && v != "false" && v != "off"
+	// 默认开启：埋点本身不采集 token/IP/UA，关闭它属于排障动作。
+	return config.Bool("PPTS_SHARE_TELEMETRY", true)
 }
 
 // shareViewEvent 是播放器上报的单条事件。

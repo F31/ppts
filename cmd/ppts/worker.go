@@ -19,6 +19,7 @@ import (
 	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations"
 	"github.com/F31/ppts/internal/integrations/llm"
@@ -76,13 +77,13 @@ func runWorker() error {
 	defer stores.close()
 
 	jobs := stores.jobs
-	tenantID := stores.defaultWorkerTenant(os.Getenv("PPTS_TENANT_ID"))
+	tenantID := stores.defaultWorkerTenant(config.String("PPTS_TENANT_ID", ""))
 
 	// ADR-018 双连接（仅 PostgreSQL 跨租户模式）：可用 PPTS_SCHEDULER_DATABASE_URL
 	// 提供独立调度连接（ppts_scheduler 角色，仅权限受限的调度函数）；未提供则复用业务连接。
 	var claimer pipeline.Claimer
 	if !stores.isSQLite() && tenantID == "" {
-		if schedDSN := os.Getenv("PPTS_SCHEDULER_DATABASE_URL"); schedDSN != "" {
+		if schedDSN := config.String("PPTS_SCHEDULER_DATABASE_URL", ""); schedDSN != "" {
 			schedStore, err := pipeline.NewPGStore(ctx, schedDSN)
 			if err != nil {
 				return err
@@ -107,7 +108,7 @@ func runWorker() error {
 	renderer, err := render.NewSofficeRenderer()
 	if err != nil {
 		observability.SetRenderPagesDisabled(true)
-		if envBool("PPTS_REQUIRE_RENDERER", false) {
+		if config.Bool("PPTS_REQUIRE_RENDERER", false) {
 			return fmt.Errorf("renderer required (PPTS_REQUIRE_RENDERER=true) but unavailable: %w", err)
 		}
 		logger.Warn("renderer unavailable: page images disabled - editor thumbnails, playback frames and MP4 export sources will be missing",
@@ -129,13 +130,13 @@ func runWorker() error {
 	usageStore := stores.usage
 	scriptDraftHandler := app.NewScriptDraftHandler(stores.scripts, objects).WithPolisher(polisher).WithTokenAccounting(usageStore).WithSteps(jobs).
 		WithSlideNotes(project.NewPgSlideNotesStore(objects)).
-		WithConcurrency(envInt("PPTS_SCRIPT_DRAFT_CONCURRENCY", 3))
-	if !envBool("PPTS_SCRIPT_DRAFT_CACHE", true) {
+		WithConcurrency(config.Int("PPTS_SCRIPT_DRAFT_CONCURRENCY", 3))
+	if !config.Bool("PPTS_SCRIPT_DRAFT_CACHE", true) {
 		scriptDraftHandler = scriptDraftHandler.WithCacheDisabled()
 	}
 	// 视觉锚点是 LLM 配置的能力开关（见 attachGateway 的 WithTenantVision）。
 	// 此 env 路径仅用于未启用网关（无 AES key）的纯环境变量部署：显式设置 PPTS_LLM_VISION_MODEL 才接入。
-	if strings.TrimSpace(os.Getenv("PPTS_LLM_VISION_MODEL")) != "" {
+	if config.String("PPTS_LLM_VISION_MODEL", "") != "" {
 		if vision, ok := polisher.(llm.VisionExtractor); ok {
 			scriptDraftHandler = scriptDraftHandler.WithVisualExtractor(vision)
 		}
@@ -144,7 +145,7 @@ func runWorker() error {
 	narrationHandler := app.NewNarrationHandler(stores.scripts, jobs, objects, ttsProvider).
 		WithUsage(usageStore).WithTTSMetrics(metrics).WithDictionary(stores.pronunciation).
 		WithSourceRevisions(stores.projects).
-		WithSegmentConcurrency(envInt("PPTS_NARRATION_TTS_CONCURRENCY", 0))
+		WithSegmentConcurrency(config.Int("PPTS_NARRATION_TTS_CONCURRENCY", 0))
 	// 文本规范化引擎：显式开关，默认关闭。启用时按租户/语言/配置有界缓存，TTL 到期重建，
 	// 词典合并（租户优先+平台种子兜底）只在适配层发生，不改动 pronunciation.Store 语义。
 	if textNormEnabled() {
@@ -159,7 +160,7 @@ func runWorker() error {
 	if err != nil {
 		logger.Info("mp4 encoder unavailable", "error", err)
 	}
-	maxExportMinutes := envInt("PPTS_MAX_EXPORT_DURATION_MINUTES", 60)
+	maxExportMinutes := config.Int("PPTS_MAX_EXPORT_DURATION_MINUTES", 60)
 	if maxExportMinutes < 0 {
 		maxExportMinutes = 0
 	}
@@ -188,10 +189,10 @@ func runWorker() error {
 	// 建客户端不发请求（Health 才探测），所以「动画关闭」多建一个客户端没有副作用。
 	// 反过来，若把两件事都塞进 animationEnabled，默认关闭的动画开关就会连带
 	// 关掉字体子集，而「开关关闭」只该关掉动画这一件事。
-	if base := strings.TrimSpace(os.Getenv("PPTS_RENDERER_URL")); base != "" {
+	if base := config.String("PPTS_RENDERER_URL", ""); base != "" {
 		client, cerr := animrender.NewClient(animrender.ClientConfig{
 			BaseURL: base,
-			Timeout: time.Duration(envInt("PPTS_RENDERER_TIMEOUT_SECONDS", 30)) * time.Second,
+			Timeout: time.Duration(config.Int("PPTS_RENDERER_TIMEOUT_SECONDS", 30)) * time.Second,
 		})
 		if cerr != nil {
 			logger.Warn("renderer client disabled", "error", cerr)
@@ -199,7 +200,7 @@ func runWorker() error {
 			exportHandler = exportHandler.WithRenderer(client)
 			if animationEnabled(stores.isSQLite()) {
 				exportHandler = exportHandler.WithAnimation(client,
-					time.Duration(envInt("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
+					time.Duration(config.Int("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
 				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects)
 			}
 		}
@@ -257,7 +258,7 @@ func runWorker() error {
 		Metrics:     metrics,
 		Logger:      stdLogger,
 		Claimer:     claimer,
-		MaxAttempts: envInt("PPTS_WORKER_MAX_ATTEMPTS", 10),
+		MaxAttempts: config.Int("PPTS_WORKER_MAX_ATTEMPTS", 10),
 		OnCanceled:  releaseUsage,
 		// 失败终态也要释放：渲染失败（服务不可达、超时）不会产生渲染分钟，
 		// 预占留着就是白占一个月的额度。
@@ -273,13 +274,13 @@ func runWorker() error {
 	// api 的 /metrics 只反映 api 进程自身 expvar，看不到 worker 侧取值）。
 	// 默认关闭；显式设置 PPTS_WORKER_METRICS_ADDR（如 127.0.0.1:8081）才监听，
 	// 与 /metrics 的唯一准入一致：PPTS_METRICS_TOKEN 的 Bearer（fail-closed）。
-	if addr := strings.TrimSpace(os.Getenv("PPTS_WORKER_METRICS_ADDR")); addr != "" {
+	if addr := config.String("PPTS_WORKER_METRICS_ADDR", ""); addr != "" {
 		go serveWorkerMetrics(addr, stdLogger)
 	}
 
 	// 任务级并发：单进程内跑 N 个执行循环（领取已加进程内互斥，处理仍并发）。
 	// 默认 2：让「一键成稿」与「配音」等任务可并行，而不是排队；SQLite 单写者可调小到 1。
-	workerConcurrency := envInt("PPTS_WORKER_CONCURRENCY", 2)
+	workerConcurrency := config.Int("PPTS_WORKER_CONCURRENCY", 2)
 	if workerConcurrency < 1 {
 		workerConcurrency = 1
 	}
@@ -294,9 +295,9 @@ func runWorker() error {
 	// QueueBacklogReporter 此前**从未被接线** —— 仪表盘上恒为 0，会被读成"从来没有积压"。
 	// 0 表示"确实为零"而不是"没人采集"，这里的启动就是把这个假象修掉。
 	go observability.NewQueueBacklogReporter(metrics, stores.jobs.OldestQueuedAge,
-		durationEnv("PPTS_QUEUE_BACKLOG_INTERVAL", 30*time.Second), stdLogger).Run(runCtx)
+		config.Duration("PPTS_QUEUE_BACKLOG_INTERVAL", 30*time.Second), stdLogger).Run(runCtx)
 	go observability.NewQueueDepthReporter(stores.jobs, tenantID,
-		durationEnv("PPTS_QUEUE_DEPTH_INTERVAL", 30*time.Second), stdLogger).Run(runCtx)
+		config.Duration("PPTS_QUEUE_DEPTH_INTERVAL", 30*time.Second), stdLogger).Run(runCtx)
 	errCh := make(chan error, workerConcurrency)
 	for i := 0; i < workerConcurrency; i++ {
 		go func() { errCh <- worker.Run(runCtx) }()
@@ -343,22 +344,22 @@ func serveWorkerMetrics(addr string, stdLogger *log.Logger) {
 
 // startBackgroundLoops 启动 PostgreSQL 控制面后台循环（保留清理/审计归档/存储生命周期）。
 func startBackgroundLoops(ctx context.Context, stores *storeSet, objects objectstore.ObjectStore, auditStore audit.Store, stdLogger *log.Logger) {
-	sweeper := retention.NewSweeper(retention.NewPGStore(stores.pg), objects, durationEnv("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), stdLogger).
-		WithQuotaReservationTTL(durationEnv("PPTS_QUOTA_RESERVATION_TTL", 24*time.Hour)).
+	sweeper := retention.NewSweeper(retention.NewPGStore(stores.pg), objects, config.Duration("PPTS_UPLOAD_ABANDON_TTL", 24*time.Hour), stdLogger).
+		WithQuotaReservationTTL(config.Duration("PPTS_QUOTA_RESERVATION_TTL", 24*time.Hour)).
 		// 孤儿扫描默认开启但**只报告**：删对象不可逆，而"无引用"的依据是"归属表里查不到引用行"，
 		// 漏认一种引用关系就会删掉在用对象。人工核对审计里的 orphan.detected 后再开 PPTS_ORPHAN_DELETE。
-		WithOrphanScan(durationEnv("PPTS_ORPHAN_GRACE", 24*time.Hour), boolEnv("PPTS_ORPHAN_DELETE", false)).
+		WithOrphanScan(config.Duration("PPTS_ORPHAN_GRACE", 24*time.Hour), config.Bool("PPTS_ORPHAN_DELETE", false)).
 		WithAuditor(auditStore)
-	go runSweeper(ctx, sweeper, durationEnv("PPTS_RETENTION_INTERVAL", time.Hour))
+	go runSweeper(ctx, sweeper, config.Duration("PPTS_RETENTION_INTERVAL", time.Hour))
 
-	if retDays := envInt("PPTS_AUDIT_RETENTION_DAYS", 365); retDays > 0 {
+	if retDays := config.Int("PPTS_AUDIT_RETENTION_DAYS", 365); retDays > 0 {
 		archiver := audit.NewArchiver(auditStore, retention.NewPGStore(stores.pg), objects, stdLogger)
 		go runAuditArchiver(ctx, archiver, time.Duration(retDays)*24*time.Hour,
-			durationEnv("PPTS_AUDIT_ARCHIVE_INTERVAL", time.Hour))
+			config.Duration("PPTS_AUDIT_ARCHIVE_INTERVAL", time.Hour))
 	}
 
 	storageSyncer := storagelifecycle.NewSyncer(stores.tenant, objects, stdLogger)
-	go runStorageLifecycleSyncer(ctx, storageSyncer, durationEnv("PPTS_STORAGE_LIFECYCLE_INTERVAL", 6*time.Hour))
+	go runStorageLifecycleSyncer(ctx, storageSyncer, config.Duration("PPTS_STORAGE_LIFECYCLE_INTERVAL", 6*time.Hour))
 }
 
 // runSweeper 启动即执行一次，随后按 interval 周期清理。
@@ -413,32 +414,9 @@ func runStorageLifecycleSyncer(ctx context.Context, s *storagelifecycle.Syncer, 
 	}
 }
 
-// durationEnv 读取时长环境变量，非法或缺失时返回默认值。
-func durationEnv(name string, fallback time.Duration) time.Duration {
-	raw := os.Getenv(name)
-	if raw == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d <= 0 {
-		return fallback
-	}
-	return d
-}
-
-// boolEnv 读取布尔环境变量；仅 "1"/"true"/"yes" 为真（忽略大小写与首尾空白）。
-// 未设置或无法识别时一律取 fallback —— 危险开关的默认必须是"关"。
-func boolEnv(name string, fallback bool) bool {
-	raw := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
-	if raw == "" {
-		return fallback
-	}
-	return raw == "1" || raw == "true" || raw == "yes"
-}
-
 // subtitleFontName 返回字幕烧录锁定的字体族名。
 func subtitleFontName() string {
-	if v := os.Getenv("PPTS_SUBTITLE_FONT_NAME"); v != "" {
+	if v := config.String("PPTS_SUBTITLE_FONT_NAME", ""); v != "" {
 		return v
 	}
 	return "WenQuanYi Zen Hei"
@@ -453,7 +431,7 @@ func subtitleFontName() string {
 //
 // 任何一步缺失都退化为静态导出而不是硬失败：渲染服务是可选依赖，没有它导出必须照常成功。
 func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store, objects objectstore.ObjectStore) *app.ExportHandler {
-	dir := strings.TrimSpace(os.Getenv("PPTS_ANIMATION_ASSET_DIR"))
+	dir := config.String("PPTS_ANIMATION_ASSET_DIR", "")
 	if dir == "" {
 		logger.Warn("animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static",
 			"renderer", rendererURL)
@@ -489,34 +467,6 @@ func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL s
 	return h
 }
 
-func envInt(name string, fallback int) int {
-	raw := os.Getenv(name)
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-// envBool 读取布尔环境变量（1/true/yes/on，大小写不敏感）；缺失或非法返回 fallback。
-func envBool(name string, fallback bool) bool {
-	raw := strings.ToLower(strings.TrimSpace(os.Getenv(name)))
-	if raw == "" {
-		return fallback
-	}
-	switch raw {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
-	}
-}
-
 // attachGateway 接入模型网关（G3 可视化配置）：DB 有配置时优先，否则回退 env 供应商。
 // 加密密钥未配置或 DB 不可用时静默回退 env，不阻断 worker 启动。
 func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, draft *app.ScriptDraftHandler, narr *app.NarrationHandler, envPolisher llm.TextRewriter, envTTS tts.TTSProvider, prefill *app.AnimationPrefillHandler) {
@@ -533,7 +483,7 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 				return nil, errors.New("worker: no TTS provider configured (env or gateway)")
 			}
 			logger.Info("narration tts resolved", "source", "env", "tenant", tenantID,
-				"provider", os.Getenv("PPTS_TTS_PROVIDER"))
+				"provider", config.String("PPTS_TTS_PROVIDER", ""))
 			return envTTS, nil
 		})
 		// 网关不可用时预填仍可用：退到 env 供应商（如果有）。
@@ -615,7 +565,7 @@ func attachGateway(ctx context.Context, logger *slog.Logger, stores *storeSet, d
 		}
 		// 回退成功也留一条 Warn：这是"界面里配了、实际没用上"的唯一线索。
 		logger.Warn("narration tts resolved", "source", "env", "tenant", tenantID,
-			"provider", os.Getenv("PPTS_TTS_PROVIDER"))
+			"provider", config.String("PPTS_TTS_PROVIDER", ""))
 		return provider, nil
 	})
 	// 预填与成稿共用同一套租户级 LLM 配置：用户在网关里换模型，
@@ -699,15 +649,15 @@ func requireTTSProvider(envProvider tts.TTSProvider) error {
 // 拼错 / 未知值仍然启动失败，绝不静默回落 fake：静音 WAV 与"合成成功"在 UI 上不可
 // 区分，属于典型的假成功。fake 只能显式请求。
 func ttsProviderFromEnv(logger *slog.Logger) (tts.TTSProvider, error) {
-	switch provider := strings.TrimSpace(os.Getenv("PPTS_TTS_PROVIDER")); provider {
+	switch provider := config.String("PPTS_TTS_PROVIDER", ""); provider {
 	case "":
 		return nil, nil
 	case "siliconflow":
 		return tts.NewSiliconFlowProvider(tts.SiliconFlowConfig{
-			BaseURL: os.Getenv("PPTS_TTS_BASE_URL"),
-			APIKey:  os.Getenv("PPTS_TTS_API_KEY"),
-			Model:   os.Getenv("PPTS_TTS_MODEL"),
-			Voice:   os.Getenv("PPTS_TTS_VOICE"),
+			BaseURL: config.String("PPTS_TTS_BASE_URL", ""),
+			APIKey:  config.String("PPTS_TTS_API_KEY", ""),
+			Model:   config.String("PPTS_TTS_MODEL", ""),
+			Voice:   config.String("PPTS_TTS_VOICE", ""),
 		}), nil
 	case "fake":
 		// 这条日志说的是「env 回退供应商已就绪」，不是「本次任务会用 fake」。

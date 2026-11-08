@@ -5,12 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/pipeline"
@@ -49,8 +48,7 @@ const (
 
 // anonymousAccessAudited 返回匿名读是否记审计（PPTS_AUDIT_ANONYMOUS_ACCESS=true）。
 func anonymousAccessAudited() bool {
-	v := strings.TrimSpace(os.Getenv("PPTS_AUDIT_ANONYMOUS_ACCESS"))
-	return v == "1" || strings.EqualFold(v, "true")
+	return config.Bool("PPTS_AUDIT_ANONYMOUS_ACCESS", false)
 }
 
 // recordPublication 记录一次公开区操作。

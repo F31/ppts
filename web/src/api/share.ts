@@ -1,66 +1,15 @@
-// 私密分享与协作者（#95）
+// 分享：匿名播放页取数与链接拼接。
 //
 // P2-C2：本文件是原 `src/api.ts` 的一部分，按域拆出，便于按功能定位而不是在近两千行里翻找。
-// **只动了文件边界，实现代码逐行未改**；对外入口仍是 `../api`（由 index.ts 统一转出），
-// 因此既有调用方的 import 路径无需任何改动。
+//
+// 范围说明：项目级「私密分享与协作者」管理端接口（/projects/{pid}/shares 与
+// /collaborators）曾在这里有完整封装，其唯一调用方 ShareDialog 在账号分叉
+// （c460bf2）后已从路由树摘除，接口随之成为死代码并已删除。匿名侧的 /shared/{token}
+// 仍在使用中，因此本文件保留匿名取数与 shareUrl。要恢复管理端，从 git 历史取回
+// ShareDialog.tsx 与对应的七个函数即可。
 
 import { requestJSON } from '../core';
-import type { Collaborator, PlaybackManifest, ShareLink, SharedMeta } from '../types';
-import type { ClientIdentity } from './identity';
-import { deleteJSON, getJSON, postJSON, putJSON } from './http';
-// ---- 私密分享与协作者（#95） ----
-// 与"发布到公开作品广场"是两种不同能力：私密分享不出现在广场，只面向持有链接的人。
-// 管理端走原生 HTTP 受保护端点；匿名端走 /shared/{token} 最小字段端点。
-
-export async function listCollaborators(identity: ClientIdentity, projectId: string): Promise<Collaborator[]> {
-  const data = await getJSON<{ collaborators?: Collaborator[] }>(identity, `/projects/${encodeURIComponent(projectId)}/collaborators`);
-  return data.collaborators ?? [];
-}
-
-export async function inviteCollaborator(
-  identity: ClientIdentity,
-  projectId: string,
-  params: { email: string; role: string }
-): Promise<Collaborator> {
-  const data = await postJSON<{ collaborator?: Collaborator }>(identity, `/projects/${encodeURIComponent(projectId)}/collaborators`, params);
-  return data.collaborator!;
-}
-
-export async function updateCollaboratorRole(
-  identity: ClientIdentity,
-  projectId: string,
-  userId: string,
-  role: string
-): Promise<Collaborator> {
-  const data = await putJSON<{ collaborator?: Collaborator }>(
-    identity,
-    `/projects/${encodeURIComponent(projectId)}/collaborators/${encodeURIComponent(userId)}`,
-    { role }
-  );
-  return data.collaborator!;
-}
-
-export async function removeCollaborator(identity: ClientIdentity, projectId: string, userId: string): Promise<void> {
-  await deleteJSON<{ ok?: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/collaborators/${encodeURIComponent(userId)}`);
-}
-
-export async function listShareLinks(identity: ClientIdentity, projectId: string): Promise<ShareLink[]> {
-  const data = await getJSON<{ shareLinks?: ShareLink[] }>(identity, `/projects/${encodeURIComponent(projectId)}/shares`);
-  return data.shareLinks ?? [];
-}
-
-export async function createShareLink(
-  identity: ClientIdentity,
-  projectId: string,
-  params: { accessMode: string; password?: string; expiresInDays?: number }
-): Promise<ShareLink> {
-  const data = await postJSON<{ shareLink?: ShareLink }>(identity, `/projects/${encodeURIComponent(projectId)}/shares`, params);
-  return data.shareLink!;
-}
-
-export async function revokeShareLink(identity: ClientIdentity, projectId: string, linkId: string): Promise<void> {
-  await postJSON<{ ok?: boolean }>(identity, `/projects/${encodeURIComponent(projectId)}/shares/${encodeURIComponent(linkId)}/revoke`, {});
-}
+import type { PlaybackManifest, SharedMeta } from '../types';
 
 // 匿名端：口令只经请求头传递（不进 URL / 访问日志）。
 async function sharedGet<T>(path: string, password?: string): Promise<T> {

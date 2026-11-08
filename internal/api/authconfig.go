@@ -1,10 +1,6 @@
 package api
 
-import (
-	"os"
-	"strconv"
-	"strings"
-)
+import "github.com/F31/ppts/internal/config"
 
 // authSettings 汇总第二批的注册治理与运营商配置（环境变量驱动）。
 type authSettings struct {
@@ -25,20 +21,18 @@ type authSettings struct {
 // authSettingsFromEnv 读取注册治理/运营商配置（缺省值面向"可安全开放注册"）。
 func authSettingsFromEnv(priceVersion string) authSettings {
 	s := authSettings{
-		registrationEnabled: envBoolValue("PPTS_REGISTRATION_ENABLED", true),
-		inviteCode:          strings.TrimSpace(os.Getenv("PPTS_REGISTRATION_INVITE_CODE")),
-		registerDailyPerIP:  envIntValue("PPTS_REGISTER_DAILY_PER_IP", 20),
-		defaultGenSeconds:   envFloatValue("PPTS_DEFAULT_GEN_SECONDS_LIMIT", 600),
+		registrationEnabled: config.Bool("PPTS_REGISTRATION_ENABLED", true),
+		inviteCode:          config.String("PPTS_REGISTRATION_INVITE_CODE", ""),
+		registerDailyPerIP:  config.Int("PPTS_REGISTER_DAILY_PER_IP", defaultRegisterDailyPerIP),
+		defaultGenSeconds:   config.Float("PPTS_DEFAULT_GEN_SECONDS_LIMIT", defaultTenantGenSeconds),
 		priceVersion:        priceVersion,
 		operatorIDs:         map[string]bool{},
 	}
 	if s.registerDailyPerIP < 0 {
-		s.registerDailyPerIP = 20
+		s.registerDailyPerIP = defaultRegisterDailyPerIP
 	}
-	for _, id := range strings.Split(os.Getenv("PPTS_OPERATOR_USER_IDS"), ",") {
-		if id = strings.TrimSpace(id); id != "" {
-			s.operatorIDs[id] = true
-		}
+	for _, id := range config.List("PPTS_OPERATOR_USER_IDS") {
+		s.operatorIDs[id] = true
 	}
 	return s
 }
@@ -47,26 +41,11 @@ func (s authSettings) isOperator(userID string) bool {
 	return userID != "" && s.operatorIDs[userID]
 }
 
-func envIntValue(key string, fallback int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func envFloatValue(key string, fallback float64) float64 {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	f, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return fallback
-	}
-	return f
-}
+// 注册治理与配额的缺省值。集中命名而不是散在调用点：这两个数字在
+// packaging/config.env.example 与运维文档里都被引用，改动时要一处改全。
+const (
+	// defaultRegisterDailyPerIP 是单 IP 每日成功注册上限（0 = 只受请求限流约束）。
+	defaultRegisterDailyPerIP = 20
+	// defaultTenantGenSeconds 是新租户默认免费配音额度（秒）。
+	defaultTenantGenSeconds float64 = 600
+)

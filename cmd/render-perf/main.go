@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/render"
 )
@@ -74,7 +75,7 @@ func run() error {
 	flag.IntVar(&opt.frameConcurrency, "frame-concurrency", 2, "帧并发（Remotion concurrency）")
 	flag.IntVar(&opt.editPage, "edit-page", 5, "edit 场景改哪一页（0 基）")
 	flag.StringVar(&opt.scenario, "scenario", "all", "all | cold | second | edit | parity | parallel")
-	flag.StringVar(&opt.chrome, "chrome", os.Getenv("PPTS_CHROME"), "chrome-headless-shell 路径")
+	flag.StringVar(&opt.chrome, "chrome", config.String("PPTS_CHROME", ""), "chrome-headless-shell 路径")
 	flag.StringVar(&opt.script, "renderer-script", filepath.Join("renderer", "render.mjs"), "render.mjs 路径")
 	flag.BoolVar(&opt.json, "json", false, "输出 JSON（默认人读表格）")
 	flag.BoolVar(&opt.keep, "keep", false, "保留临时目录（排查用）")

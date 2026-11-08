@@ -38,31 +38,6 @@ func realSuggestPage(t *testing.T, index int) *project.Page {
 	return doc.Pages[index]
 }
 
-// 用页面自己的文字造讲稿：字面匹配必然有命中，但不预设「哪一段该指谁」。
-func scriptFromPageText(page *project.Page, count int) []*narration.Segment {
-	var texts []string
-	var walk func([]*project.Shape)
-	walk = func(shapes []*project.Shape) {
-		for _, sh := range shapes {
-			if text := strings.TrimSpace(sh.Text); text != "" && len(text) < 120 {
-				texts = append(texts, text)
-			}
-			walk(sh.Children)
-		}
-	}
-	walk(page.Shapes)
-	if count > len(texts) {
-		count = len(texts)
-	}
-	segs := make([]*narration.Segment, 0, count)
-	for i := 0; i < count; i++ {
-		segs = append(segs, &narration.Segment{
-			SegmentID: "seg-" + string(rune('a'+i)), DisplayText: texts[i], SpokenText: texts[i],
-		})
-	}
-	return segs
-}
-
 // q8ScriptSegments 取项目已登记的真实讲稿（scripts/fidelity/q8-script.json）。
 // 它含「第一步 / 第一条」这类结构词，是 structured 档的语料；从页面文字临造的
 // 讲稿没有这些词，会把整页判成低置信、建议恒为空——那样三条闸门的断言全在空转。

@@ -67,11 +67,6 @@ func (s SegmentEncoding) ChromaName() string {
 	}
 }
 
-// KeyframeText 用「个数 + 最大间隔」描述关键帧分布，用于自检输出。
-func (s SegmentEncoding) KeyframeText() string {
-	return fmt.Sprintf("%d keyframes, max gap %d", s.Keyframes, s.GOP)
-}
-
 // CheckSegmentEncoding 实测一个片段，并与契约比较。
 //
 // 返回实测值是为了让调用方能把「实际是什么」打进日志——只报「不符合契约」

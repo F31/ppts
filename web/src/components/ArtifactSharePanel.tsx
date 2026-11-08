@@ -134,7 +134,7 @@ export function ArtifactSharePanel({
 
         {error ? <p className="form-error" role="alert">{error}</p> : null}
         {actionError ? <p className="form-error" role="alert">{actionError}</p> : null}
-        {!canManage ? <p className="cell-sub">{t('share.readOnlyNote')}</p> : null}
+        {!canManage ? <p className="cell-sub">{t('artifactShare.readOnlyNote')}</p> : null}
 
         {canManage ? (
           <>
@@ -161,7 +161,7 @@ export function ArtifactSharePanel({
                   <div className="artifact-share-link-main">
                     <div className="share-who">
                       <strong>{link.revoked ? t('artifactShare.revoked') : (link.expiresAt ? t('artifactShare.expiryAt', { date: new Date(link.expiresAt).toLocaleDateString() }) : t('artifactShare.expiryNever'))}</strong>
-                      <span className="member-subid">{link.passwordProtected ? t('artifactShare.passwordSet') : t('share.modeView')}</span>
+                      <span className="member-subid">{link.passwordProtected ? t('artifactShare.passwordSet') : t('artifactShare.accessViewOnly')}</span>
                       <span className="cell-sub">{new Date(link.createdAt).toLocaleString()}</span>
                     </div>
                     <div className="share-row-actions">
@@ -206,14 +206,14 @@ export function ArtifactSharePanel({
                 ).then(() => setLinkPassword(''));
               }}
             >
-              <select value={linkMode} aria-label={t('share.mode')} onChange={(e) => setLinkMode(e.currentTarget.value)}>
-                <option value="view_only">{t('share.modeView')}</option>
-                <option value="view_and_comment">{t('share.modeComment')}</option>
+              <select value={linkMode} aria-label={t('artifactShare.accessMode')} onChange={(e) => setLinkMode(e.currentTarget.value)}>
+                <option value="view_only">{t('artifactShare.accessViewOnly')}</option>
+                <option value="view_and_comment">{t('artifactShare.accessComment')}</option>
               </select>
-              <select value={linkDays} aria-label={t('share.expiry')} onChange={(e) => setLinkDays(Number(e.currentTarget.value))}>
-                <option value={0}>{t('share.expiryNever')}</option>
-                <option value={7}>{t('share.expiry7')}</option>
-                <option value={30}>{t('share.expiry30')}</option>
+              <select value={linkDays} aria-label={t('artifactShare.expiry')} onChange={(e) => setLinkDays(Number(e.currentTarget.value))}>
+                <option value={0}>{t('artifactShare.expiryNever')}</option>
+                <option value={7}>{t('artifactShare.expiry7')}</option>
+                <option value={30}>{t('artifactShare.expiry30')}</option>
               </select>
               <input
                 type="password"

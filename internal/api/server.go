@@ -20,6 +20,7 @@ import (
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/artifact"
 	"github.com/F31/ppts/internal/audit"
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/contextrule"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/objectstore"
@@ -292,7 +293,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 			jwtSecret:            opt.JWTSecret,
 			pepper:               opt.PasswordPepper,
 			mailer:               opt.Mailer,
-			baseURL:              os.Getenv("PPTS_PUBLIC_BASE_URL"),
+			baseURL:              config.String("PPTS_PUBLIC_BASE_URL", ""),
 			limits:               newAuthLimits(defaultAuthRateConfig(), rateBackend),
 			trustProxy:           opt.TrustProxy,
 			requireEmailVerified: opt.RequireEmailVerified,
@@ -425,15 +426,13 @@ func metricsTokenOK(r *http.Request) bool {
 // 默认挂载等于长期开放一个敏感读取面。开启后仍须通过 metricsTokenOK 的 Bearer 校验
 // （见 NewHandler 内的挂载处）。
 func pprofEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("PPTS_PPROF"))
-	return v == "1" || strings.EqualFold(v, "true")
+	return config.Bool("PPTS_PPROF", false)
 }
 
 // objectDeleteEnabled 指示是否挂载 DELETE /ppts/object。默认关闭：当前无签发方产出 OpDelete
 // 令牌，挂载它等于为一个没人用的写面平添风险（详见 NewHandler 内注释）。
 func objectDeleteEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("PPTS_OBJECT_ALLOW_DELETE"))
-	return v == "1" || strings.EqualFold(v, "true")
+	return config.Bool("PPTS_OBJECT_ALLOW_DELETE", false)
 }
 
 // featureDisabledHandler 为当前部署未挂载的功能路径返回明确的 JSON 503（code=feature_disabled），

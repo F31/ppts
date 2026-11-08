@@ -185,9 +185,6 @@ func newFontSubsetterWithRunner(cfg FontSubsetConfig, runner subsetRunner) *Font
 	}
 }
 
-// Family 返回母版族名。
-func (s *FontSubsetter) Family() string { return s.cfg.Family }
-
 // MaxCodepoints 返回单次请求的码位上限。
 func (s *FontSubsetter) MaxCodepoints() int { return s.cfg.MaxCodepoints }
 

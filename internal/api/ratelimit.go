@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // 认证端点的限流与登录失败锁定（P2-B1）。
@@ -120,18 +122,31 @@ type authRateConfig struct {
 	loginLockFor    time.Duration
 }
 
+// 认证端点的限流默认值。集中命名而不是散在结构体字面量里：这些数字要能被
+// 运维对着告警阈值讨论，写成一堆匿名字面量时没人说得清「30」是每刻钟还是每分。
+const (
+	defaultRegisterPerHour = 60
+	defaultLoginPer15Min   = 30
+	defaultForgotPerHour   = 5
+	defaultResendPerHour   = 5
+	defaultLoginFailMax    = 5
+	defaultLoginLockFor    = 15 * time.Minute
+)
+
 func defaultAuthRateConfig() authRateConfig {
-	registerPerHour := envIntValue("PPTS_AUTH_REGISTER_PER_HOUR", 60)
+	// 只有注册速率开放覆盖：它是唯一会因活动/压测而被临时调高的档位，
+	// 其余几档改动属于安全策略变更，应当走代码评审而不是环境变量。
+	registerPerHour := config.Int("PPTS_AUTH_REGISTER_PER_HOUR", defaultRegisterPerHour)
 	if registerPerHour <= 0 {
-		registerPerHour = 60
+		registerPerHour = defaultRegisterPerHour
 	}
 	return authRateConfig{
 		registerPerHour: registerPerHour,
-		loginPer15Min:   30,
-		forgotPerHour:   5,
-		resendPerHour:   5,
-		loginFailMax:    5,
-		loginLockFor:    15 * time.Minute,
+		loginPer15Min:   defaultLoginPer15Min,
+		forgotPerHour:   defaultForgotPerHour,
+		resendPerHour:   defaultResendPerHour,
+		loginFailMax:    defaultLoginFailMax,
+		loginLockFor:    defaultLoginLockFor,
 	}
 }
 

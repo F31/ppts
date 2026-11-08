@@ -408,38 +408,7 @@ export type ContextRule = {
   updatedAt?: number;
 };
 
-// ---- 私密分享与协作者（#95） ----
-
-// 项目级协作者角色：复用租户角色名，不含 owner（owner 属租户级）。
-export type CollaboratorRole = 'viewer' | 'reviewer' | 'editor' | 'admin';
-
-export type Collaborator = {
-  userId: string;
-  role: CollaboratorRole | string;
-  email: string;
-  username: string;
-  fullName: string;
-  invitedBy: string;
-  createdAt: string;
-  lastAccessedAt: string;
-};
-
-export type ShareAccessMode = 'view_only' | 'view_and_comment';
-
-export type ShareLink = {
-  id: string;
-  projectId: string;
-  token: string;
-  // 后端拼好的站内相对路径，前端只需拼接 origin 即可得到可分享 URL。
-  url: string;
-  accessMode: ShareAccessMode | string;
-  passwordProtected: boolean;
-  expiresAt: string;
-  revoked: boolean;
-  createdBy: string;
-  createdAt: string;
-  lastAccessedAt: string;
-};
+// ---- 分享 ----
 
 // 匿名分享页拿到的元信息：刻意不含 project_id / tenant_id 等内部标识。
 export type SharedMeta = {
@@ -450,14 +419,16 @@ export type SharedMeta = {
 };
 
 // 成品级分享链接（M6-3）：锚点是成品而不是项目，客户手里的链接永远指向那一版成片。
-// 与上面的项目级 ShareLink 是两套端点，字段相似但不可混用。
+// 项目级私密分享（#95）的前端入口随账号分叉下线，本类型不再与它并存。
+export type ArtifactShareAccessMode = 'view_only' | 'view_and_comment';
+
 export type ArtifactShareLink = {
   id: string;
   artifactId: string;
   projectId: string;
   token: string;
   url: string;
-  accessMode: ShareAccessMode | string;
+  accessMode: ArtifactShareAccessMode | string;
   passwordProtected: boolean;
   expiresAt: string;
   revoked: boolean;
