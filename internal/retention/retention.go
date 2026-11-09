@@ -45,6 +45,13 @@ type OrphanToDelete struct {
 	AssetID   string
 }
 
+// ExpiredJob 是被保留策略删除的一条终态任务（信息用于审计与日志）。
+type ExpiredJob struct {
+	JobID string
+	Kind  string
+	State string
+}
+
 // Store 是保留策略所需的存储能力。
 type Store interface {
 	// ListTenants 返回控制面租户 ID（tenants 表不受 RLS 约束）。
@@ -67,7 +74,22 @@ type Store interface {
 	StaleReservationsBefore(ctx context.Context, tenantID string, cutoff time.Time) ([]StaleReservation, error)
 	// ReleaseReservationByID 释放指定预占并回退 reserved_units。
 	ReleaseReservationByID(ctx context.Context, tenantID, reservationID string) error
+	// DeleteExpiredJobs 删除 cutoff 之前进入终态（succeeded/failed/canceled，与
+	// pipeline.JobState.Terminal 一致）的任务：连同其 job_events（无外键，必须显式删）
+	// 与 job_steps（外键级联）。单批最多 limit 条，返回实际删除的任务供审计；
+	// 返回条数小于 limit 表示该租户已清完。
+	DeleteExpiredJobs(ctx context.Context, tenantID string, cutoff time.Time, limit int) ([]ExpiredJob, error)
 }
+
+// 单批任务删除的行数上限与单次 Sweep 每租户的批数上限。
+//
+// 批次大小的取舍：一批一个事务，事务越大锁持有越久；500 行的删除在毫秒级完成，
+// 即使与一次 claim 撞上也只是短暂等待。批数上限把积压清空分摊到多个周期
+// （500 × 40 = 每租户每周期最多 2 万行）。
+const (
+	jobDeleteBatch              = 500
+	maxJobDeleteBatchesPerSweep = 40
+)
 
 // Sweeper 周期性执行保留与清理。
 type Sweeper struct {
@@ -77,6 +99,7 @@ type Sweeper struct {
 	quotaTTL     time.Duration
 	orphanGrace  time.Duration
 	orphanDelete bool
+	jobTTL       time.Duration
 	logger       *log.Logger
 	auditor      audit.Recorder
 }
@@ -112,6 +135,16 @@ func (s *Sweeper) WithAuditor(auditor audit.Recorder) *Sweeper {
 	return s
 }
 
+// WithJobRetention 启用终态任务保留清理：进入终态超过 ttl 的任务连同其事件与
+// 步骤一并删除。ttl<=0 表示关闭。
+//
+// 判定时钟是 updated_at（终态写入时刻）而不是 created_at——一个跑了 20 天才失败
+// 的任务，其"终态年龄"应从失败那一刻算，否则长任务会带着新鲜事件被提前删掉。
+func (s *Sweeper) WithJobRetention(ttl time.Duration) *Sweeper {
+	s.jobTTL = ttl
+	return s
+}
+
 // Sweep 对所有租户执行一次清理；单个租户失败不阻断其他租户。
 func (s *Sweeper) Sweep(ctx context.Context) error {
 	tenants, err := s.store.ListTenants(ctx)
@@ -128,8 +161,12 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	if s.orphanGrace > 0 {
 		orphanCutoff = now.Add(-s.orphanGrace)
 	}
+	jobCutoff := time.Time{}
+	if s.jobTTL > 0 {
+		jobCutoff = now.Add(-s.jobTTL)
+	}
 	for _, tenantID := range tenants {
-		if err := s.sweepTenant(ctx, tenantID, cutoff, quotaCutoff, orphanCutoff, now); err != nil {
+		if err := s.sweepTenant(ctx, tenantID, cutoff, quotaCutoff, orphanCutoff, jobCutoff, now); err != nil {
 			if s.logger != nil {
 				s.logger.Printf("retention: tenant %s sweep failed: %v", tenantID, err)
 			}
@@ -138,7 +175,7 @@ func (s *Sweeper) Sweep(ctx context.Context) error {
 	return nil
 }
 
-func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, quotaCutoff, orphanCutoff, now time.Time) error {
+func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, quotaCutoff, orphanCutoff, jobCutoff, now time.Time) error {
 	orphans, err := s.store.PendingUploadsBefore(ctx, tenantID, cutoff)
 	if err != nil {
 		return err
@@ -218,6 +255,12 @@ func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, quot
 		}
 	}
 
+	if !jobCutoff.IsZero() {
+		if err := s.sweepExpiredJobs(ctx, tenantID, jobCutoff); err != nil {
+			return err
+		}
+	}
+
 	if !quotaCutoff.IsZero() {
 		stale, err := s.store.StaleReservationsBefore(ctx, tenantID, quotaCutoff)
 		if err != nil {
@@ -233,6 +276,33 @@ func (s *Sweeper) sweepTenant(ctx context.Context, tenantID string, cutoff, quot
 			s.record(ctx, tenantID, "quota.reservation_release", "quota_reservation", r.ReservationID,
 				map[string]any{"logical_operation_id": r.LogicalOperationID, "usage_kind": r.UsageKind})
 		}
+	}
+	return nil
+}
+
+// sweepExpiredJobs 分批删除超过保留期的终态任务，直到本租户清完或达到单次 Sweep 上限。
+//
+// 批次间不包在一个事务里：一批失败只损失该批，前面已删的批次不需要回滚（删除幂等，
+// 下一轮 Sweep 会接着清）。单次 Sweep 设批数上限而不是无限循环，是为了把历史积压
+// （比如首次上线时已有的十几万行）分摊到多个周期，避免一次 Sweep 占住后台循环。
+func (s *Sweeper) sweepExpiredJobs(ctx context.Context, tenantID string, jobCutoff time.Time) error {
+	total := 0
+	for batch := 0; batch < maxJobDeleteBatchesPerSweep; batch++ {
+		deleted, err := s.store.DeleteExpiredJobs(ctx, tenantID, jobCutoff, jobDeleteBatch)
+		if err != nil {
+			return err
+		}
+		for _, j := range deleted {
+			s.record(ctx, tenantID, "job.delete", "job", j.JobID,
+				map[string]any{"kind": j.Kind, "state": j.State, "reason": "retention"})
+		}
+		total += len(deleted)
+		if len(deleted) < jobDeleteBatch {
+			break
+		}
+	}
+	if total > 0 && s.logger != nil {
+		s.logger.Printf("retention: deleted %d expired terminal jobs (tenant %s, cutoff %s)", total, tenantID, jobCutoff.Format(time.RFC3339))
 	}
 	return nil
 }

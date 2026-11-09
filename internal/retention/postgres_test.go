@@ -361,3 +361,120 @@ func TestSweeperDeletesExpiredDerivedTiers(t *testing.T) {
 		t.Fatalf("verify: %v", err)
 	}
 }
+
+// TestPGStoreDeleteExpiredJobs 断言保留清理只删「终态 + 过期」任务，并连带删事件、保留其余：
+//   - succeeded/failed/canceled 且 updated_at 早于 cutoff → 删（含其 job_events）
+//   - 同为终态但 updated_at 在保留期内   → 留
+//   - queued（非终态）                    → 留
+//   - unknown_provider_result（等对账）   → 留（不在终态集合内）
+func TestPGStoreDeleteExpiredJobs(t *testing.T) {
+	store, _ := setupRetention(t)
+	ctx := context.Background()
+	old := time.Now().Add(-48 * time.Hour)
+	recent := time.Now().Add(-1 * time.Hour)
+
+	type seed struct {
+		id    string
+		state string
+		when  time.Time
+	}
+	const (
+		jOldSucc = "00000000-0000-0000-0000-0000000000b1"
+		jOldFail = "00000000-0000-0000-0000-0000000000b2"
+		jOldCanc = "00000000-0000-0000-0000-0000000000b3"
+		jRecSucc = "00000000-0000-0000-0000-0000000000b4"
+		jQueOld  = "00000000-0000-0000-0000-0000000000b5"
+		jUnkOld  = "00000000-0000-0000-0000-0000000000b6"
+	)
+	seeds := []seed{
+		{jOldSucc, "succeeded", old},
+		{jOldFail, "failed", old},
+		{jOldCanc, "canceled", old},
+		{jRecSucc, "succeeded", recent},           // 终态但未过期：保留
+		{jQueOld, "queued", old},                  // 非终态：保留
+		{jUnkOld, "unknown_provider_result", old}, // 等对账：保留
+	}
+	if err := tenant.Run(ctx, store.pool, rTenant, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO projects(id,tenant_id,owner_user,title) VALUES ($1,$2,'tester','retA')`,
+			rProjectA, rTenant); err != nil {
+			return err
+		}
+		for _, s := range seeds {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO jobs(id,tenant_id,project_id,kind,state,idempotency_key,updated_at)
+				 VALUES ($1,$2,$3,'export',$4,$6,$5)`,
+				s.id, rTenant, rProjectA, s.state, s.when, s.id); err != nil {
+				return err
+			}
+			// 每个任务两条事件，验证 events 随任务一起被删（job_events.job_id 无外键）。
+			for k := 0; k < 2; k++ {
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO job_events(tenant_id,project_id,job_id,state,progress,snapshot)
+					 VALUES ($1,$2,$3,$4,0,'{}'::jsonb)`,
+					rTenant, rProjectA, s.id, s.state); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cutoff := time.Now().Add(-24 * time.Hour)
+	deleted, err := store.DeleteExpiredJobs(ctx, rTenant, cutoff, 100)
+	if err != nil {
+		t.Fatalf("DeleteExpiredJobs: %v", err)
+	}
+	if len(deleted) != 3 {
+		t.Fatalf("deleted = %d, want 3 (three terminal+old jobs)", len(deleted))
+	}
+	got := map[string]bool{}
+	for _, j := range deleted {
+		got[j.JobID] = true
+	}
+	for _, want := range []string{jOldSucc, jOldFail, jOldCanc} {
+		if !got[want] {
+			t.Fatalf("expected deleted job %s in result %+v", want, deleted)
+		}
+	}
+
+	// 库内校验：jobs 剩 3 行（终态未过期 + 非终态 + unknown），events 剩 6 条（每保留任务 2 条）。
+	if err := tenant.Run(ctx, store.pool, rTenant, func(ctx context.Context, tx pgx.Tx) error {
+		var jobs, events int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE tenant_id=$1`, rTenant).Scan(&jobs); err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM job_events WHERE tenant_id=$1`, rTenant).Scan(&events); err != nil {
+			return err
+		}
+		if jobs != 3 {
+			t.Fatalf("jobs remaining = %d, want 3", jobs)
+		}
+		if events != 6 {
+			t.Fatalf("job_events remaining = %d, want 6", events)
+		}
+		for _, keep := range []string{jRecSucc, jQueOld, jUnkOld} {
+			var n int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE id=$1`, keep).Scan(&n); err != nil {
+				return err
+			}
+			if n != 1 {
+				t.Fatalf("kept job %s count = %d, want 1", keep, n)
+			}
+		}
+		for _, gone := range []string{jOldSucc, jOldFail, jOldCanc} {
+			var n int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM jobs WHERE id=$1`, gone).Scan(&n); err != nil {
+				return err
+			}
+			if n != 0 {
+				t.Fatalf("gone job %s count = %d, want 0", gone, n)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+}

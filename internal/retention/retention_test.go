@@ -23,6 +23,16 @@ type fakeRetentionStore struct {
 	released       []string
 	derivedRecords []string
 	orphanCutoffs  []time.Time
+	// jobBatches 依次返回每批删除结果（耗尽后返回空，模拟清完）。
+	jobBatches [][]ExpiredJob
+	jobCalls   []jobDeleteCall
+}
+
+// jobDeleteCall 记录一次 DeleteExpiredJobs 的入参（断言租户、cutoff 与批大小）。
+type jobDeleteCall struct {
+	tenantID string
+	cutoff   time.Time
+	limit    int
 }
 
 func (f *fakeRetentionStore) ListTenants(context.Context) ([]string, error) { return f.tenants, nil }
@@ -57,6 +67,16 @@ func (f *fakeRetentionStore) StaleReservationsBefore(context.Context, string, ti
 func (f *fakeRetentionStore) ReleaseReservationByID(_ context.Context, _, reservationID string) error {
 	f.released = append(f.released, reservationID)
 	return nil
+}
+
+func (f *fakeRetentionStore) DeleteExpiredJobs(_ context.Context, tenantID string, cutoff time.Time, limit int) ([]ExpiredJob, error) {
+	f.jobCalls = append(f.jobCalls, jobDeleteCall{tenantID: tenantID, cutoff: cutoff, limit: limit})
+	if len(f.jobBatches) == 0 {
+		return nil, nil
+	}
+	batch := f.jobBatches[0]
+	f.jobBatches = f.jobBatches[1:]
+	return batch, nil
 }
 
 type fakeAuditor struct{ events []audit.Event }

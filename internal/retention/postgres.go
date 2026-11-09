@@ -251,3 +251,48 @@ func (s *PGStore) ReleaseReservationByID(ctx context.Context, tenantID, reservat
 		return err
 	})
 }
+
+// DeleteExpiredJobs 删除 cutoff 之前进入终态的任务及其事件与步骤，单批最多 limit 条。
+//
+// 终态集合是 succeeded/failed/canceled——与 pipeline.JobState.Terminal() 逐字一致；
+// unknown_provider_result **不在内**：它在领域模型里等对账/人工重试（RetryFailed 可
+// 重新入队），删掉它等于替运维做掉对账决定。
+//
+// job_events.job_id 没有外键（0019），删任务行不会级联事件，必须显式同批删；
+// job_steps 有 ON DELETE CASCADE（0001），由外键代劳。两条 DELETE 在同一事务里：
+// 只删其一就会留下"事件引用不存在的任务"或"步骤变孤儿"的中间态。
+func (s *PGStore) DeleteExpiredJobs(ctx context.Context, tenantID string, cutoff time.Time, limit int) ([]ExpiredJob, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	var out []ExpiredJob
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+WITH doomed AS (
+    SELECT id FROM jobs
+     WHERE tenant_id=$1
+       AND state IN ('succeeded','failed','canceled')
+       AND updated_at < $2
+     LIMIT $3
+), gone_events AS (
+    DELETE FROM job_events WHERE tenant_id=$1 AND job_id IN (SELECT id FROM doomed)
+), gone_jobs AS (
+    DELETE FROM jobs WHERE tenant_id=$1 AND id IN (SELECT id FROM doomed)
+    RETURNING id, kind, state
+)
+SELECT id, kind, state FROM gone_jobs`, tenantID, cutoff, limit)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var j ExpiredJob
+			if err := rows.Scan(&j.JobID, &j.Kind, &j.State); err != nil {
+				return err
+			}
+			out = append(out, j)
+		}
+		return rows.Err()
+	})
+	return out, err
+}

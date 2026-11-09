@@ -362,6 +362,11 @@ func startBackgroundLoops(ctx context.Context, stores *storeSet, objects objects
 		// 孤儿扫描默认开启但**只报告**：删对象不可逆，而"无引用"的依据是"归属表里查不到引用行"，
 		// 漏认一种引用关系就会删掉在用对象。人工核对审计里的 orphan.detected 后再开 PPTS_ORPHAN_DELETE。
 		WithOrphanScan(config.Duration("PPTS_ORPHAN_GRACE", 24*time.Hour), config.Bool("PPTS_ORPHAN_DELETE", false)).
+		// 终态任务保留清理（P3-6）：调度函数 ppts_claim_next_job 全表扫（0013 的 USING(true)
+		// 策略使函数内 RLS 放开），终态行只增不减会线性拖慢每次轮询——基线见
+		// internal/pipeline/growth_pg_test.go：16 万行时空转心跳 29.5ms。30 天后任务中心
+		// 也不再展示这么久远的历史；要更久就调大 TTL。
+		WithJobRetention(config.Duration("PPTS_JOB_RETENTION_TTL", 30*24*time.Hour)).
 		WithAuditor(auditStore)
 	go runSweeper(ctx, sweeper, config.Duration("PPTS_RETENTION_INTERVAL", time.Hour))
 
