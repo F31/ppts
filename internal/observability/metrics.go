@@ -3,10 +3,10 @@ package observability
 
 import (
 	"expvar"
-	"os"
 	"strings"
 	"time"
 
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/pipeline"
 )
 
@@ -59,10 +59,7 @@ var (
 
 // includeTenantLabel 控制指标键是否携带租户维度。默认关闭，避免以租户 UUID 作为
 // 高基数标签导致指标维度爆炸；排查单租户问题时经 PPTS_METRICS_TENANT_LABELS=true 开启。
-var includeTenantLabel = func() bool {
-	v := strings.TrimSpace(os.Getenv("PPTS_METRICS_TENANT_LABELS"))
-	return strings.EqualFold(v, "true") || v == "1"
-}()
+var includeTenantLabel = config.Bool("PPTS_METRICS_TENANT_LABELS", false)
 
 // PipelineMetrics records worker lifecycle counters with bounded labels.
 type PipelineMetrics struct{}
@@ -189,8 +186,7 @@ func VoicePreview(result string) { voicePreviewTotal.Add("event="+clean(result),
 // 与 SetAuthDevHeadersActive 同构：把"有意放行"与"忘了配 token"区分成两种后果。
 // 该端点会导出完整命令行（可能含密钥）与全部业务计数，默认不可匿名访问。
 func DebugVarsPublic() bool {
-	v := strings.TrimSpace(os.Getenv("PPTS_DEBUG_VARS_PUBLIC"))
-	return v == "1" || strings.EqualFold(v, "true")
+	return config.Bool("PPTS_DEBUG_VARS_PUBLIC", false)
 }
 
 func setGauge(v *expvar.Int, on bool) {

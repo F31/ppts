@@ -28,6 +28,10 @@ func main() {
 	if len(os.Args) > 1 {
 		cmd = os.Args[1]
 	}
+	switch cmd {
+	case "server", "worker", "migrate":
+		config.WarnUnknown(log.Printf)
+	}
 	var err error
 	switch cmd {
 	case "server":

@@ -2,8 +2,8 @@ package observability
 
 import (
 	"context"
-	"os"
 
+	"github.com/F31/ppts/internal/config"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -15,7 +15,7 @@ import (
 // InitTracing 初始化全局 TracerProvider。未配置 PPTS_OTEL_EXPORTER_OTLP_ENDPOINT 时
 // 保持 no-op（不产生任何 span/导出），便于开发与 CI 零依赖运行。
 func InitTracing() (shutdown func(context.Context) error, err error) {
-	endpoint := os.Getenv("PPTS_OTEL_EXPORTER_OTLP_ENDPOINT")
+	endpoint := config.String("PPTS_OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	if endpoint == "" {
 		return func(context.Context) error { return nil }, nil
 	}

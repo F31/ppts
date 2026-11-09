@@ -4,18 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"os"
 	"strings"
 
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/tenant"
 )
 
 // CipherFromEnv 加载 AES-GCM 密钥：优先 PPTS_GATEWAY_AES_KEY_BASE64，
 // 回退 PPTS_BYOS_AES_KEY_BASE64。未配置时返回错误（网关功能禁用）。
 func CipherFromEnv() (CredentialCipher, error) {
-	raw := os.Getenv("PPTS_GATEWAY_AES_KEY_BASE64")
+	raw := config.String("PPTS_GATEWAY_AES_KEY_BASE64", "")
 	if raw == "" {
-		raw = os.Getenv("PPTS_BYOS_AES_KEY_BASE64")
+		raw = config.String("PPTS_BYOS_AES_KEY_BASE64", "")
 	}
 	if raw == "" {
 		return nil, errors.New("gateway: no AES key configured (PPTS_GATEWAY_AES_KEY_BASE64 or PPTS_BYOS_AES_KEY_BASE64)")
@@ -44,16 +44,16 @@ type Env struct {
 // EnvFromEnv 读取 PPTS_TTS_* / PPTS_LLM_* 环境变量。
 func EnvFromEnv() Env {
 	return Env{
-		TTSProvider: strings.TrimSpace(os.Getenv("PPTS_TTS_PROVIDER")),
-		TTSBaseURL:  os.Getenv("PPTS_TTS_BASE_URL"),
-		TTSAPIKey:   os.Getenv("PPTS_TTS_API_KEY"),
-		TTSModel:    os.Getenv("PPTS_TTS_MODEL"),
-		TTSVoice:    os.Getenv("PPTS_TTS_VOICE"),
-		LLMProvider: strings.TrimSpace(os.Getenv("PPTS_LLM_PROVIDER")),
-		LLMBaseURL:  os.Getenv("PPTS_LLM_BASE_URL"),
-		LLMAPIKey:   os.Getenv("PPTS_LLM_API_KEY"),
-		LLMModel:    os.Getenv("PPTS_LLM_MODEL"),
-		LLMVision:   os.Getenv("PPTS_LLM_VISION_MODEL"),
+		TTSProvider: config.String("PPTS_TTS_PROVIDER", ""),
+		TTSBaseURL:  config.String("PPTS_TTS_BASE_URL", ""),
+		TTSAPIKey:   config.String("PPTS_TTS_API_KEY", ""),
+		TTSModel:    config.String("PPTS_TTS_MODEL", ""),
+		TTSVoice:    config.String("PPTS_TTS_VOICE", ""),
+		LLMProvider: config.String("PPTS_LLM_PROVIDER", ""),
+		LLMBaseURL:  config.String("PPTS_LLM_BASE_URL", ""),
+		LLMAPIKey:   config.String("PPTS_LLM_API_KEY", ""),
+		LLMModel:    config.String("PPTS_LLM_MODEL", ""),
+		LLMVision:   config.String("PPTS_LLM_VISION_MODEL", ""),
 	}
 }
 

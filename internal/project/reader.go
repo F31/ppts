@@ -9,6 +9,10 @@ import (
 	pptx "github.com/F31/go-pptx/v2/pptx"
 )
 
+// GoPPTXVersion 是本二进制链接的 go-pptx 版本，写入每次解析结果。
+// internal/project 的测试会对照 go.mod 的 require，升库时这里必须一起改。
+const GoPPTXVersion = "v2.0.3"
+
 // DocumentReader 读适配器端口（V4.0 §5.1）。页序、正文、备注、表格、图片与特性清单。
 // 由 go-pptx 适配实现；渲染与播放能力不在此端口（分别由 integrations 的渲染/TTS 适配承担）。
 type DocumentReader interface {
@@ -32,7 +36,7 @@ type Limits struct {
 	MaxBytes int64
 }
 
-// GoPPTXReader 以 go-pptx v2.0.0 实现 DocumentReader。
+// GoPPTXReader 以 go-pptx 实现 DocumentReader。版本见 GoPPTXVersion。
 type GoPPTXReader struct {
 	limits  Limits
 	parser  string
@@ -44,7 +48,7 @@ func NewGoPPTXReader(limits Limits) *GoPPTXReader {
 	if limits.MaxPages == 0 && limits.MaxBytes == 0 {
 		limits = DefaultLimits
 	}
-	return &GoPPTXReader{limits: limits, parser: "go-pptx", version: "v2.0.0"}
+	return &GoPPTXReader{limits: limits, parser: "go-pptx", version: GoPPTXVersion}
 }
 
 // Inspect 打开 OOXML 包并提取领域视图。

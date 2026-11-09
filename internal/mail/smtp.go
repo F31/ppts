@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"net"
 	"net/smtp"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // SMTPConfig 是 SMTP 发送配置（可由环境变量或数据库中的消息服务配置构建）。
@@ -87,25 +88,26 @@ func normalizeSMTPConfig(cfg SMTPConfig) (SMTPConfig, error) {
 }
 
 func newSMTPFromEnv() (Sender, error) {
-	host := strings.TrimSpace(os.Getenv("PPTS_SMTP_HOST"))
+	host := config.String("PPTS_SMTP_HOST", "")
 	if host == "" {
 		return nil, errors.New("mail: PPTS_SMTP_HOST is required for smtp backend")
 	}
 	port := 587
-	if p := strings.TrimSpace(os.Getenv("PPTS_SMTP_PORT")); p != "" {
-		n, err := strconv.Atoi(p)
-		if err != nil || n <= 0 || n > 65535 {
-			return nil, fmt.Errorf("mail: invalid PPTS_SMTP_PORT %q", p)
+	// 端口写错要拒绝启动。config.Int 会把非法值静默退回缺省，这里不能用。
+	if config.Set("PPTS_SMTP_PORT") {
+		n := config.Int("PPTS_SMTP_PORT", 0)
+		if n <= 0 || n > 65535 {
+			return nil, fmt.Errorf("mail: invalid PPTS_SMTP_PORT %q", config.String("PPTS_SMTP_PORT", ""))
 		}
 		port = n
 	}
 	return NewSMTPSender(SMTPConfig{
 		Host:     host,
 		Port:     port,
-		Username: os.Getenv("PPTS_SMTP_USER"),
-		Password: os.Getenv("PPTS_SMTP_PASSWORD"),
-		From:     os.Getenv("PPTS_SMTP_FROM"),
-		Mode:     os.Getenv("PPTS_SMTP_TLS"),
+		Username: config.String("PPTS_SMTP_USER", ""),
+		Password: config.String("PPTS_SMTP_PASSWORD", ""),
+		From:     config.String("PPTS_SMTP_FROM", ""),
+		Mode:     config.String("PPTS_SMTP_TLS", ""),
 	})
 }
 

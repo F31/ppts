@@ -84,8 +84,8 @@ func animationProbeFromEnv(logger *slog.Logger, enabled bool) api.AnimationProbe
 	}
 	client, err := render.NewClient(render.ClientConfig{
 		BaseURL: base,
-		// 探测要快：导出对话框打开时才问，等 30s 等于对话框卡死。
-		Timeout: 3 * time.Second,
+		// 探测要快：导出对话框打开时才问。缺省 3s，慢机器用 PPTS_ANIMATION_PROBE_TIMEOUT 加长。
+		Timeout: config.Duration("PPTS_ANIMATION_PROBE_TIMEOUT", 3*time.Second),
 		Retries: 1,
 	})
 	if err != nil {
@@ -115,7 +115,12 @@ func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client,
 		logger.Info("animation: preview disabled (PPTS_ANIMATION_ASSET_DIR is empty)", "reason", api.PreviewReasonAssetDirMissing)
 		return nil, nil, api.PreviewReasonAssetDirMissing
 	}
-	client, err := render.NewClient(render.ClientConfig{BaseURL: base, Timeout: 10 * time.Second, Retries: 1})
+	client, err := render.NewClient(render.ClientConfig{
+		BaseURL: base,
+		// 必须盖住预览预算上限（60s）。以前写死 10s，预算调到 40s 时客户端先断开。
+		Timeout: config.Duration("PPTS_ANIMATION_PREVIEW_CLIENT_TIMEOUT", 70*time.Second),
+		Retries: 1,
+	})
 	if err != nil {
 		logger.Warn("animation: preview disabled", "error", err, "reason", api.PreviewReasonRendererInvalid)
 		return nil, nil, api.PreviewReasonRendererInvalid

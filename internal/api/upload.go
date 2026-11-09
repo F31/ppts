@@ -168,7 +168,7 @@ func (h *signedObjectHandler) serve(methodOp objectstore.Operation, w http.Respo
 	}
 	switch op {
 	case objectstore.OpWrite:
-		body := http.MaxBytesReader(w, r.Body, app.MaxUploadBytes+1<<20)
+		body := http.MaxBytesReader(w, r.Body, app.UploadLimit()+1<<20)
 		if err := h.objects.Put(r.Context(), k, body, objectstore.ObjectMeta{
 			ContentType: r.Header.Get("Content-Type"),
 		}); err != nil {

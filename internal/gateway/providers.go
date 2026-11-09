@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/tts"
 )
@@ -31,7 +32,7 @@ func NewTTSProvider(cfg *Config) tts.TTSProvider {
 		return tts.NewCosyVoiceProvider(tts.CosyVoiceConfig{
 			BaseURL:    cfg.BaseURL,
 			PromptWAV:  cosyVoicePromptWAV(),
-			PromptText: os.Getenv("PPTS_COSYVOICE_PROMPT_TEXT"),
+			PromptText: config.String("PPTS_COSYVOICE_PROMPT_TEXT", ""),
 			SampleRate: cfg.SampleRate,
 		})
 	}
@@ -55,7 +56,7 @@ var cosyVoicePromptCache struct {
 }
 
 func cosyVoicePromptWAV() []byte {
-	path := strings.TrimSpace(os.Getenv("PPTS_COSYVOICE_PROMPT_WAV"))
+	path := config.String("PPTS_COSYVOICE_PROMPT_WAV", "")
 	if path == "" {
 		return nil
 	}

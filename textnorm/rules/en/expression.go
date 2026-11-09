@@ -49,26 +49,3 @@ func (r expressionRule) FindCandidates(req contract.Request) []contract.Candidat
 	}
 	return out
 }
-
-// gatedExpressionRule additionally requires a fully covering semantic hint of
-// the given kind before any candidate is emitted (ambiguous forms stay intact).
-type gatedExpressionRule struct {
-	expressionRule
-	gate contract.SemanticKind
-}
-
-func (r gatedExpressionRule) SemanticGate() contract.SemanticKind { return r.gate }
-
-func (r gatedExpressionRule) FindCandidates(req contract.Request) []contract.Candidate {
-	var out []contract.Candidate
-	for _, c := range r.expressionRule.FindCandidates(req) {
-		for _, h := range req.Hints {
-			if h.Kind == contract.HintSemantic && h.Semantic == r.gate &&
-				h.Range.Start <= c.Src.Start && h.Range.End >= c.Src.End {
-				out = append(out, c)
-				break
-			}
-		}
-	}
-	return out
-}

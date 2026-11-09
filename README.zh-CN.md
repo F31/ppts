@@ -295,9 +295,13 @@ docs/               技术方案 / ADR / Runbook / 跟踪计划
 
 ---
 
+## 升级到 v1.0.0
+
+已有部署升级前先读 [CHANGELOG.md](CHANGELOG.md)，并先跑 `ppts migrate`。说明里写了上传上限 100 MiB、布尔取值、终态任务保留 30 天（同时是幂等期），以及解析器版本 `go-pptx-v2.0.3`。
+
 ## 配置
 
-所有配置均为环境变量（或随包生成的 `/etc/ppts/config.env`）。最常用：
+所有配置均为环境变量（或随包生成的 `/etc/ppts/config.env`）。全表和缺省值见 [`packaging/config.md`](packaging/config.md)（由 `internal/config` 登记表生成），安装模板是 [`packaging/config.env.example`](packaging/config.env.example)。什么都不设时走代码缺省（偏安全）；安装模板是 PostgreSQL 单机配置。最常用：
 
 | 变量 | 说明 |
 |---|---|

@@ -16,6 +16,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // ErrRendererUnavailable 表示渲染器（LibreOffice 或 poppler-utils）未安装。
@@ -92,10 +94,10 @@ type Config struct {
 // 支持 PPTS_SOFFICE_BIN / PPTS_PDFTOPPPM_BIN / PPTS_PDFINFO_BIN / PPTS_RENDER_WORK_ROOT 覆盖。
 func NewSofficeRenderer() (*SofficeRenderer, error) {
 	return NewSofficeRendererWithConfig(Config{
-		SofficeBin:  os.Getenv("PPTS_SOFFICE_BIN"),
-		PdfToPPMBin: os.Getenv("PPTS_PDFTOPPPM_BIN"),
-		PdfInfoBin:  os.Getenv("PPTS_PDFINFO_BIN"),
-		WorkRoot:    os.Getenv("PPTS_RENDER_WORK_ROOT"),
+		SofficeBin:  config.String("PPTS_SOFFICE_BIN", ""),
+		PdfToPPMBin: config.String("PPTS_PDFTOPPPM_BIN", ""),
+		PdfInfoBin:  config.String("PPTS_PDFINFO_BIN", ""),
+		WorkRoot:    config.String("PPTS_RENDER_WORK_ROOT", ""),
 	})
 }
 

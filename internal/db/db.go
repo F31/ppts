@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // Driver 标识数据库驱动。
@@ -48,8 +50,8 @@ type Config struct {
 //   - 两者都未设置 → sqlite，默认路径 ~/.ppts/ppts.db（单体开箱即用）；
 //   - driver=sqlite 且 DSN 为空 → 默认路径。
 func FromEnv() (Config, error) {
-	raw := strings.ToLower(strings.TrimSpace(os.Getenv("PPTS_DB_DRIVER")))
-	dsn := strings.TrimSpace(os.Getenv("PPTS_DATABASE_URL"))
+	raw := strings.ToLower(config.String("PPTS_DB_DRIVER", ""))
+	dsn := config.String("PPTS_DATABASE_URL", "")
 
 	var d Driver
 	switch raw {

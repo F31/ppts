@@ -62,19 +62,40 @@ func TestSweeperDeletesExpiredJobsInBatches(t *testing.T) {
 			t.Fatalf("call %d cutoff = %v, want ~%v", i, call.cutoff, wantCutoff)
 		}
 	}
-	// 逐条审计：2×500 + 1 = 1001 条 job.delete，最后一条带着正确的元数据。
-	var jobDeletes int
+	// 每批一条摘要：两满批 + 一不满批 = 3 条 job.delete，不按任务逐条记。
+	var jobDeletes []audit.Event
 	for _, e := range auditor.events {
-		if e.Action != "job.delete" {
-			continue
-		}
-		jobDeletes++
-		if e.TenantID != "tenant-1" || e.ActorUser != "system" || e.ResourceType != "job" {
-			t.Fatalf("job.delete event = %+v", e)
+		if e.Action == "job.delete" {
+			jobDeletes = append(jobDeletes, e)
 		}
 	}
-	if jobDeletes != 2*jobDeleteBatch+1 {
-		t.Fatalf("job.delete audit events = %d, want %d", jobDeletes, 2*jobDeleteBatch+1)
+	if len(jobDeletes) != 3 {
+		t.Fatalf("job.delete audit events = %d, want 3 (one summary per batch)", len(jobDeletes))
+	}
+	wantDeleted := []int{jobDeleteBatch, jobDeleteBatch, 1}
+	for i, e := range jobDeletes {
+		if e.TenantID != "tenant-1" || e.ActorUser != "system" || e.ResourceType != "job" || e.ResourceID != "tenant-1" {
+			t.Fatalf("job.delete event %d = %+v", i, e)
+		}
+		if e.Metadata["reason"] != "retention" {
+			t.Fatalf("job.delete event %d reason = %v", i, e.Metadata["reason"])
+		}
+		n, ok := e.Metadata["deleted"].(int)
+		if !ok || n != wantDeleted[i] {
+			t.Fatalf("job.delete event %d deleted = %v, want %d", i, e.Metadata["deleted"], wantDeleted[i])
+		}
+		cutoff, ok := e.Metadata["cutoff"].(string)
+		if !ok {
+			t.Fatalf("job.delete event %d cutoff = %v", i, e.Metadata["cutoff"])
+		}
+		got, err := time.Parse(time.RFC3339, cutoff)
+		if err != nil {
+			t.Fatalf("job.delete event %d cutoff %q: %v", i, cutoff, err)
+		}
+		wantCutoff := before.Add(-30 * 24 * time.Hour)
+		if got.Before(wantCutoff.Add(-time.Minute)) || got.After(before.Add(-29*24*time.Hour)) {
+			t.Fatalf("job.delete event %d cutoff = %v, want ~%v", i, got, wantCutoff)
+		}
 	}
 }
 

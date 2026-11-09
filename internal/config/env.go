@@ -13,6 +13,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -104,6 +105,25 @@ func Duration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// ParseBool 解析布尔开关，并区分「没配」与「配了但非法」。
+//
+// 没配（未设置、空串、纯空白）返回 set=false。合法取值与 Bool 相同。
+// 配了但不在取值表里时返回错误，调用方据此拒绝启动，而不是把「写错了」当成 false。
+func ParseBool(key string) (value bool, set bool, err error) {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if raw == "" {
+		return false, false, nil
+	}
+	switch raw {
+	case "1", "true", "yes", "on":
+		return true, true, nil
+	case "0", "false", "no", "off":
+		return false, true, nil
+	default:
+		return false, true, fmt.Errorf("config: %s=%q is not a bool (want 1/true/yes/on or 0/false/no/off)", key, raw)
+	}
 }
 
 // List 读取逗号分隔的字符串列表，逐项去空白并丢弃空项。

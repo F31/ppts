@@ -14,6 +14,7 @@ import type { Project } from '../types';
 import { useDialogA11y } from '../a11y';
 
 // 导入限制（前端校验；后端亦可另行强制）。
+// 与服务器缺省 PPTS_MAX_UPLOAD_BYTES（100 MiB）一致。调大环境变量时这里也要改。
 const MAX_BYTES = 100 * 1024 * 1024; // 100 MB
 const MAX_LABEL = '100 MB';
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';

@@ -140,6 +140,9 @@ func (s *Sweeper) WithAuditor(auditor audit.Recorder) *Sweeper {
 //
 // 判定时钟是 updated_at（终态写入时刻）而不是 created_at——一个跑了 20 天才失败
 // 的任务，其"终态年龄"应从失败那一刻算，否则长任务会带着新鲜事件被提前删掉。
+//
+// ttl 同时是幂等期。jobs 上的 UNIQUE(tenant_id, idempotency_key, kind) 随行删除
+// 一起放开，超过 ttl 的同键请求会再执行一次。同键要永久拒绝，就不能靠删行做保留。
 func (s *Sweeper) WithJobRetention(ttl time.Duration) *Sweeper {
 	s.jobTTL = ttl
 	return s
@@ -292,9 +295,15 @@ func (s *Sweeper) sweepExpiredJobs(ctx context.Context, tenantID string, jobCuto
 		if err != nil {
 			return err
 		}
-		for _, j := range deleted {
-			s.record(ctx, tenantID, "job.delete", "job", j.JobID,
-				map[string]any{"kind": j.Kind, "state": j.State, "reason": "retention"})
+		// 每批一条摘要，不按任务逐条写审计。一次积压清扫是数万行，逐条 Record
+		// 各开一个租户事务，耗时会盖过删除本身，并把同样的行数再写进 audit_events
+		// （默认再留 365 天）。稳态每天约两百条过期任务时，摘要仍然留得下次数与截止时间。
+		if len(deleted) > 0 {
+			s.record(ctx, tenantID, "job.delete", "job", tenantID, map[string]any{
+				"reason":  "retention",
+				"deleted": len(deleted),
+				"cutoff":  jobCutoff.Format(time.RFC3339),
+			})
 		}
 		total += len(deleted)
 		if len(deleted) < jobDeleteBatch {

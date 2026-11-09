@@ -43,18 +43,17 @@ WITH tenant_load AS (
 )
 SELECT * FROM candidate`
 
-// TestPGJobTableGrowthCleanup 量化保留清理对「表只增不减」的反制效果（P3-6 端到端证据）：
-// 把一个租户灌到 16 万终态任务（与基线工具终态分布一致），量 claim-idle（预期 ~30ms，
-// 这是调度器空转心跳、无论有没有活都在付），再跑 retention 的 DeleteExpiredJobs 把终态行
-// 清掉，重量 claim-idle（预期回落到基线 ~570µs）。
+// TestPGJobTableGrowthCleanup 验证「首次把历史积压一次清光」的正确性（P3-6）。
+// 把一个租户灌到 16 万终态任务（与基线工具终态分布一致），cutoff 取 now+24h，
+// 断言终态行和事件被删光、常驻的 queued 目标还在。
 //
-// 证明两件事：(1) claim-idle 随终态行线性涨、随清理回落——保留策略确实把「增长」这一项
-// 从账单里划掉了；(2) 清理本身的成本结构：首批慢（全租户 seq scan 找 500 个终态行）、
-// 末批快（近空表）——这正是迁移 0055 要解决的（本机测试库未应用 0055，需要 superuser
-// 建索引；0055 把 seq scan 换成部分索引扫描，详见 docs/优化方案 的 P3-6 段论证）。
+// 批次耗时只作日志。首批慢、末批快混有页缓存变热：job_events 的堆在 DELETE 之后
+// 不会变小，末批仍然可能在扫同一份已经进缓存的堆。这不是迁移 0055 的实测。
+// 索引是否被用、30 天窗口留下多少行，见 TestPGJobTableGrowthRetentionWindow。
+// 清完之后的墙钟也不回到 1 行基线的 571µs：一次性删 16 万行留下的膨胀文件还在。
 //
 // 默认跳过：设 PPTS_GROWTH_CLEANUP=1 与 PPTS_TEST_DATABASE 才执行（一次灌 16 万任务 +
-// 64 万事件、约 1GB）。与基线工具 TestPGJobTableGrowthBaseline 用不同的门控，避免叠加成本。
+// 64 万事件、约 1GB）。与基线工具、30 天窗口 demo 用不同的门控，避免叠加成本。
 // 跑法：PPTS_GROWTH_CLEANUP=1 PPTS_TEST_DATABASE=... go test -tags=pg ./internal/pipeline/ -run TestPGJobTableGrowthCleanup -v -timeout 30m
 func TestPGJobTableGrowthCleanup(t *testing.T) {
 	if os.Getenv("PPTS_GROWTH_CLEANUP") == "" {
@@ -181,11 +180,9 @@ func TestPGJobTableGrowthCleanup(t *testing.T) {
 	t.Logf("清理前：jobs=%d events=%d | claim-idle(函数)=%v claim-hit(函数)=%v scan(CTE)=%v",
 		beforeJobs, beforeEvents, idleBefore.Round(time.Microsecond), hitBefore.Round(time.Microsecond), scanBefore.Round(time.Microsecond))
 
-	// 跑保留清理：cutoff 设为 now+24h（即「把所有终态行都算过期」），覆盖全部种子
-	// （最旧 updated_at = now-90天+5min，最新生子因 +5min 略超 now），一次性清空历史 90 天
-	// 堆积的全部终态行——这是「启用保留后首次全量清积压」的场景。
-	// 生产里按 PPTS_JOB_RETENTION_TTL（默认 30 天）每周期清一次，稳态只留近 30 天 + 在途行，
-	// 表被钉在很小，claim-idle 回到基线。
+	// 跑保留清理：cutoff 设为 now+24h（即「把所有终态行都算过期」），覆盖全部种子。
+	// 这是「启用保留后首次全量清积压」。生产的 30 天窗口留下大约三分之一，
+	// 行数和执行计划在 TestPGJobTableGrowthRetentionWindow 里断言。
 	rstore := retention.NewPGStore(pool)
 	cutoff := time.Now().Add(24 * time.Hour)
 	var totalDeleted int
@@ -278,22 +275,21 @@ func TestPGJobTableGrowthCleanup(t *testing.T) {
 
 	t.Logf("清理后：jobs=%d events=%d", afterJobs, afterEvents)
 	t.Logf("清理统计：删除 %d 终态任务（含事件），%d 批，总耗时 %v", totalDeleted, batches, cleanDur.Round(time.Millisecond))
-	t.Logf("清理批次耗时：首批 %v（全租户 seq scan 找 500 个终态行）末批 %v（近空表）——差距即 0055 索引要消除的成本",
+	t.Logf("清理批次耗时：首批 %v 末批 %v（墙钟，含页缓存变热；不是 0055 的对照）",
 		firstBatch.Round(time.Millisecond), lastBatch.Round(time.Millisecond))
-	t.Logf("清理前/后候选 CTE 扫描成本：清前(16万行,缓存热)=%v 清后(1活行,刚VACUUM冷堆)=%v",
+	t.Logf("清理前/后候选 CTE 扫描成本：清前(16万行)=%v 清后(1活行,尚未 VACUUM)=%v",
 		scanBefore.Round(time.Microsecond), scanSteady.Round(time.Microsecond))
-	t.Logf("注：清后绝对数仍偏高，因一次性删 16 万行留下 ~248MB 膨胀堆（DELETE 不缩文件、普通 VACUUM 不截断文件体），\n\t且刚 VACUUM 后堆是冷缓存——二者都会随缓存预热 / 堆压缩而消失，并非活行造成。\n\tEXPLAIN 证清后活行仅 ~1 行被扫；可靠稳态 floor≈基线 1 行 ~571µs（干净连接独立验证 0.5ms），\n\t生产靠 autovacuum 复用死空间 + 周期性压缩回到该 floor。")
+	t.Logf("注：下面的清后读数取自 VACUUM 之前。一次性删 16 万行会留下膨胀文件（DELETE 不缩文件、普通 VACUUM 也不把文件截断还给操作系统），\n\t清后墙钟因此回不到 1 行基线的 571µs。这个数不是活行的账单，也不拿来证明保留策略。\n\t稳态靠 autovacuum 复用死空间；文件要缩回去是维护窗口里的一次性 VACUUM FULL / pg_repack，不放进 worker。")
 	t.Logf("生产函数路径对照（含固定开销，嵌入式上下文波动大）：清前=%v 清后=%v",
 		idleBefore.Round(time.Microsecond), funcSteady.Round(time.Microsecond))
 
-	// best-effort VACUUM：回收死元组、收缩堆（释放 248MB 膨胀、降低后续扫描/下次清理的 I/O），
-	// 需要表属主 / MAINTAIN 权限；ppts_app 通常没有，这里吞掉错误并记录。注意：VACUUM 回收的是
-	// 磁盘与堆大小，不降低 ppts_claim_next_job 的单次固定开销（后者由活行数 + 函数固定成本决定，
-	// 两者都被保留策略钉住），但能避免膨胀堆拖累整体。
+	// 测量已经结束。这里的 VACUUM 只尝试回收死元组，不重新计时：普通 VACUUM 不把文件
+	// 截断还给操作系统，也不能拿来解释上面的清后读数。ppts_app 通常不是表属主，失败就记下。
+	// 不在 worker 里周期执行 VACUUM。
 	if _, err := pool.Exec(ctx, `VACUUM (ANALYZE) jobs, job_events`); err != nil {
-		t.Logf("VACUUM 未执行（需表属主/MAINTAIN 权限，ppts_app 无）：%v —— 生产依赖 autovacuum\n\t或 migrator 上下文的周期性 VACUUM 回收膨胀堆", err)
+		t.Logf("VACUUM 未执行（ppts_app 通常不是表属主）：%v", err)
 	} else {
-		t.Logf("VACUUM 已执行（回收死元组、收缩堆）")
+		t.Logf("VACUUM 已执行。死元组可被复用；文件大小不变，所以上面的清后读数仍然有效")
 	}
 	explainGrowthCandidate(t, ctx, pool, tenantID)
 }

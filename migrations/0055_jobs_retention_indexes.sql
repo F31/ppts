@@ -9,7 +9,8 @@
 --   1) idx_jobs_retention：jobs(tenant_id, updated_at) WHERE state IN 终态。
 --      DeleteExpiredJobs 的 doomed CTE 就是
 --        WHERE tenant_id=$1 AND state IN ('succeeded','failed','canceled') AND updated_at < $2
---      部分索引把扫描面从「全租户 jobs」收敛到「本租户终态且过期的少数行」。
+--        ORDER BY updated_at LIMIT 500
+--      部分索引因此是有界范围扫描：从最旧的过期行走 500 行就停。
 --      终态集合与 pipeline.JobState.Terminal() 逐字一致；unknown_provider_result 不在内。
 --
 --   2) idx_job_events_job：job_events(tenant_id, job_id)。

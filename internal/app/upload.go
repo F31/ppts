@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
@@ -21,11 +22,23 @@ import (
 
 // 上传限制与签名 TTL。
 const (
-	// MaxUploadBytes 单文件上限（G1 单段直传）。
-	MaxUploadBytes = 512 << 20
+	// MaxUploadBytes 是上传与解析共用的缺省上限：100 MiB。
+	// 解析器拒绝更大的文件，所以放行到 512 MiB 只是让失败发生在解析阶段。
+	// 部署要放宽时设 PPTS_MAX_UPLOAD_BYTES，解析走同一个数。
+	MaxUploadBytes int64 = 100 << 20
 	// UploadURLTTL 预签名写链接有效期。
 	UploadURLTTL = 15 * time.Minute
 )
+
+// UploadLimit 是本次进程的上传与解析字节上限。
+// 未设置、非法或非正数都退回 MaxUploadBytes，避免 0 把所有上传挡掉。
+func UploadLimit() int64 {
+	n := config.Int64("PPTS_MAX_UPLOAD_BYTES", MaxUploadBytes)
+	if n <= 0 {
+		return MaxUploadBytes
+	}
+	return n
+}
 
 // 用例层错误哨兵：供 API transport 映射 Connect 错误码。
 var (
@@ -81,7 +94,7 @@ func (s *UploadService) CreateUpload(ctx context.Context, tenantID string, in Up
 	if in.SizeBytes <= 0 {
 		return nil, ErrUploadInvalid
 	}
-	if in.SizeBytes > MaxUploadBytes {
+	if in.SizeBytes > UploadLimit() {
 		return nil, ErrUploadTooLarge
 	}
 	if _, err := s.projects.GetProject(ctx, tenantID, "", in.ProjectID); err != nil {

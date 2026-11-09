@@ -9,12 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/F31/ppts/internal/animation/bind"
+	"github.com/F31/ppts/internal/config"
 )
 
 const (
@@ -62,12 +62,12 @@ func NewSiliconFlowProvider(cfg SiliconFlowConfig) (*SiliconFlowProvider, error)
 }
 
 func llmTimeoutFromEnv() time.Duration {
+	// 新名优先。写错或非正值跳过该键，两个都不可用时用 180s。
 	for _, name := range []string{"PPTS_LLM_TIMEOUT", "PPTS_LLM_REQUEST_TIMEOUT"} {
-		raw := strings.TrimSpace(os.Getenv(name))
-		if raw == "" {
+		if !config.Set(name) {
 			continue
 		}
-		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		if d := config.Duration(name, 0); d > 0 {
 			return d
 		}
 	}
@@ -76,16 +76,18 @@ func llmTimeoutFromEnv() time.Duration {
 
 // FromEnv returns the configured text rewriter. Empty provider disables LLM features.
 func FromEnv() (TextRewriter, error) {
-	switch strings.TrimSpace(strings.ToLower(os.Getenv("PPTS_LLM_PROVIDER"))) {
+	switch provider := strings.ToLower(config.String("PPTS_LLM_PROVIDER", "")); provider {
 	case "", "none":
 		return nil, nil
 	case "siliconflow":
 		return NewSiliconFlowProvider(SiliconFlowConfig{
-			BaseURL: os.Getenv("PPTS_LLM_BASE_URL"), APIKey: os.Getenv("PPTS_LLM_API_KEY"),
-			Model: os.Getenv("PPTS_LLM_MODEL"), VisionModel: os.Getenv("PPTS_LLM_VISION_MODEL"),
+			BaseURL:     config.String("PPTS_LLM_BASE_URL", ""),
+			APIKey:      config.String("PPTS_LLM_API_KEY", ""),
+			Model:       config.String("PPTS_LLM_MODEL", ""),
+			VisionModel: config.String("PPTS_LLM_VISION_MODEL", ""),
 		})
 	default:
-		return nil, fmt.Errorf("llm: unsupported PPTS_LLM_PROVIDER=%q", os.Getenv("PPTS_LLM_PROVIDER"))
+		return nil, fmt.Errorf("llm: unsupported PPTS_LLM_PROVIDER=%q", provider)
 	}
 }
 

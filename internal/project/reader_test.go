@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +50,33 @@ func buildTestDeck(t *testing.T) *bytes.Reader {
 	return bytes.NewReader(buf.Bytes())
 }
 
+// TestGoPPTXVersionMatchesGoMod 钉住解析器版本和 go.mod 的 require。
+// 不读构建信息：go.work 把 go-pptx 指到本地目录时，构建信息会报 devel。
+func TestGoPPTXVersionMatchesGoMod(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "github.com/F31/go-pptx/v2 " + GoPPTXVersion
+	var found bool
+	for _, line := range strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "github.com/F31/go-pptx/v2 ") {
+			continue
+		}
+		found = true
+		if i := strings.Index(line, "//"); i >= 0 {
+			line = strings.TrimSpace(line[:i])
+		}
+		if line != want {
+			t.Fatalf("go.mod 写的是 %q，GoPPTXVersion 是 %s", line, GoPPTXVersion)
+		}
+	}
+	if !found {
+		t.Fatal("go.mod 没有 require github.com/F31/go-pptx/v2")
+	}
+}
+
 func TestGoPPTXReaderInspect(t *testing.T) {
 	src := buildTestDeck(t)
 	r := NewGoPPTXReader(Limits{})
@@ -58,7 +87,7 @@ func TestGoPPTXReaderInspect(t *testing.T) {
 	if doc.SchemaVersion != SchemaVersion {
 		t.Fatalf("SchemaVersion: got %q", doc.SchemaVersion)
 	}
-	if doc.ParserName != "go-pptx" || doc.ParserVersion != "v2.0.0" {
+	if doc.ParserName != "go-pptx" || doc.ParserVersion != GoPPTXVersion {
 		t.Fatalf("parser info: %s %s", doc.ParserName, doc.ParserVersion)
 	}
 	if len(doc.Pages) != 1 {

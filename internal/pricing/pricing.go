@@ -7,7 +7,8 @@ package pricing
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // Book 是定价表。Version 对应账本 price_version，便于审计/追溯。
@@ -54,7 +55,7 @@ func (b *Book) SupplierAmount(kind string, units float64) float64 {
 // PPTS_PRICE_BOOK 为 JSON，例如：
 // {"version":"v1","currency":"CNY","user":{"gen_seconds":0.01},"supplier":{"gen_seconds":0.004}}
 func FromEnv() (*Book, error) {
-	raw := os.Getenv("PPTS_PRICE_BOOK")
+	raw := config.String("PPTS_PRICE_BOOK", "")
 	if raw == "" {
 		return Default(), nil
 	}

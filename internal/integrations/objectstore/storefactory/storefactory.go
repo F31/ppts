@@ -11,9 +11,8 @@ package storefactory
 import (
 	"encoding/base64"
 	"errors"
-	"os"
-	"strconv"
 
+	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/integrations/objectstore/s3"
 	"github.com/F31/ppts/internal/tenant"
@@ -85,29 +84,26 @@ func New(cfg Config, resolver objectstore.BackendResolver) (*objectstore.Registr
 // FromEnv 从环境变量构建 Registry。
 func FromEnv(resolver objectstore.BackendResolver) (*objectstore.Registry, error) {
 	cfg := Config{
-		Default:     os.Getenv("PPTS_OBJECT_BACKEND"),
-		LocalRoot:   os.Getenv("PPTS_OBJECT_ROOT"),
-		LocalSecret: os.Getenv("PPTS_OBJECT_SECRET"),
+		Default:     config.String("PPTS_OBJECT_BACKEND", ""),
+		LocalRoot:   config.String("PPTS_OBJECT_ROOT", ""),
+		LocalSecret: config.String("PPTS_OBJECT_SECRET", ""),
 	}
-	if endpoint := os.Getenv("PPTS_S3_ENDPOINT"); endpoint != "" {
-		useSSL := false
-		if raw := os.Getenv("PPTS_S3_USE_SSL"); raw != "" {
-			parsed, err := strconv.ParseBool(raw)
-			if err != nil {
-				return nil, err
-			}
-			useSSL = parsed
+	if endpoint := config.String("PPTS_S3_ENDPOINT", ""); endpoint != "" {
+		// 没配按明文。写错（例如 not-a-bool）拒绝启动，不把「配错了」当成 false。
+		useSSL, _, err := config.ParseBool("PPTS_S3_USE_SSL")
+		if err != nil {
+			return nil, err
 		}
 		cfg.S3 = &S3Config{
 			Endpoint:  endpoint,
-			Bucket:    os.Getenv("PPTS_S3_BUCKET"),
-			AccessKey: os.Getenv("PPTS_S3_ACCESS_KEY"),
-			SecretKey: os.Getenv("PPTS_S3_SECRET_KEY"),
-			Region:    os.Getenv("PPTS_S3_REGION"),
+			Bucket:    config.String("PPTS_S3_BUCKET", ""),
+			AccessKey: config.String("PPTS_S3_ACCESS_KEY", ""),
+			SecretKey: config.String("PPTS_S3_SECRET_KEY", ""),
+			Region:    config.String("PPTS_S3_REGION", ""),
 			UseSSL:    useSSL,
 		}
 	}
-	if rawKey := os.Getenv("PPTS_BYOS_AES_KEY_BASE64"); rawKey != "" {
+	if rawKey := config.String("PPTS_BYOS_AES_KEY_BASE64", ""); rawKey != "" {
 		key, err := base64.StdEncoding.DecodeString(rawKey)
 		if err != nil {
 			return nil, err
@@ -127,7 +123,7 @@ func FromEnv(resolver objectstore.BackendResolver) (*objectstore.Registry, error
 
 // WithEnvelopeEncryptionFromEnv wraps store when PPTS_OBJECT_ENCRYPTION_KEY_BASE64 is set.
 func WithEnvelopeEncryptionFromEnv(store objectstore.ObjectStore, resolver objectstore.EnvelopeEncryptionResolver) (objectstore.ObjectStore, error) {
-	rawKey := os.Getenv("PPTS_OBJECT_ENCRYPTION_KEY_BASE64")
+	rawKey := config.String("PPTS_OBJECT_ENCRYPTION_KEY_BASE64", "")
 	if rawKey == "" {
 		return store, nil
 	}

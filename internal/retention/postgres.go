@@ -252,7 +252,31 @@ func (s *PGStore) ReleaseReservationByID(ctx context.Context, tenantID, reservat
 	})
 }
 
+// DeleteExpiredJobsSQL 是 DeleteExpiredJobs 执行的语句。
+// 增长 demo 用同一份文本做 EXPLAIN，避免计划测的是另一条 SQL。
+//
+// doomed 被引用两次，PostgreSQL 会物化这份 CTE，ORDER BY + LIMIT 只算一次，
+// 事件和任务删的是同一批 id。ORDER BY updated_at 让迁移 0055 的部分索引
+// （tenant_id, updated_at WHERE 终态）变成「从最旧的过期行走 500 行就停」；
+// 没有它，LIMIT 500 在「几乎每行都过期」时顺序扫描读到 500 行就会停，索引用不上。
+const DeleteExpiredJobsSQL = `
+WITH doomed AS (
+    SELECT id FROM jobs
+     WHERE tenant_id=$1
+       AND state IN ('succeeded','failed','canceled')
+       AND updated_at < $2
+     ORDER BY updated_at
+     LIMIT $3
+), gone_events AS (
+    DELETE FROM job_events WHERE tenant_id=$1 AND job_id IN (SELECT id FROM doomed)
+), gone_jobs AS (
+    DELETE FROM jobs WHERE tenant_id=$1 AND id IN (SELECT id FROM doomed)
+    RETURNING id, kind, state
+)
+SELECT id, kind, state FROM gone_jobs`
+
 // DeleteExpiredJobs 删除 cutoff 之前进入终态的任务及其事件与步骤，单批最多 limit 条。
+// 最旧的先删。
 //
 // 终态集合是 succeeded/failed/canceled——与 pipeline.JobState.Terminal() 逐字一致；
 // unknown_provider_result **不在内**：它在领域模型里等对账/人工重试（RetryFailed 可
@@ -267,20 +291,7 @@ func (s *PGStore) DeleteExpiredJobs(ctx context.Context, tenantID string, cutoff
 	}
 	var out []ExpiredJob
 	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `
-WITH doomed AS (
-    SELECT id FROM jobs
-     WHERE tenant_id=$1
-       AND state IN ('succeeded','failed','canceled')
-       AND updated_at < $2
-     LIMIT $3
-), gone_events AS (
-    DELETE FROM job_events WHERE tenant_id=$1 AND job_id IN (SELECT id FROM doomed)
-), gone_jobs AS (
-    DELETE FROM jobs WHERE tenant_id=$1 AND id IN (SELECT id FROM doomed)
-    RETURNING id, kind, state
-)
-SELECT id, kind, state FROM gone_jobs`, tenantID, cutoff, limit)
+		rows, err := tx.Query(ctx, DeleteExpiredJobsSQL, tenantID, cutoff, limit)
 		if err != nil {
 			return err
 		}

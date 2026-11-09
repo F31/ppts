@@ -3,8 +3,9 @@ package observability
 import (
 	"crypto/subtle"
 	"net/http"
-	"os"
 	"strings"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // MetricsTokenOK 校验请求携带的 Bearer token 与 PPTS_METRICS_TOKEN 一致（fail-closed）。
@@ -13,7 +14,7 @@ import (
 // 裸露指标面；需要内网匿名抓取时应由反向代理承担鉴权。与 api 侧策略同源，
 // 供 server / worker 两个进程复用同一判定。
 func MetricsTokenOK(r *http.Request) bool {
-	tok := strings.TrimSpace(os.Getenv("PPTS_METRICS_TOKEN"))
+	tok := config.String("PPTS_METRICS_TOKEN", "")
 	if tok == "" {
 		return false
 	}

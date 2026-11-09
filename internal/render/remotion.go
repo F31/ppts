@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // RemotionBackend 用 Remotion（Chromium 逐帧）产出逐页 H.264 片段。
@@ -495,14 +497,14 @@ func (b *RemotionBackend) resolveScript() string {
 	if b.Script != "" {
 		return b.Script
 	}
-	return os.Getenv("PPTS_RENDERER_SCRIPT")
+	return config.String("PPTS_RENDERER_SCRIPT", "")
 }
 
 func (b *RemotionBackend) resolveNode() string {
 	if b.NodeBin != "" {
 		return b.NodeBin
 	}
-	if env := os.Getenv("PPTS_NODE"); env != "" {
+	if env := config.String("PPTS_NODE", ""); env != "" {
 		return env
 	}
 	return "node"
@@ -512,7 +514,7 @@ func (b *RemotionBackend) resolveChrome() string {
 	if b.Chrome != "" {
 		return b.Chrome
 	}
-	return os.Getenv("PPTS_CHROME")
+	return config.String("PPTS_CHROME", "")
 }
 
 // joinInts 把页序号拼成 `0,3,5`。空集合拼成空串——渲染器据此判定「没给范围」。

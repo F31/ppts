@@ -13,8 +13,9 @@ import (
 	"context"
 	"errors"
 	"log"
-	"os"
 	"strings"
+
+	"github.com/F31/ppts/internal/config"
 )
 
 // Message 是一封纯文本（可选 HTML）邮件。
@@ -35,7 +36,7 @@ var ErrNotConfigured = errors.New("mail: no backend configured")
 
 // FromEnv 按环境变量构建发送器；未配置返回 (nil, nil)。
 func FromEnv(logger *log.Logger) (Sender, error) {
-	backend := strings.ToLower(strings.TrimSpace(os.Getenv("PPTS_MAIL_BACKEND")))
+	backend := strings.ToLower(config.String("PPTS_MAIL_BACKEND", ""))
 	switch backend {
 	case "smtp":
 		return newSMTPFromEnv()
@@ -48,7 +49,7 @@ func FromEnv(logger *log.Logger) (Sender, error) {
 		return nil, nil
 	case "":
 		// 未显式指定：配置了 SMTP host 就用 SMTP，否则禁用。
-		if strings.TrimSpace(os.Getenv("PPTS_SMTP_HOST")) != "" {
+		if config.String("PPTS_SMTP_HOST", "") != "" {
 			return newSMTPFromEnv()
 		}
 		return nil, nil

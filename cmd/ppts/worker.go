@@ -99,7 +99,7 @@ func runWorker() error {
 	// WithProjects 是**必需**的：解析 handler 用它在成功后把真实页数回写 source_revisions.page_count。
 	// 此前没接，解析一直"成功"、page_count 一直是 0——PPT 列表的"页数"列恒为 0，
 	// 而没有任何一处报错。导入报告按版本对账时把这个断点暴露了出来（回写 0 != 解析 14 页）。
-	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(project.Limits{})).
+	parseHandler := app.NewParseHandler(objects, project.NewGoPPTXReader(parseLimits())).
 		WithSteps(jobs).
 		WithProjects(stores.projects)
 	// 渲染器（LibreOffice + poppler）缺失时，解析仍会"成功"，但没有页面图
@@ -365,7 +365,8 @@ func startBackgroundLoops(ctx context.Context, stores *storeSet, objects objects
 		// 终态任务保留清理（P3-6）：调度函数 ppts_claim_next_job 全表扫（0013 的 USING(true)
 		// 策略使函数内 RLS 放开），终态行只增不减会线性拖慢每次轮询——基线见
 		// internal/pipeline/growth_pg_test.go：16 万行时空转心跳 29.5ms。30 天后任务中心
-		// 也不再展示这么久远的历史；要更久就调大 TTL。
+		// 也不再展示这么久远的历史；要更久就调大 TTL。这个 TTL 也是幂等期：删行会放开
+		// (tenant_id, idempotency_key, kind)。设 0 不会关闭，Duration 会退回 30 天。
 		WithJobRetention(config.Duration("PPTS_JOB_RETENTION_TTL", 30*24*time.Hour)).
 		WithAuditor(auditStore)
 	go runSweeper(ctx, sweeper, config.Duration("PPTS_RETENTION_INTERVAL", time.Hour))
@@ -695,6 +696,16 @@ func ttsProviderFromEnv(logger *slog.Logger) (tts.TTSProvider, error) {
 //
 // 账期取**任务创建时间**：预占发生在受理时（api），结算与释放可能发生在下一个账期
 // （月末提交、月初跑完）。两边都按创建时间算账期，才指向同一行额度。
+// parseLimits 把页数上限和上传字节上限交给解析器。
+// 两边共用同一个字节数：上传放行、解析再拒，用户看到的是成功之后的失败。
+func parseLimits() project.Limits {
+	pages := config.Int("PPTS_MAX_PARSE_PAGES", 100)
+	if pages <= 0 {
+		pages = 100
+	}
+	return project.Limits{MaxPages: pages, MaxBytes: app.UploadLimit()}
+}
+
 func animationMinutesKind(job *pipeline.Job) usage.Kind {
 	created := job.CreatedAt
 	if created.IsZero() {
