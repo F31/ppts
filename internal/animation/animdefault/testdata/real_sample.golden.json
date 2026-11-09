@@ -6,7 +6,7 @@
     "bytes": 288116,
     "pages": 14,
     "schemaVersion": "1.0",
-    "parser": "go-pptx/v2.0.0"
+    "parser": "go-pptx/v2.0.3"
   },
   "pageDurationMs": 8000,
   "fps": 30,
