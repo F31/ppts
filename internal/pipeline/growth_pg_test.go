@@ -244,7 +244,10 @@ func seedGrowthRows(t *testing.T, ctx context.Context, pool *pgxpool.Pool, tenan
 		for i := 0; i < n; i++ {
 			id := uuid.NewString()
 			ids = append(ids, id)
-			at := now.Add(-time.Duration(int64(90*24*time.Hour) * int64(i) / int64(n)))
+			// 90 天跨度按 i 线性分布。必须用 float64 做中间乘法：90 天的纳秒值（~7.8e15）
+			// 乘以 16 万行会远超 int64 上限（9.2e18）而回绕成负数/垃圾，使 created_at/
+			// updated_at 失真（部分落到未来，又让「按 updated_at 清理」漏删）。
+			at := now.Add(-time.Duration(float64(90*24*time.Hour) * float64(i) / float64(n)))
 			created = append(created, at)
 			state, kind := "succeeded", "narration"
 			switch i % 10 {
