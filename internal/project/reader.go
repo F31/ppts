@@ -66,6 +66,13 @@ func (g *GoPPTXReader) Inspect(ctx context.Context, r io.ReaderAt, size int64) (
 	if err != nil {
 		return nil, err
 	}
+	if w, h, szErr := ReadSlideSize(r, size); szErr != nil {
+		doc.Diagnostics = append(doc.Diagnostics, "IR_SLDSZ_READ: "+szErr.Error())
+	} else if w > 0 && h > 0 {
+		doc.SlideWidthEMU, doc.SlideHeightEMU = w, h
+	} else {
+		doc.Diagnostics = append(doc.Diagnostics, "IR_SLDSZ_MISSING")
+	}
 	if len(doc.Pages) > g.limits.MaxPages {
 		return nil, ErrTooLarge
 	}

@@ -67,6 +67,14 @@ func TestAnimationAnchorsFollowReadingOrder(t *testing.T) {
 	if len(presets) < 2 {
 		t.Fatalf("presets = %v, want 至少两个预设", presets)
 	}
+	firstPreset, _ := presets[0].(map[string]any)
+	entrance, _ := firstPreset["entranceClips"].(map[string]any)
+	if len(entrance) == 0 {
+		t.Fatalf("preset %v missing entranceClips for the optional-entrance checkbox", firstPreset["id"])
+	}
+	if _, ok := entrance["title"]; !ok {
+		t.Fatalf("entranceClips missing title: %v", entrance)
+	}
 }
 
 func TestClipAnchorTextTruncatesByRune(t *testing.T) {
@@ -82,6 +90,26 @@ func TestClipAnchorTextTruncatesByRune(t *testing.T) {
 	}
 }
 
+func TestBuildPreviewSceneMarksEntranceSkipped(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	plan := &render.Timeline{
+		FPS: 30, Width: 8, Height: 8,
+		Pages: []render.Page{{
+			DurationMs: 1000,
+			Focus:      []render.FocusSpan{{StartMs: 0, Rect: &render.Box{X: 1, Y: 1, W: 2, H: 2}}},
+		}},
+		Warnings: []render.Diagnostic{{Code: render.DiagEntranceSkipped, Message: "overlap"}},
+	}
+	scene := buildPreviewScene(img, buf.Bytes(), plan, 0, "")
+	if !scene.EntranceSkipped {
+		t.Fatal("diag entrance_skipped must surface on the preview scene")
+	}
+}
+
 func TestPreviewCanvasKeepsPageAspect(t *testing.T) {
 	// 4:3 的页塞进 16:9 画布会被拉伸，预览里"字歪了"会被读成动效做坏了。
 	var buf bytes.Buffer
@@ -91,18 +119,27 @@ func TestPreviewCanvasKeepsPageAspect(t *testing.T) {
 		t.Fatal(err)
 	}
 	canvas := previewCanvas(buf.Bytes())
-	if canvas.Width != previewCanvasWidth {
-		t.Fatalf("width = %d", canvas.Width)
+	if canvas.Height != previewCanvasHeight {
+		t.Fatalf("height = %d, want %d（与成片基准同高）", canvas.Height, previewCanvasHeight)
 	}
-	if canvas.Height != 720 {
-		t.Fatalf("height = %d, want 720（960 的 3:4）", canvas.Height)
+	if canvas.Width != 1440 {
+		t.Fatalf("width = %d, want 1440（1080 高的 4:3）", canvas.Width)
 	}
-	if canvas.Height%2 != 0 {
-		t.Fatal("画布高必须是偶数（H.264 yuv420p）")
+	if canvas.Width%2 != 0 {
+		t.Fatal("画布宽必须是偶数")
 	}
 	// 坏图不能 panic，退到 16:9。
-	if c := previewCanvas([]byte("not a png")); c.Width != previewCanvasWidth || c.Height%2 != 0 {
-		t.Fatalf("坏图应退到 16:9 且有偶数高: %+v", c)
+	if c := previewCanvas([]byte("not a png")); c.Width != 1920 || c.Height != previewCanvasHeight {
+		t.Fatalf("坏图应退到 1920×1080: %+v", c)
+	}
+}
+
+func TestSnapThenPreviewCanvasIs1080p(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1920, 1081))
+	snapped := render.SnapRasterSlack(src)
+	canvas := previewCanvasSize(snapped.Bounds().Dx(), snapped.Bounds().Dy())
+	if canvas.Width != 1920 || canvas.Height != previewCanvasHeight {
+		t.Fatalf("1920×1081 after snap → canvas %+v, want 1920×1080", canvas)
 	}
 }
 
@@ -276,6 +313,9 @@ func newPreviewTestServer(t *testing.T, objects objectstore.ObjectStore, jobs Jo
 func TestAnimationPreviewSubmitsOnePage(t *testing.T) {
 	objects := testObjects(t)
 	timelineKey, manifestKey := previewTimeline(t, objects)
+	// 默认页图只有 96×72，元素框缩上去之后外环采不到色，底板会退回整页。
+	// 换成同比例的大图，才能断言元素图层真的被挖出来交给浏览器。
+	rewritePageImage(t, objects, 640, 480)
 	jobs := &narrationJobStub{
 		job: &pipeline.Job{ID: "job-narr"}, stepRef: timelineKey,
 		parseJob: &pipeline.Job{ID: "job-parse"}, pageRef: manifestKey,
@@ -293,29 +333,46 @@ func TestAnimationPreviewSubmitsOnePage(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("preview status = %d, body = %s", resp.StatusCode, raw)
 	}
-	if resp.Header.Get("Content-Type") != "video/mp4" {
-		t.Fatalf("content-type = %q", resp.Header.Get("Content-Type"))
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content-type = %q, want application/json", ct)
 	}
-	if string(raw) != "MP4-BYTES" {
-		t.Fatalf("body = %q, want 渲染服务的片段字节", raw)
+	var scene previewScene
+	if err := json.Unmarshal(raw, &scene); err != nil {
+		t.Fatalf("decode scene: %v body=%s", err, raw)
 	}
-	// 只提交被请求的那一页：整片预览是另一个决策（Q1），不是"顺手多做一点"。
-	if len(fake.plans) != 1 {
-		t.Fatalf("提交了 %d 次计划，want 1", len(fake.plans))
+	// 浏览器播放不占用渲染槽。假服务若收到计划，说明又把这一页提交出去了。
+	if len(fake.plans) != 0 {
+		t.Fatalf("提交了 %d 次计划，want 0", len(fake.plans))
 	}
-	plan := fake.plans[0]
-	if len(plan.Pages) != 1 || plan.Pages[0].SlideID != anTestSlide {
-		t.Fatalf("计划页 = %+v, want 只有 %s", plan.Pages, anTestSlide)
+	if scene.DurationMs != 2000 {
+		t.Fatalf("页时长 = %d, want 2000（来自时间轴）", scene.DurationMs)
 	}
-	if plan.Pages[0].DurationMs != 2000 {
-		t.Fatalf("页时长 = %d, want 2000（来自时间轴）", plan.Pages[0].DurationMs)
+	if scene.FPS != previewFPS || scene.Width != 1440 || scene.Height != previewCanvasHeight {
+		t.Fatalf("scene canvas = %d×%d@%d, want 1440×%d@%d", scene.Width, scene.Height, scene.FPS, previewCanvasHeight, previewFPS)
 	}
-	if plan.Pages[0].BaseImage == "" {
-		t.Fatal("baseImage 为空：页图没有被投递，渲染服务会读不到图")
+	if !strings.HasPrefix(scene.Image, "data:image/png;base64,") {
+		t.Fatal("舞台图不是 PNG data URL")
 	}
-	// 分段偏移要在预览里生效，否则 withSegment 的动效全落到页首。
-	if len(plan.Pages[0].Layers) == 0 {
-		t.Fatalf("计划里没有图层: %+v", plan.Pages[0])
+	if !scene.Plate || scene.LayerCount == 0 || len(scene.Layers) != scene.LayerCount {
+		t.Fatalf("应挖出元素图层, plate=%v layerCount=%d layers=%d", scene.Plate, scene.LayerCount, len(scene.Layers))
+	}
+	if scene.Layers[0].ElementID != "shape-1" || scene.Layers[0].Image == "" || len(scene.Layers[0].Clips) == 0 {
+		t.Fatalf("图层不完整: %+v", scene.Layers[0])
+	}
+	if got := resp.Header.Get("X-Preview-Layers"); got != "1" {
+		t.Fatalf("X-Preview-Layers = %q, want 1", got)
+	}
+}
+
+func TestNewAnimationPreviewerAllowsNilRenderer(t *testing.T) {
+	store := newAnimationTestStore(t)
+	objects := testObjects(t)
+	pages := &fakeAnimationResolver{page: animationTestPage()}
+	if NewAnimationPreviewer(store, objects, &narrationJobStub{}, nil, nil, pages) == nil {
+		t.Fatal("浏览器预览不依赖渲染服务，renderer 与资产目录为 nil 时仍应可用")
+	}
+	if NewAnimationPreviewer(nil, objects, &narrationJobStub{}, nil, nil, pages) != nil {
+		t.Fatal("缺 store 时必须为 nil")
 	}
 }
 
@@ -363,10 +420,11 @@ func TestAnimationPreviewRequiresTimeline(t *testing.T) {
 	}
 }
 
-// TestAnimationPreviewTimeoutCancelsJob 守住"超时不是静默空转"：
-// 渲染服务一直 running 时必须返回 504 preview_timeout，并且**取消那个任务**——
-// 不取消的话用户连点五次预览就在渲染服务里排了五个必然被丢掉的任务。
-func TestAnimationPreviewTimeoutCancelsJob(t *testing.T) {
+// TestAnimationPreviewDoesNotCallRenderer 守住「预览不再排队渲染任务」。
+//
+// 渲染服务一直 running、预算只有 300ms 时，旧实现会 504 并取消任务。
+// 浏览器播放不该去碰它：假服务收不到计划，响应仍是这一页的场景。
+func TestAnimationPreviewDoesNotCallRenderer(t *testing.T) {
 	objects := testObjects(t)
 	timelineKey, manifestKey := previewTimeline(t, objects)
 	jobs := &narrationJobStub{job: &pipeline.Job{ID: "job-narr"}, stepRef: timelineKey, parseJob: &pipeline.Job{ID: "job-parse"}, pageRef: manifestKey}
@@ -383,15 +441,21 @@ func TestAnimationPreviewTimeoutCancelsJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var payload map[string]any
-	_ = json.NewDecoder(resp.Body).Decode(&payload)
-	if resp.StatusCode != http.StatusGatewayTimeout || payload["code"] != "preview_timeout" {
-		t.Fatalf("status = %d payload = %v, want 504 preview_timeout", resp.StatusCode, payload)
+	var scene previewScene
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, &scene); err != nil {
+		t.Fatalf("decode scene: %v body=%s", err, raw)
+	}
+	if resp.StatusCode != http.StatusOK || scene.DurationMs != 2000 {
+		t.Fatalf("status = %d scene = %+v, want 200 且时长 2000", resp.StatusCode, scene.DurationMs)
+	}
+	if len(fake.plans) != 0 {
+		t.Fatalf("渲染服务收到 %d 份计划", len(fake.plans))
 	}
 	select {
 	case <-fake.cancels:
-	case <-time.After(2 * time.Second):
-		t.Fatal("超时后没有取消渲染任务：它会继续占着渲染服务的工作槽")
+		t.Fatal("没有提交任务，却发了取消")
+	default:
 	}
 }
 

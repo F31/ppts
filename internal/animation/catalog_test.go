@@ -10,7 +10,7 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse embedded catalog: %v", err)
 	}
-	if got, want := len(reg.Effects()), 7; got != want {
+	if got, want := len(reg.Effects()), 8; got != want {
 		t.Fatalf("effects = %d, want %d", got, want)
 	}
 	if got, want := len(reg.Presets()), 4; got != want {
@@ -21,16 +21,31 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 func TestCatalogCoversEveryPresetKind(t *testing.T) {
 	reg := Catalog()
 	for _, p := range reg.Presets() {
-		// 每种预设都必须能处理整页轨道：否则"无可挂载元素"的页面会生成空规格。
-		if len(p.Clips[KindPage]) == 0 {
-			t.Errorf("preset %q has no page fallback clip", p.ID)
+		if len(p.Clips[KindPage]) != 0 {
+			t.Errorf("preset %q must not emit page fadeIn", p.ID)
 		}
-		// 四种常用版式元素都应有默认动效，避免同一预设下部分元素"静止不动"。
+		if !p.GazeFollowsSegment {
+			t.Errorf("preset %q missing gazeFollowsSegment", p.ID)
+		}
+		if p.Transition.Type != TransitionFade {
+			t.Errorf("preset %q transition = %s, want fade", p.ID, p.Transition.Type)
+		}
 		for _, kind := range []string{KindTitle, KindBullet, KindImage} {
-			if len(p.Clips[kind]) == 0 {
-				t.Errorf("preset %q has no %s clip", p.ID, kind)
+			if len(p.Clips[kind]) == 0 || p.Clips[kind][0].Type != "spotlight" {
+				t.Errorf("preset %q %s clips must be spotlight", p.ID, kind)
+			}
+			if len(p.EntranceClips[kind]) == 0 {
+				t.Errorf("preset %q missing entranceClips for %s", p.ID, kind)
 			}
 		}
+	}
+	tech, ok := reg.Preset("tech-dynamic")
+	if !ok || !tech.LookCrop {
+		t.Fatal("tech-dynamic must set lookCrop")
+	}
+	biz, ok := reg.Preset("business-calm")
+	if !ok || biz.Callout != "off" || biz.Intensity != 1.0 {
+		t.Fatalf("business-calm callout/intensity = %q %v", biz.Callout, biz.Intensity)
 	}
 }
 

@@ -181,7 +181,12 @@ func (h *ParseHandler) renderPages(ctx context.Context, job *pipeline.Job, srcKe
 		step.State = pipeline.StepFailed
 		_ = h.steps.MarkStep(ctx, step)
 	}
-	res, err := h.renderer.Render(ctx, bytes.NewReader(data), int64(len(data)), render.RenderOptions{})
+	project.FillSlideSizeFromPPTX(doc, bytes.NewReader(data), int64(len(data)))
+	dpi := project.RasterDPI(doc.SlideWidthEMU, doc.SlideHeightEMU)
+	tw, th := project.RasterSize(doc.SlideWidthEMU, doc.SlideHeightEMU, dpi)
+	res, err := h.renderer.Render(ctx, bytes.NewReader(data), int64(len(data)), render.RenderOptions{
+		DPI: dpi, TargetWidth: tw, TargetHeight: th,
+	})
 	if err != nil || len(res.Pages) == 0 {
 		fail()
 		return nil

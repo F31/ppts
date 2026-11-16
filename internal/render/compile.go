@@ -9,8 +9,10 @@ import (
 	"github.com/F31/ppts/internal/design"
 )
 
-// defaultSlideHeightEMU 是 PowerPoint 标准页高（7.5 英寸）。
-// 16:9（12192000）与 4:3（9144000）都以它为高，因此只要知道底图宽高比就能反推页宽。
+// defaultSlideHeightEMU 是经典 PowerPoint 页高（7.5 英寸）。
+// 4:3（9144000×6858000）与经典 16:9（12192000×6858000）共用这个高。
+// Office 2013+ 默认 screen16x9 是 10"×5.625"（9144000×5143500），必须从 sldSz
+// 读取：按画布宽高比把高度固定成 7.5 英寸会让圈选整体偏小（约 3/4）。
 const defaultSlideHeightEMU int64 = 6858000
 
 // 编译期哨兵错误。
@@ -43,6 +45,10 @@ type PageInput struct {
 	// Focus 是页级焦点序列（见 Page.Focus）。这里只透传：焦点不是动效，
 	// 由画布求值器推导非焦点元素的压暗量，编译器不参与。
 	Focus []FocusSpan
+	// BeatSheet 是编译期注视 IR。Valid 时 Focus.StartMs 跟拍走，不再 equal-spread。
+	BeatSheet *animation.BeatSheet
+	// GazeDenyIDs 是页码/图注等，回退 GazeFromSegmentTracks 与 focusFromBeatSheet 都跳过。
+	GazeDenyIDs map[string]struct{}
 	// Shots 是页内镜头切片（见 Page.Shots）。EMU 坐标，编译器换算成画布像素。
 	Shots []PageShotInput
 }
@@ -50,7 +56,8 @@ type PageInput struct {
 // Options 是编译器的环境参数。
 type Options struct {
 	Canvas design.Canvas
-	// SlideWidthEMU/SlideHeightEMU 为 0 时按底图宽高比推断（高度固定 6858000）。
+	// SlideWidthEMU/SlideHeightEMU 为 0 时按标准页高 6858000 推断。
+	// 宽高比匹配不能代替真实页高：Office 默认 16:9 与经典 16:9 都是 16:9。
 	SlideWidthEMU  int64
 	SlideHeightEMU int64
 	FPS            int
@@ -187,12 +194,26 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 	}
 
 	if in.Revision != nil {
+		orig := in.Revision
+		mode := animation.InferMotionMode(orig)
+		onlyEntrance := animation.IsGazeMode(mode) && in.BeatSheet.Valid()
+		in.Revision = revisionWithSpreadStarts(orig, in.SegmentOffsets, in.DurationMs, onlyEntrance)
 		intensity := in.Revision.Intensity
 		if intensity <= 0 {
 			intensity = 1
 		}
+		skipEntrance := mode == animation.MotionModeGaze
+		if mode == animation.MotionModeGazeEntrance {
+			if ok, why := c.boxesReliable(in, elems); !ok {
+				skipEntrance = true
+				diags = append(diags, Diagnostic{
+					Code: DiagEntranceSkipped, Page: in.Index,
+					Message: fmt.Sprintf("入场层已跳过：%s，本页回退为纯注视", why),
+				})
+			}
+		}
 		for _, track := range in.Revision.Tracks {
-			layer, ld, ok := c.compileTrack(in, track, elems, intensity)
+			layer, ld, ok := c.compileTrack(in, track, elems, intensity, skipEntrance, mode)
 			diags = append(diags, ld...)
 			if ok {
 				page.Layers = append(page.Layers, layer)
@@ -220,6 +241,28 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 				Code: DiagDurationTierConflict, Page: in.Index,
 				Message: fmt.Sprintf("%d 条 clip 时长不在元素速度分层内（保留 catalog 区间，未改动时长）", n),
 			})
+		}
+		if animation.IsGazeMode(mode) {
+			page.Focus = c.compileGazeFocus(in, orig)
+			if p, ok := animation.Catalog().Preset(in.Revision.PresetID); ok {
+				page.LookCrop = p.LookCrop
+				if page.LookCrop {
+					page.LookCropPadPx = LookCropPadPx(intensity)
+				}
+				if len(page.Annotations) == 0 {
+					page.Annotations = annotationsFromFocus(page.Focus, p.Callout)
+				}
+			} else if len(page.Annotations) == 0 {
+				page.Annotations = annotationsFromFocus(page.Focus, "auto")
+			}
+		} else if len(page.Focus) == 0 && presetFocusFollowsSegment(in.Revision) {
+			ids := make(map[string]struct{}, len(page.Layers))
+			for _, l := range page.Layers {
+				if l.ElementID != "" {
+					ids[l.ElementID] = struct{}{}
+				}
+			}
+			page.Focus = FocusFromSegmentTracks(in.Revision, in.SegmentOffsets, in.DurationMs, ids)
 		}
 	}
 	// 镜头切片与分层动画互相独立：没有分层动画的页一样可以切镜头
@@ -324,7 +367,7 @@ func (c *Compiler) transitionFor(in PageInput) (Transition, *Diagnostic) {
 }
 
 func (c *Compiler) compileTrack(in PageInput, track *animation.Track, elems map[string]Element,
-	intensity float64) (Layer, []Diagnostic, bool) {
+	intensity float64, skipEntrance bool, mode string) (Layer, []Diagnostic, bool) {
 	layer := Layer{
 		ElementID: track.ElementID,
 		Kind:      track.Kind,
@@ -360,6 +403,17 @@ func (c *Compiler) compileTrack(in PageInput, track *animation.Track, elems map[
 
 	frame := frameMS(c.opt.FPS)
 	for _, clip := range track.Clips {
+		if clip == nil {
+			continue
+		}
+		if skipEntrance && animation.IsEntranceEffect(clip.Type) {
+			continue
+		}
+		// chart/table 只在「注视+入场」里不挖；旧入场规格的柱状生长仍要成层。
+		if mode == animation.MotionModeGazeEntrance && animation.IsEntranceEffect(clip.Type) &&
+			(track.Kind == animation.KindChart || track.Kind == animation.KindTable) {
+			continue
+		}
 		m, cd, ok := c.compileClip(in, clip, layer, intensity, frame, track.ElementID)
 		diags = append(diags, cd...)
 		if ok {
@@ -404,6 +458,9 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 	intensity float64, frameMS int64, elementID string) (Motion, []Diagnostic, bool) {
 	m := Motion{ClipID: clip.ID, Effect: clip.Type}
 	var diags []Diagnostic
+	if skipGazeMarkerClip(clip.Type, in.Revision) {
+		return m, diags, false
+	}
 
 	anchor, ok, diag := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
 	if diag != nil {
@@ -531,7 +588,7 @@ func (c *Compiler) tierConflicts(layers []Layer) int {
 // 而焦点记录、清单、诊断全绿。
 //
 // slideHeightEMU ≤ 0 时按标准页高（与 NewCompiler 的缺省一致）。canvas 必须是这次
-// 真正要渲的画布：导出 1920×1080、预览 960 宽，钳制边界与像素框都跟着它走。
+// 真正要渲的画布：导出用快照尺寸，预览按页图比例且高 1080。钳制边界与像素框都跟着它走。
 //
 // 一个照不到的条件：轨道里所有 clip 都编译失败时 compileTrack 也不出层，那需要
 // 逐条编译才能知道（牵扯 fps、分段偏移）。规格过 validate 后轨道非空，真正的失败
@@ -541,6 +598,11 @@ func LayerElementIDs(rev *animation.Revision, elements []Element, canvas design.
 	if rev == nil || len(elements) == 0 || canvas.Width <= 0 || canvas.Height <= 0 {
 		return nil
 	}
+	mode := animation.InferMotionMode(rev)
+	if mode == animation.MotionModeGaze {
+		return nil
+	}
+	entranceOnly := mode == animation.MotionModeGazeEntrance
 	h := slideHeightEMU
 	if h <= 0 {
 		h = defaultSlideHeightEMU
@@ -550,10 +612,21 @@ func LayerElementIDs(rev *animation.Revision, elements []Element, canvas design.
 	for _, el := range elements {
 		elems[el.ID] = el
 	}
+	if entranceOnly {
+		if ok, _ := boxesReliable(rev, elems, scale, canvas.Width, canvas.Height); !ok {
+			return nil
+		}
+	}
 	out := make(map[string]struct{}, len(rev.Tracks))
 	for _, track := range rev.Tracks {
 		if track == nil || track.ElementID == "" {
 			continue // 整页轨道没有元素身份，也压暗不了「某一个形状」
+		}
+		if entranceOnly && (track.Kind == animation.KindChart || track.Kind == animation.KindTable) {
+			continue
+		}
+		if entranceOnly && !trackHasEntranceClip(track) {
+			continue
 		}
 		el, found := elems[track.ElementID]
 		if !found {
@@ -568,6 +641,98 @@ func LayerElementIDs(rev *animation.Revision, elements []Element, canvas design.
 		return nil
 	}
 	return out
+}
+
+func trackHasEntranceClip(track *animation.Track) bool {
+	if track == nil {
+		return false
+	}
+	for _, c := range track.Clips {
+		if c != nil && animation.IsEntranceEffect(c.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func skipGazeMarkerClip(typ string, rev *animation.Revision) bool {
+	if typ == "spotlight" {
+		return true
+	}
+	return typ == "highlight" && animation.IsGazeMode(animation.InferMotionMode(rev))
+}
+
+func entrancePunchKind(kind string) bool {
+	switch kind {
+	case animation.KindTitle, animation.KindBullet, animation.KindShape, animation.KindIcon:
+		return true
+	default:
+		return false
+	}
+}
+
+// boxesReliable 在 compileTrack 之前检查入场候选盒：面积合法且兄弟不部分重叠。
+// 任一条失败则本页拒绝入场层，避免先挖洞再发现重叠。
+func (c *Compiler) boxesReliable(in PageInput, elems map[string]Element) (bool, string) {
+	return boxesReliable(in.Revision, elems, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)
+}
+
+func boxesReliable(rev *animation.Revision, elems map[string]Element, scale float64, cw, ch int) (bool, string) {
+	if rev == nil {
+		return true, ""
+	}
+	type cand struct {
+		id  string
+		box Box
+	}
+	var cands []cand
+	pageArea := float64(cw) * float64(ch)
+	for _, track := range rev.Tracks {
+		if track == nil || track.ElementID == "" || !entrancePunchKind(track.Kind) {
+			continue
+		}
+		if !trackHasEntranceClip(track) {
+			continue
+		}
+		el, ok := elems[track.ElementID]
+		if !ok || el.Bounds == nil {
+			return false, "入场候选没有可用包围盒"
+		}
+		box, _, ok, _ := boxOf(el.Bounds, scale, cw, ch)
+		if !ok {
+			return false, "入场候选换算后无面积"
+		}
+		area := float64(box.W) * float64(box.H)
+		if pageArea > 0 && (area/pageArea <= gazeMinAreaRatio || area/pageArea >= plateFullPageRatio) {
+			return false, "入场候选面积不在可挖范围内"
+		}
+		cands = append(cands, cand{id: track.ElementID, box: box})
+	}
+	for i := 0; i < len(cands); i++ {
+		for j := i + 1; j < len(cands); j++ {
+			if partialOverlap(Layer{Box: cands[i].box}, Layer{Box: cands[j].box}) {
+				return false, fmt.Sprintf("入场候选 %s 与 %s 部分重叠", cands[i].id, cands[j].id)
+			}
+		}
+	}
+	return true, ""
+}
+
+// HasEntranceElementLayer 报告这一页有没有「入场元素层」——带 fadeIn/slideIn/pop/grow
+// 且有 elementId 的层。注视页 spotlight 不成层，必须据此跳过 BuildPlate；整页轨道
+// 没有可挖的元素框，同样不算。
+func HasEntranceElementLayer(layers []Layer) bool {
+	for _, layer := range layers {
+		if layer.ElementID == "" {
+			continue
+		}
+		for _, clip := range layer.Clips {
+			if animation.IsEntranceEffect(clip.Effect) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // resolveTrigger 把三种触发形式解析为页内锚点毫秒。

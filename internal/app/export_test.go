@@ -8,6 +8,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	_ "image/jpeg"
 	"image/png"
 	"io"
 	"os"
@@ -272,6 +273,60 @@ func TestExportHandlerPublishesHTMLBundle(t *testing.T) {
 	// 时间来自绑定的时间轴，不允许出现第二套时间。
 	if manifest.Artifact.DurationUS != bundle.Timeline.DurationUS {
 		t.Fatalf("duration = %d, want %d", manifest.Artifact.DurationUS, bundle.Timeline.DurationUS)
+	}
+}
+
+// 解析任务被保留清掉后，导出请求带不上 pagePngKeys。页图仍在这一版的 pages.json 里。
+// 不补的话成品只有语音和一块深色占位，打开 HTML 看不到 PPT。
+func TestExportHTMLUsesStoredPagesWhenKeysMissing(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	putObject(t, objects, audioKey, pcmWAVForExportTest(1000, 100), "audio/wav")
+	pageKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src-03", AssetType: "render", AssetID: "page-0001", Ext: "png",
+	}
+	putObject(t, objects, pageKey, pngForExportTest(), "image/png")
+	manifest, _ := json.Marshal(PageManifest{
+		RevisionNo: bundle.Timeline.SourceRevisionNo,
+		Renderer:   "LibreOffice",
+		Pages:      []PageEntry{{SlideID: "slide-1", Index: 0, Key: pageKey.String()}},
+	})
+	putObject(t, objects, objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src-03", AssetType: "render", AssetID: "pages", Ext: "json",
+	}, manifest, "application/json")
+
+	artifacts := &artifactStoreStub{}
+	handler := NewExportHandler(artifacts, &stepRecorder{}, objects, nil)
+	err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatHTMLBundle, TimelineKey: bundleKey.String(),
+		Width: 1920, Height: 1080, FPS: 30,
+	}))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	key, err := objectstore.Parse(artifacts.created.ObjectKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built, files, err := share.VerifyBundle(readAll(t, objects, key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(built.Slides) != 1 || built.Slides[0].Image == "" {
+		t.Fatalf("slides = %+v", built.Slides)
+	}
+	img, _, err := image.Decode(bytes.NewReader(files[built.Slides[0].Image]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, _, _ := img.At(10, 10).RGBA()
+	// pngForExportTest 是纯红；占位页是接近黑色的 (24,26,32)。
+	if r>>8 < 100 {
+		t.Fatalf("slide pixel red = %d, want the stored page image, not the dark placeholder", r>>8)
+	}
+	if built.AudioMix == "" && len(built.Audio) == 0 {
+		t.Fatal("audio missing")
 	}
 }
 

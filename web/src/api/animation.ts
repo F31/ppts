@@ -6,9 +6,10 @@
 //   GET .../animation            200=有规格 / 404=从没配过（不是错误）
 //   GET .../animation/anchors    总能回答"这一页有什么可以动"（与规格无关）
 //   GET  .../animation/preview/capability   部署级能力探测（始终可用，不需要渲染服务）
-//   POST .../animation/preview             只渲这一页，≤预算内给结果，超时明确报错
+//   POST .../animation/preview             编译这一页，返回浏览器播放的场景
 
 import { ConnectError, requestRaw } from '../core';
+import type { Annotation, FocusSpan, Motion, Shot } from '../../../shared/types.ts';
 import type { AnimationAnchors, AnimationSavePayload, AnimationSpec } from '../animationState';
 import { defaultSpecQuery } from '../animationPrefill';
 import { getJSON, postJSON, putJSON } from './http';
@@ -39,6 +40,23 @@ function queryOf(scope: AnimationScope, extra?: Record<string, string>): string 
 //
 // 它与规格的读取分开，是因为"还没配置过动效的页"最需要它——把两件事塞进一个响应，
 // 就得给 404 加语义。
+export type StaleAnimationSlide = { slideId: string; missing: string[] };
+
+export async function getStaleAnimationAnchors(
+  identity: ClientIdentity,
+  projectId: string,
+  opts?: { sourceRevisionNo?: number; language?: string }
+): Promise<{ slides: StaleAnimationSlide[] }> {
+  const params = new URLSearchParams();
+  if (opts?.sourceRevisionNo && opts.sourceRevisionNo > 0) params.set('sourceRevisionNo', String(opts.sourceRevisionNo));
+  if (opts?.language) params.set('language', opts.language);
+  const qs = params.toString();
+  return getJSON<{ slides: StaleAnimationSlide[] }>(
+    identity,
+    `/api/projects/${encodeURIComponent(projectId)}/animation/stale-anchors${qs ? `?${qs}` : ''}`
+  );
+}
+
 export async function getAnimationAnchors(identity: ClientIdentity, scope: AnimationScope): Promise<AnimationAnchors> {
   return getJSON<AnimationAnchors>(identity, `${basePath(scope)}/anchors${queryOf(scope)}`);
 }
@@ -159,9 +177,8 @@ export async function saveAnimationSpec(
 
 // AnimationPreviewCapability 回答「这个部署有没有开单页预览」。
 //
-// configured 只代表依赖齐全、路由可用，**不是**「渲染服务此刻可达」：
-// 服务临时挂掉由 POST 的 502 renderer_unavailable 回答。两者修复动作不同，
-// 合成一个 bool 会把用户指错方向（找运维配环境 vs. 稍后重试）。
+// 预览在浏览器里播放，不依赖渲染服务是否此刻可达。configured 为 false 时
+// reason 说明总闸为什么关着（目前是 animation_disabled）。
 export type AnimationPreviewCapability = {
   configured: boolean;
   /** ok / animation_disabled / renderer_not_configured / assets_not_configured / ... */
@@ -177,13 +194,43 @@ export async function getAnimationPreviewCapability(
   return getJSON<AnimationPreviewCapability>(identity, `${basePath(scope)}/preview/capability${queryOf(scope)}`);
 }
 
-// previewAnimation 渲染这一页，返回可直接放进 <video> 的 blob URL。
+// previewAnimation 编译这一页，返回浏览器可直接播放的场景。
 //
-// 为什么要 revoke：一次编辑会话里预览十次就有十个 blob，不释放会一直占着内存。
-// 调用方负责在替换/卸载时 revokeObjectURL（组件里统一处理）。
+// 场景与 HTML 成片的一页同构（底板、图层位图、焦点、镜头），播放器复用同一份求值。
+// 不返回视频：单页 MP4 要占渲染槽，讲稿一长就超 60 秒预算。
+export type AnimationPreviewLayer = {
+  elementId?: string;
+  kind?: string;
+  box: { x: number; y: number; w: number; h: number };
+  image: string;
+  origin?: string;
+  clips?: Motion[];
+};
+
+export type AnimationPreviewScene = {
+  fps: number;
+  width: number;
+  height: number;
+  durationMs: number;
+  /** 舞台底图。plate 为 true 时这是挖掉元素本体的底板。 */
+  image: string;
+  plate: boolean;
+  layers: AnimationPreviewLayer[];
+  focus: FocusSpan[];
+  annotations?: Annotation[];
+  lookCrop?: boolean;
+  lookCropPadPx?: number;
+  shots: Shot[];
+  layerCount: number;
+  focusCount: number;
+  focusSkipped: number;
+  focusSkipReason?: string;
+  entranceSkipped?: boolean;
+};
+
 export type AnimationPreview = {
-  url: string;
-  /** 编译出的元素图层数：>0 表示这次预览含元素级动效（导出侧目前还渲不出来）。 */
+  scene: AnimationPreviewScene;
+  /** 实际带上位图的元素图层数。0 表示这一页没有可播放的元素动效。 */
   layers: number;
   /** 这次预览里生效的焦点条数：0 表示这一段没写焦点，或这一页没配焦点。 */
   focus: number;
@@ -191,16 +238,17 @@ export type AnimationPreview = {
   focusSkipped: number;
   /** 跳过的原因码：target_missing / canvas_aspect；没有跳过时为空串。 */
   focusSkipReason: string;
+  /** boxesReliable 失败：本页入场层被跳过，回退纯注视。 */
+  entranceSkipped?: boolean;
 };
 
 export async function previewAnimation(
   identity: ClientIdentity,
   scope: AnimationScope,
-  timelineKey: string
+  timelineKey: string,
+  spec?: AnimationSavePayload
 ): Promise<AnimationPreview> {
-  // 服务端预算默认 3s、上限 60s（PPTS_ANIMATION_PREVIEW_BUDGET），客户端兜底给到 90s：
-  // 永远让服务端的 504 先到达，用户看到的是"这一页渲得太慢"（可重试），
-  // 而不是本地超时（看起来像网络断了）。两个数必须保持这个先后关系。
+  // 底板在 API 进程里生成，正常远小于渲染一页 MP4。45s 只挡住一张异常大的页图。
   const res = await requestRaw({
     method: 'POST',
     // 必须带 queryOf(scope)：服务端按 (sourceRevisionNo, language) 这个复合键取**已保存的规格**。
@@ -208,35 +256,38 @@ export async function previewAnimation(
     // 页面点预览永远失败，正是这个差异）。
     url: `${basePath(scope)}/preview${queryOf(scope)}`,
     headers: { ...identityHeaders(identity), ...languageHeader(), 'Content-Type': 'application/json' },
-    body: { timelineKey },
+    body: spec ? { timelineKey, spec } : { timelineKey },
     label: 'POST animation preview',
-    timeoutMs: 90000
+    timeoutMs: 45000
   });
-  // 200 不等于「拿到了视频」：未注册/被 SPA 兜底的路径也可能回 200 + text/html，
-  // 旧实现会把它 createObjectURL 塞进 <video>，画面空白而界面上一句错误都没有——
-  // 用户只看到"预览失败"甚至什么都看不到。这里在生成 blob URL **之前**就拦住。
+  // 200 不等于「拿到了场景」：未注册/被 SPA 兜底的路径也可能回 200 + text/html。
   const contentType = (res.headers.get('Content-Type') ?? '').toLowerCase();
-  if (!contentType.startsWith('video/mp4')) {
+  if (!contentType.startsWith('application/json')) {
     throw new ConnectError(
       'unexpected_content_type',
-      `POST animation preview: expected video/mp4, got ${contentType || 'no Content-Type'}`
+      `POST animation preview: expected application/json, got ${contentType || 'no Content-Type'}`
     );
   }
-  const blob = await res.blob();
-  if (blob.size === 0) {
-    throw new ConnectError('preview_empty_body', 'POST animation preview: empty response body');
+  const scene = (await res.json()) as AnimationPreviewScene;
+  if (!scene || typeof scene.image !== 'string' || !scene.image.startsWith('data:image/')) {
+    throw new ConnectError('preview_empty_body', 'POST animation preview: response has no page image');
   }
-  const layers = Number(res.headers.get('X-Preview-Layers') ?? '0');
-  // 三个头都是可选增强：老服务端不给就没有，前端按 0 处理，
-  // 而不是把"没有这个头"当成"这页没有焦点"去提示用户。
-  const focus = Number(res.headers.get('X-Preview-Focus') ?? '0');
-  const focusSkipped = Number(res.headers.get('X-Preview-Focus-Skipped') ?? '0');
+  if (!(scene.durationMs > 0) || !(scene.width > 0) || !(scene.height > 0)) {
+    throw new ConnectError('preview_empty_body', 'POST animation preview: scene is missing timing or canvas');
+  }
+  scene.layers = scene.layers ?? [];
+  scene.focus = scene.focus ?? [];
+  scene.shots = scene.shots ?? [];
+  const layers = Number(scene.layerCount ?? scene.layers.length);
+  const focus = Number(scene.focusCount ?? scene.focus.length);
+  const focusSkipped = Number(scene.focusSkipped ?? 0);
   return {
-    url: URL.createObjectURL(blob),
+    scene,
     layers: Number.isFinite(layers) ? layers : 0,
     focus: Number.isFinite(focus) ? focus : 0,
     focusSkipped: Number.isFinite(focusSkipped) ? focusSkipped : 0,
-    focusSkipReason: res.headers.get('X-Preview-Focus-Skip-Reason') ?? ''
+    focusSkipReason: scene.focusSkipReason ?? '',
+    entranceSkipped: Boolean(scene.entranceSkipped)
   };
 }
 
@@ -275,7 +326,8 @@ export async function applyAnimationToAll(
   identity: ClientIdentity,
   scope: AnimationApplyAllScope,
   presetId: string,
-  overwrite = false
+  overwrite = false,
+  withEntrance = false
 ): Promise<AnimationApplyAllResponse> {
   const params = new URLSearchParams();
   if (scope.sourceRevisionNo && scope.sourceRevisionNo > 0) {
@@ -287,7 +339,7 @@ export async function applyAnimationToAll(
   // 嵌套模板会让路径尾部残留字符，被误判成「后端没有这条路由」。
   const query = qs ? `?${qs}` : '';
   const path = `/api/projects/${encodeURIComponent(scope.projectId)}/animation/apply-all${query}`;
-  return postJSON<AnimationApplyAllResponse>(identity, path, { presetId, overwrite });
+  return postJSON<AnimationApplyAllResponse>(identity, path, { presetId, overwrite, withEntrance });
 }
 
 // 批量套用：把某一页已调好的规格复制到选中的页。后端要求全成或全不成，

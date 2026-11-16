@@ -78,9 +78,9 @@ type JobPager interface {
 }
 
 // registerJobDetailRoutes 挂载任务详情/摘要原生 HTTP 端点（B4-M6a）。
-func registerJobDetailRoutes(mux *http.ServeMux, jobs JobStore, auth func(http.Handler) http.Handler) {
+func registerJobDetailRoutes(mux *http.ServeMux, jobs JobStore, slides jobSlideSource, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /jobs/{jid}/detail", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		publicJobDetail(w, r, jobs)
+		publicJobDetail(w, r, jobs, slides)
 	})))
 	// 列表批量取「范围/阶段/步骤计数」：单次请求替代逐任务查询，避免 N+1。
 	mux.Handle("GET /jobs/summary", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +91,7 @@ func registerJobDetailRoutes(mux *http.ServeMux, jobs JobStore, auth func(http.H
 // publicJobDetail 返回单个任务的扩展详情。
 // 步骤读取失败时**仍返回已拿到的 traceId/范围**，并以 stepsError 明确标注步骤不可用——
 // 部分可用好过整体失败，但绝不能让失败伪装成「没有步骤」。
-func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
+func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore, slides jobSlideSource) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -107,11 +107,18 @@ func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 		writeConnectError(w, jobError(err))
 		return
 	}
+	fullScope := pipeline.ScopeOf(job.Kind, job.InputSnapshot)
+	order := snapshotPageOrder(job.Kind, job.InputSnapshot)
+	var labels map[string]jobSlideLabel
+	if slides != nil {
+		labels = slides.SlideLabels(r.Context(), principal.TenantID, principal.UserID, job.ProjectID, snapshotSourceRevision(job.Kind, job.InputSnapshot))
+	}
 	body := map[string]any{
-		"jobId":   job.ID,
-		"kind":    string(job.Kind),
-		"traceId": job.TraceParent,
-		"scope":   scopeFor(string(job.Kind), job.InputSnapshot),
+		"jobId":       job.ID,
+		"kind":        string(job.Kind),
+		"traceId":     job.TraceParent,
+		"scope":       scopeFor(string(job.Kind), job.InputSnapshot),
+		"slideLabels": slideLabelPayload(fullScope.AffectedPages, labels, order),
 	}
 	inspector, ok := jobs.(JobInspector)
 	if !ok {
@@ -126,8 +133,9 @@ func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 		writeJSON(w, http.StatusOK, body)
 		return
 	}
+	subjects := subjectsForSteps(steps, labels, order)
 	items := make([]map[string]any, 0, len(steps))
-	for _, st := range steps {
+	for i, st := range steps {
 		item := map[string]any{
 			"stepType":      st.StepType,
 			"state":         string(st.State),
@@ -135,6 +143,7 @@ func publicJobDetail(w http.ResponseWriter, r *http.Request, jobs JobStore) {
 			// result_ref 是内部对象键，只回「是否存在结果」，不把内部存储键透给前端。
 			"hasResult": st.ResultRef != "",
 		}
+		applyStepSubject(item, subjects[i])
 		// 逐页成稿（step_type=page）的 result_ref 存的是**人类可读的文本**，不是对象键：
 		//   · degraded/failed → 为什么没成稿（「第一版遗漏「数字 13」；修补调用失败」）；
 		//   · success 且非空 → "已放行但请核对"（按策略放行的概括计数，如「新增数字 4」）。

@@ -91,6 +91,12 @@ type SlideEntry struct {
 	// Focus 是页级焦点序列，与 IR 的 page.focus 同语义：此刻讲的是谁，
 	// 其余层由 shared/motion.ts 的 focusDim 推导出压暗量。播放器与 MP4 共用同一份求值。
 	Focus []SlideFocus `json:"focus,omitempty"`
+	// Annotations 是注视之上的圈选 / 台上标签。缺省表示没有。
+	Annotations []SlideAnnotation `json:"annotations,omitempty"`
+	// LookCrop 为真时播放器把当前 Focus.rect 裁切铺满舞台。
+	LookCrop bool `json:"lookCrop,omitempty"`
+	// LookCropPadPx 是 punch-in 裁切外扩。缺省 8。
+	LookCropPadPx int `json:"lookCropPadPx,omitempty"`
 	// Shots 把一页切成若干镜头切片（IR 的 page.shots 原样透传）。
 	// 为空时 Image 是唯一画面来源，与 M6-2 的清单逐字节一致。
 	Shots []SlideShot `json:"shots,omitempty"`
@@ -129,6 +135,21 @@ type SlideFocus struct {
 	// 而不是靠图层压暗——内嵌图表的柱子没有独立图层，只能这么指。
 	// 与 render.FocusSpan.Rect 一一对应，缺省表示沿用图层压暗。
 	Rect *SlideBox `json:"rect,omitempty"`
+	// VeilAlpha 矩形遮罩盖白的不透明度；(0,1]。缺省由播放器按 1-FOCUS_DIM_OPACITY。
+	VeilAlpha float64 `json:"veilAlpha,omitempty"`
+}
+
+// SlideAnnotation 与 render.Annotation 同构。
+type SlideAnnotation struct {
+	Kind      string    `json:"kind"`
+	StartMs   int64     `json:"startMs"`
+	EndMs     int64     `json:"endMs,omitempty"`
+	FadeMs    int64     `json:"fadeMs,omitempty"`
+	ElementID string    `json:"elementId,omitempty"`
+	Rect      *SlideBox `json:"rect,omitempty"`
+	Shape     string    `json:"shape,omitempty"`
+	Text      string    `json:"text,omitempty"`
+	SegmentID string    `json:"segmentId,omitempty"`
 }
 
 // SlideTransition 是页间转场。缺省（nil 或 type=none）表示直接切换。

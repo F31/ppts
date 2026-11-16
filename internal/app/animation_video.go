@@ -71,6 +71,7 @@ func (h *ExportHandler) animatedVideo(ctx context.Context, job *pipeline.Job, sn
 		ProjectID: job.ProjectID,
 		Slides:    bundle.Timeline.Slides,
 		PagePNGs:  pagePNGs,
+		Subtitles: bundle.Timeline.Subtitles,
 	})
 	if err != nil {
 		h.logAnimationSkip("animation: assemble pages: " + err.Error())

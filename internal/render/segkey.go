@@ -85,14 +85,19 @@ type segmentPage struct {
 	BaseImage  string      `json:"baseImage"`
 	Layers     []Layer     `json:"layers"`
 	Transition *Transition `json:"transition,omitempty"`
+	// Focus 与 Shots 会改变像素。不进键的话，只改焦点或镜头会命中旧片段。
+	Focus []FocusSpan `json:"focus,omitempty"`
+	Shots []Shot      `json:"shots,omitempty"`
 }
 
 // segmentPrev 是「前一页末帧」进入键的投影。转场只画前一页的末帧，
 // 因此前一页自己的 transition 不进键（它描述的是「如何进入前一页」）。
 type segmentPrev struct {
-	DurationMs int64   `json:"durationMs"`
-	BaseImage  string  `json:"baseImage"`
-	Layers     []Layer `json:"layers"`
+	DurationMs int64       `json:"durationMs"`
+	BaseImage  string      `json:"baseImage"`
+	Layers     []Layer     `json:"layers"`
+	Focus      []FocusSpan `json:"focus,omitempty"`
+	Shots      []Shot      `json:"shots,omitempty"`
 }
 
 // segmentInput 是键的完整载荷。字段顺序即序列化顺序。
@@ -123,6 +128,8 @@ func segmentKey(plan *Timeline, i int, env SegmentEnv) (string, error) {
 			BaseImage:  path.Base(page.BaseImage),
 			Layers:     canonicalLayers(page.Layers),
 			Transition: effectiveTransition(page.Transition),
+			Focus:      canonicalFocus(page.Focus),
+			Shots:      canonicalShots(page.Shots),
 		},
 	}
 	// 只有「转场真的会发生」时，前一页才影响本页像素：
@@ -133,6 +140,8 @@ func segmentKey(plan *Timeline, i int, env SegmentEnv) (string, error) {
 			DurationMs: prev.DurationMs,
 			BaseImage:  path.Base(prev.BaseImage),
 			Layers:     canonicalLayers(prev.Layers),
+			Focus:      canonicalFocus(prev.Focus),
+			Shots:      canonicalShots(prev.Shots),
 		}
 	}
 	payload, err := json.Marshal(in)
@@ -162,6 +171,34 @@ func effectiveTransition(t Transition) *Transition {
 //
 // nil 归一成空切片：`null` 与 `[]` 在 JSON 里不同、在画面上相同，不归一就会
 // 「同一份计划换个序列化路径命中不了缓存」。
+func canonicalFocus(in []FocusSpan) []FocusSpan {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]FocusSpan, len(in))
+	copy(out, in)
+	return out
+}
+
+func canonicalShots(in []Shot) []Shot {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Shot, len(in))
+	for i, s := range in {
+		out[i] = s
+		out[i].Image = path.Base(s.Image)
+		if s.Crop != nil {
+			box := *s.Crop
+			out[i].Crop = &box
+		}
+		if len(s.Camera) > 0 {
+			out[i].Camera = append([]CameraKeyframe(nil), s.Camera...)
+		}
+	}
+	return out
+}
+
 func canonicalLayers(in []Layer) []Layer {
 	out := make([]Layer, len(in))
 	for i, l := range in {

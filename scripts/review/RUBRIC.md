@@ -22,6 +22,11 @@ python3 scripts/review/still-check.py --still /tmp/f.png --page <job>/pages/p000
 # 3) 动效进行中：与源页的差异必须只落在该元素框内
 python3 scripts/review/still-check.py --still /tmp/f10.png --page <job>/pages/p000.png \
     --confined-to 116,288,1320,130
+
+# 注视页（V13 / V13b / V13c）：稳态中点、末 look 带纱、孔内 ≥ 0.97
+python3 scripts/review/gaze_test.py
+python3 scripts/review/dom-ssim.py --plan <job>/plan.json --pkg <pkg> --segments <out> --out <gate>
+python3 scripts/review/settled-gate.py --pkg <pkg> --pages <job>/pages
 ```
 
 2026-10-29 实测（5 页样片）：5 页稳定帧**逐像素相同**（平均差 0.000、差 >32 像素 0），

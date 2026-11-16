@@ -2121,6 +2121,48 @@ func TestPlaybackGetNarrationIncludesPageKeys(t *testing.T) {
 	}
 }
 
+// 解析任务不在了，时间轴仍记下源版本号。页图键必须来自这一版的 pages.json，
+// 否则导出窗口拿到空列表，HTML 成品只有语音。
+func TestPlaybackGetNarrationUsesStoredPagesWithoutParseJob(t *testing.T) {
+	objects := testObjects(t)
+	timeline, err := media.BuildTimeline([]media.SlideInput{{
+		SlideID:  "slide-1",
+		Segments: []media.SegmentInput{{SegmentID: "seg-1", DisplayText: "字幕", AudioKey: "tenant-1/project-1/cache/audio/a.wav", DurationMS: 100}},
+	}}, media.Timing{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timeline.SourceRevisionNo = 1
+	srtKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "subtitle", AssetID: "sub", Ext: "srt"}
+	vttKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "subtitle", AssetID: "sub", Ext: "vtt"}
+	timelineKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "narration", AssetType: "timeline", AssetID: "tl", Ext: "json"}
+	pageKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "src-01", AssetType: "render", AssetID: "page-0001", Ext: "png"}
+	putAPIObject(t, objects, srtKey, []byte("srt"), "application/x-subrip")
+	putAPIObject(t, objects, vttKey, []byte("vtt"), "text/vtt")
+	putAPIObject(t, objects, pageKey, []byte("png"), "image/png")
+	bundle, _ := json.Marshal(app.TimelineAsset{Timeline: timeline, SRTKey: srtKey.String(), VTTKey: vttKey.String()})
+	putAPIObject(t, objects, timelineKey, bundle, "application/json")
+	manifest, _ := json.Marshal(app.PageManifest{RevisionNo: 1, Renderer: "LibreOffice", Pages: []app.PageEntry{{SlideID: "slide-1", Index: 0, Key: pageKey.String()}}})
+	putAPIObject(t, objects, objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src-01", AssetType: "render", AssetID: "pages", Ext: "json",
+	}, manifest, "application/json")
+
+	jobs := &narrationJobStub{
+		job:     &pipeline.Job{ID: "job-narr", Kind: pipeline.KindNarration},
+		stepRef: timelineKey.String(),
+	}
+	server := httptest.NewServer(NewHandler(&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, jobs, &fakeArtifactStore{}, objects, nil, Options{DevHeaders: true}))
+	t.Cleanup(server.Close)
+	client := pptsv1connect.NewPlaybackServiceClient(http.DefaultClient, server.URL)
+	resp, err := client.GetNarration(context.Background(), authRequest(&pptsv1.GetNarrationRequest{ProjectId: "project-1"}))
+	if err != nil {
+		t.Fatalf("GetNarration: %v", err)
+	}
+	if !resp.Msg.GetReady() || len(resp.Msg.GetPagePngKeys()) != 1 || resp.Msg.GetPagePngKeys()[0] != pageKey.String() {
+		t.Fatalf("page keys = %v, want %s", resp.Msg.GetPagePngKeys(), pageKey.String())
+	}
+}
+
 // narrationJobStub 是 GetNarration 专用 stub：精确控制最近成功任务与 timeline ref。
 type narrationJobStub struct {
 	job         *pipeline.Job

@@ -22,6 +22,8 @@ import { useI18n } from '../i18n';
 import { Link, navigate, useRoute } from '../router';
 import { LoadFailure } from '../components/LoadFailure';
 import { jobKindKey, jobScopeKindKey, jobStateKey, jobStepStateKey, jobStepTypeKey, type Job, type JobState, type Project } from '../types';
+import { formatNarrationPageFailure } from '../narrationFailure';
+import { affectedPageText, stepSubjectHeading } from '../jobStepLabel';
 
 const activeStates: JobState[] = [
   'JOB_STATE_QUEUED',
@@ -563,7 +565,11 @@ export function Jobs({ identity }: { identity: ClientIdentity }) {
                     <td>
                       <span className={`state-tag ${stateClass(job.state)}`}>{t(jobStateKey[job.state])}</span>
                       {job.attempt > 1 && <small className="cell-sub block-sub">{`${t('jobs.colAttempt')} ${job.attempt}`}</small>}
-                      {job.lastError && <small className="cell-sub block-sub">{t('jobs.failureReason', { msg: job.lastError.message })}</small>}
+                      {job.lastError && (
+                        <small className="cell-sub block-sub">
+                          {t('jobs.failureReason', { msg: formatNarrationPageFailure(job.lastError.message, [], t) })}
+                        </small>
+                      )}
                     </td>
                     <td>{job.progressPercent >= 0 ? `${job.progressPercent}%` : '—'}</td>
                     <td>{new Date(job.createdAtUnix * 1000).toLocaleString()}</td>
@@ -690,7 +696,7 @@ function JobDetailPanel({
           <dd>
             {pages.length === 0
               ? t('common.none')
-              : `${pages.join('、')}${truncated ? ` ${t('jobs.pagesTruncated', { count: pages.length, total: scope?.pageCount ?? 0 })}` : ''}`}
+              : `${affectedPageText(pages, detail?.slideLabels, t)}${truncated ? ` ${t('jobs.pagesTruncated', { count: pages.length, total: scope?.pageCount ?? 0 })}` : ''}`}
           </dd>
         </div>
         <div>
@@ -718,7 +724,7 @@ function JobDetailPanel({
           <div className="full-row">
             <dt>{t('jobs.fieldLastError')}</dt>
             <dd className="error-text">
-              ({job.lastError.code}) {job.lastError.message}
+              ({job.lastError.code}) {formatNarrationPageFailure(job.lastError.message, [], t)}
               {job.lastError.traceId && <small className="cell-sub block-sub">trace: {job.lastError.traceId}</small>}
             </dd>
           </div>
@@ -769,6 +775,7 @@ function JobDetailPanel({
             <table className="data-table">
               <thead>
                 <tr>
+                  <th>{t('jobs.stepsColSubject')}</th>
                   <th>{t('jobs.stepsColType')}</th>
                   <th>{t('jobs.stepsColState')}</th>
                   <th>{t('jobs.stepsColUpdated')}</th>
@@ -776,8 +783,15 @@ function JobDetailPanel({
                 </tr>
               </thead>
               <tbody>
-                {detail.steps.map((step, index) => (
+                {detail.steps.map((step, index) => {
+                  const heading = stepSubjectHeading(step, t);
+                  return (
                   <tr key={`${step.stepType}-${step.updatedAtUnix}-${index}`}>
+                    <td className="step-subject">
+                      {heading ? <strong>{heading}</strong> : t('common.none')}
+                      {step.summary ? <small className="cell-sub block-sub">{step.summary}</small> : null}
+                      {step.reason ? <small className="cell-sub block-sub">{step.reason}</small> : null}
+                    </td>
                     <td>{stepTypeLabel(step.stepType)}</td>
                     <td>
                       <span className={`state-tag step-${step.state}`}>
@@ -788,7 +802,8 @@ function JobDetailPanel({
                     {/* result_ref 是内部对象键，后端只回是否已产出。 */}
                     <td>{step.hasResult ? t('jobs.stepsHasResult') : t('common.none')}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

@@ -13,6 +13,7 @@
   1. 落点准确：实际定位与请求相差 ≤ 50ms（滑杆是千分比，量化误差远小于此）。
   2. 舞台比例与页图一致，且尺寸 1:1 —— 见下面「为什么要求 1:1」。
   3. 逐页 SSIM ≥ 阈值（默认 0.995），且平均差、结构性差异像素占比都在阈值内。
+  4. 注视页（V13b）：取样末 look（仍带纱），全帧不对源页 PNG。孔内走 V13c（≥ 0.97）。
 
 取样点与参照物（有页内镜头时与无镜头时不同）：
   * 无 shots：页尾前 250ms，参照物是源页图。层叠在元素位置上，所以源页图
@@ -53,6 +54,13 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from domshot import run_dom_shot  # noqa: E402
+from gaze import (  # noqa: E402
+    HOLE_MIN_SSIM,
+    hole_interior,
+    is_gaze_look_page,
+    last_look,
+    slide_as_page,
+)
 from ssim import ssim_map  # noqa: E402
 
 # 结尾取样点：页尾前 250ms。入场动画通常在前 1s 内结束，页尾前这段时间
@@ -86,9 +94,30 @@ RESAMPLED_MAX_MEAN_DIFF = 1.0
 
 
 def pick_sample(slide, page_png, pkg):
-    """一页的取样时刻、参照图与一句说明。见文件头「取样点与参照物」。"""
+    """一页的取样时刻、参照图与一句说明。见文件头「取样点与参照物」。
+
+    注视页（V13b）：取样末 look（仍带纱），全帧对源页 PNG 不可能 ≥ 0.98。
+    这类页返回 skip_full=True，由 V13c 再比孔内矩形。
+    """
     start = int(slide["startUs"]) / 1000
     end = int(slide["endUs"]) / 1000
+    duration = int(round(end - start))
+    page = slide_as_page(slide, duration)
+    if is_gaze_look_page(page):
+        look = last_look(page)
+        at = int(round((start + end) / 2))
+        if look:
+            at = int(start + look["midMs"])
+            if at >= end:
+                at = int(end - 1)
+            if at <= start:
+                at = int(round((start + end) / 2))
+        if page.get("lookCrop"):
+            return at, page_png, "末 look（punch-in）", \
+                "科技 LookCrop 全帧都是孔，两端同帧走 V13；不拿源页当 V13b 参照"
+        return at, page_png, "末 look（带纱）", \
+            "注视页终态是末 look（约 90% 画面盖着纱），全帧对源图不可能 ≥ 0.98；孔内走 V13c"
+
     shots = slide.get("shots") or []
     if not shots:
         at = end - SETTLE_BACK_MS
@@ -124,12 +153,40 @@ def pick_sample(slide, page_png, pkg):
         "末镜换了整页图且该页有元素动画：画面 = 镜头图 + 层，包里没有可比的无层参照图"
 
 
+def compare_hole(crop, ref_img, rect, min_ssim):
+    """V13c：孔内矩形 vs 源页 PNG 局部。孔边 blur 外扩环不进门槛。"""
+    inner = hole_interior(rect)
+    if not inner:
+        return None, "孔太小，内缩 16px 后没有可比窗口"
+    box = (inner["x"], inner["y"], inner["x"] + inner["w"], inner["y"] + inner["h"])
+    w, h = crop.size
+    if box[2] > w or box[3] > h or box[0] < 0 or box[1] < 0:
+        return None, f"孔内窗口 {inner} 超出舞台 {w}×{h}"
+    a = np.asarray(crop.crop(box).convert("L"), dtype=np.float64)
+    b = np.asarray(ref_img.crop(box).convert("L"), dtype=np.float64)
+    if a.shape != b.shape or a.size == 0:
+        return None, "孔内窗口与源页切块尺寸不一致"
+    score = float(ssim_map(a, b).mean())
+    if score < min_ssim:
+        return score, f"孔内 SSIM {score:.5f} < {min_ssim}"
+    return score, None
+
+
+def gaze_last_rect(slide, duration_ms):
+    look = last_look(slide_as_page(slide, duration_ms))
+    if not look:
+        return None
+    return look.get("rect")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--pkg", required=True, help="成品包目录（含 index.html 与 manifest.json）")
     ap.add_argument("--pages", required=True, help="源页图目录（p000.png …），与清单按序号对齐")
     ap.add_argument("--out", default="", help="截图与报告输出目录（默认 pkg 同级 settled-gate）")
     ap.add_argument("--min-ssim", type=float, default=MIN_SSIM)
+    ap.add_argument("--hole-min-ssim", type=float, default=HOLE_MIN_SSIM,
+                    help="V13c 孔内局部 SSIM 阈值（默认 0.97）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
@@ -198,6 +255,35 @@ def main():
         if skip:
             checks.append({"code": "V13b", "page": index, "status": "skip", "detail": skip,
                            "atMs": at_ms, "sample": note})
+            slide = slides[index]
+            duration = int(round((int(slide["endUs"]) - int(slide["startUs"])) / 1000))
+            page = slide_as_page(slide, duration)
+            if is_gaze_look_page(page) and not page.get("lookCrop"):
+                shot = shots.get(at_ms) or {}
+                stage_box = shot.get("stage")
+                rect = gaze_last_rect(slide, duration)
+                if not shot.get("ok") or not stage_box or not rect:
+                    checks.append({
+                        "code": "V13c", "page": index, "status": "fail",
+                        "detail": "注视页末 look 截图不可用，无法比孔内",
+                        "atMs": at_ms,
+                    })
+                    continue
+                shot_img = Image.open(os.path.join(out_dir, f"t{at_ms}.png")).convert("RGB")
+                crop = shot_img.crop((stage_box["x"], stage_box["y"],
+                                      stage_box["x"] + stage_box["w"],
+                                      stage_box["y"] + stage_box["h"]))
+                ref_img = Image.open(ref_path).convert("RGB")
+                if ref_img.size != crop.size:
+                    ref_img = ref_img.resize(crop.size, Image.BICUBIC)
+                score, err = compare_hole(crop, ref_img, rect, args.hole_min_ssim)
+                checks.append({
+                    "code": "V13c", "page": index,
+                    "status": "fail" if err else "pass",
+                    "detail": err or f"孔内 SSIM {score:.5f}",
+                    "ssim": None if score is None else round(score, 6),
+                    "atMs": at_ms, "sample": "孔内 vs 源页",
+                })
             continue
         shot = shots.get(at_ms)
         if shot is None:
@@ -287,14 +373,20 @@ def main():
                   f"{outliers * 100:>10.3f}%  {cases[index][3]}{tag}")
         print()
         for c in skipped:
-            print(f"SKIP [V13b] page {c.get('page')}: {c['detail']}")
+            print(f"SKIP [{c.get('code', 'V13b')}] page {c.get('page')}: {c['detail']}")
+        holes = [c for c in checks if c.get("code") == "V13c"]
+        for c in holes:
+            tag = "FAIL" if c["status"] == "fail" else "PASS"
+            print(f"{tag} [V13c] page {c.get('page')}: {c['detail']}")
         if failed:
             for c in failed:
-                print(f"FAIL [V13b] page {c.get('page')}: {c['detail']}")
+                print(f"FAIL [{c.get('code', 'V13b')}] page {c.get('page')}: {c['detail']}")
         elif rows:
             worst = min(r[2] for r in rows)
             print(f"PASS: {len(rows)} 页终态帧与参照图一致（最差 SSIM {worst:.5f}）"
                   + (f"，{len(skipped)} 页跳过" if skipped else ""))
+        elif holes and not any(c["status"] == "fail" for c in holes):
+            print(f"PASS: {len(holes)} 页注视孔内与源页一致（V13c ≥ {args.hole_min_ssim}）")
         else:
             print(f"SKIP: 没有可比对的页（{len(skipped)} 页无法比对）")
     return 1 if failed else 0

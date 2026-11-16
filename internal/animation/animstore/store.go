@@ -8,6 +8,7 @@
 package animstore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -25,6 +26,10 @@ import (
 type Store interface {
 	// Get 取指定源版本下的规格；SourceRevisionNo>0 时精确匹配优先，缺失回退 legacy(0)。
 	Get(ctx context.Context, key animation.Key) (*animation.Revision, error)
+
+	// List 列出项目在该语言、该源版本下的全部规格（精确版本优先于 legacy 0）。
+	// 配音重做后用来扫 withSegment 锚点是否还指向现存分段。
+	List(ctx context.Context, key animation.Key) ([]*animation.Revision, error)
 
 	// Put 写入规格内容（不含状态）。expected 是调用方见到的 revision：
 	//   - 行不存在：expected 必须为 0，写入后 revision = 1；
@@ -55,29 +60,67 @@ type BatchOp struct {
 	Expected int64
 }
 
+// tracksColumn 是 tracks jsonb 列的包装：把 MotionMode 和轨道放在同一列里，
+// 避免加 SQL 列。旧行仍是裸数组。
+type tracksColumn struct {
+	MotionMode string             `json:"motionMode,omitempty"`
+	Tracks     []*animation.Track `json:"tracks"`
+}
+
 // marshalTracks / unmarshalTracks 是列编码细节：tracks 存成 JSON 文本，
 // NULL 与 `[]` 在读端统一成空切片。只有存储实现在意这件事，因此留在本包。
-func marshalTracks(tracks []*animation.Track) ([]byte, error) {
-	if tracks == nil {
+//
+// 未写 motionMode 时仍写成裸数组，已保存的入场规格字节不变。
+func marshalTracks(rev *animation.Revision) ([]byte, error) {
+	if rev == nil {
 		return []byte("[]"), nil
 	}
-	b, err := json.Marshal(tracks)
+	if rev.MotionMode == "" {
+		if rev.Tracks == nil {
+			return []byte("[]"), nil
+		}
+		b, err := json.Marshal(rev.Tracks)
+		if err != nil {
+			return nil, fmt.Errorf("animation: marshal tracks: %w", err)
+		}
+		return b, nil
+	}
+	env := tracksColumn{MotionMode: rev.MotionMode, Tracks: rev.Tracks}
+	if env.Tracks == nil {
+		env.Tracks = []*animation.Track{}
+	}
+	b, err := json.Marshal(env)
 	if err != nil {
 		return nil, fmt.Errorf("animation: marshal tracks: %w", err)
 	}
 	return b, nil
 }
 
-func unmarshalTracks(raw []byte) ([]*animation.Track, error) {
+func unmarshalTracks(raw []byte) ([]*animation.Track, string, error) {
+	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return []*animation.Track{}, nil
+		return []*animation.Track{}, "", nil
 	}
-	var tracks []*animation.Track
-	if err := json.Unmarshal(raw, &tracks); err != nil {
-		return nil, fmt.Errorf("animation: unmarshal tracks: %w", err)
+	switch raw[0] {
+	case '[':
+		var tracks []*animation.Track
+		if err := json.Unmarshal(raw, &tracks); err != nil {
+			return nil, "", fmt.Errorf("animation: unmarshal tracks: %w", err)
+		}
+		if tracks == nil {
+			tracks = []*animation.Track{}
+		}
+		return tracks, "", nil
+	case '{':
+		var env tracksColumn
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return nil, "", fmt.Errorf("animation: unmarshal tracks: %w", err)
+		}
+		if env.Tracks == nil {
+			env.Tracks = []*animation.Track{}
+		}
+		return env.Tracks, env.MotionMode, nil
+	default:
+		return nil, "", fmt.Errorf("animation: tracks json: expected array or object")
 	}
-	if tracks == nil {
-		tracks = []*animation.Track{}
-	}
-	return tracks, nil
 }

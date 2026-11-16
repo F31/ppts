@@ -7,6 +7,7 @@
  *   1. 讲稿页数只能来自 stepCounts.success，不能用请求的页数冒充；
  *   2. 失败 / 降级一律拦住，降级是「原文兜底」不是成稿成功；
  *   3. 读不到步骤（stepsError / 空步骤 / detail 缺失）必须显式报错，不能当成没问题。
+ *   4. 已有讲稿默认沿用：全部跳过不是失败，每一页都有稿时不再排成稿任务。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -124,11 +125,45 @@ test('超长逐页原因要截断，避免把整段模型报错糊到界面上',
 // React 19 在事件回调结束后把合成事件的 currentTarget 重置为 null，而 updater
 // 可能延迟执行，于是抛 "Cannot read properties of null (reading 'checked')"，
 // ErrorBoundary 接管整页。CDP 实点第 2/3 个复选框都复现。
-test('全部跳过：如实说「没有生成新讲稿」，不冒充无法核验', () => {
+test('全部跳过不是任务损坏：已有讲稿时调用方可以继续配音', () => {
   const out = m.evaluateDraftJob(detail({ skipped: 23 }));
-  assert.equal(out.ok, false);
-  assert.equal(out.errorKey, 'editor.oneClickDraftAllSkipped');
+  assert.equal(out.ok, true);
+  assert.equal(out.allSkipped, true);
+  assert.equal(out.errorKey, '');
   assert.equal(out.params.skipped, 23);
+});
+
+test('只填充空白页：已有讲稿的页沿用，只给缺稿的页排队', () => {
+  const out = m.planScriptReuse({
+    scopedSlideIds: ['a', 'b', 'c', ''],
+    scriptSlideIds: ['a', 'c', 'z'],
+    overwriteAll: false
+  });
+  assert.deepEqual(out.reuse, ['a', 'c']);
+  assert.deepEqual(out.generate, ['b']);
+  assert.equal(out.skipJob, false);
+});
+
+test('只填充空白页：每一页都已有讲稿时不再排成稿任务', () => {
+  const out = m.planScriptReuse({
+    scopedSlideIds: ['a', 'b'],
+    scriptSlideIds: ['b', 'a'],
+    overwriteAll: false
+  });
+  assert.deepEqual(out.reuse, ['a', 'b']);
+  assert.deepEqual(out.generate, []);
+  assert.equal(out.skipJob, true);
+});
+
+test('覆盖全部：已有讲稿也要重写，不沿用', () => {
+  const out = m.planScriptReuse({
+    scopedSlideIds: ['a', 'b'],
+    scriptSlideIds: ['a'],
+    overwriteAll: true
+  });
+  assert.deepEqual(out.reuse, []);
+  assert.deepEqual(out.generate, ['a', 'b']);
+  assert.equal(out.skipJob, false);
 });
 
 test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）', () => {
@@ -143,9 +178,38 @@ test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）'
       `${name}：setState 的更新函数里读 e.currentTarget 会在 React 19 下崩溃；必须先同步取出 checked`
     );
   }
-  // 修复形态必须保留：三个复选框各自先取值。
+  // 修复形态必须保留：讲稿/配音/动效/要点依次出现各自先取值。
   const safeAssignments = (pageSrc + drawerSrc).match(/const checked = e\.currentTarget\.checked;/g) || [];
-  assert.equal(safeAssignments.length, 3, '三个一键成片复选框都要先同步取出 checked');
+  assert.equal(safeAssignments.length, 4, '四个一键成片复选框都要先同步取出 checked');
+});
+
+// 真机：点「开始」后抽屉盖住整页，关闭钮在 running 时禁用，页面所有按钮都点不了。
+// 一键成稿和配音是入队后就能关窗。成片必须同样：关窗不中断，并且关窗发生在等待任务之前。
+test('一键成片进行中可以关闭抽屉，关闭不中断流水线', () => {
+  const pageSrc = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const drawerSrc = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(drawerSrc, /if\s*\(\s*!running\s*\)/, '关窗不得因为正在跑而拒绝');
+  assert.doesNotMatch(
+    drawerSrc,
+    /className="dialog-close-icon"[\s\S]{0,80}disabled=\{running\}/,
+    '关闭钮在生成中也要能点'
+  );
+  assert.doesNotMatch(
+    drawerSrc,
+    /className="button-ghost"\s+disabled=\{running\}/,
+    '底部关闭钮在生成中也要能点'
+  );
+  const run = pageSrc.slice(pageSrc.indexOf('const runOneClick'), pageSrc.indexOf('const regenerateVoiceActive'));
+  const closeAt = run.indexOf('setOneClickOpen(false)');
+  const waitAt = run.indexOf('waitForOneClickJob');
+  assert.ok(closeAt >= 0 && waitAt >= 0 && closeAt < waitAt, '必须先关抽屉，再等待讲稿任务');
+  assert.match(run, /setOneDraftJobId\(result\.jobId\)/, '讲稿步要登记到与一键成稿相同的任务');
+  assert.match(run, /refreshActiveGenJobs\(\)/, '入队后要立刻刷新顶部任务条');
+  assert.match(run, /scriptIdsForVoice/, '配音范围要在讲稿步之后现查，不能用点击时的旧讲稿列表');
+  assert.match(run, /planScriptReuse/, '已有讲稿要先规划沿用，不能一律重新生成');
+  assert.match(run, /reusePlan\.skipJob/, '每一页都已有讲稿时要跳过成稿任务');
+  assert.match(run, /reusePlan\.generate/, '成稿任务只提交还没有讲稿的页');
+  assert.match(run, /outcome\.allSkipped && reusePlan\.reuse\.length === 0/, '只有完全没有讲稿可用时才因全部跳过而停止');
 });
 
 // 真机反向验证踩过的坑：一键成片抽屉能选「润色讲解」，覆盖策略却藏在
@@ -158,6 +222,16 @@ test('一键成片抽屉可直接改覆盖策略，且流水线真的用这个�
   assert.match(drawer, /editor\.oneClickOverwriteNote/, '抽屉里要说明覆盖策略的影响');
   assert.match(src, /overwrite=\{oneDraftOverwrite\}/, '页面必须把覆盖策略传给抽屉');
   assert.match(src, /overwrite: oneDraftOverwrite === 'overwrite_all'/, '流水线必须真的用这个值');
+});
+
+test('一键成片抽屉可勾选要点依次出现，且套用请求真的带 withEntrance', () => {
+  const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const drawer = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
+  assert.match(drawer, /editor\.animationEntranceLayers/, '抽屉里要有要点依次出现勾选');
+  assert.match(drawer, /onEntranceChange/, '抽屉要把勾选回传给流水线');
+  assert.match(src, /oneClickEntrance/, '页面要持有勾选状态');
+  assert.match(src, /const entrance = oneClickEntrance/, '关窗之后仍要用点击当时的勾选');
+  assert.match(src, /applyAnimationToAll\([\s\S]*preset, false, entrance\)/, '套用请求必须带 withEntrance');
 });
 
 // 成稿预估（跳过/无可生成材料）是从编辑器里抽出来的纯函数，口径必须守住：

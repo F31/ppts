@@ -24,49 +24,85 @@ type editorSlideRenderItem struct {
 	URL     string `json:"url"`
 }
 
-// fallbackPageRenderer 在 job_steps 没有成功步骤引用时，按约定对象键直读页面清单，
-// 只取 renderer 字段用于诊断（如 "unavailable"）。读不到返回空串，调用方维持空列表。
-func fallbackPageRenderer(ctx context.Context, r *http.Request, objects objectstore.ObjectStore, projects project.ProjectStore, tenantID, userID, projectID string) string {
+// fallbackPageManifest 在 job_steps 没有成功步骤引用时，按约定对象键直读页面清单。
+// 读不到返回 false，调用方维持空列表。
+func fallbackPageManifest(ctx context.Context, r *http.Request, objects objectstore.ObjectStore, projects project.ProjectStore, tenantID, userID, projectID string) (*app.PageManifest, bool) {
 	revNo := 0
 	if revStr := r.URL.Query().Get("revision_no"); revStr != "" {
 		n, err := strconv.Atoi(revStr)
 		if err != nil || n <= 0 {
-			return ""
+			return nil, false
 		}
 		revNo = n
 	} else {
 		row, err := projects.GetProject(ctx, tenantID, userID, projectID)
 		if err != nil || row == nil {
-			return ""
+			return nil, false
 		}
 		revNo = int(row.CurrentRevision)
 	}
 	if revNo <= 0 {
-		return ""
+		return nil, false
 	}
 	key := objectstore.ObjectKey{
 		TenantID: tenantID, ProjectID: projectID, Revision: srcRevString(revNo),
 		AssetType: "render", AssetID: "pages", Ext: "json",
 	}
 	manifest, err := loadPageManifest(ctx, objects, tenantID, key.String())
-	if err != nil {
-		return ""
+	if err != nil || manifest == nil {
+		return nil, false
 	}
-	return manifest.Renderer
+	return manifest, true
 }
 
-// writePageRenderFallback 在拿不到成功步骤引用时，把清单里的能力缺失原因透出。
-// 返回 false 表示没有可透出的原因，调用方维持原来的空列表响应。
+// signEditorPages 为清单里的页面 PNG 签发短期可读 URL。键无法解析、跨租户或签发失败的页跳过。
+func signEditorPages(ctx context.Context, objects objectstore.ObjectStore, tenantID string, pages []app.PageEntry) []editorSlideRenderItem {
+	parser, _ := objects.(signedURLParser)
+	ttl := 15 * time.Minute
+	out := make([]editorSlideRenderItem, 0, len(pages))
+	for _, pg := range pages {
+		if pg.SlideID == "" || pg.Key == "" {
+			continue
+		}
+		key, perr := objectstore.Parse(pg.Key)
+		if perr != nil {
+			continue
+		}
+		if perr = key.EnsureTenant(tenantID); perr != nil {
+			continue
+		}
+		signed, serr := objects.SignedURL(ctx, key, objectstore.OpRead, ttl)
+		if serr != nil {
+			continue
+		}
+		url := signed
+		if parser != nil {
+			url = rewriteLocalSignedURL(parser, signed)
+		}
+		out = append(out, editorSlideRenderItem{SlideID: pg.SlideID, URL: url})
+	}
+	return out
+}
+
+// writePageRenderFallback 在拿不到成功步骤引用时直读约定路径上的页面清单。
+// 渲染器缺失时只透出 renderer，不签发空图。任务保留会删掉已终态的 parse 任务，
+// 页面 PNG 和 pages.json 仍在对象存储里，这时按清单签发，预览才不会变成「还没有渲染图」。
+// 返回 false 表示清单不存在，调用方维持原来的空列表响应。
 func writePageRenderFallback(w http.ResponseWriter, r *http.Request, objects objectstore.ObjectStore, projects project.ProjectStore, tenantID, userID, projectID string) bool {
-	renderer := fallbackPageRenderer(r.Context(), r, objects, projects, tenantID, userID, projectID)
-	if renderer == "" {
+	manifest, ok := fallbackPageManifest(r.Context(), r, objects, projects, tenantID, userID, projectID)
+	if !ok {
 		return false
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"slides": []editorSlideRenderItem{}, "renderer": renderer})
+	slides := []editorSlideRenderItem{}
+	if manifest.Renderer != app.RendererUnavailable {
+		slides = signEditorPages(r.Context(), objects, tenantID, manifest.Pages)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slides": slides, "renderer": manifest.Renderer})
 	return true
 }
 
-// editorSlideRender 读取最近一次成功解析任务的页面清单（PageManifest），为每页渲染 PNG 签发短期匿名可读 URL。
+// editorSlideRender 读取页面清单（PageManifest），为每页渲染 PNG 签发短期匿名可读 URL。
+// 优先用最近一次成功解析任务的步骤引用；任务行或成功步骤被保留清掉时，改读约定路径上的 pages.json。
 // 解析未完成、页面清单缺失或某页渲染图不存在时，对应项跳过；整体缺失时返回空列表，前端优雅降级为序号/标题缩略图。
 func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, objects objectstore.ObjectStore, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
 	principal, ok := PrincipalFromContext(r.Context())
@@ -125,37 +161,10 @@ func editorSlideRender(w http.ResponseWriter, r *http.Request, jobs JobStore, ob
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	parser, _ := objects.(signedURLParser)
-	ttl := 15 * time.Minute
-	out := make([]editorSlideRenderItem, 0, len(manifest.Pages))
-	for _, pg := range manifest.Pages {
-		if pg.SlideID == "" || pg.Key == "" {
-			continue
-		}
-		key, perr := objectstore.Parse(pg.Key)
-		if perr != nil {
-			continue
-		}
-		if perr = key.EnsureTenant(principal.TenantID); perr != nil {
-			continue
-		}
-		signed, serr := objects.SignedURL(ctx, key, objectstore.OpRead, ttl)
-		if serr != nil {
-			continue
-		}
-		url := signed
-		if parser != nil {
-			url = rewriteLocalSignedURL(parser, signed)
-		}
-		out = append(out, editorSlideRenderItem{SlideID: pg.SlideID, URL: url})
-	}
+	out := signEditorPages(ctx, objects, principal.TenantID, manifest.Pages)
 	// renderer 为空串=正常（有页面图）；"unavailable"=渲染器缺失，此时 slides 必为空。
 	// 不把它隐含在"slides 为空"里：那样前端无法区分"能力缺失"与"暂未渲染"。
-	renderer := ""
-	if manifest.Renderer != "" {
-		renderer = manifest.Renderer
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"slides": out, "renderer": renderer})
+	writeJSON(w, http.StatusOK, map[string]any{"slides": out, "renderer": manifest.Renderer})
 }
 
 // projectParseStatus 暴露项目当前版本的解析状态，供前端决定能否拉取页面列表，并区分

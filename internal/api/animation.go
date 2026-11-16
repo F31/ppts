@@ -54,18 +54,34 @@ func newAnimationResolver(projects project.ProjectStore, objects objectstore.Obj
 	return &animationResolver{projects: projects, objects: objects, scripts: scripts, jobs: jobs}
 }
 
+// NewAnimationResolver 装配与 HTTP 一键套用同一套页解析（页序 + 元素 + 页时长）。
+func NewAnimationResolver(projects project.ProjectStore, objects objectstore.ObjectStore, scripts narration.Store, jobs JobCreator) (AnimationPageResolver, AnimationDeckResolver) {
+	r := newAnimationResolver(projects, objects, scripts, jobs)
+	return r, r
+}
+
+func (r *animationResolver) ResolveSourceRevision(ctx context.Context, tenantID, userID, projectID string, sourceRevisionNo int) (int, error) {
+	if sourceRevisionNo > 0 {
+		return sourceRevisionNo, nil
+	}
+	if r == nil || r.projects == nil {
+		return 0, animation.ErrNotFound
+	}
+	proj, err := r.projects.GetProject(ctx, tenantID, userID, projectID)
+	if err != nil {
+		return 0, err
+	}
+	return proj.CurrentRevision, nil
+}
+
 func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, projectID string, sourceRevisionNo int, slideID, language string) (*project.Page, animation.PageContext, error) {
 	var empty animation.PageContext
 	if r.projects == nil || r.objects == nil {
 		return nil, empty, animation.ErrNotFound
 	}
-	revNo := sourceRevisionNo
-	if revNo <= 0 {
-		proj, err := r.projects.GetProject(ctx, tenantID, userID, projectID)
-		if err != nil {
-			return nil, empty, animation.ErrNotFound
-		}
-		revNo = proj.CurrentRevision
+	revNo, err := r.ResolveSourceRevision(ctx, tenantID, userID, projectID, sourceRevisionNo)
+	if err != nil {
+		return nil, empty, err
 	}
 	docs, err := loadProjectDocuments(ctx, r.projects, r.objects, tenantID, projectID, revNo, revNo)
 	if err != nil {
@@ -85,7 +101,12 @@ func (r *animationResolver) Resolve(ctx context.Context, tenantID, userID, proje
 	if page == nil {
 		return nil, empty, animation.ErrNotFound
 	}
-	pc := animation.PageContext{DurationMS: r.pageDurationMS(ctx, tenantID, projectID, slideID), Elements: animdefault.PageAnchors(page)}
+	pc := animation.PageContext{
+		DurationMS:     r.pageDurationMS(ctx, tenantID, projectID, slideID),
+		Elements:       animdefault.PageAnchors(page),
+		SlideWidthEMU:  doc.SlideWidthEMU,
+		SlideHeightEMU: doc.SlideHeightEMU,
+	}
 	if r.scripts != nil {
 		// 讲稿缺失不是错误：还没有讲稿时就没有 withSegment 可锚，规格里的相对锚点会被 V7 拒绝，
 		// 这正是需要告诉用户的事实（"先写讲稿再绑分段"），而不是掩盖成 500。
@@ -195,6 +216,61 @@ func (h *AnimationHandler) WithDeck(deck AnimationDeckResolver) *AnimationHandle
 	return h
 }
 
+// staleAnchors 列出配音更新后 withSegment 已失效的页。
+func (h *AnimationHandler) staleAnchors(w http.ResponseWriter, r *http.Request) {
+	principal, ok := PrincipalFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"code": "unauthenticated"})
+		return
+	}
+	projectID := strings.TrimSpace(r.PathValue("projectId"))
+	if projectID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_path"})
+		return
+	}
+	sourceRevisionNo := 0
+	if raw := r.URL.Query().Get("sourceRevisionNo"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_source_revision"})
+			return
+		}
+		sourceRevisionNo = n
+	}
+	language := r.URL.Query().Get("language")
+	if language == "" {
+		language = "zh-CN"
+	}
+	revs, err := h.store.List(r.Context(), animation.Key{
+		TenantID: principal.TenantID, ProjectID: projectID,
+		Language: language, SourceRevisionNo: sourceRevisionNo,
+	})
+	if err != nil {
+		writeAnimationError(w, err)
+		return
+	}
+	type staleSlide struct {
+		SlideID string   `json:"slideId"`
+		Missing []string `json:"missing"`
+	}
+	out := make([]staleSlide, 0)
+	for _, rev := range revs {
+		if rev == nil || h.pages == nil {
+			continue
+		}
+		_, pc, err := h.pages.Resolve(r.Context(), principal.TenantID, principal.UserID, projectID, sourceRevisionNo, rev.SlideID, language)
+		if err != nil {
+			continue
+		}
+		missing := animation.StaleSegmentIDs(rev, pc.SegmentIDs)
+		if len(missing) == 0 {
+			continue
+		}
+		out = append(out, staleSlide{SlideID: rev.SlideID, Missing: missing})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"slides": out})
+}
+
 // WithPrefill 注入异步预填所需的任务与对象存储。
 //
 // 不放进构造函数，是因为既有的构造签名被大量测试与两处装配调用（api/worker）；
@@ -238,6 +314,7 @@ func (h *AnimationHandler) Register(mux *http.ServeMux, auth func(http.Handler) 
 	mux.Handle("GET /api/projects/{projectId}/slides/{slideId}/animation/prefill", auth(http.HandlerFunc(h.prefillGet)))
 	// 整份 deck 一次套用同一预设（「一键成片」第三步）。依赖不齐时端点照常注册并返回
 	// 503 feature_unavailable，不落到 SPA 兜底变成 200 + HTML。
+	mux.Handle("GET /api/projects/{projectId}/animation/stale-anchors", auth(http.HandlerFunc(h.staleAnchors)))
 	mux.Handle("POST /api/projects/{projectId}/animation/apply-all", auth(http.HandlerFunc(h.applyAll)))
 	// 页列表多选 → 把某一页的规格复制到选中页（§7.6）。与 apply-all 不同，它要求
 	// 全成或全不成；restore 用 apply-batch 返回的快照做一次性撤销，同样单事务。
@@ -254,6 +331,7 @@ type animationSpecDTO struct {
 	Status           animation.Status   `json:"status"`
 	PresetID         string             `json:"presetId"`
 	Intensity        float64            `json:"intensity"`
+	MotionMode       string             `json:"motionMode,omitempty"`
 	Tracks           []*animation.Track `json:"tracks"`
 	// NeedsDurationRecheck 为 true 表示保存时页时长未知（尚无配音），
 	// 渲染前必须用真实时长重新校验（设计方案 §5.4 V3 的编辑期例外）。
@@ -301,6 +379,7 @@ func animationDTO(rev *animation.Revision, needsRecheck bool) animationSpecDTO {
 		Status:               rev.Status,
 		PresetID:             rev.PresetID,
 		Intensity:            rev.Intensity,
+		MotionMode:           rev.MotionMode,
 		Tracks:               rev.Tracks,
 		NeedsDurationRecheck: needsRecheck,
 	}
@@ -310,6 +389,7 @@ type animationPutRequest struct {
 	ExpectedRevision *int64             `json:"expectedRevision"`
 	PresetID         string             `json:"presetId"`
 	Intensity        float64            `json:"intensity"`
+	MotionMode       string             `json:"motionMode,omitempty"`
 	Tracks           []*animation.Track `json:"tracks"`
 }
 
@@ -403,7 +483,7 @@ func (h *AnimationHandler) get(w http.ResponseWriter, r *http.Request) {
 
 	// 同步路径只跑规则：模型通道在 worker 里（异步预填），这里如实标 route=rule，
 	// 免得前端把「同步算出来的」误当成「模型也看过了」。
-	dto, report, derr := h.defaultSpecFor(page, pc, key, r.URL.Query().Get("preset"), bindings)
+	dto, report, derr := h.defaultSpecFor(page, pc, key, r.URL.Query().Get("preset"), bindings, false)
 	if derr != nil {
 		writeAnimationError(w, derr)
 		return
@@ -485,6 +565,7 @@ func (h *AnimationHandler) put(w http.ResponseWriter, r *http.Request) {
 		Status:           animation.StatusDraft,
 		PresetID:         req.PresetID,
 		Intensity:        intensity,
+		MotionMode:       req.MotionMode,
 		Tracks:           req.Tracks,
 	}
 	if err := rev.Validate(pc); err != nil {
@@ -524,10 +605,11 @@ type animationSegmentDTO struct {
 
 // animationPresetDTO 是预设的展示信息。强度缺省值随预设走，前端据此初始化滑块。
 type animationPresetDTO struct {
-	ID          string  `json:"id"`
-	Label       string  `json:"label"`
-	Description string  `json:"description"`
-	Intensity   float64 `json:"intensity"`
+	ID            string                              `json:"id"`
+	Label         string                              `json:"label"`
+	Description   string                              `json:"description"`
+	Intensity     float64                             `json:"intensity"`
+	EntranceClips map[string][]animation.ClipTemplate `json:"entranceClips,omitempty"`
 }
 
 type animationAnchorsDTO struct {
@@ -616,7 +698,10 @@ func presetDTOs() []animationPresetDTO {
 	presets := animation.Catalog().Presets()
 	out := make([]animationPresetDTO, 0, len(presets))
 	for _, p := range presets {
-		out = append(out, animationPresetDTO{ID: p.ID, Label: p.Label, Description: p.Description, Intensity: p.Intensity})
+		out = append(out, animationPresetDTO{
+			ID: p.ID, Label: p.Label, Description: p.Description, Intensity: p.Intensity,
+			EntranceClips: p.EntranceClips,
+		})
 	}
 	return out
 }

@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -38,6 +39,10 @@ const maxApplyAllBodyBytes = 8 << 10
 // 保证「一键」与「逐页」拿到的元素分类、分段、页时长是同一份数据。
 type AnimationDeckResolver interface {
 	SlideIDs(ctx context.Context, tenantID, userID, projectID string, sourceRevisionNo int) ([]string, error)
+	// ResolveSourceRevision 把 0 / 负数收成项目 current_revision。
+	// SlideIDs 读页序已经会解析；KEYS 必须用同一份数字，否则 CLI
+	// --source-revision 0 会把规格写到 src=0，导出按 current 加载时当静态页。
+	ResolveSourceRevision(ctx context.Context, tenantID, userID, projectID string, sourceRevisionNo int) (int, error)
 }
 
 // SlideIDs 从 extracted.json 读页序。animationResolver 已经持有 projects/objects，
@@ -46,13 +51,9 @@ func (r *animationResolver) SlideIDs(ctx context.Context, tenantID, userID, proj
 	if r == nil || r.projects == nil || r.objects == nil {
 		return nil, animation.ErrNotFound
 	}
-	revNo := sourceRevisionNo
-	if revNo <= 0 {
-		proj, err := r.projects.GetProject(ctx, tenantID, userID, projectID)
-		if err != nil {
-			return nil, err
-		}
-		revNo = proj.CurrentRevision
+	revNo, err := r.ResolveSourceRevision(ctx, tenantID, userID, projectID, sourceRevisionNo)
+	if err != nil {
+		return nil, err
 	}
 	docs, err := loadProjectDocuments(ctx, r.projects, r.objects, tenantID, projectID, revNo, revNo)
 	if err != nil {
@@ -82,6 +83,9 @@ type applyAllRequest struct {
 	// Prefill 默认开启：规则预填是同步的、不调模型，却能让动效跟着讲稿走
 	// （「讲到哪条出现哪条」）。显式传 false 才退回纯顺序淡入。
 	Prefill *bool `json:"prefill,omitempty"`
+	// WithEntrance 勾选「要点依次出现」：写入 gaze+entrance，并把 catalog
+	// EntranceClips 追加到 spotlight 轨。默认 false，与逐页编辑器勾选同一套模板。
+	WithEntrance bool `json:"withEntrance,omitempty"`
 }
 
 type applyAllSlideResult struct {
@@ -143,6 +147,11 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 	// 这两份数据在一次请求里不变，挂上请求级缓存后整份 deck 只读一次
 	// （见 requestcache.go）。页序必须在缓存挂好之后再取，否则那次读落在缓存外。
 	ctx := withRequestCache(r.Context())
+	revNo, err := h.deck.ResolveSourceRevision(ctx, principal.TenantID, principal.UserID, projectID, revNo)
+	if err != nil {
+		writeAnimationError(w, err)
+		return
+	}
 	slideIDs, err := h.deck.SlideIDs(ctx, principal.TenantID, principal.UserID, projectID, revNo)
 	if err != nil {
 		writeAnimationError(w, err)
@@ -155,16 +164,84 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	resp := h.applyDeck(ctx, principal.TenantID, principal.UserID, projectID, revNo, language, req.PresetID, req.Overwrite, prefill, req.WithEntrance, slideIDs)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ApplyAllOptions 是 HTTP 与 `ppts apply-animation` 共用的整份套用参数。
+type ApplyAllOptions struct {
+	PresetID     string
+	Overwrite    bool
+	Prefill      bool
+	WithEntrance bool
+}
+
+// ApplyAllSummary 是整份套用的计数与逐页结果（供 CLI 打印，不改变 HTTP JSON）。
+type ApplyAllSummary struct {
+	PresetID string
+	Total    int
+	Applied  int
+	Skipped  int
+	Lines    []string
+}
+
+// ApplyAllSlides 走与 HTTP apply-all 同一套 DefaultSpec + 落库路径。
+func (h *AnimationHandler) ApplyAllSlides(ctx context.Context, tenantID, userID, projectID string, revNo int, language string, opt ApplyAllOptions) (ApplyAllSummary, error) {
+	var out ApplyAllSummary
+	if h == nil || h.store == nil || h.pages == nil || h.deck == nil {
+		return out, errors.New("animation apply-all is not configured")
+	}
+	presetID := strings.TrimSpace(opt.PresetID)
+	if presetID == "" {
+		presetID = animdefault.DefaultPresetID
+	}
+	if _, ok := animation.Catalog().Preset(presetID); !ok {
+		return out, fmt.Errorf("unknown preset %q", presetID)
+	}
+	if language == "" {
+		language = "zh-CN"
+	}
+	ctx = withRequestCache(ctx)
+	revNo, err := h.deck.ResolveSourceRevision(ctx, tenantID, userID, projectID, revNo)
+	if err != nil {
+		return out, err
+	}
+	slideIDs, err := h.deck.SlideIDs(ctx, tenantID, userID, projectID, revNo)
+	if err != nil {
+		return out, err
+	}
+	if len(slideIDs) == 0 {
+		return out, errors.New("no slides")
+	}
+	resp := h.applyDeck(ctx, tenantID, userID, projectID, revNo, language, presetID, opt.Overwrite, opt.Prefill, opt.WithEntrance, slideIDs)
+	out.PresetID = resp.PresetID
+	out.Total = resp.Total
+	out.Applied = resp.Applied
+	out.Skipped = resp.Skipped
+	for _, r := range resp.Results {
+		line := r.SlideID + " " + r.Status
+		if r.Revision > 0 {
+			line += fmt.Sprintf(" rev=%d", r.Revision)
+		}
+		if r.Reason != "" {
+			line += " " + r.Reason
+		}
+		out.Lines = append(out.Lines, line)
+	}
+	return out, nil
+}
+
+func (h *AnimationHandler) applyDeck(ctx context.Context, tenantID, userID, projectID string, revNo int, language, presetID string, overwrite, prefill, withEntrance bool, slideIDs []string) applyAllResponse {
 	resp := applyAllResponse{
-		PresetID: req.PresetID, Total: len(slideIDs),
+		PresetID: presetID, Total: len(slideIDs),
 		Results: make([]applyAllSlideResult, 0, len(slideIDs)),
 	}
 	for _, slideID := range slideIDs {
 		key := animation.Key{
-			TenantID: principal.TenantID, ProjectID: projectID, SlideID: slideID,
+			TenantID: tenantID, ProjectID: projectID, SlideID: slideID,
 			Language: language, SourceRevisionNo: revNo,
 		}
-		res := h.applyOneSlide(ctx, principal.UserID, key, req.PresetID, req.Overwrite, prefill)
+		res := h.applyOneSlide(ctx, userID, key, presetID, overwrite, prefill, withEntrance)
 		resp.Results = append(resp.Results, res)
 		if res.Status == "applied" {
 			resp.Applied++
@@ -172,7 +249,7 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 			resp.Skipped++
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }
 
 // applyOneSlide 处理单页，任何失败都只记成 skipped，不中断整份 deck。
@@ -180,7 +257,7 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 // 这是「一键」最重要的语义：某一页没配音、解析不出来或校验不过，不该让另外 22 页
 // 白跑一次；也不能整单 500 让用户不知道到底成了几页。逐页原因码让前端能列出
 // 「跳过 3 页：2 页未配音、1 页已锁定」这种可行动的复核清单。
-func (h *AnimationHandler) applyOneSlide(ctx context.Context, userID string, key animation.Key, presetID string, overwrite, prefill bool) applyAllSlideResult {
+func (h *AnimationHandler) applyOneSlide(ctx context.Context, userID string, key animation.Key, presetID string, overwrite, prefill, withEntrance bool) applyAllSlideResult {
 	out := applyAllSlideResult{SlideID: key.SlideID, Status: "skipped"}
 	prev, err := h.store.Get(ctx, key)
 	if err != nil && !errors.Is(err, animation.ErrNotFound) {
@@ -228,7 +305,7 @@ func (h *AnimationHandler) applyOneSlide(ctx context.Context, userID string, key
 		}
 		bindings = bind.Run(app.PageBindElements(page, 0, 0), segs, bind.Options{}).Bindings
 	}
-	dto, _, err := h.defaultSpecFor(page, pc, key, presetID, bindings)
+	dto, _, err := h.defaultSpecFor(page, pc, key, presetID, bindings, withEntrance)
 	if err != nil {
 		out.Reason = "spec_failed"
 		return out
@@ -238,7 +315,7 @@ func (h *AnimationHandler) applyOneSlide(ctx context.Context, userID string, key
 		TenantID: key.TenantID, ProjectID: key.ProjectID, SlideID: key.SlideID,
 		Language: key.Language, SourceRevisionNo: key.SourceRevisionNo,
 		Status: animation.StatusDraft, PresetID: presetID,
-		Intensity: dto.Intensity, Tracks: dto.Tracks,
+		Intensity: dto.Intensity, MotionMode: dto.MotionMode, Tracks: dto.Tracks,
 	}
 	if err := rev.Validate(pc); err != nil {
 		out.Reason = "validation_failed"

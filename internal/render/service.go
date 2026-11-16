@@ -83,6 +83,18 @@ const (
 // 它会随 JobStatus 一起被持久化到客户端，加字段时不必动 Backend 签名。
 type RenderReport struct {
 	Degraded []PageDegradation `json:"degraded,omitempty"`
+	// Paths 是三桶实渲统计（gaze_looks / chrome / still）。omitempty：旧客户端忽略。
+	Paths *RenderPathStats `json:"paths,omitempty"`
+}
+
+// RenderPathStats 记录一次渲染按路径拆开的页数与耗时。
+type RenderPathStats struct {
+	Chrome   int   `json:"chrome,omitempty"`
+	Gaze     int   `json:"gazeLooks,omitempty"`
+	Still    int   `json:"still,omitempty"`
+	ChromeMs int64 `json:"chromeMs,omitempty"`
+	GazeMs   int64 `json:"gazeLooksMs,omitempty"`
+	StillMs  int64 `json:"stillMs,omitempty"`
 }
 
 // 任务状态。

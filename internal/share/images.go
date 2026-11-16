@@ -85,12 +85,57 @@ func preparePage(data []byte, longEdge int) (*image.NRGBA, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("share: page image has invalid size %dx%d", width, height)
 	}
-	targetW, targetH := fitLongEdge(width, height, longEdge)
 	nrgba := toNRGBA(src)
+	nrgba = snapRasterSlack(nrgba)
+	width, height = nrgba.Rect.Dx(), nrgba.Rect.Dy()
+	targetW, targetH := fitLongEdge(width, height, longEdge)
 	if targetW != width || targetH != height {
 		nrgba = resizeBilinear(nrgba, targetW, targetH)
 	}
 	return nrgba, nil
+}
+
+// rasterSlackPx 与 render.canvasSlackPx 同口径：pdftoppm 常多吐 1 行。
+const rasterSlackPx = 2
+
+// snapRasterSlack 把 16:9 / 9:16 上多出来的 1–2px 裁掉，再交给长边缩放。
+// 1920×1081 → 1920×1080 → 1600×900；不裁的话会变成 1600×901，和成片 16:9 对不齐。
+func snapRasterSlack(src *image.NRGBA) *image.NRGBA {
+	if src == nil {
+		return src
+	}
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	nw, nh := snapAspectSlack(w, h)
+	if nw == w && nh == h {
+		return src
+	}
+	dst := image.NewNRGBA(image.Rect(0, 0, nw, nh))
+	draw.Draw(dst, dst.Bounds(), src, src.Rect.Min, draw.Src)
+	return dst
+}
+
+func snapAspectSlack(w, h int) (int, int) {
+	bestW, bestH, bestCut := w, h, rasterSlackPx*2+1
+	consider := func(nw, nh int) {
+		if nw <= 0 || nh <= 0 || nw > w || nh > h {
+			return
+		}
+		dw, dh := w-nw, h-nh
+		if dw > rasterSlackPx || dh > rasterSlackPx {
+			return
+		}
+		cut := dw + dh
+		if cut == 0 || cut >= bestCut {
+			return
+		}
+		bestCut = cut
+		bestW, bestH = nw, nh
+	}
+	consider(w, int(math.Round(float64(w)*9/16)))
+	consider(int(math.Round(float64(h)*16/9)), h)
+	consider(w, int(math.Round(float64(w)*16/9)))
+	consider(int(math.Round(float64(h)*9/16)), h)
+	return bestW, bestH
 }
 
 // PlaceholderPage 生成与 MP4 路径一致的深色占位页（首屏缺图时使用），输出 JPEG。

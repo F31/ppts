@@ -75,6 +75,21 @@ func TestFocusSpanPointsAtBar(t *testing.T) {
 	}
 }
 
+func TestToCanvasRectUsesOfficeScreen16x9Height(t *testing.T) {
+	b := render.EMUBox{X: 457200, Y: 1282700, Width: 2622550, Height: 1371600}
+	rect, why := toCanvasRect(b, canvasAt(1080), 5143500)
+	if rect == nil {
+		t.Fatalf("rect nil: %s", why)
+	}
+	if rect.X != 96 || rect.Y != 269 || rect.W != 551 || rect.H != 288 {
+		t.Fatalf("office 16:9 rect = %+v, want 96,269 551×288", *rect)
+	}
+	classic, _ := toCanvasRect(b, canvasAt(1080), 0)
+	if classic == nil || classic.X != 72 || classic.Y != 202 {
+		t.Fatalf("classic 7.5in fallback = %+v, want 72,202", classic)
+	}
+}
+
 // TestFocusSpanShapeUsesLayerWhenAvailable：形状本来就是图层时不该改用矩形遮罩——
 // 两种表达在画面上的观感不同（压暗其它层 vs 整页盖白留孔），能压暗就别盖白。
 func TestFocusSpanShapeUsesLayerWhenAvailable(t *testing.T) {
@@ -97,6 +112,23 @@ func TestFocusSpanShapeUsesLayerWhenAvailable(t *testing.T) {
 	spans, diags = buildFocusSpans(focusCues(slide), boxes, nil, 2000, canvasAt(1080))
 	if len(diags) != 0 || len(spans) != 1 || spans[0].Rect == nil {
 		t.Fatalf("非图层形状必须带矩形: spans=%+v diags=%+v", spans, diags)
+	}
+}
+
+func TestGazeAlwaysWritesRectEvenForLayers(t *testing.T) {
+	boxes := []FocusBox{{ShapeID: "shape-3", Box: box(100, 100, 400, 200)}}
+	layers := map[string]struct{}{"shape-3": {}}
+	slide := slideCue(cue(0, 500, &media.SegmentFocus{ShapeID: "shape-3"}))
+	spans, diags := assembleFocusSpans(focusCues(slide), boxes, layers, 2000, canvasAt(1080), true, 0)
+	if len(diags) != 0 || len(spans) != 1 {
+		t.Fatalf("spans=%+v diags=%+v", spans, diags)
+	}
+	if spans[0].Rect == nil {
+		t.Fatal("gaze 必须带 Rect")
+	}
+	// 100,100 400×200 外扩 8px → 92,92 416×216
+	if *spans[0].Rect != (render.Box{X: 92, Y: 92, W: 416, H: 216}) {
+		t.Fatalf("padded rect = %+v", *spans[0].Rect)
 	}
 }
 
@@ -304,7 +336,7 @@ func chartPage() *project.Page {
 func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
 	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b1"}))
 
-	exported, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(1080))
+	exported, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(1080), 0)
 	if len(diags) != 0 || len(exported) != 1 {
 		t.Fatalf("1080 画布：spans=%+v diags=%+v", exported, diags)
 	}
@@ -312,7 +344,7 @@ func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
 		t.Fatalf("1080 画布 rect = %+v，want 与解析画布像素一致 (300,250 60x250)", got)
 	}
 
-	previewed, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(540))
+	previewed, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(540), 0)
 	if len(diags) != 0 || len(previewed) != 1 {
 		t.Fatalf("540 画布：spans=%+v diags=%+v", previewed, diags)
 	}
@@ -325,20 +357,54 @@ func TestPageFocusSpansScalesToPreviewCanvas(t *testing.T) {
 // 返回值必须是 nil 而不是空切片：调用方据此决定要不要往计划里塞 Focus 字段。
 func TestPageFocusSpansWithoutFocusSkipsWork(t *testing.T) {
 	slide := slideCue(cue(0, 1000, nil))
-	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(960))
+	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(960), 0)
 	if spans != nil || diags != nil {
 		t.Fatalf("没有焦点时应返回 nil/nil，got %+v / %+v", spans, diags)
 	}
 	// page 为 nil 也不能 panic：预览的 Resolve 返回 nil 页时这一页本就不该渲。
-	if spans, diags := PageFocusSpans(nil, slide, nil, 2000, canvasAt(960)); spans != nil || diags != nil {
+	if spans, diags := PageFocusSpans(nil, slide, nil, 2000, canvasAt(960), 0); spans != nil || diags != nil {
 		t.Fatalf("nil page 应返回 nil/nil，got %+v / %+v", spans, diags)
+	}
+}
+
+func TestPageFocusSpansFromTeachingTracks(t *testing.T) {
+	slide := media.SlideCue{
+		SlideID: "slide-1", StartUS: pageStartUS, EndUS: pageStartUS + 4_000_000,
+		Segments: []media.SegmentCue{
+			{SegmentID: "seg-1", StartUS: pageStartUS, EndUS: pageStartUS + 1_000_000},
+			{SegmentID: "seg-2", StartUS: pageStartUS + 1_500_000, EndUS: pageStartUS + 3_000_000},
+		},
+	}
+	clip := func(id, seg string) *animation.Clip {
+		return &animation.Clip{ID: id, Type: "fadeIn", DurationMs: 400, Easing: "easeOut",
+			Trigger: animation.TriggerSegmentPrefix + seg}
+	}
+	rev := &animation.Revision{
+		PresetID: "teaching-clear",
+		Tracks: []*animation.Track{
+			{ElementID: "title", Kind: animation.KindTitle, Clips: []*animation.Clip{clip("c1", "seg-1")}},
+			{ElementID: "card", Kind: animation.KindBullet, Clips: []*animation.Clip{clip("c2", "seg-2")}},
+		},
+	}
+	spans, diags := PageFocusSpans(textPage(), slide, rev, 4000, canvasAt(1080), 0)
+	if len(diags) != 0 {
+		t.Fatalf("diags = %+v", diags)
+	}
+	if len(spans) != 2 {
+		t.Fatalf("spans = %d, want 2: %+v", len(spans), spans)
+	}
+	if spans[0].ElementID != "title" || spans[0].StartMs != 0 || spans[0].Rect != nil {
+		t.Fatalf("first = %+v, want title layer focus at 0", spans[0])
+	}
+	if spans[1].ElementID != "card" || spans[1].StartMs != 1500 {
+		t.Fatalf("second = %+v, want card at 1500", spans[1])
 	}
 }
 
 // TestPageFocusSpansReportsMissingTarget 守「目标不在这一页时留诊断，而不是凭空造框」。
 func TestPageFocusSpansReportsMissingTarget(t *testing.T) {
 	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "shape-7", BarID: "b9"}))
-	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(540))
+	spans, diags := PageFocusSpans(chartPage(), slide, nil, 2000, canvasAt(540), 0)
 	if len(spans) != 0 {
 		t.Fatalf("目标缺失时不该产出焦点，got %+v", spans)
 	}
@@ -465,11 +531,11 @@ func textPage() *project.Page {
 // PageFocusSpans 上，与组装器侧的两条用例成对。
 func TestPageFocusSpansUsesSpecTracks(t *testing.T) {
 	slide := slideCue(cue(0, 1000, &media.SegmentFocus{ShapeID: "title"}))
-	onlyCard := &animation.Revision{Tracks: []*animation.Track{{ElementID: "card", Kind: "bullet"}}}
-	onlyTitle := &animation.Revision{Tracks: []*animation.Track{{ElementID: "title", Kind: "title"}}}
+	onlyCard := &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "card", Kind: "bullet"}}}
+	onlyTitle := &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "title", Kind: "title"}}}
 
 	// title 没有轨道 → 不会成为图层 → 必须盖白留孔。
-	spans, diags := PageFocusSpans(textPage(), slide, onlyCard, 2000, canvasAt(1080))
+	spans, diags := PageFocusSpans(textPage(), slide, onlyCard, 2000, canvasAt(1080), 0)
 	if len(diags) != 0 || len(spans) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
 	}
@@ -478,7 +544,7 @@ func TestPageFocusSpansUsesSpecTracks(t *testing.T) {
 	}
 
 	// title 有轨道 → 它是图层，压暗其它层就够，不必整页盖白。
-	spans, diags = PageFocusSpans(textPage(), slide, onlyTitle, 2000, canvasAt(1080))
+	spans, diags = PageFocusSpans(textPage(), slide, onlyTitle, 2000, canvasAt(1080), 0)
 	if len(diags) != 0 || len(spans) != 1 {
 		t.Fatalf("spans=%+v diags=%+v", spans, diags)
 	}
@@ -511,19 +577,23 @@ func TestLayerElementIDs(t *testing.T) {
 		want []string
 	}{
 		{"没有规格就一个层都没有", nil, nil},
-		{"整页轨道不算元素层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "", Kind: "page"}}}, nil},
-		{"有轨道有几何 → 是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "card"}}}, []string{"card"}},
-		{"轨道指向文档里没有的元素 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "ghost"}}}, nil},
-		{"有轨道有 ID 但没几何 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "nogeo"}}}, nil},
-		{"有轨道但框是零面积 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "flat"}}}, nil},
-		{"有轨道但框整块在画布外 → 不是层", &animation.Revision{Tracks: []*animation.Track{{ElementID: "offright"}}}, nil},
-		{"多条轨道去重", &animation.Revision{Tracks: []*animation.Track{
+		{"整页轨道不算元素层", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "", Kind: "page"}}}, nil},
+		{"有轨道有几何 → 是层", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "card"}}}, []string{"card"}},
+		{"轨道指向文档里没有的元素 → 不是层", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "ghost"}}}, nil},
+		{"有轨道有 ID 但没几何 → 不是层", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "nogeo"}}}, nil},
+		{"有轨道但框是零面积 → 不是层", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "flat"}}}, nil},
+		{"有轨道但框整块在画布外 → 不是层", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{{ElementID: "offright"}}}, nil},
+		{"多条轨道去重", &animation.Revision{MotionMode: animation.MotionModeEntrance, Tracks: []*animation.Track{
 			{ElementID: "card"}, {ElementID: "card"}, {ElementID: "title"},
 		}}, []string{"card", "title"}},
+		{"gaze 规格不成层", &animation.Revision{MotionMode: animation.MotionModeGaze, Tracks: []*animation.Track{{ElementID: "card"}}}, nil},
+		{"gaze+entrance 有入场 clip 成层", &animation.Revision{MotionMode: animation.MotionModeGazeEntrance, Tracks: []*animation.Track{
+			{ElementID: "card", Kind: animation.KindShape, Clips: []*animation.Clip{{Type: "fadeIn"}}},
+		}}, []string{"card"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := layerElementIDs(tc.rev, elements, canvasAt(1080))
+			got := layerElementIDs(tc.rev, elements, canvasAt(1080), 0)
 			if len(got) != len(tc.want) {
 				t.Fatalf("got %v, want %v", got, tc.want)
 			}
@@ -610,7 +680,7 @@ func TestLayerElementIDsMatchesCompiler(t *testing.T) {
 			fromPlan[l.ElementID] = struct{}{}
 		}
 	}
-	got := layerElementIDs(rev, elements, canvasAt(1080))
+	got := layerElementIDs(rev, elements, canvasAt(1080), 0)
 
 	// 先钉住"该出谁"：只该有 title。两边一起错也不会被这条放过。
 	if _, ok := fromPlan["title"]; !ok || len(fromPlan) != 1 {

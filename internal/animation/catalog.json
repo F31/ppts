@@ -16,7 +16,7 @@
       "label": "滑入",
       "level": "L1",
       "class": "entrance",
-      "appliesTo": ["title", "bullet", "image", "icon"],
+      "appliesTo": ["title", "bullet", "image", "icon", "shape"],
       "durationRange": [300, 1200],
       "defaultDuration": 600,
       "params": {
@@ -29,7 +29,7 @@
       "label": "弹出",
       "level": "L1",
       "class": "entrance",
-      "appliesTo": ["icon", "title", "shape", "image"],
+      "appliesTo": ["icon", "title", "shape", "image", "bullet"],
       "durationRange": [300, 900],
       "defaultDuration": 500,
       "params": {
@@ -56,6 +56,16 @@
       "appliesTo": ["bullet", "title"],
       "durationRange": [400, 3000],
       "defaultDuration": 900,
+      "params": {}
+    },
+    {
+      "id": "spotlight",
+      "label": "注视",
+      "level": "L1",
+      "class": "emphasis",
+      "appliesTo": ["title", "bullet", "image", "shape", "icon", "chart", "table"],
+      "durationRange": [200, 3000],
+      "defaultDuration": 240,
       "params": {}
     },
     {
@@ -86,77 +96,123 @@
     {
       "id": "business-calm",
       "label": "商务稳重",
-      "description": "客户方案与汇报：慢节奏，仅淡入与轻微上移",
+      "description": "客户方案与汇报：整页静图，讲到哪条注视哪条",
       "intensity": 1.0,
       "staggerMs": 150,
       "segmentAligned": true,
+      "gazeFollowsSegment": true,
+      "callout": "off",
+      "caption": "off",
       "transition": { "type": "fade", "durationMs": 320 },
       "clips": {
+        "title": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "bullet": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "image": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "chart": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "table": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "icon": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "shape": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }]
+      },
+      "entranceClips": {
         "title": [{ "type": "slideIn", "durationMs": 700, "easing": "easeOut", "params": { "direction": "up", "offset": 32 } }],
         "bullet": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
         "image": [{ "type": "pop", "durationMs": 600, "easing": "easeOut", "params": { "scaleFrom": 0.96 } }],
         "chart": [{ "type": "grow", "durationMs": 800, "easing": "easeInOut", "params": { "axis": "y" } }],
         "table": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
         "icon": [{ "type": "pop", "durationMs": 500, "easing": "easeOut", "params": { "scaleFrom": 0.9 } }],
-        "shape": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
-        "page": [{ "type": "fadeIn", "durationMs": 400, "easing": "easeOut" }]
+        "shape": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }]
       }
     },
     {
       "id": "tech-dynamic",
       "label": "科技动感",
-      "description": "产品发布与技术分享：中速，滑入为主",
+      "description": "产品发布与技术分享：注视切近，讲到哪条放大哪条",
       "intensity": 1.15,
       "staggerMs": 90,
       "segmentAligned": true,
-      "transition": { "type": "slide", "durationMs": 280 },
+      "gazeFollowsSegment": true,
+      "lookCrop": true,
+      "callout": "auto",
+      "caption": "off",
+      "transition": { "type": "fade", "durationMs": 280 },
       "clips": {
+        "title": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "bullet": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "image": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "chart": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "table": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "icon": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "shape": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }]
+      },
+      "entranceClips": {
         "title": [{ "type": "slideIn", "durationMs": 450, "easing": "easeOut", "params": { "direction": "up", "offset": 56 } }],
         "bullet": [{ "type": "slideIn", "durationMs": 400, "easing": "easeOut", "params": { "direction": "left", "offset": 48 } }],
         "image": [{ "type": "pop", "durationMs": 420, "easing": "easeOut", "params": { "scaleFrom": 0.92 } }],
         "chart": [{ "type": "grow", "durationMs": 600, "easing": "easeOut", "params": { "axis": "y" } }],
         "table": [{ "type": "fadeIn", "durationMs": 420, "easing": "easeOut" }],
         "icon": [{ "type": "pop", "durationMs": 380, "easing": "spring", "params": { "scaleFrom": 0.86 } }],
-        "shape": [{ "type": "fadeIn", "durationMs": 400, "easing": "easeOut" }],
-        "page": [{ "type": "fadeIn", "durationMs": 320, "easing": "easeOut" }]
+        "shape": [{ "type": "slideIn", "durationMs": 400, "easing": "easeOut", "params": { "direction": "left", "offset": 40 } }]
       }
     },
     {
       "id": "teaching-clear",
       "label": "教学清晰",
-      "description": "培训与课程：中慢，讲到哪条出现哪条",
+      "description": "培训与课程：整页静图，讲到哪条注视哪条",
       "intensity": 0.9,
       "staggerMs": 180,
       "segmentAligned": true,
+      "focusFollowsSegment": true,
+      "gazeFollowsSegment": true,
+      "callout": "auto",
+      "caption": "overlay",
       "transition": { "type": "fade", "durationMs": 280 },
       "clips": {
+        "title": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "bullet": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "image": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "chart": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "table": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "icon": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "shape": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }]
+      },
+      "entranceClips": {
         "title": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
         "bullet": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
         "image": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
         "chart": [{ "type": "grow", "durationMs": 900, "easing": "easeInOut", "params": { "axis": "y" } }],
         "table": [{ "type": "fadeIn", "durationMs": 600, "easing": "easeOut" }],
         "icon": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
-        "shape": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }],
-        "page": [{ "type": "fadeIn", "durationMs": 450, "easing": "easeOut" }]
+        "shape": [{ "type": "fadeIn", "durationMs": 500, "easing": "easeOut" }]
       }
     },
     {
       "id": "launch-bold",
       "label": "发布会",
-      "description": "营销与路演：快节奏，大幅位移与生长",
+      "description": "营销与路演：注视加圈选，讲到哪条框哪条",
       "intensity": 1.25,
       "staggerMs": 60,
       "segmentAligned": true,
-      "transition": { "type": "zoom", "durationMs": 260 },
+      "gazeFollowsSegment": true,
+      "callout": "rect",
+      "caption": "off",
+      "transition": { "type": "fade", "durationMs": 260 },
       "clips": {
+        "title": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "bullet": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "image": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "chart": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "table": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "icon": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }],
+        "shape": [{ "type": "spotlight", "durationMs": 240, "easing": "easeOut" }]
+      },
+      "entranceClips": {
         "title": [{ "type": "pop", "durationMs": 340, "easing": "spring", "params": { "scaleFrom": 0.82 } }],
-        "bullet": [{ "type": "slideIn", "durationMs": 320, "easing": "easeOut", "params": { "direction": "left", "offset": 80 } }],
+        "bullet": [{ "type": "pop", "durationMs": 340, "easing": "spring", "params": { "scaleFrom": 0.88 } }],
         "image": [{ "type": "pop", "durationMs": 380, "easing": "spring", "params": { "scaleFrom": 0.86 } }],
         "chart": [{ "type": "grow", "durationMs": 500, "easing": "easeOut", "params": { "axis": "y" } }],
         "table": [{ "type": "fadeIn", "durationMs": 360, "easing": "easeOut" }],
         "icon": [{ "type": "pop", "durationMs": 300, "easing": "spring", "params": { "scaleFrom": 0.8 } }],
-        "shape": [{ "type": "pop", "durationMs": 320, "easing": "spring", "params": { "scaleFrom": 0.88 } }],
-        "page": [{ "type": "fadeIn", "durationMs": 260, "easing": "easeOut" }]
+        "shape": [{ "type": "pop", "durationMs": 320, "easing": "spring", "params": { "scaleFrom": 0.88 } }]
       }
     }
   ]

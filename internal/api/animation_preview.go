@@ -3,11 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
-	_ "image/png" // 只为拿页图尺寸；解码整张图在预览里没必要
+	"image/png"
 	"io"
 	"math"
 	"net/http"
@@ -21,24 +22,23 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/render"
+	"github.com/F31/ppts/internal/share"
 )
 
 // 单页预览（tasks 3.3）。
 //
-// 契约只有一句：**只提交这一页的 IR**（1 页），≤3s 内给结果，超时给明确错误。
-// 这条边界不是性能小心思，而是成本边界：全片预览意味着一次编辑动作渲一遍全片，
-// 用户改第 3 条要点的锚点也要等整片——按 Q1 的决策首版不做。
+// 契约只有一句：**只编译这一页的 IR**，把和 HTML 成片同一份场景交给浏览器播放。
+// 不提交渲染服务：全片预览意味着一次编辑动作渲一遍全片，用户改第 3 条要点的锚点
+// 也要等整片——按 Q1 的决策首版不做。导出成片仍走渲染服务，与这条路径无关。
 //
-// 三个刻意的取舍：
+// 两个刻意的取舍：
 //
-//  1. **预览用的是已保存的规格**，不是请求体里的草案。草案要预览就得把整份规格
-//     复述一遍（校验、身份、语言都对不上时该信谁），而保存本来只是一次 PUT。
-//     好处是预览与导出看的是同一份数据，用户不会遇到"预览对、导出不对"。
-//  2. **预览分辨率低于导出**（960 宽 / 24fps vs 1080p / 30fps）。预览要的是
-//     "第 4 段开始时这行字出现了吗"，不是像素级校对；按导出参数渲一页在纯 CPU
-//     渲染器上轻易吃掉 3s 预算，那样每次编辑都要等超时提示。
-//  3. **超时即取消**。不取消的话渲染服务会继续把这一页渲完，占着一个工作槽；
-//     用户连点五次预览就等于排了五个必然被丢掉的任务。
+//  1. **预览可以带上未保存的草案**。请求体里有 spec 时，用这份规格编译场景，不落库。
+//     导出仍只读已保存的规格，所以「舞台上看到的」和「成片」只在用户还没保存时不同。
+//     没有 spec 时仍读已保存的规格。草案走和 PUT 同一套 Validate。
+//  2. **画布跟页图比例走，高度对齐成片基准 1080**。位移幅度按画布高 / 1080 缩放，
+//     高度对齐后与 1080p 成片是同一套幅度；宽度按页图比例推，4:3 不会被拉进 16:9。
+//     帧率 30，与分享播放器的采样步长一致。
 
 const (
 	// previewBudget 是"提交→拿到字节"的默认总预算，也是超时提示的阈值。
@@ -58,9 +58,13 @@ const (
 	// 而不是"3s 的体验"。真要 3s 级预览，得改成只渲改变点附近的一小段窗口——
 	// 那是产品决策，不在本轮。
 	PreviewBudgetMax = 60 * time.Second
-	// previewCanvasWidth 是预览画布宽（高度按页图比例推）。
-	previewCanvasWidth = 960
-	previewFPS         = 24
+	// previewCanvasHeight 与成片基准同高（animation.BaselineHeight = 1080）。
+	// 宽度按页图比例推，并夹在 [previewCanvasMinWidth, previewCanvasMaxWidth]。
+	previewCanvasHeight   = 1080
+	previewCanvasMinWidth = 240
+	previewCanvasMaxWidth = 3840
+	// previewFPS 与导出缺省帧率一致：分享播放器按 1000/fps 采样，帧率不同画面就会分叉。
+	previewFPS = 30
 	// previewMaxImageBytes 限制读入的页图大小：一张 1080p PNG 通常 <4MB，
 	// 32MB 只用来挡住"把这个端点当文件读取器"的用法。
 	previewMaxImageBytes = 32 << 20
@@ -85,11 +89,9 @@ const (
 // 它要么完整可用，要么**明确地**不可用——静默 404 会让用户以为"动效坏了"，
 // 而前端只能显示一句没有原因的"预览失败"，反复重试一个永远不可能成功的按钮。
 type AnimationPreviewer struct {
-	store    animstore.Store
-	objects  objectstore.ObjectStore
-	jobs     JobCreator
-	assets   app.AssetPublisher
-	renderer *render.Client
+	store   animstore.Store
+	objects objectstore.ObjectStore
+	jobs    JobCreator
 	// pages 提供页文档：预览需要元素的 EMU 框才能把元素级轨道编译成图层。
 	pages AnimationPageResolver
 	// budget 可覆盖（测试用短预算），0 用 previewBudget。
@@ -99,15 +101,18 @@ type AnimationPreviewer struct {
 	unavailableReason string
 }
 
-// NewAnimationPreviewer 构造预览器。任一依赖为 nil 时返回 nil，调用方据此
-// 用 NewAnimationPreviewerUnavailable 换上明确说明原因的降级实例。
+// NewAnimationPreviewer 构造预览器。
+//
+// 浏览器播放不提交渲染服务，也不把页图投递到资产目录，所以 assets 与 renderer
+// 可以为 nil（参数保留是为了调用点不用改签名）。store、objects、jobs、pages
+// 缺一则返回 nil，调用方据此换上明确说明原因的降级实例。
 func NewAnimationPreviewer(store animstore.Store, objects objectstore.ObjectStore, jobs JobCreator,
-	assets app.AssetPublisher, renderer *render.Client, pages AnimationPageResolver) *AnimationPreviewer {
-	if store == nil || objects == nil || jobs == nil || assets == nil || renderer == nil || pages == nil {
+	_ app.AssetPublisher, _ *render.Client, pages AnimationPageResolver) *AnimationPreviewer {
+	if store == nil || objects == nil || jobs == nil || pages == nil {
 		return nil
 	}
 	return &AnimationPreviewer{
-		store: store, objects: objects, jobs: jobs, assets: assets, renderer: renderer, pages: pages,
+		store: store, objects: objects, jobs: jobs, pages: pages,
 	}
 }
 
@@ -221,7 +226,35 @@ func previewUnavailableMessage(reason string) string {
 }
 
 type previewRequest struct {
-	TimelineKey string `json:"timelineKey"`
+	TimelineKey string               `json:"timelineKey"`
+	Spec        *animationPutRequest `json:"spec,omitempty"`
+}
+
+// previewRevision 在草案和已保存规格之间选一份。草案不落库，导出仍读已保存的那份。
+func previewRevision(ctx context.Context, store animstore.Store, key animation.Key, pc animation.PageContext, spec *animationPutRequest) (*animation.Revision, error) {
+	if spec == nil {
+		return store.Get(ctx, key.Normalize())
+	}
+	intensity := spec.Intensity
+	if intensity == 0 {
+		intensity = 1
+	}
+	rev := &animation.Revision{
+		TenantID:         key.TenantID,
+		ProjectID:        key.ProjectID,
+		SlideID:          key.SlideID,
+		Language:         key.Language,
+		SourceRevisionNo: key.SourceRevisionNo,
+		Status:           animation.StatusDraft,
+		PresetID:         spec.PresetID,
+		Intensity:        intensity,
+		MotionMode:       spec.MotionMode,
+		Tracks:           spec.Tracks,
+	}
+	if err := rev.Validate(pc); err != nil {
+		return nil, err
+	}
+	return rev, nil
 }
 
 func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
@@ -245,7 +278,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req previewRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAnimationBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_body", "message": err.Error()})
@@ -256,19 +289,6 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code": "missing_timeline", "message": "timelineKey 必填：预览的页时长与分段偏移都来自时间轴",
 		})
-		return
-	}
-
-	// 规格是预览的输入，不是可选项：没有规格就没有"预览什么"。
-	rev, err := p.store.Get(r.Context(), key.Normalize())
-	if err != nil {
-		if errors.Is(err, animation.ErrNotFound) {
-			writeJSON(w, http.StatusNotFound, map[string]any{
-				"code": "no_animation", "message": "该页还没有动画规格",
-			})
-			return
-		}
-		writeAnimationError(w, err)
 		return
 	}
 
@@ -310,6 +330,17 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	rev, err := previewRevision(r.Context(), p.store, key, pc, req.Spec)
+	if err != nil {
+		if errors.Is(err, animation.ErrNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]any{
+				"code": "no_animation", "message": "该页还没有动画规格",
+			})
+			return
+		}
+		writeAnimationError(w, err)
+		return
+	}
 
 	pngKey, err := p.pageImageKey(r.Context(), principal.TenantID, key.ProjectID, timelineKey, key.SlideID)
 	if err != nil {
@@ -322,52 +353,79 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	png, err := p.readObject(r.Context(), principal.TenantID, pngKey)
+	pagePNG, err := p.readObject(r.Context(), principal.TenantID, pngKey)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": err.Error()})
 		return
 	}
-	rel, err := p.assets.Publish(r.Context(), "image/png", png)
+	base, err := png.Decode(bytes.NewReader(pagePNG))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "asset_publish_failed", "message": err.Error()})
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"code": "page_image_invalid", "message": "该页渲染图不是可读的 PNG",
+		})
 		return
 	}
+	base = render.SnapRasterSlack(base)
 
-	canvas := previewCanvas(png)
+	canvas := previewCanvasSize(base.Bounds().Dx(), base.Bounds().Dy())
 	// 焦点与元素几何来自同一份页文档、同一个源版本，只是这里不需要对象读：
 	// page 就是 Resolve 读出来的那一页。
-	focus, focusDiags := app.PageFocusSpans(page, *slide, rev, durationMS, canvas)
+	focus, focusDiags := app.PageFocusSpans(page, *slide, rev, durationMS, canvas, pc.SlideHeightEMU)
 	focusSkipped, focusReason := len(focusDiags), ""
 	if len(focusDiags) > 0 {
 		focusReason = focusDiags[0].Code
 	}
-	// 画布被夹到 [240,1920] 后可能不再保持页图比例（正常 16:9/4:3 永远触发不到）。
+	// 画布宽被夹到 [240,3840] 后可能不再保持页图比例（正常 16:9/4:3 永远触发不到）。
 	// 此时 EMU→像素的单一系数会把框整体放歪：宁可这一页不指，也不能指错位置——
 	// 遮罩错位在画面上就是「孔开在旁边」，而所有接口都返回 200。
-	if len(focus) > 0 && !canvasKeepsAspect(canvas, png) {
+	if len(focus) > 0 && !canvasKeepsAspectSize(canvas, base.Bounds().Dx(), base.Bounds().Dy()) {
 		focusSkipped += len(focus)
 		focus, focusReason = nil, "canvas_aspect"
+	}
+	elements := app.PageElements(page)
+	var beatSheet *animation.BeatSheet
+	var denyIDs map[string]struct{}
+	if animation.InferMotionMode(rev) != animation.MotionModeEntrance {
+		got := app.PageBeatSheet(
+			app.PageBindElements(page, pc.SlideWidthEMU, pc.SlideHeightEMU),
+			previewCompileIDs(elements),
+			*slide,
+			bundle.Timeline.Subtitles,
+			durationMS,
+		)
+		denyIDs = got.DenyIDs
+		if got.Sheet.Valid() {
+			s := got.Sheet
+			beatSheet = &s
+			focus = nil
+		}
 	}
 	compiler, err := render.NewCompiler(render.Options{
 		Canvas: canvas,
 		FPS:    previewFPS,
 		// 与导出路径同一个底色：页与页之间的交叉底色在单页里不可见，
 		// 但计划里必须给一个值（Validate 拒绝空串）。
-		Background: "#FFFFFF",
+		Background:     "#FFFFFF",
+		SlideWidthEMU:  pc.SlideWidthEMU,
+		SlideHeightEMU: pc.SlideHeightEMU,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"code": "internal", "message": err.Error()})
 		return
 	}
+	// BaseImage 只为通过 IR 的路径校验。浏览器播放读的是下面编码的 data URL，
+	// 不把页图投递给渲染服务，也不提交渲染任务。
 	plan, err := compiler.Compile([]render.PageInput{{
 		Index:          0,
 		SlideID:        key.SlideID,
 		DurationMs:     durationMS,
-		BaseImage:      rel,
-		Elements:       app.PageElements(page),
+		BaseImage:      "page.png",
+		Elements:       elements,
 		Revision:       rev,
 		SegmentOffsets: segmentOffsetsOf(*slide),
 		Focus:          focus,
+		BeatSheet:      beatSheet,
+		GazeDenyIDs:    denyIDs,
 	}})
 	if err != nil {
 		// 编译失败是"这份规格/这页数据有问题"，不是服务故障：
@@ -377,97 +435,40 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), p.effectiveBudget())
-	defer cancel()
-
-	jobID, err := p.renderer.Submit(ctx, plan)
-	if err != nil {
-		p.failBudget(ctx, w, "renderer_unavailable", err)
-		return
-	}
-	status, err := p.renderer.Wait(ctx, jobID, 100*time.Millisecond, p.effectiveBudget())
-	if err != nil {
-		// 超时与网络错误的处理不同：超时必须取消任务（否则渲染服务继续占槽），
-		// 而且要给"稍后重试"的明确提示，不是空转。
-		p.cancel(jobID)
-		p.failBudget(ctx, w, "preview_timeout", err)
-		return
-	}
-	if status.State != render.StateSucceeded {
-		msg := status.Error
-		if msg == "" {
-			msg = string(status.State)
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "preview_failed", "message": msg})
+	if len(plan.Pages) != 1 {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"code": "internal", "message": "preview compiled an unexpected page count",
+		})
 		return
 	}
 
-	var buf bytes.Buffer
-	if _, err := p.renderer.DownloadArtifact(ctx, jobID, render.SegmentName(0), &buf); err != nil {
-		p.cancel(jobID)
-		p.failBudget(ctx, w, "preview_failed", err)
-		return
-	}
-	if buf.Len() == 0 {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"code": "preview_empty", "message": "渲染服务返回了空片段"})
-		return
-	}
-
+	scene := buildPreviewScene(base, pagePNG, plan, focusSkipped, focusReason)
 	h := w.Header()
-	h.Set("Content-Type", "video/mp4")
-	h.Set("Content-Length", fmt.Sprintf("%d", buf.Len()))
 	// 预览是"此刻这份规格"的结果，缓存它等于让用户看到旧动效。
 	h.Set("Cache-Control", "no-store")
-	if status.PlanHash != "" {
-		h.Set("X-Render-Plan-Hash", status.PlanHash)
-	}
-	// 图层数是"这一页有几个元素在动"的唯一可核对的数字：几何读不到时会静默退化成
-	// 只有整页动效，而画面上看起来就是"动效没生效"。前端据此说明预览含几个元素动效。
-	// 导出侧 2.0b 起读同一份解析产物，两边图层数应当一致（画布分辨率/帧率不同）。
-	h.Set("X-Preview-Layers", fmt.Sprintf("%d", len(plan.Pages[0].Layers)))
-	// 焦点条数与跳过条数：前端据此说明「这段指了谁」「有几处指了但找不到」。
-	// 不给的话，用户看到整页全亮只会以为「焦点没生效」，而真实原因可能是
-	// 目标在源版本里不存在（他改过 deck）或者这页根本没写焦点。
-	h.Set("X-Preview-Focus", fmt.Sprintf("%d", len(focus)))
+	// 计数同时放进响应头：焦点说明以前只读这些头。正文里的同名字段是浏览器播放的来源。
+	h.Set("X-Preview-Layers", fmt.Sprintf("%d", scene.LayerCount))
+	h.Set("X-Preview-Focus", fmt.Sprintf("%d", scene.FocusCount))
 	if focusSkipped > 0 {
 		h.Set("X-Preview-Focus-Skipped", fmt.Sprintf("%d", focusSkipped))
 		if focusReason != "" {
 			h.Set("X-Preview-Focus-Skip-Reason", focusReason)
 		}
 	}
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(buf.Bytes())
+	writeJSON(w, http.StatusOK, scene)
 }
 
-// failBudget 区分"预算用尽"与"其它失败"。
-//
-// ctx 已过期时不能报 502 renderer_unavailable——那会让用户去查服务，
-// 而真实原因是这一页渲得太慢。两种原因的下一步动作完全不同。
-//
-// 两个条件都要判：调用方的 ctx 与 render.Wait 自己的 deadline 是两个计时器，
-// 几乎同时到期，谁先触发取决于调度。只判 ctx.Err() 时，同一场景会随机器负载
-// 在不同 CI 上分别得到 504 与 502——CI 上就因此红过一次。err 侧的判定是确定的。
-func (p *AnimationPreviewer) failBudget(ctx context.Context, w http.ResponseWriter, code string, err error) {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, render.ErrTimeout) {
-		writeJSON(w, http.StatusGatewayTimeout, map[string]any{
-			"code":    "preview_timeout",
-			"message": "预览超时：这一页渲得太慢，稍后重试或直接导出查看",
-		})
-		return
+func previewCompileIDs(elements []render.Element) map[string]struct{} {
+	if len(elements) == 0 {
+		return nil
 	}
-	status := http.StatusBadGateway
-	if code == "renderer_unavailable" {
-		status = http.StatusBadGateway
+	out := make(map[string]struct{}, len(elements))
+	for _, e := range elements {
+		if e.ID != "" {
+			out[e.ID] = struct{}{}
+		}
 	}
-	writeJSON(w, status, map[string]any{"code": code, "message": err.Error()})
-}
-
-func (p *AnimationPreviewer) cancel(jobID string) {
-	// 用后台上下文：请求上下文已经取消，拿它去发取消请求等于不取消。
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	_ = p.renderer.Cancel(ctx, jobID)
+	return out
 }
 
 // pageImageKey 取该页在对象存储里的 PNG 键（按时间轴页序对齐）。
@@ -515,39 +516,285 @@ func (p *AnimationPreviewer) readObject(ctx context.Context, tenantID, rawKey st
 	return data, nil
 }
 
-// previewCanvas 按页图比例定画布。用页图比例而不是固定 16:9：
-// 4:3 的页塞进 16:9 画布会被拉伸，预览看起来"字歪了"，用户会以为动效做坏了。
+// previewCanvas 按页图比例定画布，高度固定为成片基准 1080。
+//
+// 用页图比例而不是固定 16:9：4:3 的页塞进 16:9 画布会被拉伸，预览看起来"字歪了"。
+// 高度对齐 1080 是因为位移幅度按画布高 / 1080 缩放，只有高度相同，预览和 1080p 成片
+// 的元素才移动同样的距离。宽度取偶数，极端比例夹进 [240,3840]，夹完比例就断了，
+// 调用方会因此丢掉焦点而不是把孔开歪。
 func previewCanvas(png []byte) design.Canvas {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(png))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
-		return design.Canvas{Width: previewCanvasWidth, Height: previewCanvasWidth * 9 / 16}
+		return design.Canvas{Width: 1920, Height: previewCanvasHeight}
 	}
-	height := int(math.Round(float64(previewCanvasWidth) * float64(cfg.Height) / float64(cfg.Width)))
-	if height%2 != 0 {
-		height++ // H.264 yuv420p 要求偶数
+	return previewCanvasSize(cfg.Width, cfg.Height)
+}
+
+func previewCanvasSize(srcW, srcH int) design.Canvas {
+	if srcW <= 0 || srcH <= 0 {
+		return design.Canvas{Width: 1920, Height: previewCanvasHeight}
 	}
-	if height < 240 {
-		height = 240
+	width := int(math.Round(float64(previewCanvasHeight) * float64(srcW) / float64(srcH)))
+	if width%2 != 0 {
+		width++
 	}
-	if height > 1920 {
-		height = 1920
+	if width < previewCanvasMinWidth {
+		width = previewCanvasMinWidth
 	}
-	return design.Canvas{Width: previewCanvasWidth, Height: height}
+	if width > previewCanvasMaxWidth {
+		width = previewCanvasMaxWidth
+	}
+	return design.Canvas{Width: width, Height: previewCanvasHeight}
 }
 
 // canvasKeepsAspect 判断预览画布是否仍保持页图比例。
 //
 // 只在「这一页真有焦点」时才值得一问（调用方先判 len(focus) > 0）：它要再解一次
-// PNG 头，而预览的预算只有几秒。2px 容差用来吃掉两处取整——previewCanvas 会把
-// 奇数高度 +1（H.264 yuv420p 要求偶数），以及 960 宽未必能整除原始比例。
+// PNG 头。2px 容差用来吃掉两处取整——previewCanvas 会把奇数宽度 +1，
+// 以及 1080 高未必能整除原始比例。
 func canvasKeepsAspect(canvas design.Canvas, png []byte) bool {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(png))
 	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
 		// 解不出页图尺寸时不能说"保持了比例"：焦点框的位置无法核对。
 		return false
 	}
-	want := float64(canvas.Height) * float64(cfg.Width) / float64(cfg.Height)
+	return canvasKeepsAspectSize(canvas, cfg.Width, cfg.Height)
+}
+
+func canvasKeepsAspectSize(canvas design.Canvas, srcW, srcH int) bool {
+	if srcW <= 0 || srcH <= 0 {
+		return false
+	}
+	want := float64(canvas.Height) * float64(srcW) / float64(srcH)
 	return math.Abs(float64(canvas.Width)-want) <= 2
+}
+
+// previewScene 是浏览器播放这一页需要的全部数据。
+//
+// 字段与分享清单的一页对齐（image / plate / layers / focus / shots），
+// 播放器因此可以复用同一份 evaluateLayer、shotAt 和遮罩采样。
+// 图片是 data URL：预览不落盘，也不依赖渲染服务的工作目录。
+type previewScene struct {
+	FPS             int                     `json:"fps"`
+	Width           int                     `json:"width"`
+	Height          int                     `json:"height"`
+	DurationMs      int64                   `json:"durationMs"`
+	Image           string                  `json:"image"`
+	Plate           bool                    `json:"plate"`
+	Layers          []share.SlideLayer      `json:"layers"`
+	Focus           []share.SlideFocus      `json:"focus"`
+	Annotations     []share.SlideAnnotation `json:"annotations,omitempty"`
+	LookCrop        bool                    `json:"lookCrop,omitempty"`
+	LookCropPadPx   int                     `json:"lookCropPadPx,omitempty"`
+	Shots           []share.SlideShot       `json:"shots"`
+	LayerCount      int                     `json:"layerCount"`
+	FocusCount      int                     `json:"focusCount"`
+	FocusSkipped    int                     `json:"focusSkipped"`
+	FocusSkipReason string                  `json:"focusSkipReason,omitempty"`
+	EntranceSkipped bool                    `json:"entranceSkipped,omitempty"`
+}
+
+// buildPreviewScene 把编译结果变成浏览器能播的场景。
+//
+// 底板和图层位图与 HTML 导出走同一对函数（BuildPlate / BuildLayerAssets）：
+// 只在整页图上做 CSS 位移会在原位留下残影。挖空失败时退回整页图、不带图层，
+// 画面至少是对的。镜头裁切失败则整页镜头都不给，与导出的降级相同。
+func buildPreviewScene(base image.Image, pagePNG []byte, plan *render.Timeline, focusSkipped int, focusReason string) previewScene {
+	page := plan.Pages[0]
+	stage := pagePNG
+	scene := previewScene{
+		FPS:             plan.FPS,
+		Width:           plan.Width,
+		Height:          plan.Height,
+		DurationMs:      page.DurationMs,
+		Layers:          []share.SlideLayer{},
+		Focus:           previewFocus(page.Focus),
+		Annotations:     previewAnnotations(page.Annotations),
+		LookCrop:        page.LookCrop,
+		LookCropPadPx:   page.LookCropPadPx,
+		Shots:           []share.SlideShot{},
+		FocusCount:      len(page.Focus),
+		FocusSkipped:    focusSkipped,
+		FocusSkipReason: focusReason,
+	}
+	if previewHasAnimatedLayer(page.Layers) {
+		base = render.CropSlack(base, plan.Width, plan.Height)
+		plateImg, _ := render.BuildPlate(base, page.Layers, plan.Width, plan.Height)
+		assets := render.BuildLayerAssets(base, page.Layers, plan.Width, plan.Height)
+		if plateImg != nil && len(assets) > 0 {
+			if raw, err := encodePreviewPNG(plateImg); err == nil {
+				if layers, ok := previewLayerScenes(assets, page.Layers); ok {
+					stage = raw
+					scene.Plate = true
+					scene.Layers = layers
+				}
+			}
+		}
+	}
+	scene.Image = pngDataURL(stage)
+	scene.LayerCount = len(scene.Layers)
+	scene.Shots = previewShotScenes(base, page, plan.Width, plan.Height, stage)
+	for _, w := range plan.Warnings {
+		if w.Code == render.DiagEntranceSkipped {
+			scene.EntranceSkipped = true
+			break
+		}
+	}
+	return scene
+}
+
+func previewHasAnimatedLayer(layers []render.Layer) bool {
+	// 与导出 / Remotion 暂存同一条「入场元素层」判据：注视页不挖洞。
+	return render.HasEntranceElementLayer(layers)
+}
+
+func previewLayerScenes(assets []render.LayerAsset, layers []render.Layer) ([]share.SlideLayer, bool) {
+	out := make([]share.SlideLayer, 0, len(assets))
+	for _, asset := range assets {
+		if asset.Index < 0 || asset.Index >= len(layers) || asset.Image == nil {
+			return nil, false
+		}
+		raw, err := encodePreviewPNG(asset.Image)
+		if err != nil {
+			return nil, false
+		}
+		layer := layers[asset.Index]
+		box := layer.Box
+		if asset.Box.W > 0 && asset.Box.H > 0 {
+			box = asset.Box
+		}
+		out = append(out, share.SlideLayer{
+			ElementID: layer.ElementID,
+			Kind:      layer.Kind,
+			Box:       share.SlideBox{X: box.X, Y: box.Y, W: box.W, H: box.H},
+			Image:     pngDataURL(raw),
+			Origin:    layer.Origin,
+			Clips:     previewClips(layer.Clips),
+		})
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func previewClips(clips []render.Motion) []share.Clip {
+	if len(clips) == 0 {
+		return nil
+	}
+	out := make([]share.Clip, 0, len(clips))
+	for _, clip := range clips {
+		out = append(out, share.Clip{
+			ClipID:               clip.ClipID,
+			Effect:               clip.Effect,
+			StartMs:              clip.StartMs,
+			DurationMs:           clip.DurationMs,
+			Easing:               clip.Easing,
+			Props:                clip.Props,
+			IsContinuation:       clip.IsContinuation,
+			ContinuationOffsetMs: clip.ContinuationOffsetMs,
+			ElementID:            clip.ElementID,
+			Carry:                clip.Carry,
+		})
+	}
+	return out
+}
+
+func previewFocus(in []render.FocusSpan) []share.SlideFocus {
+	if len(in) == 0 {
+		return []share.SlideFocus{}
+	}
+	out := make([]share.SlideFocus, 0, len(in))
+	for _, span := range in {
+		item := share.SlideFocus{
+			StartMs: span.StartMs, ElementID: span.ElementID,
+			EndMs: span.EndMs, FadeMs: span.FadeMs, VeilAlpha: span.VeilAlpha,
+		}
+		if span.Rect != nil {
+			item.Rect = &share.SlideBox{X: span.Rect.X, Y: span.Rect.Y, W: span.Rect.W, H: span.Rect.H}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func previewAnnotations(in []render.Annotation) []share.SlideAnnotation {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideAnnotation, 0, len(in))
+	for _, a := range in {
+		item := share.SlideAnnotation{
+			Kind: a.Kind, StartMs: a.StartMs, EndMs: a.EndMs, FadeMs: a.FadeMs,
+			ElementID: a.ElementID, Shape: a.Shape, Text: a.Text, SegmentID: a.SegmentID,
+		}
+		if a.Rect != nil {
+			item.Rect = &share.SlideBox{X: a.Rect.X, Y: a.Rect.Y, W: a.Rect.W, H: a.Rect.H}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// previewShotScenes 产出页内镜头。首镜复用舞台图（有分层时是底板），其余镜头从原页裁切。
+// 任一步失败就整页不给镜头：半套镜头会在切换点闪一下，比没有镜头更难看。
+func previewShotScenes(base image.Image, page render.Page, canvasW, canvasH int, stagePNG []byte) []share.SlideShot {
+	if len(page.Shots) == 0 {
+		return []share.SlideShot{}
+	}
+	out := make([]share.SlideShot, 0, len(page.Shots))
+	for i, shot := range page.Shots {
+		item := share.SlideShot{
+			Index:       shot.Index,
+			StartMs:     shot.StartMs,
+			DurationMs:  shot.DurationMs,
+			CrossFadeMs: shot.CrossFadeMs,
+			Camera:      previewCamera(shot.Camera),
+		}
+		if i == 0 {
+			item.Image = pngDataURL(stagePNG)
+			out = append(out, item)
+			continue
+		}
+		if shot.Crop == nil || base == nil {
+			return []share.SlideShot{}
+		}
+		cropped, err := render.CropShot(base, *shot.Crop, canvasW, canvasH)
+		if err != nil {
+			return []share.SlideShot{}
+		}
+		raw, err := encodePreviewPNG(cropped)
+		if err != nil {
+			return []share.SlideShot{}
+		}
+		item.Image = pngDataURL(raw)
+		item.Crop = &share.SlideBox{X: shot.Crop.X, Y: shot.Crop.Y, W: shot.Crop.W, H: shot.Crop.H}
+		out = append(out, item)
+	}
+	return out
+}
+
+func previewCamera(kfs []render.CameraKeyframe) []share.CameraKeyframe {
+	if len(kfs) == 0 {
+		return nil
+	}
+	out := make([]share.CameraKeyframe, len(kfs))
+	for i, kf := range kfs {
+		out[i] = share.CameraKeyframe{AtMs: kf.AtMs, X: kf.X, Y: kf.Y, Scale: kf.Scale}
+	}
+	return out
+}
+
+func encodePreviewPNG(img image.Image) ([]byte, error) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func pngDataURL(raw []byte) string {
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
 }
 
 // segmentOffsetsOf 把分段绝对时间换算成相对本页起点的毫秒偏移。

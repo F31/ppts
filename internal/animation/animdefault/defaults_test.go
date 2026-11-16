@@ -129,21 +129,121 @@ func TestDefaultSpecAlignsBulletsToSegments(t *testing.T) {
 	}
 }
 
-func TestDefaultSpecFallsBackToPageTrack(t *testing.T) {
+func TestDefaultSpecEmptyPageHasNoTracks(t *testing.T) {
 	empty := &project.Page{Index: 0, SlideID: "slide-1"}
 	rev, err := DefaultSpec(empty, defaultOptions(DefaultPresetID))
 	if err != nil {
 		t.Fatalf("DefaultSpec: %v", err)
 	}
-	if len(rev.Tracks) != 1 {
-		t.Fatalf("tracks = %d, want 1", len(rev.Tracks))
-	}
-	if rev.Tracks[0].Kind != animation.KindPage || rev.Tracks[0].ElementID != "" {
-		t.Fatalf("fallback track = %+v, want page track", rev.Tracks[0])
+	if len(rev.Tracks) != 0 {
+		t.Fatalf("empty page must not invent page fadeIn, got %+v", rev.Tracks)
 	}
 	pc := animation.PageContext{DurationMS: 6000, FPS: 30}
 	if err := rev.Validate(pc); err != nil {
-		t.Fatalf("fallback spec invalid: %v", err)
+		t.Fatalf("empty spec invalid: %v", err)
+	}
+}
+
+func TestDefaultSpecIsGazeSpotlight(t *testing.T) {
+	for _, preset := range animation.Catalog().Presets() {
+		t.Run(preset.ID, func(t *testing.T) {
+			rev, err := DefaultSpec(samplePage(), defaultOptions(preset.ID))
+			if err != nil {
+				t.Fatalf("DefaultSpec: %v", err)
+			}
+			if animation.InferMotionMode(rev) != animation.MotionModeGaze {
+				t.Fatalf("mode = %q, want gaze", animation.InferMotionMode(rev))
+			}
+			entrance := 0
+			for _, tr := range rev.Tracks {
+				for _, c := range tr.Clips {
+					if animation.IsEntranceEffect(c.Type) {
+						entrance++
+					}
+					if c.Type != "spotlight" {
+						t.Fatalf("clip type = %q, want spotlight", c.Type)
+					}
+				}
+			}
+			if entrance != 0 {
+				t.Fatalf("entrance class clips = %d, want 0", entrance)
+			}
+			if len(preset.EntranceClips) == 0 {
+				t.Fatal("EntranceClips must stay for the optional-entrance checkbox")
+			}
+		})
+	}
+}
+
+func TestDefaultSpecWithEntranceAppendsPunchKinds(t *testing.T) {
+	opts := defaultOptions("teaching-clear")
+	opts.WithEntrance = true
+	rev, err := DefaultSpec(samplePage(), opts)
+	if err != nil {
+		t.Fatalf("DefaultSpec: %v", err)
+	}
+	if rev.MotionMode != animation.MotionModeGazeEntrance {
+		t.Fatalf("mode = %q, want %q", rev.MotionMode, animation.MotionModeGazeEntrance)
+	}
+	if animation.InferMotionMode(rev) != animation.MotionModeGazeEntrance {
+		t.Fatalf("infer = %q", animation.InferMotionMode(rev))
+	}
+	var titleFade, bulletFade, imageEntrance int
+	for _, tr := range rev.Tracks {
+		hasSpot, hasEnt := false, false
+		for _, c := range tr.Clips {
+			if c.Type == "spotlight" {
+				hasSpot = true
+			}
+			if animation.IsEntranceEffect(c.Type) {
+				hasEnt = true
+			}
+		}
+		switch tr.Kind {
+		case animation.KindTitle:
+			if !hasSpot || !hasEnt {
+				t.Fatalf("title track missing spotlight+entrance: %+v", tr.Clips)
+			}
+			for _, c := range tr.Clips {
+				if c.Type == "fadeIn" {
+					titleFade++
+					if c.Trigger == "" {
+						t.Fatal("entrance clip lost trigger")
+					}
+				}
+			}
+		case animation.KindBullet:
+			if !hasSpot || !hasEnt {
+				t.Fatalf("bullet track missing spotlight+entrance: %+v", tr.Clips)
+			}
+			for _, c := range tr.Clips {
+				if c.Type == "fadeIn" {
+					bulletFade++
+				}
+			}
+		case animation.KindImage, animation.KindChart:
+			if hasEnt {
+				t.Fatalf("%s must not get entrance clips", tr.Kind)
+			}
+			imageEntrance++
+		}
+	}
+	if titleFade != 1 {
+		t.Fatalf("title fadeIn = %d, want 1", titleFade)
+	}
+	if bulletFade < 1 {
+		t.Fatalf("bullet fadeIn = %d, want ≥1", bulletFade)
+	}
+	if imageEntrance == 0 {
+		t.Fatal("expected image/chart spotlight tracks without entrance")
+	}
+
+	again, err := DefaultSpec(samplePage(), opts)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if !reflect.DeepEqual(rev.Tracks, again.Tracks) {
+		t.Fatal("WithEntrance spec is not deterministic")
 	}
 }
 
@@ -154,7 +254,7 @@ func TestDefaultSpecShortPageStillValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DefaultSpec: %v", err)
 	}
-	pc := animation.PageContext{DurationMS: 300, FPS: 30, Elements: anchorsOf(pageElements(samplePage()))}
+	pc := animation.PageContext{DurationMS: 300, FPS: 30, Elements: anchorsOf(pageElements(samplePage())), SegmentIDs: []string{"seg-1", "seg-2"}}
 	if err := rev.Validate(pc); err != nil {
 		t.Fatalf("short-page spec invalid: %v", err)
 	}

@@ -355,6 +355,17 @@ func TestManifestValidate(t *testing.T) {
 	}
 }
 
+func TestPreparePageSnaps1081BeforeLongEdge(t *testing.T) {
+	src := pngBytes(t, 1920, 1081)
+	img, err := preparePage(src, MaxPageLongEdge)
+	if err != nil {
+		t.Fatalf("preparePage: %v", err)
+	}
+	if img.Rect.Dx() != 1600 || img.Rect.Dy() != 900 {
+		t.Fatalf("preparePage(1920×1081) = %dx%d, want 1600×900 (snap then fit)", img.Rect.Dx(), img.Rect.Dy())
+	}
+}
+
 func TestFitLongEdge(t *testing.T) {
 	cases := []struct{ w, h, limit, wantW, wantH int }{
 		{1920, 1080, 1600, 1600, 900},

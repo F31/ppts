@@ -13,6 +13,7 @@ import (
 	"github.com/F31/ppts/gen/ppts/v1/pptsv1connect"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/tenant"
 )
@@ -69,24 +70,42 @@ func (s *PlaybackService) GetNarration(ctx context.Context, req *connect.Request
 // 返回列表长度恒为时间轴 slides 数：有图填键，无图填空串；调用方据此逐页降级。
 // 供控制台 GetNarration、公开区匿名清单、编辑器版本配音状态、成品清单复用。
 func resolvePagePngKeys(ctx context.Context, jobs JobCreator, objects objectstore.ObjectStore, tenantID, projectID, timelineKey string) ([]string, error) {
-	parseJob, err := jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
-	if errors.Is(err, pipeline.ErrNoSucceededJob) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	ref, err := jobs.StepResultRef(tenant.WithContext(ctx, tenantID), parseJob.ID, "pages")
-	if err != nil || ref == "" {
-		return nil, err
-	}
-	manifest, err := loadPageManifest(ctx, objects, tenantID, ref)
-	if err != nil {
-		return nil, err
-	}
 	bundle, _, err := loadBundle(ctx, objects, tenantID, timelineKey)
 	if err != nil {
 		return nil, err
+	}
+	if bundle.Timeline == nil {
+		return nil, nil
+	}
+	supplied := pageKeysFromParseJob(ctx, jobs, objects, tenantID, projectID, bundle.Timeline.SourceRevisionNo, bundle.Timeline.Slides)
+	// 任务引用缺失或对不上这一版时，用约定路径上的 pages.json 把空位补上。
+	// 两边都没有图时保持 nil：调用方把「没有页图」和「有一串空串」看成同一件事。
+	filled := app.AlignPagePNGKeys(ctx, objects, tenantID, projectID, bundle.Timeline.SourceRevisionNo, bundle.Timeline.Slides, supplied)
+	for _, key := range filled {
+		if key != "" {
+			return filled, nil
+		}
+	}
+	return nil, nil
+}
+
+// pageKeysFromParseJob 读取最近一次成功解析任务的页面清单，并按时间轴页序对齐。
+// 任务或步骤已被清掉、清单版本对不上这一条时间轴时，返回 nil，由调用方改读 pages.json。
+func pageKeysFromParseJob(ctx context.Context, jobs JobCreator, objects objectstore.ObjectStore, tenantID, projectID string, revisionNo int, slides []media.SlideCue) []string {
+	parseJob, err := jobs.LatestSucceededJob(ctx, tenantID, projectID, string(pipeline.KindParse))
+	if err != nil || parseJob == nil {
+		return nil
+	}
+	ref, err := jobs.StepResultRef(tenant.WithContext(ctx, tenantID), parseJob.ID, "pages")
+	if err != nil || ref == "" {
+		return nil
+	}
+	manifest, err := loadPageManifest(ctx, objects, tenantID, ref)
+	if err != nil || manifest == nil || manifest.Renderer == app.RendererUnavailable {
+		return nil
+	}
+	if revisionNo > 0 && manifest.RevisionNo > 0 && manifest.RevisionNo != revisionNo {
+		return nil
 	}
 	bySlide := make(map[string]string, len(manifest.Pages))
 	for _, pg := range manifest.Pages {
@@ -94,12 +113,11 @@ func resolvePagePngKeys(ctx context.Context, jobs JobCreator, objects objectstor
 			bySlide[pg.SlideID] = pg.Key
 		}
 	}
-	// 与时间轴逐页对齐：有图填键，无图填空串（缺图页由导出/播放侧降级，而非因一页缺失整段失败）。
-	out := make([]string, len(bundle.Timeline.Slides))
-	for i, slide := range bundle.Timeline.Slides {
-		out[i] = bySlide[slide.SlideID] // map 缺键 → ""
+	out := make([]string, len(slides))
+	for i, slide := range slides {
+		out[i] = bySlide[slide.SlideID]
 	}
-	return out, nil
+	return out
 }
 
 // signManifestResources 为 timeline 清单生成签名资源列表（timeline 包、SRT/VTT 字幕、页面 PNG、去重音频段）。

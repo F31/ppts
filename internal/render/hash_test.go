@@ -131,6 +131,98 @@ func TestHashIgnoresWarnings(t *testing.T) {
 	}
 }
 
+func TestHashIgnoresEmptyGazeFields(t *testing.T) {
+	a := validPlan()
+	ha, err := a.Hash(HashOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := validPlan()
+	b.Pages[0].Annotations = []Annotation{}
+	b.Pages[0].LookCrop = false
+	hb, err := b.Hash(HashOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ha != hb {
+		t.Fatal("空 annotations / lookCrop=false 不得改变 hash")
+	}
+}
+
+func TestHashChangesWithLookCrop(t *testing.T) {
+	a := validPlan()
+	a.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}}}
+	ha, _ := a.Hash(HashOptions{})
+	b := validPlan()
+	b.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}}}
+	b.Pages[0].LookCrop = true
+	hb, _ := b.Hash(HashOptions{})
+	if ha == hb {
+		t.Fatal("lookCrop 必须参与 hash")
+	}
+	c := validPlan()
+	c.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}}}
+	c.Pages[0].LookCrop = true
+	c.Pages[0].LookCropPadPx = 12
+	hc, _ := c.Hash(HashOptions{})
+	if hb == hc {
+		t.Fatal("lookCropPadPx 必须参与 hash")
+	}
+}
+
+func TestHashIgnoresZeroVeilAlpha(t *testing.T) {
+	a := validPlan()
+	a.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1"}}
+	b := validPlan()
+	b.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", VeilAlpha: 0}}
+	ha, _ := a.Hash(HashOptions{})
+	hb, _ := b.Hash(HashOptions{})
+	if ha != hb {
+		t.Fatal("veilAlpha=0 与缺省同义，不得改变 hash")
+	}
+}
+
+func TestHashChangesWithVeilAlpha(t *testing.T) {
+	a := validPlan()
+	a.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1"}}
+	b := validPlan()
+	b.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", VeilAlpha: 0.4}}
+	ha, _ := a.Hash(HashOptions{})
+	hb, _ := b.Hash(HashOptions{})
+	if ha == hb {
+		t.Fatal("非零 veilAlpha 必须参与 hash")
+	}
+}
+
+func TestHashChangesWithAnnotations(t *testing.T) {
+	a := validPlan()
+	ha, _ := a.Hash(HashOptions{})
+	b := validPlan()
+	b.Pages[0].Annotations = []Annotation{{
+		Kind: AnnotationCaption, StartMs: 0, Text: "要点",
+	}}
+	hb, _ := b.Hash(HashOptions{})
+	if ha == hb {
+		t.Fatal("非空 annotations 必须参与 hash")
+	}
+}
+
+func TestHashChangesWithAnnotationEndMs(t *testing.T) {
+	a := validPlan()
+	a.Pages[0].Annotations = []Annotation{{
+		Kind: AnnotationCallout, StartMs: 0, Rect: &Box{X: 1, Y: 1, W: 10, H: 10},
+	}}
+	ha, _ := a.Hash(HashOptions{})
+	b := validPlan()
+	b.Pages[0].Annotations = []Annotation{{
+		Kind: AnnotationCallout, StartMs: 0, EndMs: 16000, Rect: &Box{X: 1, Y: 1, W: 10, H: 10},
+	}}
+	hb, _ := b.Hash(HashOptions{})
+	if ha == hb {
+		t.Fatal("callout EndMs 必须参与 hash，否则圈选放手不会重渲")
+	}
+}
+
 func TestCanonicalJSONIsStable(t *testing.T) {
 	data, err := validPlan().CanonicalJSON()
 	if err != nil {

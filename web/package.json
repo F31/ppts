@@ -16,7 +16,7 @@
     "polling:test": "node --experimental-strip-types --test polling-check.mjs",
     "freeze:test": "node --experimental-strip-types --test player-freeze-check.mjs",
     "fps:test": "node --experimental-strip-types --test player-fps-check.mjs",
-    "build": "npm run contrast && npm run scroll:test && npm run api:check && npm run route:check && npm run artifact-share:check && npm run core:test && npm run polling:test && npm run freeze:test && npm run fps:test && npm run animation:test && npm run batch:test && npm run telemetry:test && npm run script:test && npm run visibility:test && npm run preview:test && npm run report:test && npm run anchors:test && npm run ttsmodel:test && npm run compare:test && npm run focus:test && npm run focuspreview:test && npm run gateway:test && npm run probe:test && npm run localauth:test && npm run oneclick:test && tsc -b && vite build",
+    "build": "npm run contrast && npm run scroll:test && npm run api:check && npm run route:check && npm run artifact-share:check && npm run core:test && npm run polling:test && npm run freeze:test && npm run fps:test && npm run animation:test && npm run batch:test && npm run telemetry:test && npm run script:test && npm run visibility:test && npm run preview:test && npm run report:test && npm run anchors:test && npm run ttsmodel:test && npm run compare:test && npm run focus:test && npm run focuspreview:test && npm run gateway:test && npm run probe:test && npm run localauth:test && npm run oneclick:test && npm run narration:test && npm run jobstep:test && tsc -b && vite build",
     "build:share": "vite build --config vite.share.config.ts",
     "typecheck": "tsc -b",
     "preview": "vite preview --host 0.0.0.0",
@@ -35,7 +35,9 @@
     "gateway:test": "node --experimental-strip-types --test gateway-share-check.mjs",
     "probe:test": "node --experimental-strip-types --test gateway-probe-check.mjs",
     "localauth:test": "node --experimental-strip-types --test local-auth-check.mjs",
-    "oneclick:test": "node --experimental-strip-types --test one-click-check.mjs"
+    "oneclick:test": "node --experimental-strip-types --test one-click-check.mjs",
+    "narration:test": "node --experimental-strip-types --test narration-failure-check.mjs",
+    "jobstep:test": "node --experimental-strip-types --test job-step-label-check.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "6.1.1",

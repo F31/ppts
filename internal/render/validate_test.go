@@ -43,6 +43,22 @@ func TestValidPlanPasses(t *testing.T) {
 	}
 }
 
+func TestValidGazeFieldsPass(t *testing.T) {
+	p := validPlan()
+	p.Pages[0].Focus = []FocusSpan{{
+		StartMs: 0, ElementID: "e1", VeilAlpha: 0.4,
+		Rect: &Box{X: 10, Y: 10, W: 200, H: 80},
+	}}
+	p.Pages[0].LookCrop = true
+	p.Pages[0].Annotations = []Annotation{
+		{Kind: AnnotationCallout, StartMs: 0, Rect: &Box{X: 10, Y: 10, W: 200, H: 80}, Shape: AnnotationShapeRect},
+		{Kind: AnnotationCaption, StartMs: 0, Text: "要点"},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("合法注视字段不应报错: %v", err)
+	}
+}
+
 func TestValidateRejects(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -139,6 +155,24 @@ func TestValidateRejects(t *testing.T) {
 				{StartMs: 0, ElementID: "e1", EndMs: 900}, {StartMs: 800, ElementID: "e2"},
 			}
 		}, CodeInvalidPlan, "pages[0].focus[0].endMs"},
+		{"veilAlpha too large", func(p *Timeline) {
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", VeilAlpha: 1.2}}
+		}, CodeInvalidPlan, "pages[0].focus[0].veilAlpha"},
+		{"annotation unknown kind", func(p *Timeline) {
+			p.Pages[0].Annotations = []Annotation{{Kind: "spotlight", StartMs: 0}}
+		}, CodeInvalidPlan, "pages[0].annotations[0].kind"},
+		{"callout missing rect", func(p *Timeline) {
+			p.Pages[0].Annotations = []Annotation{{Kind: AnnotationCallout, StartMs: 0}}
+		}, CodeInvalidPlan, "pages[0].annotations[0].rect"},
+		{"lookCrop without focus rect", func(p *Timeline) {
+			p.Pages[0].LookCrop = true
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1"}}
+		}, CodeInvalidPlan, "pages[0].focus[0].rect"},
+		{"lookCropPadPx out of range", func(p *Timeline) {
+			p.Pages[0].LookCrop = true
+			p.Pages[0].LookCropPadPx = 32
+			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}}}
+		}, CodeInvalidPlan, "pages[0].lookCropPadPx"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

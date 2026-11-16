@@ -401,6 +401,38 @@ body.ppts-share-page {
   object-fit: fill;
 }
 
+.ppts-callout {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+/* 台上短标签：在字幕条上方，避免和全文 VTT 叠成双重字幕。 */
+.ppts-caption {
+  position: absolute;
+  left: 50%;
+  bottom: 72px;
+  transform: translateX(-50%);
+  max-width: 72%;
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: rgba(8, 10, 14, 0.72);
+  color: var(--ppts-text);
+  font-size: clamp(14px, 1.4vw, 22px);
+  line-height: 1.4;
+  text-align: center;
+  letter-spacing: 0.01em;
+  pointer-events: none;
+}
+
+.ppts-caption-spoken {
+  color: var(--ppts-spoken);
+}
+
+.ppts-caption-unspoken {
+  color: var(--ppts-text-dim);
+}
+
 /* 播放器图标是内联 SVG（见 main.ts 的 ICON_PATHS）。
    之前用的是字符 ▶ ❚ ↻ ‹ ›，而 Noto Sans CJK 没有这些字形——在没装对应符号字体的
    机器上就是方框。尺寸用 em 跟随字号，颜色用 currentColor 跟随按钮状态。 */

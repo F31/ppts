@@ -214,7 +214,7 @@ func runWorker() error {
 			if animationEnabled(stores.isSQLite()) {
 				exportHandler = exportHandler.WithAnimation(client,
 					time.Duration(config.Int("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
-				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects)
+				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects, stores.projects)
 			}
 		}
 	} else if animationEnabled(stores.isSQLite()) {
@@ -449,7 +449,7 @@ func subtitleFontName() string {
 // 能读的地方，返回同一个相对键），这条接线与导出主路径都不用改。
 //
 // 任何一步缺失都退化为静态导出而不是硬失败：渲染服务是可选依赖，没有它导出必须照常成功。
-func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store, objects objectstore.ObjectStore) *app.ExportHandler {
+func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store, objects objectstore.ObjectStore, sources app.SourceRevisionLookup) *app.ExportHandler {
 	dir := config.String("PPTS_ANIMATION_ASSET_DIR", "")
 	if dir == "" {
 		logger.Warn("animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static",
@@ -473,7 +473,7 @@ func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL s
 	if objects != nil {
 		// 同一个来源同时提供元素几何与焦点框：两者都来自 extracted document 的
 		// 同一份形状树，分成两个适配器只会让"几何读了、框没读"这种半接状态出现。
-		geom := app.NewDocumentGeometry(objects)
+		geom := app.NewDocumentGeometry(objects).WithSourceRevisions(sources)
 		assembler = assembler.WithGeometry(geom).WithFocus(geom)
 		withGeometry = true
 	}

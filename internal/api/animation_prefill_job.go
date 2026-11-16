@@ -93,11 +93,11 @@ func prefillDTO(res bind.RoutedResult, report *animdefault.Report) *animationPre
 
 // defaultSpecFor 用一组绑定生成默认规格。同步路径与异步路径共用，避免两处各算一遍
 // 「预填之后这一页该长什么样」——那正是分档口径最容易走偏的地方。
-func (h *AnimationHandler) defaultSpecFor(page *project.Page, pc animation.PageContext, key animation.Key, presetID string, bindings []bind.Binding) (animationSpecDTO, animdefault.Report, error) {
+func (h *AnimationHandler) defaultSpecFor(page *project.Page, pc animation.PageContext, key animation.Key, presetID string, bindings []bind.Binding, withEntrance bool) (animationSpecDTO, animdefault.Report, error) {
 	rev, report, err := animdefault.DefaultSpecReport(page, animdefault.DefaultOptions{
 		SlideID: key.SlideID, Language: key.Language, DurationMS: pc.DurationMS,
 		SegmentIDs: pc.SegmentIDs, PresetID: presetID,
-		Bindings: bindings,
+		Bindings: bindings, WithEntrance: withEntrance,
 	})
 	if err != nil {
 		return animationSpecDTO{}, report, err
@@ -170,7 +170,7 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 		observability.PrefillCache(observability.PrefillCacheReadError)
 	} else if hit && cached.Model.Fallback == "" {
 		observability.PrefillCache(observability.PrefillCacheHit)
-		dto, report, derr := h.defaultSpecFor(page, pc, key, presetID, cached.Bindings)
+		dto, report, derr := h.defaultSpecFor(page, pc, key, presetID, cached.Bindings, false)
 		if derr != nil {
 			writeAnimationError(w, derr)
 			return
@@ -188,7 +188,7 @@ func (h *AnimationHandler) prefillPost(w http.ResponseWriter, r *http.Request) {
 	// ② 规则先算一份。它同时充当三个角色：分档判定、script 档的即时底稿、
 	// 以及模型失败时的最终结果——三者用的是同一次计算，不会互相矛盾。
 	base := bind.RunRouted(r.Context(), key.SlideID, snap.Elements, snap.Segments, bind.RoutedOptions{})
-	dto, report, derr := h.defaultSpecFor(page, pc, key, presetID, base.Bindings)
+	dto, report, derr := h.defaultSpecFor(page, pc, key, presetID, base.Bindings, false)
 	if derr != nil {
 		writeAnimationError(w, derr)
 		return
@@ -333,7 +333,7 @@ func (h *AnimationHandler) prefillGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, prefillResponse{Status: "failed", JobID: job.ID, Reason: "result_missing"})
 		return
 	}
-	dto, report, derr := h.defaultSpecFor(page, pc, key, snap.PresetID, res.Bindings)
+	dto, report, derr := h.defaultSpecFor(page, pc, key, snap.PresetID, res.Bindings, false)
 	if derr != nil {
 		writeAnimationError(w, derr)
 		return

@@ -111,13 +111,27 @@ type ClipTemplate struct {
 
 // Preset 是一组默认 clip 参数（不是模板视频，用户改任一项即变为自定义）。
 type Preset struct {
-	ID             string                    `json:"id"`
-	Label          string                    `json:"label"`
-	Description    string                    `json:"description"`
-	Intensity      float64                   `json:"intensity"`
-	StaggerMs      int64                     `json:"staggerMs"`
-	SegmentAligned bool                      `json:"segmentAligned"`
-	Clips          map[string][]ClipTemplate `json:"clips"`
+	ID             string  `json:"id"`
+	Label          string  `json:"label"`
+	Description    string  `json:"description"`
+	Intensity      float64 `json:"intensity"`
+	StaggerMs      int64   `json:"staggerMs"`
+	SegmentAligned bool    `json:"segmentAligned"`
+	// FocusFollowsSegment：讲到当前条时压暗其余已绑分段的要点。
+	// 不靠讲稿里的 Focus 字段，从 withSegment 轨道推导页级焦点。
+	FocusFollowsSegment bool `json:"focusFollowsSegment"`
+	// GazeFollowsSegment：新默认注视。Clips 只含 spotlight；入场模板在 EntranceClips。
+	GazeFollowsSegment bool `json:"gazeFollowsSegment"`
+	// LookCrop：科技预设 punch-in。PageView / sharePlayer 按 Focus.rect crop-to-fill。
+	LookCrop bool `json:"lookCrop,omitempty"`
+	// Callout：off | auto | rect | circle。商务默认 off。
+	Callout string `json:"callout,omitempty"`
+	// Caption：off | overlay。台上条只出现在预览 / HTML。
+	Caption string                    `json:"caption,omitempty"`
+	Clips   map[string][]ClipTemplate `json:"clips"`
+	// EntranceClips 是「要点依次出现」的入场模板。DefaultSpec 默认不读；
+	// DefaultOptions.WithEntrance 为 true 时追加到已有 spotlight 轨。
+	EntranceClips map[string][]ClipTemplate `json:"entranceClips,omitempty"`
 	// Transition 是套用该预设时的页间转场（L0）。转场不是元素级动效，
 	// 不进入可编辑的 Tracks：它由预设整体决定，避免在 V1–V12 里为它开特例。
 	Transition TransitionSpec `json:"transition"`
@@ -311,25 +325,50 @@ func validatePreset(p *Preset, reg *Registry) error {
 		if !validKind(kind) {
 			return fmt.Errorf("animation: preset %q unknown kind %q", p.ID, kind)
 		}
-		for _, c := range clips {
-			eff, ok := reg.effectBy[c.Type]
-			if !ok {
-				return fmt.Errorf("animation: preset %q references unknown effect %q", p.ID, c.Type)
-			}
-			if !eff.Applies(kind) {
-				return fmt.Errorf("animation: preset %q uses %q on unsupported kind %q", p.ID, c.Type, kind)
-			}
-			if c.DurationMs < eff.DurationRange[0] || c.DurationMs > eff.DurationRange[1] {
-				return fmt.Errorf("animation: preset %q clip %q duration %d outside %v",
-					p.ID, c.Type, c.DurationMs, eff.DurationRange)
-			}
-			if _, ok := validEasings[c.Easing]; !ok {
-				return fmt.Errorf("animation: preset %q clip %q has invalid easing %q", p.ID, c.Type, c.Easing)
-			}
+		if err := validatePresetClips(p.ID, "clips", kind, clips, reg); err != nil {
+			return err
 		}
+	}
+	for kind, clips := range p.EntranceClips {
+		if !validKind(kind) {
+			return fmt.Errorf("animation: preset %q unknown entrance kind %q", p.ID, kind)
+		}
+		if err := validatePresetClips(p.ID, "entranceClips", kind, clips, reg); err != nil {
+			return err
+		}
+	}
+	switch p.Callout {
+	case "", "off", "auto", "rect", "circle":
+	default:
+		return fmt.Errorf("animation: preset %q unknown callout %q", p.ID, p.Callout)
+	}
+	switch p.Caption {
+	case "", "off", "overlay":
+	default:
+		return fmt.Errorf("animation: preset %q unknown caption %q", p.ID, p.Caption)
 	}
 	if err := validateTransition(p.Transition); err != nil {
 		return fmt.Errorf("animation: preset %q: %w", p.ID, err)
+	}
+	return nil
+}
+
+func validatePresetClips(presetID, field, kind string, clips []ClipTemplate, reg *Registry) error {
+	for _, c := range clips {
+		eff, ok := reg.effectBy[c.Type]
+		if !ok {
+			return fmt.Errorf("animation: preset %q %s references unknown effect %q", presetID, field, c.Type)
+		}
+		if !eff.Applies(kind) {
+			return fmt.Errorf("animation: preset %q %s uses %q on unsupported kind %q", presetID, field, c.Type, kind)
+		}
+		if c.DurationMs < eff.DurationRange[0] || c.DurationMs > eff.DurationRange[1] {
+			return fmt.Errorf("animation: preset %q %s clip %q duration %d outside %v",
+				presetID, field, c.Type, c.DurationMs, eff.DurationRange)
+		}
+		if _, ok := validEasings[c.Easing]; !ok {
+			return fmt.Errorf("animation: preset %q %s clip %q has invalid easing %q", presetID, field, c.Type, c.Easing)
+		}
 	}
 	return nil
 }

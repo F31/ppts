@@ -147,6 +147,14 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 	if err := validateFocus(p, base); err != nil {
 		return err
 	}
+	if err := validateAnnotations(p, base); err != nil {
+		return err
+	}
+	if p.LookCrop {
+		if err := validateLookCrop(p, base); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -295,6 +303,10 @@ func validateFocus(p *Page, base string) error {
 			return planErr(fb+".fadeMs", CodeInvalidPlan,
 				"fade %d outside [0,%d]", f.FadeMs, MaxFocusFadeMS)
 		}
+		if f.VeilAlpha != 0 && (f.VeilAlpha <= 0 || f.VeilAlpha > 1 || f.VeilAlpha != f.VeilAlpha) {
+			return planErr(fb+".veilAlpha", CodeInvalidPlan,
+				"veilAlpha %v outside (0,1]", f.VeilAlpha)
+		}
 		// EndMs=0 是「不放手」，不是「在 0ms 放手」：0 与「没写」在 JSON 里是同一个
 		// 字节（omitempty），所以终点只能表达成非零值。要是有人真写 0，落到这里报错
 		// 比让它静默变成「保持到下一段」好——那正是这条字段要修的病。
@@ -319,6 +331,78 @@ func validateFocus(p *Page, base string) error {
 			}
 		}
 		prev = f.StartMs
+	}
+	return nil
+}
+
+func validateLookCrop(p *Page, base string) error {
+	if len(p.Focus) == 0 {
+		return planErr(base+".lookCrop", CodeInvalidPlan, "lookCrop requires at least one focus with a rect")
+	}
+	for i, f := range p.Focus {
+		if f.Rect == nil || f.Rect.W <= 0 || f.Rect.H <= 0 {
+			return planErr(fmt.Sprintf("%s.focus[%d].rect", base, i), CodeInvalidPlan,
+				"lookCrop requires every focus to have a positive rect")
+		}
+	}
+	if p.LookCropPadPx != 0 && (p.LookCropPadPx < lookCropPadMin || p.LookCropPadPx > lookCropPadMax) {
+		return planErr(base+".lookCropPadPx", CodeInvalidPlan,
+			"lookCropPadPx %d outside [%d,%d]", p.LookCropPadPx, lookCropPadMin, lookCropPadMax)
+	}
+	return nil
+}
+
+func validateAnnotations(p *Page, base string) error {
+	if len(p.Annotations) == 0 {
+		return nil
+	}
+	if len(p.Annotations) > MaxAnnotationsPerPage {
+		return planErr(base+".annotations", CodeInvalidPlan,
+			"%d annotations exceeds %d", len(p.Annotations), MaxAnnotationsPerPage)
+	}
+	for i, a := range p.Annotations {
+		ab := fmt.Sprintf("%s.annotations[%d]", base, i)
+		switch a.Kind {
+		case AnnotationCallout, AnnotationCaption:
+		default:
+			return planErr(ab+".kind", CodeInvalidPlan, "unknown annotation kind %q", a.Kind)
+		}
+		if a.StartMs < 0 {
+			return planErr(ab+".startMs", CodeInvalidPlan, "negative start %d", a.StartMs)
+		}
+		if a.StartMs >= p.DurationMs {
+			return planErr(ab+".startMs", CodeInvalidPlan,
+				"annotation starts at %d, page is %dms", a.StartMs, p.DurationMs)
+		}
+		if a.FadeMs < 0 || a.FadeMs > MaxFocusFadeMS {
+			return planErr(ab+".fadeMs", CodeInvalidPlan,
+				"fade %d outside [0,%d]", a.FadeMs, MaxFocusFadeMS)
+		}
+		if a.EndMs != 0 {
+			if a.EndMs < 0 {
+				return planErr(ab+".endMs", CodeInvalidPlan, "negative end %d", a.EndMs)
+			}
+			if a.EndMs <= a.StartMs {
+				return planErr(ab+".endMs", CodeInvalidPlan,
+					"annotation ends at %d, starts at %d", a.EndMs, a.StartMs)
+			}
+			if a.EndMs > p.DurationMs {
+				return planErr(ab+".endMs", CodeInvalidPlan,
+					"annotation ends at %d, page is %dms", a.EndMs, p.DurationMs)
+			}
+		}
+		if a.Kind == AnnotationCallout {
+			if a.Rect == nil || a.Rect.W <= 0 || a.Rect.H <= 0 {
+				return planErr(ab+".rect", CodeInvalidPlan, "callout requires a positive rect")
+			}
+			if a.Rect.X < 0 || a.Rect.Y < 0 {
+				return planErr(ab+".rect", CodeInvalidPlan,
+					"callout rect starts outside the canvas at (%d,%d)", a.Rect.X, a.Rect.Y)
+			}
+		}
+		if a.Shape != "" && a.Shape != AnnotationShapeCircle && a.Shape != AnnotationShapeRect {
+			return planErr(ab+".shape", CodeInvalidPlan, "unknown callout shape %q", a.Shape)
+		}
 	}
 	return nil
 }

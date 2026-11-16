@@ -76,12 +76,12 @@ func rewritePageImage(t *testing.T, objects objectstore.ObjectStore, w, h int) {
 	putAPIObject(t, objects, key, buf.Bytes(), "image/png")
 }
 
-// runPreviewFor 发一次预览请求并返回响应与提交给渲染服务的计划。
+// runPreviewFor 发一次预览请求并返回响应与浏览器场景。
 //
 // after 在时间轴与页图都落盘之后调用：previewTimeline 会把页图写回默认的 96×72，
 // 想换一张图必须在它之后覆盖——否则测的其实是默认图，而用例"通过"。
 func runPreviewFor(t *testing.T, objects objectstore.ObjectStore, tweak func(*AnimationPreviewer),
-	after func(*testing.T, objectstore.ObjectStore)) (*http.Response, []byte, []byte, *fakeRenderService) {
+	after func(*testing.T, objectstore.ObjectStore)) (*http.Response, previewScene, []byte, *fakeRenderService) {
 	t.Helper()
 	timelineKey, manifestKey := previewTimeline(t, objects)
 	rewriteTimelineWithFocus(t, objects, timelineKey)
@@ -101,20 +101,22 @@ func runPreviewFor(t *testing.T, objects objectstore.ObjectStore, tweak func(*An
 	defer resp.Body.Close()
 	raw := new(bytes.Buffer)
 	_, _ = raw.ReadFrom(resp.Body)
-	if fake.plans == nil {
-		t.Fatalf("渲染服务没收到计划，status=%d body=%s", resp.StatusCode, raw.String())
+	var scene previewScene
+	_ = json.Unmarshal(raw.Bytes(), &scene)
+	if len(fake.plans) != 0 {
+		t.Fatalf("浏览器预览不应提交渲染计划，got %d（status=%d body=%s）", len(fake.plans), resp.StatusCode, raw.String())
 	}
-	return resp, raw.Bytes(), body, fake
+	return resp, scene, raw.Bytes(), fake
 }
 
-// TestAnimationPreviewCarriesFocus 是这一段的闭环：预览计划里要真有焦点。
+// TestAnimationPreviewCarriesFocus 是这一段的闭环：预览场景里要真有焦点。
 //
-// 断言的是**换算后的像素**而不是"非空"：预览画布 960×720（页图 4:3），
-// 柱子框以 1920×1080 为基准给，正确结果是坐标乘 2/3。沿用导出系数（1080）会得到
-// 300/250，画面上遮罩偏到柱子右下角——而接口 200、日志干净，只能靠数值得证。
+// 断言的是**换算后的像素**而不是"非空"：页图 4:3，画布高 1080，宽按比例是 1440。
+// 柱子框以 1920×1080 为基准给，高度对齐后坐标保持原值。若画布仍是旧的 960×720，
+// 会得到 200/167——遮罩缩到柱子左上角，而接口 200、日志干净，只能靠数值得证。
 func TestAnimationPreviewCarriesFocus(t *testing.T) {
 	objects := testObjects(t)
-	resp, raw, _, fake := runPreviewFor(t, objects, func(p *AnimationPreviewer) {
+	resp, scene, raw, _ := runPreviewFor(t, objects, func(p *AnimationPreviewer) {
 		if r, ok := p.pages.(*fakeAnimationResolver); ok {
 			r.page = chartPageForAPI()
 		}
@@ -122,29 +124,27 @@ func TestAnimationPreviewCarriesFocus(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("preview status = %d, body = %s", resp.StatusCode, raw)
 	}
-
-	plan := fake.plans[0]
-	if len(plan.Pages) != 1 {
-		t.Fatalf("want 1 page, got %d", len(plan.Pages))
+	if scene.Width != 1440 || scene.Height != previewCanvasHeight {
+		t.Fatalf("canvas = %d×%d, want 1440×%d", scene.Width, scene.Height, previewCanvasHeight)
 	}
-	focus := plan.Pages[0].Focus
-	if len(focus) != 1 {
-		t.Fatalf("预览计划里应有 1 条焦点，got %+v", focus)
+	if len(scene.Focus) != 1 {
+		t.Fatalf("预览场景里应有 1 条焦点，got %+v", scene.Focus)
 	}
-	if focus[0].ElementID != "shape-7#b1" {
-		t.Fatalf("elementId = %q, want shape-7#b1", focus[0].ElementID)
+	focus := scene.Focus[0]
+	if focus.ElementID != "shape-7#b1" {
+		t.Fatalf("elementId = %q, want shape-7#b1", focus.ElementID)
 	}
-	if focus[0].Rect == nil {
+	if focus.Rect == nil {
 		t.Fatal("柱子没有图层，焦点必须带矩形")
 	}
-	want := [4]int{200, 167, 40, 167}
-	got := *focus[0].Rect
+	want := [4]int{300, 250, 60, 250}
+	got := *focus.Rect
 	if got.X != want[0] || got.Y != want[1] || got.W != want[2] || got.H != want[3] {
-		t.Fatalf("rect = %+v，want %v（960×720 画布：解析像素 ×2/3）", got, want)
+		t.Fatalf("rect = %+v，want %v（1440×1080 画布：解析像素原值）", got, want)
 	}
 	// 第二段开口于 1000ms，最后一段指到页末（不给终点）。
-	if focus[0].StartMs != 1000 || focus[0].EndMs != 0 {
-		t.Fatalf("start/end = %d/%d，want 1000/0", focus[0].StartMs, focus[0].EndMs)
+	if focus.StartMs != 1000 || focus.EndMs != 0 {
+		t.Fatalf("start/end = %d/%d，want 1000/0", focus.StartMs, focus.EndMs)
 	}
 
 	if got := resp.Header.Get("X-Preview-Focus"); got != "1" {
@@ -157,24 +157,24 @@ func TestAnimationPreviewCarriesFocus(t *testing.T) {
 
 // TestAnimationPreviewDropsFocusWhenCanvasAspectBreaks 守「宁可不错位」。
 //
-// previewCanvas 会把高度夹到 [240,1920]。一张 4000×200 的页图算出 48px 高，被抬到 240，
-// 画布比例从此与页图无关——此时单一 EMU→像素系数会把框放歪。正确做法是这一页不指，
-// 并如实说明原因；错误做法是照旧画一个位置错误的孔（画面上看起来"有框"，实际指错）。
+// previewCanvas 把宽度夹到 [240,3840]。一张 4000×200 的页图在 1080 高下算出 21600 宽，
+// 被夹到 3840，画布比例从此与页图无关——此时单一 EMU→像素系数会把框放歪。正确做法是
+// 这一页不指，并如实说明原因；错误做法是照旧画一个位置错误的孔。
 func TestAnimationPreviewDropsFocusWhenCanvasAspectBreaks(t *testing.T) {
 	objects := testObjects(t)
-	resp, raw, _, fake := runPreviewFor(t, objects, func(p *AnimationPreviewer) {
+	resp, scene, raw, _ := runPreviewFor(t, objects, func(p *AnimationPreviewer) {
 		if r, ok := p.pages.(*fakeAnimationResolver); ok {
 			r.page = chartPageForAPI()
 		}
 	}, func(t *testing.T, objects objectstore.ObjectStore) {
-		// 4000×200：960 宽的画布算出 48px 高，被抬到下限 240，比例从此与页图无关。
+		// 4000×200：1080 高算出 21600 宽，被夹到上限 3840，比例从此与页图无关。
 		rewritePageImage(t, objects, 4000, 200)
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("preview status = %d, body = %s", resp.StatusCode, raw)
 	}
-	if n := len(fake.plans[0].Pages[0].Focus); n != 0 {
-		t.Fatalf("比例被破坏时不该带焦点，got %d 条%+v", n, fake.plans[0].Height)
+	if n := len(scene.Focus); n != 0 {
+		t.Fatalf("比例被破坏时不该带焦点，got %d 条（画布 %d×%d）", n, scene.Width, scene.Height)
 	}
 	if got := resp.Header.Get("X-Preview-Focus"); got != "0" {
 		t.Fatalf("X-Preview-Focus = %q, want 0", got)

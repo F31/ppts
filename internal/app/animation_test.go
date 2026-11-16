@@ -96,6 +96,28 @@ func testAnimationRequest(pages int) AnimationRequest {
 	return req
 }
 
+func TestAnimationWaitTimeoutScalesWithContent(t *testing.T) {
+	const overhead = 40 * time.Minute
+	base := 20 * time.Minute
+	short := 3 * time.Minute
+	if got := animationWaitTimeout(base, short); got != short+overhead {
+		t.Fatalf("short film wait = %s, want content+overhead %s", got, short+overhead)
+	}
+	floor := 90 * time.Minute
+	if got := animationWaitTimeout(floor, short); got != floor {
+		t.Fatalf("high floor wait = %s, want %s", got, floor)
+	}
+	content := 1433 * time.Second
+	got := animationWaitTimeout(base, content)
+	want := content + overhead
+	if got != want {
+		t.Fatalf("24min film wait = %s, want %s", got, want)
+	}
+	if animationWaitTimeout(0, content) != 0 {
+		t.Fatal("zero base must stay unlimited")
+	}
+}
+
 func TestRenderAnimationDownloadsEverySegment(t *testing.T) {
 	handler, _ := newAnimationHandler(t, &animationBackend{body: func(i int) []byte {
 		return bytes.Repeat([]byte{byte('A' + i)}, 1024+i)
@@ -168,6 +190,9 @@ func TestRenderAnimationLogsServerDegradedPage(t *testing.T) {
 	}
 	if !strings.Contains(logged, "gpu process crashed") {
 		t.Fatalf("日志丢了渲染器给的原因: %s", logged)
+	}
+	if !strings.Contains(logged, "stage=still") {
+		t.Fatalf("降级必须打 stage 标签: %s", logged)
 	}
 }
 

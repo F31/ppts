@@ -38,8 +38,12 @@ type SlideRenderer interface {
 
 // RenderOptions 渲染参数。
 type RenderOptions struct {
-	// DPI 栅格化分辨率。0 = 默认（150）。
+	// DPI 栅格化分辨率。0 = 默认 150。解析入口按 sldSz 传入 RasterDPI（10" 16:9 为 192）。
 	DPI int
+	// TargetWidth / TargetHeight 是该 DPI 下应有的像素（project.RasterSize）。
+	// pdftoppm 常多吐 1 行；两者都为正时，溢出 ≤2px 的边从底/右裁掉，不双线性拉伸。
+	TargetWidth  int
+	TargetHeight int
 	// WorkDir 可替换的临时工作目录；空表示使用系统临时目录。
 	WorkDir string
 	// Timeout 子进程总时限；0 = 默认（120s）。
@@ -227,6 +231,9 @@ func (r *SofficeRenderer) Render(ctx context.Context, src io.ReaderAt, size int6
 		w, h, err := pngSize(png)
 		if err != nil {
 			return nil, err
+		}
+		if cropped, cw, ch, cropErr := cropPNGTo(png, opts.TargetWidth, opts.TargetHeight); cropErr == nil {
+			png, w, h = cropped, cw, ch
 		}
 		pages = append(pages, PageImage{Index: i, Width: w, Height: h, PNG: png})
 	}

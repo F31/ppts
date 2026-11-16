@@ -24,6 +24,11 @@ type DefaultOptions struct {
 	SegmentIDs []string
 	PresetID   string // 空 = DefaultPresetID
 
+	// WithEntrance 为 true 时把 catalog EntranceClips 追加到已有 spotlight 轨，
+	// 并把 MotionMode 写成 gaze+entrance。默认 false：DefaultSpec 只出注视。
+	// 与编辑器「要点依次出现」、一键成片勾选同一口径（title/bullet/shape/icon）。
+	WithEntrance bool
+
 	// Bindings 是「讲稿绑定预填」的结果（`animation/bind.Run` 的产出）。
 	//
 	// nil 与空切片**不是一回事**，这是本字段唯一的坑：
@@ -112,13 +117,19 @@ func SpecFromElements(elems []Element, opt DefaultOptions) (*animation.Revision,
 	if err != nil {
 		return nil, Report{}, err
 	}
+	mode := animation.MotionModeGaze
+	if opt.WithEntrance {
+		tracks = appendEntranceClips(preset, tracks, opt)
+		mode = animation.MotionModeGazeEntrance
+	}
 	rev := &animation.Revision{
-		SlideID:   opt.SlideID,
-		Language:  opt.Language,
-		Status:    animation.StatusDraft,
-		PresetID:  presetID,
-		Intensity: preset.Intensity,
-		Tracks:    tracks,
+		SlideID:    opt.SlideID,
+		Language:   opt.Language,
+		Status:     animation.StatusDraft,
+		PresetID:   presetID,
+		Intensity:  preset.Intensity,
+		MotionMode: mode,
+		Tracks:     tracks,
 	}
 	// 默认规格必须自己先过一遍校验：如果这里不合法，说明 catalog/预设写错了，
 	// 应该在校验里暴露，而不是等用户第一次保存时才报错。
@@ -476,4 +487,115 @@ func bindingConfidence(b bind.Binding) float64 {
 		return b.Confidence
 	}
 	return b.Score
+}
+
+// appendEntranceClips 把 EntranceClips[kind] 追加到已有 spotlight 轨。
+//
+// 口径对齐 web withEntranceLayers：只打 title/bullet/shape/icon；已有入场 clip 的轨
+// 不重复追加；trigger/startMs 跟该轨 spotlight。超出 MaxClipsPerSlide 的模板丢掉。
+func appendEntranceClips(preset *animation.Preset, tracks []*animation.Track, opt DefaultOptions) []*animation.Track {
+	if preset == nil || len(tracks) == 0 {
+		return tracks
+	}
+	clipSeq := 0
+	for _, tr := range tracks {
+		if tr == nil {
+			continue
+		}
+		clipSeq += len(tr.Clips)
+	}
+	if clipSeq >= animation.MaxClipsPerSlide {
+		return tracks
+	}
+	out := make([]*animation.Track, len(tracks))
+	copy(out, tracks)
+	for i, tr := range out {
+		if tr == nil || clipSeq >= animation.MaxClipsPerSlide {
+			continue
+		}
+		if !animation.IsEntrancePunchKind(tr.Kind) || !trackHasSpotlight(tr) || trackHasEntrance(tr) {
+			continue
+		}
+		tpls := preset.EntranceClips[tr.Kind]
+		if len(tpls) == 0 {
+			continue
+		}
+		anchor := spotlightClip(tr)
+		if anchor == nil && len(tr.Clips) > 0 {
+			anchor = tr.Clips[0]
+		}
+		if anchor == nil {
+			continue
+		}
+		added := make([]*animation.Clip, 0, len(tpls))
+		for _, tpl := range tpls {
+			if clipSeq >= animation.MaxClipsPerSlide {
+				break
+			}
+			duration := tpl.DurationMs
+			if duration > opt.DurationMS {
+				continue
+			}
+			start := anchor.StartMs
+			if start+duration > opt.DurationMS {
+				start = opt.DurationMS - duration
+			}
+			clipSeq++
+			clip := &animation.Clip{
+				ID:            fmt.Sprintf("c%d", clipSeq),
+				Type:          tpl.Type,
+				StartMs:       start,
+				DurationMs:    duration,
+				Easing:        tpl.Easing,
+				Params:        tpl.Params,
+				Trigger:       anchor.Trigger,
+				TriggerSource: anchor.TriggerSource,
+				Confidence:    anchor.Confidence,
+			}
+			added = append(added, clip)
+		}
+		if len(added) == 0 {
+			continue
+		}
+		next := *tr
+		next.Clips = append(append([]*animation.Clip(nil), tr.Clips...), added...)
+		out[i] = &next
+	}
+	return out
+}
+
+func trackHasSpotlight(tr *animation.Track) bool {
+	if tr == nil {
+		return false
+	}
+	for _, c := range tr.Clips {
+		if c != nil && animation.IsGazeMarker(c.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func trackHasEntrance(tr *animation.Track) bool {
+	if tr == nil {
+		return false
+	}
+	for _, c := range tr.Clips {
+		if c != nil && animation.IsEntranceEffect(c.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func spotlightClip(tr *animation.Track) *animation.Clip {
+	if tr == nil {
+		return nil
+	}
+	for _, c := range tr.Clips {
+		if c != nil && c.Type == "spotlight" {
+			return c
+		}
+	}
+	return nil
 }

@@ -173,7 +173,7 @@
         }
       ],
       "transition": {
-        "type": "slide",
+        "type": "fade",
         "durationMs": 280
       }
     },

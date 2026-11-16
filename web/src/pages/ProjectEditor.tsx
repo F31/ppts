@@ -16,6 +16,7 @@ import {
   updateDictionary,
   deleteDictionary,
   getNarrationStale,
+  getStaleAnimationAnchors,
   getRevisionNarration,
   getJob,
   getJobDetail,
@@ -54,10 +55,11 @@ import {
 } from '../api';
 import { describeApiError, isNotFound, isUnimplemented } from '../apiError';
 import { Player } from '../Player';
+import { StagePlayback } from '../StagePlayback';
 import { can } from '../permissions';
 import { AnimationEditor } from '../AnimationEditor';
 import type { AnimationStagePreview } from '../animationPreview';
-import { evaluateDraftJob, type DraftJobOutcome } from '../oneClickJob';
+import { evaluateDraftJob, planScriptReuse, type DraftJobOutcome } from '../oneClickJob';
 import { summarizeApplyAllReasons, APPLY_ALL_REASON_KEYS } from '../animationPreview';
 import {
   batchTargets,
@@ -72,6 +74,7 @@ import { useI18n } from '../i18n';
 import { Link, navigate } from '../router';
 import type { Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
+import { formatNarrationPageFailure, narrationPageNumber, parseNarrationPageFailure } from '../narrationFailure';
 import { jobRevisionNo, manifestMatchesSlides, modeLabel, scriptModeOptions, sleep } from './projectEditor/helpers';
 import {
   ONE_CLICK_PRESETS,
@@ -164,6 +167,7 @@ export function ProjectEditor({
   const [includeHiddenPages, setIncludeHiddenPages] = useState(false);
   const [voiceStaleIds, setVoiceStaleIds] = useState<string[]>([]);
   const [voiceStaleLoading, setVoiceStaleLoading] = useState(false);
+  const [animationStaleCount, setAnimationStaleCount] = useState(0);
   const exportQueryHandledRef = useRef(false);
   // 版本历史（P0 多版本查看）：只读列出，供顶部版本下拉切换生效版本。
   // #9 处置：此处原有 previewRev/previewSlides/previewLoading/diffRevB/diffResult/diffLoading
@@ -248,37 +252,30 @@ export function ProjectEditor({
   const [animationOpen, setAnimationOpen] = useState(false);
   // 单页动效视频统一在中间主舞台播放。抽屉是全屏遮罩，把 <video> 留在抽屉里
   // 会与主区域的 Player/页图并存成两个画面；预览成功后抽屉自动收起，画面只留一个。
-  // blob URL 的所有权在这里：替换、切页、关闭、卸载都由本组件 revoke。
+  // 场景是 JSON（data URL 图），没有 blob 需要释放。
   const [stagePreview, setStagePreview] = useState<AnimationStagePreview | null>(null);
   const [stageError, setStageError] = useState('');
-  const stagePreviewRef = useRef<AnimationStagePreview | null>(null);
-  stagePreviewRef.current = stagePreview;
   // 一键成片：顶部唯一的主动作，把讲稿 → 配音 → 动效串成一条可跳步的流水线。
   const [oneClickOpen, setOneClickOpen] = useState(false);
   const oneClickDialogRef = useDialogA11y<HTMLElement>(() => setOneClickOpen(false));
   const [oneClickSteps, setOneClickSteps] = useState({ script: true, voice: true, animation: true });
   const [oneClickPreset, setOneClickPreset] = useState('business-calm');
+  const [oneClickEntrance, setOneClickEntrance] = useState(false);
   const [oneClickRunning, setOneClickRunning] = useState(false);
+  // 状态要等下一次渲染才变，连点「开始」会在那之前进两次。用 ref 挡住第二次。
+  const oneClickLockRef = useRef(false);
   const [oneClickPhase, setOneClickPhase] = useState('');
   const [oneClickError, setOneClickError] = useState('');
   const [oneClickDone, setOneClickDone] = useState<{ script: number; applied: number; skipped: number; reasons: string; voiceRan: boolean } | null>(null);
 
-  // 预览 blob 只由本组件释放。动效抽屉刻意不 revoke：它在预览成功后就收起，
-  // 若由它释放，主舞台的视频会立刻失效（又变成「点了预览什么都没发生」）。
   const clearStagePreview = useCallback(() => {
     setStageError('');
-    setStagePreview((prev) => {
-      if (prev) URL.revokeObjectURL(prev.url);
-      return null;
-    });
+    setStagePreview(null);
   }, []);
 
   const handleStagePreview = useCallback((next: AnimationStagePreview | null) => {
     setStageError('');
-    setStagePreview((prev) => {
-      if (prev && prev.url !== next?.url) URL.revokeObjectURL(prev.url);
-      return next;
-    });
+    setStagePreview(next);
     // 预览成功后收起抽屉：全屏遮罩不会再把主舞台挡住。
     if (next) setAnimationOpen(false);
   }, []);
@@ -287,12 +284,6 @@ export function ProjectEditor({
     setAnimationOpen(false);
     clearStagePreview();
   }, [clearStagePreview]);
-
-  useEffect(() => {
-    return () => {
-      if (stagePreviewRef.current) URL.revokeObjectURL(stagePreviewRef.current.url);
-    };
-  }, []);
 
   const propsDialogRef = useDialogA11y<HTMLElement>(() => setPropsOpen(false));
   const [oneDraftOpen, setOneDraftOpen] = useState(false);
@@ -1221,6 +1212,17 @@ export function ProjectEditor({
     }
   };
 
+  const refreshAnimationStale = async () => {
+    try {
+      const res = await getStaleAnimationAnchors(identity, projectId, {
+        sourceRevisionNo: activeSourceRevision
+      });
+      setAnimationStaleCount(res.slides?.length ?? 0);
+    } catch {
+      setAnimationStaleCount(0);
+    }
+  };
+
   const openVoiceDialog = () => {
     // 草稿回到已保存值、生成方式回到增量、清掉上次失败提示，再拉一次待配音范围。
     voiceDraft.reset({ model: voiceModelName, voice: voiceId, ratePercent });
@@ -1526,16 +1528,18 @@ export function ProjectEditor({
     // bypassCache：仅当用户显式要求"重新生成"时为 true。为 true 时后端跳过内容哈希缓存、
     // 每段真实调用语音合成（会产生真实计费）；为 false 时沿用缓存，避免无谓消耗额度。
     bypassCache = false
-  ) => {
-    if (!isReady || narrationStatus.phase === 'generating') return;
+  ): Promise<string | null> => {
+    if (!isReady || narrationStatus.phase === 'generating') return null;
     if (slideIds.length === 0) {
-      setNarrationStatus({ phase: 'error', message: t('editor.noScriptsInScope') });
-      return;
+      const message = t('editor.noScriptsInScope');
+      setNarrationStatus({ phase: 'error', message });
+      return message;
     }
     const selectedVoice = override.voiceId || voiceId;
     if (!selectedVoice) {
-      setNarrationStatus({ phase: 'error', message: t('editor.voiceModelEmpty') });
-      return;
+      const message = t('editor.voiceModelEmpty');
+      setNarrationStatus({ phase: 'error', message });
+      return message;
     }
     const selectedRate = override.ratePercent ?? ratePercent;
     // 模型与音色同理：弹窗路径传刚保存的值，其它入口用界面当前值。
@@ -1571,8 +1575,9 @@ export function ProjectEditor({
         try {
           const job = await getJob(identity, generation.jobId);
           if (job.state === 'JOB_STATE_FAILED' || job.state === 'JOB_STATE_CANCELED') {
-            setNarrationStatus({ phase: 'error', message: job.lastError?.message || t('editor.narrationFailed') });
-            return;
+            const message = job.lastError?.message || t('editor.narrationFailed');
+            setNarrationStatus({ phase: 'error', message });
+            return message;
           }
           if (job.state === 'JOB_STATE_SUCCEEDED') jobSucceeded = true;
         } catch {
@@ -1583,8 +1588,9 @@ export function ProjectEditor({
         if (status.ready && (jobSucceeded || !previousTimelineKey || status.timelineKey !== previousTimelineKey)) break;
       }
       if (!status || !status.ready || (!jobSucceeded && previousTimelineKey && status.timelineKey === previousTimelineKey)) {
-        setNarrationStatus({ phase: 'error', message: t('editor.narrationBackground') });
-        return;
+        const message = t('editor.narrationBackground');
+        setNarrationStatus({ phase: 'error', message });
+        return message;
       }
       const manifest = await getPlaybackManifest({
         identity,
@@ -1595,12 +1601,14 @@ export function ProjectEditor({
       });
       if (slidesState.mode === 'real' && !manifestMatchesSlides(manifest, slidesState.slides)) {
         setRealManifest(null);
-        setNarrationStatus({ phase: 'error', message: t('editor.narrationVersionMismatch') });
-        return;
+        const message = t('editor.narrationVersionMismatch');
+        setNarrationStatus({ phase: 'error', message });
+        return message;
       }
       setRealManifest(manifest);
       setVoiceDirty(false);
       void refreshVoiceStale();
+      void refreshAnimationStale();
       // 诚实反馈：命中缓存时"重新生成"并未真的重新合成音频。必须说清，
       // 否则用户会把"沿用既有音频"读成"已重新生成"——二者界面表现完全一致。
       const base = status.pagePngKeys.length > 0 ? t('editor.narrationReadyImages') : t('editor.narrationReadyNoImages');
@@ -1615,6 +1623,7 @@ export function ProjectEditor({
       setNarrationStatus({ phase: 'ready', message: `${base}${synthNote}` });
       // B3-M5：生成完成后立即收敛提示（无需等下一次轮询）。
       void refreshActiveGenJobs();
+      return null;
     } catch (error) {
       let message = error instanceof Error ? error.message : t('editor.narrationFailed');
       if (error instanceof ConnectError && error.code === 'resource_exhausted') {
@@ -1622,6 +1631,7 @@ export function ProjectEditor({
         message = estSec ? t('editor.quotaShort', { minutes: estSec }) : t('editor.quotaShortNoEst');
       }
       setNarrationStatus({ phase: 'error', message });
+      return message;
     }
   };
 
@@ -1665,8 +1675,11 @@ export function ProjectEditor({
   //
   // 不复用 oneDraft 的轮询 hook：那条 hook 绑在 oneDraftJobId 上、任务终态直接改 UI 状态，
   // 没法告诉流水线「讲稿好了，可以开始配音」。这里用一次独立的短轮询等 job 终态，
-  // 换来清晰的步边界：任何一步失败就停在这步，不会拿旧讲稿去配音、也不会在没配音时
-  // 去套动效（两者都会静默产出半成品）。
+  // 换来清晰的步边界：讲稿步失败或降级就停，不会拿半成品继续配音。
+  // 已经生成好的讲稿要沿用，只给空白页补稿。没配音时也不会去套动效。
+  //
+  // 点「开始」后立刻收起抽屉。讲稿与配音是队列任务，关窗、切页都不取消它们；
+  // 本函数留在编辑器里把下一步接上。顶部提示条说明当前步，页面按钮保持可点。
   const waitForOneClickJob = async (jobId: string): Promise<DraftJobOutcome> => {
     const deadline = Date.now() + 300_000;
     while (Date.now() < deadline) {
@@ -1688,60 +1701,124 @@ export function ProjectEditor({
   };
 
   const runOneClick = async () => {
-    if (oneClickRunning || !isReady) return;
+    if (oneClickLockRef.current || !isReady || slidesState.mode !== 'real') return;
+    if (!(oneClickSteps.script || oneClickSteps.voice || oneClickSteps.animation)) return;
+    oneClickLockRef.current = true;
     setOneClickError('');
     setOneClickDone(null);
-    setOneClickRunning(true);
-    const slideIds = slidesState.mode === 'real' ? slidesState.slides.map((slide) => slide.slideId) : [];
+    // 关窗之后用户还能改表单，所以这一轮用点击当时的值，不读之后的 state。
+    const steps = { ...oneClickSteps };
+    const preset = oneClickPreset;
+    const entrance = oneClickEntrance;
+    const language = oneDraftLanguage;
+    const sourceMode = oneDraftSource;
+    const mode = oneDraftMode;
+    const style = oneDraftStyle;
+    const audience = oneDraftAudience;
+    const length = oneDraftLength;
+    const overwrite = oneDraftOverwrite === 'overwrite_all';
+    const voice = voiceId;
+    const rate = ratePercent;
+    const model = voiceModelName;
+    const includeHidden = includeHiddenPages;
+    const revisionNo = Number(slidesState.revisionNo) || initRevisionNo || 0;
+    const slides = slidesState.slides;
+    const slideIds = slides.map((slide) => slide.slideId);
+    // 配音范围必须在讲稿步结束后现查：点击时的 realScripts 还不包含这一轮新写成的讲稿。
+    const scriptIdsForVoice = async (): Promise<string[]> => {
+      const { scripts } = await listProjectScripts(identity, projectId);
+      const have = new Set(
+        scripts.filter((rev) => (rev.segments?.length ?? 0) > 0).map((rev) => rev.slideId)
+      );
+      const ids = slides.filter((slide) => have.has(slide.slideId)).map((slide) => slide.slideId);
+      return scopeSlideIds(slides, ids, (slide) => slide.slideId, includeHidden);
+    };
     let scriptCount = 0;
     let applied = 0;
     let skipped = 0;
     let reasons = '';
     try {
-      if (oneClickSteps.script) {
-        setOneClickPhase('script');
-        const targetSeconds = oneDraftLength === 'brief' ? 30 : oneDraftLength === 'detailed' ? 90 : 60;
-        setScriptLanguagePreference(oneDraftLanguage);
-        persistScriptLanguage(oneDraftLanguage);
-        const result = await regenerateScriptDraft(identity, projectId, slideIds, oneDraftMode, {
-          language: oneDraftLanguage,
-          sourceMode: oneDraftSource,
-          audience: oneDraftAudience,
-          style: oneDraftStyle,
-          targetSeconds,
-          overwrite: oneDraftOverwrite === 'overwrite_all'
-        });
-        const outcome = await waitForOneClickJob(result.jobId);
-        // 只报真实写出讲稿的页数：不能用请求的 slideIds.length 冒充（含跳过/失败页）。
-        scriptCount = outcome.generated;
-        setScriptsRefreshNonce((n) => n + 1);
+      if (steps.voice && !voice) {
+        setOneClickError(t('editor.voiceModelEmpty'));
+        return;
       }
-      if (oneClickSteps.voice) {
+      if (steps.voice && !steps.script && (await scriptIdsForVoice()).length === 0) {
+        setOneClickError(t('editor.noScriptsInScope'));
+        return;
+      }
+      setOneClickRunning(true);
+      setOneClickPhase('');
+      // 与一键配音相同：任务入队后收起抽屉，页面按钮恢复可点。
+      setOneClickOpen(false);
+      // 讲稿列表按当前语言头过滤。先切到这一轮要用的语言，再决定哪些页可以沿用。
+      if (steps.script || steps.voice) {
+        setScriptLanguagePreference(language);
+        persistScriptLanguage(language);
+      }
+      const scopedIds = scopeSlideIds(slides, slideIds, (slide) => slide.slideId, includeHidden);
+      const reusePlan =
+        steps.script || steps.voice
+          ? planScriptReuse({
+              scopedSlideIds: scopedIds,
+              scriptSlideIds: await scriptIdsForVoice(),
+              overwriteAll: overwrite
+            })
+          : planScriptReuse({ scopedSlideIds: scopedIds, scriptSlideIds: [], overwriteAll: overwrite });
+      if (steps.script) {
+        if (!reusePlan.skipJob) {
+          setOneClickPhase('script');
+          const targetSeconds = length === 'brief' ? 30 : length === 'detailed' ? 90 : 60;
+          const result = await regenerateScriptDraft(identity, projectId, reusePlan.generate, mode, {
+            language,
+            sourceMode,
+            audience,
+            style,
+            targetSeconds,
+            overwrite
+          });
+          // 与单独的一键成稿共用任务号：顶部任务条、任务中心、成稿抽屉都能看到这一步。
+          window.localStorage.setItem(oneDraftStorageKey, result.jobId);
+          setOneDraftJobId(result.jobId);
+          void refreshActiveGenJobs();
+          const outcome = await waitForOneClickJob(result.jobId);
+          // 空白页被跳过、同时又没有任何已有讲稿：继续配音没有稿可用。
+          if (outcome.allSkipped && reusePlan.reuse.length === 0) {
+            throw new Error(t('editor.oneClickDraftAllSkipped', { skipped: outcome.skipped }));
+          }
+          // 新写成的加上这次沿用的，才是配音真正会用到的讲稿页数。
+          scriptCount = outcome.generated + reusePlan.reuse.length;
+          setScriptsRefreshNonce((n) => n + 1);
+        } else {
+          scriptCount = reusePlan.reuse.length;
+        }
+      }
+      if (steps.voice) {
         setOneClickPhase('voice');
-        if (!voiceId) throw new Error(t('editor.voiceModelEmpty'));
-        const ids = allScriptSlideIds(includeHiddenPages);
+        const ids = await scriptIdsForVoice();
         if (ids.length === 0) throw new Error(t('editor.noScriptsInScope'));
-        await generateNarrationFor(ids, {}, false);
-        // generateNarrationFor 失败时只改 narrationStatus、不抛错，所以这里按真实
-        // 配音状态复核一次：没 ready 就停，不能把「没配音」当成功继续套动效。
-        const status = await getRevisionNarration(identity, projectId, Number(slidesState.revisionNo) || 0);
+        const voiceError = await generateNarrationFor(ids, { voiceId: voice, ratePercent: rate, model }, false);
+        // generateNarrationFor 失败时只改 narrationStatus、不抛错。把页和原因带出来，
+        // 不能再用一句「配音生成失败」把是哪一页盖掉。
+        if (voiceError) throw new Error(formatNarrationPageFailure(voiceError, slides, t));
+        const status = await getRevisionNarration(identity, projectId, revisionNo);
         if (!status.ready) throw new Error(t('editor.narrationFailed'));
       }
-      if (oneClickSteps.animation) {
+      if (steps.animation) {
         setOneClickPhase('animation');
         const result = await applyAnimationToAll(identity, {
           projectId,
-          sourceRevisionNo: Number(slidesState.revisionNo) || initRevisionNo,
-          language: scriptLanguage || oneDraftLanguage
-        }, oneClickPreset);
+          sourceRevisionNo: revisionNo,
+          language: scriptLanguage || language
+        }, preset, false, entrance);
         applied = result.applied;
         skipped = result.skipped;
         reasons = summarizeApplyAllReasons(result, t);
       }
-      setOneClickDone({ script: scriptCount, applied, skipped, reasons, voiceRan: oneClickSteps.voice });
+      setOneClickDone({ script: scriptCount, applied, skipped, reasons, voiceRan: steps.voice });
     } catch (err) {
       setOneClickError(err instanceof Error ? err.message : String(err));
     } finally {
+      oneClickLockRef.current = false;
       setOneClickRunning(false);
       setOneClickPhase('');
     }
@@ -1756,7 +1833,10 @@ export function ProjectEditor({
     while (scriptEditorRef.current?.isDirty() && Date.now() < deadline) {
       await sleep(200);
     }
-    await generateNarrationFor(allScriptSlideIds(true), {}, true);
+    // 按钮文案是「重新生成语音」，作用域是当前页。只提交这一页：
+    // 后端会把其余页补进时间轴并命中缓存，不会把整份讲稿再合成一遍。
+    if (!activeSlideID) return;
+    await generateNarrationFor([activeSlideID], {}, true);
   };
 
   const runExport = async (format: ExportFormat, options: ExportOptions) => {
@@ -1804,18 +1884,28 @@ export function ProjectEditor({
 
   const pageCount = isReady ? slidesState.slides.length : 0;
   const scriptReadyCount = isReady ? Object.keys(realScripts).length : 0;
+  const narrationSlides = isReady ? slidesState.slides : [];
+  const narrationFailure = narrationStatus.phase === 'error' ? parseNarrationPageFailure(narrationStatus.message) : null;
   const statusMarker = useMemo(() => {
     if (!isReady) return t('editor.status.waitingParse');
+    if (narrationStatus.phase === 'error') {
+      const failure = parseNarrationPageFailure(narrationStatus.message);
+      if (failure) return t('editor.status.narrationPageFailed', { page: narrationPageNumber(failure, narrationSlides) });
+      return t('editor.narrationFailed');
+    }
     if (scriptReadyCount < pageCount) return t('editor.status.scripts', { ready: scriptReadyCount, total: pageCount });
     return narrationStatus.phase === 'ready'
       ? t('editor.status.narrationReady')
       : narrationStatus.phase === 'generating'
         ? t('editor.status.narrationGenerating')
         : t('editor.status.scriptReady');
-  }, [isReady, scriptReadyCount, pageCount, narrationStatus, t]);
+  }, [isReady, scriptReadyCount, pageCount, narrationStatus, narrationSlides, t]);
 
   return (
     <div className="workspace-v2">
+      {/* 顶栏和任务提示必须在同一个 auto 行里。工作台网格只有 auto + 1fr 两行，
+          提示条若单独占一行就会吃掉 1fr，三栏被挤到视口外，提示本身也被拉成整页。 */}
+      <div className="workspace-head">
       <header className="editor-header">
         <div className="editor-header-left">
           <Link to="/projects" className="back-link" title={t('editor.backToProjectsTitle')}>
@@ -1856,31 +1946,16 @@ export function ProjectEditor({
           <button
             type="button"
             className="primary"
-            disabled={!isReady || oneClickRunning || draftStatus.phase === 'generating'}
-            onClick={() => {
-              setOneClickError('');
-              setOneClickDone(null);
-              setOneClickOpen(true);
-            }}
+            disabled={!isReady}
+            onClick={() => setOneClickOpen(true)}
           >
-            {t('editor.oneClick')}
+            {oneClickRunning ? t('editor.oneClickRunning') : t('editor.oneClick')}
           </button>
           <button type="button" className="button-ghost" onClick={() => setOneDraftOpen(true)} disabled={!isReady || draftStatus.phase === 'generating'}>
             {t('editor.oneDraft')}
           </button>
           <button type="button" className="button-ghost" onClick={openVoiceDialog} title={t('editor.propertiesTitle')}>
             {t('editor.voiceButton')}
-          </button>
-          {/* 导入报告：只读事实页。放在这里而不是版本下拉里，是因为用户最常问"这份 PPT 读成什么样"
-              的时刻就是刚进编辑器——此时版本下拉可能只有一个选项，没地方挂入口。 */}
-          <button
-            type="button"
-            className="button-ghost"
-            disabled={!isReady}
-            onClick={() => navigate(`/projects/${projectId}/report?rev=${currentRevNo || initRevisionNo || currentRevision}`)}
-            title={t('editor.importReportTitle')}
-          >
-            {t('editor.importReport')}
           </button>
           {/* 逐页动效：需要真实页面（有 slideId 才谈得上"这一页的动效"）。 */}
           <button
@@ -1911,7 +1986,63 @@ export function ProjectEditor({
 
 
 
-      {activeGenJobs.length > 0 && (
+      {oneClickRunning && (
+        <div className="snapshot-banner" role="status" aria-live="polite">
+          <span className="snapshot-dot" aria-hidden="true" />
+          <div className="snapshot-text">
+            <strong>
+              {oneClickPhase === 'script'
+                ? t('editor.oneClickPhaseScript')
+                : oneClickPhase === 'voice'
+                  ? t('editor.oneClickPhaseVoice')
+                  : oneClickPhase === 'animation'
+                    ? t('editor.oneClickPhaseAnimation')
+                    : t('editor.oneClickQueued')}
+            </strong>
+            <span>{t('editor.oneClickBackground')}</span>
+          </div>
+          <Link to="/jobs" className="button-ghost">
+            {t('editor.genViewJobs')}
+          </Link>
+        </div>
+      )}
+      {!oneClickRunning && oneClickError && (
+        <div className="snapshot-banner" role="alert">
+          <span className="snapshot-dot" aria-hidden="true" />
+          <div className="snapshot-text">
+            <strong>{t('editor.oneClick')}</strong>
+            <span>{oneClickError}</span>
+          </div>
+          <button type="button" className="button-ghost" onClick={() => setOneClickError('')}>
+            {t('common.close')}
+          </button>
+        </div>
+      )}
+      {!oneClickRunning && !oneClickError && oneClickDone && (
+        <div className="snapshot-banner" role="status">
+          <span className="snapshot-dot" aria-hidden="true" />
+          <div className="snapshot-text">
+            <strong>
+              {t('editor.oneClickDone', {
+                script: oneClickDone.script,
+                applied: oneClickDone.applied,
+                skipped: oneClickDone.skipped
+              })}
+            </strong>
+            {oneClickDone.skipped > 0 && oneClickDone.reasons && (
+              <span>
+                {t(oneClickDone.voiceRan ? 'editor.oneClickSkippedReasonsNoSource' : 'editor.oneClickSkippedReasons', {
+                  reasons: oneClickDone.reasons
+                })}
+              </span>
+            )}
+          </div>
+          <button type="button" className="button-ghost" onClick={() => setOneClickDone(null)}>
+            {t('common.close')}
+          </button>
+        </div>
+      )}
+      {activeGenJobs.length > 0 && !oneClickRunning && (
         <div className="snapshot-banner" role="status" aria-live="polite">
           <span className="snapshot-dot" aria-hidden="true" />
           <div className="snapshot-text">
@@ -1940,6 +2071,57 @@ export function ProjectEditor({
           </button>
         </div>
       )}
+
+      {animationStaleCount > 0 && (
+        <p className="narration-note warn" role="status">
+          {t('editor.animationAnchorsStaleDeck', { count: animationStaleCount })}
+        </p>
+      )}
+
+      {narrationStatus.phase === 'error' && narrationStatus.message && (
+        <div className="load-failure" role="alert">
+          <p className="form-error">{formatNarrationPageFailure(narrationStatus.message, narrationSlides, t)}</p>
+          {narrationFailure && canGenerate && (
+            <button
+              type="button"
+              disabled={voiceBusy}
+              onClick={() => void generateNarrationFor([narrationFailure.slideId], {}, true)}
+            >
+              {t('editor.retryThisPage')}
+            </button>
+          )}
+        </div>
+      )}
+
+      {conflict && (
+        <section className="playback-column">
+          <section className="compare-panel" aria-label={t('editor.conflictAria')}>
+            <header>
+              <span className="eyebrow">{t('editor.conflictEyebrow')}</span>
+              <h3>{conflict.slideId}</h3>
+            </header>
+            <div className="compare-columns">
+              <div>
+                <h4>{t('editor.myChanges')}</h4>
+                <pre>{conflict.localText}</pre>
+              </div>
+              <div>
+                <h4>{t('editor.serverLatest', { revision: conflict.latest.revision })}</h4>
+                <pre>{conflict.latest.segments.map((segment) => segment.displayText).join('\n\n')}</pre>
+              </div>
+            </div>
+            <div className="draft-actions">
+              <button type="button" onClick={() => void retryWithLatest()}>
+                {t('editor.retryMine')}
+              </button>
+              <button type="button" onClick={acceptLatest}>
+                {t('editor.acceptServer')}
+              </button>
+            </div>
+          </section>
+        </section>
+      )}
+      </div>
 
       <div className={`editor-layout${scriptOpen ? '' : ' script-collapsed'}${scriptResizing ? ' script-resizing' : ''}`} ref={editorLayoutRef}>
         <aside className="slide-rail-v2" aria-label={t('editor.pageList')}>
@@ -2028,21 +2210,15 @@ export function ProjectEditor({
 
         <section className="slide-preview" aria-label={t('editor.slidePreview')}>
           {stagePreview ? (
-            <div className="slide-stage-video">
-              <video
-                src={stagePreview.url}
-                controls
-                autoPlay
-                muted
-                loop
-                playsInline
-                onError={() => setStageError(t('editor.animationPreviewFailed'))}
-              />
+            <div className="slide-stage-preview">
+              <StagePlayback scene={stagePreview.scene} />
               <div className="slide-stage-bar">
                 <span className="form-hint nowrap-ellipsis">
                   {stagePreview.layers > 0
                     ? t('editor.animationPreviewLayers', { count: stagePreview.layers })
-                    : t('editor.animationPreviewStatic')}
+                    : stagePreview.focusNotices.length > 0
+                      ? t('editor.animationPreviewGaze')
+                      : t('editor.animationPreviewStatic')}
                 </span>
                 <div className="draft-actions">
                   <button
@@ -2373,6 +2549,7 @@ export function ProjectEditor({
           mode={oneDraftMode}
           overwrite={oneDraftOverwrite}
           preset={oneClickPreset}
+          entrance={oneClickEntrance}
           phase={oneClickPhase}
           error={oneClickError}
           done={oneClickDone}
@@ -2382,6 +2559,7 @@ export function ProjectEditor({
           onModeChange={(mode) => patchDraftForm({ mode })}
           onOverwriteChange={(overwrite) => patchDraftForm({ overwrite })}
           onPresetChange={setOneClickPreset}
+          onEntranceChange={setOneClickEntrance}
           onRun={() => void runOneClick()}
         />
       )}
@@ -2398,41 +2576,13 @@ export function ProjectEditor({
           resultUnavailable={oneDraftResultUnavailable}
           reasons={oneDraftReasons}
           running={oneDraftRunning}
-          busy={draftStatus.phase === 'generating'}
+          busy={draftStatus.phase === 'generating' || oneClickRunning}
           canSubmit={canEditScript}
           onClose={() => setOneDraftOpen(false)}
           onSubmit={() => void submitOneDraft()}
         />
       )}
 
-      <section className="playback-column">
-        {conflict && (
-          <section className="compare-panel" aria-label={t('editor.conflictAria')}>
-            <header>
-              <span className="eyebrow">{t('editor.conflictEyebrow')}</span>
-              <h3>{conflict.slideId}</h3>
-            </header>
-            <div className="compare-columns">
-              <div>
-                <h4>{t('editor.myChanges')}</h4>
-                <pre>{conflict.localText}</pre>
-              </div>
-              <div>
-                <h4>{t('editor.serverLatest', { revision: conflict.latest.revision })}</h4>
-                <pre>{conflict.latest.segments.map((segment) => segment.displayText).join('\n\n')}</pre>
-              </div>
-            </div>
-            <div className="draft-actions">
-              <button type="button" onClick={() => void retryWithLatest()}>
-                {t('editor.retryMine')}
-              </button>
-              <button type="button" onClick={acceptLatest}>
-                {t('editor.acceptServer')}
-              </button>
-            </div>
-          </section>
-        )}
-      </section>
       {exportOpen && realManifest && (
         <ExportDialog
           manifest={realManifest}

@@ -1,12 +1,16 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"sync"
 
+	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/animation/animdefault"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/project"
@@ -41,6 +45,17 @@ type PageGeometrySource interface {
 	ElementsBySlide(ctx context.Context, scope PageGeometryScope) (map[string][]render.Element, error)
 }
 
+// SlideSizeSource 给出源页 EMU 尺寸。未实现或返回 0 时编译器按标准页高推断。
+type SlideSizeSource interface {
+	SlideSize(ctx context.Context, scope PageGeometryScope) (int64, int64, error)
+}
+
+// PageDocumentSource 给出源版本里的 project.Page（含 Shape.Text）。
+// 与 SlideSizeSource 同形：可选能力，未实现则 BeatSheet=nil。
+type PageDocumentSource interface {
+	PagesBySlide(ctx context.Context, scope PageGeometryScope) (map[string]*project.Page, error)
+}
+
 // FocusBox 是一个可作焦点目标的矩形（EMU，页坐标）。
 //
 // 与 render.Element 分开：元素是"能挂动效的层"，焦点目标可以是**不是层**的东西
@@ -62,15 +77,80 @@ type PageFocusSource interface {
 	FocusBoxes(ctx context.Context, scope PageGeometryScope) (map[string][]FocusBox, error)
 }
 
+type docCacheEntry struct {
+	doc *project.Document
+	err error
+}
+
 // DocumentGeometry 从解析产物读取元素几何。
 type DocumentGeometry struct {
 	objects objectstore.ObjectStore
+	sources SourceRevisionLookup
+
+	mu    sync.Mutex
+	cache map[string]docCacheEntry
 }
 
 // NewDocumentGeometry 用对象存储构造几何来源。objects 为 nil 时 ElementsBySlide 返回错误
 // （调用方据此只编整页轨道），不在启动时 panic：几何缺失是可降级的能力边界。
 func NewDocumentGeometry(objects objectstore.ObjectStore) *DocumentGeometry {
 	return &DocumentGeometry{objects: objects}
+}
+
+// WithSourceRevisions 在 extracted.json 没有 sldSz 时从源 PPTX 只读页尺寸。
+func (g *DocumentGeometry) WithSourceRevisions(s SourceRevisionLookup) *DocumentGeometry {
+	if g != nil {
+		g.sources = s
+	}
+	return g
+}
+
+// SlideSize 实现 SlideSizeSource。旧产物没有字段时读源 PPTX 的 presentation.xml。
+func (g *DocumentGeometry) SlideSize(ctx context.Context, scope PageGeometryScope) (int64, int64, error) {
+	doc, err := g.load(ctx, scope)
+	if err != nil {
+		return 0, 0, err
+	}
+	if doc.SlideWidthEMU > 0 && doc.SlideHeightEMU > 0 {
+		return doc.SlideWidthEMU, doc.SlideHeightEMU, nil
+	}
+	g.fillFromSource(ctx, scope, doc)
+	return doc.SlideWidthEMU, doc.SlideHeightEMU, nil
+}
+
+func (g *DocumentGeometry) fillFromSource(ctx context.Context, scope PageGeometryScope, doc *project.Document) {
+	if g == nil || g.sources == nil || doc == nil {
+		return
+	}
+	rev, err := g.sources.GetSourceRevision(ctx, scope.TenantID, scope.ProjectID, scope.SourceRevisionNo)
+	if err != nil || rev == nil {
+		return
+	}
+	FillSlideSizeFromSource(ctx, g.objects, rev.ObjectKey, doc)
+}
+
+// FillSlideSizeFromSource 在 Document 没有页尺寸时从源 PPTX 对象只读 sldSz。
+func FillSlideSizeFromSource(ctx context.Context, objects objectstore.ObjectStore, sourceObjectKey string, doc *project.Document) {
+	if objects == nil || sourceObjectKey == "" || doc == nil {
+		return
+	}
+	if doc.SlideWidthEMU > 0 && doc.SlideHeightEMU > 0 {
+		return
+	}
+	key, err := objectstore.Parse(sourceObjectKey)
+	if err != nil {
+		return
+	}
+	rc, _, err := objects.Get(ctx, key)
+	if err != nil {
+		return
+	}
+	data, err := io.ReadAll(rc)
+	_ = rc.Close()
+	if err != nil {
+		return
+	}
+	project.FillSlideSizeFromPPTX(doc, bytes.NewReader(data), int64(len(data)))
 }
 
 // ElementsBySlide 实现 PageGeometrySource。
@@ -89,12 +169,25 @@ func (g *DocumentGeometry) ElementsBySlide(ctx context.Context, scope PageGeomet
 	return out, nil
 }
 
+// PagesBySlide 实现 PageDocumentSource。与 ElementsBySlide 共用一次 load。
+func (g *DocumentGeometry) PagesBySlide(ctx context.Context, scope PageGeometryScope) (map[string]*project.Page, error) {
+	doc, err := g.load(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]*project.Page, len(doc.Pages))
+	for _, page := range doc.Pages {
+		if page == nil || page.SlideID == "" {
+			continue
+		}
+		out[page.SlideID] = page
+	}
+	return out, nil
+}
+
 // FocusBoxes 实现 PageFocusSource：形状框 + 每根柱子的框。
 //
-// 会再读一次 document.json（与 ElementsBySlide 各读一次）。这是刻意的取舍：把两份
-// 结果塞进一个"顺带返回"的结构会让每个只想要元素的调用方（预览）背上一份用不上的
-// 数据；而这里多出来的成本是一次对象读，导出本来就只发生一次。真变贵了再说，先别
-// 让接口变成"读什么都给"。
+// 与 ElementsBySlide / PagesBySlide / SlideSize 共用 load 缓存，一次导出只 Get 一份 document.json。
 func (g *DocumentGeometry) FocusBoxes(ctx context.Context, scope PageGeometryScope) (map[string][]FocusBox, error) {
 	doc, err := g.load(ctx, scope)
 	if err != nil {
@@ -219,7 +312,12 @@ func focusBarBox(bar project.ChartBar) [4]int {
 	return [4]int{x, y, w, h}
 }
 
-// load 读取并解码某个源版本的 document.json。
+func geometryScopeKey(scope PageGeometryScope) string {
+	return fmt.Sprintf("%s\x00%s\x00%d", scope.TenantID, scope.ProjectID, scope.SourceRevisionNo)
+}
+
+// load 读取并解码某个源版本的 document.json。按 PageGeometryScope 记忆化，
+// Elements / FocusBoxes / Pages / SlideSize 共用一次 Get。
 func (g *DocumentGeometry) load(ctx context.Context, scope PageGeometryScope) (*project.Document, error) {
 	if g == nil || g.objects == nil {
 		return nil, errors.New("animation: geometry source has no object store")
@@ -229,8 +327,37 @@ func (g *DocumentGeometry) load(ctx context.Context, scope PageGeometryScope) (*
 		// 也就是一个可能与当前讲稿毫无关系的旧文档——宁可不给几何。
 		return nil, fmt.Errorf("animation: geometry scope has no source revision (project %q)", scope.ProjectID)
 	}
-	key := objectstore.DocumentKey(scope.TenantID, scope.ProjectID, srcRevString(scope.SourceRevisionNo))
-	rc, _, err := g.objects.Get(ctx, key)
+	key := geometryScopeKey(scope)
+	g.mu.Lock()
+	if g.cache != nil {
+		if e, ok := g.cache[key]; ok {
+			g.mu.Unlock()
+			return e.doc, e.err
+		}
+	}
+	g.mu.Unlock()
+
+	doc, err := g.loadUncached(ctx, scope)
+	if err == nil {
+		g.fillFromSource(ctx, scope, doc)
+	}
+
+	g.mu.Lock()
+	if g.cache == nil {
+		g.cache = make(map[string]docCacheEntry)
+	}
+	if e, ok := g.cache[key]; ok {
+		g.mu.Unlock()
+		return e.doc, e.err
+	}
+	g.cache[key] = docCacheEntry{doc: doc, err: err}
+	g.mu.Unlock()
+	return doc, err
+}
+
+func (g *DocumentGeometry) loadUncached(ctx context.Context, scope PageGeometryScope) (*project.Document, error) {
+	objKey := objectstore.DocumentKey(scope.TenantID, scope.ProjectID, srcRevString(scope.SourceRevisionNo))
+	rc, _, err := g.objects.Get(ctx, objKey)
 	if err != nil {
 		return nil, fmt.Errorf("animation: read extracted document: %w", err)
 	}
@@ -281,6 +408,7 @@ func PageElements(page *project.Page) []render.Element {
 
 	anchors := animdefault.Anchors(page)
 	out := make([]render.Element, 0, len(anchors))
+	seen := make(map[string]struct{}, len(anchors))
 	for _, a := range anchors {
 		box := bounds[a.ID]
 		if box == nil {
@@ -293,6 +421,36 @@ func PageElements(page *project.Page) []render.Element {
 				X: box.X, Y: box.Y, Width: box.Width, Height: box.Height,
 			},
 		})
+		seen[a.ID] = struct{}{}
 	}
+	// 无文字的卡片底进几何，但不进默认规格：注视圈选要扩到整张卡，
+	// 而 Anchors / pageElements 会丢掉空容器，框就停在标题上。
+	var walkFrames func([]*project.Shape)
+	walkFrames = func(shapes []*project.Shape) {
+		for _, sh := range shapes {
+			if sh == nil || sh.ID == "" {
+				continue
+			}
+			if _, dup := seen[sh.ID]; !dup && sh.Bounds != nil && !sh.Opaque {
+				switch strings.ToLower(strings.TrimSpace(sh.Kind)) {
+				case "audio", "video":
+				default:
+					out = append(out, render.Element{
+						ID:   sh.ID,
+						Kind: animation.KindShape,
+						Bounds: &render.EMUBox{
+							X: sh.Bounds.X, Y: sh.Bounds.Y,
+							Width: sh.Bounds.Width, Height: sh.Bounds.Height,
+						},
+					})
+					seen[sh.ID] = struct{}{}
+				}
+			}
+			if len(sh.Children) > 0 {
+				walkFrames(sh.Children)
+			}
+		}
+	}
+	walkFrames(page.Shapes)
 	return out
 }

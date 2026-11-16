@@ -51,6 +51,13 @@ func (s *Service) stageAssetsFor(plan *Timeline, dir string, pages []int) error 
 		if err := copyAsset(root, dir, rel); err != nil {
 			return fmt.Errorf("准备底图失败: page %d baseImage %q: %w", page.Index, rel, err)
 		}
+		dst, err := workPath(dir, rel)
+		if err != nil {
+			return fmt.Errorf("准备底图失败: page %d baseImage %q: %w", page.Index, rel, err)
+		}
+		if err := cropStagedPNG(dst, plan.Width, plan.Height); err != nil {
+			return fmt.Errorf("准备底图失败: page %d crop: %w", page.Index, err)
+		}
 	}
 	return nil
 }

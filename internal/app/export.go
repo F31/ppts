@@ -330,6 +330,28 @@ func fileExportOutput(f *os.File, contentType, ext string) (exportOutput, error)
 // 各格式的实现见 export_format_*.go。
 func (h *ExportHandler) produce(ctx context.Context, job *pipeline.Job, snapshot ExportSnapshot,
 	bundle *TimelineAsset, snapshotHash string) (exportOutput, error) {
+	// 页图不进快照哈希：补的是同一源版本上已经渲染好的 PNG，不是另一份输入。
+	// 请求里没带键（解析任务被清掉后前端拿不到）时，仍要把这些图打进 HTML / MP4。
+	if bundle != nil && bundle.Timeline != nil && snapshotNeedsPageImages(snapshot.Format) {
+		before := 0
+		for _, key := range snapshot.PagePNGKeys {
+			if key != "" {
+				before++
+			}
+		}
+		snapshot.PagePNGKeys = AlignPagePNGKeys(ctx, h.objects, job.TenantID, job.ProjectID,
+			bundle.Timeline.SourceRevisionNo, bundle.Timeline.Slides, snapshot.PagePNGKeys)
+		after := 0
+		for _, key := range snapshot.PagePNGKeys {
+			if key != "" {
+				after++
+			}
+		}
+		if after > before && h.logger != nil {
+			h.logger.Info("export: filled missing page images from stored render manifest",
+				"job", job.ID, "pages", after)
+		}
+	}
 	switch snapshot.Format {
 	case artifact.FormatSRT:
 		data, err := h.readTenantObject(ctx, job.TenantID, bundle.SRTKey)

@@ -1,8 +1,12 @@
 package app
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -88,6 +92,30 @@ func TestDocumentGeometryReadsExtractedDocument(t *testing.T) {
 	}
 }
 
+func TestPageElementsIncludesEmptyCardFrames(t *testing.T) {
+	box := func(x, y, w, h int64) *project.Box { return &project.Box{X: x, Y: y, Width: w, Height: h} }
+	page := &project.Page{
+		Index: 0, SlideID: "cards",
+		Shapes: []*project.Shape{
+			{ID: "card-a", Kind: "roundRect", Bounds: box(100, 200, 4000, 3000)},
+			{ID: "title-a", Kind: "text", Text: "大会全景", Bounds: box(200, 400, 3000, 800)},
+			{ID: "card-b", Kind: "roundRect", Bounds: box(5000, 200, 4000, 3000)},
+			{ID: "title-b", Kind: "text", Text: "AI Coding", Bounds: box(5100, 400, 3000, 800)},
+		},
+	}
+	got := PageElements(page)
+	ids := map[string]string{}
+	for _, e := range got {
+		ids[e.ID] = e.Kind
+	}
+	if ids["title-a"] == "" || ids["title-b"] == "" {
+		t.Fatalf("titles missing: %+v", ids)
+	}
+	if ids["card-a"] != "shape" || ids["card-b"] != "shape" {
+		t.Fatalf("empty cards must be shape frames: %+v", ids)
+	}
+}
+
 // 源版本缺失时不能退化成读 src-00：那是「上一次解析到第 0 版」的内容，
 // 与当前讲稿可能毫无关系，拿它编译出的元素轨道会动错东西。
 func TestDocumentGeometryRefusesUnknownSourceRevision(t *testing.T) {
@@ -128,6 +156,44 @@ func TestDocumentGeometryRejectsTrailingGarbage(t *testing.T) {
 	}
 }
 
+func TestDocumentGeometryLoadMemoized(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	seedDocument(t, objects, "t1", "p1", 2, geometryDocument())
+	inner := objects
+	cs := &countingStore{ObjectStore: inner}
+	g := NewDocumentGeometry(cs)
+	scope := PageGeometryScope{TenantID: "t1", ProjectID: "p1", SourceRevisionNo: 2}
+	if _, err := g.ElementsBySlide(context.Background(), scope); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.FocusBoxes(context.Background(), scope); err != nil {
+		t.Fatal(err)
+	}
+	pages, err := g.PagesBySlide(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pages["s1"] == nil || pages["s1"].Shapes[0].Text == "" {
+		t.Fatalf("PagesBySlide must keep Shape.Text: %+v", pages["s1"])
+	}
+	if _, _, err := g.SlideSize(context.Background(), scope); err != nil {
+		t.Fatal(err)
+	}
+	if cs.n != 1 {
+		t.Fatalf("document.json Get = %d, want 1", cs.n)
+	}
+}
+
+type countingStore struct {
+	objectstore.ObjectStore
+	n int
+}
+
+func (c *countingStore) Get(ctx context.Context, key objectstore.ObjectKey) (io.ReadCloser, objectstore.ObjectMeta, error) {
+	c.n++
+	return c.ObjectStore.Get(ctx, key)
+}
+
 func TestDocumentGeometryWithoutObjectStore(t *testing.T) {
 	if _, err := NewDocumentGeometry(nil).ElementsBySlide(context.Background(),
 		PageGeometryScope{TenantID: "t1", ProjectID: "p1", SourceRevisionNo: 1}); err == nil {
@@ -154,10 +220,8 @@ func TestPageElementsIsPathIndependent(t *testing.T) {
 	}
 }
 
-// 这一条是 2.0b 的验收：从**解析产物**读出的几何必须真的变成渲染计划里的元素层。
-// 到这一步之前，2.x 的整条通道虽然通，但每次导出都只有整页轨道——
-// 中间任何一环（键写错、分类退化成 shape、编译期把元素丢了）都会让结论回到"只动整页"，
-// 而它长得和"用户没配元素动效"一模一样。
+// 这一条是 2.0b 的验收：从**解析产物**读出的几何必须真的变成渲染计划里的注视矩形。
+// 默认规格是 spotlight，不成入口层；几何丢了就会只剩整页静图，和「没配动效」长得一样。
 func TestDocumentGeometryReachesRenderPlan(t *testing.T) {
 	objects := objectstore.NewLocal(t.TempDir(), nil)
 	doc := geometryDocument()
@@ -204,20 +268,82 @@ func TestDocumentGeometryReachesRenderPlan(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	layers := plan.Pages[0].Layers
-	animated := 0
-	for _, l := range layers {
-		if len(l.Clips) > 0 {
-			animated++
+	if len(plan.Pages[0].Layers) != 0 {
+		t.Fatalf("默认注视规格不应出入口层，got %+v", plan.Pages[0].Layers)
+	}
+	if len(plan.Pages[0].Focus) < 2 {
+		t.Fatalf("几何必须变成 Focus.rect，got %+v", plan.Pages[0].Focus)
+	}
+	for i, f := range plan.Pages[0].Focus {
+		if f.Rect == nil || f.Rect.W <= 0 {
+			t.Fatalf("focus[%d] 没有从文档几何得到矩形: %+v", i, f)
 		}
 	}
-	if animated == 0 {
-		t.Fatalf("配了元素动效、几何也读到了，计划里却没有任何元素动画：%+v", layers)
+	if len(plan.Pages[1].Layers) != 0 || len(plan.Pages[1].Focus) != 0 {
+		t.Fatalf("无规格页出现了层或焦点")
 	}
-	// 没有规格的第二页不该凭空长出层：几何只对真要渲动效的页生效。
-	if len(plan.Pages[1].Layers) != 0 {
-		t.Fatalf("无规格页出现了 %d 个图层", len(plan.Pages[1].Layers))
+}
+
+func TestAnimationPageAssemblerCopiesSlideSize(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	doc := geometryDocument()
+	doc.SlideWidthEMU = 9144000
+	doc.SlideHeightEMU = 5143500
+	seedDocument(t, objects, "t1", "p1", 2, doc)
+
+	specs := &fakeSpecSource{revs: map[animation.Key]*animation.Revision{
+		{TenantID: "t1", ProjectID: "p1", SlideID: "s1", Language: "zh-CN", SourceRevisionNo: 2}: {Revision: 7},
+	}}
+	a := NewAnimationPageAssembler(&recordingPublisher{}, specs).
+		WithGeometry(NewDocumentGeometry(objects))
+	req, err := a.Build(context.Background(), assemblerInput())
+	if err != nil {
+		t.Fatalf("build: %v", err)
 	}
+	if req.SlideWidthEMU != 9144000 || req.SlideHeightEMU != 5143500 {
+		t.Fatalf("slide size = %d×%d, want Office screen16x9", req.SlideWidthEMU, req.SlideHeightEMU)
+	}
+}
+
+func TestDocumentGeometrySlideSizeFallsBackToSourcePPTX(t *testing.T) {
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	doc := geometryDocument()
+	seedDocument(t, objects, "t1", "p1", 2, doc)
+
+	srcKey := objectstore.ObjectKey{
+		TenantID: "t1", ProjectID: "p1", Revision: "src", AssetType: "source", AssetID: "deck", Ext: "pptx",
+	}
+	putObject(t, objects, srcKey, sldSzZipForTest(t, 9144000, 5143500), "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
+	geom := NewDocumentGeometry(objects).WithSourceRevisions(&fakeSourceRevisions{
+		rev: &project.SourceRevision{ObjectKey: srcKey.String()},
+	})
+	w, h, err := geom.SlideSize(context.Background(), PageGeometryScope{
+		TenantID: "t1", ProjectID: "p1", SourceRevisionNo: 2,
+	})
+	if err != nil {
+		t.Fatalf("SlideSize: %v", err)
+	}
+	if w != 9144000 || h != 5143500 {
+		t.Fatalf("fallback sldSz = %d×%d, want 9144000×5143500", w, h)
+	}
+}
+
+func sldSzZipForTest(t *testing.T, cx, cy int64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("ppt/presentation.xml")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := fmt.Fprintf(w, `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldSz cx="%d" cy="%d" type="screen16x9"/></p:presentation>`, cx, cy); err != nil {
+		t.Fatalf("write xml: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return buf.Bytes()
 }
 
 // TestFocusBarBoxExpandsLabelBand 守「焦点框 = 柱体 + 这根的数字」。

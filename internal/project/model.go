@@ -12,6 +12,11 @@ type Document struct {
 	Pages         []*Page   `json:"pages"`
 	Features      *Features `json:"features,omitempty"`
 	Diagnostics   []string  `json:"diagnostics,omitempty"`
+	// SlideWidthEMU/SlideHeightEMU 来自 ppt/presentation.xml 的 p:sldSz。
+	// 0 表示旧产物没记：EMU→像素会按 7.5 英寸页高推断，Office 默认 16:9
+	//（9144000×5143500）会整体偏小。
+	SlideWidthEMU  int64 `json:"slideWidthEmu,omitempty"`
+	SlideHeightEMU int64 `json:"slideHeightEmu,omitempty"`
 }
 
 // Page 是一页的提取结果。页序按 presentation 关系读取，不依赖文件名排序。

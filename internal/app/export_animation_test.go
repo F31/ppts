@@ -88,23 +88,43 @@ func TestBundleAnimationsBlanksPlateAndCropsLayer(t *testing.T) {
 	}
 
 	layer := anim.Layers[0]
-	if layer.Box.W != 40 || layer.Box.H != 40 {
-		t.Fatalf("layer box = %+v", layer.Box)
+	if layer.Box.W < 40 || layer.Box.H < 40 {
+		t.Fatalf("layer box = %+v, want at least original 40x40", layer.Box)
 	}
 	layerImg, err := png.Decode(bytes.NewReader(layer.PNG))
 	if err != nil {
 		t.Fatalf("decode layer: %v", err)
 	}
-	if b := layerImg.Bounds(); b.Dx() != 40 || b.Dy() != 40 {
-		t.Fatalf("layer image size = %dx%d", b.Dx(), b.Dy())
+	if b := layerImg.Bounds(); b.Dx() != layer.Box.W || b.Dy() != layer.Box.H {
+		t.Fatalf("layer image size = %dx%d, box %+v", b.Dx(), b.Dy(), layer.Box)
 	}
 	// 层图里必须仍留着这个元素本身（否则播出来是个空心框）。
-	if r, g, bb, _ := layerImg.At(20, 20).RGBA(); !(r>>8 > 200 && g>>8 < 80 && bb>>8 < 80) {
+	cx, cy := layer.Box.W/2, layer.Box.H/2
+	if r, g, bb, _ := layerImg.At(cx, cy).RGBA(); !(r>>8 > 200 && g>>8 < 80 && bb>>8 < 80) {
 		t.Fatalf("layer lost its own pixels: rgb=(%d,%d,%d)", r>>8, g>>8, bb>>8)
 	}
 	// clips 必须带过去，播放器靠它编译关键帧。
 	if len(layer.Clips) != 1 || layer.Clips[0].DurationMs != 500 {
 		t.Fatalf("clips = %+v", layer.Clips)
+	}
+}
+
+func TestBundleAnimationsGazeFocusHasNoPlate(t *testing.T) {
+	plan := animatedPlan()
+	plan.Pages[0].Layers = nil
+	plan.Pages[0].Focus = []render.FocusSpan{{
+		StartMs: 0, ElementID: "box-1", Rect: &render.Box{X: 80, Y: 30, W: 40, H: 40},
+	}}
+	pages, err := BundleAnimations(plan, [][]byte{syntheticPage(t)}, nil)
+	if err != nil {
+		t.Fatalf("BundleAnimations: %v", err)
+	}
+	if len(pages[0].PlatePNG) != 0 || len(pages[0].Layers) != 0 {
+		t.Fatalf("gaze page must not punch a hole: plate=%d layers=%d",
+			len(pages[0].PlatePNG), len(pages[0].Layers))
+	}
+	if len(pages[0].Focus) != 1 {
+		t.Fatalf("focus must still ship in the bundle, got %d", len(pages[0].Focus))
 	}
 }
 

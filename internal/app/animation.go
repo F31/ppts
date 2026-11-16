@@ -10,6 +10,7 @@ import (
 
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -47,6 +48,10 @@ type AnimationPage struct {
 	// 视野里，但和编译诊断同样不阻断渲染、同样要留痕——所以随页带进去，最后并进
 	// plan.Warnings。
 	Diagnostics []render.Diagnostic
+	// BeatSheet 是编译期注视 IR。Valid 时编译器按拍表填 Focus，不再 equal-spread。
+	BeatSheet *animation.BeatSheet
+	// GazeDenyIDs 是页码/图注，回退 GazeFromSegmentTracks 也跳过。
+	GazeDenyIDs map[string]struct{}
 }
 
 // AnimationRequest 是一次动画渲染的全部输入。
@@ -100,6 +105,8 @@ type AnimationPageInput struct {
 	// 又让「HTML 包不需要渲染服务」这句话在代码里不成立。
 	// 非空时必须与 Slides 同序等长。
 	BaseImagePaths []string
+	// Subtitles 是时间轴字幕（DisplayText + 可选字级钟）。拍表只用这一份，不用 SpokenText。
+	Subtitles []media.SubtitleCue
 }
 
 // AnimationRequestBuilder 把材料组装成一次动画渲染的完整输入。
@@ -122,6 +129,36 @@ func (h *ExportHandler) WithAnimation(client *render.Client, timeout time.Durati
 	h.renderer = client
 	h.animationTimeout = timeout
 	return h
+}
+
+// animationWaitTimeout 把配置里的等待上限当作地板，再按片长加 40 分钟开销。
+// 24 分钟教学片在 2 核上 look 仍帧仍是大头；looks=once 把每页 N 次 medium 收成一次 ultrafast。
+// 20 分钟硬顶会把注视通道降成静图。0 仍表示不设上限，交给作业上下文。
+func animationWaitTimeout(base, content time.Duration) time.Duration {
+	if base == 0 {
+		return 0
+	}
+	const overhead = 40 * time.Minute
+	const capWait = 2 * time.Hour
+	need := content + overhead
+	if need < base {
+		need = base
+	}
+	if need > capWait {
+		return capWait
+	}
+	return need
+}
+
+func compiledContentDuration(plan *render.Timeline) time.Duration {
+	if plan == nil {
+		return 0
+	}
+	var total int64
+	for _, p := range plan.Pages {
+		total += p.DurationMs
+	}
+	return time.Duration(total) * time.Millisecond
 }
 
 // WithRenderer 只注入渲染客户端，不打开动画通道。
@@ -153,11 +190,17 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 	if err != nil {
 		return nil, err
 	}
+	h.observeCompiledPlan(plan)
 	jobID, err := h.renderer.Submit(ctx, plan)
 	if err != nil {
 		return nil, fmt.Errorf("animation: submit: %w", err)
 	}
-	st, err := h.renderer.Wait(ctx, jobID, 0, h.animationTimeout)
+	waitFor := animationWaitTimeout(h.animationTimeout, compiledContentDuration(plan))
+	if h.logger != nil && waitFor != h.animationTimeout {
+		h.logger.Info("animation wait timeout scaled with content",
+			"base", h.animationTimeout, "content", compiledContentDuration(plan), "wait", waitFor)
+	}
+	st, err := h.renderer.Wait(ctx, jobID, 0, waitFor)
 	if err != nil {
 		// 等待失败（超时/取消）必须让服务端尽快释放并发位：一次卡住的导出
 		// 会把渲染槽占满，后面的导出连排队都进不去。成功路径不取消——
@@ -249,9 +292,64 @@ func (h *ExportHandler) downloadSegment(ctx context.Context, jobID, name, dst st
 // logAnimationDegrade 记录降级。降级是静默的用户体验损失，日志是唯一能让
 // 「用户说这页没动」变得可查的东西。logger 未注入时保持安静。
 func (h *ExportHandler) logAnimationDegrade(jobID string, page int, reason string) {
+	stage := degradeStage(reason)
+	render.RecordDegrade(stage)
 	if h.logger == nil {
 		return
 	}
 	h.logger.Warn("animation segment degraded to still",
-		"render_job", jobID, "page", page, "reason", reason)
+		"render_job", jobID, "page", page, "reason", reason, "stage", stage)
+}
+
+func degradeStage(reason string) string {
+	switch reason {
+	case "segment missing from artifacts":
+		return "missing"
+	case "empty segment":
+		return "empty"
+	default:
+		return "still"
+	}
+}
+
+func (h *ExportHandler) observeCompiledPlan(plan *render.Timeline) {
+	if plan == nil {
+		return
+	}
+	idxs := make([]int, len(plan.Pages))
+	for i := range plan.Pages {
+		idxs[i] = i
+	}
+	chrome, gaze, still := render.SplitRenderPages(plan, idxs)
+	render.RecordGazePages(len(gaze))
+	for _, i := range gaze {
+		observability.BeatsLooks(len(plan.Pages[i].Focus))
+	}
+	if render.ChromeShareAlarm(len(chrome), len(gaze)) {
+		render.RecordChromeShareAlarm()
+		if h.logger != nil {
+			h.logger.Warn("animation chrome share high",
+				"chrome", len(chrome), "gaze", len(gaze), "still", len(still),
+				"share", render.ChromeShare(len(chrome), len(gaze)))
+		}
+	}
+	for _, d := range plan.Warnings {
+		if d.Code == render.DiagEntranceSkipped {
+			render.RecordEntranceSkipped()
+		}
+	}
+	if h.logger == nil {
+		return
+	}
+	for i, page := range plan.Pages {
+		mode, looks, plate := render.DescribePageMotion(page)
+		h.logger.Info("animation page compiled",
+			"page", i, "motion_mode", mode, "looks", looks, "plate", plate)
+		if n := len(page.Annotations); n > 1 {
+			h.logger.Info("animation callouts",
+				"page", i, "n", n,
+				"end0", page.Annotations[0].EndMs,
+				"endLast", page.Annotations[n-1].EndMs)
+		}
+	}
 }

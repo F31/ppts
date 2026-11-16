@@ -38,12 +38,13 @@ func pgScanRevision(row pgx.Row) (*animation.Revision, error) {
 		&tracks, &r.RenderedRevision, &r.UpdatedAt); err != nil {
 		return nil, err
 	}
-	parsed, err := unmarshalTracks(tracks)
+	parsed, mode, err := unmarshalTracks(tracks)
 	if err != nil {
 		return nil, err
 	}
 	r.Status = animation.Status(status)
 	r.Tracks = parsed
+	r.MotionMode = mode
 	return &r, nil
 }
 
@@ -71,6 +72,41 @@ func pgLoadExact(ctx context.Context, q pgx.Tx, key animation.Key) (*animation.R
 		return nil, animation.ErrNotFound
 	}
 	return rev, err
+}
+
+// List 实现 Store。
+func (s *PGStore) List(ctx context.Context, key animation.Key) ([]*animation.Revision, error) {
+	key = key.Normalize()
+	if key.TenantID == "" || key.ProjectID == "" {
+		return nil, animation.ErrInvalidKey
+	}
+	var out []*animation.Revision
+	err := tenant.Run(ctx, s.pool, key.TenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT `+pgAnimationColumns+` FROM animation_revisions
+			 WHERE tenant_id = $1::uuid AND project_id = $2::uuid AND language = $3
+			   AND source_revision_no IN ($4, 0)
+			 ORDER BY slide_id, source_revision_no DESC`,
+			key.TenantID, key.ProjectID, key.Language, key.SourceRevisionNo)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		seen := map[string]struct{}{}
+		for rows.Next() {
+			rev, err := pgScanRevision(rows)
+			if err != nil {
+				return err
+			}
+			if _, ok := seen[rev.SlideID]; ok {
+				continue
+			}
+			seen[rev.SlideID] = struct{}{}
+			out = append(out, rev)
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // Get 实现 Store。
@@ -129,7 +165,7 @@ func pgPutInTx(ctx context.Context, tx pgx.Tx, rev *animation.Revision, expected
 	if err := key.Validate(); err != nil {
 		return nil, err
 	}
-	tracks, err := marshalTracks(rev.Tracks)
+	tracks, err := marshalTracks(rev)
 	if err != nil {
 		return nil, err
 	}

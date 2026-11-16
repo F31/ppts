@@ -35,8 +35,12 @@ import {
   editorStateOf,
   isDirty,
   savePayloadOf,
+  wantsEntranceLayers,
+  withEntranceLayers,
   segmentOfTrigger,
   segmentTrigger,
+  staleSegmentIds,
+  rebindEntranceToSegments,
   summarize,
   withIntensity,
   withTrackTrigger,
@@ -66,7 +70,7 @@ import { emptyHistory, recordHistory, redoHistory, undoHistory, type TrackHistor
 
 // 三级入口的第一级（tasks 3.2）：
 //
-//   风格（预设） → 强度（只放大位移/缩放，不改时长） → 逐条要点的出现时机
+//   风格（预设） → 强度（压暗/圈选/裁切） → 逐条要点的注视时机
 //
 // 刻意不做的东西：逐条 clip 的动效类型/时长编辑。那是第二、三级，
 // 需要的是时间轴可视化而不是一个下拉框；先把"整页风格 + 哪条要点什么时候出来"做对，
@@ -84,7 +88,7 @@ export function AnimationEditor({
   timelineKey,
   canEdit,
   trackEditor,
-  /** 预览结果上报给编辑页主舞台。父组件持有 blob URL 并负责释放。 */
+  /** 预览结果上报给编辑页主舞台。父组件持有场景，抽屉收起后画面还在。 */
   onPreview,
   onClose
 }: {
@@ -121,7 +125,7 @@ export function AnimationEditor({
   // 每次成功保存 +1：顶上那句"已保存"要能让人看见，而不是靠猜按钮有没有灰。
   const [savedAt, setSavedAt] = useState(0);
   // 视频本体在编辑页主舞台，这里只记「这次预览成没成」以及图层/焦点说明。
-  // blob URL 的所有权已上移到 ProjectEditor：抽屉收起时不能把主区域的视频 revoke 掉。
+  // 场景的所有权在 ProjectEditor：抽屉收起后主舞台还要播。
   const [previewReady, setPreviewReady] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const [previewError, setPreviewError] = useState('');
@@ -202,7 +206,7 @@ export function AnimationEditor({
     // 而那个任务已经不会被轮询了。
     setPrefilling(false);
     prefillBaselineRef.current = null;
-    // 换页时通知主舞台清掉旧画面。blob URL 由父组件释放，这里不 revoke。
+    // 换页时通知主舞台清掉旧画面。场景由父组件丢弃。
     setPreviewReady(false);
     setPreviewFocus([]);
     onPreviewRef.current(null);
@@ -247,13 +251,14 @@ export function AnimationEditor({
     };
   }, [identity, scope, capabilityAttempt]);
 
-  // 预览 blob URL 的所有权在 ProjectEditor（见 AnimationStagePreview 注释）。
-  // 这里刻意不写卸载 revoke：抽屉在预览成功后会收起，若它 revoke 掉自己刚交出去的
-  // URL，主区域的 <video> 立刻变黑——正好回到「点了预览什么都没发生」。
+  // 场景留在 ProjectEditor（见 AnimationStagePreview 注释）。
+  // 抽屉在预览成功后会收起，不能在卸载时把刚交出去的场景清掉，否则主舞台什么都不播。
 
   const state = editorStateOf(saved, canEdit);
   const dirty = isDirty(draft, saved);
   const summary = summarize(draft, anchors);
+  const staleIds = staleSegmentIds(draft, (anchors?.segments ?? []).map((item) => item.segmentId));
+  const liveSegmentIds = (anchors?.segments ?? []).map((item) => item.segmentId);
 
   // 面板内所有可编辑控件共用一条禁用判据：锁定 / 无权限 / 正在保存。
   const disabled = state.editDisabled || saving;
@@ -265,6 +270,7 @@ export function AnimationEditor({
     capabilityState,
     hasTimeline: Boolean(timelineKey),
     hasSavedSpec: Boolean(saved),
+    hasDraft: Boolean(draft),
     previewing,
     panelDisabled: disabled
   });
@@ -338,6 +344,11 @@ export function AnimationEditor({
   // M1b：入口改走异步。服务端的契约是「总会返回一份可用的规格」——规则档当场算完
   // （200），script 档先给规则底稿再在后台问模型（202 + jobId）。所以这里拿到的 spec
   // 永远可以直接上屏，模型结果只是一个更好的版本，晚一点到。
+  const rebindByOrder = () => {
+    if (!draft) return;
+    setDraft(rebindEntranceToSegments(draft, liveSegmentIds));
+  };
+
   const runPrefill = async () => {
     const seq = ++generateSeq.current;
     setSaveError('');
@@ -515,7 +526,9 @@ export function AnimationEditor({
       const result = await applyAnimationToAll(
         identity,
         { projectId, sourceRevisionNo, language },
-        presetId
+        presetId,
+        false,
+        wantsEntranceLayers(draft)
       );
       setApplyAllResult(result);
       // 当前页被改写后要重读规格，否则面板里还挂着旧草案（保存时必冲突）。
@@ -539,15 +552,20 @@ export function AnimationEditor({
       setPreviewError(t('editor.animationPreviewNeedsVoice'));
       return;
     }
-    // 预览渲的是**已保存的规格**（服务端按规格身份取，不接受请求体里的草案）。
-    // 有未保存改动就先存一次：否则用户看到的是上一版动效，会以为"改了没生效"。
-    let current = saved;
-    if (dirty) current = await save();
-    if (!current) return;
+    // 舞台播的是当前草案，不先保存。导出仍只读已保存的规格。
+    if (!draft && !saved) {
+      setPreviewError(t('editor.animationPreviewNeedsSave'));
+      return;
+    }
 
     setPreviewing(true);
     try {
-      const result = await previewAnimation(identity, scope, timelineKey);
+      const result = await previewAnimation(
+        identity,
+        scope,
+        timelineKey,
+        draft ? savePayloadOf(draft) : undefined
+      );
       const notices = previewFocusNotices(result);
       setPreviewReady(true);
       setPreviewLayers(result.layers);
@@ -556,7 +574,7 @@ export function AnimationEditor({
       setPreviewDetail('');
       // 最后上报：父组件会收起抽屉并在中间主舞台播放。放在末尾是因为这一步
       // 之后本组件就卸载了，剩下的 setState 没有意义。
-      onPreviewRef.current({ url: result.url, layers: result.layers, focusNotices: notices });
+      onPreviewRef.current({ scene: result.scene, layers: result.layers, focusNotices: notices });
     } catch (err) {
       const failure = previewFailureOf(err);
       setPreviewError(previewErrorText(failure, t));
@@ -642,6 +660,19 @@ export function AnimationEditor({
           {(state.needsVoice || (anchors !== null && anchors.durationMs <= 0)) && (
             <p className="narration-note warn">{t('editor.animationNeedsVoice')}</p>
           )}
+          {staleIds.length > 0 && (
+            <div className="narration-note warn" role="status">
+              <p>{t('editor.animationAnchorsStale', { count: staleIds.length })}</p>
+              <div className="animation-prefill-action">
+                <button type="button" className="button-ghost" disabled={disabled || prefilling} onClick={() => void runPrefill()}>
+                  {t('editor.animationRebindPrefill')}
+                </button>
+                <button type="button" className="button-ghost" disabled={disabled} onClick={rebindByOrder}>
+                  {t('editor.animationRebindOrder')}
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* 第一级：风格。没有规格时这里就是"开始"入口。 */}
           <section className="animation-block">
@@ -713,7 +744,7 @@ export function AnimationEditor({
               <button
                 type="button"
                 className="button-ghost"
-                disabled={disabled || prefilling || saved !== null || (anchors !== null && anchors.durationMs <= 0)}
+                disabled={disabled || prefilling || (saved !== null && staleIds.length === 0) || (anchors !== null && anchors.durationMs <= 0)}
                 onClick={() => void runPrefill()}
               >
                 {prefilling
@@ -723,7 +754,7 @@ export function AnimationEditor({
                     : t('editor.animationPrefillAction')}
               </button>
             </div>
-            {saved !== null && <p className="form-hint">{t('editor.animationPrefillNeedsFresh')}</p>}
+            {saved !== null && staleIds.length === 0 && <p className="form-hint">{t('editor.animationPrefillNeedsFresh')}</p>}
             {/* 模型结果到了但草案已经被改过：让用户自己决定。
                 自动替换会静默扔掉他这十几秒的手工调整，而不替换又不告诉他，
                 他会一直等一个永远不会自动生效的结果——两种都不行。 */}
@@ -739,7 +770,7 @@ export function AnimationEditor({
 
           {draft && (
             <>
-              {/* 强度：只放大位移/缩放幅度，不动时长（时长归规格，见设计 ADR）。 */}
+              {/* 强度：只加重压暗、圈选与裁切，不动旁白时长。 */}
               <section className="animation-block">
                 <label className="animation-intensity">
                   <span>{t('editor.animationIntensity')}</span>
@@ -757,8 +788,28 @@ export function AnimationEditor({
                 <p className="form-hint">{t('editor.animationIntensityHint')}</p>
               </section>
 
-              {/* 第二级：逐条要点的出现时机。 */}
-              <section className="animation-block">
+              <details className="animation-block animation-advanced">
+                <summary className="eyebrow">{t('editor.animationEntranceLayers')}</summary>
+                <label className="animation-entrance">
+                  <input
+                    type="checkbox"
+                    checked={wantsEntranceLayers(draft)}
+                    disabled={disabled}
+                    onChange={(event) => {
+                      const preset = anchors?.presets.find((item) => item.id === draft.presetId);
+                      setDraft(
+                        withEntranceLayers(draft, event.currentTarget.checked, preset?.entranceClips)
+                      );
+                    }}
+                  />
+                  <span>{t('editor.animationEntranceLayersLabel')}</span>
+                </label>
+                <p className="form-hint">{t('editor.animationEntranceLayersHint')}</p>
+              </details>
+
+              {/* 逐条轨道收在高级里。默认只留风格和强度。 */}
+              <details className="animation-block animation-advanced">
+                <summary className="eyebrow">{t('editor.animationAdvanced')}</summary>
                 <div className="animation-block-head">
                   <span className="eyebrow">{t('editor.animationTracks')}</span>
                   <span className="animation-summary">
@@ -802,7 +853,7 @@ export function AnimationEditor({
                     {t('editor.animationPageTrack', { count: pageTracks.reduce((n, track) => n + track.clips.length, 0) })}
                   </p>
                 )}
-              </section>
+              </details>
 
               {/* 预填复核（tasks 4.1–4.3）：机器猜的绑定按来源摊开，撤销以"组"为单位。
                   没有来源标注的页面不该出现这一块——空表只会让人以为功能坏了。 */}
@@ -1022,6 +1073,9 @@ export function AnimationEditor({
 
               {/* 置灰的理由必须可见：按钮灰着却不说话，用户只会反复点击或以为页面卡了。 */}
               {previewButton.hintKey && <p className="form-hint" role="status">{t(previewButton.hintKey)}</p>}
+              {!previewButton.hintKey && draft && (
+                <p className="form-hint">{t('editor.animationPreviewDraft')}</p>
+              )}
               {capabilityState === 'error' && (
                 <div className="draft-actions">
                   <button type="button" className="button-ghost" onClick={() => setCapabilityAttempt((n) => n + 1)}>
@@ -1051,7 +1105,9 @@ export function AnimationEditor({
                   <p className="form-hint">
                     {previewLayers > 0
                       ? t('editor.animationPreviewLayers', { count: previewLayers })
-                      : t('editor.animationPreviewStatic')}
+                      : previewFocus.length > 0
+                        ? t('editor.animationPreviewGaze')
+                        : t('editor.animationPreviewStatic')}
                   </p>
                   {previewFocus.map((notice) => (
                     <p className="form-hint" key={notice.key}>

@@ -8,9 +8,10 @@
 // 这里刻意不引入 zod 之类的运行时校验：校验的权威在 Go 侧（Validate 已在提交前跑过），
 // Node 端重复校验只会得到两套规则。
 
-import type { FocusSpan, Layer, Shot, Transition } from '../../shared/types';
+import type { Annotation, FocusSpan, Layer, Shot, Transition } from '../../shared/types';
 
 export type {
+  Annotation,
   Box,
   CubicBezier,
   FocusSpan,
@@ -51,6 +52,9 @@ export type Page = {
   shots?: Shot[];
   /** 页级焦点序列：此刻讲的是谁（见 shared/motion.ts 的 focusDim）。 */
   focus?: FocusSpan[];
+  annotations?: Annotation[];
+  lookCrop?: boolean;
+  lookCropPadPx?: number;
 };
 
 export type Timeline = {

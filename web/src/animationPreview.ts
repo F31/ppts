@@ -1,18 +1,18 @@
 import type { AnimationApplyAllResponse, AnimationPreview, AnimationPreviewCapability } from './api/animation';
 
 /** 预览下方的一条说明：i18n 键 + 插值参数。 */
-export type PreviewFocusNotice = { key: string; params: Record<string, number> };
+export type PreviewFocusNotice = { key: string; params?: Record<string, number> };
 
 /**
  * 主舞台上的单页动效预览。
  *
  * 视频实际渲染在编辑页**中间主区域**，不在动效抽屉里：抽屉是全屏遮罩，
  * 放在里面的视频会与主区域已有的 Player/页图并存成两个画面。
- * url 是 blob URL，所有权归持有它的 ProjectEditor（负责替换/关闭/卸载时 revoke），
- * 动效抽屉只负责生成与上报，不 revoke —— 否则抽屉一收起，主区域的视频就失效了。
+ * scene 是服务端编译好的这一页（底板、图层、焦点、镜头），由主舞台的浏览器播放器消费。
+ * 动效抽屉只负责生成与上报：成功后抽屉会收起，场景必须留在父组件里。
  */
 export type AnimationStagePreview = {
-  url: string;
+  scene: AnimationPreview['scene'];
   layers: number;
   focusNotices: PreviewFocusNotice[];
 };
@@ -25,9 +25,12 @@ export type AnimationStagePreview = {
  * 这一页的比例。反过来把未知原因硬塞进某个已知分支，也是在猜。
  */
 export function previewFocusNotices(
-  preview: Pick<AnimationPreview, 'focus' | 'focusSkipped' | 'focusSkipReason'>
+  preview: Pick<AnimationPreview, 'focus' | 'focusSkipped' | 'focusSkipReason' | 'entranceSkipped'>
 ): PreviewFocusNotice[] {
   const out: PreviewFocusNotice[] = [];
+  if (preview.entranceSkipped) {
+    out.push({ key: 'editor.animationEntranceSkipped' });
+  }
   if (preview.focus > 0) {
     out.push({ key: 'editor.animationPreviewFocus', params: { count: preview.focus } });
   }
@@ -67,8 +70,10 @@ export type PreviewButtonInput = {
   capabilityState: PreviewCapabilityState;
   /** 有没有配音时间轴：没有时长就无从编译预览。 */
   hasTimeline: boolean;
-  /** 有没有已保存的规格：预览渲的是服务器上那份。 */
+  /** 有没有已保存的规格。没有草案时，预览只能读这一份。 */
   hasSavedSpec: boolean;
+  /** 有没有编辑中的草案。有草案时不必先保存就能在舞台上播。 */
+  hasDraft?: boolean;
   previewing: boolean;
   /** 面板整体锁定（只读 / 正在保存）。 */
   panelDisabled: boolean;
@@ -113,7 +118,7 @@ export function previewButtonState(input: PreviewButtonInput): PreviewButtonStat
   if (!input.capability.configured) return blocked(previewUnconfiguredKey(input.capability.reason));
   if (input.panelDisabled) return blocked('');
   if (!input.hasTimeline) return blocked('editor.animationPreviewNeedsVoice');
-  if (!input.hasSavedSpec) return blocked('editor.animationPreviewNeedsSave');
+  if (!input.hasSavedSpec && !input.hasDraft) return blocked('editor.animationPreviewNeedsSave');
   if (input.previewing) return blocked('');
   return { disabled: false, hintKey: '' };
 }

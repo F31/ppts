@@ -53,6 +53,8 @@ export type AnimationSpec = {
   status: AnimationStatus;
   presetId: string;
   intensity: number;
+  /** gaze | entrance | gaze+entrance；缺省由服务端按 clip 推断。 */
+  motionMode?: string;
   tracks: AnimationTrack[];
   /** true 表示保存时页时长未知（还没配音），渲染前必须用真实时长重校验。 */
   needsDurationRecheck?: boolean;
@@ -103,11 +105,19 @@ export type AnimationAnchor = {
 
 export type AnimationSegment = { segmentId: string; index: number };
 
+export type EntranceClipTemplate = {
+  type: string;
+  durationMs: number;
+  easing: string;
+  params?: Record<string, unknown>;
+};
+
 export type AnimationPreset = {
   id: string;
   label: string;
   description: string;
   intensity: number;
+  entranceClips?: Record<string, EntranceClipTemplate[]>;
 };
 
 export type AnimationAnchors = {
@@ -123,9 +133,18 @@ export type AnimationAnchors = {
 // 这几个值变了，客户端的夹紧范围与触发串格式都要一起改，属于契约变更。
 export const MIN_INTENSITY = 0.5;
 export const MAX_INTENSITY = 1.5;
+export const MAX_CLIPS_PER_SLIDE = 40;
 export const TRIGGER_ENTER = 'onEnter';
 export const TRIGGER_SEGMENT_PREFIX = 'withSegment:';
 export const TRIGGER_AT_TIME_PREFIX = 'atTime:';
+
+const ENTRANCE_EFFECTS = new Set(['fadeIn', 'slideIn', 'pop', 'grow']);
+// 与 Go animation.IsEntrancePunchKind 同口径：chart/table/image 不挖洞。
+const ENTRANCE_PUNCH_KINDS = new Set(['title', 'bullet', 'shape', 'icon']);
+
+export function isEntranceEffect(type: string): boolean {
+  return ENTRANCE_EFFECTS.has(type);
+}
 
 export type AnimationEditorState = {
   /** none = 这一页还没配置过动效。 */
@@ -185,6 +204,81 @@ export function withIntensity(draft: AnimationSpec, value: number): AnimationSpe
   return { ...draft, intensity: clampIntensity(value) };
 }
 
+export const MOTION_MODE_GAZE = 'gaze';
+export const MOTION_MODE_GAZE_ENTRANCE = 'gaze+entrance';
+
+export function withMotionMode(draft: AnimationSpec, mode: string): AnimationSpec {
+  return { ...draft, motionMode: mode };
+}
+
+export function wantsEntranceLayers(spec: AnimationSpec | null | undefined): boolean {
+  return spec?.motionMode === MOTION_MODE_GAZE_ENTRANCE;
+}
+
+function trackHasSpotlight(track: AnimationTrack): boolean {
+  return track.clips.some((clip) => clip.type === 'spotlight');
+}
+
+function clipCountOf(spec: AnimationSpec): number {
+  return spec.tracks.reduce((n, track) => n + track.clips.length, 0);
+}
+
+/**
+ * 勾选「要点依次出现」：写 gaze+entrance，并把 EntranceClips[kind] 追加到已有 spotlight 轨。
+ * 去掉勾选：写回 gaze，删掉入场 class clip，保留 spotlight。没有 spotlight 的旧入场轨不动。
+ */
+export function withEntranceLayers(
+  draft: AnimationSpec,
+  enabled: boolean,
+  templates?: Record<string, EntranceClipTemplate[]>
+): AnimationSpec {
+  const next = withMotionMode(draft, enabled ? MOTION_MODE_GAZE_ENTRANCE : MOTION_MODE_GAZE);
+  if (!enabled) {
+    return {
+      ...next,
+      tracks: next.tracks.map((track) => {
+        if (!trackHasSpotlight(track)) return track;
+        const clips = track.clips.filter((clip) => !isEntranceEffect(clip.type));
+        if (clips.length === track.clips.length) return track;
+        return { ...track, clips };
+      })
+    };
+  }
+  let remaining = MAX_CLIPS_PER_SLIDE - clipCountOf(next);
+  if (remaining <= 0) return next;
+  const byKind = templates ?? {};
+  return {
+    ...next,
+    tracks: next.tracks.map((track) => {
+      if (remaining <= 0) return track;
+      if (!ENTRANCE_PUNCH_KINDS.has(track.kind) || !trackHasSpotlight(track)) return track;
+      if (track.clips.some((clip) => isEntranceEffect(clip.type))) return track;
+      const tpls = byKind[track.kind] ?? [];
+      if (tpls.length === 0) return track;
+      const anchor = track.clips.find((clip) => clip.type === 'spotlight') ?? track.clips[0];
+      const added: AnimationClip[] = [];
+      tpls.forEach((tpl, i) => {
+        if (remaining <= 0) return;
+        remaining -= 1;
+        const clip: AnimationClip = {
+          id: `ent-${track.elementId}-${i + 1}`,
+          type: tpl.type,
+          startMs: anchor.startMs,
+          durationMs: tpl.durationMs,
+          easing: tpl.easing,
+          trigger: anchor.trigger
+        };
+        if (tpl.params && Object.keys(tpl.params).length > 0) {
+          clip.params = { ...tpl.params };
+        }
+        added.push(clip);
+      });
+      if (added.length === 0) return track;
+      return { ...track, clips: [...track.clips, ...added] };
+    })
+  };
+}
+
 export function segmentTrigger(segmentId: string): string {
   return TRIGGER_SEGMENT_PREFIX + segmentId;
 }
@@ -193,6 +287,48 @@ export function segmentTrigger(segmentId: string): string {
 export function segmentOfTrigger(trigger: string): string {
   if (!trigger.startsWith(TRIGGER_SEGMENT_PREFIX)) return '';
   return trigger.slice(TRIGGER_SEGMENT_PREFIX.length);
+}
+
+/** 规格里 withSegment 指向、但当前讲稿已不存在的分段 id。 */
+export function staleSegmentIds(spec: AnimationSpec | null, live: string[]): string[] {
+  if (!spec) return [];
+  const ok = new Set(live.filter(Boolean));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const track of spec.tracks) {
+    for (const clip of track.clips) {
+      const id = segmentOfTrigger(clip.trigger);
+      if (!id || ok.has(id) || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
+/** 把入场 clip 按轨道顺序接到当前配音分段；分段不够的改回页首。效果类型不动。 */
+export function rebindEntranceToSegments(spec: AnimationSpec, segmentIds: string[]): AnimationSpec {
+  let i = 0;
+  return {
+    ...spec,
+    tracks: spec.tracks.map((track) => {
+      if (track.kind === 'page') return track;
+      return {
+        ...track,
+        clips: track.clips.map((clip) => {
+          if (!isEntranceClip(clip)) return clip;
+          const nextId = segmentIds[i] ?? '';
+          i += 1;
+          const trigger = nextId ? segmentTrigger(nextId) : TRIGGER_ENTER;
+          if (clip.trigger === trigger) return clip;
+          const next: AnimationClip = { ...clip, trigger };
+          delete next.triggerSource;
+          delete next.confidence;
+          return next;
+        })
+      };
+    })
+  };
 }
 
 // withTrackTrigger 把某条轨道的**入场**片段改挂到指定触发器。
@@ -239,6 +375,7 @@ export function specFingerprint(spec: AnimationSpec): string {
   return JSON.stringify({
     presetId: spec.presetId,
     intensity: clampIntensity(spec.intensity),
+    motionMode: spec.motionMode ?? '',
     tracks: spec.tracks.map((track) => ({
       elementId: track.elementId,
       kind: track.kind,
@@ -273,6 +410,7 @@ export type AnimationSavePayload = {
   expectedRevision: number;
   presetId: string;
   intensity: number;
+  motionMode?: string;
   tracks: AnimationTrack[];
 };
 
@@ -281,6 +419,7 @@ export function savePayloadOf(draft: AnimationSpec): AnimationSavePayload {
     expectedRevision: draft.revision,
     presetId: draft.presetId,
     intensity: clampIntensity(draft.intensity),
+    motionMode: draft.motionMode,
     tracks: draft.tracks.map((track) => ({
       elementId: track.elementId,
       kind: track.kind,

@@ -21,6 +21,8 @@ export type OneClickDrawerProps = {
   mode: ScriptMode;
   overwrite: OneDraftOverwrite;
   preset: string;
+  /** 「要点依次出现」：一键套用写入 gaze+entrance。默认关。 */
+  entrance: boolean;
   phase: string;
   error: string;
   done: OneClickResult | null;
@@ -31,6 +33,7 @@ export type OneClickDrawerProps = {
   onModeChange: (mode: ScriptMode) => void;
   onOverwriteChange: (value: OneDraftOverwrite) => void;
   onPresetChange: (id: string) => void;
+  onEntranceChange: (value: boolean) => void;
   onRun: () => void;
 };
 
@@ -41,13 +44,11 @@ export type OneClickDrawerProps = {
  * 因为它要串联讲稿生成、配音任务与动效套用三条既有通道）。
  */
 export function OneClickDrawer(props: OneClickDrawerProps) {
-  const { dialogRef, t, running, steps, mode, overwrite, preset, phase, error, done, canRun } = props;
-  const close = () => {
-    if (!running) props.onClose();
-  };
+  const { dialogRef, t, running, steps, mode, overwrite, preset, entrance, phase, error, done, canRun } = props;
+  // 关闭只收起抽屉。流水线在编辑器里继续，不因关窗而中断。
 
   return (
-    <div className="drawer-backdrop" onClick={close}>
+    <div className="drawer-backdrop" onClick={props.onClose}>
       <aside
         className="properties-drawer"
         role="dialog"
@@ -64,7 +65,6 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
           <button
             type="button"
             className="dialog-close-icon"
-            disabled={running}
             onClick={props.onClose}
             aria-label={t('common.close')}
             title={t('common.close')}
@@ -148,7 +148,21 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
               <option value="launch-bold">{t('editor.oneClickPresetLaunch')}</option>
             </select>
           </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={entrance}
+              disabled={running || !steps.animation}
+              onChange={(e) => {
+                const checked = e.currentTarget.checked;
+                props.onEntranceChange(checked);
+              }}
+            />
+            {t('editor.animationEntranceLayers')}
+          </label>
+          <p className="narration-note">{t('editor.oneClickEntranceHint')}</p>
           <p className="narration-note">{t('editor.oneClickAdvancedNote')}</p>
+          {running && <p className="narration-note" role="status">{t('editor.oneClickBackground')}</p>}
           {phase === 'script' && <p className="narration-note" role="status">{t('editor.oneClickPhaseScript')}</p>}
           {phase === 'voice' && <p className="narration-note" role="status">{t('editor.oneClickPhaseVoice')}</p>}
           {phase === 'animation' && <p className="narration-note" role="status">{t('editor.oneClickPhaseAnimation')}</p>}
@@ -161,8 +175,8 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
             >
               {running ? t('editor.oneClickRunning') : t('editor.oneClickSubmit')}
             </button>
-            <button type="button" className="button-ghost" disabled={running} onClick={props.onClose}>
-              {t('common.cancel')}
+            <button type="button" className="button-ghost" onClick={props.onClose}>
+              {running ? t('common.close') : t('common.cancel')}
             </button>
           </div>
           {error && <p className="form-error" role="alert">{error}</p>}

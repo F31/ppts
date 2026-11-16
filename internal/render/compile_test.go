@@ -96,6 +96,51 @@ func TestGeometryStandard43Canvas(t *testing.T) {
 	}
 }
 
+func TestCompilerOfficeScreen16x9Scale(t *testing.T) {
+	c, err := NewCompiler(Options{
+		Canvas:         design.Canvas{Width: 1920, Height: 1080},
+		SlideWidthEMU:  9144000,
+		SlideHeightEMU: 5143500,
+		FPS:            30,
+		Background:     "#FFFFFF",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 7.5in 下 (72,202,413,216) 的自选图形，在 Office 10"×5.625" 页上应对准画出来的卡片。
+	box := &EMUBox{X: 457200, Y: 1282700, Width: 2622550, Height: 1371600}
+	rev := revisionOf("teaching-clear", 1,
+		&animation.Track{ElementID: "a", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c1", "spotlight", 0, 240, "withSegment:seg-1")}},
+		&animation.Track{ElementID: "b", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c2", "spotlight", 0, 240, "withSegment:seg-2")}},
+	)
+	rev.MotionMode = animation.MotionModeGaze
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "s", DurationMs: 8000, BaseImage: "p0.png",
+		Elements: []Element{
+			{ID: "a", Kind: animation.KindBullet, Bounds: box},
+			{ID: "b", Kind: animation.KindBullet, Bounds: &EMUBox{X: 3200400, Y: 1282700, Width: 2622550, Height: 1371600}},
+		},
+		SegmentOffsets: map[string]int64{"seg-1": 0, "seg-2": 4000},
+		Revision:       rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) == 0 || page.Focus[0].Rect == nil {
+		t.Fatalf("want gaze rect, got %+v", page.Focus)
+	}
+	got := *page.Focus[0].Rect
+	// 换算后约 (96,269,551,288)，再外扩 8px。
+	if got.X > 96 || got.Y > 269 || got.X+got.W < 96+551 || got.Y+got.H < 269+288 {
+		t.Fatalf("office 16:9 rect = %+v, want to cover 96,269 551×288", got)
+	}
+	if got.W > 600 || got.H > 330 {
+		t.Fatalf("office 16:9 rect too large: %+v", got)
+	}
+}
+
 func TestGeometryAspectMismatchRejected(t *testing.T) {
 	// 16:9 的页尺寸 + 4:3 的画布：等比缩放后盒子必然错位，宁可拒绝。
 	_, err := NewCompiler(Options{
@@ -364,8 +409,8 @@ func TestTransitions(t *testing.T) {
 	if tr := page(0, "tech-dynamic").Transition; tr.Type != animation.TransitionNone || tr.DurationMs != 0 {
 		t.Fatalf("首屏转场必须为 none，实际 %+v", tr)
 	}
-	if tr := page(1, "tech-dynamic").Transition; tr.Type != animation.TransitionSlide || tr.DurationMs != 280 {
-		t.Fatalf("第二页转场应取预设 tech-dynamic，实际 %+v", tr)
+	if tr := page(1, "tech-dynamic").Transition; tr.Type != animation.TransitionFade || tr.DurationMs != 280 {
+		t.Fatalf("第二页转场应取预设 tech-dynamic fade/280，实际 %+v", tr)
 	}
 	if tr := page(1, "").Transition; tr.Type != animation.TransitionFade || tr.DurationMs != 240 {
 		t.Fatalf("自定义预设应回退 fade/240，实际 %+v", tr)

@@ -40,11 +40,11 @@ func TestCompilePlanProducesAnimatedLayers(t *testing.T) {
 		durMs   = int64(2000)
 		wantPer = 2 // 每个元素一条轨道
 	)
-	plan, err := compilePlan(w, h, pages, durMs, animdefault.DefaultPresetID, elementBoxes(w, h), 2)
+	plan, err := compilePlan(w, h, pages, durMs, animdefault.DefaultPresetID, elementBoxes(w, h), 2, false)
 	if err != nil {
 		t.Fatalf("compilePlan: %v", err)
 	}
-	if err := checkPlan(plan, 2); err != nil {
+	if err := checkPlan(plan, 2, false); err != nil {
 		t.Fatalf("checkPlan: %v", err)
 	}
 	if plan.FPS != fixtureFPS || plan.Width != w || plan.Height != h {
@@ -165,11 +165,11 @@ func TestPageShotInputsShrinkFadeForShortPages(t *testing.T) {
 
 func TestCheckPlanRejectsStaticPlan(t *testing.T) {
 	static := &render.Timeline{Pages: []render.Page{{Index: 0, DurationMs: 1000, BaseImage: "pages/p001.png"}}}
-	if err := checkPlan(static, 1); err == nil {
+	if err := checkPlan(static, 1, false); err == nil {
 		t.Fatal("没有层的计划必须被拒：否则 V13 会比两张静态图")
 	}
 	empty := &render.Timeline{}
-	if err := checkPlan(empty, 1); err == nil {
+	if err := checkPlan(empty, 1, false); err == nil {
 		t.Fatal("空计划必须被拒")
 	}
 }
@@ -197,5 +197,54 @@ func TestTimelineMatchesPlanDuration(t *testing.T) {
 		if slide.Segments[0].EndUS >= slide.EndUS {
 			t.Fatalf("slide %d 音频段没有留白", i)
 		}
+	}
+}
+
+func TestCompileGazePlanIsLookPath(t *testing.T) {
+	const (
+		w, h  = 1280, 720
+		pages = 2
+		durMs = int64(8000)
+	)
+	plan, err := compilePlan(w, h, pages, durMs, "teaching-clear", elementBoxes(w, h), 1, true)
+	if err != nil {
+		t.Fatalf("compilePlan gaze: %v", err)
+	}
+	if err := checkPlan(plan, 1, true); err != nil {
+		t.Fatalf("checkPlan gaze: %v", err)
+	}
+	for i, page := range plan.Pages {
+		if len(page.Layers) != 0 {
+			t.Fatalf("page %d layers = %d, want 0", i, len(page.Layers))
+		}
+		if len(page.Shots) != 0 {
+			t.Fatalf("page %d shots = %d, want 0", i, len(page.Shots))
+		}
+		if len(page.Focus) < 2 {
+			t.Fatalf("page %d focus = %d, want >= 2", i, len(page.Focus))
+		}
+		for _, f := range page.Focus {
+			if f.Rect == nil || f.Rect.W <= 0 {
+				t.Fatalf("page %d focus missing rect: %+v", i, f)
+			}
+		}
+		mode, looks, plate := render.DescribePageMotion(page)
+		if mode != "gaze" || plate != "skipped" || looks < 2 {
+			t.Fatalf("page %d motion_mode=%s looks=%d plate=%s", i, mode, looks, plate)
+		}
+	}
+	chrome, gaze, still := render.SplitRenderPages(plan, []int{0, 1})
+	if len(gaze) != 2 || len(chrome) != 0 || len(still) != 0 {
+		t.Fatalf("buckets chrome=%v gaze=%v still=%v", chrome, gaze, still)
+	}
+}
+
+func TestCheckGazePlanRejectsEntranceLayers(t *testing.T) {
+	plan, err := compilePlan(1280, 720, 1, 2000, animdefault.DefaultPresetID, elementBoxes(1280, 720), 2, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPlan(plan, 2, true); err == nil {
+		t.Fatal("入场夹具按注视检查必须被拒")
 	}
 }

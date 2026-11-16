@@ -9,7 +9,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cubicBezier, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY } from './motion.ts';
+import { calloutLayout, cubicBezier, evaluateAnnotation, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY } from './motion.ts';
+import {
+  cropLocalRect,
+  lookCropAt,
+  lookCropEnabled,
+  lookCropImageStyle,
+  lookCropPadPx,
+  lookCropTransform,
+  padFocusRect
+} from './lookcrop.ts';
 
 const linear = { x1: 0, y1: 0, x2: 1, y2: 1 };
 
@@ -229,4 +238,78 @@ test('focusMasks：换段用交叉淡化，整页压暗量全程连续、不归�
     if (t >= 1240) minAfterStart = Math.min(minAfterStart, dim);
   }
   assert.ok(minAfterStart > 0.38, `压暗量最低掉到 ${minAfterStart.toFixed(3)}，交叉淡化没有托住`);
+});
+
+test('focusMasks：veilAlpha 覆盖默认纱强度', () => {
+  const rect = { x: 0, y: 0, w: 10, h: 10 };
+  const plain = [{ startMs: 0, elementId: 'a', rect, fadeMs: 0 }];
+  const custom = [{ startMs: 0, elementId: 'a', rect, fadeMs: 0, veilAlpha: 0.3 }];
+  assert.equal(Math.round(focusMasks(plain, 500)[0].alpha * 1000) / 1000, Math.round((1 - FOCUS_DIM_OPACITY) * 1000) / 1000);
+  assert.equal(focusMasks(custom, 500)[0].alpha, 0.3);
+});
+
+test('evaluateAnnotation：淡入、hold、放手与起点不挂节点', () => {
+  const a = { kind: 'callout', startMs: 1000, endMs: 3000, fadeMs: 240, rect: { x: 1, y: 2, w: 3, h: 4 }, shape: 'rect' };
+  assert.equal(evaluateAnnotation(a, 500), null);
+  assert.equal(evaluateAnnotation(a, 1000), null);
+  const mid = evaluateAnnotation(a, 2000);
+  assert.ok(mid);
+  assert.equal(mid.kind, 'callout');
+  assert.equal(mid.opacity, 1);
+  assert.deepEqual(mid.rect, a.rect);
+  assert.equal(evaluateAnnotation(a, 3240), null);
+});
+
+test('calloutLayout：近方形走正圆，扁盒走圆角矩形', () => {
+  const circle = calloutLayout({ x: 10, y: 20, w: 100, h: 90 }, 'circle');
+  assert.equal(circle.w, 90);
+  assert.equal(circle.h, 90);
+  assert.equal(circle.radius, '50%');
+  const auto = calloutLayout({ x: 0, y: 0, w: 80, h: 80 });
+  assert.equal(auto.radius, '50%');
+  const rect = calloutLayout({ x: 0, y: 0, w: 400, h: 80 }, 'rect');
+  assert.equal(rect.w, 400);
+  assert.equal(rect.h, 80);
+  assert.ok(rect.radius.endsWith('px'));
+});
+
+test('lookCropPadPx：强度只改外扩，夹到 4–16', () => {
+  assert.equal(lookCropPadPx(), 8);
+  assert.equal(lookCropPadPx(1), 8);
+  assert.equal(lookCropPadPx(1.15), 9);
+  assert.equal(lookCropPadPx(0.5), 4);
+  assert.equal(lookCropPadPx(0.4), 4);
+  assert.equal(lookCropPadPx(2), 16);
+});
+
+test('LookCrop crop-to-fill 铺满舞台，cropLocalRect 把页坐标变到舞台', () => {
+  const canvasW = 1920;
+  const canvasH = 1080;
+  const rect = { x: 100, y: 200, w: 400, h: 80 };
+  const crop = padFocusRect(rect, 8, canvasW, canvasH);
+  assert.deepEqual(crop, { x: 92, y: 192, w: 416, h: 96 });
+  const { scale, tx, ty } = lookCropTransform(crop, canvasW, canvasH);
+  assert.equal(scale, Math.max(canvasW / 416, canvasH / 96));
+  const mapped = cropLocalRect(crop, crop, canvasW, canvasH);
+  assert.ok(mapped.x <= 0 && mapped.y <= 0, `mapped origin ${mapped.x},${mapped.y}`);
+  assert.ok(mapped.x + mapped.w >= canvasW && mapped.y + mapped.h >= canvasH, 'crop must cover the stage');
+  const frame = lookCropAt([{ startMs: 0, elementId: 'a', rect }], 500, canvasW, canvasH, 8);
+  assert.ok(frame);
+  assert.equal(frame.scale, scale);
+  assert.equal(frame.tx, tx);
+  assert.equal(frame.ty, ty);
+  const css = lookCropImageStyle(frame, false);
+  assert.equal(css.transformOrigin, '0 0');
+  assert.equal(css.transform, `translate(${tx}px, ${ty}px) scale(${scale})`);
+  const staged = lookCropImageStyle(frame, true);
+  assert.equal(staged.transform, `translate(calc(${tx}px * var(--ppts-k, 1)), calc(${ty}px * var(--ppts-k, 1))) scale(${scale})`);
+});
+
+test('LookCrop 无 rect / 降级 / 入场层 / 镜头裁切都不 punch-in', () => {
+  assert.equal(lookCropEnabled({ lookCrop: true }), true);
+  assert.equal(lookCropEnabled({ lookCrop: true, reduceMotion: true }), false);
+  assert.equal(lookCropEnabled({ lookCrop: true, hasShotCrop: true }), false);
+  assert.equal(lookCropEnabled({ lookCrop: true, hasEntranceLayers: true }), false);
+  assert.equal(lookCropAt([{ startMs: 0, elementId: 'a' }], 0, 1920, 1080), null);
+  assert.equal(lookCropAt([{ startMs: 1000, elementId: 'a', rect: { x: 1, y: 1, w: 10, h: 10 } }], 0, 1920, 1080), null);
 });

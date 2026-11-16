@@ -43,12 +43,13 @@ func sqScanRevision(row rowScanner) (*animation.Revision, error) {
 		&tracks, &r.RenderedRevision, &updated); err != nil {
 		return nil, err
 	}
-	parsed, err := unmarshalTracks(tracks)
+	parsed, mode, err := unmarshalTracks(tracks)
 	if err != nil {
 		return nil, err
 	}
 	r.Status = animation.Status(status)
 	r.Tracks = parsed
+	r.MotionMode = mode
 	r.UpdatedAt = db.ParseTime(updated)
 	return &r, nil
 }
@@ -79,6 +80,38 @@ func (s *SQLiteStore) sqLoadExact(ctx context.Context, q queryer, key animation.
 		return nil, animation.ErrNotFound
 	}
 	return rev, err
+}
+
+// List 实现 Store。
+func (s *SQLiteStore) List(ctx context.Context, key animation.Key) ([]*animation.Revision, error) {
+	key = key.Normalize()
+	if key.TenantID == "" || key.ProjectID == "" {
+		return nil, animation.ErrInvalidKey
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+sqAnimationColumns+` FROM animation_revisions
+		 WHERE tenant_id = ? AND project_id = ? AND language = ?
+		   AND source_revision_no IN (?, 0)
+		 ORDER BY slide_id, source_revision_no DESC`,
+		key.TenantID, key.ProjectID, key.Language, key.SourceRevisionNo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*animation.Revision
+	seen := map[string]struct{}{}
+	for rows.Next() {
+		rev, err := sqScanRevision(rows)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[rev.SlideID]; ok {
+			continue
+		}
+		seen[rev.SlideID] = struct{}{}
+		out = append(out, rev)
+	}
+	return out, rows.Err()
 }
 
 // Get 实现 Store。
@@ -124,7 +157,7 @@ func (s *SQLiteStore) sqPutInTx(ctx context.Context, tx *sql.Tx, rev *animation.
 	if err := key.Validate(); err != nil {
 		return nil, err
 	}
-	tracks, err := marshalTracks(rev.Tracks)
+	tracks, err := marshalTracks(rev)
 	if err != nil {
 		return nil, err
 	}

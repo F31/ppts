@@ -59,6 +59,18 @@ export type JobStep = {
   updatedAtUnix: number;
   hasResult: boolean;
   reason?: string;
+  // 页码从 1 起。标题是 PPT 页名，概述是备注或页面正文。分段号只在配音步骤上有。
+  page?: number;
+  title?: string;
+  summary?: string;
+  segment?: number;
+};
+
+export type JobSlideLabel = {
+  slideId: string;
+  page?: number;
+  title?: string;
+  summary?: string;
 };
 
 // JobScope 是任务范围摘要：kind 为范围性质，pageCount 为受影响页数；
@@ -84,6 +96,7 @@ export type JobDetail = {
   traceId: string;
   scope: JobScope;
   steps: JobStep[];
+  slideLabels?: JobSlideLabel[];
   stepCounts: Record<string, number>;
   stepTotal: number;
   stepsTruncated: boolean;

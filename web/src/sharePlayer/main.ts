@@ -10,8 +10,8 @@ import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } 
 import type { SlideCue, SubtitleCue, Timeline } from '../types';
 import { easeOutCubic } from '../../../shared/motion.ts';
 import { shotAt, cameraTransform } from '../../../shared/shots.ts';
-import type { FocusSpan, Shot } from '../../../shared/types';
-import { buildLayerNodes, pickStageLayers, releaseLayers, seekLayer } from './animation';
+import type { Annotation, FocusSpan, Shot } from '../../../shared/types';
+import { applyLookCrop, buildLayerNodes, hasEntranceLayers, pickStageLayers, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
 import { FpsMeter, nextFpsStreak, shouldDegradeFps } from './fps';
@@ -121,6 +121,9 @@ type ShareSlide = SlideCue & {
   shots?: Shot[];
   /** 页级焦点序列：此刻讲的是谁（与 MP4 同一份求值）。 */
   focus?: FocusSpan[];
+  annotations?: Annotation[];
+  lookCrop?: boolean;
+  lookCropPadPx?: number;
 };
 
 type ShareAudio = {
@@ -454,13 +457,15 @@ function mount(): void {
     // 同一份清单，MP4 在指、网页版全亮。
     //
     // 低电量也只省元素层、不省遮罩，取舍写在 pickStageLayers 里（那里能被 CI 测到）。
-    const stageLayers = pickStageLayers(layers, slide.focus, lowPower || degraded);
+    const stageLayers = pickStageLayers(layers, slide.focus, lowPower || degraded, slide.annotations);
     if (stageLayers === null) return;
     activeLayers = buildLayerNodes(layersBox, stageLayers as ManifestLayer[], videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: (slide.endUs - slide.startUs) / 1000,
       reduceMotion,
-      focus: slide.focus
+      focus: slide.focus,
+      annotations: slide.annotations,
+      lookCrop: slide.lookCrop
     });
   };
 
@@ -531,8 +536,10 @@ function mount(): void {
     const cam = shot.camera;
     if (!cam || cam.length === 0) {
       img.style.transform = '';
+      img.style.transformOrigin = '';
       return;
     }
+    img.style.transformOrigin = '';
     const { x, y, scale } = cameraTransform(cam, localMs - shot.startMs);
     const tx = (0.5 - x) * videoW * scale;
     const ty = (0.5 - y) * videoH * scale;
@@ -553,8 +560,17 @@ function mount(): void {
     const frame = shotAt(shots, localMs);
     if (!frame) {
       setShotSrc(cur.img, slide.image);
-      cur.img.style.transform = '';
       hideTop();
+      applyLookCrop(cur.img, {
+        lookCrop: slide.lookCrop,
+        lookCropPadPx: slide.lookCropPadPx,
+        reduceMotion,
+        hasEntranceLayers: hasEntranceLayers(slide.layers),
+        focus: slide.focus,
+        tMs: localMs,
+        canvasW: videoW,
+        canvasH: videoH
+      });
       layersBox.style.visibility = '';
       return;
     }
@@ -609,6 +625,7 @@ function mount(): void {
     prev.panel.style.opacity = '1';
     prev.panel.style.transform = 'none';
     prev.img.style.transform = '';
+    prev.img.style.transformOrigin = '';
     prev.layers.style.visibility = '';
     transitionKind = 'none';
     transitionMs = 0;
@@ -627,6 +644,18 @@ function mount(): void {
     // 末镜若带相机，转场垫底也按镜末帧的相机取景（否则交叉第一帧未对齐）。
     const lastShot = before.shots?.[before.shots.length - 1];
     if (lastShot) applyCamera(prev.img, lastShot, lastShot.durationMs);
+    else {
+      applyLookCrop(prev.img, {
+        lookCrop: before.lookCrop,
+        lookCropPadPx: before.lookCropPadPx,
+        reduceMotion,
+        hasEntranceLayers: hasEntranceLayers(before.layers),
+        focus: before.focus,
+        tMs: (before.endUs - before.startUs) / 1000,
+        canvasW: videoW,
+        canvasH: videoH
+      });
+    }
     prev.panel.hidden = false;
     cur.panel.style.opacity = '1';
     cur.panel.style.transform = 'none';
@@ -639,14 +668,16 @@ function mount(): void {
     // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
     // 判据与当前页完全同一条（pickStageLayers）：只有焦点没有层的页，交叉时也要把
     // 遮罩建出来；低电量下元素层不建，但遮罩仍建。
-    const stageLayers = pickStageLayers(layers, before.focus, lowPower);
+    const stageLayers = pickStageLayers(layers, before.focus, lowPower, before.annotations);
     if (stageLayers === null) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
     prevLayers = buildLayerNodes(prev.layers, stageLayers as ManifestLayer[], videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
       pageDurationMs: pageMs,
       reduceMotion,
-      focus: before.focus
+      focus: before.focus,
+      annotations: before.annotations,
+      lookCrop: before.lookCrop
     });
     // 前一页取的是它自己的末帧（与 MP4 的 PageView tMs=durationMs 一致）：
     // 若该页有出场动画，末帧才是正确画面，不能拿底板顶替。

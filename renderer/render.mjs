@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bundle } from '@remotion/bundler';
-import { renderMedia, selectComposition } from '@remotion/renderer';
+import { openBrowser, renderMedia, renderStill, selectComposition } from '@remotion/renderer';
 import { DEGRADED_SKIPPED, DEGRADED_STILL, faultPages, stillTimeline } from './degrade.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +37,17 @@ function fail(message) {
 }
 
 function parseArgs(argv) {
-  const out = { plan: '', outDir: '', concurrency: 2, crf: 18, gop: 30, pageConcurrency: 1, onlyPages: null };
+  const out = {
+    plan: '',
+    outDir: '',
+    concurrency: 2,
+    crf: 18,
+    gop: 30,
+    pageConcurrency: 1,
+    onlyPages: null,
+    motionFrames: new Map(),
+    stills: ''
+  };
   for (let i = 0; i < argv.length; i++) {
     const key = argv[i];
     const value = argv[i + 1];
@@ -75,6 +85,21 @@ function parseArgs(argv) {
           .filter((n) => Number.isInteger(n) && n >= 0);
         i++;
         break;
+      case '--motion-frames':
+        // page:frames，逗号分隔。列出的页只画前缀，余下帧由 Go 用末帧铺满。
+        for (const part of String(value).split(',')) {
+          const [page, frames] = part.split(':');
+          const p = Number(page);
+          const f = Number(frames);
+          if (Number.isInteger(p) && p >= 0 && Number.isInteger(f) && f > 0) out.motionFrames.set(p, f);
+        }
+        i++;
+        break;
+      case '--stills':
+        // JSON [{frame, out}, ...]：同一次 bundle + 浏览器渲 look 中点，禁止循环 still.mjs。
+        out.stills = value;
+        i++;
+        break;
       default:
         break;
     }
@@ -84,7 +109,7 @@ function parseArgs(argv) {
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.plan) fail('--plan is required');
-if (!args.outDir) fail('--out-dir is required');
+if (!args.stills && !args.outDir) fail('--out-dir is required');
 
 const planPath = path.resolve(args.plan);
 if (!fs.existsSync(planPath)) fail(`plan not found: ${planPath}`);
@@ -125,12 +150,94 @@ const bundleLocation = await bundle({
   onProgress: () => undefined
 });
 
+// 串行时一个任务共用一个浏览器，页与页之间只换时间线。
+// 每 20 页或单页失败后关掉重开，避免同一个 Page 把 DOM 和画布缓存越积越大。
+// 页并发大于 1 时不共用：并行的 renderMedia 各自启停，避免抢同一个实例。
+const BROWSER_PAGE_LIMIT = 20;
+const serialBrowser = args.pageConcurrency <= 1;
+let sharedBrowser = null;
+let pagesOnBrowser = 0;
+
+async function acquireBrowser(reset) {
+  if (!serialBrowser) return undefined;
+  if (sharedBrowser && (reset || pagesOnBrowser >= BROWSER_PAGE_LIMIT)) {
+    const current = sharedBrowser;
+    sharedBrowser = null;
+    pagesOnBrowser = 0;
+    await current.close({ silent: true }).catch(() => {});
+  }
+  if (!sharedBrowser) {
+    sharedBrowser = await openBrowser('chrome', {
+      browserExecutable: browserExecutable ?? null,
+      logLevel: 'error'
+    });
+  }
+  return sharedBrowser;
+}
+
+async function closeSharedBrowser() {
+  if (!sharedBrowser) return;
+  const current = sharedBrowser;
+  sharedBrowser = null;
+  await current.close({ silent: true }).catch(() => {});
+}
+
 const composition = await selectComposition({
   serveUrl: bundleLocation,
   id: COMPOSITION_ID,
   inputProps: timeline,
-  browserExecutable
+  browserExecutable,
+  puppeteerInstance: await acquireBrowser(false)
 });
+
+if (args.stills) {
+  const stillsPath = path.resolve(args.stills);
+  if (!fs.existsSync(stillsPath)) fail(`stills list not found: ${stillsPath}`);
+  let jobs;
+  try {
+    jobs = JSON.parse(fs.readFileSync(stillsPath, 'utf8'));
+  } catch (err) {
+    fail(`invalid stills json: ${err.message}`);
+  }
+  if (!Array.isArray(jobs) || jobs.length === 0) fail('stills list is empty');
+  let rendered = 0;
+  for (const job of jobs) {
+    const frame = Number(job.frame);
+    const out = String(job.out ?? '');
+    if (!Number.isInteger(frame) || frame < 0 || !out) {
+      fail(`invalid still job: ${JSON.stringify(job)}`);
+    }
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    const dest = path.resolve(out);
+    try {
+      if (fs.statSync(dest).size > 0) {
+        rendered++;
+        emit({ type: 'still', frame, file: out, cached: true });
+        continue;
+      }
+    } catch {
+      // missing or unreadable: render
+    }
+    const browser = await acquireBrowser(false);
+    await renderStill({
+      serveUrl: bundleLocation,
+      composition,
+      inputProps: timeline,
+      output: path.resolve(out),
+      frame,
+      overwrite: true,
+      imageFormat: 'png',
+      browserExecutable,
+      puppeteerInstance: browser
+    });
+    if (serialBrowser) pagesOnBrowser++;
+    rendered++;
+    emit({ type: 'still', frame, file: out });
+  }
+  await closeSharedBrowser();
+  emit({ type: 'done', stills: rendered });
+  process.exit(0);
+}
 
 const common = {
   serveUrl: bundleLocation,
@@ -138,6 +245,7 @@ const common = {
   inputProps: timeline,
   codec: 'h264',
   pixelFormat: 'yuv420p',
+  colorSpace: 'bt709',
   crf: args.crf,
   gopSize: args.gop,
   x264Preset: 'medium',
@@ -169,11 +277,12 @@ const pageConcurrency = Math.min(args.pageConcurrency, renderList.length);
 // composition 必须与 inputProps 一起换：renderMedia 用的是 composition 里算好的 props，
 // 只传新 inputProps 不会生效——画面仍是原动画。这一点没有报错，只能靠帧比对发现
 // （降级页第 8 帧与末帧差 42926 像素，差异框正好落在标题条 box 内）。
-const renderPage = (total, from, to, file, inputProps, onProgress, composition = common.composition) =>
+const renderPage = (total, from, to, file, inputProps, onProgress, composition = common.composition, puppeteerInstance) =>
   renderMedia({
     ...common,
     composition,
     inputProps,
+    puppeteerInstance,
     outputLocation: path.join(outDir, file),
     frameRange: [from, to],
     onProgress
@@ -181,15 +290,19 @@ const renderPage = (total, from, to, file, inputProps, onProgress, composition =
 
 const renderOnePage = async (i) => {
   const total = framesPerPage(timeline.pages[i].durationMs);
+  const limited = args.motionFrames.get(i);
+  const count = limited && limited < total ? limited : total;
   const from = starts[i];
-  const to = from + total - 1;
+  const to = from + count - 1;
   const file = `segment_${String(i).padStart(3, '0')}.mp4`;
 
   try {
     if (faults.has(i)) throw new Error(`injected fault on page ${i} (PPTS_RENDER_FAULT_PAGES)`);
-    await renderPage(total, from, to, file, timeline, ({ renderedFrames: done }) => {
-      emit({ type: 'progress', page: i, done, total });
-    });
+    const browser = await acquireBrowser(false);
+    await renderPage(count, from, to, file, timeline, ({ renderedFrames: done }) => {
+      emit({ type: 'progress', page: i, done, total: count });
+    }, common.composition, browser);
+    if (serialBrowser) pagesOnBrowser++;
   } catch (err) {
     // 单页失败不再让整次渲染失败：先如实说明「这页降级了」，再用静态画面重出一次。
     // 注意顺序——降级事件在重试之前发，重试若成功，客户端拿到的仍是「片段齐全、
@@ -198,15 +311,19 @@ const renderOnePage = async (i) => {
     emit({ type: 'degraded', page: i, code: DEGRADED_STILL, message: first });
 
     try {
+      // 失败后换一个浏览器再重试，不把已经出错的页面实例留到下一页。
+      const browser = await acquireBrowser(true);
       // 重试不回报进度：同一页的 done 会从 0 重新开始，进度条会倒退。
       const still = stillTimeline(timeline, i);
       const stillComposition = await selectComposition({
         serveUrl: bundleLocation,
         id: COMPOSITION_ID,
         inputProps: still,
-        browserExecutable
+        browserExecutable,
+        puppeteerInstance: browser
       });
-      await renderPage(total, from, to, file, still, undefined, stillComposition);
+      await renderPage(count, from, to, file, still, undefined, stillComposition, browser);
+      if (serialBrowser) pagesOnBrowser++;
     } catch (stillErr) {
       const stillFirst = String(stillErr?.message ?? stillErr).split('\n')[0];
       emit({ type: 'degraded', page: i, code: DEGRADED_SKIPPED, message: stillFirst });
@@ -214,9 +331,9 @@ const renderOnePage = async (i) => {
     }
   }
 
-  emit({ type: 'page', page: i, file, frames: total });
+  emit({ type: 'page', page: i, file, frames: count });
   renderedSegments++;
-  renderedFrames += total;
+  renderedFrames += count;
 };
 
 // 页级并行（M5）：N 个 worker 分摊页列表。
@@ -242,6 +359,8 @@ if (pageConcurrency <= 1) {
 }
 
 // 一页都没出等于这次渲染失败：返回成功但产物为空，上游会拿到一个 0 段的「成功任务」。
+await closeSharedBrowser();
+
 if (renderedSegments === 0) {
   fail(`all ${renderList.length} pages failed`);
 }

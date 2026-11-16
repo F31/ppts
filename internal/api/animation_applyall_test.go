@@ -21,6 +21,13 @@ func (f *fakeDeckResolver) SlideIDs(context.Context, string, string, string, int
 	return f.ids, nil
 }
 
+func (f *fakeDeckResolver) ResolveSourceRevision(_ context.Context, _, _, _ string, n int) (int, error) {
+	if n <= 0 {
+		return 1, nil
+	}
+	return n, nil
+}
+
 // applyAllTestResolver 让每页可以有不同的上下文（尤其是「这页还没配音」）。
 type applyAllTestResolver struct {
 	// noDuration 的页返回 DurationMS=0，模拟整份里有个别页没配音。
@@ -195,6 +202,71 @@ func TestApplyAllIsolatesPageFailures(t *testing.T) {
 	}
 }
 
+func TestApplyAllPersistsGazeMode(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{"presetId": "teaching-clear"})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("apply-all: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.MotionMode != animation.MotionModeGaze {
+		t.Fatalf("mode = %q, want gaze", rev.MotionMode)
+	}
+	for _, tr := range rev.Tracks {
+		for _, c := range tr.Clips {
+			if animation.IsEntranceEffect(c.Type) {
+				t.Fatalf("without withEntrance got entrance clip %s", c.Type)
+			}
+		}
+	}
+}
+
+func TestApplyAllWithEntranceWritesGazeEntrance(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "withEntrance": true,
+	})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("apply-all: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.PresetID != "teaching-clear" {
+		t.Fatalf("preset = %s", rev.PresetID)
+	}
+	if rev.MotionMode != animation.MotionModeGazeEntrance {
+		t.Fatalf("mode = %q, want gaze+entrance", rev.MotionMode)
+	}
+	if animation.InferMotionMode(rev) != animation.MotionModeGazeEntrance {
+		t.Fatalf("infer = %q", animation.InferMotionMode(rev))
+	}
+	titleFade := 0
+	for _, tr := range rev.Tracks {
+		if tr.Kind != animation.KindTitle {
+			continue
+		}
+		for _, c := range tr.Clips {
+			if c.Type == "fadeIn" {
+				titleFade++
+			}
+		}
+	}
+	if titleFade == 0 {
+		t.Fatal("teaching-clear + withEntrance must append title fadeIn")
+	}
+}
+
 func TestApplyAllRejectsUnknownPreset(t *testing.T) {
 	ts, _ := newApplyAllServer(t, []string{"slide-1"}, nil)
 	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{"presetId": "not-a-preset"})
@@ -220,5 +292,37 @@ func TestApplyAllDisabledReturnsNotFound(t *testing.T) {
 	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{"presetId": "business-calm"})
 	if status != http.StatusNotFound {
 		t.Fatalf("灰度未开应 404: %d %v", status, payload)
+	}
+}
+
+func TestApplyAllSlidesResolvesZeroSourceRevision(t *testing.T) {
+	store := newAnimationTestStore(t)
+	h := NewAnimationHandler(store, &applyAllTestResolver{}, true).
+		WithDeck(&fakeDeckResolver{ids: []string{"slide-1"}})
+	summary, err := h.ApplyAllSlides(context.Background(), db.LocalTenantID, db.LocalUserID, anTestProject, 0, "zh-CN", ApplyAllOptions{
+		PresetID: "teaching-clear", Overwrite: true, Prefill: true, WithEntrance: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Applied != 1 {
+		t.Fatalf("applied=%d skipped=%d lines=%v", summary.Applied, summary.Skipped, summary.Lines)
+	}
+	zero := animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 0,
+	}
+	if _, err := store.Get(context.Background(), zero); err == nil {
+		t.Fatal("wrote src=0 key")
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatalf("src=1 missing: %v", err)
+	}
+	if rev.MotionMode != animation.MotionModeGazeEntrance {
+		t.Fatalf("mode=%q", rev.MotionMode)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -328,5 +329,120 @@ func TestGoPPTXReaderReadsTransitionAndAutoAdvance(t *testing.T) {
 	}
 	if hasFlag(second, "transition") || hasFlag(second, "auto_advance") {
 		t.Errorf("第 2 页标记 = %v，不该含过渡相关项", second.FeatureFlags)
+	}
+}
+
+func TestGoPPTXReaderInspectReadsSlideSize(t *testing.T) {
+	src := buildTestDeck(t)
+	w, h, err := ReadSlideSize(src, int64(src.Len()))
+	if err != nil {
+		t.Fatalf("ReadSlideSize: %v", err)
+	}
+	if w <= 0 || h <= 0 {
+		t.Fatalf("go-pptx 样本必须带 sldSz，got %d×%d", w, h)
+	}
+	doc, err := NewGoPPTXReader(Limits{}).Inspect(context.Background(), src, int64(src.Len()))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if doc.SlideWidthEMU != w || doc.SlideHeightEMU != h {
+		t.Fatalf("document sldSz = %d×%d, want %d×%d", doc.SlideWidthEMU, doc.SlideHeightEMU, w, h)
+	}
+}
+
+func TestReadSlideSizeOfficeScreen16x9(t *testing.T) {
+	src := buildTestDeck(t)
+	deck := make([]byte, src.Len())
+	if _, err := src.ReadAt(deck, 0); err != nil && err != io.EOF {
+		t.Fatalf("read deck: %v", err)
+	}
+	patched := rewriteSldSz(t, deck, 9144000, 5143500)
+	w, h, err := ReadSlideSize(patched, int64(patched.Len()))
+	if err != nil {
+		t.Fatalf("ReadSlideSize: %v", err)
+	}
+	if w != 9144000 || h != 5143500 {
+		t.Fatalf("sldSz = %d×%d, want 9144000×5143500", w, h)
+	}
+	doc, err := NewGoPPTXReader(Limits{}).Inspect(context.Background(), patched, int64(patched.Len()))
+	if err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	if doc.SlideWidthEMU != 9144000 || doc.SlideHeightEMU != 5143500 {
+		t.Fatalf("document sldSz = %d×%d, want Office screen16x9", doc.SlideWidthEMU, doc.SlideHeightEMU)
+	}
+}
+
+func TestFillSlideSizeFromPPTXSkipsWhenPresent(t *testing.T) {
+	doc := &Document{SlideWidthEMU: 12192000, SlideHeightEMU: 6858000}
+	raw := sldSzZip(t, 9144000, 5143500)
+	FillSlideSizeFromPPTX(doc, bytes.NewReader(raw), int64(len(raw)))
+	if doc.SlideWidthEMU != 12192000 || doc.SlideHeightEMU != 6858000 {
+		t.Fatalf("already-set size must stay, got %d×%d", doc.SlideWidthEMU, doc.SlideHeightEMU)
+	}
+}
+
+func rewriteSldSz(t *testing.T, deck []byte, cx, cy int64) *bytes.Reader {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(deck), int64(len(deck)))
+	if err != nil {
+		t.Fatalf("zip: %v", err)
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	re := regexp.MustCompile(`<(?:[a-zA-Z0-9]+:)?sldSz\b[^>]*/>`)
+	repl := fmt.Sprintf(`<p:sldSz cx="%d" cy="%d" type="screen16x9"/>`, cx, cy)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open %s: %v", f.Name, err)
+		}
+		body, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read %s: %v", f.Name, err)
+		}
+		if f.Name == "ppt/presentation.xml" {
+			body = []byte(re.ReplaceAllString(string(body), repl))
+		}
+		w, err := zw.Create(f.Name)
+		if err != nil {
+			t.Fatalf("create %s: %v", f.Name, err)
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Fatalf("write %s: %v", f.Name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return bytes.NewReader(out.Bytes())
+}
+
+func sldSzZip(t *testing.T, cx, cy int64) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("ppt/presentation.xml")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := fmt.Fprintf(w, `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldSz cx="%d" cy="%d" type="screen16x9"/></p:presentation>`, cx, cy); err != nil {
+		t.Fatalf("write xml: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestReadSlideSizeFromMinimalZip(t *testing.T) {
+	raw := sldSzZip(t, 9144000, 5143500)
+	w, h, err := ReadSlideSize(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		t.Fatalf("ReadSlideSize: %v", err)
+	}
+	if w != 9144000 || h != 5143500 {
+		t.Fatalf("got %d×%d", w, h)
 	}
 }

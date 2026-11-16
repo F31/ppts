@@ -266,6 +266,35 @@
 - **WHEN** 页时长 2000ms、第二镜 `startMs=1000, crossFadeMs=120`、fps=30
 - **THEN** 该页的取样点 MUST 含 1153ms（切点后一帧），且该页最差帧不得低于阈值
 
+### Requirement: 注视页 V13 取样稳态中点且探针关闭台上 caption
+
+注视 look 链页（有 `Focus.rect`、fade/none、无 shots；只含 `fadeIn`/`slideIn`/`pop`/`grow` 的元素层可留在链上）的 V13 取样 MUST 落在每条 Focus 的稳态中点（避开 240ms 交叉 **和页间 fade 窗口**），MUST NOT 再用「第一条 clip 中点」，也 MUST NOT 取 0ms——页间 fade 里 HTML 还叠着上一页，MP4 分段没有这段过渡。look 中点时入场已收束，取样的是纱/圈选构图。纯 `entrance`（无 Focus.rect）、切镜、slide/zoom、bob 仍按 clip/shot 取样。
+
+HTML 探针 MUST 摘掉台上 caption（`.ppts-caption`）。产品 HTML 仍画台上条，MP4 不画；不关 caption 时底栏会让每页 gaze SSIM 红。`tech-dynamic` 的 LookCrop punch-in 两端 MUST 都已实现，否则特写对整页。
+
+夹具 `cmd/film-baseline -gaze` MUST 产出无入场层、无切镜、带 `Focus.rect` 的计划，且 `SplitRenderPages` 把这些页分进 `gaze_looks`，MUST NOT 进 `chromePages`。生产教学页打开「要点依次出现」后仍是 look 链：门禁 `is_gaze_look_page` MUST 与 Go `isGazeLookPage` 同口径，不得把带 Focus.rect 的 `gaze+entrance` 误判成 clip-mid 取样。
+
+#### Scenario: 80s / 5 looks
+
+- **WHEN** 一页 80000ms、五条 Focus 均分
+- **THEN** 取样点 MUST 含 8000ms 以及每条后续 look 的 hold 中点，MUST NOT 落在交叉淡化的 240ms 窗口内
+
+#### Scenario: 台上 caption 不进比对
+
+- **WHEN** HTML 播放器在舞台底部画了 `.ppts-caption`
+- **THEN** `dom-shot.mjs` MUST 在截图前摘掉该节点，与 `.ppts-subtitle` 相同
+
+### Requirement: 注视页 V13b 对照末 look，V13c 比孔内
+
+注视页的终态 MUST 是末 look（仍带纱），MUST NOT 用源页 PNG 做全帧 SSIM ≥ 0.98——约 90% 画面盖着 0.45 白纱，那条门槛不可能过。
+
+V13c MUST 把末 look 的 `Focus.rect` 内缩 16px（避开孔边 `blur(8px)`）后与源页 PNG 局部比较，SSIM MUST ≥ 0.97。LookCrop punch-in 页 MUST 跳过 V13c（全帧都是孔，两端同帧走 V13）。
+
+#### Scenario: 教学注视页终态
+
+- **WHEN** 成品包一页是 look 链（spotlight Focus.rect，可带入场元素层）
+- **THEN** V13b MUST 报 skip（对照末 look，不对源图），V13c 孔内 MUST ≥ 0.97
+
 ### Requirement: 播放器产物由源码生成
 
 成品包里的播放器（`internal/share/assets/app.js`、`app.css`）MUST 由 `web/src/sharePlayer/` 与 `shared/` 重新生成，MUST NOT 手工修改，也 MUST NOT 落后于源码。

@@ -9,6 +9,12 @@ import (
 // 新增一种动效却忘了写属性展开时，这条用例会红——这正是 IR"后端不认识动效名"的前提。
 func TestEveryCatalogEffectHasProperties(t *testing.T) {
 	for _, eff := range Catalog().Effects() {
+		if eff.ID == "spotlight" {
+			if _, err := PlanMotion(eff.ID, Params{}, "easeOut", 1); err == nil {
+				t.Fatal("spotlight is a gaze marker; expandEffect must stay a hard error")
+			}
+			continue
+		}
 		plan, err := PlanMotion(eff.ID, Params{}, "easeOut", 1)
 		if err != nil {
 			t.Fatalf("effect %q has no property expansion: %v", eff.ID, err)

@@ -230,6 +230,33 @@ func TestAnimationPutLifecycle(t *testing.T) {
 	}
 }
 
+func TestStaleAnchorsListsMissingSegments(t *testing.T) {
+	ts, store := newAnimationTestServer(t, true)
+	rev := &animation.Revision{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: anTestSlide,
+		Language: "zh-CN", PresetID: "teaching-clear", Intensity: 1,
+		Tracks: []*animation.Track{{
+			ElementID: "shape-1", Kind: "title",
+			Clips: []*animation.Clip{{ID: "c1", Type: "fadeIn", DurationMs: 400, Easing: "easeOut", Trigger: "withSegment:seg-old"}},
+		}},
+	}
+	if _, err := store.Put(context.Background(), rev, 0); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	status, payload := doJSON(t, http.MethodGet, ts.URL+"/api/projects/"+anTestProject+"/animation/stale-anchors", nil)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d (%v)", status, payload)
+	}
+	slides, _ := payload["slides"].([]any)
+	if len(slides) != 1 {
+		t.Fatalf("slides = %v, want 1", payload["slides"])
+	}
+	row, _ := slides[0].(map[string]any)
+	if row["slideId"] != anTestSlide {
+		t.Fatalf("slideId = %v", row["slideId"])
+	}
+}
+
 func TestAnimationPutValidationError(t *testing.T) {
 	ts, _ := newAnimationTestServer(t, true)
 	body := validPutBody(0)

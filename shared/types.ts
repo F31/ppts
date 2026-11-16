@@ -91,6 +91,23 @@ export type FocusSpan = {
    * 缺省时行为不变：elementId 必须是本页的图层。
    */
   rect?: { x: number; y: number; w: number; h: number };
+  /**
+   * 矩形遮罩盖白的不透明度 (0,1]。缺省与 0 同义：求值器用 1-FOCUS_DIM_OPACITY。
+   */
+  veilAlpha?: number;
+};
+
+/** 注视之上的描边或台上短标签。spotlight 不是 Annotation，它是带 rect 的 FocusSpan。 */
+export type Annotation = {
+  kind: 'callout' | 'caption';
+  startMs: number;
+  endMs?: number;
+  fadeMs?: number;
+  elementId?: string;
+  rect?: Box;
+  shape?: 'circle' | 'rect';
+  text?: string;
+  segmentId?: string;
 };
 
 /**

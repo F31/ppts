@@ -35,9 +35,16 @@ const {
   editorStateOf,
   draftOf,
   withIntensity,
+  withMotionMode,
+  withEntranceLayers,
+  wantsEntranceLayers,
+  MOTION_MODE_GAZE,
+  MOTION_MODE_GAZE_ENTRANCE,
   withTrackTrigger,
   segmentOfTrigger,
   segmentTrigger,
+  staleSegmentIds,
+  rebindEntranceToSegments,
   isDirty,
   savePayloadOf,
   animationRuleKey,
@@ -132,6 +139,22 @@ test('改锚点只动入场片段，不动 atTime 的强调', () => {
   assert.equal(segmentOfTrigger('onEnter'), '');
 });
 
+test('staleSegmentIds 只报当前讲稿里没有的分段', () => {
+  const spec = withTrackTrigger(baseSpec(), 'bullet-1', segmentTrigger('seg-gone'));
+  assert.deepEqual(staleSegmentIds(spec, ['seg-1', 'seg-2']), ['seg-gone']);
+  assert.deepEqual(staleSegmentIds(spec, ['seg-gone']), []);
+});
+
+test('rebindEntranceToSegments 按顺序接到新配音', () => {
+  const spec = withTrackTrigger(baseSpec(), 'bullet-1', segmentTrigger('seg-gone'));
+  const next = rebindEntranceToSegments(spec, ['seg-a', 'seg-b']);
+  const title = next.tracks.find((t) => t.elementId === 'title-1');
+  const bullet = next.tracks.find((t) => t.elementId === 'bullet-1');
+  assert.equal(title.clips[0].trigger, 'withSegment:seg-a');
+  assert.equal(bullet.clips[0].trigger, 'withSegment:seg-b');
+  assert.equal(bullet.clips[1].trigger, 'atTime:900');
+});
+
 test('withTrackTrigger 不改原对象（取消编辑要能真的还原）', () => {
   const spec = baseSpec();
   const draft = draftOf(spec);
@@ -140,6 +163,80 @@ test('withTrackTrigger 不改原对象（取消编辑要能真的还原）', () 
   const intensity = withIntensity(draft, 0.8);
   assert.equal(intensity.intensity, 0.8);
   assert.equal(draft.intensity, 1.15);
+});
+
+test('withMotionMode 写 gaze+entrance，去掉勾选写回 gaze', () => {
+  const spec = baseSpec();
+  const on = withMotionMode(draftOf(spec), MOTION_MODE_GAZE_ENTRANCE);
+  assert.equal(wantsEntranceLayers(on), true);
+  assert.equal(spec.motionMode, undefined, '原规格被改写了');
+  const off = withMotionMode(on, MOTION_MODE_GAZE);
+  assert.equal(off.motionMode, MOTION_MODE_GAZE);
+  assert.equal(wantsEntranceLayers(off), false);
+  assert.equal(isDirty(on, spec), true);
+  const payload = savePayloadOf(on);
+  assert.equal(payload.motionMode, MOTION_MODE_GAZE_ENTRANCE);
+});
+
+const entranceTemplates = {
+  title: [{ type: 'slideIn', durationMs: 450, easing: 'easeOut', params: { direction: 'up', offset: 32 } }],
+  bullet: [{ type: 'fadeIn', durationMs: 500, easing: 'easeOut' }],
+  shape: [{ type: 'fadeIn', durationMs: 500, easing: 'easeOut' }]
+};
+
+const gazeSpec = () => ({
+  ...baseSpec(),
+  motionMode: MOTION_MODE_GAZE,
+  tracks: [
+    {
+      elementId: 'title-1',
+      kind: 'title',
+      clips: [{ id: 'c1', type: 'spotlight', startMs: 0, durationMs: 240, easing: 'easeOut', trigger: 'withSegment:seg-a' }]
+    },
+    {
+      elementId: 'bullet-1',
+      kind: 'bullet',
+      clips: [{ id: 'c2', type: 'spotlight', startMs: 140, durationMs: 240, easing: 'easeOut', trigger: 'withSegment:seg-b' }]
+    },
+    {
+      elementId: 'chart-1',
+      kind: 'chart',
+      clips: [{ id: 'c3', type: 'spotlight', startMs: 0, durationMs: 240, easing: 'easeOut', trigger: 'onEnter' }]
+    }
+  ]
+});
+
+test('withEntranceLayers 把 EntranceClips 追加到 spotlight 轨，chart 不挖', () => {
+  const spec = gazeSpec();
+  const on = withEntranceLayers(draftOf(spec), true, entranceTemplates);
+  assert.equal(on.motionMode, MOTION_MODE_GAZE_ENTRANCE);
+  assert.equal(spec.tracks[0].clips.length, 1, '原规格被改写了');
+  const title = on.tracks.find((t) => t.elementId === 'title-1');
+  const bullet = on.tracks.find((t) => t.elementId === 'bullet-1');
+  const chart = on.tracks.find((t) => t.elementId === 'chart-1');
+  assert.equal(title.clips[0].type, 'spotlight');
+  assert.equal(title.clips[1].type, 'slideIn');
+  assert.equal(title.clips[1].trigger, 'withSegment:seg-a');
+  assert.equal(title.clips[1].startMs, 0);
+  assert.equal(title.clips[1].params.direction, 'up');
+  assert.equal(bullet.clips[1].type, 'fadeIn');
+  assert.equal(bullet.clips[1].trigger, 'withSegment:seg-b');
+  assert.equal(chart.clips.length, 1, 'chart/table 不追加入场');
+  const again = withEntranceLayers(on, true, entranceTemplates);
+  assert.equal(again.tracks[0].clips.length, 2, '重复勾选不得再追加');
+});
+
+test('withEntranceLayers 去掉勾选只删入场 clip，旧入场轨不动', () => {
+  const spec = gazeSpec();
+  const on = withEntranceLayers(draftOf(spec), true, entranceTemplates);
+  const off = withEntranceLayers(on, false, entranceTemplates);
+  assert.equal(off.motionMode, MOTION_MODE_GAZE);
+  assert.deepEqual(off.tracks[0].clips.map((c) => c.type), ['spotlight']);
+  assert.deepEqual(off.tracks[1].clips.map((c) => c.type), ['spotlight']);
+  const leftover = withEntranceLayers(draftOf(baseSpec()), false);
+  assert.equal(leftover.motionMode, MOTION_MODE_GAZE);
+  assert.equal(leftover.tracks[0].clips[0].type, 'fadeIn', '没有 spotlight 的旧入场轨必须保留');
+  assert.equal(leftover.tracks[1].clips[0].type, 'slideIn');
 });
 
 test('脏判据只看产物相关字段', () => {
@@ -1025,6 +1122,52 @@ test('buildLayerNodes：矩形焦点生成遮罩节点，定位与强度都对',
   delete globalThis.document;
 });
 
+test('buildLayerNodes：lookCrop+入场层仍建纱（与 PageView 同公式）', () => {
+  globalThis.document = {
+    createElement(tag) {
+      const el = {
+        tag,
+        className: '',
+        style: {},
+        children: [],
+        append(child) { this.children.push(child); },
+        animate(frames, opts) {
+          this.frames = frames;
+          this.timing = opts;
+          return { pause() {}, currentTime: 0 };
+        }
+      };
+      return el;
+    }
+  };
+  const container = { children: [], append(el) { this.children.push(el); }, animate() {} };
+  const focus = [{
+    startMs: 0,
+    elementId: 'title',
+    endMs: 4000,
+    fadeMs: 240,
+    rect: { x: 100, y: 80, w: 400, h: 200 }
+  }];
+  const layers = [{
+    elementId: 'title',
+    box: { x: 100, y: 80, w: 400, h: 200 },
+    image: 'layer.png',
+    clips: [slideInClip(0, 400)]
+  }];
+  const withEntrance = buildLayerNodes(container, layers, 1920, 1080, {
+    pageDurationMs: 4000, fps: 30, focus, lookCrop: true
+  });
+  assert.ok(withEntrance.some((n) => n.element.className === 'ppts-layer'), '应有入场层节点');
+  assert.ok(withEntrance.some((n) => n.element.className === 'ppts-focus-mask'), '入场层关掉 punch-in，应有焦点纱');
+
+  const techOnly = { children: [], append(el) { this.children.push(el); }, animate() {} };
+  const punched = buildLayerNodes(techOnly, [], 1920, 1080, {
+    pageDurationMs: 4000, fps: 30, focus, lookCrop: true
+  });
+  assert.equal(punched.length, 0, '科技 punch-in 无入场层时不建页坐标纱');
+  delete globalThis.document;
+});
+
 test('needsLayerStage：只有矩形焦点、没有层的页也要建舞台', () => {
   // 这是我们踩过的第三种「同一份清单、两种画面」：清单里带 focus.rect、layers 为空，
   // 播放器按 layers.length 提前 return，遮罩节点根本没建——MP4 在指，网页版全亮。
@@ -1038,6 +1181,9 @@ test('needsLayerStage：只有矩形焦点、没有层的页也要建舞台', ()
   // 空矩形不算：buildFocusMasks 也会跳过它，提前建舞台只会多一个空 div。
   assert.equal(needsLayerStage([], [{ startMs: 0, elementId: 'x', rect: { x: 1, y: 2, w: 0, h: 4 } }]), false);
   assert.equal(needsLayerStage([], undefined), false);
+  const callout = [{ kind: 'callout', startMs: 0, rect: { x: 1, y: 2, w: 30, h: 40 } }];
+  assert.equal(needsLayerStage([], [], callout), true, '只有圈选也要建舞台');
+  assert.equal(needsLayerStage([], [], [{ kind: 'caption', startMs: 0, text: '要点' }]), true, '台上 caption 也要建');
 });
 
 test('pickStageLayers：低电量也只省元素层，焦点遮罩照建', async () => {
@@ -1062,6 +1208,8 @@ test('pickStageLayers：低电量也只省元素层，焦点遮罩照建', async
   // 什么都没有：两档都不建。
   assert.equal(pickStageLayers([], [], true), null);
   assert.equal(pickStageLayers([], [], false), null);
+  const callout = [{ kind: 'callout', startMs: 0, rect: { x: 1, y: 2, w: 10, h: 10 } }];
+  assert.deepEqual(pickStageLayers(oneLayer, [], true, callout), []);
 });
 
 // ---- 焦点过渡：网页版与成片在**每个帧时刻**逐点一致 ----
@@ -1244,4 +1392,40 @@ test('矩形焦点：网页版所有遮罩叠加后的压暗量，逐毫秒等�
     `网页版叠加后与成片的最大差 ${worst.toFixed(4)}（${worstAt}ms）：` +
       '多个遮罩同时亮会叠成 1-(1-0.45)²，hold 期缺关键帧会被插值一路淡到 0'
   );
+});
+
+test('calloutKeyframes 与 evaluateAnnotation 同曲线', async () => {
+  const { calloutKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const { evaluateAnnotation } = await import('../shared/motion.ts');
+  const a = {
+    kind: 'callout', startMs: 1000, endMs: 3000, fadeMs: 240,
+    rect: { x: 1, y: 2, w: 30, h: 40 }, shape: 'rect'
+  };
+  const pageMs = 4000;
+  const frames = calloutKeyframes(a, pageMs);
+  assert.ok(frames && frames.length >= 2);
+  assert.equal(Number(frames[0].opacity), 0);
+  const hold = frames.find((f) => Math.abs(f.offset * pageMs - 1240) <= 20);
+  assert.ok(hold);
+  assert.equal(Number(hold.opacity), 1);
+  assert.equal(evaluateAnnotation(a, 2000)?.opacity, 1);
+  assert.equal(calloutKeyframes({ kind: 'caption', startMs: 0, text: 'x' }, pageMs), null);
+});
+
+test('Timeline.tsx 导出构图不画 caption', async () => {
+  const src = await readFile(new URL('../renderer/src/Timeline.tsx', import.meta.url), 'utf8');
+  assert.match(src, /evaluateAnnotation/);
+  assert.match(src, /kind !== 'callout'/);
+  assert.equal(src.includes('ppts-caption'), false);
+});
+
+test('Timeline.tsx 与 sharePlayer 共用 lookcrop 公式，LookCrop 跳过页坐标纱', async () => {
+  const pageView = await readFile(new URL('../renderer/src/Timeline.tsx', import.meta.url), 'utf8');
+  assert.match(pageView, /lookCropAt/);
+  assert.match(pageView, /lookCropImageStyle/);
+  assert.match(pageView, /skipPageSpace/);
+  const player = await readFile(new URL('./src/sharePlayer/animation.ts', import.meta.url), 'utf8');
+  assert.match(player, /lookcrop\.ts/);
+  assert.match(player, /applyLookCrop/);
+  assert.match(player, /punchIn/);
 });

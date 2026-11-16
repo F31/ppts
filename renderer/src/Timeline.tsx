@@ -7,7 +7,20 @@
 
 import React from 'react';
 import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfig } from 'remotion';
-import { easeOutCubic, evaluateLayer, focusDim, focusMasks, focusOpacity, framesForDuration, originCss } from '../../shared/motion';
+import {
+  CALLOUT_STROKE,
+  CALLOUT_STROKE_PX,
+  calloutLayout,
+  easeOutCubic,
+  evaluateAnnotation,
+  evaluateLayer,
+  focusDim,
+  focusMasks,
+  focusOpacity,
+  framesForDuration,
+  originCss
+} from '../../shared/motion';
+import { lookCropAt, lookCropEnabled, lookCropImageStyle } from '../../shared/lookcrop';
 import { shotAt } from '../../shared/shots';
 import type { Layer, Page, Timeline } from './types';
 
@@ -30,13 +43,22 @@ const PageView: React.FC<{
   // 特写镜头里不画层：层的 box 是整页坐标，局部放大后同一套坐标必然错位，
   // 而错位不会报错，只会看起来「元素飘了」（design §4）。
   const layers = frame?.shot.crop ? [] : page.layers ?? [];
+  const entrance = layers.some((l) => Boolean(l.elementId) && (l.clips?.length ?? 0) > 0);
+  const punching = lookCropEnabled({
+    lookCrop: page.lookCrop,
+    hasShotCrop: Boolean(frame?.shot.crop),
+    hasEntranceLayers: entrance
+  });
+  const punch = punching ? lookCropAt(page.focus, tMs, width, height, page.lookCropPadPx) : null;
+  const punchStyle = punch ? lookCropImageStyle(punch, false) : null;
   // 页级焦点：非焦点元素整体退后。位置不动，只降不透明度——
   // 版面是烘焙的底图，改布局不是合成器的事。
   const dims = focusDim(page.focus, tMs);
   // 换段窗口里是**两块**（旧的收拢、新的张开），所以这里是一组而不是一块。
-  const masks = focusMasks(page.focus, tMs);
+  const masks = punch ? [] : focusMasks(page.focus, tMs);
+  const skipPageSpace = Boolean(punch) || Boolean(frame?.shot.crop);
   return (
-    <AbsoluteFill>
+    <AbsoluteFill style={punch ? { overflow: 'hidden' } : undefined}>
       {frame ? (
         <>
           {/* 两张图各自套一层 AbsoluteFill：AbsoluteFill 是 flex 列容器，
@@ -44,7 +66,7 @@ const PageView: React.FC<{
               表现是「叠化没生效」，而 props 与图片路径全都对。
               播放器那边是同一个坑，靠 .ppts-slide 的 position:absolute 解决。 */}
           <AbsoluteFill>
-            <Img src={staticFile(bottom)} style={{ width, height, objectFit: 'fill' }} />
+            <Img src={staticFile(bottom)} style={{ width, height, objectFit: 'fill', ...(punchStyle ?? {}) }} />
           </AbsoluteFill>
           {top ? (
             <AbsoluteFill style={{ opacity: frame?.progress ?? 1 }}>
@@ -54,7 +76,7 @@ const PageView: React.FC<{
         </>
       ) : (
         <AbsoluteFill>
-          <Img src={plate} style={{ width, height, objectFit: 'fill' }} />
+          <Img src={plate} style={{ width, height, objectFit: 'fill', ...(punchStyle ?? {}) }} />
         </AbsoluteFill>
       )}
       {layers.map((layer: Layer, i: number) => {
@@ -104,7 +126,7 @@ const PageView: React.FC<{
           只能靠这一块矩形告诉观众「此刻讲的是这根」。
           孔用 box-shadow 撑出来（一个 div 就是「透明孔 + 四周无穷大的阴影」），
           blur 让孔边羽化：硬边会在网格线上切出一亮一淡的接缝。 */}
-      {!frame?.shot.crop
+      {!skipPageSpace
         ? masks.map((mask) => (
             <div
               key={mask.index}
@@ -120,6 +142,32 @@ const PageView: React.FC<{
               }}
             />
           ))
+        : null}
+      {/* 圈选盖在纱之上。caption 只走 DOM（K10），导出构图不得挂台上条。 */}
+      {!skipPageSpace
+        ? (page.annotations ?? []).map((a, i) => {
+            if (a.kind !== 'callout') return null;
+            const ev = evaluateAnnotation(a, tMs);
+            if (!ev?.rect || ev.rect.w <= 0 || ev.rect.h <= 0) return null;
+            const box = calloutLayout(ev.rect, ev.shape);
+            return (
+              <div
+                key={`callout-${i}`}
+                style={{
+                  position: 'absolute',
+                  left: box.x,
+                  top: box.y,
+                  width: box.w,
+                  height: box.h,
+                  boxSizing: 'border-box',
+                  border: `${CALLOUT_STROKE_PX}px solid ${CALLOUT_STROKE}`,
+                  borderRadius: box.radius,
+                  opacity: ev.opacity,
+                  pointerEvents: 'none'
+                }}
+              />
+            );
+          })
         : null}
     </AbsoluteFill>
   );

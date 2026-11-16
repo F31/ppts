@@ -95,42 +95,20 @@ func animationProbeFromEnv(logger *slog.Logger, enabled bool) api.AnimationProbe
 	return client
 }
 
-// animationPreviewFromEnv 构造单页预览的两个硬依赖，并给出「为什么没开」的原因码。
+// animationPreviewFromEnv 决定单页预览开不开。
 //
-// 返回 reason 而不是只返回 nil：api 层据此注册一个会明确说 503 preview_unavailable 的
-// 降级处理器，能力探测端点也把同一个码交给页面。此前依赖缺失等于路由不注册，POST 落到
-// 404 纯文本，前端只能显示"预览失败"——用户既不知道原因，也不知道该找谁。
+// 预览在浏览器里播放已编译的时间线，不再提交渲染服务，所以不再读取
+// PPTS_RENDERER_URL / PPTS_ANIMATION_ASSET_DIR。这两个只服务导出
+// （animationProbeFromEnv 仍会在地址为空时报告 renderer_not_configured）。
+// 返回的客户端和发布器恒为 nil：签名保留是为了调用点不用改。
+// reason 非空时 api 层注册一个会明确说 503 preview_unavailable 的降级处理器。
 func animationPreviewFromEnv(logger *slog.Logger, enabled bool) (*render.Client, app.AssetPublisher, string) {
 	if !enabled {
 		logger.Info("animation: preview disabled by deployment switch", "reason", api.PreviewReasonDisabled)
 		return nil, nil, api.PreviewReasonDisabled
 	}
-	base := config.String("PPTS_RENDERER_URL", "")
-	dir := config.String("PPTS_ANIMATION_ASSET_DIR", "")
-	if base == "" {
-		logger.Info("animation: preview disabled (PPTS_RENDERER_URL is empty)", "reason", api.PreviewReasonRendererMissing)
-		return nil, nil, api.PreviewReasonRendererMissing
-	}
-	if dir == "" {
-		logger.Info("animation: preview disabled (PPTS_ANIMATION_ASSET_DIR is empty)", "reason", api.PreviewReasonAssetDirMissing)
-		return nil, nil, api.PreviewReasonAssetDirMissing
-	}
-	client, err := render.NewClient(render.ClientConfig{
-		BaseURL: base,
-		// 必须盖住预览预算上限（60s）。以前写死 10s，预算调到 40s 时客户端先断开。
-		Timeout: config.Duration("PPTS_ANIMATION_PREVIEW_CLIENT_TIMEOUT", 70*time.Second),
-		Retries: 1,
-	})
-	if err != nil {
-		logger.Warn("animation: preview disabled", "error", err, "reason", api.PreviewReasonRendererInvalid)
-		return nil, nil, api.PreviewReasonRendererInvalid
-	}
-	assets, err := app.NewLocalAssetPublisher(dir)
-	if err != nil {
-		logger.Warn("animation: preview disabled", "error", err, "reason", api.PreviewReasonAssetDirInvalid)
-		return nil, nil, api.PreviewReasonAssetDirInvalid
-	}
-	return client, assets, ""
+	logger.Info("animation: preview plays in the browser; the renderer is export-only")
+	return nil, nil, ""
 }
 
 // previewBudgetFromEnv 读取单页预览预算 PPTS_ANIMATION_PREVIEW_BUDGET（Go duration，如 "8s"）。

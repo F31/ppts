@@ -35,6 +35,17 @@ const (
 	// MaxShotsPerPage 是一页里镜头切片的上限。超过这个数就不是「切镜」，
 	// 是把一整段剪贴进一页：观众跟不上，片段缓存也失去意义（一页仍是一段）。
 	MaxShotsPerPage = 4
+
+	// MaxAnnotationsPerPage 是一页标注条数上限（圈选 + 台上 caption）。
+	MaxAnnotationsPerPage = 32
+)
+
+// 标注种类。spotlight 不是 Annotation，它就是带 Rect 的 FocusSpan。
+const (
+	AnnotationCallout     = "callout"
+	AnnotationCaption     = "caption"
+	AnnotationShapeCircle = "circle"
+	AnnotationShapeRect   = "rect"
 )
 
 // 资产模式（设计方案 §6.2）。首版只支持前两种：底图来自整页渲染的 PNG。
@@ -93,6 +104,15 @@ type Page struct {
 	// 页级序列只描述「此刻焦点是谁」，由求值器推导其余元素的压暗量，
 	// 因此天然不会出现「两个元素同时被压暗一半」这类矛盾状态。
 	Focus []FocusSpan `json:"focus,omitempty"`
+	// Annotations 是注视之上的描边/台上标签。全部 omitempty：旧计划字节不变。
+	// 合成器在 PR4 之前不读这些字段。
+	Annotations []Annotation `json:"annotations,omitempty"`
+	// LookCrop 为真时，每个注视窗把 Focus.rect 裁切铺满舞台（科技 punch-in）。
+	// 缺省 false，不参与旧计划 hash。
+	LookCrop bool `json:"lookCrop,omitempty"`
+	// LookCropPadPx 是 punch-in 裁切盒相对 Focus.rect 的外扩（画布像素）。
+	// 由强度烘焙：clamp(8×intensity, 4, 16)。0 / 缺省时合成器按 8。
+	LookCropPadPx int `json:"lookCropPadPx,omitempty"`
 	// Shots 把一页切成若干镜头切片：每个切片有自己的底图，按页内相对时间切换。
 	// 为空表示整页一张图（今天的行为），产物里也不会出现该字段。
 	//
@@ -175,6 +195,21 @@ type FocusSpan struct {
 	EndMs int64 `json:"endMs,omitempty"`
 	// FadeMs 是切换的过渡时长（缺省 240ms）。0 表示硬切，用于「不需要喘口气」的场景。
 	FadeMs int64 `json:"fadeMs,omitempty"`
+	// VeilAlpha 是矩形遮罩盖白的不透明度。(0,1]；0 与缺省同义，求值器用 1-FOCUS_DIM_OPACITY。
+	VeilAlpha float64 `json:"veilAlpha,omitempty"`
+}
+
+// Annotation 是注视之上的描边或台上短标签，不挖洞、不改底板。
+type Annotation struct {
+	Kind      string `json:"kind"` // callout | caption
+	StartMs   int64  `json:"startMs"`
+	EndMs     int64  `json:"endMs,omitempty"`
+	FadeMs    int64  `json:"fadeMs,omitempty"`
+	ElementID string `json:"elementId,omitempty"`
+	Rect      *Box   `json:"rect,omitempty"`
+	Shape     string `json:"shape,omitempty"` // circle | rect
+	Text      string `json:"text,omitempty"`
+	SegmentID string `json:"segmentId,omitempty"`
 }
 
 // Layer 是一个可做元素级动作的区域。ElementID 为空表示整页图层。
@@ -272,6 +307,8 @@ const (
 	DiagTransitionDefaulted       = "transition_defaulted"
 	DiagSiblingOverlapPartial     = "sibling_overlap_partial"
 	DiagCameraInvalid             = "camera_invalid"
+	// 可选入场层因包围盒不可靠被整页拒绝：回退纯注视，不挖洞。
+	DiagEntranceSkipped = "entrance_skipped"
 	// 焦点目标在文档里找不到（形状被删/柱号写错）。不阻断渲染：这一段不指，
 	// 整页保持全亮——比整页编译失败、让用户"配了焦点反而导不出视频"要好。
 	DiagFocusTargetMissing = "focus_target_missing"

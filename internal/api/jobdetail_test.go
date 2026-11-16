@@ -96,7 +96,7 @@ func identityAuth(h http.Handler) http.Handler { return h }
 
 func serveJobRoute(store JobStore, target string) *httptest.ResponseRecorder {
 	mux := http.NewServeMux()
-	registerJobDetailRoutes(mux, store, identityAuth)
+	registerJobDetailRoutes(mux, store, nil, identityAuth)
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	req = req.WithContext(context.WithValue(req.Context(), principalKey{}, Principal{TenantID: "tenant-1", UserID: "user-1"}))
 	rec := httptest.NewRecorder()
@@ -121,7 +121,17 @@ type jobDetailResponse struct {
 		UpdatedAtUnix int64  `json:"updatedAtUnix"`
 		HasResult     bool   `json:"hasResult"`
 		Reason        string `json:"reason"`
+		Page          int    `json:"page"`
+		Title         string `json:"title"`
+		Summary       string `json:"summary"`
+		Segment       int    `json:"segment"`
 	} `json:"steps"`
+	SlideLabels []struct {
+		SlideID string `json:"slideId"`
+		Page    int    `json:"page"`
+		Title   string `json:"title"`
+		Summary string `json:"summary"`
+	} `json:"slideLabels"`
 	StepCounts     map[string]int `json:"stepCounts"`
 	StepTotal      int            `json:"stepTotal"`
 	StepsTruncated bool           `json:"stepsTruncated"`

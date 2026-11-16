@@ -76,7 +76,9 @@ type testTTSProvider struct {
 	caps  tts.VoiceCapabilities
 	err   error
 	calls int
-	fake  *tts.FakeProvider
+	// failOpContains 非空时，只有 LogicalOpID 含该子串的调用返回 err，其余照常合成。
+	failOpContains string
+	fake           *tts.FakeProvider
 }
 
 type ttsMetricsRecorder struct {
@@ -110,7 +112,7 @@ func (p *testTTSProvider) Capabilities(context.Context, string) (tts.VoiceCapabi
 
 func (p *testTTSProvider) Synthesize(ctx context.Context, req tts.SynthesisRequest) (tts.SynthesisResult, error) {
 	p.calls++
-	if p.err != nil {
+	if p.err != nil && (p.failOpContains == "" || strings.Contains(req.LogicalOpID, p.failOpContains)) {
 		return tts.SynthesisResult{}, p.err
 	}
 	return p.fake.Synthesize(ctx, req)
@@ -396,6 +398,77 @@ func snapshotJob(t *testing.T, jobID string, snap NarrationSnapshot) *pipeline.J
 	return &pipeline.Job{
 		ID: jobID, TenantID: "tenant-1", ProjectID: "project-1",
 		Kind: pipeline.KindNarration, InputSnapshot: string(raw),
+	}
+}
+
+func TestAnnotateNarrationPageErrorKeepsRetryTypes(t *testing.T) {
+	base := errors.New("provider timeout")
+	plain := annotateNarrationPageError(base, "slide-9", 3, "seg-2")
+	if plain.Error() != "narration page failed: slideId=slide-9 page=3 segment=seg-2: provider timeout" {
+		t.Fatalf("plain = %v", plain)
+	}
+	if pipeline.AsRetry(plain) != nil || pipeline.AsUnknownResult(plain) != nil {
+		t.Fatal("普通错误不能变成可重试或未知结果")
+	}
+
+	at := time.Unix(1_700_000_000, 0).UTC()
+	retry := annotateNarrationPageError(&pipeline.RetryError{Err: base, At: at}, "slide-9", 3, "seg-2")
+	got := pipeline.AsRetry(retry)
+	if got == nil || !got.At.Equal(at) {
+		t.Fatalf("retry lost: %#v", retry)
+	}
+	if !strings.Contains(got.Err.Error(), "narration page failed: slideId=slide-9 page=3 segment=seg-2:") {
+		t.Fatalf("retry message = %v", got.Err)
+	}
+
+	unknown := annotateNarrationPageError(&pipeline.UnknownResultError{Err: base}, "slide-a", 1, "seg-1")
+	u := pipeline.AsUnknownResult(unknown)
+	if u == nil || !strings.Contains(u.Error(), "slideId=slide-a page=1 segment=seg-1: provider timeout") {
+		t.Fatalf("unknown = %v", unknown)
+	}
+	if annotateNarrationPageError(nil, "slide-a", 1, "seg-1") != nil {
+		t.Fatal("nil error must stay nil")
+	}
+}
+
+func TestNarrationPageFailureNamesTheSlide(t *testing.T) {
+	store := &multiSlideStore{bySlide: map[string]*narration.Revision{
+		"slide-a": {ProjectID: "project-1", SlideID: "slide-a", Language: "zh-CN",
+			Status: narration.StatusApproved, Revision: 2,
+			Segments: []*narration.Segment{{SegmentID: "seg-1", DisplayText: "A", SpokenText: "甲页的讲稿"}}},
+		"slide-b": {ProjectID: "project-1", SlideID: "slide-b", Language: "zh-CN",
+			Status: narration.StatusApproved, Revision: 2,
+			Segments: []*narration.Segment{{SegmentID: "seg-1", DisplayText: "B", SpokenText: "乙页的讲稿"}}},
+	}}
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	provider := providerForTests()
+	provider.err = &tts.RetryableError{Err: errors.New("voice provider rejected the text")}
+	provider.failOpContains = ":slide-b:"
+	handler := NewNarrationHandler(store, steps, objects, provider)
+	snap := NarrationSnapshot{
+		Slides: []NarrationSlideSnapshot{
+			{SlideID: "slide-a", ScriptRevision: 2},
+			{SlideID: "slide-b", ScriptRevision: 2},
+		},
+		Language: "zh-CN", VoiceID: "voice-1", SampleRate: 16000,
+	}
+	err := handler.Handle(context.Background(), snapshotJob(t, "job-fail", snap))
+	retry := pipeline.AsRetry(err)
+	if retry == nil {
+		t.Fatalf("可重试的供应商错误必须仍是 RetryError: %v", err)
+	}
+	msg := retry.Err.Error()
+	if !strings.Contains(msg, "narration page failed: slideId=slide-b page=2 segment=seg-1:") || !strings.Contains(msg, "voice provider rejected the text") {
+		t.Fatalf("page identity missing: %s", msg)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("calls=%d, want 2（第一页合成成功，第二页失败）", provider.calls)
+	}
+	for _, step := range steps.latest {
+		if step.StepType == "timeline" {
+			t.Fatalf("失败的任务不能发布时间轴: %+v", step)
+		}
 	}
 }
 

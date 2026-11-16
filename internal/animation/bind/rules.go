@@ -85,6 +85,11 @@ func isAux(e Element) bool {
 	return auxTextRe.MatchString(strings.TrimSpace(e.Text))
 }
 
+// IsAux 报告元素是不是页码 / 图注 / 眉标这类元信息。节拍表与预填共用同一份正则。
+func IsAux(e Element) bool {
+	return isAux(e)
+}
+
 func area(e Element) float64 {
 	return max(e.Box.W, 0) * max(e.Box.H, 0)
 }

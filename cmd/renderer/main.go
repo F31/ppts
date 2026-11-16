@@ -112,6 +112,8 @@ func run() error {
 			Logf: func(format string, args ...any) {
 				log.Printf(format, args...)
 			},
+			OnPathStats:        render.RecordPathStats,
+			OnChromeShareAlarm: render.RecordChromeShareAlarm,
 		}
 	default:
 		return fmt.Errorf("未知 backend %q（可选 stub | remotion）", *backend)

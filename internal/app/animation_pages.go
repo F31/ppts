@@ -10,6 +10,7 @@ import (
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/render"
 )
 
@@ -126,6 +127,25 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 	// 而整份 document.json 本来就是一次对象读。
 	geometryByRevision := make(map[int]map[string][]render.Element, 1)
 	focusByRevision := make(map[int]map[string][]FocusBox, 1)
+	pagesByRevision := make(map[int]map[string]*project.Page, 1)
+	pageSrc, hasPages := a.geometry.(PageDocumentSource)
+	if a.geometry != nil && !hasPages {
+		a.warn("animation: geometry source has no page documents, BeatSheet skipped")
+		pageSrc = nil
+	}
+	if fallbackRev > 0 {
+		if ss, ok := a.geometry.(SlideSizeSource); ok {
+			w, h, err := ss.SlideSize(ctx, PageGeometryScope{
+				TenantID: in.TenantID, ProjectID: in.ProjectID, SourceRevisionNo: fallbackRev,
+			})
+			if err != nil {
+				a.warn("animation: load slide size failed, EMU scale will be inferred",
+					"source_revision", fallbackRev, "error", err.Error())
+			} else {
+				req.SlideWidthEMU, req.SlideHeightEMU = w, h
+			}
+		}
+	}
 	// 本页画布：EMU → 像素的系数（见 render.NewCompiler 的 scale）与「框在不在画布内」
 	// 都要跟着它走。只传高度是不够的——判不出「整个落在画布右边」那种框，而它的遮罩
 	// 会把孔开到画面外，合成器钳在边缘后看起来是一块盖住左上角的白纱。
@@ -152,7 +172,11 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 		ref, hasSpec := refs[slide.SlideID]
 		rev := a.revision(ctx, in, slide.SlideID, refs)
 		elements := a.elements(ctx, in, ref, hasSpec && rev != nil, geometryByRevision)
-		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, rev, fallbackRev, elements, durationMS, pageCanvas, focusByRevision)
+		spans, focusDiags := a.focusSpans(ctx, in, slide, i, ref, rev, fallbackRev, elements, durationMS, pageCanvas, focusByRevision, req.SlideHeightEMU)
+		sheet, deny := a.pageBeatSheet(ctx, in, slide, ref, rev, fallbackRev, elements, durationMS, req.SlideWidthEMU, req.SlideHeightEMU, pageSrc, pagesByRevision)
+		if sheet != nil && sheet.Valid() {
+			spans = nil
+		}
 		req.Pages = append(req.Pages, AnimationPage{
 			SlideID:        slide.SlideID,
 			DurationMs:     durationMS,
@@ -163,6 +187,8 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 			SegmentOffsets: segmentOffsets(slide),
 			Focus:          spans,
 			Diagnostics:    focusDiags,
+			BeatSheet:      sheet,
+			GazeDenyIDs:    deny,
 		})
 	}
 	return req, nil
@@ -224,7 +250,7 @@ func (a *AnimationPageAssembler) revision(ctx context.Context, in AnimationPageI
 func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPageInput, slide media.SlideCue,
 	pageIndex int, ref AnimationSpecRef, rev *animation.Revision, fallbackRev int,
 	elements []render.Element, pageMs int64, canvas design.Canvas,
-	cache map[int]map[string][]FocusBox) ([]render.FocusSpan, []render.Diagnostic) {
+	cache map[int]map[string][]FocusBox, slideHeightEMU int64) ([]render.FocusSpan, []render.Diagnostic) {
 	if a == nil || a.focus == nil {
 		return nil, nil
 	}
@@ -258,7 +284,7 @@ func (a *AnimationPageAssembler) focusSpans(ctx context.Context, in AnimationPag
 		}
 		cache[revNo] = bySlide
 	}
-	spans, diags := buildFocusSpans(cues, bySlide[slide.SlideID], layerElementIDs(rev, elements, canvas), pageMs, canvas)
+	spans, diags := assembleFocusSpans(cues, bySlide[slide.SlideID], layerElementIDs(rev, elements, canvas, slideHeightEMU), pageMs, canvas, gazeAlwaysRect(rev), slideHeightEMU)
 	for i := range diags {
 		diags[i].Page = pageIndex
 	}
@@ -295,6 +321,43 @@ func (a *AnimationPageAssembler) elements(ctx context.Context, in AnimationPageI
 		cache[ref.SourceRevisionNo] = bySlide
 	}
 	return bySlide[ref.SlideID]
+}
+
+func (a *AnimationPageAssembler) pageBeatSheet(ctx context.Context, in AnimationPageInput, slide media.SlideCue,
+	ref AnimationSpecRef, rev *animation.Revision, fallbackRev int,
+	elements []render.Element, durationMS, slideWEMU, slideHEMU int64,
+	pageSrc PageDocumentSource, cache map[int]map[string]*project.Page) (*animation.BeatSheet, map[string]struct{}) {
+	if rev == nil || pageSrc == nil {
+		return nil, nil
+	}
+	if animation.InferMotionMode(rev) == animation.MotionModeEntrance {
+		return nil, nil
+	}
+	revNo := ref.SourceRevisionNo
+	if revNo == 0 {
+		revNo = fallbackRev
+	}
+	if revNo == 0 {
+		return nil, nil
+	}
+	bySlide, cached := cache[revNo]
+	if !cached {
+		var err error
+		bySlide, err = pageSrc.PagesBySlide(ctx, PageGeometryScope{
+			TenantID: in.TenantID, ProjectID: in.ProjectID, SourceRevisionNo: revNo,
+		})
+		if err != nil {
+			a.warn("animation: load page documents failed, BeatSheet skipped",
+				"source_revision", revNo, "error", err.Error())
+			bySlide = nil
+		}
+		cache[revNo] = bySlide
+	}
+	if bySlide == nil {
+		return nil, nil
+	}
+	page := bySlide[slide.SlideID]
+	return beatSheetForPage(page, elements, rev, slide, in.Subtitles, durationMS, slideWEMU, slideHEMU)
 }
 
 func (a *AnimationPageAssembler) warn(msg string, args ...any) {

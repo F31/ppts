@@ -53,6 +53,7 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from domshot import run_dom_shot  # noqa: E402
+from gaze import gaze_sample_points, is_gaze_look_page  # noqa: E402
 
 # 与 shot-gate 同一口径：暂停中的播放器读数恒定，超过它就是「画面还在走」。
 MOVE_TOLERANCE_MS = 2
@@ -69,8 +70,12 @@ def page_starts(pages):
 
 
 def sample_points(page, fps):
-    """一页的取样时刻（页内毫秒）：首帧、第一段 clip 的中点、每个切点之后、末帧前一帧。
+    """一页的取样时刻（页内毫秒）。
 
+    注视页（V13 gaze）：每条 Focus 的稳态中点（避开 240ms 交叉），加上首帧与
+    末帧。HTML 探针已经摘掉台上 caption（dom-shot.mjs）；MP4 本来就不画。
+
+    入场 / 切镜页：首帧、第一段 clip 的中点、每个切点之后、末帧前一帧。
     中点取「第一条带 props 的 clip」而不是「最长的那条」：第一条 clip 通常是
     标题入场，它是每页最早开始运动的元素，也是最容易被做错的一处
     （位置或透明度算错时，这里最明显）。
@@ -80,6 +85,9 @@ def sample_points(page, fps):
     其实只是取样时刻不同。混合**期间**的一致性由 V18 单独验（两侧各取一帧），
     这里只验「切完之后两端画的是不是同一张」。
     """
+    if is_gaze_look_page(page):
+        return gaze_sample_points(page, fps)
+
     duration = int(page.get("durationMs", 0))
     frame = max(1, int(round(1000.0 / max(int(fps or 30), 1))))
     points = [("first", 0)]
@@ -146,12 +154,32 @@ def motion_region(page, stage):
 def grab_mp4_frame(segment, local_ms, dst):
     # Windows 上 ffmpeg 常常只装在 WSL 里；本机没有就走 WSL，并把路径一并转换。
     use_wsl = os.name == "nt" and shutil.which("ffmpeg") is None
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-           "-ss", f"{local_ms / 1000:.3f}", "-i",
-           to_posix(segment) if use_wsl else segment,
-           "-frames:v", "1",
-           to_posix(dst) if use_wsl else dst]
-    subprocess.run(wsl_wrap(cmd) if use_wsl else cmd, check=True)
+    src = to_posix(segment) if use_wsl else segment
+    out = to_posix(dst) if use_wsl else dst
+
+    def run(args):
+        if os.path.isfile(dst):
+            os.remove(dst)
+        subprocess.run(wsl_wrap(args) if use_wsl else args, check=True)
+        return os.path.isfile(dst)
+
+    # 输入前 -ss 快；页末取样可能落到文件外（ffmpeg 仍退出 0）。
+    fast = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-ss", f"{local_ms / 1000:.3f}", "-i", src, "-frames:v", "1", out]
+    if run(fast):
+        return
+    backed = max(0, int(local_ms) - 80)
+    if backed != local_ms:
+        fast[fast.index("-ss") + 1] = f"{backed / 1000:.3f}"
+        if run(fast):
+            return
+    # 输入后 -ss 精确，慢，只在快路径没写出帧时用。
+    accurate = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", src, "-ss", f"{max(0, int(local_ms) - 40) / 1000:.3f}",
+                "-frames:v", "1", out]
+    if run(accurate):
+        return
+    raise RuntimeError(f"ffmpeg 没有写出 {dst}（ss={local_ms}ms, src={segment})")
 
 
 def to_posix(path):

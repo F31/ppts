@@ -276,8 +276,28 @@ type plannedSlide struct {
 // nalInstruction 是一次配音任务里单个"页 × 段"的合成工作单元，固定顺序（预分配槽位）。
 type nalInstruction struct {
 	idx     int // 最终结果槽位索引（= 展平序）
+	page    int // 本次任务里的页序，从 1 起；界面能对上讲稿页时会改用文稿里的真实页码
 	slide   plannedSlide
 	segment *narration.Segment
+}
+
+// annotateNarrationPageError 给分段失败补上页身份。
+//
+// 任务在第一段失败时整单失败，last_error 原先只有供应商原文，界面分不出是哪一页。
+// 前缀是稳定的机器文本，由界面本地化，不要翻译这句。
+// RetryError / UnknownResultError 必须保持原类型，否则 worker 的退避与对账会变成永久失败。
+func annotateNarrationPageError(err error, slideID string, page int, segmentID string) error {
+	if err == nil {
+		return nil
+	}
+	annotated := fmt.Errorf("narration page failed: slideId=%s page=%d segment=%s: %w", slideID, page, segmentID, err)
+	if retry := pipeline.AsRetry(err); retry != nil {
+		return &pipeline.RetryError{Err: annotated, At: retry.At}
+	}
+	if unknown := pipeline.AsUnknownResult(err); unknown != nil {
+		return &pipeline.UnknownResultError{Err: annotated}
+	}
+	return annotated
 }
 
 // nalOutcome 是单个工作单元的合成结果（槽位由 instruction 索引，天然有序）。
@@ -347,9 +367,11 @@ func (h *NarrationHandler) synthesizeAllSegments(ctx context.Context, job *pipel
 		n += len(s.revision.Segments)
 	}
 	instructions := make([]nalInstruction, 0, n)
-	for _, s := range planned {
+	for pageIdx, s := range planned {
 		for _, seg := range s.revision.Segments {
-			instructions = append(instructions, nalInstruction{idx: len(instructions), slide: s, segment: seg})
+			instructions = append(instructions, nalInstruction{
+				idx: len(instructions), page: pageIdx + 1, slide: s, segment: seg,
+			})
 		}
 	}
 	outcomes := make([]nalOutcome, len(instructions))
@@ -362,7 +384,7 @@ func (h *NarrationHandler) synthesizeAllSegments(ctx context.Context, job *pipel
 			}
 			asset, cached, err := h.synthesizeSegment(ctx, job, snapshot, ins.slide.snapshot, provider, capabilities, ins.segment, dictRules, textNormEngine)
 			if err != nil {
-				return timelineAssembly{}, err
+				return timelineAssembly{}, annotateNarrationPageError(err, ins.slide.snapshot.SlideID, ins.page, ins.segment.SegmentID)
 			}
 			outcomes[ins.idx] = nalOutcome{asset: asset, cached: cached}
 			if isTargeted(ins.segment) {
@@ -391,7 +413,7 @@ func (h *NarrationHandler) synthesizeAllSegments(ctx context.Context, job *pipel
 				if err != nil {
 					errMu.Lock()
 					if firstErr == nil {
-						firstErr = err
+						firstErr = annotateNarrationPageError(err, ins.slide.snapshot.SlideID, ins.page, ins.segment.SegmentID)
 						cancel()
 					}
 					errMu.Unlock()

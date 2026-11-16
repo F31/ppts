@@ -56,6 +56,17 @@ test('未知原因给通用文案，不冒充已知分支', () => {
   assert.deepEqual(out.map((n) => n.key), ['editor.animationPreviewFocusSkipped']);
 });
 
+test('boxesReliable 失败要单独说跳过入场，不能吞进焦点说明', () => {
+  const out = m.previewFocusNotices({
+    focus: 2,
+    focusSkipped: 0,
+    focusSkipReason: '',
+    entranceSkipped: true
+  });
+  assert.equal(out[0].key, 'editor.animationEntranceSkipped');
+  assert.equal(out[1].key, 'editor.animationPreviewFocus');
+});
+
 // ─── 2026-11-05 回归：预览按钮不能再「点了才知道必然失败」 ─────────────────
 //
 // 部署没配渲染服务时，预览路由原本不注册，POST 返回 404 纯文本；前端错误映射
@@ -104,7 +115,8 @@ test('部署级原因优先于「没有配音」：不该让用户白跑一次�
 
 test('配置齐全时按时间轴 / 已保存规格依次判断，全齐才允许点', () => {
   assert.equal(button({ hasTimeline: false }).hintKey, 'editor.animationPreviewNeedsVoice');
-  assert.equal(button({ hasSavedSpec: false }).hintKey, 'editor.animationPreviewNeedsSave');
+  assert.equal(button({ hasSavedSpec: false, hasDraft: false }).hintKey, 'editor.animationPreviewNeedsSave');
+  assert.equal(button({ hasSavedSpec: false, hasDraft: true }).disabled, false);
   assert.equal(button({ previewing: true }).disabled, true);
   assert.deepEqual(button(), { disabled: false, hintKey: '' });
 });

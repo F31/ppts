@@ -4,6 +4,8 @@ import (
 	"image"
 	"image/color"
 	"testing"
+
+	"github.com/F31/ppts/internal/animation"
 )
 
 func flatPage(w, h int, bg color.NRGBA) *image.NRGBA {
@@ -25,7 +27,13 @@ func fillRect(img *image.NRGBA, x0, y0, x1, y1 int, c color.NRGBA) {
 }
 
 func layer(elementID string, box Box) Layer {
-	return Layer{ElementID: elementID, Kind: "title", AssetMode: AssetBitmapRegion, Box: box}
+	return Layer{
+		ElementID: elementID, Kind: "title", AssetMode: AssetBitmapRegion, Box: box,
+		Clips: []Motion{{
+			Effect: "fadeIn", DurationMs: 400,
+			Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}},
+		}},
+	}
 }
 
 // 纯色底上的元素必须被完整抹平，且补丁颜色等于底色——这是「去残影」成立的充要条件。
@@ -132,6 +140,44 @@ func TestBuildPlateScalesBoxToImageSize(t *testing.T) {
 	}
 }
 
+// IR 盒子经常贴着字形。盒外几个像素的抗锯齿必须一并盖掉，否则入场时原文还在。
+func TestBuildPlateCoversGlyphsOutsideTightBox(t *testing.T) {
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	ink := color.NRGBA{0x11, 0x11, 0x11, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 16, 16, 124, 84, ink)
+
+	plate, patches := BuildPlate(page, []Layer{layer("title", Box{X: 20, Y: 20, W: 100, H: 60})}, 200, 100)
+	if len(patches) != 1 {
+		t.Fatalf("want 1 patch, got %d", len(patches))
+	}
+	got := plate.(*image.NRGBA)
+	if c := got.NRGBAAt(17, 50); c != white {
+		t.Fatalf("glyph fringe at (17,50) = %v, want white", c)
+	}
+	if c := got.NRGBAAt(70, 50); c != white {
+		t.Fatalf("hole center = %v, want white", c)
+	}
+}
+
+// 邻行文字把外沿极差拉满时，洞必须盖成页面底色，不能填成一块深灰。
+func TestBuildPlateNoisyCoverDropsNeighborInk(t *testing.T) {
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	ink := color.NRGBA{0x10, 0x10, 0x10, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 40, 20, 100, 50, ink)
+	fillRect(page, 102, 20, 170, 50, ink)
+
+	plate, patches := BuildPlate(page, []Layer{layer("title", Box{X: 40, Y: 20, W: 60, H: 30})}, 200, 100)
+	if len(patches) != 1 {
+		t.Fatalf("want 1 patch, got %d", len(patches))
+	}
+	c := plate.(*image.NRGBA).NRGBAAt(70, 35)
+	if int(c.R) < 200 || int(c.G) < 200 || int(c.B) < 200 {
+		t.Fatalf("noisy hole filled with ink-like color %v", c)
+	}
+}
+
 // ADR-9 的回归用例：父层素材里的子元素必须被抹成父层底色，
 // 否则子元素会跟着父层的不透明度出现，自己声明的 startMs 形同失效。
 func TestBuildLayerAssetsErasesNestedChild(t *testing.T) {
@@ -154,14 +200,14 @@ func TestBuildLayerAssetsErasesNestedChild(t *testing.T) {
 	if card.ElementID != "card" || card.Index != 0 {
 		t.Fatalf("asset[0] = %s#%d, want card#0", card.ElementID, card.Index)
 	}
-	if got := card.Image.Bounds(); got.Dx() != 160 || got.Dy() != 70 {
-		t.Fatalf("card asset bounds = %v, want 160x70", got)
+	if got := card.Image.Bounds(); got.Dx() != 160+2*platePadPx || got.Dy() != 70+2*platePadPx {
+		t.Fatalf("card asset bounds = %v, want padded 160x70", got)
 	}
 	if len(card.Erased) != 1 || card.Erased[0] != "bullet" {
 		t.Errorf("card should erase its child, erased = %v", card.Erased)
 	}
-	// 卡片素材坐标 = 页坐标 − (20,20)；子元素中心 (90,50) → 素材 (70,30)。
-	if got := card.Image.At(70, 30); !sameColor(got, cardColor) {
+	// 卡片素材原点随扩边外移；子元素中心 (90,50) → 素材 (76,36)。
+	if got := card.Image.At(90-(20-platePadPx), 50-(20-platePadPx)); !sameColor(got, cardColor) {
 		t.Errorf("nested child not erased from card asset: %v", got)
 	}
 }
@@ -183,18 +229,39 @@ func TestBuildLayerAssetsKeepsEnclosingBackground(t *testing.T) {
 	if len(bullet.Erased) != 0 {
 		t.Errorf("enclosing layer must not be erased, got %v", bullet.Erased)
 	}
-	// 自己还在：子层坐标 (50,10) → 页坐标 (90,50)。
-	if got := bullet.Image.At(50, 10); !sameColor(got, blue) {
+	// 自己还在：扩边后原点外移，页坐标 (90,50) → 素材 (56,16)。
+	if got := bullet.Image.At(90-(40-platePadPx), 50-(40-platePadPx)); !sameColor(got, blue) {
 		t.Errorf("child pixel lost: %v", got)
 	}
-	// 裁切图只覆盖元素自己的盒子，盒子之外本来就不在素材里；
-	// 「保留父层背景」的含义是：父层的填色没有被涂到子层上，子层四角仍是自己的像素。
-	if got := bullet.Image.At(0, 0); !sameColor(got, blue) {
-		t.Errorf("enclosing fill leaked into child asset: %v", got)
+	// 扩边裁进了父层底色：四角不再是子元素自己的像素，这是「层图盖住挖洞」所需要的。
+	if got := bullet.Image.At(0, 0); !sameColor(got, cardColor) {
+		t.Errorf("padded crop should keep parent background at corner: %v", got)
 	}
 }
 
 // 无重叠的兄弟元素互不干扰：各自素材就是原图对应区域的拷贝。
+func TestLayerCropMatchesPlateHole(t *testing.T) {
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	ink := color.NRGBA{0x11, 0x11, 0x11, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 16, 16, 124, 84, ink)
+	box := Box{X: 20, Y: 20, W: 100, H: 60}
+	plate, _ := BuildPlate(page, []Layer{layer("title", box)}, 200, 100)
+	assets := BuildLayerAssets(page, []Layer{layer("title", box)}, 200, 100)
+	if len(assets) != 1 {
+		t.Fatalf("assets = %d", len(assets))
+	}
+	// 盒外残墨：底板上应被抹掉，层图里还在。
+	if plate.(*image.NRGBA).NRGBAAt(17, 50) != white {
+		t.Fatal("plate still has glyph fringe")
+	}
+	localX := 17 - assets[0].Box.X
+	localY := 50 - assets[0].Box.Y
+	if assets[0].Image.NRGBAAt(localX, localY) != ink {
+		t.Fatalf("layer crop missing fringe at (%d,%d)", localX, localY)
+	}
+}
+
 func TestBuildLayerAssetsLeavesSiblingsIntact(t *testing.T) {
 	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
 	blue := color.NRGBA{0x1E, 0x3A, 0x8A, 0xFF}

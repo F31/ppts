@@ -74,6 +74,15 @@ func (r *Revision) Validate(pc PageContext) error {
 			}
 		}
 	}
+	if r.MotionMode != "" && !ValidMotionMode(r.MotionMode) {
+		return &ValidationError{
+			Rule:    RuleStructure,
+			Field:   "motionMode",
+			Message: fmt.Sprintf("unknown motionMode %q", r.MotionMode),
+			Hint:    "gaze|entrance|gaze+entrance",
+			Status:  400,
+		}
+	}
 
 	// V5（页级部分）：强度。
 	if r.Intensity < MinIntensity || r.Intensity > MaxIntensity {

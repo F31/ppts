@@ -162,6 +162,19 @@ func TestSegmentKeyEnvInvalidatesEverything(t *testing.T) {
 	}
 }
 
+func TestSegmentKeyFocusChangeInvalidatesOnlyThatPage(t *testing.T) {
+	plan := multiPagePlan(3)
+	before := mustKeys(t, plan, testEnv())
+	plan.Pages[1].Focus = []FocusSpan{{StartMs: 0, ElementID: "e1", EndMs: 800}}
+	after := mustKeys(t, plan, testEnv())
+	if after[1] == before[1] {
+		t.Fatal("focus change must miss")
+	}
+	if after[0] != before[0] || after[2] != before[2] {
+		t.Fatal("focus on one page must not invalidate the others")
+	}
+}
+
 func TestSegmentKeyIgnoresDerivedAndAuditFields(t *testing.T) {
 	plan := multiPagePlan(2)
 	before := mustKeys(t, plan, testEnv())

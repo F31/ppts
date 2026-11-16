@@ -103,7 +103,9 @@ const SEEK_FN = `async (ms) => {
   // 必须 remove 而不是 hidden = true：seek 会走一遍 X()，里面把字幕重新显示出来；
   // 音频元数据迟到时还会再走一次 X()，又一次改回 false。于是同一份包两次运行给出
   // 两种结果（实测 0.9999 与 0.9676 交替出现）。摘掉节点，播放器再改属性也改不回画面。
-  for (const sel of ['.ppts-cover', '.ppts-subtitle']) {
+  // 台上 caption 只在 HTML 画、MP4 不画（K10）。探针必须摘掉，否则每页
+  // 注视 SSIM 会被底栏打红。字幕条同理（V16 / 播放时钟另有守卫）。
+  for (const sel of ['.ppts-cover', '.ppts-subtitle', '.ppts-caption']) {
     const node = document.querySelector(sel);
     if (node) node.remove();
   }

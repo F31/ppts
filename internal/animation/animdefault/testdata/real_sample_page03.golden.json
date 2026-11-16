@@ -5,14 +5,11 @@
     "clips": [
       {
         "id": "c1",
-        "type": "slideIn",
+        "type": "spotlight",
         "startMs": 0,
-        "durationMs": 700,
+        "durationMs": 240,
         "easing": "easeOut",
-        "params": {
-          "direction": "up",
-          "offset": 32
-        },
+        "params": {},
         "trigger": "onEnter"
       }
     ]
@@ -23,9 +20,9 @@
     "clips": [
       {
         "id": "c2",
-        "type": "fadeIn",
+        "type": "spotlight",
         "startMs": 150,
-        "durationMs": 500,
+        "durationMs": 240,
         "easing": "easeOut",
         "params": {},
         "trigger": "onEnter"
@@ -38,9 +35,9 @@
     "clips": [
       {
         "id": "c3",
-        "type": "fadeIn",
+        "type": "spotlight",
         "startMs": 300,
-        "durationMs": 600,
+        "durationMs": 240,
         "easing": "easeOut",
         "params": {},
         "trigger": "onEnter"
@@ -53,9 +50,9 @@
     "clips": [
       {
         "id": "c4",
-        "type": "fadeIn",
+        "type": "spotlight",
         "startMs": 450,
-        "durationMs": 500,
+        "durationMs": 240,
         "easing": "easeOut",
         "params": {},
         "trigger": "onEnter"
@@ -68,9 +65,9 @@
     "clips": [
       {
         "id": "c5",
-        "type": "fadeIn",
+        "type": "spotlight",
         "startMs": 600,
-        "durationMs": 500,
+        "durationMs": 240,
         "easing": "easeOut",
         "params": {},
         "trigger": "onEnter"

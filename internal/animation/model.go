@@ -153,6 +153,9 @@ type Revision struct {
 	Status           Status
 	PresetID         string  // 页面级预设；空串表示自定义（不套预设）
 	Intensity        float64 // 统一缩放幅度/时长，[MinIntensity, MaxIntensity]
+	// MotionMode 是 "gaze" | "entrance" | "gaze+entrance"；空串由 InferMotionMode 推断。
+	// 持久化在 tracks 列的包装对象里，不是单独一列。
+	MotionMode       string `json:"motionMode,omitempty"`
 	Tracks           []*Track
 	RenderedRevision int64      // 最近一次成功渲染对应的 Revision；< Revision 表示过期
 	Shots            []ShotSpec `json:"shots,omitempty"` // 页内镜头切片（见 render.PageShotInput）
@@ -284,6 +287,9 @@ type PageContext struct {
 	FPS        int      // 用于 1 帧容差；<=0 时按 30 处理
 	Elements   []Anchor // 页内可挂载元素（含 Children 递归）
 	SegmentIDs []string // 当前讲稿修订的分段 id（V7）
+	// SlideWidthEMU/SlideHeightEMU 来自解析产物的 p:sldSz。0 = 按 7.5 英寸页高推断。
+	SlideWidthEMU  int64
+	SlideHeightEMU int64
 	// Segments 是分段 id + 文本，与 SegmentIDs 同序。可空（还没写讲稿）。
 	//
 	// 校验只要 id，文本只有「讲稿绑定预填」用得上：预填靠段落文本与元素文本的
@@ -364,10 +370,11 @@ func (r *Revision) ClipCount() int {
 // Size 返回规格的可持久化字节数（V12）。只统计会落库的内容，不含 ID/租户/时间戳。
 func (r *Revision) Size() int {
 	payload := struct {
-		PresetID  string   `json:"presetId"`
-		Intensity float64  `json:"intensity"`
-		Tracks    []*Track `json:"tracks"`
-	}{PresetID: r.PresetID, Intensity: r.Intensity, Tracks: r.Tracks}
+		PresetID   string   `json:"presetId"`
+		Intensity  float64  `json:"intensity"`
+		MotionMode string   `json:"motionMode,omitempty"`
+		Tracks     []*Track `json:"tracks"`
+	}{PresetID: r.PresetID, Intensity: r.Intensity, MotionMode: r.MotionMode, Tracks: r.Tracks}
 	b, err := json.Marshal(payload)
 	if err != nil { // 结构本身可序列化，这里只可能是极端情况
 		return 0

@@ -15,8 +15,24 @@
 //
 // 时钟一律由调用方给（音频 currentTime），这里不持有任何"当前时间"。
 
-import { FOCUS_FADE_MS, evaluateLayer, focusDim, focusMasks, focusOpacity, originCss } from '../../../shared/motion.ts';
-import type { FocusSpan, Layer, Motion } from '../../../shared/types.ts';
+import {
+  lookCropAt,
+  lookCropEnabled,
+  lookCropImageStyle
+} from '../../../shared/lookcrop.ts';
+import {
+  CALLOUT_STROKE,
+  CALLOUT_STROKE_PX,
+  FOCUS_FADE_MS,
+  calloutLayout,
+  evaluateAnnotation,
+  evaluateLayer,
+  focusDim,
+  focusMasks,
+  focusOpacity,
+  originCss
+} from '../../../shared/motion.ts';
+import type { Annotation, FocusSpan, Layer, Motion } from '../../../shared/types.ts';
 
 /** 清单里的一层（字段是 IR 的投影，见 internal/share/manifest.go 的 SlideLayer）。 */
 export type ManifestLayer = {
@@ -38,6 +54,10 @@ export type CompileOptions = {
   reduceMotion: boolean;
   /** 页级焦点：此刻讲的是谁。缺省表示这页没有让位关系。 */
   focus?: FocusSpan[];
+  /** 圈选 / 台上 caption。caption 只在 DOM 画，Remotion 不读这份。 */
+  annotations?: Annotation[];
+  /** 科技 punch-in。为真且未降级时不建页坐标纱/圈选。 */
+  lookCrop?: boolean;
 };
 
 /** 一页编译结果：每层一个 Animation，按清单顺序。 */
@@ -220,8 +240,53 @@ export function buildLayerNodes(
     out.push({ element: node, animation });
   }
   // 遮罩在**所有层之后**追加：它压暗的是画面，不是某一层。
-  out.push(...buildFocusMasks(container, canvasW, canvasH, opts, canAnimate));
+  // LookCrop look 不画页坐标纱/圈选：bitmap 已是 crop 坐标，页坐标孔会对错位。
+  // 入场层同样关掉 punch-in（与 PageView / applyLookCrop 同一条 lookCropEnabled）：
+  // 漏传 hasEntranceLayers 时科技+入场页会 HTML 无纱、MP4 整页+纱。
+  const punchIn = lookCropEnabled({
+    lookCrop: opts.lookCrop,
+    reduceMotion: opts.reduceMotion,
+    hasEntranceLayers: hasEntranceLayers(layers)
+  });
+  if (!punchIn) {
+    out.push(...buildFocusMasks(container, canvasW, canvasH, opts, canAnimate));
+    out.push(...buildCallouts(container, canvasW, canvasH, opts, canAnimate));
+  }
+  out.push(...buildCaptions(container, opts, canAnimate));
   return out;
+}
+
+/**
+ * 把 LookCrop punch-in 写到铺满舞台的页图上。返回是否正在切近。
+ * 镜头路径会覆盖 transform；无 punch-in 时清掉，避免上一 look 的缩放残留。
+ */
+export function applyLookCrop(
+  img: HTMLImageElement,
+  opts: {
+    lookCrop?: boolean;
+    lookCropPadPx?: number;
+    reduceMotion?: boolean;
+    hasShotCrop?: boolean;
+    hasEntranceLayers?: boolean;
+    focus?: FocusSpan[];
+    tMs: number;
+    canvasW: number;
+    canvasH: number;
+  }
+): boolean {
+  const enabled = lookCropEnabled({
+    lookCrop: opts.lookCrop,
+    reduceMotion: opts.reduceMotion,
+    hasShotCrop: opts.hasShotCrop,
+    hasEntranceLayers: opts.hasEntranceLayers
+  });
+  const frame = enabled
+    ? lookCropAt(opts.focus, opts.tMs, opts.canvasW, opts.canvasH, opts.lookCropPadPx)
+    : null;
+  const css = lookCropImageStyle(frame, true);
+  img.style.transformOrigin = css.transformOrigin;
+  img.style.transform = css.transform;
+  return Boolean(frame);
 }
 
 /**
@@ -230,6 +295,10 @@ export function buildLayerNodes(
  * 单独导出是因为**低电量降级要按它做例外**：低内存设备不建元素层，但焦点遮罩得留下
  * （见 main.ts 的 lowPower 分支）。判据只有一份，两处不能各写一个「rect.w > 0」。
  */
+export function hasEntranceLayers(layers?: { elementId?: string; clips?: unknown[] }[]): boolean {
+  return (layers ?? []).some((layer) => Boolean(layer.elementId) && (layer.clips?.length ?? 0) > 0);
+}
+
 export function hasRectFocus(focus?: FocusSpan[]): boolean {
   return (focus ?? []).some((f) => !!f.rect && f.rect.w > 0 && f.rect.h > 0);
 }
@@ -241,9 +310,21 @@ export function hasRectFocus(focus?: FocusSpan[]): boolean {
  * **只有焦点、没有层**。只看 `layers.length` 会让这类页连遮罩都不建——
  * 同一份清单，MP4 在指、网页版全亮，而且两边都没有报错。
  */
-export function needsLayerStage(layers: readonly ManifestLayer[], focus?: FocusSpan[]): boolean {
+export function hasCallout(annotations?: Annotation[]): boolean {
+  return (annotations ?? []).some((a) => a.kind === 'callout' && !!a.rect && a.rect.w > 0 && a.rect.h > 0);
+}
+
+export function hasCaption(annotations?: Annotation[]): boolean {
+  return (annotations ?? []).some((a) => a.kind === 'caption' && (a.text ?? '').length > 0);
+}
+
+export function needsLayerStage(
+  layers: readonly ManifestLayer[],
+  focus?: FocusSpan[],
+  annotations?: Annotation[]
+): boolean {
   if (layers.length > 0) return true;
-  return hasRectFocus(focus);
+  return hasRectFocus(focus) || hasCallout(annotations) || hasCaption(annotations);
 }
 
 /**
@@ -260,12 +341,13 @@ export function needsLayerStage(layers: readonly ManifestLayer[], focus?: FocusS
 export function pickStageLayers(
   layers: readonly ManifestLayer[],
   focus: FocusSpan[] | undefined,
-  lowPower: boolean
+  lowPower: boolean,
+  annotations?: Annotation[]
 ): readonly ManifestLayer[] | null {
-  if (!needsLayerStage(layers, focus)) return null;
+  if (!needsLayerStage(layers, focus, annotations)) return null;
   if (!lowPower) return layers;
-  // 低电量：元素层一个不放。若这页连矩形焦点都没有，舞台上就什么都不剩，不建。
-  return hasRectFocus(focus) ? [] : null;
+  // 低电量：元素层一个不放。纱 / 圈选 / 台上条仍建。
+  return hasRectFocus(focus) || hasCallout(annotations) || hasCaption(annotations) ? [] : null;
 }
 
 /**
@@ -377,12 +459,139 @@ function buildFocusMasks(
   return out;
 }
 
+export function calloutKeyframes(a: Annotation, pageMs: number): Keyframe[] | null {
+  if (a.kind !== 'callout' || !a.rect || !(a.rect.w > 0) || !(a.rect.h > 0) || !(pageMs > 0)) return null;
+  const fade = a.fadeMs ?? FOCUS_FADE_MS;
+  const marks: number[] = [0];
+  pushFadeSamples(marks, a.startMs, fade);
+  if (a.endMs) pushFadeSamples(marks, a.endMs, fade);
+  marks.push(pageMs);
+  const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
+    const ev = evaluateAnnotation(a, t);
+    return { offset: t / pageMs, opacity: String(round(ev ? ev.opacity : 0)) };
+  });
+  return frames.length >= 2 ? frames : null;
+}
+
+function buildCallouts(
+  container: HTMLElement,
+  canvasW: number,
+  canvasH: number,
+  opts: CompileOptions,
+  canAnimate: boolean
+): CompiledLayer[] {
+  if (opts.reduceMotion) return [];
+  const out: CompiledLayer[] = [];
+  const pageMs = opts.pageDurationMs > 0 ? opts.pageDurationMs : 0;
+  for (const a of opts.annotations ?? []) {
+    if (a.kind !== 'callout' || !a.rect || !(a.rect.w > 0) || !(a.rect.h > 0)) continue;
+    const box = calloutLayout(a.rect, a.shape);
+    const node = document.createElement('div');
+    node.className = 'ppts-callout';
+    node.style.position = 'absolute';
+    node.style.pointerEvents = 'none';
+    node.style.boxSizing = 'border-box';
+    node.style.left = pct(box.x, canvasW);
+    node.style.top = pct(box.y, canvasH);
+    node.style.width = pct(box.w, canvasW);
+    node.style.height = pct(box.h, canvasH);
+    node.style.border = `solid ${CALLOUT_STROKE}`;
+    node.style.borderWidth = `calc(${CALLOUT_STROKE_PX}px * var(--ppts-k, 1))`;
+    node.style.borderRadius = box.radius;
+    node.style.opacity = '0';
+    container.append(node);
+
+    let animation: Animation | null = null;
+    if (canAnimate && pageMs > 0) {
+      const frames = calloutKeyframes(a, pageMs);
+      if (frames) {
+        animation = node.animate(frames, {
+          duration: Math.max(1, pageMs),
+          fill: 'both',
+          easing: 'linear'
+        });
+        animation.pause();
+        animation.currentTime = 0;
+      }
+    }
+    out.push({ element: node, animation });
+  }
+  return out;
+}
+
+function buildCaptions(container: HTMLElement, opts: CompileOptions, canAnimate: boolean): CompiledLayer[] {
+  const out: CompiledLayer[] = [];
+  const pageMs = opts.pageDurationMs > 0 ? opts.pageDurationMs : 0;
+  for (const a of opts.annotations ?? []) {
+    if (a.kind !== 'caption') continue;
+    const text = (a.text ?? '').trim();
+    if (!text) continue;
+    const node = document.createElement('div');
+    node.className = 'ppts-caption';
+    node.dataset.text = text;
+    node.dataset.startMs = String(a.startMs);
+    node.dataset.endMs = String(a.endMs ?? 0);
+    node.dataset.pageMs = String(pageMs);
+    const spoken = document.createElement('span');
+    spoken.className = 'ppts-caption-spoken';
+    const rest = document.createElement('span');
+    rest.className = 'ppts-caption-unspoken';
+    rest.textContent = text;
+    node.append(spoken, rest);
+    node.style.opacity = '0';
+    container.append(node);
+
+    let animation: Animation | null = null;
+    if (canAnimate && pageMs > 0) {
+      const fade = a.fadeMs ?? FOCUS_FADE_MS;
+      const marks: number[] = [0];
+      pushFadeSamples(marks, a.startMs, fade);
+      if (a.endMs) pushFadeSamples(marks, a.endMs, fade);
+      marks.push(pageMs);
+      const frames = timelinePoints(marks, pageMs).map((t) => {
+        const ev = evaluateAnnotation(a, t);
+        return { offset: t / pageMs, opacity: String(round(ev ? ev.opacity : 0)) };
+      });
+      if (frames.length >= 2) {
+        animation = node.animate(frames, {
+          duration: Math.max(1, pageMs),
+          fill: 'both',
+          easing: 'linear'
+        });
+        animation.pause();
+        animation.currentTime = 0;
+      }
+    }
+    out.push({ element: node, animation });
+  }
+  return out;
+}
+
 /** 把一个已编译的层设到页内某个时刻（毫秒）。 */
 export function seekLayer(layer: CompiledLayer, localMs: number): void {
-  if (!layer.animation) return;
-  const duration = Number(layer.animation.effect?.getTiming().duration ?? 0);
-  const t = Math.max(0, Math.min(duration > 0 ? duration : 0, localMs));
-  layer.animation.currentTime = t;
+  if (layer.animation) {
+    const duration = Number(layer.animation.effect?.getTiming().duration ?? 0);
+    const t = Math.max(0, Math.min(duration > 0 ? duration : 0, localMs));
+    layer.animation.currentTime = t;
+  }
+  if (layer.element.classList.contains('ppts-caption')) {
+    paintCaptionKaraoke(layer.element, localMs);
+  }
+}
+
+function paintCaptionKaraoke(node: HTMLElement, localMs: number): void {
+  const text = node.dataset.text ?? '';
+  if (!text) return;
+  const start = Number(node.dataset.startMs);
+  const endRaw = Number(node.dataset.endMs);
+  const pageMs = Number(node.dataset.pageMs);
+  const end = endRaw > start ? endRaw : pageMs > start ? pageMs : start + 1;
+  const p = Math.max(0, Math.min(1, (localMs - start) / (end - start)));
+  const n = Math.max(0, Math.min(text.length, Math.floor(text.length * p)));
+  const spoken = node.querySelector('.ppts-caption-spoken');
+  const rest = node.querySelector('.ppts-caption-unspoken');
+  if (spoken) spoken.textContent = text.slice(0, n);
+  if (rest) rest.textContent = text.slice(n);
 }
 
 /** 取消并释放。留着 pause 的 animation 会继续占合成层，20 页之后是几百个对象。 */

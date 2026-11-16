@@ -63,6 +63,27 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 	t.Helper()
 	ctx := context.Background()
 
+	t.Run("list returns one row per slide preferring exact revision", func(t *testing.T) {
+		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, "slide-list-a", 1), 0); err != nil {
+			t.Fatalf("insert a: %v", err)
+		}
+		legacy := sampleRevision(tenantID, projectID, "slide-list-b", 0)
+		if _, err := s.Put(ctx, legacy, 0); err != nil {
+			t.Fatalf("insert b legacy: %v", err)
+		}
+		got, err := s.List(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, Language: "zh-CN", SourceRevisionNo: 1})
+		if err != nil {
+			t.Fatalf("list: %v", err)
+		}
+		ids := map[string]int{}
+		for _, rev := range got {
+			ids[rev.SlideID] = rev.SourceRevisionNo
+		}
+		if ids["slide-list-a"] != 1 || ids["slide-list-b"] != 0 {
+			t.Fatalf("list = %v", ids)
+		}
+	})
+
 	t.Run("get missing returns animation.ErrNotFound", func(t *testing.T) {
 		_, err := s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: "slide-none", Language: "zh-CN"})
 		if !errors.Is(err, animation.ErrNotFound) {
@@ -205,6 +226,35 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		if got.Tracks == nil || len(got.Tracks) != 0 {
 			t.Fatalf("nil tracks must round-trip as empty slice, got %#v", got.Tracks)
 		}
+	})
+
+	t.Run("motionMode envelope round-trips; old array stays empty mode", func(t *testing.T) {
+		slide := "slide-motion-mode"
+		old := sampleRevision(tenantID, projectID, slide, 1)
+		saved, err := s.Put(ctx, old, 0)
+		if err != nil {
+			t.Fatalf("insert old: %v", err)
+		}
+		if saved.MotionMode != "" {
+			t.Fatalf("old row mode = %q, want empty", saved.MotionMode)
+		}
+		next := sampleRevision(tenantID, projectID, slide, 1)
+		next.MotionMode = animation.MotionModeGazeEntrance
+		updated, err := s.Put(ctx, next, saved.Revision)
+		if err != nil {
+			t.Fatalf("insert envelope: %v", err)
+		}
+		got, err := s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN", SourceRevisionNo: 1})
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.MotionMode != animation.MotionModeGazeEntrance {
+			t.Fatalf("mode = %q, want %q", got.MotionMode, animation.MotionModeGazeEntrance)
+		}
+		if len(got.Tracks) != 1 {
+			t.Fatalf("tracks lost: %+v", got.Tracks)
+		}
+		_ = updated
 	})
 
 	t.Run("tenant isolation", func(t *testing.T) {

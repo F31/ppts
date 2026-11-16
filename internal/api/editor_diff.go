@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/membership"
@@ -90,7 +91,8 @@ func loadProjectDocuments(ctx context.Context, projects project.ProjectStore, ob
 // loadProjectDocument 读一个源版本的 document.json；任何一步失败都返回 nil，
 // 由调用方按「该版本缺失」处理（原实现就是逐段 continue 到 nil）。
 func loadProjectDocument(ctx context.Context, projects project.ProjectStore, objects objectstore.ObjectStore, tenantID, projectID string, rev int) *project.Document {
-	if _, err := projects.GetSourceRevision(ctx, tenantID, projectID, rev); err != nil {
+	src, err := projects.GetSourceRevision(ctx, tenantID, projectID, rev)
+	if err != nil {
 		return nil
 	}
 	key := objectstore.DocumentKey(tenantID, projectID, srcRevString(rev))
@@ -106,6 +108,9 @@ func loadProjectDocument(ctx context.Context, projects project.ProjectStore, obj
 	var doc project.Document
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil
+	}
+	if src != nil && (doc.SlideWidthEMU <= 0 || doc.SlideHeightEMU <= 0) {
+		app.FillSlideSizeFromSource(ctx, objects, src.ObjectKey, &doc)
 	}
 	return &doc
 }

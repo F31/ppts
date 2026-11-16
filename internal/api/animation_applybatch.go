@@ -65,12 +65,13 @@ type applyBatchRequest struct {
 // batchSlideSnapshot 是一页套用前的规格，用于一次性撤销。
 // Existed=false 表示这页原本没有规格，撤销时必须删行而不是写空草稿。
 type batchSlideSnapshot struct {
-	SlideID   string             `json:"slideId"`
-	Existed   bool               `json:"existed"`
-	Revision  int64              `json:"revision"`
-	PresetID  string             `json:"presetId,omitempty"`
-	Intensity float64            `json:"intensity,omitempty"`
-	Tracks    []*animation.Track `json:"tracks,omitempty"`
+	SlideID    string             `json:"slideId"`
+	Existed    bool               `json:"existed"`
+	Revision   int64              `json:"revision"`
+	PresetID   string             `json:"presetId,omitempty"`
+	Intensity  float64            `json:"intensity,omitempty"`
+	MotionMode string             `json:"motionMode,omitempty"`
+	Tracks     []*animation.Track `json:"tracks,omitempty"`
 }
 
 type applyBatchResponse struct {
@@ -231,7 +232,9 @@ func (h *AnimationHandler) applyBatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		// 按这一页自己的元素与讲稿生成同风格规格，而不是复用源页轨道。
-		dto, _, err := h.defaultSpecFor(page, pc, key, source.PresetID, batchBindings(page, pc))
+		// 源页若是 gaze+entrance，目标页同样追加入场模板，避免「套用此页」丢掉要点依次出现。
+		withEntrance := animation.InferMotionMode(source) == animation.MotionModeGazeEntrance
+		dto, _, err := h.defaultSpecFor(page, pc, key, source.PresetID, batchBindings(page, pc), withEntrance)
 		if err != nil {
 			res.Reason = batchReasonSpec
 			results = append(results, res)
@@ -242,7 +245,7 @@ func (h *AnimationHandler) applyBatch(w http.ResponseWriter, r *http.Request) {
 			TenantID: key.TenantID, ProjectID: key.ProjectID, SlideID: key.SlideID,
 			Language: key.Language, SourceRevisionNo: key.SourceRevisionNo,
 			Status: animation.StatusDraft, PresetID: source.PresetID,
-			Intensity: source.Intensity, Tracks: dto.Tracks,
+			Intensity: source.Intensity, MotionMode: dto.MotionMode, Tracks: dto.Tracks,
 		}
 		if err := rev.Validate(pc); err != nil {
 			res.Reason = batchReasonValidate
@@ -394,7 +397,7 @@ func (h *AnimationHandler) restoreBatch(w http.ResponseWriter, r *http.Request) 
 			TenantID: key.TenantID, ProjectID: key.ProjectID, SlideID: key.SlideID,
 			Language: key.Language, SourceRevisionNo: key.SourceRevisionNo,
 			Status: animation.StatusDraft, PresetID: snap.PresetID,
-			Intensity: snap.Intensity, Tracks: tracks,
+			Intensity: snap.Intensity, MotionMode: snap.MotionMode, Tracks: tracks,
 		}
 		if err := rev.Validate(pc); err != nil {
 			res.Status, res.Reason = "skipped", batchReasonValidate
@@ -449,7 +452,8 @@ func snapshotOf(slideID string, prev *animation.Revision) batchSlideSnapshot {
 	}
 	return batchSlideSnapshot{
 		SlideID: slideID, Existed: true, Revision: prev.Revision,
-		PresetID: prev.PresetID, Intensity: prev.Intensity, Tracks: tracks,
+		PresetID: prev.PresetID, Intensity: prev.Intensity,
+		MotionMode: prev.MotionMode, Tracks: tracks,
 	}
 }
 

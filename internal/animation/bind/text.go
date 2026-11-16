@@ -265,3 +265,10 @@ func similarity(segText, elemText, elemKind string) (float64, SimilarityDetail) 
 	}
 	return min(score, 1), SimilarityDetail{Dice: d, LCS: lc, Token: tok}
 }
+
+// Score 是字面相似度（Dice + LCS + token），供节拍表匹配与预填共用。
+// 权重与 similarity 相同；改一边等于改契约。
+func Score(text, elemText, elemKind string) float64 {
+	s, _ := similarity(text, elemText, elemKind)
+	return s
+}

@@ -4,7 +4,7 @@
 // 两端漂移的典型后果是「浏览器预览里入场是 600ms，导出的 mp4 里是 400ms」——
 // 这是客户最容易发现、也最伤信任的一类 bug（设计方案 §20.4）。
 
-import type { CubicBezier, FocusSpan, Layer, Motion } from './types';
+import type { Annotation, Box, CubicBezier, FocusSpan, Layer, Motion } from './types';
 
 /** 层在某一时刻的合成状态。 */
 export type LayerState = {
@@ -257,7 +257,11 @@ function maskAlphaOf(span: FocusSpan, tMs: number): number {
   } else {
     lock = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - span.startMs) / fade));
   }
-  return (1 - FOCUS_DIM_OPACITY) * Math.max(0, Math.min(1, lock));
+  const veil =
+    typeof span.veilAlpha === 'number' && span.veilAlpha > 0 && span.veilAlpha <= 1
+      ? span.veilAlpha
+      : 1 - FOCUS_DIM_OPACITY;
+  return veil * Math.max(0, Math.min(1, lock));
 }
 
 /**
@@ -317,6 +321,75 @@ export function focusMasks(focus: FocusSpan[] | undefined, tMs: number): FocusMa
 function validRect(span: FocusSpan): boolean {
   const r = span.rect;
   return !!r && r.w > 0 && r.h > 0;
+}
+
+export type AnnotationEval = {
+  kind: Annotation['kind'];
+  opacity: number;
+  rect?: Box;
+  shape?: string;
+  text?: string;
+  segmentId?: string;
+};
+
+/**
+ * 标注可见性：与遮罩同一条淡入/放手曲线，但不乘纱的强度。
+ * 起点那一帧 opacity=0 时返回 null（和 focusMasks 一样不挂节点）。
+ */
+/** 圈选描边色；两端同一份，避免 Remotion 金、DOM 蓝。 */
+export const CALLOUT_STROKE = '#ffd166';
+/** 1080p 下的圈选线宽（画布像素）。 */
+export const CALLOUT_STROKE_PX = 3;
+
+export type CalloutLayout = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  radius: string;
+};
+
+/**
+ * 圈选落位：显式 circle / 近方形走正圆（取短边居中），否则圆角矩形。
+ * 圆角 = min(12px, 短边×0.08)，与设计方案 §2.3 一致。
+ */
+export function calloutLayout(rect: Box, shape?: string): CalloutLayout {
+  const circle =
+    shape === 'circle' || (shape !== 'rect' && rect.h > 0 && rect.w / rect.h >= 0.75 && rect.w / rect.h <= 1.33);
+  if (circle) {
+    const s = Math.min(rect.w, rect.h);
+    return {
+      x: rect.x + (rect.w - s) / 2,
+      y: rect.y + (rect.h - s) / 2,
+      w: s,
+      h: s,
+      radius: '50%'
+    };
+  }
+  const short = Math.min(rect.w, rect.h);
+  return { x: rect.x, y: rect.y, w: rect.w, h: rect.h, radius: `${Math.min(12, short * 0.08)}px` };
+}
+
+export function evaluateAnnotation(a: Annotation | undefined, tMs: number): AnnotationEval | null {
+  if (!a) return null;
+  if (tMs < a.startMs) return null;
+  const fade = a.fadeMs ?? FOCUS_FADE_MS;
+  let opacity: number;
+  if (a.endMs && tMs >= a.endMs) {
+    const p = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - a.endMs) / fade));
+    opacity = 1 - p;
+  } else {
+    opacity = fade <= 0 ? 1 : easeOutCubic(Math.min(1, (tMs - a.startMs) / fade));
+  }
+  if (opacity <= 1e-6) return null;
+  return {
+    kind: a.kind,
+    opacity,
+    rect: a.rect,
+    shape: a.shape,
+    text: a.text,
+    segmentId: a.segmentId
+  };
 }
 
 /** 把压暗量折成实际不透明度系数：dim=0 → 1，dim=1 → FOCUS_DIM_OPACITY。 */

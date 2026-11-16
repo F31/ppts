@@ -53,8 +53,15 @@ type RemotionBackend struct {
 	// 实际超时会按片长放宽：墙钟与内容长度成正比（ADR-16 实测 2 核 1080p30 约 3.1× 实时），
 	// 常量要么掐断长片，要么给卡死的浏览器留过长的占用窗口。
 	Timeout time.Duration
+	// FFmpeg 是静止页编码器。空则取 PPTS_FFMPEG，再空则在 PATH 里找。
+	// 找不到时这些页仍进合成器，导出不会因此失败。
+	FFmpeg string
 	// Logf 用于记录 staging 诊断（可为 nil）。
 	Logf func(format string, args ...any)
+	// OnPathStats 在每个渲染桶完成后回调（path=gaze_looks|chrome|still）。可为 nil。
+	OnPathStats func(path string, pages int, d time.Duration)
+	// OnChromeShareAlarm 在实渲 chrome 占 gaze+chrome > 20% 时回调。可为 nil。
+	OnChromeShareAlarm func()
 
 	chromeOnce    sync.Once
 	chromeVersion string
@@ -90,9 +97,9 @@ func (b *RemotionBackend) Render(ctx context.Context, plan *Timeline, dir string
 
 // RenderPages 实现 PageRenderer：只渲染 pages 里的页。
 //
-// 关键不变式：**渲染第 i 页的效果与「整片渲染时渲第 i 页」逐字节相同**。
-// 做法是仍然把整份计划（含所有页）写成 plan.json，只把 frameRange 限定在目标页——
-// 合成器需要前一页的数据来画转场，少一页就会出空白而不是报错。
+// 三桶：入场层 / 切镜 / 非 fade 转场走 Chrome 逐帧；注视页（Focus.rect、无入场层）
+// 走 look 中点仍帧 + ffmpeg xfade；真静页走 encodeStillPages。找不到 ffmpeg 时
+// 后两桶退回合成器，导出不会因此失败。
 func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir string,
 	pages []int, progress func(done, total int)) (RenderReport, error) {
 	if plan == nil || len(plan.Pages) == 0 {
@@ -106,13 +113,6 @@ func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir s
 			return RenderReport{}, fmt.Errorf("render: page index %d out of range (0..%d)", i, len(plan.Pages)-1)
 		}
 	}
-	script := b.resolveScript()
-	if script == "" {
-		return RenderReport{}, errors.New("render: renderer script not configured (set PPTS_RENDERER_SCRIPT)")
-	}
-	if _, err := os.Stat(script); err != nil {
-		return RenderReport{}, fmt.Errorf("render: renderer script %q: %w", script, err)
-	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return RenderReport{}, fmt.Errorf("render: prepare workdir: %w", err)
 	}
@@ -124,6 +124,26 @@ func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir s
 	}
 	dir = absDir
 
+	chromePages, gazePages, stillPages := splitRenderPages(plan, pages)
+	if b.resolveFFmpeg() == "" && (len(stillPages) > 0 || len(gazePages) > 0) {
+		if b.Logf != nil {
+			b.Logf("render: ffmpeg not found; %d still + %d gaze pages stay on the compositor", len(stillPages), len(gazePages))
+		}
+		chromePages = append([]int(nil), pages...)
+		gazePages = nil
+		stillPages = nil
+	}
+	if ChromeShareAlarm(len(chromePages), len(gazePages)) {
+		if b.Logf != nil {
+			share := ChromeShare(len(chromePages), len(gazePages))
+			b.Logf("render: chrome share %.0f%% of gaze+chrome (gaze=%d chrome=%d still=%d) exceeds 20%%: pageNeedsCompositor may have leaked gaze pages",
+				share*100, len(gazePages), len(chromePages), len(stillPages))
+		}
+		if b.OnChromeShareAlarm != nil {
+			b.OnChromeShareAlarm()
+		}
+	}
+
 	// staging 的页集合要比「要渲的页」更大：转场页会在页首画**前一页的末帧**，
 	// 而前一页的末帧要用它自己的底板与层图（带出场动画的页，底图与「底板 + 图层」
 	// 在末帧并不相同）。只 staging 目标页，转场那几帧会悄悄用回底图烘焙版。
@@ -132,19 +152,130 @@ func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir s
 		return RenderReport{}, err
 	}
 
-	planPath := filepath.Join(dir, "plan.json")
-	payload, err := json.Marshal(staged)
-	if err != nil {
-		return RenderReport{}, fmt.Errorf("render: marshal staged plan: %w", err)
-	}
-	if err := os.WriteFile(planPath, payload, 0o640); err != nil {
-		return RenderReport{}, fmt.Errorf("render: write staged plan: %w", err)
+	done := 0
+	tick := func(n int) {
+		done = n
+		if progress != nil {
+			progress(done, len(pages))
+		}
 	}
 
-	report, err := b.exec(ctx, script, planPath, dir, pages, contentDuration(plan), progress)
-	if err != nil {
-		return RenderReport{}, err
+	var report RenderReport
+	paths := &RenderPathStats{
+		Chrome: len(chromePages),
+		Gaze:   len(gazePages),
+		Still:  len(stillPages),
 	}
+	recordPath := func(path string, n int, d time.Duration) {
+		if n <= 0 {
+			return
+		}
+		ms := d.Milliseconds()
+		switch path {
+		case RenderPathChrome:
+			paths.ChromeMs = ms
+		case RenderPathGazeLooks:
+			paths.GazeMs = ms
+		case RenderPathStill:
+			paths.StillMs = ms
+		}
+		if b.Logf != nil {
+			b.Logf("render: path=%s pages=%d duration=%s", path, n, d.Round(time.Millisecond))
+		}
+		if b.OnPathStats != nil {
+			b.OnPathStats(path, n, d)
+		}
+	}
+	if b.Logf != nil {
+		for _, i := range pages {
+			if i < 0 || i >= len(plan.Pages) {
+				continue
+			}
+			mode, looks, plate := DescribePageMotion(plan.Pages[i])
+			b.Logf("render: page %d motion_mode=%s looks=%d plate=%s", i, mode, looks, plate)
+		}
+	}
+	planPath := filepath.Join(dir, "plan.json")
+	if len(chromePages) > 0 || len(gazePages) > 0 {
+		payload, err := json.Marshal(staged)
+		if err != nil {
+			return RenderReport{}, fmt.Errorf("render: marshal staged plan: %w", err)
+		}
+		if err := os.WriteFile(planPath, payload, 0o640); err != nil {
+			return RenderReport{}, fmt.Errorf("render: write staged plan: %w", err)
+		}
+	}
+	if len(chromePages) > 0 {
+		script := b.resolveScript()
+		if script == "" {
+			return RenderReport{}, errors.New("render: renderer script not configured (set PPTS_RENDERER_SCRIPT)")
+		}
+		if _, err := os.Stat(script); err != nil {
+			return RenderReport{}, fmt.Errorf("render: renderer script %q: %w", script, err)
+		}
+		motion := map[int]int{}
+		if b.resolveFFmpeg() != "" {
+			motion = motionFrameList(staged, chromePages)
+			for i, prefix := range motion {
+				if b.Logf != nil && i >= 0 && i < len(staged.Pages) {
+					total := framesForDuration(staged.Pages[i].DurationMs, staged.FPS)
+					b.Logf("render: page %d motion window %d/%d frames", i, prefix, total)
+				}
+			}
+		}
+		chromeStart := time.Now()
+		report, err = b.exec(ctx, script, planPath, dir, chromePages, motion, contentDuration(plan), func(n, _ int) {
+			tick(n)
+		})
+		if err != nil {
+			return RenderReport{}, err
+		}
+		skippedNow := map[int]struct{}{}
+		for _, d := range report.Degraded {
+			if d.Code == DegradationSkipped {
+				skippedNow[d.Page] = struct{}{}
+			}
+		}
+		if err := holdChromeTails(ctx, b.resolveFFmpeg(), staged, dir, motion, skippedNow, b.crf(), b.gop(), b.Logf); err != nil {
+			return RenderReport{}, err
+		}
+		recordPath(RenderPathChrome, len(chromePages), time.Since(chromeStart))
+		done = len(chromePages)
+	}
+
+	if len(gazePages) > 0 {
+		if b.Logf != nil {
+			b.Logf("render: %d gaze pages via look stills, %d chrome, %d still", len(gazePages), len(chromePages), len(stillPages))
+		}
+		gctx, cancel := context.WithTimeout(ctx, renderTimeout(b.Timeout, contentDuration(plan)))
+		defer cancel()
+		base := done
+		gazeStart := time.Now()
+		if err := encodeGazePages(gctx, b, staged, dir, gazePages, planPath, func(n int) {
+			tick(base + n)
+		}); err != nil {
+			return RenderReport{}, err
+		}
+		recordPath(RenderPathGazeLooks, len(gazePages), time.Since(gazeStart))
+		done = base + len(gazePages)
+	}
+
+	if len(stillPages) > 0 {
+		if b.Logf != nil {
+			b.Logf("render: %d pages encoded without chrome, %d still use the compositor", len(stillPages), len(chromePages))
+		}
+		sctx, cancel := context.WithTimeout(ctx, renderTimeout(b.Timeout, contentDuration(plan)))
+		defer cancel()
+		base := done
+		stillStart := time.Now()
+		if err := encodeStillPages(sctx, b.resolveFFmpeg(), staged, dir, stillPages, b.crf(), b.gop(), b.Logf, func(n int) {
+			tick(base + n)
+		}); err != nil {
+			return RenderReport{}, err
+		}
+		recordPath(RenderPathStill, len(stillPages), time.Since(stillStart))
+	}
+	report.Paths = paths
 
 	// 产物校验：退出码 0 不等于有可播放的片段。缺文件或没有 ftyp box 都要报出来，
 	// 否则上游会拿着空片段去拼接，最后表现成「成片黑屏」。
@@ -175,7 +306,7 @@ func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir s
 // 字节就变了，片段缓存必须跟着失效。
 func (b *RemotionBackend) SegmentEnv() SegmentEnv {
 	return SegmentEnv{
-		Encoding:      fmt.Sprintf("crf=%d;gop=%d", b.crf(), b.gop()),
+		Encoding:      fmt.Sprintf("crf=%d;gop=%d;cs=bt709;pad=%d;looks=once;callout=end;crop=slack", b.crf(), b.gop(), platePadPx),
 		ChromeVersion: b.ChromeVersion(),
 	}
 }
@@ -234,13 +365,8 @@ func (b *RemotionBackend) stagePages(plan *Timeline, dir string, pages []int) (*
 		if !needShots && pageHasShots(page) {
 			needShots = true
 		}
-		if !needPlates {
-			for _, layer := range page.Layers {
-				if layer.ElementID != "" {
-					needPlates = true
-					break
-				}
-			}
+		if !needPlates && HasEntranceElementLayer(page.Layers) {
+			needPlates = true
 		}
 		if needPlates && needShots {
 			break
@@ -268,16 +394,10 @@ func (b *RemotionBackend) stagePages(plan *Timeline, dir string, pages []int) (*
 		// 外部计划（直接 POST 上来的 IR）不保证编译器的出层顺序，
 		// 这里再兜一次：父层必须先画，否则子层被盖掉，表现为「内容凭空消失」。
 		page.Layers = orderLayersParentsFirst(page.Layers)
-		hasElementLayer := false
-		for _, layer := range page.Layers {
-			if layer.ElementID != "" {
-				hasElementLayer = true
-				break
-			}
-		}
+		hasEntranceLayer := HasEntranceElementLayer(page.Layers)
 		hasShots := pageHasShots(*page)
 		// 只切镜、没有分层动画的页同样要读页图：镜头图是从它裁出来的。
-		if !hasElementLayer && !hasShots {
+		if !hasEntranceLayer && !hasShots {
 			continue
 		}
 		basePath, err := workPath(dir, page.BaseImage)
@@ -288,7 +408,8 @@ func (b *RemotionBackend) stagePages(plan *Timeline, dir string, pages []int) (*
 		if err != nil {
 			return nil, fmt.Errorf("render: page %d base image: %w", i, err)
 		}
-		if hasElementLayer {
+		base = CropSlack(base, plan.Width, plan.Height)
+		if hasEntranceLayer {
 			plate, patches := BuildPlate(base, page.Layers, plan.Width, plan.Height)
 
 			name := fmt.Sprintf("plates/plate_%03d.png", i)
@@ -313,6 +434,9 @@ func (b *RemotionBackend) stagePages(plan *Timeline, dir string, pages []int) (*
 					return nil, fmt.Errorf("render: page %d layer %d: %w", i, asset.Index, err)
 				}
 				page.Layers[asset.Index].Image = layerName
+				if asset.Box.W > 0 && asset.Box.H > 0 {
+					page.Layers[asset.Index].Box = asset.Box
+				}
 				if len(asset.Erased) > 0 && b.Logf != nil {
 					b.Logf("render: page %d layer %s: erased nested elements %v", i, asset.ElementID, asset.Erased)
 				}
@@ -377,7 +501,7 @@ func renderTimeout(base, content time.Duration) time.Duration {
 	return need
 }
 
-func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages []int, content time.Duration, progress func(done, total int)) (RenderReport, error) {
+func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir string, pages []int, motion map[int]int, content time.Duration, progress func(done, total int)) (RenderReport, error) {
 	timeout := renderTimeout(b.Timeout, content)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -412,6 +536,9 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 		"--gop", strconv.Itoa(gop),
 		"--page-concurrency", strconv.Itoa(pageConcurrency),
 		"--only-pages", joinInts(pages),
+	}
+	if frames := formatMotionFrames(motion); frames != "" {
+		args = append(args, "--motion-frames", frames)
 	}
 	cmd := exec.CommandContext(ctx, b.resolveNode(), args...)
 	cmd.Dir = filepath.Dir(absScript)
@@ -493,6 +620,37 @@ func (b *RemotionBackend) exec(ctx context.Context, script, planPath, outDir str
 	return report, nil
 }
 
+func (b *RemotionBackend) execStills(ctx context.Context, script, planPath, stillsPath, outDir string, content time.Duration) error {
+	timeout := renderTimeout(b.Timeout, content)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	absScript, err := filepath.Abs(script)
+	if err != nil {
+		return fmt.Errorf("render: resolve renderer script: %w", err)
+	}
+	args := []string{
+		absScript,
+		"--plan", planPath,
+		"--out-dir", outDir,
+		"--stills", stillsPath,
+		"--page-concurrency", "1",
+	}
+	cmd := exec.CommandContext(ctx, b.resolveNode(), args...)
+	cmd.Dir = filepath.Dir(absScript)
+	cmd.Env = os.Environ()
+	if chrome := b.resolveChrome(); chrome != "" {
+		cmd.Env = append(cmd.Env, "PPTS_CHROME="+chrome)
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("render: look stills timed out after %s: %w", timeout, err)
+		}
+		return fmt.Errorf("render: look stills: %w: %s", err, trimTail(out))
+	}
+	return nil
+}
+
 func (b *RemotionBackend) resolveScript() string {
 	if b.Script != "" {
 		return b.Script
@@ -515,6 +673,19 @@ func (b *RemotionBackend) resolveChrome() string {
 		return b.Chrome
 	}
 	return config.String("PPTS_CHROME", "")
+}
+
+func (b *RemotionBackend) resolveFFmpeg() string {
+	if b.FFmpeg != "" {
+		return b.FFmpeg
+	}
+	if p := config.String("PPTS_FFMPEG", ""); p != "" {
+		return p
+	}
+	if p, err := exec.LookPath("ffmpeg"); err == nil {
+		return p
+	}
+	return ""
 }
 
 // joinInts 把页序号拼成 `0,3,5`。空集合拼成空串——渲染器据此判定「没给范围」。

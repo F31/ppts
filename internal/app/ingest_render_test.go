@@ -21,11 +21,13 @@ func (s stubReader) Inspect(context.Context, io.ReaderAt, int64) (*project.Docum
 }
 
 type stubRenderer struct {
-	res *render.RenderResult
-	err error
+	res     *render.RenderResult
+	err     error
+	lastDPI int
 }
 
-func (s stubRenderer) Render(context.Context, io.ReaderAt, int64, render.RenderOptions) (*render.RenderResult, error) {
+func (s *stubRenderer) Render(_ context.Context, _ io.ReaderAt, _ int64, opts render.RenderOptions) (*render.RenderResult, error) {
+	s.lastDPI = opts.DPI
 	return s.res, s.err
 }
 
@@ -57,7 +59,7 @@ func TestParseHandlerStoresRenderedPages(t *testing.T) {
 		{Index: 0, SlideID: "slide-1"},
 		{Index: 1, SlideID: "slide-2"},
 	}}
-	renderer := stubRenderer{res: &render.RenderResult{
+	renderer := &stubRenderer{res: &render.RenderResult{
 		Pages: []render.PageImage{
 			{Index: 0, Width: 10, Height: 10, PNG: []byte("png-0")},
 			{Index: 1, Width: 10, Height: 10, PNG: []byte("png-1")},
@@ -123,7 +125,7 @@ func TestParseHandlerAlignsRenderedPagesToVisibleSlides(t *testing.T) {
 		hiddenPage(1, "slide-2"),
 		{Index: 2, SlideID: "slide-3"},
 	}}
-	renderer := stubRenderer{res: &render.RenderResult{
+	renderer := &stubRenderer{res: &render.RenderResult{
 		Pages: []render.PageImage{
 			{Index: 0, PNG: []byte("png-0")},
 			{Index: 1, PNG: []byte("png-1")},
@@ -179,7 +181,7 @@ func TestParseHandlerPageCountMismatchMarksStepFailed(t *testing.T) {
 		{Index: 0, SlideID: "slide-1"},
 		{Index: 1, SlideID: "slide-2"},
 	}}
-	renderer := stubRenderer{res: &render.RenderResult{
+	renderer := &stubRenderer{res: &render.RenderResult{
 		Pages:  []render.PageImage{{Index: 0, PNG: []byte("png-0")}},
 		Report: render.RenderReport{Renderer: "stub", PageCount: 1},
 	}}
@@ -261,7 +263,7 @@ func TestParseHandlerRenderFailureIsNonFatal(t *testing.T) {
 	}
 	steps := &stepRecorder{}
 	handler := NewParseHandler(objects, stubReader{doc: &project.Document{Pages: []*project.Page{{Index: 0, SlideID: "slide-1"}}}}).
-		WithRenderer(stubRenderer{err: errors.New("no renderer")}).WithSteps(steps)
+		WithRenderer(&stubRenderer{err: errors.New("no renderer")}).WithSteps(steps)
 
 	if err := handler.Handle(ctx, renderParseJob(t, sourceKey.String())); err != nil {
 		t.Fatalf("parse should succeed without page images: %v", err)
@@ -276,4 +278,31 @@ func TestParseHandlerRenderFailureIsNonFatal(t *testing.T) {
 		t.Fatalf("extracted document should exist: %v", err)
 	}
 	r.Close()
+}
+
+func TestParseHandlerRastersOffice16x9At192DPI(t *testing.T) {
+	ctx := context.Background()
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	sourceKey := objectstore.ObjectKey{
+		TenantID: "tenant-1", ProjectID: "project-1", Revision: "src", AssetType: "source", AssetID: "deck", Ext: "pptx",
+	}
+	if err := objects.Put(ctx, sourceKey, bytes.NewReader([]byte("pptx")), objectstore.ObjectMeta{ContentType: "application/octet-stream"}); err != nil {
+		t.Fatal(err)
+	}
+	doc := &project.Document{
+		SlideWidthEMU:  9144000,
+		SlideHeightEMU: 5143500,
+		Pages:          []*project.Page{{Index: 0, SlideID: "slide-1"}},
+	}
+	renderer := &stubRenderer{res: &render.RenderResult{
+		Pages:  []render.PageImage{{Index: 0, Width: 1920, Height: 1080, PNG: []byte("png-0")}},
+		Report: render.RenderReport{Renderer: "stub", PageCount: 1},
+	}}
+	handler := NewParseHandler(objects, stubReader{doc: doc}).WithRenderer(renderer).WithSteps(&stepRecorder{})
+	if err := handler.Handle(ctx, renderParseJob(t, sourceKey.String())); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if renderer.lastDPI != 192 {
+		t.Fatalf("parse DPI = %d, want 192 for Office 10in 16:9", renderer.lastDPI)
+	}
 }

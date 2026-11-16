@@ -89,13 +89,12 @@ type Options struct {
 	// nil = 该部署没有渲染服务，导出选项端点会明确返回 renderer_not_configured
 	// （不是"端点不存在"——前端要据此把选项置灰并说明原因，而不是当成接口 404）。
 	AnimationProbe AnimationProbe
-	// AnimationRenderer/AnimationAssets 是单页预览的两个硬依赖（渲染客户端与页图投递）。
-	// 任一为 nil 时预览路由**仍然注册**，但返回 503 preview_unavailable：
-	// 半可用的预览会让用户以为"动效没生效"，而静默 404 只会给出一句没有原因的"预览失败"。
+	// AnimationRenderer/AnimationAssets 不再参与单页预览（预览在浏览器里播放）。
+	// 字段保留，避免旧的构造点编译失败；传 nil 不影响预览。导出仍由 AnimationProbe 回答。
 	AnimationRenderer *render.Client
 	AnimationAssets   app.AssetPublisher
-	// AnimationPreviewReason 是预览依赖不齐全时的原因码（PreviewReason*）。
-	// 由部署层在构造依赖时一并给出，避免 api 层再猜一次缺了哪个环境变量。
+	// AnimationPreviewReason 非空时预览路由仍注册，但返回 503 preview_unavailable。
+	// 目前只有动画总闸关闭（animation_disabled）会走到这里。渲染地址缺失不再关闭预览。
 	AnimationPreviewReason string
 	// AnimationPreviewBudget 覆盖单页预览的预算（0 = 默认 3s）。
 	// 渲染耗时随部署硬件差异很大，硬编码会让慢机器上的预览恒定超时；
@@ -252,12 +251,18 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		WithPrefill(jobs, objects).
 		WithDeck(animationPages).
 		Register(mux, auth)
-	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只提交被请求的那一页 IR。
-	// 依赖不齐时换成"未启用"降级实例：路由照常挂载，POST 明确 503、GET 能力探测说明原因，
-	// 而不是让请求落到 404 后被前端翻成一句无从下手的"预览失败"。
-	previewer := NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages)
-	if previewer == nil {
+	// 单页预览（3.3）：逐页编辑器"改完立刻看一眼"的入口。只编译被请求的那一页，
+	// 由浏览器播放。动画总闸关闭时换成"未启用"降级实例：路由照常挂载，POST 明确 503、
+	// GET 能力探测说明原因，而不是让请求落到 404 后被前端翻成一句无从下手的"预览失败"。
+	// 渲染服务和页图目录不是预览的依赖：缺了它们导出不可用，预览仍然要能播。
+	var previewer *AnimationPreviewer
+	if opt.AnimationPreviewReason != "" {
 		previewer = NewAnimationPreviewerUnavailable(opt.AnimationPreviewReason, opt.AnimationPreviewBudget)
+	} else {
+		previewer = NewAnimationPreviewer(opt.Animation, objects, jobs, opt.AnimationAssets, opt.AnimationRenderer, animationPages)
+		if previewer == nil {
+			previewer = NewAnimationPreviewerUnavailable(PreviewReasonDisabled, opt.AnimationPreviewBudget)
+		}
 	}
 	previewer.WithBudget(opt.AnimationPreviewBudget).Register(mux, auth)
 	// 导出选项探测（3.4）：回答"这次导出能不能出动画"以及逐页规格身份。
@@ -360,7 +365,7 @@ func NewHandler(projects project.ProjectStore, uploads upload.Store, scripts nar
 		projects: projects, members: opt.Members, recorder: opt.Audit,
 	}, auth)
 	// 任务详情辅助路由（范围/受影响页/输入版本/执行步骤/traceId，B4-M6a）。
-	registerJobDetailRoutes(mux, jobs, auth)
+	registerJobDetailRoutes(mux, jobs, jobDocumentLabels{projects: projects, objects: objects}, auth)
 	// 任务列表筛选/排序/翻页（阶段筛选 + 多键排序 + keyset 游标，B4-M6b）。
 	registerJobListRoutes(mux, jobs, auth)
 	// 成员档案富字段列表/编辑（原生 HTTP，绕过 proto，成员页展示 用户名/姓名/性别/出生年月/邮箱/电话/创建时间）。

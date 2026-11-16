@@ -154,6 +154,116 @@ func TestStageSkipsPlateWithoutElementLayers(t *testing.T) {
 	}
 }
 
+func TestHasEntranceElementLayer(t *testing.T) {
+	fade := Motion{Effect: "fadeIn", DurationMs: 400}
+	if HasEntranceElementLayer(nil) {
+		t.Fatal("empty layers")
+	}
+	if HasEntranceElementLayer([]Layer{{ElementID: "e", Clips: []Motion{{Effect: "spotlight", DurationMs: 240}}}}) {
+		t.Fatal("spotlight is not an entrance layer")
+	}
+	if HasEntranceElementLayer([]Layer{{Clips: []Motion{fade}}}) {
+		t.Fatal("page-level fadeIn has no hole to punch")
+	}
+	if HasEntranceElementLayer([]Layer{{ElementID: "e"}}) {
+		t.Fatal("element without clips")
+	}
+	if !HasEntranceElementLayer([]Layer{{ElementID: "e", Clips: []Motion{fade}}}) {
+		t.Fatal("fadeIn element layer must punch")
+	}
+}
+
+// gaze+entrance：挖洞底板 + 仍走 look 链，整页不得进 Chrome。
+func TestStageGazeEntranceKeepsLookChain(t *testing.T) {
+	dir := t.TempDir()
+	white := color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF}
+	blue := color.NRGBA{0x1E, 0x3A, 0x8A, 0xFF}
+	page := flatPage(200, 100, white)
+	fillRect(page, 20, 20, 120, 80, blue)
+	writePNG(t, filepath.Join(dir, "pages", "p000.png"), page)
+
+	plan := onePagePlan("pages/p000.png", []Layer{layer("title", Box{X: 20, Y: 20, W: 100, H: 60})})
+	plan.Pages[0].Focus = []FocusSpan{{
+		StartMs: 0, ElementID: "title", Rect: &Box{X: 20, Y: 20, W: 100, H: 60},
+	}}
+	plan.Pages[0].Transition = Transition{Type: "fade", DurationMs: 280}
+
+	staged, err := (&RemotionBackend{}).stage(plan, dir)
+	if err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if staged.Pages[0].PlateImage != "plates/plate_000.png" {
+		t.Fatalf("plateImage = %q, want plates/plate_000.png", staged.Pages[0].PlateImage)
+	}
+	if !HasEntranceElementLayer(staged.Pages[0].Layers) {
+		t.Fatal("fadeIn element layer must punch")
+	}
+	if !isGazeLookPage(staged.Pages[0]) {
+		t.Fatal("gaze+entrance with Focus.rect must stay on the look chain")
+	}
+	if pageNeedsCompositor(staged.Pages[0]) {
+		t.Fatal("look-chain pages must leave Chrome")
+	}
+	chrome, gaze, still := splitRenderPages(staged, []int{0})
+	if len(gaze) != 1 || len(chrome) != 0 || len(still) != 0 {
+		t.Fatalf("buckets chrome=%v gaze=%v still=%v, want gaze only", chrome, gaze, still)
+	}
+
+	plateFile, err := os.Open(filepath.Join(dir, "plates", "plate_000.png"))
+	if err != nil {
+		t.Fatalf("plate file: %v", err)
+	}
+	defer plateFile.Close()
+	plate, err := png.Decode(plateFile)
+	if err != nil {
+		t.Fatalf("decode plate: %v", err)
+	}
+	if got := plate.At(50, 40); !sameColor(got, white) {
+		t.Errorf("plate at element center = %v, want white (hole)", got)
+	}
+}
+
+// 注视页有 Focus、没有入场层：底板必须是完整页图。Focus 仍让它进 Chrome（PR5 才分流）。
+func TestStageSkipsPlateForGazeFocusWithoutEntrance(t *testing.T) {
+	dir := t.TempDir()
+	page := flatPage(200, 100, color.NRGBA{0xFF, 0xFF, 0xFF, 0xFF})
+	writePNG(t, filepath.Join(dir, "pages", "p000.png"), page)
+
+	plan := onePagePlan("pages/p000.png", nil)
+	plan.Pages[0].Focus = []FocusSpan{{
+		StartMs: 0, ElementID: "a", Rect: &Box{X: 10, Y: 10, W: 80, H: 40},
+	}}
+	staged, err := (&RemotionBackend{}).stage(plan, dir)
+	if err != nil {
+		t.Fatalf("stage: %v", err)
+	}
+	if staged.Pages[0].PlateImage != "" {
+		t.Fatalf("gaze page must keep the intact PNG, got plate %q", staged.Pages[0].PlateImage)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "plates")); !os.IsNotExist(err) {
+		t.Fatal("plate dir must not exist for a gaze page")
+	}
+	if pageNeedsCompositor(staged.Pages[0]) {
+		t.Fatal("gaze look pages must leave Chrome")
+	}
+	if !isGazeLookPage(staged.Pages[0]) {
+		t.Fatal("gaze page must go to encodeGazePage, not encodeStillPages")
+	}
+}
+
+func TestSegmentEnvLooksOnce(t *testing.T) {
+	env := (&RemotionBackend{}).SegmentEnv()
+	if !strings.Contains(env.Encoding, "looks=once") {
+		t.Fatalf("encoding = %q, want looks=once", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "crop=slack") {
+		t.Fatalf("encoding = %q, want crop=slack (1px pdftoppm crop busts the segment cache)", env.Encoding)
+	}
+	if strings.Contains(env.Encoding, "looks=fit") {
+		t.Fatal("looks=fit must not remain in the cache key")
+	}
+}
+
 // 噪声底要留下 warning：补丁在照片底上可能可见，静默通过等于把问题藏到成片里。
 func TestStageLogsNoisyPatch(t *testing.T) {
 	dir := t.TempDir()

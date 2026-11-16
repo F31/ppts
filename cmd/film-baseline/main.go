@@ -17,6 +17,11 @@
 //	go run ./cmd/film-baseline -out tmp/v13real -chrome /path/to/chrome
 //	python3 scripts/review/dom-ssim.py --plan tmp/v13real/render/plan.json \
 //	    --pkg tmp/v13real/pkg --segments tmp/v13real/render --out tmp/v13real/gate
+//
+// 注视夹具（V13 稳态中点；HTML 探针 caption:off）：
+//
+//	go run ./cmd/film-baseline -out tmp/v13gaze -gaze -shots-per-page 1
+//	科技 punch-in 再加 -preset tech-dynamic（PR9 之后两端才同构图）。
 package main
 
 import (
@@ -72,6 +77,7 @@ func main() {
 		shots       = flag.Int("shots-per-page", 2, "每页镜头数（1 = 不切镜；2 = 整页 + 一个特写）")
 		pageScale   = flag.Int("page-scale", 2, "页图相对画布的倍率（生产是 300 DPI ≈ 2.3×；1× 会让特写被放大）")
 		noRender    = flag.Bool("no-render", false, "只造包与计划，不跑成片（调试用）")
+		gaze        = flag.Bool("gaze", false, "注视夹具：spotlight + Focus.rect，无入场层、无切镜（V13 注视取样）")
 	)
 	flag.Parse()
 
@@ -84,6 +90,9 @@ func main() {
 	}
 	if *pageCC < 1 {
 		*pageCC = 1
+	}
+	if *gaze {
+		*shots = 1
 	}
 
 	root, err := filepath.Abs(*outDir)
@@ -125,11 +134,11 @@ func main() {
 		}
 	}
 
-	plan, err := compilePlan(*width, *height, *pages, durationMs, *preset, boxes, *shots)
+	plan, err := compilePlan(*width, *height, *pages, durationMs, *preset, boxes, *shots, *gaze)
 	if err != nil {
 		log.Fatalf("film-baseline: %v", err)
 	}
-	if err := checkPlan(plan, *shots); err != nil {
+	if err := checkPlan(plan, *shots, *gaze); err != nil {
 		log.Fatalf("film-baseline: %v", err)
 	}
 
@@ -319,7 +328,7 @@ func blend(dst, src color.NRGBA) color.NRGBA {
 // 走 Compiler 而不是手写 Timeline：手写的计划只能证明「渲染器能读我们以为的格式」，
 // 而 Compile 会把 EMU→像素、触发锚点、clip 重叠截断、锚点推导这些规则一起走一遍。
 // 夹具里出现诊断就说明输入写歪了，直接失败比「带着诊断往下跑」诚实。
-func compilePlan(w, h, pages int, durationMs int64, preset string, boxes []box, shotCount int) (*render.Timeline, error) {
+func compilePlan(w, h, pages int, durationMs int64, preset string, boxes []box, shotCount int, gaze bool) (*render.Timeline, error) {
 	compiler, err := render.NewCompiler(render.Options{
 		Canvas:         design.Canvas{Width: w, Height: h},
 		SlideWidthEMU:  slideWidthEMU,
@@ -348,6 +357,20 @@ func compilePlan(w, h, pages int, durationMs int64, preset string, boxes []box, 
 					Width: int64(math.Round(float64(b.w) * emuPerPx)), Height: int64(math.Round(float64(b.h) * emuPerPx)),
 				},
 			})
+			if gaze {
+				start := int64(k) * (durationMs / int64(len(boxes)+1))
+				if start < 0 {
+					start = 0
+				}
+				tracks = append(tracks, &animation.Track{
+					ElementID: id, Kind: animation.KindShape,
+					Clips: []*animation.Clip{
+						{ID: fmt.Sprintf("%s-spot", id), Type: "spotlight", StartMs: start,
+							DurationMs: 240, Easing: "easeOut", Trigger: "onEnter"},
+					},
+				})
+				continue
+			}
 			// 两条 clip 叠在同一层上（淡入 + 上移）：这是产品里最常见的入场，
 			// 也是两端最容易分叉的地方——透明度与位移分别求值，再合成一个 transform。
 			tracks = append(tracks, &animation.Track{
@@ -361,14 +384,22 @@ func compilePlan(w, h, pages int, durationMs int64, preset string, boxes []box, 
 				},
 			})
 		}
+		rev := &animation.Revision{PresetID: preset, Intensity: 1, Tracks: tracks}
+		if gaze {
+			rev.MotionMode = animation.MotionModeGaze
+		}
+		var shots []render.PageShotInput
+		if !gaze {
+			shots = pageShotInputs(durationMs, shotCount, boxes, w, h, emuPerPx)
+		}
 		inputs = append(inputs, render.PageInput{
 			Index:      i,
 			SlideID:    fmt.Sprintf("slide-%02d", i+1),
 			DurationMs: durationMs,
 			BaseImage:  fmt.Sprintf("pages/p%03d.png", i+1),
 			Elements:   elements,
-			Revision:   &animation.Revision{PresetID: preset, Intensity: 1, Tracks: tracks},
-			Shots:      pageShotInputs(durationMs, shotCount, boxes, w, h, emuPerPx),
+			Revision:   rev,
+			Shots:      shots,
 		})
 	}
 	return compiler.Compile(inputs)
@@ -442,9 +473,12 @@ func cropEMU(b box, w, h int, emuPerPx float64) render.EMUBox {
 
 // checkPlan 把「夹具不合格」与「判据不通过」分开：这里失败意味着输入本身不成立，
 // 后面的 SSIM 跑不跑都没有意义。
-func checkPlan(plan *render.Timeline, wantShots int) error {
+func checkPlan(plan *render.Timeline, wantShots int, gaze bool) error {
 	if plan == nil || len(plan.Pages) == 0 {
 		return fmt.Errorf("计划为空")
+	}
+	if gaze {
+		return checkGazePlan(plan)
 	}
 	layers, clips := 0, 0
 	for _, page := range plan.Pages {
@@ -479,6 +513,36 @@ func checkPlan(plan *render.Timeline, wantShots int) error {
 		switch d.Code {
 		case "plan_motion_failed", "anchor_missing", render.DiagClipTruncated, render.DiagCameraInvalid:
 			return fmt.Errorf("编译器诊断 page %d %s: %s", d.Page, d.Code, d.Message)
+		}
+	}
+	return nil
+}
+
+func checkGazePlan(plan *render.Timeline) error {
+	idxs := make([]int, len(plan.Pages))
+	for i := range plan.Pages {
+		idxs[i] = i
+	}
+	chrome, gaze, still := render.SplitRenderPages(plan, idxs)
+	if len(gaze) != len(plan.Pages) || len(chrome) != 0 {
+		return fmt.Errorf("注视夹具必须整页走 gaze_looks（gaze=%d chrome=%d still=%d, pages=%d）",
+			len(gaze), len(chrome), len(still), len(plan.Pages))
+	}
+	for i, page := range plan.Pages {
+		if len(page.Layers) != 0 {
+			return fmt.Errorf("page %d 注视夹具不得有入场层（layers=%d）", i, len(page.Layers))
+		}
+		if len(page.Shots) != 0 {
+			return fmt.Errorf("page %d 注视夹具不得有切镜", i)
+		}
+		rects := 0
+		for _, f := range page.Focus {
+			if f.Rect != nil && f.Rect.W > 0 && f.Rect.H > 0 {
+				rects++
+			}
+		}
+		if rects == 0 {
+			return fmt.Errorf("page %d 没有 Focus.rect：V13 会变成比两张静图", i)
 		}
 	}
 	return nil

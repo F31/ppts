@@ -4,18 +4,25 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"math"
 	"sort"
 )
 
 // 底板补洞的判定参数。
 const (
-	// plateRingPx 是采样环的宽度（像素，图像坐标系）。1px 在高分底图上样本太少，
-	// 2px 在中位色上更稳，同时仍能贴合元素外沿的底色。
-	plateRingPx = 2
+	// plateRingPx 是采样环的宽度（像素，图像坐标系）。洞撑开之后再采外沿，
+	// 3px 比贴着字采 2px 更不容易把邻行笔画算进底色。
+	plateRingPx = 3
+	// platePadPx 是填洞和层图裁切共用的外扩（图像像素）。IR 盒子经常贴着字形；
+	// 洞和层图必须同一尺寸，否则底板抹掉了盒外笔画，层图又裁不到，成片里字被切掉。
+	// 不再对噪声页额外扩 12px 或用四角底色盖：那会在邻行上盖出一块块色斑。
+	platePadPx = 6
 	// plateNoiseThreshold 是「这圈颜色不平整」的阈值（每通道 max-min，0–255）。
-	// 超过它多半意味着底图是照片/强渐变，中位色补丁会露馅——此时仍然补，
-	// 但必须记一条 warning，让下游知道这页的画面可能不干净。
+	// 超过它仍用外沿中位色填洞，只记 warning。
 	plateNoiseThreshold = 48
+	// plateFullPageRatio 超过这个面积就不再填：几乎整页的盒子没有外沿，
+	// 用四角颜色糊整页会把幻灯片洗掉。
+	plateFullPageRatio = 0.92
 )
 
 // PlatePatch 是一次补洞的留痕。
@@ -56,14 +63,12 @@ func BuildPlate(base image.Image, layers []Layer, canvasW, canvasH int) (image.I
 		if layer.ElementID == "" || layer.Box.W <= 0 || layer.Box.H <= 0 {
 			continue
 		}
-		rect := scaleRect(layer.Box, sx, sy).Intersect(plate.Bounds())
-		if rect.Empty() {
+		rect := paddedLayerRect(layer.Box, sx, sy, plate.Bounds())
+		if rect.Empty() || nearlyFullFrame(rect, plate.Bounds()) {
 			continue
 		}
 		fill, spread, ok := ringMedianColor(plate, rect, plateRingPx)
 		if !ok {
-			// 元素几乎占满整页，没有外环可采样。跳过补洞而不是拿全图均值——
-			// 那会把整页的平均色糊到元素上，比残影更难看。
 			continue
 		}
 		draw.Draw(plate, rect, &image.Uniform{C: fill}, image.Point{}, draw.Src)
@@ -112,6 +117,44 @@ func median(values []uint8) uint8 {
 	return sorted[len(sorted)/2]
 }
 
+func inflateRect(r image.Rectangle, pad int, bounds image.Rectangle) image.Rectangle {
+	if pad <= 0 {
+		return r.Intersect(bounds)
+	}
+	return image.Rect(r.Min.X-pad, r.Min.Y-pad, r.Max.X+pad, r.Max.Y+pad).Intersect(bounds)
+}
+
+func nearlyFullFrame(r, bounds image.Rectangle) bool {
+	if r.Empty() || bounds.Empty() {
+		return true
+	}
+	if r == bounds {
+		return true
+	}
+	area := r.Dx() * r.Dy()
+	full := bounds.Dx() * bounds.Dy()
+	if full <= 0 {
+		return true
+	}
+	return float64(area) >= plateFullPageRatio*float64(full)
+}
+
+func paddedLayerRect(box Box, sx, sy float64, bounds image.Rectangle) image.Rectangle {
+	return inflateRect(scaleRect(box, sx, sy).Intersect(bounds), platePadPx, bounds)
+}
+
+func boxFromScaledRect(r image.Rectangle, sx, sy float64) Box {
+	if sx <= 0 || sy <= 0 || r.Empty() {
+		return Box{}
+	}
+	return Box{
+		X: int(math.Round(float64(r.Min.X) / sx)),
+		Y: int(math.Round(float64(r.Min.Y) / sy)),
+		W: int(math.Round(float64(r.Dx()) / sx)),
+		H: int(math.Round(float64(r.Dy()) / sy)),
+	}
+}
+
 func maxSpread(channels ...[]uint8) int {
 	spread := 0
 	for _, values := range channels {
@@ -150,6 +193,8 @@ type LayerAsset struct {
 	Index     int
 	ElementID string
 	Image     *image.NRGBA
+	// Box 是裁切后在画布上的位置，与底板挖洞同一扩边，合成器必须用它而不是 IR 原盒。
+	Box Box
 	// Erased 记录为出图而抹掉的其它元素 id：排查「这里为什么少一块」时有用。
 	Erased []string
 }
@@ -196,8 +241,8 @@ func BuildLayerAssets(base image.Image, layers []Layer, canvasW, canvasH int) []
 		if layer.ElementID == "" || layer.Box.W <= 0 || layer.Box.H <= 0 {
 			continue
 		}
-		rect := scaleRect(layer.Box, sx, sy).Intersect(src.Bounds())
-		if rect.Empty() {
+		rect := paddedLayerRect(layer.Box, sx, sy, src.Bounds())
+		if rect.Empty() || nearlyFullFrame(rect, src.Bounds()) {
 			continue
 		}
 		fill, _, ok := ringMedianColor(src, rect, plateRingPx)
@@ -225,7 +270,7 @@ func BuildLayerAssets(base image.Image, layers []Layer, canvasW, canvasH int) []
 			if !other.rect.In(self.rect) || other.rect == self.rect {
 				continue
 			}
-			draw.Draw(frame, other.rect, &image.Uniform{C: other.fill}, image.Point{}, draw.Src)
+			draw.Draw(frame, other.rect.Intersect(self.rect), &image.Uniform{C: other.fill}, image.Point{}, draw.Src)
 			erased = append(erased, other.id)
 		}
 		crop := image.NewNRGBA(image.Rect(0, 0, self.rect.Dx(), self.rect.Dy()))
@@ -234,6 +279,7 @@ func BuildLayerAssets(base image.Image, layers []Layer, canvasW, canvasH int) []
 			Index:     self.index,
 			ElementID: self.id,
 			Image:     crop,
+			Box:       boxFromScaledRect(self.rect, sx, sy),
 			Erased:    erased,
 		})
 	}

@@ -78,3 +78,136 @@ func (c *Compiler) toBox(b *EMUBox, page int, elementID string) (Box, bool, *Dia
 	}
 	return box, true, diag
 }
+
+// GazeRectPadPx 是注视矩形的外扩（页坐标像素）。夹到画布之后才写进 Focus.rect。
+const GazeRectPadPx = 8
+
+// gazeMaxFrameRatio 是「卡片底」相对页面积的上限。再大就是分区/整页底，不能当圈选。
+// 与 bind.cluster 的 0.4 同一条线：六宫格卡片约 7%，两列分区常超过 40%。
+const gazeMaxFrameRatio = 0.40
+
+// gazeCoverRatio 是「容器包住了这个元素」的面积门槛。PPT 标题盒会略伸出卡片描边，
+// 要求 100% 包含会扩不上去，圈选就停在标题上。
+const gazeCoverRatio = 0.80
+
+// gazeRectNearPx 是「同一张卡」的像素容差：扩到同一容器后坐标可能差 1–2px。
+const gazeRectNearPx = 4
+
+// PadGazeRect 把焦点盒外扩 pad 并夹到画布内。输入无面积时原样返回。
+func PadGazeRect(b Box, canvasW, canvasH int) Box {
+	if b.W <= 0 || b.H <= 0 || canvasW <= 0 || canvasH <= 0 {
+		return b
+	}
+	x := b.X - GazeRectPadPx
+	y := b.Y - GazeRectPadPx
+	w := b.W + GazeRectPadPx*2
+	h := b.H + GazeRectPadPx*2
+	if x < 0 {
+		w += x
+		x = 0
+	}
+	if y < 0 {
+		h += y
+		y = 0
+	}
+	if x+w > canvasW {
+		w = canvasW - x
+	}
+	if y+h > canvasH {
+		h = canvasH - y
+	}
+	if w <= 0 || h <= 0 {
+		return b
+	}
+	return Box{X: x, Y: y, W: w, H: h}
+}
+
+func boxArea(b Box) float64 {
+	if b.W <= 0 || b.H <= 0 {
+		return 0
+	}
+	return float64(b.W) * float64(b.H)
+}
+
+func boxIntersection(a, b Box) Box {
+	x1 := a.X
+	if b.X > x1 {
+		x1 = b.X
+	}
+	y1 := a.Y
+	if b.Y > y1 {
+		y1 = b.Y
+	}
+	x2 := a.X + a.W
+	if b.X+b.W < x2 {
+		x2 = b.X + b.W
+	}
+	y2 := a.Y + a.H
+	if b.Y+b.H < y2 {
+		y2 = b.Y + b.H
+	}
+	if x2 <= x1 || y2 <= y1 {
+		return Box{}
+	}
+	return Box{X: x1, Y: y1, W: x2 - x1, H: y2 - y1}
+}
+
+func boxCovers(outer, inner Box) bool {
+	innerA := boxArea(inner)
+	if innerA <= 0 {
+		return false
+	}
+	return boxArea(boxIntersection(outer, inner))/innerA >= gazeCoverRatio
+}
+
+func rectNear(a, b Box) bool {
+	dx := a.X - b.X
+	if dx < 0 {
+		dx = -dx
+	}
+	dy := a.Y - b.Y
+	if dy < 0 {
+		dy = -dy
+	}
+	dw := a.W - b.W
+	if dw < 0 {
+		dw = -dw
+	}
+	dh := a.H - b.H
+	if dh < 0 {
+		dh = -dh
+	}
+	return dx <= gazeRectNearPx && dy <= gazeRectNearPx && dw <= gazeRectNearPx && dh <= gazeRectNearPx
+}
+
+// expandGazeRect 把标题/编号的小盒扩到最小的合法卡片底。没有合适容器时原样返回。
+func expandGazeRect(box Box, frames []Box, pageArea float64) Box {
+	elArea := boxArea(box)
+	if elArea <= 0 {
+		return box
+	}
+	best := box
+	bestArea := 0.0
+	found := false
+	for _, f := range frames {
+		fa := boxArea(f)
+		if fa <= elArea {
+			continue
+		}
+		if pageArea > 0 && fa/pageArea >= gazeMaxFrameRatio {
+			continue
+		}
+		if !boxCovers(f, box) {
+			continue
+		}
+		if !found || fa < bestArea {
+			best = f
+			bestArea = fa
+			found = true
+		}
+	}
+	if !found {
+		return box
+	}
+	return best
+}

@@ -42,7 +42,7 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 			SegmentOffsets: p.SegmentOffsets, Shots: p.Shots,
 			// 焦点在这一层已经换算成画布像素：编译器的职责是排版与动效，
 			// 不该再替内容层决定"这段话在讲哪根柱子"。
-			Focus: p.Focus,
+			Focus: p.Focus, BeatSheet: p.BeatSheet, GazeDenyIDs: p.GazeDenyIDs,
 		})
 		preDiags = append(preDiags, p.Diagnostics...)
 	}
@@ -94,13 +94,21 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 		// 先把这两项装好，再决定要不要为这一页落一条：过去的写法是「没有分层动画就
 		// 整页跳过」，于是同一份 IR，MP4 在指、网页版全亮，两边都没有报错。
 		anim := share.PageAnimation{
-			Transition: share.SlideTransition{Type: page.Transition.Type, DurationMs: page.Transition.DurationMs},
-			Focus:      slideFocus(page.Focus),
-			Shots:      shots,
+			Transition:    share.SlideTransition{Type: page.Transition.Type, DurationMs: page.Transition.DurationMs},
+			Focus:         slideFocus(page.Focus),
+			Shots:         shots,
+			Annotations:   slideAnnotations(page.Annotations),
+			LookCrop:      page.LookCrop,
+			LookCropPadPx: page.LookCropPadPx,
 		}
 
 		if !hasAnimatedLayer(page.Layers) {
 			// 无分层动画的页：只有在还有别的东西要写时才落条目（焦点/镜头/转场）。
+			if logger != nil {
+				mode, looks, plate := render.DescribePageMotion(page)
+				logger.Info("animation bundle page",
+					"page", i, "motion_mode", mode, "looks", looks, "plate", plate)
+			}
 			if !pageNeedsBundleEntry(anim) {
 				continue
 			}
@@ -121,12 +129,18 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 			}
 			continue
 		}
+		base = render.CropSlack(base, plan.Width, plan.Height)
 
 		plateImg, _ := render.BuildPlate(base, page.Layers, plan.Width, plan.Height)
 		assets := render.BuildLayerAssets(base, page.Layers, plan.Width, plan.Height)
 		if plateImg == nil || len(assets) == 0 {
 			// 挖空不可用（元素几乎占满整页、取不到外环色）：退回整页图 + 无层。
 			// 这一页会「不动的入场」——但至少画面是对的，不会出现纯色疤。
+			if logger != nil {
+				mode, looks, _ := render.DescribePageMotion(page)
+				logger.Info("animation bundle page",
+					"page", i, "motion_mode", mode, "looks", looks, "plate", "skipped")
+			}
 			out[i] = anim
 		} else {
 			platePNG, err := encodePNG(plateImg)
@@ -141,6 +155,10 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 					continue
 				}
 				layer := page.Layers[a.Index]
+				box := layer.Box
+				if a.Box.W > 0 && a.Box.H > 0 {
+					box = a.Box
+				}
 				layerPNG, err := encodePNG(a.Image)
 				if err != nil {
 					return nil, fmt.Errorf("animation: encode layer %s on page %d: %w", a.ElementID, i, err)
@@ -148,13 +166,18 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 				layers = append(layers, share.LayerAsset{
 					ElementID: layer.ElementID,
 					Kind:      layer.Kind,
-					Box:       share.SlideBox{X: layer.Box.X, Y: layer.Box.Y, W: layer.Box.W, H: layer.Box.H},
+					Box:       share.SlideBox{X: box.X, Y: box.Y, W: box.W, H: box.H},
 					PNG:       layerPNG,
 					Origin:    layer.Origin,
 					Clips:     bundleClips(layer.Clips),
 				})
 			}
 			anim.Layers = layers
+			if logger != nil {
+				mode, looks, _ := render.DescribePageMotion(page)
+				logger.Info("animation bundle page",
+					"page", i, "motion_mode", mode, "looks", looks, "plate", "built")
+			}
 			out[i] = anim
 		}
 	}
@@ -326,6 +349,7 @@ func (h *ExportHandler) htmlBundleAnimations(ctx context.Context, job *pipeline.
 		PagePNGs:  pagePNGs,
 		// HTML 包自带页图：不走资产发布器，也就不用为一次包导出往渲染资产根写一份。
 		BaseImagePaths: paths,
+		Subtitles:      bundle.Timeline.Subtitles,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("animation: assemble pages: %w", err)
@@ -343,6 +367,7 @@ func (h *ExportHandler) htmlBundleAnimations(ctx context.Context, job *pipeline.
 	if err != nil {
 		return nil, err
 	}
+	h.observeCompiledPlan(plan)
 	// 对带 Crop 的页做 300 DPI 重渲并替换源图，使特写清晰（graceful 降级，见函数）。
 	h.rerenderHiResPages(ctx, job, plan, bundle, pagePNGs)
 	return BundleAnimations(plan, pagePNGs, h.logger)
@@ -418,18 +443,11 @@ func pageHasCrop(page render.Page) bool {
 	return false
 }
 
-// hasAnimatedLayer 判断一页是否有元素级动画。
+// hasAnimatedLayer 判断一页是否有入场元素层，因而需要挖洞。
 //
-// 只看 clips 是否非空，不看 layers 数量：编译器会为每条轨道出一层，
-// 但一条轨道可能一个 clip 都没有（例如触发器解析失败后被跳过），
-// 那种页挖空出图纯属浪费体积，还多了一批不该动的层。
+// 注视页 spotlight 不成层；整页 fadeIn 没有可挖的元素框。两者都不得出底板。
 func hasAnimatedLayer(layers []render.Layer) bool {
-	for _, l := range layers {
-		if len(l.Clips) > 0 {
-			return true
-		}
-	}
-	return false
+	return render.HasEntranceElementLayer(layers)
 }
 
 // pageNeedsBundleEntry 判断这一页在清单里要不要占一条。
@@ -438,7 +456,7 @@ func hasAnimatedLayer(layers []render.Layer) bool {
 // 最需要指的那一页往往一个层都没有。真正什么都没有的静态页不占，M6-1 的包必须
 // 逐字节不变（清单里多一条空动画就是一次回归）。
 func pageNeedsBundleEntry(anim share.PageAnimation) bool {
-	if len(anim.Shots) > 0 || len(anim.Focus) > 0 {
+	if len(anim.Shots) > 0 || len(anim.Focus) > 0 || len(anim.Annotations) > 0 || anim.LookCrop {
 		return true
 	}
 	// type=none 与「没有转场」同义：写进清单只是多一个字段，播放器按 none 直接切。
@@ -464,6 +482,24 @@ func bundleClips(clips []render.Motion) []share.Clip {
 	return out
 }
 
+func slideAnnotations(in []render.Annotation) []share.SlideAnnotation {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideAnnotation, 0, len(in))
+	for _, a := range in {
+		sa := share.SlideAnnotation{
+			Kind: a.Kind, StartMs: a.StartMs, EndMs: a.EndMs, FadeMs: a.FadeMs,
+			ElementID: a.ElementID, Shape: a.Shape, Text: a.Text, SegmentID: a.SegmentID,
+		}
+		if a.Rect != nil {
+			sa.Rect = &share.SlideBox{X: a.Rect.X, Y: a.Rect.Y, W: a.Rect.W, H: a.Rect.H}
+		}
+		out = append(out, sa)
+	}
+	return out
+}
+
 func encodePNG(img image.Image) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, img); err != nil {
@@ -481,7 +517,7 @@ func slideFocus(in []render.FocusSpan) []share.SlideFocus {
 	out := make([]share.SlideFocus, 0, len(in))
 	for _, f := range in {
 		sf := share.SlideFocus{StartMs: f.StartMs, ElementID: f.ElementID,
-			EndMs: f.EndMs, FadeMs: f.FadeMs}
+			EndMs: f.EndMs, FadeMs: f.FadeMs, VeilAlpha: f.VeilAlpha}
 		if f.Rect != nil {
 			sf.Rect = &share.SlideBox{X: f.Rect.X, Y: f.Rect.Y, W: f.Rect.W, H: f.Rect.H}
 		}

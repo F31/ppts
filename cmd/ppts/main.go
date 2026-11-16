@@ -40,6 +40,8 @@ func main() {
 		err = runWorker()
 	case "migrate":
 		err = runMigrate()
+	case "apply-animation":
+		err = runApplyAnimation(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Printf("ppts %s\n", version)
 	case "help", "-h", "--help":
@@ -62,8 +64,9 @@ func printUsage() {
 命令:
   server    启动 API + 前端控制台（缺省命令；配置见 packaging/config.env.example）
   worker    启动任务 worker（依赖 ffmpeg、LibreOffice、poppler、中文字体）
-  migrate   幂等应用数据库迁移（superuser DSN：PPTS_MIGRATE_DATABASE_URL，回退 PPTS_DATABASE_URL）
-  version   打印版本
+  migrate           幂等应用数据库迁移（superuser DSN：PPTS_MIGRATE_DATABASE_URL，回退 PPTS_DATABASE_URL）
+  apply-animation   按 catalog 套用动效到整份 deck（与 HTTP apply-all 同一路径）
+  version           打印版本
 `)
 }
 

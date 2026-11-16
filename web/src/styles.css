@@ -615,6 +615,8 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 
 /* ============ 工作台（三栏） ============ */
 .workspace-v2 { display: grid; gap: 14px; }
+/* 与下方两行网格配套：标题、任务提示、冲突面板共用第一行，避免提示条占用 1fr。 */
+.workspace-head { display: grid; gap: 12px; align-content: start; min-width: 0; }
 .editor-header { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .editor-header-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .editor-header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
@@ -696,7 +698,7 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .field-label { display: grid; gap: 6px; font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
 .playback-column { display: grid; gap: 12px; }
 /* B3-M5：生成中继续编辑的顶部快照提示 */
-.snapshot-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 14px; border: 1px solid var(--info-border); border-radius: 12px; background: var(--info-soft); }
+.snapshot-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; align-self: start; width: 100%; margin: 0; padding: 10px 14px; border: 1px solid var(--info-border); border-radius: 12px; background: var(--info-soft); box-sizing: border-box; }
 .snapshot-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent-info); box-shadow: 0 0 0 4px rgba(103,232,249,.18); animation: snapshot-pulse 1.6s ease-in-out infinite; flex: none; }
 @keyframes snapshot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .snapshot-text { display: grid; gap: 2px; flex: 1 1 320px; min-width: 0; }
@@ -784,6 +786,8 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .steps-section { margin-top: 18px; }
 .steps-section .table-head h2 { margin: 6px 0 10px; }
 .steps-scroll { max-height: 340px; overflow: auto; }
+.step-subject { max-width: 28rem; white-space: normal; }
+.step-subject strong { display: block; }
 .snapshot-raw { margin: 8px 0 0; padding: 12px; max-height: 240px; overflow: auto; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; background: rgba(5, 10, 20, .72); color: #edf1f7; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.6; }
 /* 步骤状态色与任务状态色分开命名（step-*），避免与 .state-tag.success 之类的既有语义混淆。 */
 .state-tag.step-pending { color: #67e8f9; background: rgba(103,232,249,.12); }
@@ -1336,6 +1340,7 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .animation-drawer { width: 460px; }
 .animation-slide { margin: 2px 0 0; color: var(--text-muted); font-size: 12.5px; }
 .animation-block { display: grid; gap: 8px; }
+.animation-advanced > summary { cursor: pointer; }
 .animation-presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .animation-preset { display: grid; gap: 4px; text-align: left; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-body); cursor: pointer; }
 .animation-preset strong { color: var(--text-strong); font-size: 13px; }
@@ -1343,6 +1348,8 @@ input { border: 1px solid var(--border-strong); border-radius: 8px; padding: 9px
 .animation-preset.active { border-color: rgba(103, 232, 249, .6); box-shadow: inset 0 0 0 1px rgba(103, 232, 249, .35); }
 .animation-preset:disabled { opacity: .55; cursor: not-allowed; }
 .animation-intensity { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 12px; color: var(--text-muted); }
+.animation-entrance { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--text); }
+.animation-entrance input { margin-top: 3px; }
 .animation-intensity strong { color: var(--text-strong); font-variant-numeric: tabular-nums; }
 .animation-intensity input { grid-column: 1 / -1; }
 .animation-block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -1543,11 +1550,37 @@ html[data-theme="light"] .user-menu-note { color: #64748b; }
 /* ============ 一键成片 / 主舞台动效预览 ============ */
 /* 画布型交互：动效编辑在右侧抽屉，观看统一在中间主舞台。抽屉预览成功后自动收起，
    避免全屏遮罩挡住画面、也避免抽屉与主区域同时出现两个画面。 */
-.slide-stage-video { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
-.slide-stage-video video {
-  flex: 1 1 auto; width: 100%; min-height: 0; object-fit: contain;
-  border-radius: 10px; background: #05080f; border: 1px solid var(--border);
+.slide-stage-preview { display: flex; flex-direction: column; gap: 6px; min-height: 0; height: 100%; }
+.slide-stage-playback { display: flex; flex-direction: column; gap: 6px; min-height: 0; flex: 1 1 auto; }
+.browser-stage-fit {
+  flex: 1 1 auto; min-height: 180px; width: 100%;
+  display: flex; align-items: center; justify-content: center;
 }
+.browser-stage {
+  position: relative; max-width: 100%; max-height: 100%; overflow: hidden;
+  background: #05080f; border-radius: 10px; border: 1px solid var(--border);
+}
+.browser-stage .ppts-slide {
+  position: absolute; inset: 0; display: block; width: 100%; height: 100%;
+  object-fit: contain; background: #000;
+}
+.browser-stage .ppts-slide[hidden] { display: none; }
+.browser-stage .ppts-slide.ppts-shot { object-fit: fill; }
+.browser-stage .ppts-layers { position: absolute; inset: 0; pointer-events: none; }
+.browser-stage .ppts-layer { position: absolute; will-change: transform, opacity; }
+.browser-stage .ppts-layer-image { display: block; width: 100%; height: 100%; object-fit: fill; }
+.browser-stage .ppts-callout { position: absolute; pointer-events: none; box-sizing: border-box; }
+.browser-stage .ppts-caption {
+  position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%);
+  max-width: 72%; padding: 8px 16px; border-radius: 8px;
+  background: rgba(8, 10, 14, 0.72); color: #e6e9ef;
+  font-size: clamp(14px, 1.4vw, 22px); line-height: 1.4; text-align: center;
+}
+.browser-stage .ppts-caption-spoken { color: #ffd166; }
+.browser-stage .ppts-caption-unspoken { color: #9aa3b2; }
+.browser-stage-controls { display: flex; align-items: center; gap: 8px; }
+.browser-stage-controls input[type="range"] { flex: 1 1 auto; min-width: 0; }
+.browser-stage-time { font-variant-numeric: tabular-nums; font-size: 12px; opacity: .8; }
 .slide-stage-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .slide-stage-bar .draft-actions { margin: 0; }
 .one-click-steps { display: grid; gap: 8px; margin: 4px 0 12px; }
