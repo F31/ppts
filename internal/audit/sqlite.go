@@ -162,6 +162,34 @@ func (s *SQLiteStore) ViewStats(ctx context.Context, tenantID string, q ViewStat
 	return out, nil
 }
 
+// CountByResource 在 SQLite 侧按 resource_id 聚合事件条数（成品库卡片播放次数）。
+func (s *SQLiteStore) CountByResource(ctx context.Context, tenantID, action, resourceType string) (map[string]int64, error) {
+	if strings.TrimSpace(tenantID) == "" || action == "" || resourceType == "" {
+		return nil, ErrViewStatsQueryIncomplete
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT resource_id, COUNT(*) FROM audit_events
+		 WHERE tenant_id = ? AND action = ? AND resource_type = ?
+		 GROUP BY resource_id`, tenantID, action, resourceType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var id string
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return 0, ErrTenantRequired

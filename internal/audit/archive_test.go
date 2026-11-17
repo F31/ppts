@@ -79,6 +79,19 @@ func (s *fakeArchiveStore) ViewStats(_ context.Context, tenantID string, q ViewS
 	return out, nil
 }
 
+func (s *fakeArchiveStore) CountByResource(_ context.Context, tenantID, action, resourceType string) (map[string]int64, error) {
+	out := make(map[string]int64)
+	if tenantID == "" || action == "" || resourceType == "" {
+		return nil, ErrViewStatsQueryIncomplete
+	}
+	for _, e := range s.events[tenantID] {
+		if e.Action == action && e.ResourceType == resourceType {
+			out[e.ResourceID]++
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeArchiveStore) DeleteBefore(_ context.Context, tenantID string, before time.Time) (int64, error) {
 	var kept []Event
 	for _, e := range s.events[tenantID] {

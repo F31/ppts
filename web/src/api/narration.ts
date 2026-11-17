@@ -117,6 +117,8 @@ export type LibraryArtifact = {
   // sourceDisplayName：源版本展示名（source_revisions.display_name，空 = 未知），
   // 空时前端回退到 projectName。
   sourceDisplayName?: string;
+  // playCount：视频分享链接的播放次数（留存期内）；其它格式恒为 0。
+  playCount?: number;
 };
 
 export async function getLibraryArtifacts(identity: ClientIdentity): Promise<{ artifacts: LibraryArtifact[] }> {

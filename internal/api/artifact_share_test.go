@@ -141,6 +141,28 @@ func (e *shareTestEnv) seedBundle(t *testing.T, projectID string) *artifact.Arti
 	return a
 }
 
+// seedVideo 在对象存储写一个最小 mp4 字节流并登记成品。
+func (e *shareTestEnv) seedVideo(t *testing.T, projectID string) (*artifact.Artifact, []byte) {
+	t.Helper()
+	body := []byte("0123456789")
+	key := objectstore.ObjectKey{
+		TenantID: db.LocalTenantID, ProjectID: projectID, Revision: "artifact",
+		AssetType: "artifact", AssetID: "video", Ext: "mp4",
+	}
+	if err := e.objects.Put(context.Background(), key, bytes.NewReader(body),
+		objectstore.ObjectMeta{ContentType: "video/mp4", Size: int64(len(body))}); err != nil {
+		t.Fatalf("put video: %v", err)
+	}
+	a, err := e.store.Create(context.Background(), db.LocalTenantID, artifact.NewArtifact{
+		ProjectID: projectID, SnapshotHash: "snap-video-" + projectID, Format: artifact.FormatMP4,
+		ObjectKey: key.String(), ContentHash: "hash-video-" + projectID, SizeBytes: int64(len(body)),
+	})
+	if err != nil {
+		t.Fatalf("create video artifact: %v", err)
+	}
+	return a, body
+}
+
 func (e *shareTestEnv) createShare(t *testing.T, projectID, artifactID, body string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost,
@@ -253,7 +275,110 @@ func TestArtifactShareLifecycle(t *testing.T) {
 	}
 }
 
-// TestArtifactShareAnchorsToArtifact 是本变更的门禁核心：
+// TestSharePlaybackStart 钉住「哪些请求算一次播放」：起点为 0 或无 Range 才算，
+// 续传/拖动/后缀段都不重复计数。
+func TestSharePlaybackStart(t *testing.T) {
+	for _, tc := range []struct {
+		rangeHeader string
+		want        bool
+	}{
+		{"", true},
+		{"bytes=0-", true},
+		{"bytes=0-1", true},
+		{"bytes=0-1,5-6", true},
+		{"bytes=2-5", false},
+		{"bytes=-500", false},
+		{"items=0-1", false},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/s/token/media", nil)
+		if tc.rangeHeader != "" {
+			req.Header.Set("Range", tc.rangeHeader)
+		}
+		if got := sharePlaybackStart(req); got != tc.want {
+			t.Errorf("Range %q: got %v, want %v", tc.rangeHeader, got, tc.want)
+		}
+	}
+}
+
+// TestArtifactShareVideoDirectPlay 守护视频链接的两个承诺：
+// 打开就是可播放的页面（不是下载），以及每次播放真的落一条审计。
+func TestArtifactShareVideoDirectPlay(t *testing.T) {
+	env := newShareTestEnv(t)
+	a, body := env.seedVideo(t, "p1")
+
+	createBody := readBody(t, env.createShare(t, "p1", a.ID, `{}`))
+	var created struct {
+		ShareLink struct {
+			ID    string `json:"id"`
+			Token string `json:"token"`
+		} `json:"shareLink"`
+	}
+	if err := json.Unmarshal([]byte(createBody), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, createBody)
+	}
+
+	var creates int
+	for _, event := range env.audit.snapshot() {
+		if event.Action == artifactShareActionCreate && event.ResourceID == created.ShareLink.ID {
+			creates++
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("create audit events = %d, want 1", creates)
+	}
+
+	page := env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+created.ShareLink.Token+"/"))
+	pageBody := readBody(t, page)
+	if page.StatusCode != http.StatusOK || !strings.Contains(pageBody, "<video") || !strings.Contains(pageBody, "./media") {
+		t.Fatalf("video page = %d %s", page.StatusCode, pageBody)
+	}
+
+	media := env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+created.ShareLink.Token+"/media"))
+	mediaBody := readBody(t, media)
+	if media.StatusCode != http.StatusOK || mediaBody != string(body) {
+		t.Fatalf("media = %d %q", media.StatusCode, mediaBody)
+	}
+	if ct := media.Header.Get("Content-Type"); ct != "video/mp4" {
+		t.Fatalf("content-type = %q", ct)
+	}
+
+	// 拖动进度条依赖 206 + Content-Range；否则只能从头顺放。
+	rangeReq := mustReq(t, http.MethodGet, env.server.URL+"/s/"+created.ShareLink.Token+"/media")
+	rangeReq.Header.Set("Range", "bytes=2-5")
+	part := env.do(t, rangeReq)
+	partBody := readBody(t, part)
+	if part.StatusCode != http.StatusPartialContent || partBody != "2345" {
+		t.Fatalf("range = %d %q", part.StatusCode, partBody)
+	}
+	if got := part.Header.Get("Content-Range"); got != "bytes 2-5/10" {
+		t.Fatalf("content-range = %q", got)
+	}
+
+	var plays int
+	for _, event := range env.audit.snapshot() {
+		if event.Action == artifactShareActionPlay && event.ResourceType == "artifact" && event.ResourceID == a.ID {
+			plays++
+		}
+	}
+	// 全量请求算一次播放；从 2 开始的 Range 是续传/拖动，不重复计数。
+	if plays != 1 {
+		t.Fatalf("play events = %d, want 1", plays)
+	}
+
+	// 撤销后媒体流立即不可用，不能因为浏览器缓存或已签发的对象 URL 继续播。
+	revoke := env.do(t, mustReq(t, http.MethodPost,
+		env.server.URL+"/projects/p1/artifacts/"+a.ID+"/shares/"+created.ShareLink.ID+"/revoke"))
+	_ = readBody(t, revoke)
+	if revoke.StatusCode != http.StatusOK {
+		t.Fatalf("revoke status = %d", revoke.StatusCode)
+	}
+	gone := env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+created.ShareLink.Token+"/media"))
+	_ = readBody(t, gone)
+	if gone.StatusCode != http.StatusNotFound {
+		t.Fatalf("after revoke media status = %d, want 404", gone.StatusCode)
+	}
+}
+
 // 项目重新导出（artifacts 行被指到新对象）后，旧链接读到的字节必须一模一样。
 func TestArtifactShareAnchorsToArtifact(t *testing.T) {
 	env := newShareTestEnv(t)
@@ -309,19 +434,24 @@ func TestArtifactShareAnchorsToArtifact(t *testing.T) {
 
 func TestArtifactShareRejectsWrongTargets(t *testing.T) {
 	env := newShareTestEnv(t)
-	mp4, err := env.store.Create(context.Background(), db.LocalTenantID, artifact.NewArtifact{
-		ProjectID: "p1", SnapshotHash: "snap-mp4", Format: artifact.FormatMP4,
+	mp4, _ := env.seedVideo(t, "p1")
+	srt, err := env.store.Create(context.Background(), db.LocalTenantID, artifact.NewArtifact{
+		ProjectID: "p1", SnapshotHash: "snap-srt", Format: artifact.FormatSRT,
 		ObjectKey: "x", ContentHash: "c", SizeBytes: 1,
 	})
 	if err != nil {
-		t.Fatalf("seed mp4: %v", err)
+		t.Fatalf("seed srt: %v", err)
 	}
 	other := env.seedBundle(t, "p2")
 	// 同项目里的第二个成品：用来验证「跨成品撤销」而不是被格式校验挡下来。
 	second := env.seedBundle(t, "p1")
 
-	if resp := env.createShare(t, "p1", mp4.ID, `{}`); resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("mp4 share status = %d, want 400", resp.StatusCode)
+	// mp4 是可直接播放的视频，允许建在线链接；字幕等其它格式仍拒绝。
+	if resp := env.createShare(t, "p1", mp4.ID, `{}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("mp4 share status = %d, want 201", resp.StatusCode)
+	}
+	if resp := env.createShare(t, "p1", srt.ID, `{}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("srt share status = %d, want 400", resp.StatusCode)
 	}
 	// 用项目 p1 的路径去分享 p2 的成品：404，不是 403 —— 否则「成品存在但不在你的项目」
 	// 本身就是一条可枚举的信息。
@@ -490,9 +620,16 @@ func TestArtifactShareAuditHasNoCredentials(t *testing.T) {
 	}
 
 	// 子资源不再重复记：一页 20 张切片，逐个记会把一次观看放大成几十条。
+	// 只数匿名访问事件：创建链接本身也会写一条 artifact_share.create。
 	_ = readBody(t, env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+created.ShareLink.Token+"/slides/001.png")))
-	if n := len(env.audit.snapshot()); n != found {
-		t.Fatalf("subresource wrote an extra audit event (%d -> %d)", found, n)
+	var after int
+	for _, e := range env.audit.snapshot() {
+		if e.Action == artifactShareActionAnonAccess {
+			after++
+		}
+	}
+	if after != found {
+		t.Fatalf("subresource wrote an extra anonymous-access event (%d -> %d)", found, after)
 	}
 }
 

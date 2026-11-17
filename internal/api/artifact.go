@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -22,12 +23,12 @@ import (
 // 注意：/artifacts 此前 handler（globalArtifacts）已写但漏挂路由，请求落到 SPA 兜底（server.go 的 "/"）
 // 拿到 index.html，前端 JSON 解析报 `Unexpected token '<', "<!doctype"`。新增任何 REST handler
 // 必须同步在注册表挂载（见项目风险 R-10）。
-func registerArtifactRoutes(mux *http.ServeMux, artifacts artifact.Store, members membership.Store, projects project.ProjectStore, recorder audit.Recorder, jobs JobCreator, objects objectstore.ObjectStore, auth func(http.Handler) http.Handler) {
+func registerArtifactRoutes(mux *http.ServeMux, artifacts artifact.Store, members membership.Store, projects project.ProjectStore, recorder audit.Store, jobs JobCreator, objects objectstore.ObjectStore, auth func(http.Handler) http.Handler) {
 	mux.Handle("GET /projects/{pid}/artifacts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		publicProjectArtifacts(w, r, artifacts, members, projects, recorder)
 	})))
 	mux.Handle("GET /artifacts", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		globalArtifacts(w, r, artifacts, members)
+		globalArtifacts(w, r, artifacts, members, recorder)
 	})))
 	// 成品内嵌预览：以该成品绑定的时间轴构建播放清单（timeline/字幕/音频/页图签名 URL）。
 	// 与下载同源（同一 snapshot），不会出现"预览是当前版本、下载是旧版本"的错位。
@@ -196,7 +197,7 @@ func publicProjectArtifacts(w http.ResponseWriter, r *http.Request, artifacts ar
 
 // globalArtifacts 返回当前租户全部项目的成品（B5-M2 跨项目成品库）。
 // 权限：owner（跨项目曝光，高于单项目 artifact.list 的 editor）；按创建时间倒序。
-func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, members membership.Store) {
+func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, members membership.Store, auditStore audit.Store) {
 	principal, err := requirePrincipal(r.Context())
 	if err != nil {
 		writeConnectError(w, err)
@@ -210,6 +211,16 @@ func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.
 	if err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return
+	}
+	// 一次聚合覆盖整页：按 artifact 计数，不对每张卡片各发一条 SQL。
+	// 审计事件会被保留期清理，所以这里是「留存期内播放次数」，不是有史以来的累计。
+	playCounts := map[string]int64{}
+	if auditStore != nil {
+		playCounts, err = auditStore.CountByResource(r.Context(), principal.TenantID, artifactShareActionPlay, "artifact")
+		if err != nil {
+			log.Printf("api: artifact play counts: %v", err)
+			playCounts = map[string]int64{}
+		}
 	}
 	out := make([]map[string]any, 0, len(list))
 	for _, a := range list {
@@ -229,6 +240,8 @@ func globalArtifacts(w http.ResponseWriter, r *http.Request, artifacts artifact.
 			// 历史行（无来源信息）为零值，前端回退到项目名称。
 			"revisionNo":        a.SourceRevisionNo,
 			"sourceDisplayName": a.SourceDisplayName,
+			// playCount 只对视频分享有意义；其它格式恒为 0。
+			"playCount": playCounts[a.ID],
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"artifacts": out})

@@ -316,6 +316,19 @@ func (f *fakeAuditStore) ViewStats(_ context.Context, _ string, q audit.ViewStat
 	return f.viewStats, nil
 }
 
+func (f *fakeAuditStore) CountByResource(_ context.Context, _ string, action, resourceType string) (map[string]int64, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make(map[string]int64)
+	for _, e := range f.events {
+		if e.Action == action && e.ResourceType == resourceType {
+			out[e.ResourceID]++
+		}
+	}
+	return out, nil
+}
+
 type fakeTenantStatusChecker struct {
 	active bool
 	err    error
@@ -1963,6 +1976,47 @@ func TestGlobalArtifactsRouteMounted(t *testing.T) {
 		t.Fatalf("响应不是 JSON: %v body = %s", err, body)
 	}
 	if len(payload.Artifacts) != 1 || payload.Artifacts[0].ProjectName != "Demo" {
+		t.Fatalf("artifacts = %+v", payload.Artifacts)
+	}
+}
+
+// TestGlobalArtifactsIncludesPlayCount 守护卡片播放次数：列表只发一条聚合查询，
+// resource_id 用成品 ID（视频播放事件按成品计数，不按链接计数）。
+func TestGlobalArtifactsIncludesPlayCount(t *testing.T) {
+	members := &fakeRoleReader{role: membership.RoleOwner}
+	artifacts := &fakeArtifactStore{artifact: &artifact.Artifact{
+		ID: "artifact-1", TenantID: "tenant-1", ProjectID: "project-1", ProjectName: "Demo",
+		Format: artifact.FormatMP4, SizeBytes: 3, CreatedAt: time.Unix(1, 0),
+	}}
+	auditStore := &fakeAuditStore{events: []audit.Event{
+		{TenantID: "tenant-1", Action: artifactShareActionPlay, ResourceType: "artifact", ResourceID: "artifact-1"},
+		{TenantID: "tenant-1", Action: artifactShareActionPlay, ResourceType: "artifact", ResourceID: "artifact-1"},
+		{TenantID: "tenant-1", Action: artifactShareActionPlay, ResourceType: "artifact", ResourceID: "other"},
+	}}
+	server := httptest.NewServer(NewHandler(
+		&fakeProjectStore{}, newFakeUploadStore(), &fakeScriptStore{}, &jobCreatorStub{},
+		artifacts, testObjects(t), nil, Options{DevHeaders: true, Members: members, Audit: auditStore},
+	))
+	t.Cleanup(server.Close)
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/artifacts", nil)
+	req.Header.Set(tenantHeader, "tenant-1")
+	req.Header.Set(userHeader, "user-1")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /artifacts: %v", err)
+	}
+	defer resp.Body.Close()
+	var payload struct {
+		Artifacts []struct {
+			ID        string `json:"id"`
+			PlayCount int64  `json:"playCount"`
+		} `json:"artifacts"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(payload.Artifacts) != 1 || payload.Artifacts[0].PlayCount != 2 {
 		t.Fatalf("artifacts = %+v", payload.Artifacts)
 	}
 }

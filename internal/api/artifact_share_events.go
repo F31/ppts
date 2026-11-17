@@ -36,6 +36,10 @@ import (
 // 在浏览器（DNT / GPC / privacy=1 / 离线），PPTS_SHARE_TELEMETRY 是运营侧总闸。
 
 const (
+	artifactShareActionCreate = "artifact_share.create"
+	// artifactShareActionPlay 是视频分享每次播放开始的事件。与 view_event 分开：
+	// 后者是 HTML 包的进度漏斗，前者是可直接播放的视频，两者分母不同。
+	artifactShareActionPlay      = "artifact_share.play"
 	artifactShareActionViewEvent = "artifact_share.view_event"
 	// 写入与聚合必须共用同一个资源类型：两处各写一个字符串，改一处就会让
 	// 看板静默查不到数据（而事件仍照常写，所有写入测试都是绿的）。

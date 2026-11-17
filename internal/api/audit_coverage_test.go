@@ -98,6 +98,9 @@ var requiredAudit = []struct {
 	// 成品级分享（M6-3）：与上一条是两件事——「看了这个项目」和「看了这一版成片」。
 	// 分开登记而不是复用同一个 action，才能在事故里回答"泄露的是哪一版"。
 	{"internal/api/artifact_share_serve.go", "artifact_share.anonymous_access", "匿名访问成品分享链接"},
+	// 视频分享：没有「谁把链接发出去」与「它被播了几次」，事故里只剩一条 URL 可猜。
+	{"internal/api/artifact_share.go", "artifact_share.create", "成品分享链接创建"},
+	{"internal/api/artifact_share_serve.go", "artifact_share.play", "视频分享链接播放"},
 }
 
 func TestAuditCoverageRequiredActions(t *testing.T) {

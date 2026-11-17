@@ -68,4 +68,7 @@ type Store interface {
 	// ViewStats 在存储层聚合观看事件。不能用 List 代替：List 有 500 条上限，
 	// 用它统计会静默截断长尾，看板会低报而不报错。
 	ViewStats(ctx context.Context, tenantID string, q ViewStatsQuery) (ViewStats, error)
+	// CountByResource 按 resource_id 聚合全部留存事件条数（不按会话去重）。
+	// 供成品库卡片显示播放次数：一次列表只发一条 SQL，不对每张卡片各查一次。
+	CountByResource(ctx context.Context, tenantID, action, resourceType string) (map[string]int64, error)
 }

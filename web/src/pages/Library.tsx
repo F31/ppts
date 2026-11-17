@@ -452,6 +452,12 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
                         <dt>{t('library.createdAt')}</dt>
                         <dd>{new Date(a.createdAt).toLocaleString()}</dd>
                       </div>
+                      {a.format === 'mp4' && (
+                        <div>
+                          <dt>{t('library.playCount')}</dt>
+                          <dd>{a.playCount ?? 0}</dd>
+                        </div>
+                      )}
                     </dl>
                     <div className="library-card-actions">
                       {canPreview(a) && (
@@ -467,6 +473,19 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
                           <IconEye />
                         </button>
                       )}
+                      {/* 视频与 HTML 包都能建在线 /s/ 链接；其它格式 backend loadShareableArtifact 会拒绝，
+                          html_single 虽同源也不能分享——不给它一个点了才报错的按钮。 */}
+                      {canShare && a.downloadable && (a.format === 'mp4' || a.format === 'html_bundle') && (
+                        <button
+                          type="button"
+                          className="icon-btn artifact-share"
+                          title={t('library.shareHint')}
+                          aria-label={t('library.share')}
+                          onClick={() => setShareArtifact(a)}
+                        >
+                          <IconShare />
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="icon-btn artifact-download"
@@ -478,19 +497,6 @@ export function Library({ identity, role }: { identity: ClientIdentity; role?: R
                       >
                         <IconDownload />
                       </button>
-                      {/* 只有 html_bundle 能建在线 /s/ 链接（后端 loadShareableArtifact 明确拒绝其它格式），
-                          html_single 虽同源也不能分享——不给它一个点了才报错的按钮。 */}
-                      {canShare && a.format === 'html_bundle' && (
-                        <button
-                          type="button"
-                          className="icon-btn artifact-share"
-                          title={t('library.shareHint')}
-                          aria-label={t('library.share')}
-                          onClick={() => setShareArtifact(a)}
-                        >
-                          <IconShare />
-                        </button>
-                      )}
                       {canDelete && (
                         <button
                           type="button"

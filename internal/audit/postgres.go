@@ -163,6 +163,38 @@ func (s *PGStore) ViewStats(ctx context.Context, tenantID string, q ViewStatsQue
 	return out, nil
 }
 
+// CountByResource 在 PG 侧按 resource_id 聚合事件条数。整段包在 tenant.Run 里，
+// 不在 SQL 里另写一套租户条件，与 ViewStats 同一纪律。
+func (s *PGStore) CountByResource(ctx context.Context, tenantID, action, resourceType string) (map[string]int64, error) {
+	if strings.TrimSpace(tenantID) == "" || action == "" || resourceType == "" {
+		return nil, ErrViewStatsQueryIncomplete
+	}
+	out := make(map[string]int64)
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT resource_id, COUNT(*) FROM audit_events
+			 WHERE tenant_id=$1 AND action=$2 AND resource_type=$3
+			 GROUP BY resource_id`, tenantID, action, resourceType)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			var n int64
+			if err := rows.Scan(&id, &n); err != nil {
+				return err
+			}
+			out[id] = n
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DeleteBefore 删除 before 之前（排他）的审计事件，返回删除行数。
 func (s *PGStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
 	if strings.TrimSpace(tenantID) == "" {

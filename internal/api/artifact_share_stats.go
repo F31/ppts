@@ -58,6 +58,13 @@ func artifactShareStats(w http.ResponseWriter, r *http.Request,
 	if !ok {
 		return
 	}
+	// 视频分享没有进度漏斗，播放事件按成品聚合（卡片上的播放次数）。
+	// 这里不返回一排 0：那会让作者以为「没人看」，而不是「这条链接没有分链接统计」。
+	if a.Format != artifact.FormatHTMLBundle {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("share stats are only available for html_bundle artifacts")))
+		return
+	}
 	principal, _ := requirePrincipal(r.Context())
 
 	// 先按 (tenant, artifact) 列出再匹配 linkID，而不是「按 ID 直取」：

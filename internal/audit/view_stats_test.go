@@ -197,3 +197,24 @@ func TestSQLiteViewStatsEmptyAndIncompleteQuery(t *testing.T) {
 		})
 	}
 }
+
+func TestSQLiteCountByResource(t *testing.T) {
+	ctx := context.Background()
+	store, sqldb := newSQLiteAuditStore(t)
+	now := db.Now()
+	insertViewEvent(t, sqldb, db.LocalTenantID, "artifact_share.play", "artifact", "a1", "play", "s1", now)
+	insertViewEvent(t, sqldb, db.LocalTenantID, "artifact_share.play", "artifact", "a1", "play", "s2", now)
+	insertViewEvent(t, sqldb, db.LocalTenantID, "artifact_share.play", "artifact", "a2", "play", "s1", now)
+	insertViewEvent(t, sqldb, db.LocalTenantID, "artifact_share.view_event", "artifact_share_link", "a1", "view", "s1", now)
+
+	got, err := store.CountByResource(ctx, db.LocalTenantID, "artifact_share.play", "artifact")
+	if err != nil {
+		t.Fatalf("count by resource: %v", err)
+	}
+	if got["a1"] != 2 || got["a2"] != 1 {
+		t.Fatalf("counts = %+v, want a1=2 a2=1", got)
+	}
+	if len(got) != 2 {
+		t.Fatalf("其它 resource_type 混进了计数：%+v", got)
+	}
+}

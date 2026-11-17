@@ -86,6 +86,10 @@ func TestShareEventsRecordsCompleteViewSet(t *testing.T) {
 		t.Fatalf("events = %v, want %v", got, want)
 	}
 	for _, event := range env.audit.snapshot() {
+		// 只看观看事件：创建链接本身另有一条 artifact_share.create。
+		if event.Action != artifactShareActionViewEvent {
+			continue
+		}
 		if event.ActorUser != "anonymous" || event.ResourceType != "artifact_share_link" {
 			t.Fatalf("unexpected audit envelope: %+v", event)
 		}

@@ -25,6 +25,9 @@ import (
 //   - GET  /projects/{pid}/artifacts/{aid}/shares/{linkId}/stats   该链接的在线观看统计
 //   - POST /projects/{pid}/artifacts/{aid}/shares/{linkId}/revoke  撤销
 //
+// 可分享格式：html_bundle（整包）与 mp4（直接播放的视频）。创建与播放都写审计：
+// 创建记 artifact_share.create，视频播放记 artifact_share.play。
+//
 // auditStore 必须是完整 Store 而不只是 Recorder：stats 端点要在存储层聚合，
 // 不能用有 500 条上限的 List 在应用层数事件（会静默低报）。
 func registerArtifactShareRoutes(
@@ -55,7 +58,7 @@ func registerArtifactShareRoutes(
 //  1. 鉴权（principal / editor / 项目可见）；
 //  2. 取成品并校验它属于路径里的项目——**不匹配一律 404**，不能返回 403：
 //     否则「这个成品 ID 存在但不在你这个项目」本身就是一条可枚举的信息；
-//  3. 校验格式是 html_bundle。创建阶段就拒绝，而不是等到匿名访问时才 500。
+//  3. 校验格式是 html_bundle 或 mp4。创建阶段就拒绝，而不是等到匿名访问时才 500。
 func loadShareableArtifact(
 	w http.ResponseWriter, r *http.Request,
 	artifacts artifact.Store, projects project.ProjectStore, members membership.Reader, recorder audit.Recorder,
@@ -86,9 +89,9 @@ func loadShareableArtifact(
 		http.Error(w, "not found", http.StatusNotFound)
 		return nil, false
 	}
-	if a.Format != artifact.FormatHTMLBundle {
+	if a.Format != artifact.FormatHTMLBundle && a.Format != artifact.FormatMP4 {
 		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument,
-			errors.New("only html_bundle artifacts can be shared online")))
+			errors.New("only html_bundle and mp4 artifacts can be shared online")))
 		return nil, false
 	}
 	return a, true
@@ -134,6 +137,13 @@ func createArtifactShare(w http.ResponseWriter, r *http.Request, artifacts artif
 	projects project.ProjectStore, members membership.Reader, pepper string, recorder audit.Recorder) {
 	a, ok := loadShareableArtifact(w, r, artifacts, projects, members, recorder)
 	if !ok {
+		return
+	}
+	// 没有对象键的历史行分享出去只会得到一个 502/404。只在创建阶段拒绝，
+	// 不影响已有链接的列出与撤销。
+	if a.ObjectKey == "" {
+		writeConnectError(w, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("artifact has no stored bytes")))
 		return
 	}
 	principal, _ := requirePrincipal(r.Context())
@@ -186,6 +196,18 @@ func createArtifactShare(w http.ResponseWriter, r *http.Request, artifacts artif
 	if err != nil {
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return
+	}
+	// 外发链接的创建本身是传播事故的第一现场：谁、在什么时候、把哪一版成品发出去，
+	// 只有这一处能回答。记录失败不阻断创建（审计存储抖动不该让分享功能不可用）。
+	if recorder != nil {
+		_ = recorder.Record(r.Context(), audit.Event{
+			TenantID: principal.TenantID, ActorUser: principal.UserID, Action: artifactShareActionCreate,
+			ResourceType: artifactShareLinkResourceType, ResourceID: l.ID,
+			Metadata: map[string]any{
+				"project_id": a.ProjectID, "artifact_id": a.ID, "format": string(a.Format),
+				"password_protected": l.PasswordProtected, "expires_at": optionalTime(l.ExpiresAt),
+			},
+		})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"shareLink": artifactShareLinkJSON(l)})
 }

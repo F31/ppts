@@ -125,11 +125,11 @@ function buildChecks(s) {
     assert(/\[expanded, days, loadStats\]/.test(s.panel), '窗口变化没有触发重新加载');
   });
 
-  check('Library 只对 html_bundle 且有权者显示分享入口', () => {
+  check('Library 只对 html_bundle / mp4 且有权者显示分享入口', () => {
     const marker = s.library.indexOf('className="icon-btn artifact-share"');
     assert(marker > 0, '卡片缺少分享按钮');
-    const guard = s.library.slice(Math.max(0, marker - 600), marker);
-    assert(/canShare && a\.format === 'html_bundle'/.test(guard), '按钮守卫不是「有权限且仅 html_bundle」');
+    const guard = s.library.slice(Math.max(0, marker - 700), marker);
+    assert(/canShare && a\.downloadable && \(a\.format === 'mp4' \|\| a\.format === 'html_bundle'\)/.test(guard), '按钮守卫不是「有权限、有字节且仅 mp4 / html_bundle」');
     assert(!/a\.format === 'html_single'/.test(guard), 'html_single 不能建 /s/ 链接，不该出现在守卫里');
     assert(/<ArtifactSharePanel/.test(s.library), '面板没有挂进 Library');
   });
@@ -170,7 +170,7 @@ if (selfTest) {
   const mutations = [
     ['删掉采集关闭早退', (s) => ({ ...s, panel: s.panel.replace(/if \(!data\.telemetryEnabled\) \{[\s\S]*?\n  \}/, '') }), '采集关闭 / 请求失败'],
     ['组件里私加 fetch', (s) => ({ ...s, panel: s.panel + '\nvoid fetch("/api/x");\n' }), '组件与页面零 fetch'],
-    ['放开 html_single 守卫', (s) => ({ ...s, library: s.library.replace("canShare && a.format === 'html_bundle'", 'canShare') }), 'Library 只对 html_bundle'],
+    ['放开格式守卫', (s) => ({ ...s, library: s.library.replace("canShare && a.downloadable && (a.format === 'mp4' || a.format === 'html_bundle')", 'canShare') }), 'Library 只对 html_bundle / mp4'],
     ['删掉留存窗口说明', (s) => ({ ...s, zh: { ...s.zh, 'artifactShare.retentionNote': '' }, en: { ...s.en, 'artifactShare.retentionNote': '' } }), '四条诚实口径']
   ];
   let bad = 0;

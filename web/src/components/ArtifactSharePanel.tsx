@@ -40,6 +40,9 @@ export function ArtifactSharePanel({
 }) {
   const { t } = useI18n();
   const canManage = can(role, 'project.share');
+  // 视频分享没有进度漏斗，逐链接的观看统计端点仍返回 0；播放次数在成品库卡片上
+  // 按成品聚合，所以这里只为 HTML 包暴露「观看数据」。
+  const isVideo = artifact.format === 'mp4';
   const [links, setLinks] = useState<ArtifactShareLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -127,9 +130,18 @@ export function ArtifactSharePanel({
 
         {/* honest-scope: 离线/隐私零上报、留存窗口、完播率分母——三条口径常驻，不随数据开关消失。 */}
         <div className="artifact-share-notes">
-          <p>{t('artifactShare.scopeNote')}</p>
-          <p>{t('artifactShare.retentionNote', { days: String(days) })}</p>
-          <p>{t('artifactShare.denominatorNote')}</p>
+          {isVideo ? (
+            <>
+              <p>{t('artifactShare.videoScopeNote')}</p>
+              <p>{t('artifactShare.videoPlayCountNote')}</p>
+            </>
+          ) : (
+            <>
+              <p>{t('artifactShare.scopeNote')}</p>
+              <p>{t('artifactShare.retentionNote', { days: String(days) })}</p>
+              <p>{t('artifactShare.denominatorNote')}</p>
+            </>
+          )}
         </div>
 
         {error ? <p className="form-error" role="alert">{error}</p> : null}
@@ -138,7 +150,7 @@ export function ArtifactSharePanel({
 
         {canManage ? (
           <>
-            <div className="artifact-share-toolbar">
+            {!isVideo && <div className="artifact-share-toolbar">
               <label className="filter-field">
                 <span>{t('artifactShare.days')}</span>
                 <select
@@ -151,7 +163,7 @@ export function ArtifactSharePanel({
                   <option value={90}>{t('artifactShare.days90')}</option>
                 </select>
               </label>
-            </div>
+            </div>}
 
             {loading ? <p className="cell-sub">{t('common.loading')}</p> : null}
             {!loading && links.length === 0 ? <p className="cell-sub">{t('artifactShare.noLinks')}</p> : null}
@@ -168,13 +180,15 @@ export function ArtifactSharePanel({
                       <button type="button" disabled={link.revoked} onClick={() => void copy(link)}>
                         {copiedId === link.id ? t('artifactShare.copied') : t('artifactShare.copy')}
                       </button>
-                      <button
-                        type="button"
-                        disabled={link.revoked || busy}
-                        onClick={() => setExpanded((cur) => (cur === link.id ? null : link.id))}
-                      >
-                        {expanded === link.id ? t('artifactShare.hideStats') : t('artifactShare.showStats')}
-                      </button>
+                      {!isVideo && (
+                        <button
+                          type="button"
+                          disabled={link.revoked || busy}
+                          onClick={() => setExpanded((cur) => (cur === link.id ? null : link.id))}
+                        >
+                          {expanded === link.id ? t('artifactShare.hideStats') : t('artifactShare.showStats')}
+                        </button>
+                      )}
                       {!link.revoked ? (
                         <button
                           type="button"

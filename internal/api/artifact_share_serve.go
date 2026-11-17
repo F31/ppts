@@ -92,7 +92,7 @@ func registerArtifactShareAnonRoutes(
 	}
 	mux.HandleFunc("POST /s/{token}/events", events.serve)
 	mux.HandleFunc("GET /s/{token}/{path...}", func(w http.ResponseWriter, r *http.Request) {
-		serveArtifactShareEntry(w, r, links, source, pepper, recorder)
+		serveArtifactShareEntry(w, r, links, source, objects, pepper, recorder)
 	})
 }
 
@@ -116,7 +116,7 @@ func shareNotFound(w http.ResponseWriter) {
 func serveArtifactShareEntry(
 	w http.ResponseWriter, r *http.Request,
 	links artifact.ShareLinkStore, source *share.BundleSource,
-	pepper string, recorder audit.Recorder,
+	objects objectstore.ObjectStore, pepper string, recorder audit.Recorder,
 ) {
 	setShareHeaders(w)
 
@@ -125,19 +125,35 @@ func serveArtifactShareEntry(
 		shareNotFound(w)
 		return
 	}
+	video := shareLinkIsVideo(link)
 	name := r.PathValue("path")
-	if name == "" {
+	if name == "" && !video {
 		name = share.FileIndexHTML
 	}
 
 	// 口令门只在入口文档上渲染。子资源没有"再输一次口令"的界面，
 	// 未解锁时直接 404，与链接无效同码——那里没有可供用户判断的上下文。
 	if link.PasswordProtected && !shareCookieMatches(r, link.ID, pepper) {
-		if name == share.FileIndexHTML {
+		if name == "" || (!video && name == share.FileIndexHTML) {
 			renderShareGate(w, r.PathValue("token"), http.StatusOK, "")
 			return
 		}
 		shareNotFound(w)
+		return
+	}
+
+	// 视频链接只认两个落点：入口页与媒体流。其它路径一律 404，
+	// 不让 token 变成「可以从对象存储里取任意路径」的许可证。
+	if video {
+		switch name {
+		case "":
+			renderShareVideo(w)
+		case "media":
+			serveArtifactShareVideo(w, r, link, links, objects, recorder)
+		}
+		if name != "" && name != "media" {
+			shareNotFound(w)
+		}
 		return
 	}
 
@@ -177,6 +193,115 @@ func serveArtifactShareEntry(
 		_ = links.TouchShareLinkAccess(r.Context(), link.TenantID, link.ID)
 		recordArtifactShareAccess(r.Context(), recorder, link, "shared.bundle")
 	}
+}
+
+// shareLinkIsVideo 用链接快照里的对象键扩展名判断是不是视频。
+//
+// 不在 serve 时回查 artifacts 行：匿名链路没有租户上下文，而且链接按快照钉住字节，
+// 回查反而会重新引入「同一个 id 指向新产物」的漂移面。
+func shareLinkIsVideo(link *artifact.ShareLink) bool {
+	key, err := objectstore.Parse(link.ObjectKey)
+	return err == nil && strings.EqualFold(key.Ext, "mp4")
+}
+
+// shareVideoHTML 是自包含的视频分享页：没有脚本、没有外链，只引用同源的 ./media。
+// 保持 `default-src 'none'` 下也能播放，与 HTML 包同一个 CSP。
+const shareVideoHTML = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>视频分享</title>
+<style>
+:root{color-scheme:light dark}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0f1115}
+video{width:min(100vw,1280px);max-height:100vh;background:#000;outline:none}
+</style></head>
+<body><video controls playsinline preload="metadata" src="./media"></video></body></html>`
+
+func renderShareVideo(w http.ResponseWriter) {
+	// 分享页不缓存：撤销链接后，旧浏览器不应继续从缓存里打开入口页。
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, shareVideoHTML)
+}
+
+// serveArtifactShareVideo 把 mp4 通过 token 路由流式送出。
+//
+// 不重定向到对象存储的预签名 URL：预签名一旦签发就脱离链接的有效期与撤销状态，
+// 而分享链接的核心承诺是「撤销立即生效」。这里每次请求都回查链接行。
+func serveArtifactShareVideo(w http.ResponseWriter, r *http.Request, link *artifact.ShareLink,
+	links artifact.ShareLinkStore, objects objectstore.ObjectStore, recorder audit.Recorder) {
+	key, err := objectstore.Parse(link.ObjectKey)
+	if err != nil || key.EnsureTenant(link.TenantID) != nil {
+		http.Error(w, "video unavailable", http.StatusInternalServerError)
+		return
+	}
+	rc, meta, err := objects.Get(r.Context(), key)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrObjectNotFound) {
+			shareNotFound(w)
+			return
+		}
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+		return
+	}
+	defer rc.Close()
+
+	contentType := meta.ContentType
+	if !strings.HasPrefix(contentType, "video/") {
+		contentType = "video/mp4"
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, no-store")
+
+	// 只在一次播放的起点记一条：Range 续传与拖动会产生多个请求，逐个记会把
+	// 一次观看放大成几十次「播放」。判断用「有无 Range」或「起点是否为 0」。
+	if sharePlaybackStart(r) {
+		_ = links.TouchShareLinkAccess(r.Context(), link.TenantID, link.ID)
+		recordArtifactSharePlay(r.Context(), recorder, link)
+	}
+
+	if rs, ok := rc.(io.ReadSeeker); ok {
+		http.ServeContent(w, r, "", time.Time{}, rs)
+	} else {
+		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
+		_, _ = io.Copy(w, rc)
+	}
+}
+
+func sharePlaybackStart(r *http.Request) bool {
+	raw := strings.TrimSpace(r.Header.Get("Range"))
+	if raw == "" {
+		return true
+	}
+	if !strings.HasPrefix(raw, "bytes=") {
+		return false
+	}
+	first := strings.TrimPrefix(raw, "bytes=")
+	if i := strings.IndexByte(first, ','); i >= 0 {
+		first = first[:i]
+	}
+	if i := strings.IndexByte(first, '-'); i > 0 {
+		return strings.TrimSpace(first[:i]) == "0"
+	}
+	return false
+}
+
+// recordArtifactSharePlay 记一次视频播放。沿用在线观看埋点的脱敏纪律：
+// 不记 token、不记 IP、不记 UA。resource_id 用成品 ID，成品库因此一条 SQL
+// 就能给整页卡片算出播放次数。
+func recordArtifactSharePlay(ctx context.Context, recorder audit.Recorder, link *artifact.ShareLink) {
+	if recorder == nil || link == nil || !shareTelemetryEnabled() {
+		return
+	}
+	_ = recorder.Record(ctx, audit.Event{
+		TenantID: link.TenantID, ActorUser: "anonymous", Action: artifactShareActionPlay,
+		ResourceType: "artifact", ResourceID: link.ArtifactID,
+		Metadata: map[string]any{
+			"surface": "shared.video.online", "link_id": link.ID,
+			"project_id": link.ProjectID, "format": "mp4",
+		},
+	})
 }
 
 func shareContentType(name string) string {
