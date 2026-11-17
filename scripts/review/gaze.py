@@ -10,6 +10,14 @@ gaze+entrance 带 Focus.rect 留在 look 链；稳态中点避开 240ms 交叉�
 from __future__ import annotations
 
 FOCUS_FADE_MS = 240
+LOOK_XFADE_MS = 120  # look 仍帧默认叠化；纱/圈选已烧进仍帧，240ms 叠两帧会闪
+LOOK_ARRIVE_HOLD_MS = 400
+LOOK_ARRIVE_MIN_MS = 1600
+LOOK_ARRIVE_XFADE_MS = 80
+LOOK_NEAR_XFADE_MS = 80
+LOOK_WIPE_XFADE_MS = 140
+LOOK_FAR_XFADE_MS = 160
+LOOK_CROP_XFADE_MS = 200
 PAGE_FADE_MS = 280  # catalog 页间 fade；HTML 在这窗口内还叠着上一页，MP4 分段没有
 HOLE_RING_PX = 16
 CAPTION_CROP_RATIO = 0.12
@@ -93,8 +101,8 @@ def is_gaze_look_page(page):
     return True
 
 
-def look_hold_mid(start, end, fade=0):
-    """注视窗稳态中点。前缀窗也走这里，避免 MidMs=0 采到页边界。"""
+def look_hold_mid(start, end, fade=0, late=False):
+    """注视窗稳态取样点。前缀窗也走这里，避免 MidMs=0 采到页边界。late 采 hold 的 3/4。"""
     if end <= start:
         return start
     if fade < 0:
@@ -102,17 +110,41 @@ def look_hold_mid(start, end, fade=0):
     if fade >= end - start:
         fade = 0
     hold = end - start - fade
-    mid = start + fade + hold // 2
+    if late and hold > 0:
+        mid = start + fade + hold * 3 // 4
+    else:
+        mid = start + fade + hold // 2
     if mid <= start and end > start + 1:
         return start + 1
+    if mid >= end and end > start:
+        return end - 1
     return mid
 
 
-def look_windows(page):
-    """返回 [{startMs, endMs, fadeMs, midMs, rect}, ...]。
+def _look_travel_xfade(prev, cur, look_crop):
+    if look_crop:
+        return LOOK_CROP_XFADE_MS, "fade"
+    if not prev or not cur:
+        return LOOK_XFADE_MS, "fade"
+    dx = (cur["x"] + cur["w"] / 2) - (prev["x"] + prev["w"] / 2)
+    dy = (cur["y"] + cur["h"] / 2) - (prev["y"] + prev["h"] / 2)
+    dist = (dx * dx + dy * dy) ** 0.5
+    if dist < 48:
+        return LOOK_NEAR_XFADE_MS, "fade"
+    if abs(dx) >= abs(dy) * 1.4 and abs(dx) >= 80:
+        return LOOK_WIPE_XFADE_MS, ("wiperight" if dx > 0 else "wipeleft")
+    if abs(dy) >= abs(dx) * 1.4 and abs(dy) >= 80:
+        return LOOK_WIPE_XFADE_MS, ("wipedown" if dy > 0 else "wipeup")
+    if dist > 600:
+        return LOOK_FAR_XFADE_MS, "fade"
+    return LOOK_XFADE_MS, "fade"
 
-    算法对齐 gazepage.go：缺 Rect 的 span 丢掉；第一段之前若有空隙补一条
-    未蒙纱前缀（mid=0）；末段 EndMs=0 延伸到页尾。
+
+def look_windows(page):
+    """返回 [{startMs, endMs, fadeMs, midMs, rect, xfade}, ...]。
+
+    算法对齐 gazepage.go：缺 Rect 的 span 丢掉；第一段之前若有空隙补前缀；
+    教学页第一条 Focus 拆成 arrive+settle；切焦按位移选 wipe/fade。
     """
     duration = _int(page.get("durationMs"))
     spans = []
@@ -129,6 +161,8 @@ def look_windows(page):
     if not spans or duration <= 0:
         return []
 
+    late = has_entrance_element_layer(page)
+    look_crop = bool(page.get("lookCrop"))
     out = []
     if spans[0]["startMs"] > 0:
         end = spans[0]["startMs"]
@@ -136,9 +170,12 @@ def look_windows(page):
             "startMs": 0,
             "endMs": end,
             "fadeMs": 0,
-            "midMs": look_hold_mid(0, end, 0),
+            "midMs": look_hold_mid(0, end, 0, late),
             "rect": None,
+            "xfade": "fade",
         })
+    prev_rect = None
+    first_rect = True
     for i, span in enumerate(spans):
         start = span["startMs"]
         end = duration
@@ -150,24 +187,56 @@ def look_windows(page):
             end = duration
         if end <= start:
             continue
-        fade = 0
+        fade, kind = 0, "fade"
         if out:
-            fade = span["fadeMs"]
-            if fade == 0:
-                fade = FOCUS_FADE_MS
+            fade, kind = _look_travel_xfade(prev_rect, span["rect"], look_crop)
             if fade >= end - start:
-                fade = 0
-        out.append({
-            "startMs": start,
-            "endMs": end,
-            "fadeMs": fade,
-            "midMs": look_hold_mid(start, end, fade),
-            "rect": span["rect"],
-        })
+                fade, kind = 0, "cut"
+        dur = end - start
+        split = (
+            first_rect
+            and not look_crop
+            and dur >= LOOK_ARRIVE_MIN_MS
+            and dur > LOOK_ARRIVE_HOLD_MS + LOOK_ARRIVE_XFADE_MS + 200
+        )
+        first_rect = False
+        if split:
+            arrive_end = start + LOOK_ARRIVE_HOLD_MS
+            if fade >= arrive_end - start:
+                fade, kind = 0, "cut"
+            out.append({
+                "startMs": start,
+                "endMs": arrive_end,
+                "fadeMs": fade,
+                "midMs": look_hold_mid(start, arrive_end, fade, False),
+                "rect": span["rect"],
+                "xfade": kind,
+            })
+            settle_fade = LOOK_ARRIVE_XFADE_MS
+            if settle_fade >= end - arrive_end:
+                settle_fade = 0
+            out.append({
+                "startMs": arrive_end,
+                "endMs": end,
+                "fadeMs": settle_fade,
+                "midMs": look_hold_mid(arrive_end, end, settle_fade, late),
+                "rect": span["rect"],
+                "xfade": "fade",
+            })
+        else:
+            out.append({
+                "startMs": start,
+                "endMs": end,
+                "fadeMs": fade,
+                "midMs": look_hold_mid(start, end, fade, late),
+                "rect": span["rect"],
+                "xfade": kind,
+            })
+        prev_rect = span["rect"]
     if out and out[-1]["endMs"] < duration:
         last = out[-1]
         last["endMs"] = duration
-        last["midMs"] = look_hold_mid(last["startMs"], duration, last["fadeMs"])
+        last["midMs"] = look_hold_mid(last["startMs"], duration, last["fadeMs"], late)
     return out
 
 

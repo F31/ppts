@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Trim 《人工智能》 export snapshot to the 3-page canary set and enqueue.
 
-Picks slide-257 / slide-258 / slide-278. Rewrites timeline + subtitles +
-pagePngKeys + specs together. Writes a new timeline object under canary-3p.
+Picks slide-257 / slide-258 / slide-278 by default. Override with
+PPTS_CANARY_PICK=slide-261,slide-265,slide-273 and a distinct
+PPTS_CANARY_IDEM. Rewrites timeline + subtitles + pagePngKeys + specs
+together. Writes a new timeline object under canary-3p.
 Does not source /etc/ppts/config.env.
 
 Run on 101.34.82.237 as root:
@@ -21,7 +23,14 @@ import uuid
 
 SRC_JOB = "99353147-976e-42c7-8fa6-ed6be5dacdd6"
 IDEM = os.environ.get("PPTS_CANARY_IDEM", "gaze-canary-20261116-3p")
-PICK = ("slide-257", "slide-258", "slide-278")
+_PICK_DEFAULT = ("slide-257", "slide-258", "slide-278")
+PICK = tuple(
+    s.strip()
+    for s in os.environ.get("PPTS_CANARY_PICK", ",".join(_PICK_DEFAULT)).split(",")
+    if s.strip()
+)
+if not PICK:
+    raise SystemExit("PPTS_CANARY_PICK is empty")
 TENANT = "10b1891a-a34d-4ed0-8275-da5531b7a79d"
 PROJ = "33e4919a-7025-4f62-b54c-c7e7bc3ee762"
 OBJECTS = "/var/lib/ppts/objects"
@@ -155,10 +164,14 @@ def main() -> int:
     src_path = os.path.join(OBJECTS, src_key)
     bundle = json.load(open(src_path, encoding="utf-8"))
     tl = trim_timeline(bundle["timeline"])
-    want_ms = 83840 + 21080 + 31840
     got_ms = tl["durationUs"] // 1000
-    if got_ms != want_ms:
-        print(f"duration_ms {got_ms} want {want_ms}", file=sys.stderr)
+    if PICK == _PICK_DEFAULT:
+        want_ms = 83840 + 21080 + 31840
+        if got_ms != want_ms:
+            print(f"duration_ms {got_ms} want {want_ms}", file=sys.stderr)
+            return 1
+    if got_ms <= 0:
+        print(f"duration_ms {got_ms} invalid", file=sys.stderr)
         return 1
 
     tl_bytes = json.dumps(tl, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -185,7 +198,11 @@ def main() -> int:
             shutil.chown(os.path.join(root, name), user="ppts", group="ppts")
 
     pngs = snap.get("pagePngKeys") or []
-    idx = {"slide-257": 1, "slide-258": 2, "slide-278": 22}
+    idx = {s["slideId"]: i for i, s in enumerate(bundle["timeline"].get("slides") or [])}
+    missing_idx = [sid for sid in PICK if sid not in idx]
+    if missing_idx:
+        print(f"source timeline missing {missing_idx}", file=sys.stderr)
+        return 1
     snap["format"] = fmt
     snap["timelineKey"] = tl_key
     snap["pagePngKeys"] = [pngs[idx[sid]] for sid in PICK]

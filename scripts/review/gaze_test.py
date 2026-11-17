@@ -48,11 +48,12 @@ class LookWindowsTest(unittest.TestCase):
             ],
         }
         got = look_windows(page)
-        self.assertEqual(len(got), 5)
-        self.assertEqual([w["startMs"] for w in got], [0, 16000, 32000, 48000, 64000])
-        self.assertEqual([w["endMs"] for w in got], [16000, 32000, 48000, 64000, 80000])
-        self.assertEqual([w["fadeMs"] for w in got], [0, 240, 240, 240, 240])
-        self.assertEqual(got[0]["midMs"], 8000)
+        self.assertEqual(len(got), 6)
+        self.assertEqual(got[0]["endMs"], 400)
+        self.assertEqual(got[1]["startMs"], 400)
+        self.assertEqual(got[1]["endMs"], 16000)
+        self.assertEqual([w["startMs"] for w in got[2:]], [16000, 32000, 48000, 64000])
+        self.assertEqual([w["endMs"] for w in got[2:]], [32000, 48000, 64000, 80000])
         for w in got:
             self.assertGreaterEqual(w["midMs"], w["startMs"] + w["fadeMs"])
             self.assertLess(w["midMs"], w["endMs"])
@@ -80,9 +81,32 @@ class LookWindowsTest(unittest.TestCase):
             "focus": [focus(0, "a", rect(10, 10, 40, 20), fade=0, end=2000)],
         }
         got = look_windows(page)
-        self.assertEqual(len(got), 1)
-        self.assertEqual(got[0]["endMs"], 5000)
-        self.assertEqual(got[0]["midMs"], 2500)
+        self.assertEqual(len(got), 2)
+        self.assertEqual(got[0]["endMs"], 400)
+        self.assertEqual(got[-1]["endMs"], 5000)
+
+    def test_travel_xfade_wipe_and_crop(self):
+        from gaze import _look_travel_xfade, LOOK_WIPE_XFADE_MS, LOOK_CROP_XFADE_MS, LOOK_NEAR_XFADE_MS
+        left = rect(80, 200, 400, 200)
+        right = rect(900, 200, 400, 200)
+        ms, kind = _look_travel_xfade(left, right, False)
+        self.assertEqual((ms, kind), (LOOK_WIPE_XFADE_MS, "wiperight"))
+        ms, kind = _look_travel_xfade(left, right, True)
+        self.assertEqual((ms, kind), (LOOK_CROP_XFADE_MS, "fade"))
+        ms, kind = _look_travel_xfade(left, left, False)
+        self.assertEqual((ms, kind), (LOOK_NEAR_XFADE_MS, "fade"))
+
+    def test_look_crop_skips_arrive(self):
+        page = {
+            "durationMs": 16000,
+            "lookCrop": True,
+            "focus": [
+                focus(0, "a", rect(1, 1, 10, 10)),
+                focus(8000, "b", rect(900, 1, 10, 10)),
+            ],
+        }
+        got = look_windows(page)
+        self.assertEqual(len(got), 2)
 
 
 class GazePageTest(unittest.TestCase):
@@ -140,9 +164,12 @@ class GazePageTest(unittest.TestCase):
             ],
         }
         points = dict(gaze_sample_points(page, 30))
-        self.assertEqual(points["look0"], 8000)
-        self.assertGreaterEqual(points["look1"], 16000 + FOCUS_FADE_MS)
-        self.assertLess(points["look1"], 32000)
+        # 将至窗中点落在页间 fade 内，V13 跳过 look0。
+        self.assertNotIn("look0", points)
+        self.assertGreaterEqual(points["look1"], 400)
+        self.assertLess(points["look1"], 16000)
+        self.assertGreaterEqual(points["look2"], 16000)
+        self.assertLess(points["look2"], 32000)
         self.assertNotIn("first", points)
         self.assertIn("last", points)
         self.assertGreaterEqual(PAGE_FADE_MS, 240)
