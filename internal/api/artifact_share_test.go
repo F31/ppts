@@ -379,6 +379,102 @@ func TestArtifactShareVideoDirectPlay(t *testing.T) {
 	}
 }
 
+// TestArtifactShareVideoPasswordGate 覆盖视频的口令链路：未解锁只能看到口令门，
+// 媒体流与其它子路径一律 404；解锁后 cookie 对入口页与 /media 同时生效。
+func TestArtifactShareVideoPasswordGate(t *testing.T) {
+	env := newShareTestEnv(t)
+	a, body := env.seedVideo(t, "p1")
+
+	createdBody := readBody(t, env.createShare(t, "p1", a.ID, `{"password":"s3cret"}`))
+	var created struct {
+		ShareLink struct {
+			Token string `json:"token"`
+		} `json:"shareLink"`
+	}
+	if err := json.Unmarshal([]byte(createdBody), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, createdBody)
+	}
+	token := created.ShareLink.Token
+
+	gate := env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+token+"/"))
+	gateBody := readBody(t, gate)
+	if gate.StatusCode != http.StatusOK || !strings.Contains(gateBody, "需要口令") {
+		t.Fatalf("gate = %d %q", gate.StatusCode, gateBody)
+	}
+	if strings.Contains(gateBody, "<video") {
+		t.Fatal("locked page rendered the video player")
+	}
+	if media := env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+token+"/media")); media.StatusCode != http.StatusNotFound {
+		_ = readBody(t, media)
+		t.Fatalf("locked media status = %d, want 404", media.StatusCode)
+	}
+
+	ok := env.do(t, formPost(t, env.server.URL+"/s/"+token+"/unlock", "password=s3cret"))
+	_ = readBody(t, ok)
+	if ok.StatusCode != http.StatusSeeOther || len(ok.Cookies()) != 1 {
+		t.Fatalf("unlock = %d cookies=%d", ok.StatusCode, len(ok.Cookies()))
+	}
+	cookie := ok.Cookies()[0]
+
+	page := mustReq(t, http.MethodGet, env.server.URL+"/s/"+token+"/")
+	page.AddCookie(cookie)
+	pageResp := env.do(t, page)
+	pageBody := readBody(t, pageResp)
+	if pageResp.StatusCode != http.StatusOK || !strings.Contains(pageBody, "<video") {
+		t.Fatalf("unlocked page = %d %q", pageResp.StatusCode, pageBody)
+	}
+	mediaReq := mustReq(t, http.MethodGet, env.server.URL+"/s/"+token+"/media")
+	mediaReq.AddCookie(cookie)
+	mediaResp := env.do(t, mediaReq)
+	mediaBody := readBody(t, mediaResp)
+	if mediaResp.StatusCode != http.StatusOK || mediaBody != string(body) {
+		t.Fatalf("unlocked media = %d %q", mediaResp.StatusCode, mediaBody)
+	}
+}
+
+// TestArtifactShareVideoRejectsUnknownPaths 守 token 不是「对象存储任意路径通行证」。
+func TestArtifactShareVideoRejectsUnknownPaths(t *testing.T) {
+	env := newShareTestEnv(t)
+	a, _ := env.seedVideo(t, "p1")
+	createdBody := readBody(t, env.createShare(t, "p1", a.ID, `{}`))
+	var created struct {
+		ShareLink struct {
+			Token string `json:"token"`
+		} `json:"shareLink"`
+	}
+	if err := json.Unmarshal([]byte(createdBody), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, createdBody)
+	}
+	for _, p := range []string{"nope", "manifest.json", "slides/001.jpg", "%2e%2e%2fmedia"} {
+		resp := env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+created.ShareLink.Token+"/"+p))
+		_ = readBody(t, resp)
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", p, resp.StatusCode)
+		}
+	}
+}
+
+// TestArtifactShareVideoStatsUnsupported 防「一排 0」被读成没人看：视频没有逐链接进度统计。
+func TestArtifactShareVideoStatsUnsupported(t *testing.T) {
+	env := newShareTestEnv(t)
+	a, _ := env.seedVideo(t, "p1")
+	createdBody := readBody(t, env.createShare(t, "p1", a.ID, `{}`))
+	var created struct {
+		ShareLink struct {
+			ID string `json:"id"`
+		} `json:"shareLink"`
+	}
+	if err := json.Unmarshal([]byte(createdBody), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, createdBody)
+	}
+	resp := env.do(t, mustReq(t, http.MethodGet,
+		env.server.URL+"/projects/p1/artifacts/"+a.ID+"/shares/"+created.ShareLink.ID+"/stats?days=30"))
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(body, "html_bundle") {
+		t.Fatalf("video stats = %d %s", resp.StatusCode, body)
+	}
+}
+
 // 项目重新导出（artifacts 行被指到新对象）后，旧链接读到的字节必须一模一样。
 func TestArtifactShareAnchorsToArtifact(t *testing.T) {
 	env := newShareTestEnv(t)
