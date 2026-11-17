@@ -427,8 +427,7 @@ staging MUST NOT 改写调用方的计划：`Shots` 是切片，只复制 `Page`
 
 ### Requirement: 镜头相机（Shot.Camera）
 
-镜头 MAY 声明 `camera` 关键帧序列，表示该镜头内的平移/缩放运动（Ken Burns）。`camera` 为空时
-画面 MUST 与引入本需求前逐像素一致（无相机时退化为静态特写）。
+镜头 MAY 声明 `camera` 关键帧序列，表示该镜头内的平移/缩放运动（Ken Burns）；`camera` 为空时画面 MUST 与引入本需求前逐像素一致（无相机时退化为静态特写）。
 
 `camera` 关键帧 MUST 表达为镜头图局部的归一化坐标：`x` / `y` 为视口中心在镜头图上的归一化
 位置（0.5 = 中心），`scale` MUST 满足 `scale ≥ 1`，为相对「图覆盖舞台」的缩放倍率；
@@ -526,9 +525,7 @@ staging MUST NOT 改写调用方的计划：`Shots` 是切片，只复制 `Page`
 
 ### Requirement: 跨页延续的静态盒差在编译期补偿
 
-跨页延续只保证 clip 进度在页缝处连续，不保证**视觉几何**连续：同一 `elementId` 的元素在相邻页的
-静态盒（`box.x/y/w/h`）可以不同。编译器 MUST 在下列条件同时成立时，为承接页的续播层补一条
-`carry = true` 的补偿 Motion，把视觉矩形从上一页的盒搬回本页的盒：
+跨页延续只保证 clip 进度在页缝处连续，不保证**视觉几何**连续：同一 `elementId` 的元素在相邻页的静态盒（`box.x/y/w/h`）可以不同，编译器 MUST 在下列条件同时成立时补一条 `carry = true` 的补偿 Motion，把视觉矩形从上一页的盒搬回本页的盒：
 
 - 承接页存在同 `elementId` 层；
 - 上一页（首跳为源页，链式时为上一跳所在页）的同 `elementId` 层盒与本页盒**不完全相同**；

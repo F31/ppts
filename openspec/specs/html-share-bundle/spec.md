@@ -269,9 +269,7 @@ clip 的叠加语义 MUST 与渲染端一致：`opacity` 相乘、`translate*` �
 
 ### Requirement: 镜头相机字段为可选且不升 schemaVersion
 
-声明了页内镜头的页，`slides[i].shots[]` 的每一项 MAY 另带 `camera[]`（相机关键帧），语义与
-IR 的 `render.CameraKeyframe` 同构，字段为 `atMs`、`x`、`y`、`scale`。`camera` 是可选字段：
-缺省时产物 MUST 与引入它之前逐字节一致。
+声明了页内镜头的页，`slides[i].shots[]` 的每一项 MAY 另带 `camera[]`；`camera` 缺省时产物 MUST 与引入它之前逐字节一致，其语义与 IR 的 `render.CameraKeyframe` 同构，字段为 `atMs`、`x`、`y`、`scale`。
 
 `camera` 非空时，其所属镜头 MUST 同时声明 `crop`（相机在特写图内部运动）。打包 MUST 校验
 `scale ≥ 1` 与中心落在覆盖安全区间 `[0.5/scale, 1-0.5/scale]`、关键帧按 `atMs` 升序；任一违例
