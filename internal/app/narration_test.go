@@ -42,7 +42,7 @@ func (*narrationStoreStub) CountDraftSegments(context.Context, string, string) (
 	return 0, nil
 }
 
-func (*narrationStoreStub) MarkAudioRevision(context.Context, string, string, int, string, string, int64) error {
+func (*narrationStoreStub) MarkAudioRevisions(context.Context, string, string, int, string, []narration.AudioRevisionMark) error {
 	return nil
 }
 
@@ -377,7 +377,7 @@ func (*multiSlideStore) CountDraftSegments(context.Context, string, string) (int
 	return 0, nil
 }
 
-func (*multiSlideStore) MarkAudioRevision(context.Context, string, string, int, string, string, int64) error {
+func (*multiSlideStore) MarkAudioRevisions(context.Context, string, string, int, string, []narration.AudioRevisionMark) error {
 	return nil
 }
 

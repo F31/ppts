@@ -4,6 +4,7 @@ package narration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -137,6 +138,52 @@ func TestListByProjectQueryCountIsConstant(t *testing.T) {
 	if large > 3 {
 		t.Fatalf("ListByProject 打了 %d 次库，期望 ≤3（脚本一次 + 分段一次 + 余量）", large)
 	}
+}
+
+// 配音完成后的 audio_revision 回写同样不能逐页打库：3 页与 12 页都只能有一条 UPDATE。
+func TestMarkAudioRevisionsQueryCountIsConstant(t *testing.T) {
+	s, tracer := tracedStore(t)
+	ctx := context.Background()
+
+	seedNarrationSlides(t, s, nrTenant, nrProject, 5, 3)
+	tracer.reset()
+	if err := s.MarkAudioRevisions(ctx, nrTenant, nrProject, 5, lang, audioMarks(3)); err != nil {
+		t.Fatalf("MarkAudioRevisions(3): %v", err)
+	}
+	small := tracer.count()
+	smallDump := tracer.dump()
+
+	seedNarrationSlidesRange(t, s, nrTenant, nrProject, 5, 3, 12)
+	tracer.reset()
+	if err := s.MarkAudioRevisions(ctx, nrTenant, nrProject, 5, lang, audioMarks(12)); err != nil {
+		t.Fatalf("MarkAudioRevisions(12): %v", err)
+	}
+	large := tracer.count()
+
+	if small != large {
+		t.Fatalf("回写查询数随页数增长：3 页 %d 条、12 页 %d 条（3 页时：%s）", small, large, smallDump)
+	}
+	if large != 1 {
+		t.Fatalf("MarkAudioRevisions 打了 %d 次库，期望 1", large)
+	}
+
+	list, err := s.ListByProject(ctx, nrTenant, nrProject, 5, lang)
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	for _, rev := range list {
+		if rev.AudioRevision != 1 {
+			t.Fatalf("slide %s audio revision = %d, want 1", rev.SlideID, rev.AudioRevision)
+		}
+	}
+}
+
+func audioMarks(n int) []AudioRevisionMark {
+	marks := make([]AudioRevisionMark, n)
+	for i := range marks {
+		marks[i] = AudioRevisionMark{SlideID: fmt.Sprintf("slide-%02d", i+1), Revision: 1}
+	}
+	return marks
 }
 
 // BenchmarkListByProjectPG30：PG 上一次 30 页列表读的成本（逐页查分段时是 31 次往返）。

@@ -102,6 +102,12 @@ type ErrConflict struct {
 
 func (e *ErrConflict) Error() string { return "narration: revision conflict" }
 
+// AudioRevisionMark 是批量回写的一页：该讲稿最近一次成功配音对应的脚本修订号。
+type AudioRevisionMark struct {
+	SlideID  string
+	Revision int64
+}
+
 // Store 讲稿存储端口。更新带 expected_revision；冲突返回 ErrConflict{Latest}。
 //
 // 所有读写都以 sourceRevisionNo 定位「源版本」：slide_id 只在单个 PPTX 文件内唯一，
@@ -121,8 +127,8 @@ type Store interface {
 	EnsureExists(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID, language string, mode ScriptMode) (*Revision, error)
 	// CountDraftSegments 返回项目内仍处于 draft 状态的讲稿分段总数（生成前置检查用，跨版本）。
 	CountDraftSegments(ctx context.Context, tenantID, projectID string) (int, error)
-	// MarkAudioRevision 回写某讲稿最近一次成功配音对应的脚本修订号（配音任务完成时调用）。
-	MarkAudioRevision(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID, language string, revision int64) error
+	// MarkAudioRevisions 批量回写各讲稿最近一次成功配音对应的脚本修订号（配音任务完成时调用）。
+	MarkAudioRevisions(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, language string, marks []AudioRevisionMark) error
 	// ListByProject 返回项目下指定语言、指定源版本的讲稿（含 AudioRevision，供 stale 计算）。
 	// sourceRevisionNo==0 时只返回 legacy 行；>0 时返回该版本行，并对缺少该版本行的 slide 回退 legacy。
 	ListByProject(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, language string) ([]*Revision, error)

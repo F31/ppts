@@ -415,11 +415,30 @@ func (s *SQLiteStore) CountDraftSegments(ctx context.Context, tenantID, projectI
 	return n, err
 }
 
-func (s *SQLiteStore) MarkAudioRevision(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID, language string, revision int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE narration_scripts SET audio_revision = ?, updated_at = ?
-		 WHERE tenant_id = ? AND project_id = ? AND slide_id = ? AND language = ? AND source_revision_no = ?`,
-		revision, db.Now(), tenantID, projectID, slideID, language, sourceRevisionNo)
+func (s *SQLiteStore) MarkAudioRevisions(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, language string, marks []AudioRevisionMark) error {
+	if len(marks) == 0 {
+		return nil
+	}
+	// CASE 而非 UPDATE FROM：后者要 SQLite 3.33+，CASE 在所有支持版本上都成立。
+	var query strings.Builder
+	query.WriteString(`UPDATE narration_scripts SET audio_revision = CASE slide_id`)
+	args := make([]any, 0, 2*len(marks)+5)
+	for _, mark := range marks {
+		query.WriteString(` WHEN ? THEN ?`)
+		args = append(args, mark.SlideID, mark.Revision)
+	}
+	query.WriteString(` END, updated_at = ?
+	 WHERE tenant_id = ? AND project_id = ? AND language = ? AND source_revision_no = ? AND slide_id IN (`)
+	args = append(args, db.Now(), tenantID, projectID, language, sourceRevisionNo)
+	for i, mark := range marks {
+		if i > 0 {
+			query.WriteString(`, `)
+		}
+		query.WriteString(`?`)
+		args = append(args, mark.SlideID)
+	}
+	query.WriteString(`)`)
+	_, err := s.db.ExecContext(ctx, query.String(), args...)
 	return err
 }
 

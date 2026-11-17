@@ -606,12 +606,13 @@ func (h *NarrationHandler) Handle(ctx context.Context, job *pipeline.Job) error 
 	if err := h.publishTimeline(ctx, job, snapshot.Timing, timelineSlides, snapshot.RevisionNo, stats); err != nil {
 		return err
 	}
-	// 回写 audio_revision：标记每段最近一次配音对应的脚本修订号（stale 判定）。
+	// 回写 audio_revision：标记每页最近一次配音对应的脚本修订号（stale 判定）。
+	marks := make([]narration.AudioRevisionMark, 0, len(planned))
 	for _, slide := range planned {
-		if err := h.scripts.MarkAudioRevision(ctx, job.TenantID, job.ProjectID, snapshot.RevisionNo, slide.snapshot.SlideID, snapshot.Language, slide.snapshot.ScriptRevision); err != nil {
-			// 非致命：stale 信号缺失不影响已生成音频的可用性。
-			continue
-		}
+		marks = append(marks, narration.AudioRevisionMark{SlideID: slide.snapshot.SlideID, Revision: slide.snapshot.ScriptRevision})
+	}
+	if err := h.scripts.MarkAudioRevisions(ctx, job.TenantID, job.ProjectID, snapshot.RevisionNo, snapshot.Language, marks); err != nil {
+		// 非致命：stale 信号缺失不影响已生成音频的可用性。
 	}
 	// 按真实合成时长结算额度（幂等键与 API 预占一致）。
 	if h.usage != nil && job.IDempotencyKey != "" {

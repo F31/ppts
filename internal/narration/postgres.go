@@ -239,13 +239,25 @@ func (s *PGStore) CountDraftSegments(ctx context.Context, tenantID, projectID st
 	return n, err
 }
 
-// MarkAudioRevision 回写某讲稿最近一次成功配音对应的脚本修订号（配音任务完成时调用）。
-func (s *PGStore) MarkAudioRevision(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, slideID, language string, revision int64) error {
+// MarkAudioRevisions 批量回写各讲稿最近一次成功配音对应的脚本修订号（配音任务完成时调用）。
+func (s *PGStore) MarkAudioRevisions(ctx context.Context, tenantID, projectID string, sourceRevisionNo int, language string, marks []AudioRevisionMark) error {
+	if len(marks) == 0 {
+		return nil
+	}
+	slideIDs := make([]string, len(marks))
+	revisions := make([]int64, len(marks))
+	for i, mark := range marks {
+		slideIDs[i] = mark.SlideID
+		revisions[i] = mark.Revision
+	}
 	return tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
 		_, err := tx.Exec(ctx,
-			`UPDATE narration_scripts SET audio_revision=$6, updated_at=now()
-			 WHERE tenant_id=$1 AND project_id=$2 AND slide_id=$3 AND language=$4 AND source_revision_no=$5`,
-			tenantID, projectID, slideID, language, sourceRevisionNo, revision)
+			`UPDATE narration_scripts AS n
+			 SET audio_revision=v.revision, updated_at=now()
+			 FROM unnest($5::text[], $6::bigint[]) AS v(slide_id, revision)
+			 WHERE n.tenant_id=$1 AND n.project_id=$2 AND n.language=$3 AND n.source_revision_no=$4
+			   AND n.slide_id=v.slide_id`,
+			tenantID, projectID, language, sourceRevisionNo, slideIDs, revisions)
 		return err
 	})
 }

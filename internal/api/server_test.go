@@ -514,7 +514,7 @@ func (*fakeScriptStore) CountDraftSegments(context.Context, string, string) (int
 	return 0, nil
 }
 
-func (*fakeScriptStore) MarkAudioRevision(context.Context, string, string, int, string, string, int64) error {
+func (*fakeScriptStore) MarkAudioRevisions(context.Context, string, string, int, string, []narration.AudioRevisionMark) error {
 	return nil
 }
 

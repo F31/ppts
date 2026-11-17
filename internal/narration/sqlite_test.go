@@ -29,6 +29,46 @@ func newNarrationStore(t *testing.T) *SQLiteStore {
 	return NewSQLiteStore(sqldb)
 }
 
+// 批量回写必须只改 marks 里的页：把整份未配音的页一起刷成最新修订号，
+// 会让 stale 提示静默消失。
+func TestSQLiteMarkAudioRevisionsBatches(t *testing.T) {
+	ctx := context.Background()
+	s := newNarrationStore(t)
+	const tenant = db.LocalTenantID
+	const project, lang = "p-batch", "zh-CN"
+	slides := []string{"slide-a", "slide-b", "slide-c"}
+
+	for _, slide := range slides {
+		if _, err := s.EnsureExists(ctx, tenant, project, 0, slide, lang, ModeOriginal); err != nil {
+			t.Fatalf("EnsureExists %s: %v", slide, err)
+		}
+		if _, err := s.Update(ctx, tenant, project, 0, slide, lang, 0, oneSeg(slide)); err != nil {
+			t.Fatalf("Update %s: %v", slide, err)
+		}
+	}
+	if err := s.MarkAudioRevisions(ctx, tenant, project, 0, lang, []AudioRevisionMark{
+		{SlideID: "slide-a", Revision: 1},
+		{SlideID: "slide-b", Revision: 2},
+	}); err != nil {
+		t.Fatalf("MarkAudioRevisions: %v", err)
+	}
+
+	list, err := s.ListByProject(ctx, tenant, project, 0, lang)
+	if err != nil {
+		t.Fatalf("ListByProject: %v", err)
+	}
+	want := map[string]int64{"slide-a": 1, "slide-b": 2, "slide-c": 0}
+	for _, rev := range list {
+		if rev.AudioRevision != want[rev.SlideID] {
+			t.Fatalf("slide %s audio revision = %d, want %d", rev.SlideID, rev.AudioRevision, want[rev.SlideID])
+		}
+	}
+
+	if err := s.MarkAudioRevisions(ctx, tenant, project, 0, lang, nil); err != nil {
+		t.Fatalf("empty marks: %v", err)
+	}
+}
+
 func TestSQLiteNarrationLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := newNarrationStore(t)
@@ -104,8 +144,8 @@ func TestSQLiteNarrationLifecycle(t *testing.T) {
 		t.Fatalf("count draft: err=%v n=%d", err, n)
 	}
 
-	// MarkAudioRevision
-	if err := s.MarkAudioRevision(ctx, tenant, project, 0, slide, lang, 1); err != nil {
+	// MarkAudioRevisions
+	if err := s.MarkAudioRevisions(ctx, tenant, project, 0, lang, []AudioRevisionMark{{SlideID: slide, Revision: 1}}); err != nil {
 		t.Fatalf("mark audio: %v", err)
 	}
 	list, err := s.ListByProject(ctx, tenant, project, 0, lang)
