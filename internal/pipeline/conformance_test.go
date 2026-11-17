@@ -34,10 +34,12 @@ type pipelineConformanceEnv struct {
 // 幂等查询）只有具体实现才有，用局部接口把它们也纳入契约。
 type conformanceStore interface {
 	Store
+	CompleteWithStep
 	CountActive(ctx context.Context, tenantID string) (int, error)
 	ByIdempotency(ctx context.Context, tenantID, kind, idemKey string) (*Job, error)
 	OldestQueuedAge(ctx context.Context) (time.Duration, error)
 	QueueDepthByKind(ctx context.Context, tenantID string) ([]QueueDepthStat, error)
+	ListSteps(ctx context.Context, tenantID, jobID string) ([]JobStep, error)
 }
 
 func runPipelineStoreConformance(t *testing.T, newEnv func(t *testing.T) pipelineConformanceEnv) {
@@ -54,6 +56,9 @@ func runPipelineStoreConformance(t *testing.T, newEnv func(t *testing.T) pipelin
 		{"RetryFailed", conformanceJobRetryFailed},
 		{"ListPaging", conformanceJobListPaging},
 		{"EventsSince", conformanceJobEventsSince},
+		{"StepUpsert", conformanceStepUpsert},
+		{"CompleteWithStepAtomic", conformanceCompleteWithStepAtomic},
+		{"CompleteWithStepFencing", conformanceCompleteWithStepFencing},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -405,6 +410,99 @@ func mustDepth(t *testing.T, ctx context.Context, env pipelineConformanceEnv) []
 		t.Fatalf("QueueDepthByKind: %v", err)
 	}
 	return stats
+}
+
+// 步骤覆盖规则：同 key 重放只留一行、引用不被空值覆盖；任务终态后仍可读。
+func conformanceStepUpsert(t *testing.T, ctx context.Context, env pipelineConformanceEnv) {
+	j := mustCreateJob(t, env, ctx, KindParse, "step-upsert", time.Time{})
+	claimed, err := env.Store.ClaimNext(ctx, env.Tenant, "ow-steps", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	if claimed.ID != j.ID {
+		t.Fatalf("claimed %s, want %s", claimed.ID, j.ID)
+	}
+	step := JobStep{
+		TenantID: env.Tenant, JobID: claimed.ID, StepType: "parse", StepKey: "extract",
+		State: StepSuccess, ResultRef: "ref-1",
+	}
+	for i := 0; i < 2; i++ {
+		if err := env.Store.MarkStep(ctx, step); err != nil {
+			t.Fatalf("MarkStep #%d: %v", i+1, err)
+		}
+	}
+	steps, err := env.Store.ListSteps(ctx, env.Tenant, claimed.ID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("ListSteps = %d, %v; want 1", len(steps), err)
+	}
+	if steps[0].ResultRef != "ref-1" {
+		t.Fatalf("result_ref = %q, want ref-1", steps[0].ResultRef)
+	}
+
+	if err := env.Store.Complete(ctx, claimed.ID, "ow-steps", claimed.FencingToken, StateSucceeded, nil); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := env.Store.MarkStep(ctx, step); err != nil {
+		t.Fatalf("MarkStep after terminal: %v", err)
+	}
+	steps, err = env.Store.ListSteps(ctx, env.Tenant, claimed.ID)
+	if err != nil || len(steps) != 1 || steps[0].ResultRef != "ref-1" {
+		t.Fatalf("terminal steps = %+v, %v", steps, err)
+	}
+}
+
+// 终态与最终步骤同事务：成功时两者都可见；fencing 失效时两者都不落地。
+func conformanceCompleteWithStepAtomic(t *testing.T, ctx context.Context, env pipelineConformanceEnv) {
+	j := mustCreateJob(t, env, ctx, KindExport, "outbox-atomic", time.Time{})
+	claimed, err := env.Store.ClaimNext(ctx, env.Tenant, "ow-outbox", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	if claimed.ID != j.ID {
+		t.Fatalf("claimed %s, want %s", claimed.ID, j.ID)
+	}
+	step := &JobStep{
+		TenantID: env.Tenant, JobID: claimed.ID, StepType: "export",
+		StepKey: "export:srt:hash", State: StepSuccess, ResultRef: "artifact-1",
+	}
+	if err := env.Store.CompleteWithStep(ctx, claimed.ID, "ow-outbox", claimed.FencingToken, StateSucceeded, nil, step); err != nil {
+		t.Fatalf("CompleteWithStep: %v", err)
+	}
+	got, err := env.Store.Get(ctx, claimed.ID, env.Tenant)
+	if err != nil || got.State != StateSucceeded {
+		t.Fatalf("job = %+v, %v; want succeeded", got, err)
+	}
+	steps, err := env.Store.ListSteps(ctx, env.Tenant, claimed.ID)
+	if err != nil || len(steps) != 1 || steps[0].ResultRef != "artifact-1" {
+		t.Fatalf("steps = %+v, %v", steps, err)
+	}
+}
+
+func conformanceCompleteWithStepFencing(t *testing.T, ctx context.Context, env pipelineConformanceEnv) {
+	j := mustCreateJob(t, env, ctx, KindExport, "outbox-fencing", time.Time{})
+	claimed, err := env.Store.ClaimNext(ctx, env.Tenant, "ow-outbox", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext: %v", err)
+	}
+	if claimed.ID != j.ID {
+		t.Fatalf("claimed %s, want %s", claimed.ID, j.ID)
+	}
+	step := &JobStep{
+		TenantID: env.Tenant, JobID: claimed.ID, StepType: "export",
+		StepKey: "export:srt:hash2", State: StepSuccess, ResultRef: "artifact-2",
+	}
+	err = env.Store.CompleteWithStep(ctx, claimed.ID, "wrong-owner", claimed.FencingToken, StateSucceeded, nil, step)
+	if !errors.Is(err, ErrLeaseMismatch) {
+		t.Fatalf("CompleteWithStep bad fencing = %v, want ErrLeaseMismatch", err)
+	}
+	steps, err := env.Store.ListSteps(ctx, env.Tenant, claimed.ID)
+	if err != nil || len(steps) != 0 {
+		t.Fatalf("steps after rollback = %+v, %v; want none", steps, err)
+	}
+	got, err := env.Store.Get(ctx, claimed.ID, env.Tenant)
+	if err != nil || got.State != StateRunning {
+		t.Fatalf("job after rollback = %+v, %v; want running", got, err)
+	}
 }
 
 // TestSQLitePipelineConformance 用本地库跑同一套用例。
