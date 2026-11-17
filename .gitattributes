@@ -55,3 +55,15 @@ internal/share/assets/* text eol=lf
 Dockerfile* text eol=lf
 **/Dockerfile* text eol=lf
 .dockerignore text eol=lf
+
+# 11. 前端源码 / 配置 / SQL：没有显式规则时，Windows 检出会把整个文件改成 CRLF，
+#     于是 git diff 里全是行尾噪音（2026-11-17 收口时 21 个文件、上万行假 diff）。
+#     这些文件只在构建与测试里被解析，没有任何理由保留平台行尾。
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.json text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
