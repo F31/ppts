@@ -198,6 +198,69 @@ func TestSQLiteViewStatsEmptyAndIncompleteQuery(t *testing.T) {
 	}
 }
 
+func insertAuditMetadata(t *testing.T, sqldb *sql.DB, tenant, action, rtype, rid, meta, createdAt string) {
+	t.Helper()
+	id := fmt.Sprintf("ev-%d", viewEventSeq.Add(1))
+	if _, err := sqldb.Exec(
+		`INSERT INTO audit_events (id, tenant_id, actor_user, action, resource_type, resource_id, metadata, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, tenant, "anonymous", action, rtype, rid, meta, createdAt); err != nil {
+		t.Fatalf("insert audit event: %v", err)
+	}
+}
+
+func TestSQLiteCountByMetadata(t *testing.T) {
+	ctx := context.Background()
+	store, sqldb := newSQLiteAuditStore(t)
+	now := db.Now()
+	const action = "artifact_share.play"
+	const rtype = "artifact"
+	if _, err := sqldb.Exec(`INSERT INTO tenants (id, name) VALUES (?, ?)`, auditOtherTenant, "另一租户"); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+
+	// a1 的两条链接：link-1 两次、link-2 一次；缺 link_id 的事件不参与。
+	insertAuditMetadata(t, sqldb, db.LocalTenantID, action, rtype, "a1", `{"link_id":"link-1"}`, now)
+	insertAuditMetadata(t, sqldb, db.LocalTenantID, action, rtype, "a1", `{"link_id":"link-1"}`, now)
+	insertAuditMetadata(t, sqldb, db.LocalTenantID, action, rtype, "a1", `{"link_id":"link-2"}`, now)
+	insertAuditMetadata(t, sqldb, db.LocalTenantID, action, rtype, "a1", `{"surface":"shared.video.online"}`, now)
+	// 其它成品、其它动作、其它租户都不能串进来。
+	insertAuditMetadata(t, sqldb, db.LocalTenantID, action, rtype, "a2", `{"link_id":"link-1"}`, now)
+	insertAuditMetadata(t, sqldb, db.LocalTenantID, "artifact_share.view_event", rtype, "a1", `{"link_id":"link-1"}`, now)
+	insertAuditMetadata(t, sqldb, auditOtherTenant, action, rtype, "a1", `{"link_id":"link-1"}`, now)
+
+	got, err := store.CountByMetadata(ctx, db.LocalTenantID, action, rtype, "a1", "link_id")
+	if err != nil {
+		t.Fatalf("count by metadata: %v", err)
+	}
+	if got["link-1"] != 2 || got["link-2"] != 1 || len(got) != 2 {
+		t.Fatalf("counts = %+v, want link-1=2 link-2=1", got)
+	}
+
+	for _, tc := range []struct {
+		name       string
+		tenant     string
+		action     string
+		rtype      string
+		resourceID string
+		field      string
+	}{
+		{"tenant", "", action, rtype, "a1", "link_id"},
+		{"action", db.LocalTenantID, "", rtype, "a1", "link_id"},
+		{"resource_type", db.LocalTenantID, action, "", "a1", "link_id"},
+		{"resource_id", db.LocalTenantID, action, rtype, "", "link_id"},
+		{"field", db.LocalTenantID, action, rtype, "a1", ""},
+		{"field injection", db.LocalTenantID, action, rtype, "a1", "link_id') OR 1=1 --"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := store.CountByMetadata(ctx, tc.tenant, tc.action, tc.rtype, tc.resourceID, tc.field)
+			if !errors.Is(err, ErrMetadataAggregationIncomplete) {
+				t.Fatalf("err = %v, want ErrMetadataAggregationIncomplete", err)
+			}
+		})
+	}
+}
+
 func TestSQLiteCountByResource(t *testing.T) {
 	ctx := context.Background()
 	store, sqldb := newSQLiteAuditStore(t)

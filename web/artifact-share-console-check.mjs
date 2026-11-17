@@ -47,6 +47,7 @@ function goRoutes(go) {
 const NEW_KEYS = [
   'library.share', 'library.shareHint',
   'artifactShare.eyebrow', 'artifactShare.title', 'artifactShare.scopeNote',
+  'artifactShare.videoScopeNote', 'artifactShare.videoPlayCountNote', 'artifactShare.videoPlays',
   'artifactShare.retentionNote', 'artifactShare.denominatorNote', 'artifactShare.telemetryOff',
   'artifactShare.noLinks', 'artifactShare.create', 'artifactShare.createFailed',
   'artifactShare.revoke', 'artifactShare.revokeFailed', 'artifactShare.copy',
@@ -120,6 +121,15 @@ function buildChecks(s) {
     assert(!/stats\./.test(errBlock), '失败分支渲染了指标');
   });
 
+  check('视频链接逐条显示播放次数，且不冒充进度统计', () => {
+    assert(/link\.playCount/.test(s.panel), '链接行没有读 playCount');
+    assert(/artifactShare\.videoPlays/.test(s.panel), '链接行没有渲染逐链接播放次数');
+    const showStats = s.panel.indexOf("t('artifactShare.showStats'");
+    const videoGuard = s.panel.indexOf('{!isVideo && (');
+    assert(showStats > 0, 'HTML 统计按钮消失');
+    assert(videoGuard > 0 && videoGuard < showStats, '视频链接不能复用 HTML 的进度统计按钮');
+  });
+
   check('切换统计窗口必须丢掉旧缓存', () => {
     assert(/setStatsByLink\(\{\}\)/.test(s.panel), '窗口变化仍复用旧数据，标签与数字会不一致');
     assert(/\[expanded, days, loadStats\]/.test(s.panel), '窗口变化没有触发重新加载');
@@ -171,7 +181,8 @@ if (selfTest) {
     ['删掉采集关闭早退', (s) => ({ ...s, panel: s.panel.replace(/if \(!data\.telemetryEnabled\) \{[\s\S]*?\n  \}/, '') }), '采集关闭 / 请求失败'],
     ['组件里私加 fetch', (s) => ({ ...s, panel: s.panel + '\nvoid fetch("/api/x");\n' }), '组件与页面零 fetch'],
     ['放开格式守卫', (s) => ({ ...s, library: s.library.replace("canShare && a.downloadable && (a.format === 'mp4' || a.format === 'html_bundle')", 'canShare') }), 'Library 只对 html_bundle / mp4'],
-    ['删掉留存窗口说明', (s) => ({ ...s, zh: { ...s.zh, 'artifactShare.retentionNote': '' }, en: { ...s.en, 'artifactShare.retentionNote': '' } }), '四条诚实口径']
+    ['删掉留存窗口说明', (s) => ({ ...s, zh: { ...s.zh, 'artifactShare.retentionNote': '' }, en: { ...s.en, 'artifactShare.retentionNote': '' } }), '四条诚实口径'],
+    ['删掉逐链接播放次数', (s) => ({ ...s, panel: s.panel.replace(/link\.playCount/g, 'link.playTotal') }), '视频链接逐条显示播放次数']
   ];
   let bad = 0;
   for (const [name, mutate, expectRed] of mutations) {

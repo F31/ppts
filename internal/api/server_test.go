@@ -329,6 +329,22 @@ func (f *fakeAuditStore) CountByResource(_ context.Context, _ string, action, re
 	return out, nil
 }
 
+func (f *fakeAuditStore) CountByMetadata(_ context.Context, _ string, action, resourceType, resourceID, field string) (map[string]int64, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	out := make(map[string]int64)
+	for _, e := range f.events {
+		if e.Action != action || e.ResourceType != resourceType || e.ResourceID != resourceID {
+			continue
+		}
+		if v, ok := e.Metadata[field].(string); ok && v != "" {
+			out[v]++
+		}
+	}
+	return out, nil
+}
+
 type fakeTenantStatusChecker struct {
 	active bool
 	err    error

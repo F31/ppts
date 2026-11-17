@@ -97,7 +97,7 @@ func loadShareableArtifact(
 	return a, true
 }
 
-func artifactShareLinkJSON(l *artifact.ShareLink) map[string]any {
+func artifactShareLinkJSON(l *artifact.ShareLink, playCount int64) map[string]any {
 	return map[string]any{
 		"id":                l.ID,
 		"artifactId":        l.ArtifactID,
@@ -111,12 +111,14 @@ func artifactShareLinkJSON(l *artifact.ShareLink) map[string]any {
 		"createdBy":         l.CreatedBy,
 		"createdAt":         l.CreatedAt.Format(time.RFC3339),
 		"lastAccessedAt":    optionalTime(l.LastAccessedAt),
+		// playCount 是逐链接的播放次数（仅 mp4 有意义）；HTML 链接的观看数据走 stats。
+		"playCount": playCount,
 	}
 }
 
 func listArtifactShares(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, links artifact.ShareLinkStore,
-	projects project.ProjectStore, members membership.Reader, recorder audit.Recorder) {
-	a, ok := loadShareableArtifact(w, r, artifacts, projects, members, recorder)
+	projects project.ProjectStore, members membership.Reader, auditStore audit.Store) {
+	a, ok := loadShareableArtifact(w, r, artifacts, projects, members, auditStore)
 	if !ok {
 		return
 	}
@@ -126,9 +128,16 @@ func listArtifactShares(w http.ResponseWriter, r *http.Request, artifacts artifa
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	// 逐链接播放次数一次聚合，不按链接逐条查审计表。查询失败只降级为 0：
+	// 链接管理本身不该因为辅助计数不可用而打不开。
+	playCounts := map[string]int64{}
+	if a.Format == artifact.FormatMP4 && auditStore != nil {
+		playCounts, _ = auditStore.CountByMetadata(r.Context(), principal.TenantID,
+			artifactShareActionPlay, "artifact", a.ID, "link_id")
+	}
 	out := make([]map[string]any, 0, len(items))
 	for _, l := range items {
-		out = append(out, artifactShareLinkJSON(l))
+		out = append(out, artifactShareLinkJSON(l, playCounts[l.ID]))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"shareLinks": out})
 }
@@ -209,7 +218,7 @@ func createArtifactShare(w http.ResponseWriter, r *http.Request, artifacts artif
 			},
 		})
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"shareLink": artifactShareLinkJSON(l)})
+	writeJSON(w, http.StatusCreated, map[string]any{"shareLink": artifactShareLinkJSON(l, 0)})
 }
 
 func revokeArtifactShare(w http.ResponseWriter, r *http.Request, artifacts artifact.Store, links artifact.ShareLinkStore,

@@ -92,6 +92,22 @@ func (s *fakeArchiveStore) CountByResource(_ context.Context, tenantID, action, 
 	return out, nil
 }
 
+func (s *fakeArchiveStore) CountByMetadata(_ context.Context, tenantID, action, resourceType, resourceID, field string) (map[string]int64, error) {
+	if tenantID == "" || action == "" || resourceType == "" || resourceID == "" || !validMetadataField(field) {
+		return nil, ErrMetadataAggregationIncomplete
+	}
+	out := make(map[string]int64)
+	for _, e := range s.events[tenantID] {
+		if e.Action != action || e.ResourceType != resourceType || e.ResourceID != resourceID {
+			continue
+		}
+		if v, ok := e.Metadata[field].(string); ok && v != "" {
+			out[v]++
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeArchiveStore) DeleteBefore(_ context.Context, tenantID string, before time.Time) (int64, error) {
 	var kept []Event
 	for _, e := range s.events[tenantID] {

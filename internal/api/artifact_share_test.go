@@ -475,6 +475,55 @@ func TestArtifactShareVideoStatsUnsupported(t *testing.T) {
 	}
 }
 
+// 视频分享不仅要按成品显示总数，还要按链接回答「这一条链接被播了多少次」。
+// 拖动产生的 Range 请求不能重复计数。
+func TestArtifactShareVideoPlayCountPerLink(t *testing.T) {
+	env := newShareTestEnv(t)
+	a, _ := env.seedVideo(t, "p1")
+
+	create := func() (id, token string) {
+		t.Helper()
+		body := readBody(t, env.createShare(t, "p1", a.ID, `{}`))
+		var out struct {
+			ShareLink struct {
+				ID    string `json:"id"`
+				Token string `json:"token"`
+			} `json:"shareLink"`
+		}
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("decode: %v (%s)", err, body)
+		}
+		return out.ShareLink.ID, out.ShareLink.Token
+	}
+	idA, tokenA := create()
+	idB, tokenB := create()
+
+	_ = readBody(t, env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+tokenA+"/media")))
+	rangeReq := mustReq(t, http.MethodGet, env.server.URL+"/s/"+tokenA+"/media")
+	rangeReq.Header.Set("Range", "bytes=2-5")
+	_ = readBody(t, env.do(t, rangeReq))
+	_ = readBody(t, env.do(t, mustReq(t, http.MethodGet, env.server.URL+"/s/"+tokenB+"/media")))
+
+	body := readBody(t, env.do(t, mustReq(t, http.MethodGet,
+		env.server.URL+"/projects/p1/artifacts/"+a.ID+"/shares")))
+	var out struct {
+		ShareLinks []struct {
+			ID        string `json:"id"`
+			PlayCount int64  `json:"playCount"`
+		} `json:"shareLinks"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode links: %v (%s)", err, body)
+	}
+	got := map[string]int64{}
+	for _, link := range out.ShareLinks {
+		got[link.ID] = link.PlayCount
+	}
+	if got[idA] != 1 || got[idB] != 1 {
+		t.Fatalf("per-link play counts = %+v, want %s=1 %s=1", got, idA, idB)
+	}
+}
+
 // 项目重新导出（artifacts 行被指到新对象）后，旧链接读到的字节必须一模一样。
 func TestArtifactShareAnchorsToArtifact(t *testing.T) {
 	env := newShareTestEnv(t)

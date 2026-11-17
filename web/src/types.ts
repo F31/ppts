@@ -435,6 +435,8 @@ export type ArtifactShareLink = {
   createdBy: string;
   createdAt: string;
   lastAccessedAt: string;
+  // 逐链接播放次数（仅 mp4 有意义）；HTML 链接的观看数据走 stats。
+  playCount: number;
 };
 
 // 作者侧在线观看统计。所有数字都是「窗口内独立会话数」，不是事件条数。

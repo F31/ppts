@@ -40,8 +40,8 @@ export function ArtifactSharePanel({
 }) {
   const { t } = useI18n();
   const canManage = can(role, 'project.share');
-  // 视频分享没有进度漏斗，逐链接的观看统计端点仍返回 0；播放次数在成品库卡片上
-  // 按成品聚合，所以这里只为 HTML 包暴露「观看数据」。
+  // 视频分享没有进度漏斗，逐链接的观看统计端点仍返回 400；播放次数在链接行上
+  // 逐条显示，成品库卡片仍按成品汇总。所以这里只为 HTML 包暴露「观看数据」。
   const isVideo = artifact.format === 'mp4';
   const [links, setLinks] = useState<ArtifactShareLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -174,6 +174,7 @@ export function ArtifactSharePanel({
                     <div className="share-who">
                       <strong>{link.revoked ? t('artifactShare.revoked') : (link.expiresAt ? t('artifactShare.expiryAt', { date: new Date(link.expiresAt).toLocaleDateString() }) : t('artifactShare.expiryNever'))}</strong>
                       <span className="member-subid">{link.passwordProtected ? t('artifactShare.passwordSet') : t('artifactShare.accessViewOnly')}</span>
+                      {isVideo ? <span className="cell-sub">{t('artifactShare.videoPlays', { count: String(link.playCount) })}</span> : null}
                       <span className="cell-sub">{new Date(link.createdAt).toLocaleString()}</span>
                     </div>
                     <div className="share-row-actions">

@@ -195,6 +195,40 @@ func (s *PGStore) CountByResource(ctx context.Context, tenantID, action, resourc
 	return out, nil
 }
 
+// CountByMetadata 在 PG 侧按 metadata 字段聚合；整段包在 tenant.Run 里，
+// 不另写租户条件，与 ViewStats / CountByResource 同一纪律。
+func (s *PGStore) CountByMetadata(ctx context.Context, tenantID, action, resourceType, resourceID, field string) (map[string]int64, error) {
+	if strings.TrimSpace(tenantID) == "" || action == "" || resourceType == "" || resourceID == "" || !validMetadataField(field) {
+		return nil, ErrMetadataAggregationIncomplete
+	}
+	out := make(map[string]int64)
+	err := tenant.Run(ctx, s.pool, tenantID, func(ctx context.Context, tx pgx.Tx) error {
+		rows, err := tx.Query(ctx,
+			`SELECT metadata->>$5, COUNT(*) FROM audit_events
+			 WHERE tenant_id=$1 AND action=$2 AND resource_type=$3 AND resource_id=$4 AND metadata ? $5
+			 GROUP BY metadata->>$5`, tenantID, action, resourceType, resourceID, field)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key string
+			var n int64
+			if err := rows.Scan(&key, &n); err != nil {
+				return err
+			}
+			if key != "" {
+				out[key] = n
+			}
+		}
+		return rows.Err()
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DeleteBefore 删除 before 之前（排他）的审计事件，返回删除行数。
 func (s *PGStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
 	if strings.TrimSpace(tenantID) == "" {

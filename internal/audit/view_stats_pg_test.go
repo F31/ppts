@@ -59,3 +59,37 @@ func TestPGViewStats(t *testing.T) {
 		t.Errorf("progress_50 = %d, want 0", n)
 	}
 }
+
+// CountByMetadata 的 PG 方言：jsonb ->> 与 metadata ? 的配合、以及 tenant.Run 下的隔离。
+func TestPGCountByMetadata(t *testing.T) {
+	s := auditStore(t)
+	ctx := context.Background()
+
+	record := func(tenantID, artifactID, linkID string) {
+		t.Helper()
+		if err := s.Record(ctx, Event{
+			TenantID:     tenantID,
+			ActorUser:    "anonymous",
+			Action:       "artifact_share.play",
+			ResourceType: "artifact",
+			ResourceID:   artifactID,
+			Metadata:     map[string]any{"link_id": linkID},
+		}); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+
+	record(auditTenantA, "a1", "link-1")
+	record(auditTenantA, "a1", "link-1")
+	record(auditTenantA, "a1", "link-2")
+	record(auditTenantA, "a2", "link-1")
+	record(auditTenantB, "a1", "link-1")
+
+	got, err := s.CountByMetadata(ctx, auditTenantA, "artifact_share.play", "artifact", "a1", "link_id")
+	if err != nil {
+		t.Fatalf("CountByMetadata: %v", err)
+	}
+	if got["link-1"] != 2 || got["link-2"] != 1 || len(got) != 2 {
+		t.Fatalf("counts = %+v, want link-1=2 link-2=1", got)
+	}
+}

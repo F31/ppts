@@ -71,4 +71,7 @@ type Store interface {
 	// CountByResource 按 resource_id 聚合全部留存事件条数（不按会话去重）。
 	// 供成品库卡片显示播放次数：一次列表只发一条 SQL，不对每张卡片各查一次。
 	CountByResource(ctx context.Context, tenantID, action, resourceType string) (map[string]int64, error)
+	// CountByMetadata 按 metadata 的单个字段聚合事件条数；resource_id 限定同一资源。
+	// 供成品分享列表显示逐链接播放次数：一次列表只发一条 SQL，不按链接逐条查。
+	CountByMetadata(ctx context.Context, tenantID, action, resourceType, resourceID, field string) (map[string]int64, error)
 }

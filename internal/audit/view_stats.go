@@ -19,6 +19,22 @@ type ViewStatsQuery struct {
 
 var ErrViewStatsQueryIncomplete = errors.New("audit: view stats query requires action, resource type, resource id and since")
 
+var ErrMetadataAggregationIncomplete = errors.New("audit: metadata aggregation requires action, resource type, resource id and field")
+
+// validMetadataField 让插件式字段名只能走 JSON 键路径，不能拼进 SQL。
+// 调用方只传内部常量（如 link_id），这里仍校验一次，避免以后有人把用户输入传进来。
+func validMetadataField(field string) bool {
+	if field == "" {
+		return false
+	}
+	for _, r := range field {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' {
+			return false
+		}
+	}
+	return true
+}
+
 func (q ViewStatsQuery) validate(tenantID string) error {
 	if tenantID == "" || q.Action == "" || q.ResourceType == "" || q.ResourceID == "" || q.Since.IsZero() {
 		return ErrViewStatsQueryIncomplete

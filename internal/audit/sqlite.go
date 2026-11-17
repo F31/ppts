@@ -190,6 +190,38 @@ func (s *SQLiteStore) CountByResource(ctx context.Context, tenantID, action, res
 	return out, nil
 }
 
+// CountByMetadata 在 SQLite 侧按 metadata 字段聚合（JSON1）。
+func (s *SQLiteStore) CountByMetadata(ctx context.Context, tenantID, action, resourceType, resourceID, field string) (map[string]int64, error) {
+	if strings.TrimSpace(tenantID) == "" || action == "" || resourceType == "" || resourceID == "" || !validMetadataField(field) {
+		return nil, ErrMetadataAggregationIncomplete
+	}
+	path := "$." + field
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT json_extract(metadata, ?), COUNT(*) FROM audit_events
+		 WHERE tenant_id = ? AND action = ? AND resource_type = ? AND resource_id = ?
+		   AND json_extract(metadata, ?) IS NOT NULL
+		 GROUP BY json_extract(metadata, ?)`, path, tenantID, action, resourceType, resourceID, path, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	for rows.Next() {
+		var key string
+		var n int64
+		if err := rows.Scan(&key, &n); err != nil {
+			return nil, err
+		}
+		if key != "" {
+			out[key] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *SQLiteStore) DeleteBefore(ctx context.Context, tenantID string, before time.Time) (int64, error) {
 	if strings.TrimSpace(tenantID) == "" {
 		return 0, ErrTenantRequired
