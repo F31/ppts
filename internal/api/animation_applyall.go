@@ -28,6 +28,7 @@ import (
 	"github.com/F31/ppts/internal/animation/animdefault"
 	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/app"
+	"github.com/F31/ppts/internal/lang"
 	"github.com/F31/ppts/internal/project"
 )
 
@@ -199,7 +200,7 @@ func (h *AnimationHandler) ApplyAllSlides(ctx context.Context, tenantID, userID,
 		return out, fmt.Errorf("unknown preset %q", presetID)
 	}
 	if language == "" {
-		language = "zh-CN"
+		language = lang.Default
 	}
 	ctx = withRequestCache(ctx)
 	revNo, err := h.deck.ResolveSourceRevision(ctx, tenantID, userID, projectID, revNo)
@@ -387,7 +388,7 @@ func deckParamsFromRequest(w http.ResponseWriter, r *http.Request) (string, int,
 	}
 	language := r.URL.Query().Get("language")
 	if language == "" {
-		language = "zh-CN"
+		language = lang.Default
 	}
 	return projectID, revNo, language, true
 }

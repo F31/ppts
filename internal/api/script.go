@@ -16,13 +16,14 @@ import (
 	"github.com/F31/ppts/internal/audit"
 	"github.com/F31/ppts/internal/gateway"
 	"github.com/F31/ppts/internal/integrations/llm"
+	"github.com/F31/ppts/internal/lang"
 	"github.com/F31/ppts/internal/membership"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 )
 
-const defaultLanguage = "zh-CN"
+const defaultLanguage = lang.Default
 
 // sourceRevisionHeader 是「当前查看的源版本」显式头。浏览器可自由设置它（Accept-Language
 // 在部分实现中受限），用于让讲稿/配音读写在正确的源版本上进行。缺失/非法 = 0（legacy）。

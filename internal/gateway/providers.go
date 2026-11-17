@@ -18,6 +18,7 @@ import (
 	"github.com/F31/ppts/internal/config"
 	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/tts"
+	"github.com/F31/ppts/internal/lang"
 )
 
 // ProviderCosyVoice 是本地 CosyVoice runtime 的 provider 标识。
@@ -158,7 +159,7 @@ func Probe(ctx context.Context, cfg *Config) (latencyMS int64, err error) {
 func probeTTS(ctx context.Context, cfg *Config) error {
 	provider := NewTTSProvider(cfg)
 	_, err := provider.Synthesize(ctx, tts.SynthesisRequest{
-		LogicalOpID: "gateway-probe:llm-tts", VoiceID: cfg.Voice, Text: "网关连通性测试。", Language: "zh-CN",
+		LogicalOpID: "gateway-probe:llm-tts", VoiceID: cfg.Voice, Text: "网关连通性测试。", Language: lang.Default,
 	})
 	if err != nil {
 		return classifyTTSProbeError(cfg, err)

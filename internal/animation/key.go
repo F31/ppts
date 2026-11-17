@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/F31/ppts/internal/lang"
 )
 
 // ErrInvalidKey 表示隔离维度不完整（缺租户/项目/页）。
@@ -29,7 +31,7 @@ func (r *Revision) Key() Key {
 // 不属于某个 store。放在 animstore 里会让 SQLite 与 PostgreSQL 各写一份。
 func (k Key) Normalize() Key {
 	if strings.TrimSpace(k.Language) == "" {
-		k.Language = "zh-CN"
+		k.Language = lang.Default
 	}
 	return k
 }
@@ -57,7 +59,7 @@ func (k Key) Validate() error {
 // 导出给持久化实现：写入前的规整是数据契约的一部分，不该由两个 store 各实现一遍。
 func (r *Revision) Normalize() {
 	if strings.TrimSpace(r.Language) == "" {
-		r.Language = "zh-CN"
+		r.Language = lang.Default
 	}
 	if r.Tracks == nil {
 		r.Tracks = []*Track{}

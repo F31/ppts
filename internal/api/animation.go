@@ -15,6 +15,7 @@ import (
 	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/app"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/lang"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
@@ -239,7 +240,7 @@ func (h *AnimationHandler) staleAnchors(w http.ResponseWriter, r *http.Request) 
 	}
 	language := r.URL.Query().Get("language")
 	if language == "" {
-		language = "zh-CN"
+		language = lang.Default
 	}
 	revs, err := h.store.List(r.Context(), animation.Key{
 		TenantID: principal.TenantID, ProjectID: projectID,
@@ -735,7 +736,7 @@ func animationKeyFromRequest(w http.ResponseWriter, r *http.Request, tenantID st
 	}
 	language := r.URL.Query().Get("language")
 	if language == "" {
-		language = "zh-CN"
+		language = lang.Default
 	}
 	return animation.Key{
 		TenantID: tenantID, ProjectID: projectID, SlideID: slideID,

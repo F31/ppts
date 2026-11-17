@@ -12,6 +12,7 @@ import (
 
 	"github.com/F31/ppts/internal/integrations/llm"
 	"github.com/F31/ppts/internal/integrations/objectstore"
+	"github.com/F31/ppts/internal/lang"
 	"github.com/F31/ppts/internal/narration"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
@@ -229,7 +230,7 @@ func (h *ScriptDraftHandler) Handle(ctx context.Context, job *pipeline.Job) erro
 		return fmt.Errorf("script_draft: unsupported mode %q", snap.Mode)
 	}
 	if snap.Language == "" {
-		snap.Language = "zh-CN"
+		snap.Language = lang.Default
 	}
 	pages, err := h.loadPages(ctx, job.TenantID, snap.ProjectID, snap.RevisionNo)
 	if err != nil {

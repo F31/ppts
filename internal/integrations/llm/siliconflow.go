@@ -15,6 +15,7 @@ import (
 
 	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/config"
+	"github.com/F31/ppts/internal/lang"
 )
 
 const (
@@ -349,7 +350,7 @@ func buildRewritePrompt(req RewriteRequest) string {
 	}
 	language := strings.TrimSpace(req.Language)
 	if language == "" {
-		language = "zh-CN"
+		language = lang.Default
 	}
 	instructions := strings.TrimSpace(req.Instructions)
 	if instructions == "" {
