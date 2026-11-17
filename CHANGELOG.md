@@ -30,7 +30,8 @@
 - 解析页图 DPI 按 `sldSz` 对齐到成片长边 ≥1920（Office 默认 10" 16:9 为 192 DPI）。已有页图需重新解析才会变清晰。
 - 「要点依次出现」（`gaze+entrance`）在教学注视页上仍走 look 链：挖洞后按 look 中点仍帧，240ms xfade 承担显现，不把整页丢进 Chrome。包围盒不可靠仍回退纯注视。已保存的纯 `entrance` 规格仍整页合成。
 - 教学注视页每页一次 ffmpeg 图（PNG xfade + concat + ultrafast / CRF 18），不再对每条 look 先 medium 再整页 medium。几何与 240ms easeOutCubic 不变。片段键 `looks=once`。
-- 成品库的 mp4 成品可以建在线分享链接：打开即为播放器，`/s/{token}/media` 支持 Range 拖动；创建与每次播放写审计（`artifact_share.create` / `artifact_share.play`），卡片显示留存期内的播放次数。链接沿用 128 位随机 token、有效期、口令与撤销，媒体流每次回查链接，不签发脱离撤销状态的预签名 URL。其它格式仍拒绝分享。
+- 成品库的 mp4 成品可以建在线分享链接：打开即为播放器，`/s/{token}/media` 支持 Range 拖动；创建与每次播放写审计（`artifact_share.create` / `artifact_share.play`），卡片显示留存期内的播放次数，分享面板按链接分别显示。链接沿用 128 位随机 token、有效期、口令与撤销，媒体流每次回查链接，不签发脱离撤销状态的预签名 URL。其它格式仍拒绝分享。
+- 分组名在租户内唯一：升级时先把同名分组合并到最早一条（项目随迁），再加唯一索引。并发建同名分组会返回「已存在」，不再产生两条同名分组。
 
 ### 质量门禁
 
