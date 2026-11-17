@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/media"
 	"github.com/F31/ppts/internal/project"
@@ -41,12 +42,17 @@ type AnimationSpecSource interface {
 // 未注入或读取失败时元素级轨道会被编译成 anchor_missing 诊断并跳过，
 // **整页轨道（转场、整页推拉/淡入）仍然有效**。这条区别很重要——
 // 缺几何不等于「动画完全没用」，只是能做的动效少一类。
+// BeatDirector 按租户解析拍表导演用的模型通道。nil 或返回错误都视为不问模型。
+type BeatDirector func(ctx context.Context, tenantID string) (bind.ModelCompleter, error)
+
 type AnimationPageAssembler struct {
 	publisher AssetPublisher
 	specs     AnimationSpecSource
 	geometry  PageGeometrySource
 	focus     PageFocusSource
 	logger    *slog.Logger
+	director  BeatDirector
+	dirCache  bind.CompletionCache
 }
 
 // NewAnimationPageAssembler 组装一个可用的构建器。publisher 与 specs 都必须非 nil：
@@ -73,6 +79,16 @@ func (a *AnimationPageAssembler) WithFocus(f PageFocusSource) *AnimationPageAsse
 // WithLogger 注入日志。降级与版本不符靠日志留痕，nil 时静默。
 func (a *AnimationPageAssembler) WithLogger(l *slog.Logger) *AnimationPageAssembler {
 	a.logger = l
+	return a
+}
+
+// WithBeatDirector 注入阶段 2 拍表导演。未注入时导出与今日一样只跑阶段 1。
+// 预览路径不走组装器，仍然只跑阶段 1。
+func (a *AnimationPageAssembler) WithBeatDirector(d BeatDirector) *AnimationPageAssembler {
+	a.director = d
+	if a.dirCache == nil {
+		a.dirCache = newDirectorCache()
+	}
 	return a
 }
 
@@ -357,7 +373,32 @@ func (a *AnimationPageAssembler) pageBeatSheet(ctx context.Context, in Animation
 		return nil, nil
 	}
 	page := bySlide[slide.SlideID]
-	return beatSheetForPage(page, elements, rev, slide, in.Subtitles, durationMS, slideWEMU, slideHEMU)
+	beatIn, out, ran := beatSheetForPage(page, elements, rev, slide, in.Subtitles, durationMS, slideWEMU, slideHEMU)
+	if !ran {
+		return nil, nil
+	}
+	if !out.Sheet.Valid() && a.director != nil {
+		if c, err := a.director(ctx, in.TenantID); err == nil && c != nil {
+			modelID := directorModelID(c)
+			out = directPageBeatSheet(ctx, beatIn, out, c, a.dirCache, modelID)
+		}
+	}
+	recordBeatMetrics(out)
+	if out.Sheet.Valid() {
+		s := out.Sheet
+		return &s, out.DenyIDs
+	}
+	return nil, out.DenyIDs
+}
+
+func directorModelID(c bind.ModelCompleter) string {
+	type named interface{ ModelName() string }
+	if n, ok := c.(named); ok {
+		if id := strings.TrimSpace(n.ModelName()); id != "" {
+			return id
+		}
+	}
+	return "llm"
 }
 
 func (a *AnimationPageAssembler) warn(msg string, args ...any) {

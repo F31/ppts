@@ -1122,7 +1122,7 @@ test('buildLayerNodes：矩形焦点生成遮罩节点，定位与强度都对',
   delete globalThis.document;
 });
 
-test('buildLayerNodes：lookCrop+入场层仍建纱（与 PageView 同公式）', () => {
+test('buildLayerNodes：lookCrop+入场层 punch-in，不建页坐标纱', () => {
   globalThis.document = {
     createElement(tag) {
       const el = {
@@ -1158,13 +1158,15 @@ test('buildLayerNodes：lookCrop+入场层仍建纱（与 PageView 同公式）'
     pageDurationMs: 4000, fps: 30, focus, lookCrop: true
   });
   assert.ok(withEntrance.some((n) => n.element.className === 'ppts-layer'), '应有入场层节点');
-  assert.ok(withEntrance.some((n) => n.element.className === 'ppts-focus-mask'), '入场层关掉 punch-in，应有焦点纱');
+  assert.ok(!withEntrance.some((n) => n.element.className === 'ppts-focus-mask'), 'punch-in 不建页坐标纱');
+  assert.ok(container.children.some((c) => c.className === 'ppts-lookcrop'), '入场层进 crop 容器');
 
   const techOnly = { children: [], append(el) { this.children.push(el); }, animate() {} };
   const punched = buildLayerNodes(techOnly, [], 1920, 1080, {
     pageDurationMs: 4000, fps: 30, focus, lookCrop: true
   });
   assert.equal(punched.length, 0, '科技 punch-in 无入场层时不建页坐标纱');
+  assert.ok(techOnly.children.some((c) => c.className === 'ppts-lookcrop'), '无层也建 crop 容器给底板对齐');
   delete globalThis.document;
 });
 
@@ -1183,6 +1185,8 @@ test('needsLayerStage：只有矩形焦点、没有层的页也要建舞台', ()
   assert.equal(needsLayerStage([], undefined), false);
   const callout = [{ kind: 'callout', startMs: 0, rect: { x: 1, y: 2, w: 30, h: 40 } }];
   assert.equal(needsLayerStage([], [], callout), true, '只有圈选也要建舞台');
+  const pointer = [{ kind: 'pointer', startMs: 0, rect: { x: 1, y: 2, w: 30, h: 6 } }];
+  assert.equal(needsLayerStage([], [], pointer), true, '只有词级下划线也要建舞台');
   assert.equal(needsLayerStage([], [], [{ kind: 'caption', startMs: 0, text: '要点' }]), true, '台上 caption 也要建');
 });
 
@@ -1394,9 +1398,30 @@ test('矩形焦点：网页版所有遮罩叠加后的压暗量，逐毫秒等�
   );
 });
 
+test('pointerKeyframes 只做透明度、不缩放', async () => {
+  const { pointerKeyframes, hasPointer } = await import('./src/sharePlayer/animation.ts');
+  const a = {
+    kind: 'pointer', startMs: 1000, endMs: 3000, fadeMs: 240,
+    rect: { x: 40, y: 80, w: 120, h: 6 }
+  };
+  const pageMs = 4000;
+  const frames = pointerKeyframes(a, pageMs);
+  assert.ok(frames && frames.length >= 2);
+  assert.equal(Number(frames[0].opacity), 0);
+  for (const f of frames) {
+    assert.equal(f.transform, undefined, 'pointer must not scale');
+  }
+  const hold = frames.find((f) => Math.abs(f.offset * pageMs - 1240) <= 20);
+  assert.ok(hold);
+  assert.equal(Number(hold.opacity), 1);
+  assert.equal(pointerKeyframes({ kind: 'callout', startMs: 0, rect: a.rect }, pageMs), null);
+  assert.equal(hasPointer([a]), true);
+  assert.equal(hasPointer([{ kind: 'callout', startMs: 0, rect: a.rect }]), false);
+});
+
 test('calloutKeyframes 与 evaluateAnnotation 同曲线', async () => {
   const { calloutKeyframes } = await import('./src/sharePlayer/animation.ts');
-  const { evaluateAnnotation } = await import('../shared/motion.ts');
+  const { evaluateAnnotation, CALLOUT_ARRIVE_SCALE } = await import('../shared/motion.ts');
   const a = {
     kind: 'callout', startMs: 1000, endMs: 3000, fadeMs: 240,
     rect: { x: 1, y: 2, w: 30, h: 40 }, shape: 'rect'
@@ -1405,9 +1430,13 @@ test('calloutKeyframes 与 evaluateAnnotation 同曲线', async () => {
   const frames = calloutKeyframes(a, pageMs);
   assert.ok(frames && frames.length >= 2);
   assert.equal(Number(frames[0].opacity), 0);
-  const hold = frames.find((f) => Math.abs(f.offset * pageMs - 1240) <= 20);
+  const start = frames.find((f) => Math.abs(f.offset * pageMs - 1000) <= 20);
+  assert.ok(start);
+  assert.match(String(start.transform), new RegExp(String(CALLOUT_ARRIVE_SCALE)));
+  const hold = frames.find((f) => Math.abs(f.offset * pageMs - 1480) <= 20);
   assert.ok(hold);
   assert.equal(Number(hold.opacity), 1);
+  assert.match(String(hold.transform), /scale\(1\)/);
   assert.equal(evaluateAnnotation(a, 2000)?.opacity, 1);
   assert.equal(calloutKeyframes({ kind: 'caption', startMs: 0, text: 'x' }, pageMs), null);
 });
@@ -1416,6 +1445,8 @@ test('Timeline.tsx 导出构图不画 caption', async () => {
   const src = await readFile(new URL('../renderer/src/Timeline.tsx', import.meta.url), 'utf8');
   assert.match(src, /evaluateAnnotation/);
   assert.match(src, /kind !== 'callout'/);
+  assert.match(src, /kind === 'pointer'/);
+  assert.match(src, /calloutArriveScale/);
   assert.equal(src.includes('ppts-caption'), false);
 });
 
@@ -1424,8 +1455,11 @@ test('Timeline.tsx 与 sharePlayer 共用 lookcrop 公式，LookCrop 跳过页�
   assert.match(pageView, /lookCropAt/);
   assert.match(pageView, /lookCropImageStyle/);
   assert.match(pageView, /skipPageSpace/);
+  assert.match(pageView, /style=\{punchStyle \?\? undefined\}/);
+  assert.equal(pageView.includes('...(punchStyle ?? {})'), false, 'punch 变换套在底板+入场层外层，不单写在 Img');
   const player = await readFile(new URL('./src/sharePlayer/animation.ts', import.meta.url), 'utf8');
   assert.match(player, /lookcrop\.ts/);
   assert.match(player, /applyLookCrop/);
   assert.match(player, /punchIn/);
+  assert.match(player, /ppts-lookcrop/);
 });

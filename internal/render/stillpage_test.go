@@ -206,6 +206,7 @@ func TestStillEncodeArgsFade(t *testing.T) {
 		"-i\npage.png",
 		"xfade=transition=custom:duration=0.233:offset=0",
 		`expr='A*pow(1-P\,3)+B*(1-pow(1-P\,3))'`,
+		"fps=30:start_time=0",
 		"-frames:v\n60",
 		"-colorspace\nbt709",
 		"-an",

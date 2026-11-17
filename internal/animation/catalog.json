@@ -6,7 +6,7 @@
       "label": "淡入",
       "level": "L1",
       "class": "entrance",
-      "appliesTo": ["title", "bullet", "image", "shape", "icon", "chart", "table", "page"],
+      "appliesTo": ["title", "bullet", "image", "shape", "icon", "chart", "table", "row", "page"],
       "durationRange": [200, 1000],
       "defaultDuration": 400,
       "params": {}
@@ -41,11 +41,23 @@
       "label": "生长",
       "level": "L2",
       "class": "entrance",
-      "appliesTo": ["chart", "table", "shape"],
+      "appliesTo": ["chart", "table", "shape", "bar"],
       "durationRange": [400, 2000],
       "defaultDuration": 900,
       "params": {
         "axis": { "type": "enum", "values": ["x", "y"], "default": "y" }
+      }
+    },
+    {
+      "id": "tilt",
+      "label": "倾斜",
+      "level": "L2",
+      "class": "emphasis",
+      "appliesTo": ["shape", "image", "icon"],
+      "durationRange": [400, 2000],
+      "defaultDuration": 800,
+      "params": {
+        "angle": { "type": "number", "min": -20, "max": 20, "default": 8 }
       }
     },
     {

@@ -129,6 +129,37 @@ func TestT1FooterIsDenied(t *testing.T) {
 	}
 }
 
+func TestPageTitleIsDeniedCardsRemain(t *testing.T) {
+	heading := bind.Element{
+		ID: "heading", Kind: "title", Text: "人工智能应用场景",
+		Box: bind.Box{X: 96, Y: 48, W: 1440, H: 96},
+	}
+	cards := sixCards()
+	els := append([]bind.Element{heading}, cards...)
+	text := "首先看智慧城市。接着看智能办公。再看智能制造。然后是数字政务。还有智慧医疗。最后是产业升级。"
+	out := Produce(Input{
+		Elements:   els,
+		CompileIDs: compileIDs(els...),
+		Segments: []SpeechSeg{{
+			ID: "s1", Text: text, StartMs: 0, EndMs: 60000, Method: tts.AlignEstimate,
+		}},
+	})
+	if _, ok := out.DenyIDs["heading"]; !ok {
+		t.Fatalf("DenyIDs 应含页标题 heading: %#v", out.DenyIDs)
+	}
+	if out.DenyReasons["title"] != 1 {
+		t.Fatalf("title deny = %d, want 1: %#v", out.DenyReasons["title"], out.DenyReasons)
+	}
+	for _, b := range out.Sheet.Beats {
+		if b.ShapeID == "heading" {
+			t.Fatalf("页标题成拍: %+v", b)
+		}
+	}
+	if n := gazeCount(out.Sheet); n != 6 {
+		t.Fatalf("cards = %d want 6; beats=%v", n, out.Sheet.Beats)
+	}
+}
+
 func TestT2OfficeCardNotManufacture(t *testing.T) {
 	cards := sixCards()
 	text := "首先看智慧城市的建设成果。首先看智能办公场景，它覆盖审批与会议。接下来是智能制造产线。数字政务提升了办事效率。智慧医疗改善了问诊体验。产业升级需要数据底座。"
@@ -155,7 +186,11 @@ func TestT2OfficeCardNotManufacture(t *testing.T) {
 		t.Fatalf("智能办公 score=%v 智能制造=%v", office, manu)
 	}
 	found := false
+	hasText := false
 	for _, b := range out.Sheet.Beats {
+		if strings.TrimSpace(b.Text) != "" {
+			hasText = true
+		}
 		if b.ShapeID != "c2" {
 			continue
 		}
@@ -166,6 +201,9 @@ func TestT2OfficeCardNotManufacture(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("未命中智能办公卡 c2; beats=%v ids=%v", out.Sheet.Beats, gazeIDs(out.Sheet))
+	}
+	if !hasText {
+		t.Fatal("Beat.Text must copy piece text for the word pointer")
 	}
 }
 

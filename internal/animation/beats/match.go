@@ -14,6 +14,7 @@ func matchPieces(pieces []piece, cands []bind.Element) []animation.Beat {
 			StartMs:   p.StartMs,
 			EndMs:     p.EndMs,
 			SegmentID: p.SegmentID,
+			Text:      p.Text,
 		}
 		if id == "" {
 			b.Shot = animation.BeatShotHold

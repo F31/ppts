@@ -45,6 +45,7 @@ import {
   setSlideScriptSource,
   updateScript as updateScriptApi,
   type AnimationExportOptions,
+  type AnimationExportSpec,
   type ClientIdentity,
   type NarrationEstimate,
   type ProjectVoiceSettings,
@@ -255,10 +256,10 @@ export function ProjectEditor({
   // 场景是 JSON（data URL 图），没有 blob 需要释放。
   const [stagePreview, setStagePreview] = useState<AnimationStagePreview | null>(null);
   const [stageError, setStageError] = useState('');
-  // 一键成片：顶部唯一的主动作，把讲稿 → 配音 → 动效串成一条可跳步的流水线。
+  // 一键成片：顶部唯一的主动作，把讲稿 → 配音 → 动效 → 导出成片串成一条可跳步的流水线。
   const [oneClickOpen, setOneClickOpen] = useState(false);
   const oneClickDialogRef = useDialogA11y<HTMLElement>(() => setOneClickOpen(false));
-  const [oneClickSteps, setOneClickSteps] = useState({ script: true, voice: true, animation: true });
+  const [oneClickSteps, setOneClickSteps] = useState({ script: true, voice: true, animation: true, export: true });
   const [oneClickPreset, setOneClickPreset] = useState('business-calm');
   const [oneClickEntrance, setOneClickEntrance] = useState(false);
   const [oneClickRunning, setOneClickRunning] = useState(false);
@@ -266,7 +267,15 @@ export function ProjectEditor({
   const oneClickLockRef = useRef(false);
   const [oneClickPhase, setOneClickPhase] = useState('');
   const [oneClickError, setOneClickError] = useState('');
-  const [oneClickDone, setOneClickDone] = useState<{ script: number; applied: number; skipped: number; reasons: string; voiceRan: boolean } | null>(null);
+  const [oneClickDone, setOneClickDone] = useState<{
+    script: number;
+    applied: number;
+    skipped: number;
+    reasons: string;
+    voiceRan: boolean;
+    exportJobId?: string;
+    exportDropped?: string;
+  } | null>(null);
 
   const clearStagePreview = useCallback(() => {
     setStageError('');
@@ -1671,12 +1680,13 @@ export function ProjectEditor({
     await generateNarrationFor(ids, override, mode === 'full');
   };
 
-  // 一键成片：把三个已有动作串成一条**真实串行**链。
+  // 一键成片：把讲稿、配音、动效、导出串成一条**真实串行**链。
   //
   // 不复用 oneDraft 的轮询 hook：那条 hook 绑在 oneDraftJobId 上、任务终态直接改 UI 状态，
   // 没法告诉流水线「讲稿好了，可以开始配音」。这里用一次独立的短轮询等 job 终态，
   // 换来清晰的步边界：讲稿步失败或降级就停，不会拿半成品继续配音。
-  // 已经生成好的讲稿要沿用，只给空白页补稿。没配音时也不会去套动效。
+  // 已经生成好的讲稿要沿用，只给空白页补稿。导出是最后一步：入队后不再等渲染结束，
+  // 进度在任务中心，完成后出现在成品库。
   //
   // 点「开始」后立刻收起抽屉。讲稿与配音是队列任务，关窗、切页都不取消它们；
   // 本函数留在编辑器里把下一步接上。顶部提示条说明当前步，页面按钮保持可点。
@@ -1702,7 +1712,7 @@ export function ProjectEditor({
 
   const runOneClick = async () => {
     if (oneClickLockRef.current || !isReady || slidesState.mode !== 'real') return;
-    if (!(oneClickSteps.script || oneClickSteps.voice || oneClickSteps.animation)) return;
+    if (!(oneClickSteps.script || oneClickSteps.voice || oneClickSteps.animation || oneClickSteps.export)) return;
     oneClickLockRef.current = true;
     setOneClickError('');
     setOneClickDone(null);
@@ -1721,6 +1731,7 @@ export function ProjectEditor({
     const rate = ratePercent;
     const model = voiceModelName;
     const includeHidden = includeHiddenPages;
+    const allowExport = canExport;
     const revisionNo = Number(slidesState.revisionNo) || initRevisionNo || 0;
     const slides = slidesState.slides;
     const slideIds = slides.map((slide) => slide.slideId);
@@ -1737,6 +1748,8 @@ export function ProjectEditor({
     let applied = 0;
     let skipped = 0;
     let reasons = '';
+    let exportJobId = '';
+    let exportDropped = '';
     try {
       if (steps.voice && !voice) {
         setOneClickError(t('editor.voiceModelEmpty'));
@@ -1745,6 +1758,19 @@ export function ProjectEditor({
       if (steps.voice && !steps.script && (await scriptIdsForVoice()).length === 0) {
         setOneClickError(t('editor.noScriptsInScope'));
         return;
+      }
+      if (steps.export && !allowExport) {
+        setOneClickError(t('perm.needEditorExport'));
+        return;
+      }
+      // 不配音这一轮时，导出只能用已经存在的时间轴。没有时间轴就先拦住，
+      // 避免套完动效才告诉用户「成片没交出去」。
+      if (steps.export && !steps.voice) {
+        const status = await getRevisionNarration(identity, projectId, revisionNo);
+        if (!status.ready || !status.timelineKey) {
+          setOneClickError(t('editor.oneClickExportNoTimeline'));
+          return;
+        }
       }
       setOneClickRunning(true);
       setOneClickPhase('');
@@ -1814,7 +1840,50 @@ export function ProjectEditor({
         skipped = result.skipped;
         reasons = summarizeApplyAllReasons(result, t);
       }
-      setOneClickDone({ script: scriptCount, applied, skipped, reasons, voiceRan: steps.voice });
+      if (steps.export) {
+        setOneClickPhase('export');
+        // 配音刚跑完时 React state 里的 manifest 还是上一拍；导出必须现查时间轴。
+        const status = await getRevisionNarration(identity, projectId, revisionNo);
+        if (!status.ready || !status.timelineKey) {
+          throw new Error(t('editor.oneClickExportNoTimeline'));
+        }
+        setExportPagePngKeys(status.pagePngKeys ?? []);
+        let animation: AnimationExportSpec[] = [];
+        try {
+          const opts = await getAnimationExportOptions(identity, projectId, status.timelineKey);
+          animation = animationSpecsOf(opts);
+        } catch {
+          // 规格探测失败仍导出静态版：成片任务必须进队列，不能整步吞掉。
+        }
+        try {
+          const result = await createArtifactExport(identity, {
+            projectId,
+            format: 'ARTIFACT_FORMAT_MP4',
+            timelineKey: status.timelineKey,
+            pagePngKeys: status.pagePngKeys ?? [],
+            burnSubtitles: true,
+            includeNotes: true,
+            animation,
+            idempotencyKey: `oneclick-export-${projectId}-${Date.now()}`
+          });
+          exportJobId = result.jobId;
+          if (result.animationDropped) {
+            exportDropped = animationDroppedText(result.animationDropped, result.jobId, t);
+          }
+        } catch (err) {
+          throw new Error(exportFailureText(err, t, lang));
+        }
+        void refreshActiveGenJobs();
+      }
+      setOneClickDone({
+        script: scriptCount,
+        applied,
+        skipped,
+        reasons,
+        voiceRan: steps.voice,
+        exportJobId: exportJobId || undefined,
+        exportDropped: exportDropped || undefined
+      });
     } catch (err) {
       setOneClickError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -1941,7 +2010,7 @@ export function ProjectEditor({
           <span className={`status-marker ${unsaved ? 'unsaved' : ''} ${isReady ? '' : 'muted'}`}>
             {unsaved ? t('editor.unsaved') : statusMarker}
           </span>
-          {/* 主动作只有一个：把讲稿 → 配音 → 动效串成一条链。其余单步入口保留，
+          {/* 主动作只有一个：把讲稿 → 配音 → 动效 → 导出成片串成一条链。其余单步入口保留，
               但降为次级按钮——过去五个并列 ghost 按钮没有主次，用户不知道从哪开始。 */}
           <button
             type="button"
@@ -1997,7 +2066,9 @@ export function ProjectEditor({
                   ? t('editor.oneClickPhaseVoice')
                   : oneClickPhase === 'animation'
                     ? t('editor.oneClickPhaseAnimation')
-                    : t('editor.oneClickQueued')}
+                    : oneClickPhase === 'export'
+                      ? t('editor.oneClickPhaseExport')
+                      : t('editor.oneClickQueued')}
             </strong>
             <span>{t('editor.oneClickBackground')}</span>
           </div>
@@ -2029,6 +2100,10 @@ export function ProjectEditor({
                 skipped: oneClickDone.skipped
               })}
             </strong>
+            {oneClickDone.exportJobId && (
+              <span>{t('editor.oneClickExportQueued', { jobId: oneClickDone.exportJobId })}</span>
+            )}
+            {oneClickDone.exportDropped && <span>{oneClickDone.exportDropped}</span>}
             {oneClickDone.skipped > 0 && oneClickDone.reasons && (
               <span>
                 {t(oneClickDone.voiceRan ? 'editor.oneClickSkippedReasonsNoSource' : 'editor.oneClickSkippedReasons', {
@@ -2037,9 +2112,15 @@ export function ProjectEditor({
               </span>
             )}
           </div>
-          <button type="button" className="button-ghost" onClick={() => setOneClickDone(null)}>
-            {t('common.close')}
-          </button>
+          {oneClickDone.exportJobId ? (
+            <Link to={`/jobs?job=${encodeURIComponent(oneClickDone.exportJobId)}`} className="button-ghost">
+              {t('editor.genViewJobs')}
+            </Link>
+          ) : (
+            <button type="button" className="button-ghost" onClick={() => setOneClickDone(null)}>
+              {t('common.close')}
+            </button>
+          )}
         </div>
       )}
       {activeGenJobs.length > 0 && !oneClickRunning && (

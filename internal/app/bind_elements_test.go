@@ -87,6 +87,11 @@ func TestPageBindElementsMatchesExperiment(t *testing.T) {
 			id := goShapeID(want.ID)
 			kind, ok := byID[id]
 			if !ok {
+				if want.Kind == "table" {
+					if _, sliced := byID[id+"-r1"]; sliced {
+						continue
+					}
+				}
 				t.Errorf("page %d: 夹具里的 %s 在 Go 侧不存在（id=%s）", i, want.ID, id)
 				continue
 			}
@@ -112,6 +117,84 @@ func TestPageBindElementsMatchesExperiment(t *testing.T) {
 		t.Fatalf("分类差异 %d 处、包围盒差异 %d 处（比对 %d 个元素）", kindDiff, boxDiff, compared)
 	}
 	t.Logf("比对 %d 个元素，分类与包围盒均一致", compared)
+}
+
+func TestPageBindElementsEmitsBarsNotChart(t *testing.T) {
+	page := &project.Page{SlideID: "s1", Shapes: []*project.Shape{
+		{ID: "title", Kind: "text", Text: "季度对比", Bounds: &project.Box{X: 500000, Y: 200000, Width: 8000000, Height: 800000}},
+		{
+			ID: "chart-1", Kind: "chart", ChartType: "col",
+			Bounds: &project.Box{X: 1000000, Y: 2000000, Width: 4000000, Height: 3000000},
+			ChartBars: []project.ChartBar{
+				{ID: "chart-1-b0", Category: "Q1", Value: 174, Box: [4]int{300, 250, 60, 250}},
+				{ID: "chart-1-b1", Category: "Q2", Value: 96, Box: [4]int{420, 300, 60, 200}},
+			},
+		},
+	}}
+	got := PageBindElements(page, 12192000, 6858000)
+	byID := map[string]string{}
+	for _, e := range got {
+		byID[e.ID] = e.Kind
+	}
+	if _, ok := byID["chart-1"]; ok {
+		t.Fatalf("whole chart should be replaced by bars: %+v", byID)
+	}
+	if byID["chart-1-b0"] != "bar" || byID["chart-1-b1"] != "bar" {
+		t.Fatalf("bars missing: %+v", byID)
+	}
+	for _, e := range got {
+		if e.ID == "chart-1-b0" {
+			if e.Text != "Q1" {
+				t.Fatalf("bar text = %q, want Q1", e.Text)
+			}
+			if e.Box.X != 300 || e.Box.W != 60 {
+				t.Fatalf("bar box = %+v, want canvas px 300/60", e.Box)
+			}
+		}
+	}
+}
+
+func TestPageBindElementsEmitsRowsNotTable(t *testing.T) {
+	page := &project.Page{SlideID: "s1", Shapes: []*project.Shape{
+		{ID: "title", Kind: "text", Text: "演进节点", Bounds: &project.Box{X: 500000, Y: 200000, Width: 8000000, Height: 800000}},
+		{
+			ID: "shape-7", Kind: "table", TableRows: 6, TableCols: 3,
+			Bounds: &project.Box{X: 457200, Y: 1280160, Width: 8229600, Height: 914400},
+			TableCells: [][]string{
+				{"时间", "节点", "要点"},
+				{"2023-04", "Qwen", "开源"},
+				{"2023-08", "Qwen-72B", "长文"},
+				{"2024-02", "Qwen1.5", "MoE"},
+				{"2024-06", "Qwen2", "多模态"},
+				{"2024-09", "Qwen2.5", "代码"},
+			},
+		},
+	}}
+	got := PageBindElements(page, 12192000, 6858000)
+	byID := map[string]string{}
+	for _, e := range got {
+		byID[e.ID] = e.Kind
+	}
+	if _, ok := byID["shape-7"]; ok {
+		t.Fatalf("whole table should be replaced by rows: %+v", byID)
+	}
+	if _, ok := byID["shape-7-r0"]; ok {
+		t.Fatalf("header row must not bind: %+v", byID)
+	}
+	if byID["shape-7-r1"] != "row" || byID["shape-7-r5"] != "row" {
+		t.Fatalf("rows missing: %+v", byID)
+	}
+	for _, e := range got {
+		if e.ID == "shape-7-r1" {
+			if e.Text != "2023-04 Qwen 开源" {
+				t.Fatalf("row text = %q", e.Text)
+			}
+			wantY := pxOf(1280160+914400/6, 6858000, bindCanvasH)
+			if math.Abs(e.Box.Y-wantY) > 0.01 {
+				t.Fatalf("row y = %v, want %v", e.Box.Y, wantY)
+			}
+		}
+	}
 }
 
 // goShapeID 把夹具 id（`p4-s12`，页号从 1 起）映射成 Go 解析侧的 `shape-12`。

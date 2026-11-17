@@ -13,7 +13,7 @@ var (
 	beatsDeniedTotal = expvar.NewMap("ppts_animation_beats_denied_total")
 )
 
-// BeatsSource 记录一页拍表切拍来源：vad | punct | fallback。
+// BeatsSource 记录一页拍表切拍来源：vad | punct | fallback | llm。
 func BeatsSource(source string) {
 	if source == "" {
 		return
@@ -27,7 +27,7 @@ func BeatsLooks(n int) {
 	beatsLooksTotal.Add(key, 1)
 }
 
-// BeatsDenied 记录被命名规则丢掉的候选（page_number | aux | area）。
+// BeatsDenied 记录被命名规则丢掉的候选（page_number | aux | title | area）。
 func BeatsDenied(reason string, n int) {
 	if reason == "" || n <= 0 {
 		return

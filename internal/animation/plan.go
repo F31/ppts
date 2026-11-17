@@ -17,6 +17,9 @@ const (
 	PropScale      = "scale"
 	PropScaleX     = "scaleX"
 	PropScaleY     = "scaleY"
+	// PropRotate 是绕层锚点的平面转角，单位度。天平/指针这类零件 opt-in 用，
+	// 默认预设不写。正值顺时针，与 CSS rotate() 同号。
+	PropRotate = "rotate"
 )
 
 // MotionProp 是一条属性轨道：从 From 线性（按缓动）过渡到 To。
@@ -198,14 +201,30 @@ func expandEffect(eff *Effect, p Params, k float64) ([]MotionProp, error) {
 
 	case "fadeOut":
 		return []MotionProp{{Name: PropOpacity, From: 1, To: 0}}, nil
+
+	case "tilt":
+		deg := p.Angle
+		if deg == 0 {
+			deg = paramNumber(eff, "angle", 8)
+		}
+		deg *= k
+		if deg > maxTiltDeg {
+			deg = maxTiltDeg
+		}
+		if deg < -maxTiltDeg {
+			deg = -maxTiltDeg
+		}
+		return []MotionProp{{Name: PropRotate, From: 0, To: round3(deg)}}, nil
 	}
 	return nil, fmt.Errorf("animation: effect %q has no property expansion (catalog 与 plan.go 不同步)", eff.ID)
 }
 
+const maxTiltDeg = 20.0
+
 // ValidProp 报告属性名是否在白名单内（IR 校验使用）。
 func ValidProp(name string) bool {
 	switch name {
-	case PropOpacity, PropTranslateX, PropTranslateY, PropScale, PropScaleX, PropScaleY:
+	case PropOpacity, PropTranslateX, PropTranslateY, PropScale, PropScaleX, PropScaleY, PropRotate:
 		return true
 	}
 	return false

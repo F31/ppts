@@ -49,6 +49,8 @@ const (
 	KindChart  = "chart"
 	KindTable  = "table"
 	KindShape  = "shape"
+	KindBar    = "bar"
+	KindRow    = "row"
 )
 
 // 动效类别（设计方案 §5.4 V4：入场/退场各最多一条，强调可多条）。
@@ -197,7 +199,7 @@ type CameraKeyframe struct {
 // Track 是一个可视元素上的动效集合。ElementID 为空表示整页轨道（Kind 必须为 page）。
 type Track struct {
 	ElementID string  `json:"elementId"` // project.Shape.ID；"" 表示页面级
-	Kind      string  `json:"kind"`      // title|bullet|image|shape|icon|chart|table|page
+	Kind      string  `json:"kind"`      // title|bullet|image|shape|icon|chart|table|bar|row|page
 	Clips     []*Clip `json:"clips"`
 }
 
@@ -236,6 +238,7 @@ type Params struct {
 	ScaleFrom float64 `json:"scaleFrom,omitempty"`
 	Axis      string  `json:"axis,omitempty"` // x|y
 	Loop      bool    `json:"loop,omitempty"`
+	Angle     float64 `json:"angle,omitempty"` // 度；tilt 用，正值顺时针
 }
 
 // UnmarshalJSON 拒绝未知参数 key。错误在解码期暴露，而不是等渲染时才被忽略。
@@ -258,6 +261,8 @@ func (p *Params) UnmarshalJSON(data []byte) error {
 			err = json.Unmarshal(val, &p.Axis)
 		case "loop":
 			err = json.Unmarshal(val, &p.Loop)
+		case "angle":
+			err = json.Unmarshal(val, &p.Angle)
 		default:
 			return fmt.Errorf("animation: unknown param %q", key)
 		}

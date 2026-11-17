@@ -38,9 +38,9 @@ type q8Script struct {
 // 夹具里的五页对应 deck 的 1/2/4/8/10 页（0 基 index 0/1/3/7/9）。
 var prefillDeckPages = []int{0, 1, 3, 7, 9}
 
-// 基线数字，来自 Q7 实验（53 条绑定）。出轨道的是 45 条：另外 8 条指向容器形状，
-// 而 business-calm 不给「无文字形状」挂动效——绑定成立，但没有模板可用。
-var wantPrefillTracks = map[int]int{0: 3, 1: 11, 3: 3, 7: 14, 9: 14}
+// 基线数字，来自 Q7 实验（53 条绑定）。出轨道的是 44 条：容器形状没有模板，
+// 表格被切成数据行后整表不再走预设 fadeIn（逐行淡入在编译期合成）。
+var wantPrefillTracks = map[int]int{0: 3, 1: 11, 3: 2, 7: 14, 9: 14}
 
 func TestPrefillPipelineOnRealDeck(t *testing.T) {
 	raw, err := os.ReadFile(prefillDeckPath)
@@ -129,8 +129,8 @@ func TestPrefillPipelineOnRealDeck(t *testing.T) {
 		totalTrack += report.Bound
 	}
 	t.Logf("五页合计：绑定 %d 条，产出轨道 %d 条（差值来自无动效模板的容器）", totalBind, totalTrack)
-	if totalBind != 53 || totalTrack != 45 {
-		t.Errorf("合计绑定 %d / 轨道 %d，基线 53 / 45", totalBind, totalTrack)
+	if totalBind != 53 || totalTrack != 44 {
+		t.Errorf("合计绑定 %d / 轨道 %d，基线 53 / 44", totalBind, totalTrack)
 	}
 }
 

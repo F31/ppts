@@ -29,6 +29,11 @@ type Element struct {
 	ID     string
 	Kind   string
 	Bounds *EMUBox
+	// Text 是形状原文，供词级下划线把旁白对到盒内某一截。可空。
+	Text string
+	// GrowAxis / GrowOrigin 只给 KindBar：编译器合成生长层时用，不进规格。
+	GrowAxis   string
+	GrowOrigin string
 }
 
 // PageInput 是一页的编译输入。它刻意不引用时间轴类型：分段偏移由调用方换算后注入，
@@ -219,6 +224,10 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 				page.Layers = append(page.Layers, layer)
 			}
 		}
+		if mode == animation.MotionModeGazeEntrance && !skipEntrance {
+			page.Layers = append(page.Layers, c.synthesizeBarGrowLayers(in, page.Layers, intensity)...)
+			page.Layers = append(page.Layers, c.synthesizeRowFadeLayers(in, page.Layers, intensity)...)
+		}
 		// 顺序是语义的一部分：合成器按数组顺序绘制，而父层位图里的子元素已被抹掉，
 		// 父层排在子层之后就会把子元素盖掉（见 layerorder.go）。
 		page.Layers = orderLayersParentsFirst(page.Layers)
@@ -245,16 +254,28 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 		if animation.IsGazeMode(mode) {
 			page.Focus = c.compileGazeFocus(in, orig)
 			if p, ok := animation.Catalog().Preset(in.Revision.PresetID); ok {
-				page.LookCrop = p.LookCrop
+				// lookCrop 是按 Focus.rect 裁切铺满。没有矩形时渲染器会 invalid_plan，
+				// worker 把整份成片降成静帧（真机 8c28ca1e，pages[22] 单层入口页）。
+				// 词表随后否决文字/卡片/大图的切近，页图保持 1:1。
+				page.LookCrop = p.LookCrop && hasFocusRect(page)
 				if page.LookCrop {
 					page.LookCropPadPx = LookCropPadPx(intensity)
 				}
 				if len(page.Annotations) == 0 {
 					page.Annotations = annotationsFromFocus(page.Focus, p.Callout)
 				}
+				if p.Callout != "off" {
+					page.Annotations = append(page.Annotations, pointersFromFocus(
+						page.Focus, in.Elements, in.BeatSheet, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)...)
+				}
+				applyGazeLayoutVocab(&page, in.Elements, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)
 			} else if len(page.Annotations) == 0 {
 				page.Annotations = annotationsFromFocus(page.Focus, "auto")
+				page.Annotations = append(page.Annotations, pointersFromFocus(
+					page.Focus, in.Elements, in.BeatSheet, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)...)
 			}
+			alignEntranceClipsToFocus(&page)
+			page.ClearRects = headingClearRects(in.Elements, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)
 		} else if len(page.Focus) == 0 && presetFocusFollowsSegment(in.Revision) {
 			ids := make(map[string]struct{}, len(page.Layers))
 			for _, l := range page.Layers {
@@ -637,6 +658,42 @@ func LayerElementIDs(rev *animation.Revision, elements []Element, canvas design.
 		}
 		out[track.ElementID] = struct{}{}
 	}
+	if mode == animation.MotionModeGazeEntrance {
+		nBars := 0
+		for _, el := range elements {
+			if el.Kind != animation.KindBar || el.ID == "" || el.Bounds == nil {
+				continue
+			}
+			if _, have := out[el.ID]; have {
+				continue
+			}
+			if _, _, ok, _ := boxOf(el.Bounds, scale, canvas.Width, canvas.Height); !ok {
+				continue
+			}
+			out[el.ID] = struct{}{}
+			nBars++
+			if nBars >= maxBarGrowLayers {
+				break
+			}
+		}
+		nRows := 0
+		for _, el := range elements {
+			if el.Kind != animation.KindRow || el.ID == "" || el.Bounds == nil {
+				continue
+			}
+			if _, have := out[el.ID]; have {
+				continue
+			}
+			if _, _, ok, _ := boxOf(el.Bounds, scale, canvas.Width, canvas.Height); !ok {
+				continue
+			}
+			out[el.ID] = struct{}{}
+			nRows++
+			if nRows >= maxRowFadeLayers {
+				break
+			}
+		}
+	}
 	if len(out) == 0 {
 		return nil
 	}
@@ -733,6 +790,49 @@ func HasEntranceElementLayer(layers []Layer) bool {
 		}
 	}
 	return false
+}
+
+func lookChainEntrance(effect string) bool {
+	switch effect {
+	case "fadeIn", "slideIn", "pop":
+		return true
+	default:
+		return false
+	}
+}
+
+// alignEntranceClipsToFocus 把 fadeIn/slideIn/pop 的起点拉到该元素第一条 Focus。
+// equal-spread 与拍表 Focus 各自铺时，圈选亮起时洞还是空的，下一条 look 才看得到上一格。
+func alignEntranceClipsToFocus(page *Page) {
+	if page == nil || len(page.Focus) == 0 || len(page.Layers) == 0 {
+		return
+	}
+	first := make(map[string]int64, len(page.Focus))
+	for _, f := range page.Focus {
+		if f.ElementID == "" {
+			continue
+		}
+		if _, ok := first[f.ElementID]; ok {
+			continue
+		}
+		first[f.ElementID] = f.StartMs
+	}
+	if len(first) == 0 {
+		return
+	}
+	for i := range page.Layers {
+		start, ok := first[page.Layers[i].ElementID]
+		if !ok {
+			continue
+		}
+		for j := range page.Layers[i].Clips {
+			c := &page.Layers[i].Clips[j]
+			if !lookChainEntrance(c.Effect) || c.IsContinuation {
+				continue
+			}
+			c.StartMs = start
+		}
+	}
 }
 
 // resolveTrigger 把三种触发形式解析为页内锚点毫秒。

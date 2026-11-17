@@ -133,6 +133,7 @@ type PageAnimation struct {
 	Annotations   []SlideAnnotation
 	LookCrop      bool
 	LookCropPadPx int
+	ClearRects    []SlideBox
 }
 
 // CameraKeyframe 是镜头图局部的归一化相机关键帧（与 render.CameraKeyframe 同构）。
@@ -591,6 +592,7 @@ func (b *BundleBuilder) writeSlides(
 				SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
 				Plate: true, Transition: &transition, Layers: layers, Shots: shots, Focus: anim.Focus,
 				Annotations: anim.Annotations, LookCrop: anim.LookCrop, LookCropPadPx: anim.LookCropPadPx,
+				ClearRects: anim.ClearRects,
 			})
 			previousName, previousPlate = name, true
 			continue
@@ -649,6 +651,7 @@ func (b *BundleBuilder) writeSlides(
 			SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
 			Shots: shots, Focus: anim.Focus,
 			Annotations: anim.Annotations, LookCrop: anim.LookCrop, LookCropPadPx: anim.LookCropPadPx,
+			ClearRects: anim.ClearRects,
 		}
 		// 转场同样不依赖图层：这一页没有元素级动效，不等于它不该有入场方式。
 		// 只在真的有时才写——type=none 与「没有转场」同义，写进去只是给清单加噪声，

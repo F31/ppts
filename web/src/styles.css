@@ -1567,9 +1567,11 @@ html[data-theme="light"] .user-menu-note { color: #64748b; }
 .browser-stage .ppts-slide[hidden] { display: none; }
 .browser-stage .ppts-slide.ppts-shot { object-fit: fill; }
 .browser-stage .ppts-layers { position: absolute; inset: 0; pointer-events: none; }
+.browser-stage .ppts-lookcrop { position: absolute; inset: 0; pointer-events: none; }
 .browser-stage .ppts-layer { position: absolute; will-change: transform, opacity; }
 .browser-stage .ppts-layer-image { display: block; width: 100%; height: 100%; object-fit: fill; }
 .browser-stage .ppts-callout { position: absolute; pointer-events: none; box-sizing: border-box; }
+.browser-stage .ppts-pointer { position: absolute; pointer-events: none; box-sizing: border-box; background: #ffd166; border-radius: 2px; }
 .browser-stage .ppts-caption {
   position: absolute; left: 50%; bottom: 8%; transform: translateX(-50%);
   max-width: 72%; padding: 8px 16px; border-radius: 8px;

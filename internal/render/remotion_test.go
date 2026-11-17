@@ -259,6 +259,33 @@ func TestSegmentEnvLooksOnce(t *testing.T) {
 	if !strings.Contains(env.Encoding, "crop=slack") {
 		t.Fatalf("encoding = %q, want crop=slack (1px pdftoppm crop busts the segment cache)", env.Encoding)
 	}
+	if !strings.Contains(env.Encoding, "punch=off") {
+		t.Fatalf("encoding = %q, want punch=off (full-page gaze busts the punch-in cache)", env.Encoding)
+	}
+	if strings.Contains(env.Encoding, "punch=in") {
+		t.Fatal("punch=in must not remain in the cache key")
+	}
+	if strings.Contains(env.Encoding, "arrive=1") || strings.Contains(env.Encoding, "xfade=var") {
+		t.Fatalf("encoding = %q, want arrive=0 without xfade=var", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "arrive=0") || !strings.Contains(env.Encoding, "look=cut") {
+		t.Fatalf("encoding = %q, want arrive=0;look=cut", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "first=over") {
+		t.Fatalf("encoding = %q, want first=over", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "title=wide") {
+		t.Fatalf("encoding = %q, want title=wide", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "pointer=1") {
+		t.Fatalf("encoding = %q, want pointer=1", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "sample=ready") {
+		t.Fatalf("encoding = %q, want sample=ready", env.Encoding)
+	}
+	if !strings.Contains(env.Encoding, "page=cut") {
+		t.Fatalf("encoding = %q, want page=cut", env.Encoding)
+	}
 	if strings.Contains(env.Encoding, "looks=fit") {
 		t.Fatal("looks=fit must not remain in the cache key")
 	}
@@ -294,6 +321,10 @@ func TestStageLogsNoisyPatch(t *testing.T) {
 // 缺少脚本时必须给出「怎么配」的错误，而不是等到 exec 时才报一串 Node 堆栈。
 func TestRemotionBackendRequiresScript(t *testing.T) {
 	t.Setenv("PPTS_RENDERER_SCRIPT", "")
+	// 有 ffmpeg 的机器会把这张无层页判成 still 直接调用 ffmpeg，根本走不到
+	// 「缺脚本」分支。清空 PATH / PPTS_FFMPEG 强制回退到 Chrome，让断言不依赖构建机。
+	t.Setenv("PATH", "")
+	t.Setenv("PPTS_FFMPEG", "")
 	b := &RemotionBackend{}
 	_, err := b.Render(context.Background(), onePagePlan("pages/p.png", nil), t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "PPTS_RENDERER_SCRIPT") {
@@ -308,6 +339,9 @@ func TestRemotionBackendReportsMissingNode(t *testing.T) {
 	if err := os.WriteFile(script, []byte("// noop"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// 同上：先强制回退 Chrome，错误才会来自 node 启动而不是 ffmpeg 缺页。
+	t.Setenv("PATH", "")
+	t.Setenv("PPTS_FFMPEG", "")
 	b := &RemotionBackend{
 		Script:  script,
 		NodeBin: filepath.Join(dir, "definitely-not-node"),

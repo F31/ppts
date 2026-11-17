@@ -398,10 +398,10 @@ func TransitionFor(presetID string) TransitionSpec {
 	return TransitionSpec{Type: TransitionFade, DurationMs: 240}
 }
 
-// validKind 报告轨道类型是否是登记的 8 种之一。
+// validKind 报告轨道类型是否是登记的 10 种之一。
 func validKind(kind string) bool {
 	switch kind {
-	case KindPage, KindTitle, KindBullet, KindImage, KindIcon, KindChart, KindTable, KindShape:
+	case KindPage, KindTitle, KindBullet, KindImage, KindIcon, KindChart, KindTable, KindShape, KindBar, KindRow:
 		return true
 	default:
 		return false

@@ -52,10 +52,23 @@ func TestValidGazeFieldsPass(t *testing.T) {
 	p.Pages[0].LookCrop = true
 	p.Pages[0].Annotations = []Annotation{
 		{Kind: AnnotationCallout, StartMs: 0, Rect: &Box{X: 10, Y: 10, W: 200, H: 80}, Shape: AnnotationShapeRect},
+		{Kind: AnnotationPointer, StartMs: 0, Rect: &Box{X: 20, Y: 80, W: 80, H: 6}},
 		{Kind: AnnotationCaption, StartMs: 0, Text: "要点"},
 	}
 	if err := p.Validate(); err != nil {
 		t.Fatalf("合法注视字段不应报错: %v", err)
+	}
+}
+
+func TestValidateAllowsRepeatFocusElement(t *testing.T) {
+	p := validPlan()
+	p.Pages[0].Focus = []FocusSpan{
+		{StartMs: 0, ElementID: "e1", Rect: &Box{X: 10, Y: 10, W: 200, H: 80}},
+		{StartMs: 800, ElementID: "e1", Rect: &Box{X: 10, Y: 10, W: 200, H: 80}},
+		{StartMs: 2000, ElementID: "e2", Rect: &Box{X: 40, Y: 120, W: 200, H: 80}},
+	}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("same element at increasing times must pass: %v", err)
 	}
 }
 
@@ -104,7 +117,7 @@ func TestValidateRejects(t *testing.T) {
 		{"no props", func(p *Timeline) { p.Pages[0].Layers[0].Clips[0].Props = nil },
 			CodeInvalidPlan, "pages[0].layers[0].clips[0].props"},
 		{"unknown prop", func(p *Timeline) {
-			p.Pages[0].Layers[0].Clips[0].Props[0].Name = "rotate"
+			p.Pages[0].Layers[0].Clips[0].Props[0].Name = "skewX"
 		}, CodeUnsupported, "pages[0].layers[0].clips[0].props[0].name"},
 		{"bad origin", func(p *Timeline) {
 			p.Pages[0].Layers[0].Origin = "middle"
@@ -117,14 +130,9 @@ func TestValidateRejects(t *testing.T) {
 		{"focus unknown element", func(p *Timeline) {
 			p.Pages[0].Focus = []FocusSpan{{StartMs: 0, ElementID: "nope"}}
 		}, CodeInvalidPlan, "pages[0].focus[0].elementId"},
-		{"focus duplicate element", func(p *Timeline) {
-			p.Pages[0].Focus = []FocusSpan{
-				{StartMs: 0, ElementID: "e1"}, {StartMs: 500, ElementID: "e1"},
-			}
-		}, CodeInvalidPlan, "pages[0].focus[1].elementId"},
 		{"focus not increasing", func(p *Timeline) {
 			p.Pages[0].Focus = []FocusSpan{
-				{StartMs: 500, ElementID: "e1"}, {StartMs: 500, ElementID: "e1"},
+				{StartMs: 500, ElementID: "e1"}, {StartMs: 500, ElementID: "e2"},
 			}
 		}, CodeInvalidPlan, "pages[0].focus[1]"},
 		{"focus beyond page", func(p *Timeline) {
@@ -163,6 +171,9 @@ func TestValidateRejects(t *testing.T) {
 		}, CodeInvalidPlan, "pages[0].annotations[0].kind"},
 		{"callout missing rect", func(p *Timeline) {
 			p.Pages[0].Annotations = []Annotation{{Kind: AnnotationCallout, StartMs: 0}}
+		}, CodeInvalidPlan, "pages[0].annotations[0].rect"},
+		{"pointer missing rect", func(p *Timeline) {
+			p.Pages[0].Annotations = []Annotation{{Kind: AnnotationPointer, StartMs: 0}}
 		}, CodeInvalidPlan, "pages[0].annotations[0].rect"},
 		{"lookCrop without focus rect", func(p *Timeline) {
 			p.Pages[0].LookCrop = true

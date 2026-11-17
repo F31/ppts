@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +21,27 @@ type lookWindow struct {
 	EndMs   int64
 	FadeMs  int64 // 与上一段交叉的时长；第一段为 0（页间 fade 另算）
 	MidMs   int64
+	// XFade 是叠化种类：fade（缺省 cubic）、wipeleft/right/up/down、cut。
+	XFade string
 }
+
+// lookXFadeMS 是默认 look 叠化。纱/圈选已经烧进仍帧，240ms 叠两帧会闪。
+const lookXFadeMS int64 = 120
+
+// lookFirstBoxMS 是「未加纱前缀 → 第一条黄框」的 overlay 淡入。
+// 不用 ffmpeg xfade：loop 静图的 PTS 会先切新框再把旧板冲回来。
+const lookFirstBoxMS int64 = 200
+
+// 第一条 Focus 双帧到达：将至（圈选略大）→ 稳住。只加 1 次 Chrome 静帧。
+const (
+	lookArriveHoldMS  int64 = 400
+	lookArriveMinMS   int64 = 1600
+	lookArriveXFadeMS int64 = 80
+	lookNearXFadeMS   int64 = 80
+	lookWipeXFadeMS   int64 = 140
+	lookFarXFadeMS    int64 = 160
+	lookCropXFadeMS   int64 = 200
+)
 
 func lookWindows(page Page) []lookWindow {
 	var spans []FocusSpan
@@ -32,13 +53,26 @@ func lookWindows(page Page) []lookWindow {
 	if len(spans) == 0 || page.DurationMs <= 0 {
 		return nil
 	}
+	late := HasEntranceElementLayer(page.Layers)
+	clearMs := pageFadeClearMs(page)
+	// 入场页的前缀窗是挖空底板：页切 xfade 会闪一帧空卡。第一条 Focus 落在页间
+	// fade 里时，前缀仍帧也会烘进上一页残影。这两种都并进第一条 look。
+	foldPrefix := late || (clearMs > 0 && spans[0].StartMs > 0 && spans[0].StartMs < clearMs)
 	var out []lookWindow
-	if spans[0].StartMs > 0 {
+	if !foldPrefix && spans[0].StartMs > 0 {
 		end := spans[0].StartMs
-		out = append(out, lookWindow{StartMs: 0, EndMs: end, FadeMs: 0, MidMs: lookHoldMid(0, end, 0)})
+		out = append(out, lookWindow{
+			StartMs: 0, EndMs: end, FadeMs: 0,
+			MidMs: lookStillMid(page, 0, end, 0, 0, late), XFade: "cut",
+		})
 	}
+	var ready int64
+	seen := map[string]struct{}{}
 	for i, f := range spans {
 		start := f.StartMs
+		if foldPrefix && i == 0 {
+			start = 0
+		}
 		end := page.DurationMs
 		if f.EndMs > start {
 			end = f.EndMs
@@ -51,29 +85,75 @@ func lookWindows(page Page) []lookWindow {
 		if end <= start {
 			continue
 		}
-		fade := int64(0)
-		if len(out) > 0 {
-			fade = f.FadeMs
-			if fade == 0 {
-				fade = focusFadeDefaultMS
-			}
-			if fade >= end-start {
-				fade = 0
+		if f.ElementID != "" {
+			if _, ok := seen[f.ElementID]; !ok {
+				seen[f.ElementID] = struct{}{}
+				if r := layerEntranceEnd(page, f.ElementID); r > ready {
+					ready = r
+				}
 			}
 		}
-		out = append(out, lookWindow{StartMs: start, EndMs: end, FadeMs: fade, MidMs: lookHoldMid(start, end, fade)})
+		// look 之间硬切。loop 静图走 ffmpeg xfade 时 PTS 会先切到新框，再把上一框
+		// 冲回来。到达拆帧（1.12→1）同样要叠化，硬切后只剩缩放跳变，一并取消。
+		// 第一条黄框从「未加纱前缀」过来时，用 overlay 淡入（不是 xfade），纱和框
+		// 在 200ms 里铺上，避免硬切那一下整页闪灰。
+		fadeMs := int64(0)
+		xfade := "cut"
+		if i == 0 && len(out) > 0 {
+			fadeMs = lookFirstBoxMS
+			xfade = "over"
+			if fadeMs >= end-start {
+				fadeMs = 0
+				xfade = "cut"
+			}
+		}
+		out = append(out, lookWindow{
+			StartMs: start, EndMs: end, FadeMs: fadeMs,
+			MidMs: lookStillMid(page, start, end, fadeMs, ready, late), XFade: xfade,
+		})
 	}
 	if n := len(out); n > 0 && out[n-1].EndMs < page.DurationMs {
 		last := out[n-1]
 		out[n-1].EndMs = page.DurationMs
-		out[n-1].MidMs = lookHoldMid(last.StartMs, page.DurationMs, last.FadeMs)
+		out[n-1].MidMs = lookStillMid(page, last.StartMs, page.DurationMs, last.FadeMs, ready, late)
 	}
 	return out
 }
 
-// lookHoldMid 是注视窗稳态中点。前缀窗（第一条 Focus 晚于 0）也走这里，
-// 避免 MidMs=0 采到页边界上上一页的末帧。
-func lookHoldMid(start, end, fade int64) int64 {
+func lookTravelXFade(prev, cur *Box, lookCrop bool) (int64, string) {
+	if lookCrop {
+		return lookCropXFadeMS, "fade"
+	}
+	if prev == nil || cur == nil {
+		return lookXFadeMS, "fade"
+	}
+	dx := float64(cur.X + cur.W/2 - (prev.X + prev.W/2))
+	dy := float64(cur.Y + cur.H/2 - (prev.Y + prev.H/2))
+	dist := math.Hypot(dx, dy)
+	if dist < 48 {
+		return lookNearXFadeMS, "fade"
+	}
+	if math.Abs(dx) >= math.Abs(dy)*1.4 && math.Abs(dx) >= 80 {
+		if dx > 0 {
+			return lookWipeXFadeMS, "wiperight"
+		}
+		return lookWipeXFadeMS, "wipeleft"
+	}
+	if math.Abs(dy) >= math.Abs(dx)*1.4 && math.Abs(dy) >= 80 {
+		if dy > 0 {
+			return lookWipeXFadeMS, "wipedown"
+		}
+		return lookWipeXFadeMS, "wipeup"
+	}
+	if dist > 600 {
+		return lookFarXFadeMS, "fade"
+	}
+	return lookXFadeMS, "fade"
+}
+
+// lookHoldMid 是注视窗稳态取样点。前缀窗（第一条 Focus 晚于 0）也走这里，
+// 避免 MidMs=0 采到页边界上上一页的末帧。late 时采 hold 的 3/4 处，让入场层先走完。
+func lookHoldMid(start, end, fade int64, late bool) int64 {
 	if end <= start {
 		return start
 	}
@@ -84,11 +164,81 @@ func lookHoldMid(start, end, fade int64) int64 {
 		fade = 0
 	}
 	hold := end - start - fade
-	mid := start + fade + hold/2
+	var mid int64
+	if late && hold > 0 {
+		mid = start + fade + hold*3/4
+	} else {
+		mid = start + fade + hold/2
+	}
 	if mid <= start && end > start+1 {
 		return start + 1
 	}
+	if mid >= end && end > start {
+		return end - 1
+	}
 	return mid
+}
+
+// pageFadeClearPadMs 让仍帧的 Sequence 本地 tMs 越过页间 fade。
+// framesForDuration(280)=8 → tMs=266 仍 inTransition，再加 40ms 采到第 10 帧。
+const pageFadeClearPadMs int64 = 40
+
+func pageFadeClearMs(page Page) int64 {
+	if page.Index <= 0 {
+		return 0
+	}
+	tr := effectiveTransition(page.Transition)
+	if tr == nil || tr.Type != animation.TransitionFade {
+		return 0
+	}
+	return tr.DurationMs + pageFadeClearPadMs
+}
+
+// lookStillMid 把取样点抬到页间 fade 结束、以及本条及更早入场层播完之后。
+// 黄框第一次框住的仍帧必须已经显现内容；页切目标仍帧不能烘上一页残影。
+func lookStillMid(page Page, start, end, fade, ready int64, late bool) int64 {
+	mid := lookHoldMid(start, end, fade, late)
+	floor := start
+	if fade > 0 && fade < end-start {
+		floor = start + fade
+	}
+	if clear := pageFadeClearMs(page); clear > floor {
+		floor = clear
+	}
+	if ready > floor {
+		floor = ready
+	}
+	if mid < floor {
+		mid = floor
+	}
+	if end > start && mid >= end {
+		mid = end - 1
+	}
+	if mid < start {
+		mid = start
+	}
+	return mid
+}
+
+func layerEntranceEnd(page Page, elementID string) int64 {
+	if elementID == "" {
+		return 0
+	}
+	var end int64
+	for _, layer := range page.Layers {
+		if layer.ElementID != elementID {
+			continue
+		}
+		for _, c := range layer.Clips {
+			if !lookChainEntrance(c.Effect) {
+				continue
+			}
+			if e := c.StartMs + c.DurationMs; e > end {
+				end = e
+			}
+		}
+	}
+	return end
 }
 
 func pageStartFrameList(plan *Timeline) []int {
@@ -204,30 +354,20 @@ func encodeGazePage(ctx context.Context, ffmpeg string, plan *Timeline, dir stri
 	pageFrames := framesForDuration(page.DurationMs, plan.FPS)
 	counts := lookFrameCounts(windows, pageFrames, plan.FPS)
 	looks := make([]gazeLookEncode, 0, len(windows))
-	for li, w := range windows {
+	for li := range windows {
 		img := lookStillPath(dir, i, li)
 		if st, err := os.Stat(img); err != nil || st.Size() == 0 {
 			return fmt.Errorf("render: gaze page %d look %d missing still %s", i, li, img)
 		}
-		prev := ""
-		trans := 0
-		if li == 0 && i > 0 {
-			if tr := effectiveTransition(page.Transition); tr != nil && tr.Type == animation.TransitionFade {
-				trans = framesForDuration(tr.DurationMs, plan.FPS)
-				p, err := stillPrevImage(ctx, ffmpeg, plan, dir, i, logf)
-				if err != nil {
-					return fmt.Errorf("render: gaze page %d previous frame: %w", i, err)
-				}
-				prev = p
-			}
-		} else if li > 0 && w.FadeMs > 0 {
-			trans = framesForDuration(w.FadeMs, plan.FPS)
-			prev = lookStillPath(dir, i, li-1)
+		enc := gazeLookEncode{
+			Image: img, Frames: counts[li], XFade: windows[li].XFade,
 		}
-		looks = append(looks, gazeLookEncode{
-			Image: img, PrevImage: prev,
-			Frames: counts[li], TransitionFrames: trans,
-		})
+		// 第一条黄框：把未加纱前缀 overlay 淡入到带纱带框的仍帧。其余 look 硬切。
+		if li > 0 && windows[li].XFade == "over" && windows[li].FadeMs > 0 {
+			enc.PrevImage = lookStillPath(dir, i, li-1)
+			enc.TransitionFrames = framesForDuration(windows[li].FadeMs, plan.FPS)
+		}
+		looks = append(looks, enc)
 	}
 	out := filepath.Join(dir, SegmentName(i))
 	args, err := encodeGazePageArgs(gazePageEncodeSpec{
@@ -256,6 +396,7 @@ type gazeLookEncode struct {
 	PrevImage        string
 	Frames           int
 	TransitionFrames int
+	XFade            string
 }
 
 type gazePageEncodeSpec struct {
@@ -267,6 +408,22 @@ type gazePageEncodeSpec struct {
 }
 
 const gazeXfadeExpr = `expr='A*pow(1-P\,3)+B*(1-pow(1-P\,3))'`
+
+func lookXFadeFilter(prevIdx, imgIdx int, transSec string, frames int, kind, label string) string {
+	switch kind {
+	case "over":
+		// 新仍帧 alpha 淡入叠在旧仍帧上。两路都从 PTS 0 起，不会出现 xfade 那种
+		// 「先切 B 再闪回 A」。淡入结束后 overlay 保持 B 不透明，直到本段 trim。
+		return fmt.Sprintf("[s%d]format=yuva420p,fade=t=in:st=0:d=%s:alpha=1[o%s];[s%d][o%s]overlay,format=yuv420p,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
+			imgIdx, transSec, label, prevIdx, label, frames, label)
+	case "wipeleft", "wiperight", "wipeup", "wipedown":
+		return fmt.Sprintf("[s%d][s%d]xfade=transition=%s:duration=%s:offset=0,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
+			prevIdx, imgIdx, kind, transSec, frames, label)
+	default:
+		return fmt.Sprintf("[s%d][s%d]xfade=transition=custom:duration=%s:offset=0:%s,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
+			prevIdx, imgIdx, transSec, gazeXfadeExpr, frames, label)
+	}
+}
 
 // encodeGazePageArgs 一页一张 filtergraph：静图 xfade + concat + 一次 ultrafast 编码。
 // 替代「每 look 一次 medium + concat 再 medium」。输入是仍 PNG，不是 N 路运动流。
@@ -298,6 +455,7 @@ func encodeGazePageArgs(spec gazePageEncodeSpec) ([]string, error) {
 	type prepared struct {
 		prevIdx, imgIdx int
 		frames, trans   int
+		xfade           string
 	}
 	type loopIn struct {
 		path string
@@ -335,10 +493,16 @@ func encodeGazePageArgs(spec gazePageEncodeSpec) ([]string, error) {
 		}
 		prevIdx := -1
 		if trans > 0 {
-			prevIdx = addInput(look.PrevImage, trans+1)
+			// 两路都铺满本段时长。只给 prev 转场那么长时，loop 图的 PTS 一旦
+			// 不是从 0 起，xfade 会先吐 B（新页），再把上一页冲回来，页切闪一下。
+			prevIdx = addInput(look.PrevImage, frames)
 		}
 		imgIdx := addInput(look.Image, frames)
-		preparedLooks = append(preparedLooks, prepared{prevIdx: prevIdx, imgIdx: imgIdx, frames: frames, trans: trans})
+		kind := look.XFade
+		if kind == "" {
+			kind = "fade"
+		}
+		preparedLooks = append(preparedLooks, prepared{prevIdx: prevIdx, imgIdx: imgIdx, frames: frames, trans: trans, xfade: kind})
 	}
 
 	fit := stillFitFilter(w, h, spec.Background, fps)
@@ -351,8 +515,8 @@ func encodeGazePageArgs(spec gazePageEncodeSpec) ([]string, error) {
 		label := fmt.Sprintf("l%d", i)
 		if p.trans > 0 {
 			transSec := strconv.FormatFloat(float64(p.trans)/float64(fps), 'f', 3, 64)
-			fc = append(fc, fmt.Sprintf("[s%d][s%d]xfade=transition=custom:duration=%s:offset=0:%s,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
-				p.prevIdx, p.imgIdx, transSec, gazeXfadeExpr, p.frames, label))
+			xf := lookXFadeFilter(p.prevIdx, p.imgIdx, transSec, p.frames, p.xfade, label)
+			fc = append(fc, xf)
 		} else {
 			fc = append(fc, fmt.Sprintf("[s%d]trim=end_frame=%d,setpts=PTS-STARTPTS[%s]", p.imgIdx, p.frames, label))
 		}

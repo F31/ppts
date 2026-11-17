@@ -152,6 +152,13 @@ func GazeFromSegmentTracks(rev *animation.Revision, offsets map[string]int64, du
 		if !ok {
 			continue
 		}
+		if skipGazeFocusKind(el.Kind) {
+			continue
+		}
+		raw, _, rawOK, _ := boxOf(el.Bounds, scale, canvasW, canvasH)
+		if rawOK && isPageHeading(el.Kind, raw, canvasW, canvasH) {
+			continue
+		}
 		rect, ok := gazeRectFor(el, frames, scale, canvasW, canvasH, pageArea)
 		if !ok {
 			continue
@@ -217,8 +224,9 @@ func gazeRectFor(el Element, frames []Box, scale float64, canvasW, canvasH int, 
 	return PadGazeRect(expanded, canvasW, canvasH), true
 }
 
-// mergeGazeLooks 按矩形去重（保留 StartMs 更早的那条），同一张卡上的标题/正文只留一条。
-// keepTimes 时按时间序排并重算 EndMs，禁止 (Y,X) 与 duration/n。回退路径保持今日阅读序重铺。
+// mergeGazeLooks 按矩形去重（保留 StartMs 更晚的那条），同一张卡上的标题/正文只留正文。
+// 更晚的起点让 gaze+entrance 的 look 仍帧采在正文入场之后。keepTimes 时按时间序排并重算 EndMs，
+// 禁止 (Y,X) 与 duration/n。回退路径保持今日阅读序重铺。
 func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []FocusSpan {
 	if len(spans) < 2 {
 		return spans
@@ -240,7 +248,12 @@ func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []Focus
 			uniq = append(uniq, s)
 			continue
 		}
-		if s.StartMs < uniq[dupAt].StartMs {
+		sameEl := s.ElementID != "" && s.ElementID == uniq[dupAt].ElementID
+		if keepTimes && sameEl && s.StartMs-uniq[dupAt].StartMs >= lookPhraseGapMS {
+			uniq = append(uniq, s)
+			continue
+		}
+		if s.StartMs > uniq[dupAt].StartMs {
 			uniq[dupAt] = s
 		}
 	}
@@ -332,18 +345,23 @@ func (c *Compiler) compileGazeFocus(in PageInput, orig *animation.Revision) []Fo
 	cw, ch := c.opt.Canvas.Width, c.opt.Canvas.Height
 	var focus []FocusSpan
 	if in.BeatSheet.Valid() {
-		focus = mergeGazeLooks(c.focusFromBeatSheet(in, orig), in.DurationMs, true)
+		focus = dropContainedLooks(mergeGazeLooks(c.focusFromBeatSheet(in, orig, false), in.DurationMs, true))
 	}
 	if len(focus) < 2 {
 		filled := fillFocusRects(in.Focus, in.Elements, c.scale, cw, ch)
 		if gazeFocusReady(filled) {
-			focus = mergeGazeLooks(bakeGazeFocus(filled, orig), in.DurationMs, false)
+			focus = dropContainedLooks(mergeGazeLooks(bakeGazeFocus(filled, orig), in.DurationMs, false))
 		}
 	}
 	if len(focus) < 2 {
 		fallback := revisionWithSpreadStarts(orig, in.SegmentOffsets, in.DurationMs, false)
 		cands := GazeFromSegmentTracks(fallback, in.SegmentOffsets, in.DurationMs, in.Elements, c.scale, cw, ch, in.GazeDenyIDs)
-		focus = mergeGazeLooks(cands, in.DurationMs, false)
+		focus = dropContainedLooks(mergeGazeLooks(cands, in.DurationMs, false))
+	}
+	// 表格页旁白点的是数据行：行不当圈选之后往往不足 2 条，整页掉出 look 链走
+	// Chrome。没有其它注视时才让行成为圈选，混合页（卡片+表）仍只淡入行。
+	if len(focus) < 2 && in.BeatSheet.Valid() {
+		focus = dropContainedLooks(mergeGazeLooks(c.focusFromBeatSheet(in, orig, true), in.DurationMs, true))
 	}
 	if len(focus) < 2 {
 		return nil
@@ -351,7 +369,7 @@ func (c *Compiler) compileGazeFocus(in PageInput, orig *animation.Revision) []Fo
 	return focus
 }
 
-func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision) []FocusSpan {
+func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision, allowRow bool) []FocusSpan {
 	if in.BeatSheet == nil {
 		return nil
 	}
@@ -376,15 +394,47 @@ func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision) []
 	veil := bakedVeilAlpha(intensity)
 	out := make([]FocusSpan, 0, len(beats))
 	var prev int64 = -1
+	var lastID string
+	var lastRect Box
+	phraseExtra := 0
 	for _, b := range beats {
-		if b.ShapeID == "" || b.Shot == animation.BeatShotHold {
+		id := b.ShapeID
+		hold := id == "" || b.Shot == animation.BeatShotHold
+		if hold {
+			if lastID == "" || phraseExtra >= maxPhraseLooks {
+				continue
+			}
+			dur := b.EndMs - b.StartMs
+			if b.EndMs <= b.StartMs || dur < minPhraseHoldMS {
+				continue
+			}
+			if b.StartMs <= prev {
+				continue
+			}
+			r := lastRect
+			out = append(out, FocusSpan{
+				StartMs:   b.StartMs,
+				ElementID: lastID,
+				Rect:      &r,
+				FadeMs:    focusFadeDefaultMS,
+				VeilAlpha: veil,
+			})
+			prev = b.StartMs
+			phraseExtra++
 			continue
 		}
-		if _, deny := in.GazeDenyIDs[b.ShapeID]; deny {
+		if _, deny := in.GazeDenyIDs[id]; deny {
 			continue
 		}
-		el, ok := byID[b.ShapeID]
+		el, ok := byID[id]
 		if !ok {
+			continue
+		}
+		if skipGazeActorKind(el.Kind, allowRow) {
+			continue
+		}
+		raw, _, rawOK, _ := boxOf(el.Bounds, c.scale, cw, ch)
+		if rawOK && isPageHeading(el.Kind, raw, cw, ch) {
 			continue
 		}
 		rect, ok := gazeRectFor(el, frames, c.scale, cw, ch, pageArea)
@@ -397,22 +447,64 @@ func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision) []
 		r := rect
 		out = append(out, FocusSpan{
 			StartMs:   b.StartMs,
-			ElementID: b.ShapeID,
+			ElementID: id,
 			Rect:      &r,
 			FadeMs:    focusFadeDefaultMS,
 			VeilAlpha: veil,
 		})
 		prev = b.StartMs
+		lastID = id
+		lastRect = rect
 	}
 	for i := range out {
 		if i+1 < len(out) {
 			out[i].EndMs = out[i+1].StartMs
 		}
 	}
+	out = preferUniqueFocus(out)
 	if len(out) < 2 {
 		return nil
 	}
 	return out
+}
+
+func uniqueFocusIDs(spans []FocusSpan) int {
+	seen := make(map[string]struct{}, len(spans))
+	for _, s := range spans {
+		if s.ElementID != "" {
+			seen[s.ElementID] = struct{}{}
+		}
+	}
+	return len(seen)
+}
+
+func firstLookPerElement(spans []FocusSpan) []FocusSpan {
+	seen := make(map[string]struct{}, len(spans))
+	out := make([]FocusSpan, 0, len(spans))
+	for _, s := range spans {
+		if s.ElementID == "" {
+			continue
+		}
+		if _, ok := seen[s.ElementID]; ok {
+			continue
+		}
+		seen[s.ElementID] = struct{}{}
+		out = append(out, s)
+	}
+	for i := range out {
+		if i+1 < len(out) {
+			out[i].EndMs = out[i+1].StartMs
+		}
+	}
+	return out
+}
+
+// preferUniqueFocus 密页丢掉同一元素的词级加拍，互异形状全部保留。
+func preferUniqueFocus(spans []FocusSpan) []FocusSpan {
+	if uniqueFocusIDs(spans) >= denseGazeLooks {
+		return firstLookPerElement(spans)
+	}
+	return spans
 }
 
 func fillFocusRects(spans []FocusSpan, elements []Element, scale float64, canvasW, canvasH int) []FocusSpan {
@@ -425,17 +517,27 @@ func fillFocusRects(spans []FocusSpan, elements []Element, scale float64, canvas
 	}
 	pageArea := float64(canvasW) * float64(canvasH)
 	frames := gazeFrameBoxes(elements, scale, canvasW, canvasH, pageArea)
-	out := append([]FocusSpan(nil), spans...)
-	for i := range out {
-		el, ok := byID[out[i].ElementID]
+	out := make([]FocusSpan, 0, len(spans))
+	for _, s := range spans {
+		el, ok := byID[s.ElementID]
 		if !ok {
+			out = append(out, s)
+			continue
+		}
+		if skipGazeFocusKind(el.Kind) {
+			continue
+		}
+		raw, _, rawOK, _ := boxOf(el.Bounds, scale, canvasW, canvasH)
+		if rawOK && isPageHeading(el.Kind, raw, canvasW, canvasH) {
 			continue
 		}
 		rect, ok := gazeRectFor(el, frames, scale, canvasW, canvasH, pageArea)
 		if !ok {
+			out = append(out, s)
 			continue
 		}
-		out[i].Rect = &rect
+		s.Rect = &rect
+		out = append(out, s)
 	}
 	return out
 }
@@ -511,14 +613,138 @@ func annotationsFromFocus(spans []FocusSpan, callout string) []Annotation {
 }
 
 func calloutShape(b Box) string {
-	if b.H <= 0 {
-		return AnnotationShapeRect
-	}
-	r := float64(b.W) / float64(b.H)
-	if r >= 0.75 && r <= 1.33 {
-		return AnnotationShapeCircle
-	}
+	_ = b
 	return AnnotationShapeRect
+}
+
+// skipGazeFocusKind 是入场演员，默认不当注视圈选。柱子生长必须进 Chrome；
+// 表格行先不当圈选，只在 compileGazeFocus 发现整页不足 2 条注视时才放行。
+func skipGazeFocusKind(kind string) bool {
+	return skipGazeActorKind(kind, false)
+}
+
+func skipGazeActorKind(kind string, allowRow bool) bool {
+	switch kind {
+	case animation.KindBar:
+		return true
+	case animation.KindRow:
+		return !allowRow
+	default:
+		return false
+	}
+}
+
+// isPageHeading 是页眉大标题：靠上、不太高。
+//
+// 阅读序第一个文字标成 title，但角标（「大会全景」）Y 更小会抢走 kind，真正的
+// 大标题变成 bullet。title 用 20% 宽（角标也算页眉）；bullet/shape 必须过半宽，
+// 才不会把靠上的要点条当成标题。六宫格卡片标题 Y 过不了 15%。
+func isPageHeading(kind string, box Box, canvasW, canvasH int) bool {
+	if canvasW <= 0 || canvasH <= 0 {
+		return false
+	}
+	if box.Y >= int(float64(canvasH)*0.15) {
+		return false
+	}
+	if box.H >= int(float64(canvasH)*0.18) {
+		return false
+	}
+	minW := float64(canvasW) * 0.50
+	switch kind {
+	case animation.KindTitle:
+		minW = float64(canvasW) * 0.20
+	case animation.KindBullet, animation.KindShape:
+	default:
+		return false
+	}
+	return box.W > int(minW)
+}
+
+// headingClearPadPx 让标题笔画不贴着纱边被羽化吃掉。
+const headingClearPadPx = 4
+const maxHeadingClearRects = 4
+
+// headingClearRects 收集页眉大标题的画布矩形，供合成器贴在纱之上。
+func headingClearRects(elements []Element, scale float64, canvasW, canvasH int) []Box {
+	if canvasW <= 0 || canvasH <= 0 {
+		return nil
+	}
+	var out []Box
+	for _, el := range elements {
+		raw, _, ok, _ := boxOf(el.Bounds, scale, canvasW, canvasH)
+		if !ok || !isPageHeading(el.Kind, raw, canvasW, canvasH) {
+			continue
+		}
+		out = append(out, padBox(raw, headingClearPadPx, canvasW, canvasH))
+		if len(out) >= maxHeadingClearRects {
+			break
+		}
+	}
+	return out
+}
+
+func padBox(b Box, pad, canvasW, canvasH int) Box {
+	if pad < 0 {
+		pad = 0
+	}
+	x := b.X - pad
+	y := b.Y - pad
+	w := b.W + pad*2
+	h := b.H + pad*2
+	if x < 0 {
+		w += x
+		x = 0
+	}
+	if y < 0 {
+		h += y
+		y = 0
+	}
+	if x+w > canvasW {
+		w = canvasW - x
+	}
+	if y+h > canvasH {
+		h = canvasH - y
+	}
+	if w < 1 || h < 1 {
+		return b
+	}
+	return Box{X: x, Y: y, W: w, H: h}
+}
+
+// dropContainedLooks 丢掉落在更大 look 里面的小框（卡片标题 vs 卡片底）。
+func dropContainedLooks(spans []FocusSpan) []FocusSpan {
+	if len(spans) < 2 {
+		return spans
+	}
+	drop := make([]bool, len(spans))
+	for i := range spans {
+		if spans[i].Rect == nil {
+			continue
+		}
+		ai := boxArea(*spans[i].Rect)
+		for j := range spans {
+			if i == j || spans[j].Rect == nil {
+				continue
+			}
+			if boxArea(*spans[j].Rect) <= ai {
+				continue
+			}
+			if boxCovers(*spans[j].Rect, *spans[i].Rect) {
+				drop[i] = true
+				break
+			}
+		}
+	}
+	out := make([]FocusSpan, 0, len(spans))
+	for i, s := range spans {
+		if !drop[i] {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func bakeGazeFocus(spans []FocusSpan, rev *animation.Revision) []FocusSpan {

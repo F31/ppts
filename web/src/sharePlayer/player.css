@@ -385,6 +385,13 @@ body.ppts-share-page {
   pointer-events: none;
 }
 
+/* LookCrop punch-in 的入场层容器：与页图同一套 translate+scale。台上 caption 不进这里。 */
+.ppts-lookcrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
 .ppts-layer {
   position: absolute;
   /* 位移与不透明度走合成层；不写 translateZ 之类的小技巧，
@@ -405,6 +412,14 @@ body.ppts-share-page {
   position: absolute;
   pointer-events: none;
   box-sizing: border-box;
+}
+
+.ppts-pointer {
+  position: absolute;
+  pointer-events: none;
+  box-sizing: border-box;
+  background: #ffd166;
+  border-radius: 2px;
 }
 
 /* 台上短标签：在字幕条上方，避免和全文 VTT 叠成双重字幕。 */

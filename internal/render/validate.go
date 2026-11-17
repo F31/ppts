@@ -255,6 +255,7 @@ func validateShots(p *Page, base string, frameMS int64, width, height int) error
 // 三条必须成立：焦点有「让位」的对象（是本页图层，或者带一个矩形）、
 // 起点严格递增（同一时刻两个焦点是自相矛盾的状态）、不越过页长
 // （越过意味着后半页没有焦点，非焦点元素会一直压暗着播到页尾）。
+// 同一 elementId 在不同时刻可以再亮：词级仍帧和同一行被两段旁白点到都是这个。
 //
 // 带 Rect 的焦点不受「必须是图层」约束：内嵌图表的柱子没有独立图层，
 // 靠一块矩形遮罩来指。但矩形本身要成立——宽高为正、不落在画布左上之外，
@@ -267,7 +268,6 @@ func validateFocus(p *Page, base string) error {
 		}
 	}
 	prev := int64(-1)
-	seen := make(map[string]struct{}, len(p.Focus))
 	for i, f := range p.Focus {
 		fb := fmt.Sprintf("%s.focus[%d]", base, i)
 		if f.Rect == nil {
@@ -282,12 +282,6 @@ func validateFocus(p *Page, base string) error {
 			return planErr(fb+".rect", CodeInvalidPlan,
 				"focus rect starts outside the canvas at (%d,%d)", f.Rect.X, f.Rect.Y)
 		}
-		if _, dup := seen[f.ElementID]; dup {
-			// 求值器按 elementId 查压暗量，「甲又亮又暗」无法表达。
-			return planErr(fb+".elementId", CodeInvalidPlan,
-				"focus element %q appears twice", f.ElementID)
-		}
-		seen[f.ElementID] = struct{}{}
 		if f.StartMs < 0 {
 			return planErr(fb+".startMs", CodeInvalidPlan, "negative start %d", f.StartMs)
 		}
@@ -363,7 +357,7 @@ func validateAnnotations(p *Page, base string) error {
 	for i, a := range p.Annotations {
 		ab := fmt.Sprintf("%s.annotations[%d]", base, i)
 		switch a.Kind {
-		case AnnotationCallout, AnnotationCaption:
+		case AnnotationCallout, AnnotationCaption, AnnotationPointer:
 		default:
 			return planErr(ab+".kind", CodeInvalidPlan, "unknown annotation kind %q", a.Kind)
 		}
@@ -391,13 +385,13 @@ func validateAnnotations(p *Page, base string) error {
 					"annotation ends at %d, page is %dms", a.EndMs, p.DurationMs)
 			}
 		}
-		if a.Kind == AnnotationCallout {
+		if a.Kind == AnnotationCallout || a.Kind == AnnotationPointer {
 			if a.Rect == nil || a.Rect.W <= 0 || a.Rect.H <= 0 {
-				return planErr(ab+".rect", CodeInvalidPlan, "callout requires a positive rect")
+				return planErr(ab+".rect", CodeInvalidPlan, "%s requires a positive rect", a.Kind)
 			}
 			if a.Rect.X < 0 || a.Rect.Y < 0 {
 				return planErr(ab+".rect", CodeInvalidPlan,
-					"callout rect starts outside the canvas at (%d,%d)", a.Rect.X, a.Rect.Y)
+					"%s rect starts outside the canvas at (%d,%d)", a.Kind, a.Rect.X, a.Rect.Y)
 			}
 		}
 		if a.Shape != "" && a.Shape != AnnotationShapeCircle && a.Shape != AnnotationShapeRect {
@@ -479,7 +473,7 @@ func validateTransition(t Transition) error {
 func validKind(kind string) bool {
 	switch kind {
 	case animation.KindPage, animation.KindTitle, animation.KindBullet, animation.KindImage,
-		animation.KindIcon, animation.KindChart, animation.KindTable, animation.KindShape:
+		animation.KindIcon, animation.KindChart, animation.KindTable, animation.KindShape, animation.KindBar, animation.KindRow:
 		return true
 	}
 	return false

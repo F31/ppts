@@ -36,14 +36,15 @@ const (
 	// 是把一整段剪贴进一页：观众跟不上，片段缓存也失去意义（一页仍是一段）。
 	MaxShotsPerPage = 4
 
-	// MaxAnnotationsPerPage 是一页标注条数上限（圈选 + 台上 caption）。
-	MaxAnnotationsPerPage = 32
+	// MaxAnnotationsPerPage 是一页标注条数上限（圈选 + 词级下划线 + 台上 caption）。
+	MaxAnnotationsPerPage = 48
 )
 
 // 标注种类。spotlight 不是 Annotation，它就是带 Rect 的 FocusSpan。
 const (
 	AnnotationCallout     = "callout"
 	AnnotationCaption     = "caption"
+	AnnotationPointer     = "pointer"
 	AnnotationShapeCircle = "circle"
 	AnnotationShapeRect   = "rect"
 )
@@ -113,6 +114,9 @@ type Page struct {
 	// LookCropPadPx 是 punch-in 裁切盒相对 Focus.rect 的外扩（画布像素）。
 	// 由强度烘焙：clamp(8×intensity, 4, 16)。0 / 缺省时合成器按 8。
 	LookCropPadPx int `json:"lookCropPadPx,omitempty"`
+	// ClearRects 是页眉大标题的画布矩形。纱罩盖在整页上时，合成器把这些区域
+	// 从原页图再贴一层盖在纱之上，标题保持原始清晰，不被压成灰。卡片标题不算。
+	ClearRects []Box `json:"clearRects,omitempty"`
 	// Shots 把一页切成若干镜头切片：每个切片有自己的底图，按页内相对时间切换。
 	// 为空表示整页一张图（今天的行为），产物里也不会出现该字段。
 	//
@@ -201,7 +205,7 @@ type FocusSpan struct {
 
 // Annotation 是注视之上的描边或台上短标签，不挖洞、不改底板。
 type Annotation struct {
-	Kind      string `json:"kind"` // callout | caption
+	Kind      string `json:"kind"` // callout | caption | pointer
 	StartMs   int64  `json:"startMs"`
 	EndMs     int64  `json:"endMs,omitempty"`
 	FadeMs    int64  `json:"fadeMs,omitempty"`

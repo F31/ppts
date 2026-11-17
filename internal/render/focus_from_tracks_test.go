@@ -177,16 +177,27 @@ func TestCompileGazeSpreadsFiveSpotlightsOver80s(t *testing.T) {
 	if len(page.Focus) != 5 {
 		t.Fatalf("focus = %d, want 5: %+v", len(page.Focus), page.Focus)
 	}
-	if len(page.Annotations) != 5 {
-		t.Fatalf("callouts = %d, want 5", len(page.Annotations))
-	}
+	var callouts, pointers int
 	for i, a := range page.Annotations {
-		if a.Kind != AnnotationCallout || a.Rect == nil {
-			t.Fatalf("annotation[%d] = %+v, want callout with rect", i, a)
+		if a.Rect == nil {
+			t.Fatalf("annotation[%d] missing rect: %+v", i, a)
 		}
-		if a.Kind == "caption" {
+		switch a.Kind {
+		case AnnotationCallout:
+			callouts++
+		case AnnotationPointer:
+			pointers++
+		case AnnotationCaption:
 			t.Fatal("compile must not emit caption for MP4")
+		default:
+			t.Fatalf("annotation[%d] kind = %q", i, a.Kind)
 		}
+	}
+	if callouts != 5 {
+		t.Fatalf("callouts = %d, want 5", callouts)
+	}
+	if pointers != 5 {
+		t.Fatalf("pointers = %d, want 5", pointers)
 	}
 	want := []int64{0, 16000, 32000, 48000, 64000}
 	for i, f := range page.Focus {
@@ -361,6 +372,109 @@ func TestMergeGazeLooksUniqueByRect(t *testing.T) {
 	}
 }
 
+func TestMergeGazeLooksKeepsPhraseStillsSameElement(t *testing.T) {
+	r := Box{X: 64, Y: 194, W: 429, H: 232}
+	copyR := r
+	spans := []FocusSpan{
+		{StartMs: 0, EndMs: 8000, ElementID: "c1", Rect: &r},
+		{StartMs: 8000, EndMs: 16000, ElementID: "c1", Rect: &copyR},
+	}
+	got := mergeGazeLooks(spans, 20000, true)
+	if len(got) != 2 {
+		t.Fatalf("same-element phrase stills must keep both, got %d: %+v", len(got), got)
+	}
+	if got[0].StartMs != 0 || got[1].StartMs != 8000 {
+		t.Fatalf("times = %d %d, want 0 8000", got[0].StartMs, got[1].StartMs)
+	}
+}
+
+func TestFocusFromBeatSheetHoldEmitsPhraseLooks(t *testing.T) {
+	c := newTestCompiler(t)
+	rev := revisionOf("teaching-clear", 1,
+		&animation.Track{ElementID: "a", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c1", "spotlight", 0, 240, "withSegment:seg-1")}},
+		&animation.Track{ElementID: "b", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c2", "spotlight", 140, 240, "withSegment:seg-1")}},
+	)
+	rev.MotionMode = animation.MotionModeGaze
+	sheet := &animation.BeatSheet{Source: animation.BeatSourcePunct, Beats: []animation.Beat{
+		{StartMs: 0, EndMs: 4000, ShapeID: "a", Shot: animation.BeatShotGaze, Text: "先讲这张卡的上半句"},
+		{StartMs: 4000, EndMs: 8000, Shot: animation.BeatShotHold, Text: "同一张卡的下半句"},
+		{StartMs: 8000, EndMs: 16000, ShapeID: "b", Shot: animation.BeatShotGaze, Text: "切到第二张"},
+	}}
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "slide-1", DurationMs: 16000, BaseImage: "pages/p0.png",
+		Elements: []Element{
+			{ID: "a", Kind: animation.KindBullet, Bounds: emuBox(96, 200, 800, 80), Text: "先讲这张卡的上半句同一张卡的下半句"},
+			{ID: "b", Kind: animation.KindBullet, Bounds: emuBox(96, 320, 800, 80), Text: "切到第二张"},
+		},
+		SegmentOffsets: map[string]int64{"seg-1": 0},
+		Revision:       rev, BeatSheet: sheet,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) != 3 {
+		t.Fatalf("hold phrase still missing, looks=%d: %+v", len(page.Focus), page.Focus)
+	}
+	if page.Focus[0].ElementID != "a" || page.Focus[1].ElementID != "a" || page.Focus[2].ElementID != "b" {
+		t.Fatalf("look ids = %s %s %s, want a a b", page.Focus[0].ElementID, page.Focus[1].ElementID, page.Focus[2].ElementID)
+	}
+	if page.Focus[1].StartMs != 4000 {
+		t.Fatalf("phrase look start = %d, want 4000", page.Focus[1].StartMs)
+	}
+	var pointers int
+	for _, a := range page.Annotations {
+		if a.Kind == AnnotationPointer {
+			pointers++
+		}
+	}
+	if pointers != 3 {
+		t.Fatalf("pointers = %d, want 3", pointers)
+	}
+}
+
+func TestFocusFromBeatSheetDenseDropsPhraseExtras(t *testing.T) {
+	c := newTestCompiler(t)
+	tracks := make([]*animation.Track, 6)
+	elems := make([]Element, 6)
+	beats := make([]animation.Beat, 0, 12)
+	t0 := int64(0)
+	for i := 0; i < 6; i++ {
+		id := fmt.Sprintf("c%d", i+1)
+		tracks[i] = &animation.Track{ElementID: id, Kind: animation.KindShape,
+			Clips: []*animation.Clip{clipOf("s"+id, "spotlight", 0, 240, "withSegment:seg-1")}}
+		col, row := i%3, i/3
+		x, y := int64(80+col*620), int64(220+row*380)
+		elems[i] = Element{ID: id, Kind: animation.KindShape, Bounds: emuBox(x, y, 560, 320), Text: id}
+		beats = append(beats, animation.Beat{StartMs: t0, EndMs: t0 + 4000, ShapeID: id, Shot: animation.BeatShotGaze, Text: id})
+		beats = append(beats, animation.Beat{StartMs: t0 + 4000, EndMs: t0 + 8000, Shot: animation.BeatShotHold, Text: id + "下半句"})
+		t0 += 8000
+	}
+	rev := revisionOf("teaching-clear", 1, tracks...)
+	rev.MotionMode = animation.MotionModeGaze
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "slide-1", DurationMs: t0, BaseImage: "pages/p0.png",
+		Elements: elems, SegmentOffsets: map[string]int64{"seg-1": 0},
+		Revision: rev, BeatSheet: &animation.BeatSheet{Source: animation.BeatSourcePunct, Beats: beats},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) != 6 {
+		t.Fatalf("dense page must keep 6 unique looks, got %d: %+v", len(page.Focus), page.Focus)
+	}
+	seen := map[string]int{}
+	for _, f := range page.Focus {
+		seen[f.ElementID]++
+	}
+	for id, n := range seen {
+		if n != 1 {
+			t.Fatalf("element %s appears %d times, want 1", id, n)
+		}
+	}
+}
+
 func TestT6KeepTimesUniqueByRect(t *testing.T) {
 	cardA := Box{X: 64, Y: 194, W: 429, H: 232}
 	cardB := Box{X: 506, Y: 194, W: 429, H: 232}
@@ -373,11 +487,11 @@ func TestT6KeepTimesUniqueByRect(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d looks, want 2: %+v", len(got), got)
 	}
-	if got[0].StartMs != 12000 || got[0].EndMs != 40000 {
-		t.Fatalf("collapsed card StartMs=%d EndMs=%d, want 12000/40000", got[0].StartMs, got[0].EndMs)
+	if got[0].StartMs != 18000 || got[0].EndMs != 40000 {
+		t.Fatalf("collapsed card StartMs=%d EndMs=%d, want 18000/40000", got[0].StartMs, got[0].EndMs)
 	}
-	if got[0].ElementID != "title-a" {
-		t.Fatalf("keep earliest, got %s", got[0].ElementID)
+	if got[0].ElementID != "body-a" {
+		t.Fatalf("keep later body, got %s", got[0].ElementID)
 	}
 	if got[1].StartMs != 40000 || got[1].ElementID != "title-b" {
 		t.Fatalf("second = %+v, want title-b@40000", got[1])
@@ -487,8 +601,8 @@ func TestT8bGazeEntranceOnlySpreadsEntranceTracks(t *testing.T) {
 	if len(page.Layers) != 1 || page.Layers[0].ElementID != "a" {
 		t.Fatalf("layers = %+v, want only fadeIn on a", page.Layers)
 	}
-	if page.Layers[0].Clips[0].StartMs != 0 {
-		t.Fatalf("fadeIn StartMs = %d, want 0 (n=1, no spread hole)", page.Layers[0].Clips[0].StartMs)
+	if page.Layers[0].Clips[0].StartMs != 3000 {
+		t.Fatalf("fadeIn StartMs = %d, want first Focus 3000", page.Layers[0].Clips[0].StartMs)
 	}
 	if rev.Tracks[1].Clips[0].StartMs != origSpotB {
 		t.Fatalf("caller spotlight StartMs mutated: %d", rev.Tracks[1].Clips[0].StartMs)
@@ -796,7 +910,7 @@ func TestCompileGazeEntranceSkipsChartTable(t *testing.T) {
 	}
 }
 
-func TestCompileTechDynamicBakesLookCrop(t *testing.T) {
+func TestCompileTechDynamicStaysFullPage(t *testing.T) {
 	c := newTestCompiler(t)
 	rev := revisionOf("tech-dynamic", 1.15,
 		&animation.Track{ElementID: "a", Kind: animation.KindBullet,
@@ -817,17 +931,60 @@ func TestCompileTechDynamicBakesLookCrop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !page.LookCrop {
-		t.Fatal("tech-dynamic must bake lookCrop")
+	if page.LookCrop {
+		t.Fatal("tech-dynamic catalog lookCrop is vetoed: lecture pages stay full-page")
 	}
-	if page.LookCropPadPx != LookCropPadPx(1.15) {
-		t.Fatalf("pad = %d, want %d", page.LookCropPadPx, LookCropPadPx(1.15))
+	if page.LookCropPadPx != 0 {
+		t.Fatalf("pad = %d, want 0", page.LookCropPadPx)
 	}
 	if !isGazeLookPage(page) {
-		t.Fatal("teaching encoder still takes lookCrop pages; punch-in is PageView")
+		t.Fatal("full-page tech gaze still uses the look chain")
+	}
+	if len(page.Annotations) == 0 {
+		t.Fatal("full-page tech gaze keeps callout")
 	}
 	if len(page.Layers) != 0 {
 		t.Fatalf("tech gaze must not emit layers, got %d", len(page.Layers))
+	}
+}
+
+func TestCompileTechDynamicOmitsLookCropWithoutFocus(t *testing.T) {
+	c := newTestCompiler(t)
+	rev := revisionOf("tech-dynamic", 1,
+		&animation.Track{ElementID: "a", Kind: animation.KindShape,
+			Clips: []*animation.Clip{
+				clipOf("c1", "slideIn", 0, 240, "withSegment:seg-1"),
+				clipOf("c2", "spotlight", 0, 240, "withSegment:seg-1"),
+			}},
+	)
+	rev.MotionMode = animation.MotionModeGazeEntrance
+	page, _, err := c.CompilePage(PageInput{
+		Index: 22, SlideID: "slide-278", DurationMs: 31840, BaseImage: "pages/p22.png",
+		Elements: []Element{
+			{ID: "a", Kind: animation.KindShape, Bounds: emuBox(96, 200, 800, 80)},
+		},
+		SegmentOffsets: map[string]int64{"seg-1": 0},
+		Revision:       rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) != 0 {
+		t.Fatalf("focus = %+v, want none", page.Focus)
+	}
+	if page.LookCrop {
+		t.Fatal("lookCrop without Focus.rect is invalid_plan and drops the whole film to static")
+	}
+	plan := &Timeline{
+		SchemaVersion: IRSchemaVersion,
+		FPS:           30,
+		Width:         1920,
+		Height:        1080,
+		Background:    "#FFFFFF",
+		Pages:         []Page{page},
+	}
+	if err := plan.Validate(); err != nil {
+		t.Fatalf("single-layer tech page must be a valid plan: %v", err)
 	}
 }
 
@@ -844,5 +1001,152 @@ func TestLayerElementIDsSkipsUnreliableGazeEntrance(t *testing.T) {
 	got := LayerElementIDs(rev, elems, design.Canvas{Width: 1920, Height: 1080}, emuHeight)
 	if got != nil {
 		t.Fatalf("unreliable boxes must not count as layers, got %v", got)
+	}
+}
+
+func TestCalloutShapeAutoIsRect(t *testing.T) {
+	square := Box{X: 100, Y: 200, W: 400, H: 400}
+	if got := calloutShape(square); got != AnnotationShapeRect {
+		t.Fatalf("square auto = %q, want rect", got)
+	}
+	wide := Box{X: 0, Y: 0, W: 800, H: 80}
+	if got := calloutShape(wide); got != AnnotationShapeRect {
+		t.Fatalf("wide auto = %q, want rect", got)
+	}
+	anns := annotationsFromFocus([]FocusSpan{
+		{StartMs: 0, ElementID: "card", Rect: &square, FadeMs: 240},
+		{StartMs: 4000, ElementID: "next", Rect: &wide, FadeMs: 240},
+	}, "auto")
+	if len(anns) != 2 || anns[0].Shape != AnnotationShapeRect {
+		t.Fatalf("auto callout shape = %+v, want rect", anns)
+	}
+	forced := annotationsFromFocus([]FocusSpan{
+		{StartMs: 0, ElementID: "card", Rect: &square, FadeMs: 240},
+		{StartMs: 4000, ElementID: "next", Rect: &wide, FadeMs: 240},
+	}, "circle")
+	if forced[0].Shape != AnnotationShapeCircle {
+		t.Fatalf("explicit circle = %q", forced[0].Shape)
+	}
+}
+
+func TestGazeSkipsPageTitleKeepsCards(t *testing.T) {
+	c := newTestCompiler(t)
+	rev := revisionOf("tech-dynamic", 1.15,
+		&animation.Track{ElementID: "heading", Kind: animation.KindTitle, Clips: []*animation.Clip{
+			clipOf("h-spot", "spotlight", 0, 240, "withSegment:seg-1"),
+		}},
+		&animation.Track{ElementID: "c1", Kind: animation.KindBullet, Clips: []*animation.Clip{
+			clipOf("c1-spot", "spotlight", 140, 240, "withSegment:seg-1"),
+		}},
+		&animation.Track{ElementID: "c2", Kind: animation.KindBullet, Clips: []*animation.Clip{
+			clipOf("c2-spot", "spotlight", 280, 240, "withSegment:seg-1"),
+		}},
+	)
+	rev.MotionMode = animation.MotionModeGazeEntrance
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "slide-1", DurationMs: 60000, BaseImage: "pages/p0.png",
+		Elements: []Element{
+			{ID: "heading", Kind: animation.KindTitle, Bounds: emuBox(96, 48, 1440, 96)},
+			{ID: "c1", Kind: animation.KindBullet, Bounds: emuBox(96, 220, 420, 280)},
+			{ID: "c2", Kind: animation.KindBullet, Bounds: emuBox(596, 220, 420, 280)},
+		},
+		SegmentOffsets: map[string]int64{"seg-1": 0},
+		Revision:       rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) != 2 {
+		t.Fatalf("focus = %d, want 2 cards (no page title): %+v", len(page.Focus), page.Focus)
+	}
+	for _, f := range page.Focus {
+		if f.ElementID == "heading" {
+			t.Fatal("page title became a look")
+		}
+	}
+	if len(page.ClearRects) != 1 {
+		t.Fatalf("clearRects = %d, want 1 page heading: %+v", len(page.ClearRects), page.ClearRects)
+	}
+	got := page.ClearRects[0]
+	if got.Y >= 1080/4 || got.W <= 1920*2/5 {
+		t.Fatalf("heading clear rect %+v is not a wide top bar", got)
+	}
+}
+
+func TestHeadingClearRectsBulletTitleAndCornerTag(t *testing.T) {
+	c := newTestCompiler(t)
+	rev := revisionOf("tech-dynamic", 1.15,
+		&animation.Track{ElementID: "tag", Kind: animation.KindTitle, Clips: []*animation.Clip{
+			clipOf("tag-spot", "spotlight", 0, 240, "withSegment:seg-1"),
+		}},
+		&animation.Track{ElementID: "heading", Kind: animation.KindBullet, Clips: []*animation.Clip{
+			clipOf("h-spot", "spotlight", 40, 240, "withSegment:seg-1"),
+		}},
+		&animation.Track{ElementID: "kicker", Kind: animation.KindBullet, Clips: []*animation.Clip{
+			clipOf("k-spot", "spotlight", 80, 240, "withSegment:seg-1"),
+		}},
+		&animation.Track{ElementID: "metric", Kind: animation.KindBullet, Clips: []*animation.Clip{
+			clipOf("m-spot", "spotlight", 200, 240, "withSegment:seg-1"),
+		}},
+	)
+	rev.MotionMode = animation.MotionModeGaze
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "slide-258", DurationMs: 21080, BaseImage: "pages/p1.png",
+		Elements: []Element{
+			{ID: "tag", Kind: animation.KindTitle, Bounds: emuBox(1344, 23, 480, 48)},
+			{ID: "heading", Kind: animation.KindBullet, Bounds: emuBox(96, 58, 1728, 115)},
+			{ID: "kicker", Kind: animation.KindBullet, Bounds: emuBox(96, 173, 1728, 67)},
+			{ID: "metric", Kind: animation.KindBullet, Bounds: emuBox(96, 299, 410, 170)},
+		},
+		SegmentOffsets: map[string]int64{"seg-1": 0},
+		Revision:       rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.ClearRects) != 2 {
+		t.Fatalf("clearRects = %d, want tag + page title: %+v", len(page.ClearRects), page.ClearRects)
+	}
+	var sawTitle, sawTag, sawKicker bool
+	for _, r := range page.ClearRects {
+		if r.Y <= 30 && r.W >= 470 {
+			sawTag = true
+		}
+		if r.Y >= 50 && r.Y < 80 && r.W >= 1700 {
+			sawTitle = true
+		}
+		if r.Y >= 160 {
+			sawKicker = true
+		}
+	}
+	if !sawTitle || !sawTag {
+		t.Fatalf("clearRects = %+v, want corner tag and 大会概览-sized title", page.ClearRects)
+	}
+	if sawKicker {
+		t.Fatalf("subtitle/kicker must stay dimmable: %+v", page.ClearRects)
+	}
+	for _, f := range page.Focus {
+		if f.ElementID == "heading" || f.ElementID == "tag" {
+			t.Fatalf("page chrome became a look: %+v", page.Focus)
+		}
+	}
+}
+
+func TestDropContainedLooksPrefersCardOverTitle(t *testing.T) {
+	title := Box{X: 120, Y: 220, W: 360, H: 48}
+	card := Box{X: 96, Y: 200, W: 420, H: 280}
+	titleB := Box{X: 620, Y: 220, W: 360, H: 48}
+	cardB := Box{X: 596, Y: 200, W: 420, H: 280}
+	got := dropContainedLooks([]FocusSpan{
+		{StartMs: 0, ElementID: "title-a", Rect: &title},
+		{StartMs: 2000, ElementID: "body-a", Rect: &card},
+		{StartMs: 4000, ElementID: "title-b", Rect: &titleB},
+		{StartMs: 6000, ElementID: "body-b", Rect: &cardB},
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d, want 2 card looks: %+v", len(got), got)
+	}
+	if got[0].ElementID != "body-a" || got[1].ElementID != "body-b" {
+		t.Fatalf("ids = %s,%s want body-a,body-b", got[0].ElementID, got[1].ElementID)
 	}
 }

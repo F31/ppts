@@ -13,9 +13,11 @@ export type LayerState = {
   ty: number;
   sx: number;
   sy: number;
+  /** 绕层锚点的平面转角，单位度。缺省 0。 */
+  rotate: number;
 };
 
-export const IDENTITY: LayerState = { opacity: 1, tx: 0, ty: 0, sx: 1, sy: 1 };
+export const IDENTITY: LayerState = { opacity: 1, tx: 0, ty: 0, sx: 1, sy: 1, rotate: 0 };
 
 const NEWTON_ITERATIONS = 8;
 const NEWTON_MIN_SLOPE = 0.001;
@@ -84,6 +86,7 @@ export function clipProgress(clip: Motion, tMs: number): number {
  *   - opacity 相乘（两个淡入叠在一起不会变成「更不透明」）
  *   - translate 相加（同方向叠加就是位移之和）
  *   - scale 相乘（0.9 × 1.1 回到 1）
+ *   - rotate 相加（度；两个倾斜叠在一起就是转角之和）
  * 顺序无关，因此不依赖 clip 的数组顺序——这一点很重要：
  * 规格里 clip 的书写顺序是用户的自由，不该影响像素。
  */
@@ -113,6 +116,9 @@ export function evaluateLayer(layer: Layer, tMs: number): LayerState {
         case 'scaleY':
           state.sy *= value;
           break;
+        case 'rotate':
+          state.rotate += value;
+          break;
         default:
           // 未知属性一律忽略：IR 校验已在服务端拒绝过非法属性名，
           // 这里静默忽略是为了让「新增属性但旧合成器」不至于整片失败。
@@ -121,6 +127,14 @@ export function evaluateLayer(layer: Layer, tMs: number): LayerState {
     }
   }
   return state;
+}
+
+/** 层变换 CSS。顺序与现网一致：translate → scale，rotate 接在后面。rotate=0 时字面量与旧片相同。 */
+export function layerTransformPx(state: LayerState): string {
+  const rot = state.rotate ?? 0;
+  const base = `translate(${state.tx}px, ${state.ty}px) scale(${state.sx}, ${state.sy})`;
+  if (rot === 0) return base;
+  return `${base} rotate(${rot}deg)`;
 }
 
 /** 帧数：与 Go 侧 round(durationMs × fps / 1000) 同口径，至少 1 帧。 */
@@ -138,6 +152,26 @@ export const FOCUS_FADE_MS = 240;
  * 读到的信息，不是失效项。0.55 是「退后一步、但还读得清」的位置。
  */
 export const FOCUS_DIM_OPACITY = 0.55;
+
+/**
+ * 页眉大标题：靠上、不太高。与 Go `isPageHeading` 同一套门槛。
+ * 角标会抢走 title kind，真正的大标题常是 bullet/shape：title 宽过 20% 即可，
+ * bullet/shape 必须过半宽。六宫格卡片标题 Y 过不了 15%，继续跟着纱走。
+ */
+export function isPageHeading(
+  kind: string | undefined,
+  box: { x: number; y: number; w: number; h: number },
+  canvasW: number,
+  canvasH: number
+): boolean {
+  if (canvasW <= 0 || canvasH <= 0) return false;
+  if (box.y >= Math.trunc(canvasH * 0.15)) return false;
+  if (box.h >= Math.trunc(canvasH * 0.18)) return false;
+  let minW = canvasW * 0.5;
+  if (kind === 'title') minW = canvasW * 0.2;
+  else if (kind !== 'bullet' && kind !== 'shape') return false;
+  return box.w > Math.trunc(minW);
+}
 
 /**
  * 转场进度曲线。页间转场、焦点过渡、页内镜头叠化都用这一条：
@@ -340,6 +374,18 @@ export type AnnotationEval = {
 export const CALLOUT_STROKE = '#ffd166';
 /** 1080p 下的圈选线宽（画布像素）。 */
 export const CALLOUT_STROKE_PX = 3;
+/** 圈选到达：略放大再回落。与 gazepage.go lookArriveHoldMS 对齐取样。 */
+export const CALLOUT_ARRIVE_MS = 480;
+export const CALLOUT_ARRIVE_SCALE = 1.12;
+
+/** 圈选到达倍率。startMs 起 480ms 内从 1.12 收到 1。 */
+export function calloutArriveScale(startMs: number, tMs: number): number {
+  const dt = tMs - startMs;
+  if (!(dt < CALLOUT_ARRIVE_MS)) return 1;
+  if (dt <= 0) return CALLOUT_ARRIVE_SCALE;
+  const p = easeOutCubic(dt / CALLOUT_ARRIVE_MS);
+  return CALLOUT_ARRIVE_SCALE + (1 - CALLOUT_ARRIVE_SCALE) * p;
+}
 
 export type CalloutLayout = {
   x: number;
@@ -350,12 +396,11 @@ export type CalloutLayout = {
 };
 
 /**
- * 圈选落位：显式 circle / 近方形走正圆（取短边居中），否则圆角矩形。
- * 圆角 = min(12px, 短边×0.08)，与设计方案 §2.3 一致。
+ * 圈选落位：只有显式 circle 才走正圆（取短边居中），其余（含 auto）走圆角矩形。
+ * 正方形卡片用内接圆会切掉四角。圆角 = min(12px, 短边×0.08)，与设计方案 §2.3 一致。
  */
 export function calloutLayout(rect: Box, shape?: string): CalloutLayout {
-  const circle =
-    shape === 'circle' || (shape !== 'rect' && rect.h > 0 && rect.w / rect.h >= 0.75 && rect.w / rect.h <= 1.33);
+  const circle = shape === 'circle';
   if (circle) {
     const s = Math.min(rect.w, rect.h);
     return {

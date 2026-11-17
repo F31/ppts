@@ -16,8 +16,8 @@ import (
 // pageNeedsCompositor 报告这一页必须进 Chromium 按页时长逐帧。
 //
 // 注视页（有 Focus.rect、fade/none、无 shots）走 look 链，不进这里。
-// gaze+entrance 的入场层也留在 look 链：中点仍帧已经过完 fadeIn，xfade 承担显现。
-// 纯 entrance、无矩形的图层焦点、切镜、slide/zoom、非入场 clip 仍要合成器。
+// gaze+entrance 的 fadeIn/slideIn/pop 留在 look 链：中点仍帧已经过完，xfade 承担显现。
+// grow、纯 entrance、无矩形的图层焦点、切镜、slide/zoom、非入场 clip 仍要合成器。
 func pageNeedsCompositor(p Page) bool {
 	if isGazeLookPage(p) {
 		return false
@@ -38,8 +38,9 @@ func pageNeedsCompositor(p Page) bool {
 
 // isGazeLookPage 是教学注视页：用 look 中点仍帧而不是整页 Chrome。
 // 教学页 catalog 的 lookCrop=false，所以 look 链仍是完整页+纱。
-// 科技 punch-in 在 PageView 里做，不改这一页的分桶。
-// 入场层（fadeIn/slideIn/pop/grow）可以留在链上：staging 挖洞，中点仍帧里已显现的层不透明。
+// 科技 punch-in 在 PageView 里做（底板+入场层同一套 crop 变换），不改这一页的分桶。
+// 入场层（fadeIn/slideIn/pop）可以留在链上：staging 挖洞，中点仍帧里已显现的层不透明。
+// grow 必须进 Chrome：中点仍帧会把 scale 冻在终态。
 func isGazeLookPage(p Page) bool {
 	if len(p.Shots) > 0 {
 		return false
@@ -68,6 +69,19 @@ func lookChainLayerOK(layer Layer) bool {
 		return false
 	}
 	for _, clip := range layer.Clips {
+		if clip.Effect == "grow" {
+			// look 中点仍帧会把 scale 冻在终态，柱子「已经长完」。生长必须进 Chrome。
+			return false
+		}
+		if clip.Effect == "tilt" {
+			// 转角冻在终态就看不见倾。倾斜必须进 Chrome。
+			return false
+		}
+		for _, p := range clip.Props {
+			if p.Name == animation.PropRotate {
+				return false
+			}
+		}
 		if !animation.IsEntranceEffect(clip.Effect) {
 			return false
 		}
@@ -182,13 +196,13 @@ func stillEncodeArgs(spec stillEncodeSpec) ([]string, error) {
 		filter = "[0:v]" + fit + ",format=yuv420p[v]"
 	} else {
 		transSec := strconv.FormatFloat(float64(trans)/float64(fps), 'f', 3, 64)
-		prevSec := strconv.FormatFloat(float64(trans+1)/float64(fps), 'f', 3, 64)
-		pageSec := strconv.FormatFloat(float64(frames)/float64(fps), 'f', 3, 64)
+		pageSec := strconv.FormatFloat(float64(frames+1)/float64(fps), 'f', 3, 64)
 		args = append(args,
-			"-loop", "1", "-framerate", strconv.Itoa(fps), "-t", prevSec, "-i", spec.PrevImage,
+			"-loop", "1", "-framerate", strconv.Itoa(fps), "-t", pageSec, "-i", spec.PrevImage,
 			"-loop", "1", "-framerate", strconv.Itoa(fps), "-t", pageSec, "-i", spec.Image,
 		)
 		// easeOutCubic(P) = 1-(1-P)^3。逗号在 filtergraph 里是分隔符，必须转义。
+		// fps=start_time=0 让 xfade offset=0 对准第一帧；setpts 会丢掉时长，xfade 直接 -22。
 		filter = "[0:v]" + fit + "[a];[1:v]" + fit + "[b];" +
 			"[a][b]xfade=transition=custom:duration=" + transSec + ":offset=0:" +
 			`expr='A*pow(1-P\,3)+B*(1-pow(1-P\,3))',format=yuv420p[v]`
@@ -275,7 +289,7 @@ func holdTailArgs(spec holdTailSpec) ([]string, error) {
 // stillFitFilter 把任意静图铺进偶数画布，和合成器片段同尺寸、同帧率。
 func stillFitFilter(w, h int, background string, fps int) string {
 	return fmt.Sprintf(
-		"scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=%s,setsar=1,fps=%d",
+		"scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=%s,setsar=1,fps=%d:start_time=0",
 		w, h, w, h, ffmpegPadColor(background), fps,
 	)
 }

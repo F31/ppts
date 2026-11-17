@@ -100,6 +100,7 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 			Annotations:   slideAnnotations(page.Annotations),
 			LookCrop:      page.LookCrop,
 			LookCropPadPx: page.LookCropPadPx,
+			ClearRects:    slideBoxes(page.ClearRects),
 		}
 
 		if !hasAnimatedLayer(page.Layers) {
@@ -456,7 +457,7 @@ func hasAnimatedLayer(layers []render.Layer) bool {
 // 最需要指的那一页往往一个层都没有。真正什么都没有的静态页不占，M6-1 的包必须
 // 逐字节不变（清单里多一条空动画就是一次回归）。
 func pageNeedsBundleEntry(anim share.PageAnimation) bool {
-	if len(anim.Shots) > 0 || len(anim.Focus) > 0 || len(anim.Annotations) > 0 || anim.LookCrop {
+	if len(anim.Shots) > 0 || len(anim.Focus) > 0 || len(anim.Annotations) > 0 || anim.LookCrop || len(anim.ClearRects) > 0 {
 		return true
 	}
 	// type=none 与「没有转场」同义：写进清单只是多一个字段，播放器按 none 直接切。
@@ -510,6 +511,23 @@ func encodePNG(img image.Image) ([]byte, error) {
 
 // slideFocus 把 IR 的页级焦点搬到分享清单：两处字段一一对应，但分享包不依赖
 // internal/render 的类型（清单是给浏览器看的，IR 是给渲染后端看的）。
+func slideBoxes(in []render.Box) []share.SlideBox {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideBox, 0, len(in))
+	for _, b := range in {
+		if b.W <= 0 || b.H <= 0 {
+			continue
+		}
+		out = append(out, share.SlideBox{X: b.X, Y: b.Y, W: b.W, H: b.H})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func slideFocus(in []render.FocusSpan) []share.SlideFocus {
 	if len(in) == 0 {
 		return nil

@@ -119,7 +119,7 @@ func (r *Revision) Validate(pc PageContext) error {
 			return &ValidationError{
 				Rule: RuleType, Field: field + ".kind",
 				Message: fmt.Sprintf("unknown kind %q", t.Kind),
-				Hint:    "page|title|bullet|image|icon|chart|table|shape",
+				Hint:    "page|title|bullet|image|icon|chart|table|shape|bar|row",
 				Status:  400,
 			}
 		}

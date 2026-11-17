@@ -32,6 +32,23 @@ func trimText(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// pageTitleLook 是页眉大标题：宽条、靠上、高度不像卡片。六宫格卡片标题过不了宽度门槛。
+func pageTitleLook(e bind.Element) bool {
+	if e.Kind != "title" {
+		return false
+	}
+	if e.Box.Y >= 0.25*denyPageH {
+		return false
+	}
+	if e.Box.W <= 0.40*denyPageW {
+		return false
+	}
+	if e.Box.H >= 0.20*denyPageH {
+		return false
+	}
+	return true
+}
+
 func collectCandidates(in Input) (usable []bind.Element, deny map[string]struct{}, reasons map[string]int) {
 	deny = make(map[string]struct{})
 	reasons = make(map[string]int)
@@ -39,6 +56,11 @@ func collectCandidates(in Input) (usable []bind.Element, deny map[string]struct{
 		if pageNumberLook(e) {
 			deny[e.ID] = struct{}{}
 			reasons["page_number"]++
+			continue
+		}
+		if pageTitleLook(e) {
+			deny[e.ID] = struct{}{}
+			reasons["title"]++
 			continue
 		}
 		if bind.IsAux(e) {

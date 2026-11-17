@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { calloutLayout, cubicBezier, evaluateAnnotation, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY } from './motion.ts';
+import { CALLOUT_ARRIVE_MS, CALLOUT_ARRIVE_SCALE, calloutArriveScale, calloutLayout, cubicBezier, evaluateAnnotation, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY, layerTransformPx } from './motion.ts';
 import {
   cropLocalRect,
   lookCropAt,
@@ -99,6 +99,21 @@ test('未知属性静默忽略：新增属性不该让旧合成器整片失败',
   };
   const state = evaluateLayer(layer(unknown), 500);
   assert.deepEqual(state, IDENTITY);
+});
+
+test('rotate 相加，单位度；0 度时 CSS 与旧片字面量相同', () => {
+  const a = {
+    effect: 'tilt', startMs: 0, durationMs: 1000, easing: linear,
+    props: [{ name: 'rotate', from: 0, to: 8 }]
+  };
+  const b = {
+    effect: 'tilt', startMs: 0, durationMs: 1000, easing: linear,
+    props: [{ name: 'rotate', from: 0, to: -2 }]
+  };
+  const mid = evaluateLayer(layer(a, b), 500);
+  assert.equal(mid.rotate, 3);
+  assert.equal(layerTransformPx(IDENTITY), 'translate(0px, 0px) scale(1, 1)');
+  assert.equal(layerTransformPx(mid), 'translate(0px, 0px) scale(1, 1) rotate(3deg)');
 });
 
 test('cubicBezier 端点与单调性', () => {
@@ -260,13 +275,23 @@ test('evaluateAnnotation：淡入、hold、放手与起点不挂节点', () => {
   assert.equal(evaluateAnnotation(a, 3240), null);
 });
 
-test('calloutLayout：近方形走正圆，扁盒走圆角矩形', () => {
+test('calloutArriveScale：圈选到达从 1.12 收到 1', () => {
+  assert.equal(calloutArriveScale(1000, 1000), CALLOUT_ARRIVE_SCALE);
+  assert.equal(calloutArriveScale(1000, 1000 + CALLOUT_ARRIVE_MS), 1);
+  assert.equal(calloutArriveScale(1000, 2000), 1);
+  const mid = calloutArriveScale(1000, 1000 + CALLOUT_ARRIVE_MS / 2);
+  assert.ok(mid > 1 && mid < CALLOUT_ARRIVE_SCALE, `mid=${mid}`);
+});
+
+test('calloutLayout：只有显式 circle 走正圆，auto/正方形走圆角矩形', () => {
   const circle = calloutLayout({ x: 10, y: 20, w: 100, h: 90 }, 'circle');
   assert.equal(circle.w, 90);
   assert.equal(circle.h, 90);
   assert.equal(circle.radius, '50%');
   const auto = calloutLayout({ x: 0, y: 0, w: 80, h: 80 });
-  assert.equal(auto.radius, '50%');
+  assert.equal(auto.w, 80);
+  assert.equal(auto.h, 80);
+  assert.ok(auto.radius.endsWith('px'));
   const rect = calloutLayout({ x: 0, y: 0, w: 400, h: 80 }, 'rect');
   assert.equal(rect.w, 400);
   assert.equal(rect.h, 80);
@@ -305,11 +330,11 @@ test('LookCrop crop-to-fill 铺满舞台，cropLocalRect 把页坐标变到舞�
   assert.equal(staged.transform, `translate(calc(${tx}px * var(--ppts-k, 1)), calc(${ty}px * var(--ppts-k, 1))) scale(${scale})`);
 });
 
-test('LookCrop 无 rect / 降级 / 入场层 / 镜头裁切都不 punch-in', () => {
+test('LookCrop 无 rect / 降级 / 镜头裁切都不 punch-in；入场层仍 punch-in', () => {
   assert.equal(lookCropEnabled({ lookCrop: true }), true);
   assert.equal(lookCropEnabled({ lookCrop: true, reduceMotion: true }), false);
   assert.equal(lookCropEnabled({ lookCrop: true, hasShotCrop: true }), false);
-  assert.equal(lookCropEnabled({ lookCrop: true, hasEntranceLayers: true }), false);
+  assert.equal(lookCropEnabled({ lookCrop: true, hasEntranceLayers: true }), true);
   assert.equal(lookCropAt([{ startMs: 0, elementId: 'a' }], 0, 1920, 1080), null);
   assert.equal(lookCropAt([{ startMs: 1000, elementId: 'a', rect: { x: 1, y: 1, w: 10, h: 10 } }], 0, 1920, 1080), null);
 });

@@ -99,7 +99,7 @@ export type FocusSpan = {
 
 /** 注视之上的描边或台上短标签。spotlight 不是 Annotation，它是带 rect 的 FocusSpan。 */
 export type Annotation = {
-  kind: 'callout' | 'caption';
+  kind: 'callout' | 'caption' | 'pointer';
   startMs: number;
   endMs?: number;
   fadeMs?: number;

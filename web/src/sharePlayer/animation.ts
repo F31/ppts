@@ -23,13 +23,16 @@ import {
 import {
   CALLOUT_STROKE,
   CALLOUT_STROKE_PX,
+  CALLOUT_ARRIVE_MS,
   FOCUS_FADE_MS,
+  calloutArriveScale,
   calloutLayout,
   evaluateAnnotation,
   evaluateLayer,
   focusDim,
   focusMasks,
   focusOpacity,
+  isPageHeading,
   originCss
 } from '../../../shared/motion.ts';
 import type { Annotation, FocusSpan, Layer, Motion } from '../../../shared/types.ts';
@@ -58,6 +61,10 @@ export type CompileOptions = {
   annotations?: Annotation[];
   /** 科技 punch-in。为真且未降级时不建页坐标纱/圈选。 */
   lookCrop?: boolean;
+  /** 页图路径，供页眉 clearRects 从原图裁切。 */
+  pageImage?: string;
+  /** 页眉大标题矩形：纱之上再贴原页图。 */
+  clearRects?: { x: number; y: number; w: number; h: number }[];
 };
 
 /** 一页编译结果：每层一个 Animation，按清单顺序。 */
@@ -172,16 +179,18 @@ export function compileKeyframes(
     const ty = opts.reduceMotion ? 0 : state.ty;
     const sx = opts.reduceMotion ? 1 : state.sx;
     const sy = opts.reduceMotion ? 1 : state.sy;
+    const rot = opts.reduceMotion ? 0 : state.rotate ?? 0;
     frames.push({
       offset: t / pageMs,
       opacity: String(opacity),
       // 位移单位是画布像素，而层是按百分比铺在舞台上的；--ppts-k 是"1 画布像素等于多少
       // 实际像素"，由 resize 时写入。用 calc 而不是预先乘好，是因为窗口尺寸会变。
       transform:
-        tx === 0 && ty === 0 && sx === 1 && sy === 1
+        tx === 0 && ty === 0 && sx === 1 && sy === 1 && rot === 0
           ? IDENTITY_TRANSFORM
           : `translate(calc(${round(tx)}px * var(--ppts-k, 1)), calc(${round(ty)}px * var(--ppts-k, 1))) ` +
-            `scale(${round(sx)}, ${round(sy)})`
+            `scale(${round(sx)}, ${round(sy)})` +
+            (rot === 0 ? '' : ` rotate(${round(rot)}deg)`)
     });
   }
   return frames;
@@ -202,8 +211,27 @@ export function buildLayerNodes(
 ): CompiledLayer[] {
   const out: CompiledLayer[] = [];
   const canAnimate = typeof container.animate === 'function';
+  // LookCrop punch-in：入场层跟底板进同一套 crop 变换；页坐标纱/圈选仍不建。
+  // 台上 caption 留在 container 上，不进 .ppts-lookcrop，避免跟着切近放大。
+  const punchIn = lookCropEnabled({
+    lookCrop: opts.lookCrop,
+    reduceMotion: opts.reduceMotion
+  });
+  let layerRoot: HTMLElement = container;
+  if (punchIn) {
+    const wrap = document.createElement('div');
+    wrap.className = 'ppts-lookcrop';
+    container.append(wrap);
+    layerRoot = wrap;
+  }
+  const heading: ManifestLayer[] = [];
+  const body: ManifestLayer[] = [];
   for (const layer of layers) {
-    if (!layer.image || layer.box.w <= 0 || layer.box.h <= 0) continue;
+    if (isPageHeading(layer.kind, layer.box, canvasW, canvasH)) heading.push(layer);
+    else body.push(layer);
+  }
+  const appendLayer = (layer: ManifestLayer, dimFocus: boolean): void => {
+    if (!layer.image || layer.box.w <= 0 || layer.box.h <= 0) return;
     const node = document.createElement('div');
     node.className = 'ppts-layer';
     node.style.left = pct(layer.box.x, canvasW);
@@ -222,10 +250,11 @@ export function buildLayerNodes(
     img.alt = '';
     img.decoding = 'async';
     node.append(img);
-    container.append(node);
+    layerRoot.append(node);
 
     let animation: Animation | null = null;
-    const frames = compileKeyframes(layer.clips ?? [], opts, layer.elementId);
+    const layerOpts = dimFocus ? opts : { ...opts, focus: undefined };
+    const frames = compileKeyframes(layer.clips ?? [], layerOpts, layer.elementId);
     if (canAnimate && frames) {
       animation = node.animate(frames, {
         duration: Math.max(1, opts.pageDurationMs),
@@ -238,27 +267,90 @@ export function buildLayerNodes(
       animation.currentTime = 0;
     }
     out.push({ element: node, animation });
-  }
+  };
+  for (const layer of body) appendLayer(layer, true);
   // 遮罩在**所有层之后**追加：它压暗的是画面，不是某一层。
   // LookCrop look 不画页坐标纱/圈选：bitmap 已是 crop 坐标，页坐标孔会对错位。
-  // 入场层同样关掉 punch-in（与 PageView / applyLookCrop 同一条 lookCropEnabled）：
-  // 漏传 hasEntranceLayers 时科技+入场页会 HTML 无纱、MP4 整页+纱。
-  const punchIn = lookCropEnabled({
-    lookCrop: opts.lookCrop,
-    reduceMotion: opts.reduceMotion,
-    hasEntranceLayers: hasEntranceLayers(layers)
-  });
   if (!punchIn) {
     out.push(...buildFocusMasks(container, canvasW, canvasH, opts, canAnimate));
+    for (const layer of heading) appendLayer(layer, false);
+    out.push(...buildClearRects(container, canvasW, canvasH, opts, heading));
     out.push(...buildCallouts(container, canvasW, canvasH, opts, canAnimate));
+    out.push(...buildPointers(container, canvasW, canvasH, opts, canAnimate));
+  } else {
+    for (const layer of heading) appendLayer(layer, false);
   }
   out.push(...buildCaptions(container, opts, canAnimate));
   return out;
 }
 
+function headingLayerCovers(
+  layers: readonly ManifestLayer[],
+  rect: { x: number; y: number; w: number; h: number },
+  canvasW: number,
+  canvasH: number
+): boolean {
+  return layers.some((layer) => {
+    if (!isPageHeading(layer.kind, layer.box, canvasW, canvasH)) return false;
+    const ax2 = layer.box.x + layer.box.w;
+    const ay2 = layer.box.y + layer.box.h;
+    const bx2 = rect.x + rect.w;
+    const by2 = rect.y + rect.h;
+    return layer.box.x < bx2 && ax2 > rect.x && layer.box.y < by2 && ay2 > rect.y;
+  });
+}
+
+function buildClearRects(
+  container: HTMLElement,
+  canvasW: number,
+  canvasH: number,
+  opts: CompileOptions,
+  headingLayers: readonly ManifestLayer[]
+): CompiledLayer[] {
+  const src = opts.pageImage;
+  if (!src) return [];
+  const out: CompiledLayer[] = [];
+  for (const rect of opts.clearRects ?? []) {
+    if (!(rect.w > 0) || !(rect.h > 0)) continue;
+    if (headingLayerCovers(headingLayers, rect, canvasW, canvasH)) continue;
+    const node = document.createElement('div');
+    node.className = 'ppts-clear-rect';
+    node.style.position = 'absolute';
+    node.style.overflow = 'hidden';
+    node.style.pointerEvents = 'none';
+    node.style.left = pct(rect.x, canvasW);
+    node.style.top = pct(rect.y, canvasH);
+    node.style.width = pct(rect.w, canvasW);
+    node.style.height = pct(rect.h, canvasH);
+    const img = document.createElement('img');
+    img.alt = '';
+    img.decoding = 'async';
+    img.src = src;
+    img.style.position = 'absolute';
+    img.style.left = `${(-rect.x / rect.w) * 100}%`;
+    img.style.top = `${(-rect.y / rect.h) * 100}%`;
+    img.style.width = `${(canvasW / rect.w) * 100}%`;
+    img.style.height = `${(canvasH / rect.h) * 100}%`;
+    node.append(img);
+    container.append(node);
+    out.push({ element: node, animation: null });
+  }
+  return out;
+}
+
+function applyLookCropStyle(
+  el: HTMLElement | null | undefined,
+  css: { transform: string; transformOrigin: string }
+): void {
+  if (!el) return;
+  el.style.transformOrigin = css.transformOrigin;
+  el.style.transform = css.transform;
+}
+
 /**
  * 把 LookCrop punch-in 写到铺满舞台的页图上。返回是否正在切近。
- * 镜头路径会覆盖 transform；无 punch-in 时清掉，避免上一 look 的缩放残留。
+ * 入场层在 `.ppts-lookcrop` 里跟底板同一套变换；镜头路径会覆盖 transform。
+ * 无 punch-in 时清掉，避免上一 look 的缩放残留。
  */
 export function applyLookCrop(
   img: HTMLImageElement,
@@ -272,20 +364,21 @@ export function applyLookCrop(
     tMs: number;
     canvasW: number;
     canvasH: number;
+    layers?: HTMLElement;
   }
 ): boolean {
   const enabled = lookCropEnabled({
     lookCrop: opts.lookCrop,
     reduceMotion: opts.reduceMotion,
-    hasShotCrop: opts.hasShotCrop,
-    hasEntranceLayers: opts.hasEntranceLayers
+    hasShotCrop: opts.hasShotCrop
   });
   const frame = enabled
     ? lookCropAt(opts.focus, opts.tMs, opts.canvasW, opts.canvasH, opts.lookCropPadPx)
     : null;
   const css = lookCropImageStyle(frame, true);
-  img.style.transformOrigin = css.transformOrigin;
-  img.style.transform = css.transform;
+  applyLookCropStyle(img, css);
+  const wrap = opts.layers?.querySelector(':scope > .ppts-lookcrop') as HTMLElement | null;
+  applyLookCropStyle(wrap, css);
   return Boolean(frame);
 }
 
@@ -314,6 +407,10 @@ export function hasCallout(annotations?: Annotation[]): boolean {
   return (annotations ?? []).some((a) => a.kind === 'callout' && !!a.rect && a.rect.w > 0 && a.rect.h > 0);
 }
 
+export function hasPointer(annotations?: Annotation[]): boolean {
+  return (annotations ?? []).some((a) => a.kind === 'pointer' && !!a.rect && a.rect.w > 0 && a.rect.h > 0);
+}
+
 export function hasCaption(annotations?: Annotation[]): boolean {
   return (annotations ?? []).some((a) => a.kind === 'caption' && (a.text ?? '').length > 0);
 }
@@ -324,7 +421,7 @@ export function needsLayerStage(
   annotations?: Annotation[]
 ): boolean {
   if (layers.length > 0) return true;
-  return hasRectFocus(focus) || hasCallout(annotations) || hasCaption(annotations);
+  return hasRectFocus(focus) || hasCallout(annotations) || hasPointer(annotations) || hasCaption(annotations);
 }
 
 /**
@@ -347,7 +444,9 @@ export function pickStageLayers(
   if (!needsLayerStage(layers, focus, annotations)) return null;
   if (!lowPower) return layers;
   // 低电量：元素层一个不放。纱 / 圈选 / 台上条仍建。
-  return hasRectFocus(focus) || hasCallout(annotations) || hasCaption(annotations) ? [] : null;
+  return hasRectFocus(focus) || hasCallout(annotations) || hasPointer(annotations) || hasCaption(annotations)
+    ? []
+    : null;
 }
 
 /**
@@ -464,11 +563,17 @@ export function calloutKeyframes(a: Annotation, pageMs: number): Keyframe[] | nu
   const fade = a.fadeMs ?? FOCUS_FADE_MS;
   const marks: number[] = [0];
   pushFadeSamples(marks, a.startMs, fade);
+  pushFadeSamples(marks, a.startMs, CALLOUT_ARRIVE_MS);
   if (a.endMs) pushFadeSamples(marks, a.endMs, fade);
   marks.push(pageMs);
   const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
     const ev = evaluateAnnotation(a, t);
-    return { offset: t / pageMs, opacity: String(round(ev ? ev.opacity : 0)) };
+    const k = calloutArriveScale(a.startMs, t);
+    return {
+      offset: t / pageMs,
+      opacity: String(round(ev ? ev.opacity : 0)),
+      transform: `scale(${round(k)})`
+    };
   });
   return frames.length >= 2 ? frames : null;
 }
@@ -499,11 +604,70 @@ function buildCallouts(
     node.style.borderWidth = `calc(${CALLOUT_STROKE_PX}px * var(--ppts-k, 1))`;
     node.style.borderRadius = box.radius;
     node.style.opacity = '0';
+    node.style.transformOrigin = 'center center';
     container.append(node);
 
     let animation: Animation | null = null;
     if (canAnimate && pageMs > 0) {
       const frames = calloutKeyframes(a, pageMs);
+      if (frames) {
+        animation = node.animate(frames, {
+          duration: Math.max(1, pageMs),
+          fill: 'both',
+          easing: 'linear'
+        });
+        animation.pause();
+        animation.currentTime = 0;
+      }
+    }
+    out.push({ element: node, animation });
+  }
+  return out;
+}
+
+export function pointerKeyframes(a: Annotation, pageMs: number): Keyframe[] | null {
+  if (a.kind !== 'pointer' || !a.rect || !(a.rect.w > 0) || !(a.rect.h > 0) || !(pageMs > 0)) return null;
+  const fade = a.fadeMs ?? FOCUS_FADE_MS;
+  const marks: number[] = [0];
+  pushFadeSamples(marks, a.startMs, fade);
+  if (a.endMs) pushFadeSamples(marks, a.endMs, fade);
+  marks.push(pageMs);
+  const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
+    const ev = evaluateAnnotation(a, t);
+    return { offset: t / pageMs, opacity: String(round(ev ? ev.opacity : 0)) };
+  });
+  return frames.length >= 2 ? frames : null;
+}
+
+function buildPointers(
+  container: HTMLElement,
+  canvasW: number,
+  canvasH: number,
+  opts: CompileOptions,
+  canAnimate: boolean
+): CompiledLayer[] {
+  if (opts.reduceMotion) return [];
+  const out: CompiledLayer[] = [];
+  const pageMs = opts.pageDurationMs > 0 ? opts.pageDurationMs : 0;
+  for (const a of opts.annotations ?? []) {
+    if (a.kind !== 'pointer' || !a.rect || !(a.rect.w > 0) || !(a.rect.h > 0)) continue;
+    const node = document.createElement('div');
+    node.className = 'ppts-pointer';
+    node.style.position = 'absolute';
+    node.style.pointerEvents = 'none';
+    node.style.boxSizing = 'border-box';
+    node.style.left = pct(a.rect.x, canvasW);
+    node.style.top = pct(a.rect.y, canvasH);
+    node.style.width = pct(a.rect.w, canvasW);
+    node.style.height = pct(a.rect.h, canvasH);
+    node.style.background = CALLOUT_STROKE;
+    node.style.borderRadius = '2px';
+    node.style.opacity = '0';
+    container.append(node);
+
+    let animation: Animation | null = null;
+    if (canAnimate && pageMs > 0) {
+      const frames = pointerKeyframes(a, pageMs);
       if (frames) {
         animation = node.animate(frames, {
           duration: Math.max(1, pageMs),

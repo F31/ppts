@@ -3,7 +3,7 @@ import type { ScriptMode } from '../../types';
 import type { OneDraftOverwrite } from './oneClickPlan';
 import type { Translate } from './model';
 
-export type OneClickSteps = { script: boolean; voice: boolean; animation: boolean };
+export type OneClickSteps = { script: boolean; voice: boolean; animation: boolean; export: boolean };
 
 export type OneClickResult = {
   script: number;
@@ -11,6 +11,8 @@ export type OneClickResult = {
   skipped: number;
   reasons: string;
   voiceRan: boolean;
+  exportJobId?: string;
+  exportDropped?: string;
 };
 
 export type OneClickDrawerProps = {
@@ -38,10 +40,10 @@ export type OneClickDrawerProps = {
 };
 
 /**
- * 一键成片抽屉：讲稿 → 配音 → 动效的唯一入口。
+ * 一键成片抽屉：讲稿 → 配音 → 动效 → 导出成片的唯一入口。
  *
  * 纯展示组件：只发事件、不取数、不持有流水线状态（流水线仍在编辑器，
- * 因为它要串联讲稿生成、配音任务与动效套用三条既有通道）。
+ * 因为它要串联讲稿生成、配音任务、动效套用与导出四条既有通道）。
  */
 export function OneClickDrawer(props: OneClickDrawerProps) {
   const { dialogRef, t, running, steps, mode, overwrite, preset, entrance, phase, error, done, canRun } = props;
@@ -114,6 +116,18 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
               />
               {t('editor.oneClickStepAnimation')}
             </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={steps.export}
+                disabled={running}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  props.onStepsChange((s) => ({ ...s, export: checked }));
+                }}
+              />
+              {t('editor.oneClickStepExport')}
+            </label>
           </div>
           <label className="field-label">
             {t('editor.oneDraftMode')}
@@ -161,16 +175,18 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
             {t('editor.animationEntranceLayers')}
           </label>
           <p className="narration-note">{t('editor.oneClickEntranceHint')}</p>
+          <p className="narration-note">{t('editor.oneClickExportHint')}</p>
           <p className="narration-note">{t('editor.oneClickAdvancedNote')}</p>
           {running && <p className="narration-note" role="status">{t('editor.oneClickBackground')}</p>}
           {phase === 'script' && <p className="narration-note" role="status">{t('editor.oneClickPhaseScript')}</p>}
           {phase === 'voice' && <p className="narration-note" role="status">{t('editor.oneClickPhaseVoice')}</p>}
           {phase === 'animation' && <p className="narration-note" role="status">{t('editor.oneClickPhaseAnimation')}</p>}
+          {phase === 'export' && <p className="narration-note" role="status">{t('editor.oneClickPhaseExport')}</p>}
           <div className="draft-actions">
             <button
               type="button"
               className="primary"
-              disabled={running || !canRun || !(steps.script || steps.voice || steps.animation)}
+              disabled={running || !canRun || !(steps.script || steps.voice || steps.animation || steps.export)}
               onClick={props.onRun}
             >
               {running ? t('editor.oneClickRunning') : t('editor.oneClickSubmit')}
@@ -189,6 +205,12 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
                   skipped: done.skipped
                 })}
               </p>
+              {done.exportJobId && (
+                <p className="narration-note" role="status">
+                  {t('editor.oneClickExportQueued', { jobId: done.exportJobId })}
+                </p>
+              )}
+              {done.exportDropped && <p className="narration-note" role="status">{done.exportDropped}</p>}
               {done.skipped > 0 && done.reasons && (
                 <p className="narration-note">
                   {t(done.voiceRan ? 'editor.oneClickSkippedReasonsNoSource' : 'editor.oneClickSkippedReasons', {

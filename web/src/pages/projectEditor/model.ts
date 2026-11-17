@@ -42,8 +42,8 @@ export type DraftStatus = { phase: 'idle' | 'generating' | 'ready' | 'error'; me
 
 export type ConflictState = { slideId: string; localText: string; latest: ScriptRevision } | null;
 
-// B3-M5：生成类任务（配音生成 / 讲稿生成）的活跃态判定，用于"生成中继续编辑"顶部快照提示。
-export const genJobKinds = ['narration', 'script_draft'];
+// B3-M5：生成类任务（配音 / 讲稿 / 成片导出）的活跃态判定，用于"生成中继续编辑"顶部快照提示。
+export const genJobKinds = ['narration', 'script_draft', 'export'];
 export const genActiveStates = [
   'JOB_STATE_QUEUED',
   'JOB_STATE_RUNNING',

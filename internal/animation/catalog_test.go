@@ -10,8 +10,11 @@ func TestEmbeddedCatalogParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse embedded catalog: %v", err)
 	}
-	if got, want := len(reg.Effects()), 8; got != want {
+	if got, want := len(reg.Effects()), 9; got != want {
 		t.Fatalf("effects = %d, want %d", got, want)
+	}
+	if _, ok := reg.Effect("tilt"); !ok {
+		t.Fatal("catalog missing tilt")
 	}
 	if got, want := len(reg.Presets()), 4; got != want {
 		t.Fatalf("presets = %d, want %d", got, want)
@@ -46,6 +49,22 @@ func TestCatalogCoversEveryPresetKind(t *testing.T) {
 	biz, ok := reg.Preset("business-calm")
 	if !ok || biz.Callout != "off" || biz.Intensity != 1.0 {
 		t.Fatalf("business-calm callout/intensity = %q %v", biz.Callout, biz.Intensity)
+	}
+	for _, p := range reg.Presets() {
+		for kind, clips := range p.Clips {
+			for _, c := range clips {
+				if c.Type == "tilt" {
+					t.Errorf("preset %q clips[%s] must not emit tilt", p.ID, kind)
+				}
+			}
+		}
+		for kind, clips := range p.EntranceClips {
+			for _, c := range clips {
+				if c.Type == "tilt" {
+					t.Errorf("preset %q entranceClips[%s] must not emit tilt", p.ID, kind)
+				}
+			}
+		}
 	}
 }
 

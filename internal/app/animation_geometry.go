@@ -390,6 +390,7 @@ func PageElements(page *project.Page) []render.Element {
 		return nil
 	}
 	bounds := make(map[string]*project.Box)
+	texts := make(map[string]string)
 	var walk func([]*project.Shape)
 	walk = func(shapes []*project.Shape) {
 		for _, sh := range shapes {
@@ -398,6 +399,9 @@ func PageElements(page *project.Page) []render.Element {
 			}
 			if sh.Bounds != nil {
 				bounds[sh.ID] = sh.Bounds
+			}
+			if sh.Text != "" {
+				texts[sh.ID] = sh.Text
 			}
 			if len(sh.Children) > 0 {
 				walk(sh.Children)
@@ -417,6 +421,7 @@ func PageElements(page *project.Page) []render.Element {
 		out = append(out, render.Element{
 			ID:   a.ID,
 			Kind: a.Kind,
+			Text: texts[a.ID],
 			Bounds: &render.EMUBox{
 				X: box.X, Y: box.Y, Width: box.Width, Height: box.Height,
 			},
@@ -452,5 +457,155 @@ func PageElements(page *project.Page) []render.Element {
 		}
 	}
 	walkFrames(page.Shapes)
+	// 切开的柱体单独成元素：生长层要柱体盒，不要标签带（scaleY 会把数字压扁）。
+	var walkBars func([]*project.Shape)
+	walkBars = func(shapes []*project.Shape) {
+		for _, sh := range shapes {
+			if sh == nil {
+				continue
+			}
+			axis, posOrigin, negOrigin := barGrowAxes(sh.ChartOrientation)
+			for _, bar := range sh.ChartBars {
+				if bar.ID == "" || bar.Box[2] <= 0 || bar.Box[3] <= 0 {
+					continue
+				}
+				if _, dup := seen[bar.ID]; dup {
+					continue
+				}
+				origin := posOrigin
+				if bar.Value < 0 {
+					origin = negOrigin
+				}
+				out = append(out, render.Element{
+					ID:   bar.ID,
+					Kind: animation.KindBar,
+					Text: barElementText(bar),
+					Bounds: &render.EMUBox{
+						X: pxToEMU(bar.Box[0]), Y: pxToEMU(bar.Box[1]),
+						Width: pxToEMU(bar.Box[2]), Height: pxToEMU(bar.Box[3]),
+					},
+					GrowAxis:   axis,
+					GrowOrigin: origin,
+				})
+				seen[bar.ID] = struct{}{}
+			}
+			if len(sh.Children) > 0 {
+				walkBars(sh.Children)
+			}
+		}
+	}
+	walkBars(page.Shapes)
+	// 表格数据行单独成元素：整表 fadeIn 在 gaze+entrance 会被跳过，逐行淡入
+	// 才跟旁白对齐。表头留在底板（n>=2 跳过第 0 行）。盒是整表高按行数均分，
+	// 解析产物没有单元格几何。
+	var walkRows func([]*project.Shape)
+	walkRows = func(shapes []*project.Shape) {
+		for _, sh := range shapes {
+			if sh == nil {
+				continue
+			}
+			for _, row := range tableDataRows(sh) {
+				if _, dup := seen[row.ID]; dup {
+					continue
+				}
+				b := row.Bounds
+				out = append(out, render.Element{
+					ID:   row.ID,
+					Kind: animation.KindRow,
+					Text: row.Text,
+					Bounds: &render.EMUBox{
+						X: b.X, Y: b.Y, Width: b.Width, Height: b.Height,
+					},
+				})
+				seen[row.ID] = struct{}{}
+			}
+			if len(sh.Children) > 0 {
+				walkRows(sh.Children)
+			}
+		}
+	}
+	walkRows(page.Shapes)
 	return out
+}
+
+type tableRow struct {
+	ID     string
+	Bounds project.Box
+	Text   string
+}
+
+// tableDataRows 把表格按等高切成数据行。n>=2 时第 0 行当表头留下；n==1 时那一行就是内容。
+func tableDataRows(sh *project.Shape) []tableRow {
+	if sh == nil || sh.Bounds == nil || sh.Bounds.Width <= 0 || sh.Bounds.Height <= 0 {
+		return nil
+	}
+	n := len(sh.TableCells)
+	if n == 0 {
+		n = sh.TableRows
+	}
+	if n <= 0 {
+		return nil
+	}
+	start := 0
+	if n >= 2 {
+		start = 1
+	}
+	n64 := int64(n)
+	rowH := sh.Bounds.Height / n64
+	if rowH <= 0 {
+		return nil
+	}
+	out := make([]tableRow, 0, n-start)
+	for i := start; i < n; i++ {
+		y := sh.Bounds.Y + int64(i)*rowH
+		h := rowH
+		if i == n-1 {
+			h = sh.Bounds.Y + sh.Bounds.Height - y
+		}
+		if h <= 0 {
+			continue
+		}
+		out = append(out, tableRow{
+			ID: fmt.Sprintf("%s-r%d", sh.ID, i),
+			Bounds: project.Box{
+				X: sh.Bounds.X, Y: y, Width: sh.Bounds.Width, Height: h,
+			},
+			Text: tableRowText(sh, i),
+		})
+	}
+	return out
+}
+
+func tableRowText(sh *project.Shape, i int) string {
+	if sh == nil || i < 0 || i >= len(sh.TableCells) {
+		return ""
+	}
+	cells := sh.TableCells[i]
+	parts := make([]string, 0, len(cells))
+	for _, c := range cells {
+		if t := strings.TrimSpace(c); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func barGrowAxes(orientation string) (axis, posOrigin, negOrigin string) {
+	if orientation == "horizontal" {
+		return "x", render.OriginLeft, render.OriginRight
+	}
+	return "y", render.OriginBottom, render.OriginTop
+}
+
+func barElementText(bar project.ChartBar) string {
+	cat := strings.TrimSpace(bar.Category)
+	ser := strings.TrimSpace(bar.Series)
+	switch {
+	case cat != "" && ser != "" && ser != cat:
+		return cat + " " + ser
+	case cat != "":
+		return cat
+	default:
+		return ser
+	}
 }

@@ -253,6 +253,8 @@ var catalog = []Spec{
 		Note: "node 可执行文件。"},
 	{Key: "PPTS_CHROME", Kind: KindString, Category: "render", Install: true, ExampleSet: true,
 		Note: "chrome-headless-shell 或 Chrome 的路径。留空则交给 Remotion 自己找。"},
+	{Key: "PPTS_FFMPEG", Kind: KindString, Category: "render", Install: true, ExampleSet: true,
+		Note: "ffmpeg 可执行文件。留空则在 PATH 里找；找不到时静页/注视页退回 Chrome 合成器。"},
 	{Key: "PPTS_SUBTITLE_FONT_NAME", Kind: KindString, Category: "render", Install: true, ExampleSet: true,
 		Note: "字幕字体名。留空用内置字体。"},
 

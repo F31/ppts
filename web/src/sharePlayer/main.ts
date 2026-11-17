@@ -11,7 +11,7 @@ import type { SlideCue, SubtitleCue, Timeline } from '../types';
 import { easeOutCubic } from '../../../shared/motion.ts';
 import { shotAt, cameraTransform } from '../../../shared/shots.ts';
 import type { Annotation, FocusSpan, Shot } from '../../../shared/types';
-import { applyLookCrop, buildLayerNodes, hasEntranceLayers, pickStageLayers, releaseLayers, seekLayer } from './animation';
+import { applyLookCrop, buildLayerNodes, pickStageLayers, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
 import { FpsMeter, nextFpsStreak, shouldDegradeFps } from './fps';
@@ -124,6 +124,7 @@ type ShareSlide = SlideCue & {
   annotations?: Annotation[];
   lookCrop?: boolean;
   lookCropPadPx?: number;
+  clearRects?: { x: number; y: number; w: number; h: number }[];
 };
 
 type ShareAudio = {
@@ -465,7 +466,9 @@ function mount(): void {
       reduceMotion,
       focus: slide.focus,
       annotations: slide.annotations,
-      lookCrop: slide.lookCrop
+      lookCrop: slide.lookCrop,
+      pageImage: slide.image,
+      clearRects: slide.clearRects
     });
   };
 
@@ -565,11 +568,11 @@ function mount(): void {
         lookCrop: slide.lookCrop,
         lookCropPadPx: slide.lookCropPadPx,
         reduceMotion,
-        hasEntranceLayers: hasEntranceLayers(slide.layers),
         focus: slide.focus,
         tMs: localMs,
         canvasW: videoW,
-        canvasH: videoH
+        canvasH: videoH,
+        layers: layersBox
       });
       layersBox.style.visibility = '';
       return;
@@ -586,6 +589,14 @@ function mount(): void {
       hideTop();
     }
 
+    // 镜头路径覆盖页图 transform；顺手清掉 LookCrop，避免 .ppts-lookcrop 残留切近。
+    applyLookCrop(cur.img, {
+      lookCrop: false,
+      tMs: localMs,
+      canvasW: videoW,
+      canvasH: videoH,
+      layers: layersBox
+    });
     // 相机运动：镜内相对时间插值，写到底层与（叠化中的）顶层。无相机时 applyCamera 清 transform。
     applyCamera(cur.img, frame.from ?? frame.shot, localMs);
     if (fading && frame.from) applyCamera(cur.imgTop, frame.shot, localMs);
@@ -649,11 +660,11 @@ function mount(): void {
         lookCrop: before.lookCrop,
         lookCropPadPx: before.lookCropPadPx,
         reduceMotion,
-        hasEntranceLayers: hasEntranceLayers(before.layers),
         focus: before.focus,
         tMs: (before.endUs - before.startUs) / 1000,
         canvasW: videoW,
-        canvasH: videoH
+        canvasH: videoH,
+        layers: prev.layers
       });
     }
     prev.panel.hidden = false;
@@ -667,8 +678,8 @@ function mount(): void {
     prev.layers.style.visibility = lastShotIsCrop(before) ? 'hidden' : '';
     // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
     // 判据与当前页完全同一条（pickStageLayers）：只有焦点没有层的页，交叉时也要把
-    // 遮罩建出来；低电量下元素层不建，但遮罩仍建。
-    const stageLayers = pickStageLayers(layers, before.focus, lowPower, before.annotations);
+    // 遮罩建出来；低电量/已降级下元素层不建，但遮罩仍建。
+    const stageLayers = pickStageLayers(layers, before.focus, lowPower || degraded, before.annotations);
     if (stageLayers === null) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
     prevLayers = buildLayerNodes(prev.layers, stageLayers as ManifestLayer[], videoW, videoH, {
@@ -677,7 +688,9 @@ function mount(): void {
       reduceMotion,
       focus: before.focus,
       annotations: before.annotations,
-      lookCrop: before.lookCrop
+      lookCrop: before.lookCrop,
+      pageImage: before.image,
+      clearRects: before.clearRects
     });
     // 前一页取的是它自己的末帧（与 MP4 的 PageView tMs=durationMs 一致）：
     // 若该页有出场动画，末帧才是正确画面，不能拿底板顶替。

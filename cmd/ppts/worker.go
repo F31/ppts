@@ -214,7 +214,7 @@ func runWorker() error {
 			if animationEnabled(stores.isSQLite()) {
 				exportHandler = exportHandler.WithAnimation(client,
 					time.Duration(config.Int("PPTS_ANIMATION_TIMEOUT_MINUTES", 20))*time.Minute)
-				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects, stores.projects)
+				exportHandler = wireAnimationPages(logger, exportHandler, base, stores.animation, objects, stores.projects, prefillHandler.Completer())
 			}
 		}
 	} else if animationEnabled(stores.isSQLite()) {
@@ -449,7 +449,7 @@ func subtitleFontName() string {
 // 能读的地方，返回同一个相对键），这条接线与导出主路径都不用改。
 //
 // 任何一步缺失都退化为静态导出而不是硬失败：渲染服务是可选依赖，没有它导出必须照常成功。
-func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store, objects objectstore.ObjectStore, sources app.SourceRevisionLookup) *app.ExportHandler {
+func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL string, specs animstore.Store, objects objectstore.ObjectStore, sources app.SourceRevisionLookup, director app.BeatDirector) *app.ExportHandler {
 	dir := config.String("PPTS_ANIMATION_ASSET_DIR", "")
 	if dir == "" {
 		logger.Warn("animation: PPTS_ANIMATION_ASSET_DIR is empty; page images cannot reach the renderer, exports stay static",
@@ -466,6 +466,9 @@ func wireAnimationPages(logger *slog.Logger, h *app.ExportHandler, rendererURL s
 		return h
 	}
 	assembler := app.NewAnimationPageAssembler(publisher, specs).WithLogger(logger)
+	if director != nil {
+		assembler = assembler.WithBeatDirector(director)
+	}
 	// 元素几何来自解析期的 extracted document（tasks 2.0b）：按源版本读一次，
 	// 不新增产物、不重解析 PPTX。没有对象存储时退化为「只编整页轨道」——
 	// 那是能力边界而不是错误，导出照常成功。

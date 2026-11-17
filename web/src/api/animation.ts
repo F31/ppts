@@ -51,10 +51,10 @@ export async function getStaleAnimationAnchors(
   if (opts?.sourceRevisionNo && opts.sourceRevisionNo > 0) params.set('sourceRevisionNo', String(opts.sourceRevisionNo));
   if (opts?.language) params.set('language', opts.language);
   const qs = params.toString();
-  return getJSON<{ slides: StaleAnimationSlide[] }>(
-    identity,
-    `/api/projects/${encodeURIComponent(projectId)}/animation/stale-anchors${qs ? `?${qs}` : ''}`
-  );
+  // 不把查询串拼进同一个模板字符串：api-contract-check 的路径扫描遇到嵌套反引号
+  // 会截断成半条路径（归一后匹配不到后端路由）。先落路径字面量，再按需追加查询串。
+  const route = `/api/projects/${encodeURIComponent(projectId)}/animation/stale-anchors`;
+  return getJSON<{ slides: StaleAnimationSlide[] }>(identity, qs ? `${route}?${qs}` : route);
 }
 
 export async function getAnimationAnchors(identity: ClientIdentity, scope: AnimationScope): Promise<AnimationAnchors> {
@@ -220,6 +220,7 @@ export type AnimationPreviewScene = {
   annotations?: Annotation[];
   lookCrop?: boolean;
   lookCropPadPx?: number;
+  clearRects?: { x: number; y: number; w: number; h: number }[];
   shots: Shot[];
   layerCount: number;
   focusCount: number;

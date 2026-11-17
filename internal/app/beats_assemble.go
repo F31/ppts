@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/animation/beats"
 	"github.com/F31/ppts/internal/animation/bind"
@@ -11,7 +13,7 @@ import (
 	"github.com/F31/ppts/internal/render"
 )
 
-// PageBeatSheet 从本页绑定元素与时间轴字幕产出拍表。预览与导出共用。
+// PageBeatSheet 从本页绑定元素与时间轴字幕产出拍表。预览走这一条，只跑阶段 1。
 //
 // Text 一律 DisplayText（SubtitleCue.Text）。禁止改用 SpokenText。
 func PageBeatSheet(
@@ -21,6 +23,18 @@ func PageBeatSheet(
 	subtitles []media.SubtitleCue,
 	pageDurMs int64,
 ) beats.Output {
+	_, out := producePageBeatSheet(bindElems, compileIDs, slide, subtitles, pageDurMs)
+	recordBeatMetrics(out)
+	return out
+}
+
+func producePageBeatSheet(
+	bindElems []bind.Element,
+	compileIDs map[string]struct{},
+	slide media.SlideCue,
+	subtitles []media.SubtitleCue,
+	pageDurMs int64,
+) (beats.Input, beats.Output) {
 	var segs []beats.SpeechSeg
 	for _, cue := range subtitles {
 		if cue.SlideID != slide.SlideID {
@@ -40,11 +54,15 @@ func PageBeatSheet(
 			Chars:   charsToPage(cue.Chars, slide.StartUS),
 		})
 	}
-	out := beats.Produce(beats.Input{
+	in := beats.Input{
 		Elements:   bindElems,
 		CompileIDs: compileIDs,
 		Segments:   segs,
-	})
+	}
+	return in, beats.Produce(in)
+}
+
+func recordBeatMetrics(out beats.Output) {
 	src := out.Sheet.Source
 	if src == "" {
 		src = animation.BeatSourceFallback
@@ -53,7 +71,14 @@ func PageBeatSheet(
 	for reason, n := range out.DenyReasons {
 		observability.BeatsDenied(reason, n)
 	}
-	return out
+}
+
+func directPageBeatSheet(ctx context.Context, in beats.Input, phase1 beats.Output, model bind.ModelCompleter, cache bind.CompletionCache, modelID string) beats.Output {
+	return beats.Direct(ctx, in, phase1, beats.DirectOptions{
+		Model:   model,
+		Cache:   cache,
+		ModelID: modelID,
+	})
 }
 
 func compileIDsOf(elements []render.Element) map[string]struct{} {
@@ -102,17 +127,13 @@ func usToPageMs(us, slideStartUS int64) int64 {
 	return ms
 }
 
-func beatSheetForPage(page *project.Page, elements []render.Element, rev *animation.Revision, slide media.SlideCue, subtitles []media.SubtitleCue, durationMS, slideWEMU, slideHEMU int64) (*animation.BeatSheet, map[string]struct{}) {
+func beatSheetForPage(page *project.Page, elements []render.Element, rev *animation.Revision, slide media.SlideCue, subtitles []media.SubtitleCue, durationMS, slideWEMU, slideHEMU int64) (beats.Input, beats.Output, bool) {
 	if rev == nil || page == nil {
-		return nil, nil
+		return beats.Input{}, beats.Output{}, false
 	}
 	if animation.InferMotionMode(rev) == animation.MotionModeEntrance {
-		return nil, nil
+		return beats.Input{}, beats.Output{}, false
 	}
-	out := PageBeatSheet(PageBindElements(page, slideWEMU, slideHEMU), compileIDsOf(elements), slide, subtitles, durationMS)
-	if out.Sheet.Valid() {
-		s := out.Sheet
-		return &s, out.DenyIDs
-	}
-	return nil, out.DenyIDs
+	in, out := producePageBeatSheet(PageBindElements(page, slideWEMU, slideHEMU), compileIDsOf(elements), slide, subtitles, durationMS)
+	return in, out, true
 }

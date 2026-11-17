@@ -23,24 +23,122 @@ func TestLookWindowsFiveSpotlightsOver80s(t *testing.T) {
 	}
 	got := lookWindows(page)
 	if len(got) != 5 {
-		t.Fatalf("looks = %d, want 5: %+v", len(got), got)
+		t.Fatalf("looks = %d, want 5 (no arrive split): %+v", len(got), got)
 	}
 	wantStart := []int64{0, 16000, 32000, 48000, 64000}
 	wantEnd := []int64{16000, 32000, 48000, 64000, 80000}
-	wantFade := []int64{0, 240, 240, 240, 240}
 	for i, w := range got {
 		if w.StartMs != wantStart[i] || w.EndMs != wantEnd[i] {
 			t.Fatalf("look[%d] = [%d,%d), want [%d,%d)", i, w.StartMs, w.EndMs, wantStart[i], wantEnd[i])
 		}
-		if w.FadeMs != wantFade[i] {
-			t.Fatalf("look[%d].FadeMs = %d, want %d", i, w.FadeMs, wantFade[i])
+		if w.FadeMs != 0 || w.XFade != "cut" {
+			t.Fatalf("look[%d] fade=%d xfade=%q, want hard cut", i, w.FadeMs, w.XFade)
 		}
-		if w.MidMs < w.StartMs+w.FadeMs || w.MidMs >= w.EndMs {
-			t.Fatalf("look[%d] mid %d not in hold [%d,%d)", i, w.MidMs, w.StartMs+w.FadeMs, w.EndMs)
+		if w.MidMs < w.StartMs || w.MidMs >= w.EndMs {
+			t.Fatalf("look[%d] mid %d not in [%d,%d)", i, w.MidMs, w.StartMs, w.EndMs)
 		}
 	}
-	if got[0].MidMs != 8000 {
-		t.Fatalf("first mid = %d, want 8000", got[0].MidMs)
+}
+
+func TestLookWindowsEntranceSettlesLater(t *testing.T) {
+	page := Page{
+		DurationMs: 16000,
+		Focus: []FocusSpan{
+			{StartMs: 0, ElementID: "a", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}, FadeMs: 240},
+			{StartMs: 8000, ElementID: "b", Rect: &Box{X: 20, Y: 20, W: 10, H: 10}, FadeMs: 240},
+		},
+		Layers: []Layer{{
+			ElementID: "a",
+			Clips:     []Motion{{Effect: "fadeIn", StartMs: 0, DurationMs: 400}},
+		}},
+	}
+	got := lookWindows(page)
+	if len(got) != 2 {
+		t.Fatalf("looks = %d, want 2 (entrance skips arrive): %+v", len(got), got)
+	}
+	if got[0].StartMs != 0 || got[0].EndMs != 8000 {
+		t.Fatalf("first = [%d,%d), want [0,8000)", got[0].StartMs, got[0].EndMs)
+	}
+	if got[0].MidMs < 400 {
+		t.Fatalf("first MidMs %d must be after fadeIn 400ms", got[0].MidMs)
+	}
+	if got[0].MidMs < lookHoldMid(0, 8000, 0, true) {
+		t.Fatalf("first MidMs %d must be at least 3/4 hold", got[0].MidMs)
+	}
+}
+
+func TestLookWindowsEntranceFoldsPrefix(t *testing.T) {
+	page := Page{
+		DurationMs: 20000,
+		Focus: []FocusSpan{
+			{StartMs: 420, ElementID: "c1", Rect: &Box{X: 88, Y: 261, W: 566, H: 304}, FadeMs: 240},
+			{StartMs: 10000, ElementID: "c2", Rect: &Box{X: 677, Y: 261, W: 566, H: 304}, FadeMs: 240},
+		},
+		Layers: []Layer{{
+			ElementID: "c1",
+			Clips:     []Motion{{Effect: "fadeIn", StartMs: 420, DurationMs: 400}},
+		}},
+	}
+	got := lookWindows(page)
+	if len(got) != 2 {
+		t.Fatalf("looks = %d, want 2 (no empty-plate prefix): %+v", len(got), got)
+	}
+	if got[0].StartMs != 0 || got[0].EndMs != 10000 {
+		t.Fatalf("folded first = [%d,%d), want [0,10000)", got[0].StartMs, got[0].EndMs)
+	}
+	if got[0].MidMs < 820 {
+		t.Fatalf("first MidMs %d must be after fadeIn end 820", got[0].MidMs)
+	}
+}
+
+func TestLookWindowsPageFadeSamplesAfterTransition(t *testing.T) {
+	page := Page{
+		Index:      1,
+		DurationMs: 8000,
+		Transition: Transition{Type: animation.TransitionFade, DurationMs: 280},
+		Focus: []FocusSpan{
+			{StartMs: 0, ElementID: "a", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}, FadeMs: 240},
+		},
+	}
+	got := lookWindows(page)
+	if len(got) != 1 {
+		t.Fatalf("looks = %d, want 1 (no arrive split): %+v", len(got), got)
+	}
+	clear := int64(280) + pageFadeClearPadMs
+	if got[0].MidMs < clear {
+		t.Fatalf("first MidMs %d must clear page fade %d", got[0].MidMs, clear)
+	}
+	local := framesForDuration(got[0].MidMs, 30)
+	if tMs := float64(local) * 1000 / 30; tMs < 280 {
+		t.Fatalf("sampled tMs %.1f still inside 280ms page fade (frame %d)", tMs, local)
+	}
+}
+
+func TestAlignEntranceClipsToFocus(t *testing.T) {
+	page := Page{
+		Focus: []FocusSpan{
+			{StartMs: 3000, ElementID: "a", Rect: &Box{X: 1, Y: 1, W: 8, H: 8}},
+			{StartMs: 9000, ElementID: "b", Rect: &Box{X: 20, Y: 1, W: 8, H: 8}},
+		},
+		Layers: []Layer{
+			{ElementID: "a", Clips: []Motion{{Effect: "fadeIn", StartMs: 0, DurationMs: 400}}},
+			{ElementID: "b", Clips: []Motion{{Effect: "slideIn", StartMs: 10000, DurationMs: 600}}},
+			{ElementID: "c", Clips: []Motion{{Effect: "fadeIn", StartMs: 20000, DurationMs: 400}}},
+			{ElementID: "a", Clips: []Motion{{Effect: "grow", StartMs: 100, DurationMs: 900}}},
+		},
+	}
+	alignEntranceClipsToFocus(&page)
+	if page.Layers[0].Clips[0].StartMs != 3000 {
+		t.Fatalf("a fadeIn = %d, want 3000", page.Layers[0].Clips[0].StartMs)
+	}
+	if page.Layers[1].Clips[0].StartMs != 9000 {
+		t.Fatalf("b slideIn = %d, want 9000", page.Layers[1].Clips[0].StartMs)
+	}
+	if page.Layers[2].Clips[0].StartMs != 20000 {
+		t.Fatalf("c without Focus must keep spread %d", page.Layers[2].Clips[0].StartMs)
+	}
+	if page.Layers[3].Clips[0].StartMs != 100 {
+		t.Fatalf("grow must keep %d", page.Layers[3].Clips[0].StartMs)
 	}
 }
 
@@ -63,6 +161,9 @@ func TestLookWindowsIgnoresSpansWithoutRect(t *testing.T) {
 	if got[0].MidMs != 500 {
 		t.Fatalf("prefix MidMs = %d, want 500 (inside the unveiled hold, not page boundary)", got[0].MidMs)
 	}
+	if got[1].XFade != "over" || got[1].FadeMs != lookFirstBoxMS {
+		t.Fatalf("first boxed = %+v, want overlay %dms", got[1], lookFirstBoxMS)
+	}
 }
 
 func TestLookWindowsPrefixSamplesInsidePage(t *testing.T) {
@@ -75,7 +176,7 @@ func TestLookWindowsPrefixSamplesInsidePage(t *testing.T) {
 	}
 	got := lookWindows(page)
 	if len(got) != 3 {
-		t.Fatalf("looks = %d, want 3 (prefix + two cards): %+v", len(got), got)
+		t.Fatalf("looks = %d, want 3 (prefix + two looks, no arrive): %+v", len(got), got)
 	}
 	if got[0].StartMs != 0 || got[0].EndMs != 420 || got[0].FadeMs != 0 {
 		t.Fatalf("prefix = %+v, want [0,420) fade 0", got[0])
@@ -86,8 +187,27 @@ func TestLookWindowsPrefixSamplesInsidePage(t *testing.T) {
 	if got[0].MidMs != 210 {
 		t.Fatalf("prefix MidMs = %d, want 210", got[0].MidMs)
 	}
+	if got[1].StartMs != 420 || got[1].XFade != "over" || got[1].FadeMs != lookFirstBoxMS {
+		t.Fatalf("first boxed = %+v, want start 420 overlay %dms", got[1], lookFirstBoxMS)
+	}
 	if frame := lookFrame(500, 2515, got[0].MidMs, 30); frame <= 500 {
 		t.Fatalf("prefix still frame %d must be inside the page (start 500)", frame)
+	}
+}
+
+func TestLookWindowsDenseSkipsArrive(t *testing.T) {
+	focus := make([]FocusSpan, 6)
+	for i := range focus {
+		r := Box{X: 64 + i*200, Y: 194, W: 180, H: 220}
+		focus[i] = FocusSpan{StartMs: int64(i) * 10000, ElementID: string(rune('a' + i)), Rect: &r, FadeMs: 240}
+	}
+	page := Page{DurationMs: 60000, Focus: focus}
+	got := lookWindows(page)
+	if len(got) != 6 {
+		t.Fatalf("dense looks = %d, want 6 (no arrive split): %+v", len(got), got)
+	}
+	if got[0].StartMs != 0 || got[0].EndMs != 10000 {
+		t.Fatalf("first window = [%d,%d), want [0,10000) without arrive split", got[0].StartMs, got[0].EndMs)
 	}
 }
 
@@ -119,6 +239,60 @@ func TestLookFrameClampsToPage(t *testing.T) {
 	}
 	if got := lookFrame(100, 60, 0, 30); got != 100 {
 		t.Fatalf("start = %d, want 100", got)
+	}
+}
+
+func TestLookTravelXFadeWipeAndCrop(t *testing.T) {
+	left := &Box{X: 80, Y: 200, W: 400, H: 200}
+	right := &Box{X: 900, Y: 200, W: 400, H: 200}
+	ms, kind := lookTravelXFade(left, right, false)
+	if kind != "wiperight" || ms != lookWipeXFadeMS {
+		t.Fatalf("rightward = %d %s, want wipe %d wiperight", ms, kind, lookWipeXFadeMS)
+	}
+	ms, kind = lookTravelXFade(left, right, true)
+	if kind != "fade" || ms != lookCropXFadeMS {
+		t.Fatalf("lookCrop travel = %d %s, want fade %d", ms, kind, lookCropXFadeMS)
+	}
+	same := &Box{X: 80, Y: 200, W: 400, H: 200}
+	ms, kind = lookTravelXFade(left, same, false)
+	if kind != "fade" || ms != lookNearXFadeMS {
+		t.Fatalf("near = %d %s, want fade %d", ms, kind, lookNearXFadeMS)
+	}
+}
+
+func TestLookWindowsSkipArriveWhenLookCrop(t *testing.T) {
+	page := Page{
+		DurationMs: 16000,
+		LookCrop:   true,
+		Focus: []FocusSpan{
+			{StartMs: 0, ElementID: "a", Rect: &Box{X: 1, Y: 1, W: 10, H: 10}, FadeMs: 240},
+			{StartMs: 8000, ElementID: "b", Rect: &Box{X: 900, Y: 1, W: 10, H: 10}, FadeMs: 240},
+		},
+	}
+	got := lookWindows(page)
+	if len(got) != 2 {
+		t.Fatalf("lookCrop pages keep one still per look, got %d: %+v", len(got), got)
+	}
+	if got[1].FadeMs != 0 || got[1].XFade != "cut" {
+		t.Fatalf("look travel is a hard cut, got fade=%d xfade=%q", got[1].FadeMs, got[1].XFade)
+	}
+}
+
+func TestEncodeGazePageArgsWipeXfade(t *testing.T) {
+	args, err := encodeGazePageArgs(gazePageEncodeSpec{
+		Width: 1920, Height: 1080, FPS: 30, CRF: 18, GOP: 30,
+		Background: "#FFFFFF", Out: "segment_wipe.mp4", PageFrames: 960,
+		Looks: []gazeLookEncode{
+			{Image: "looks/p001_l00.png", Frames: 480},
+			{Image: "looks/p001_l01.png", PrevImage: "looks/p001_l00.png", Frames: 480, TransitionFrames: 4, XFade: "wiperight"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\n")
+	if !strings.Contains(joined, "xfade=transition=wiperight") {
+		t.Fatalf("missing wipe xfade:\n%s", joined)
 	}
 }
 
@@ -162,6 +336,26 @@ func TestIsGazeLookPageAllowsEntranceRejectsShots(t *testing.T) {
 	if isGazeLookPage(withBob) {
 		t.Fatal("non-entrance clips stay on Chrome")
 	}
+	withGrow := base
+	withGrow.Layers = []Layer{{
+		ElementID: "b0", Kind: animation.KindBar,
+		Clips: []Motion{{Effect: "grow", DurationMs: 900, Props: []animation.MotionProp{
+			{Name: animation.PropScaleY, From: 0.04, To: 1},
+		}}},
+	}}
+	if isGazeLookPage(withGrow) {
+		t.Fatal("grow layers must leave the look chain")
+	}
+	withTilt := base
+	withTilt.Layers = []Layer{{
+		ElementID: "beam", Kind: animation.KindShape,
+		Clips: []Motion{{Effect: "tilt", DurationMs: 800, Props: []animation.MotionProp{
+			{Name: animation.PropRotate, From: 0, To: 8},
+		}}},
+	}}
+	if isGazeLookPage(withTilt) {
+		t.Fatal("tilt layers must leave the look chain")
+	}
 }
 
 func TestCollectLookJobsFiveLooks(t *testing.T) {
@@ -184,7 +378,7 @@ func TestCollectLookJobsFiveLooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(jobs) != 5 {
-		t.Fatalf("jobs = %d, want 5", len(jobs))
+		t.Fatalf("jobs = %d, want 5 (no arrive split)", len(jobs))
 	}
 	for i, j := range jobs {
 		if j.Frame < 0 || j.Out == "" {
@@ -194,7 +388,7 @@ func TestCollectLookJobsFiveLooks(t *testing.T) {
 			t.Fatalf("job[%d].out = %q", i, j.Out)
 		}
 	}
-	if jobs[0].Frame == jobs[4].Frame {
+	if jobs[0].Frame == jobs[len(jobs)-1].Frame {
 		t.Fatal("first and last looks must sample different frames")
 	}
 }
@@ -320,26 +514,66 @@ func TestEncodeGazePageArgsXfadeConcatOnce(t *testing.T) {
 	}
 }
 
+func TestEncodeGazePageArgsFirstBoxOverlay(t *testing.T) {
+	args, err := encodeGazePageArgs(gazePageEncodeSpec{
+		Width: 1920, Height: 1080, FPS: 30, Out: "segment_001.mp4", PageFrames: 960,
+		Looks: []gazeLookEncode{
+			{Image: "looks/p001_l00.png", Frames: 14, XFade: "cut"},
+			{Image: "looks/p001_l01.png", PrevImage: "looks/p001_l00.png", Frames: 946, TransitionFrames: 6, XFade: "over"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\n")
+	if strings.Contains(joined, "xfade") {
+		t.Fatalf("first box must not use xfade:\n%s", joined)
+	}
+	if !strings.Contains(joined, "fade=t=in:st=0") || !strings.Contains(joined, "overlay") {
+		t.Fatalf("first box wants overlay fade-in:\n%s", joined)
+	}
+	if !strings.Contains(joined, "-i\nlooks/p001_l00.png") || !strings.Contains(joined, "-i\nlooks/p001_l01.png") {
+		t.Fatalf("missing look stills:\n%s", joined)
+	}
+}
+
+func TestEncodeGazePageArgsLookTravelHardCut(t *testing.T) {
+	args, err := encodeGazePageArgs(gazePageEncodeSpec{
+		Width: 1920, Height: 1080, FPS: 30, Out: "segment_001.mp4", PageFrames: 960,
+		Looks: []gazeLookEncode{
+			{Image: "looks/p001_l00.png", Frames: 480},
+			{Image: "looks/p001_l01.png", Frames: 480},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, "\n")
+	if strings.Contains(joined, "xfade") {
+		t.Fatalf("look travel is a hard cut, got xfade:\n%s", joined)
+	}
+	if !strings.Contains(joined, "-i\nlooks/p001_l00.png") || !strings.Contains(joined, "-i\nlooks/p001_l01.png") {
+		t.Fatalf("missing look stills:\n%s", joined)
+	}
+}
+
 func TestEncodeGazePageArgsPageHeadFade(t *testing.T) {
 	args, err := encodeGazePageArgs(gazePageEncodeSpec{
 		Width: 1920, Height: 1080, FPS: 30, Out: "segment_002.mp4", PageFrames: 90,
 		Looks: []gazeLookEncode{{
-			Image: "looks/p002_l00.png", PrevImage: "looks/p001_l05.png",
-			Frames: 90, TransitionFrames: 7,
+			Image:  "looks/p002_l00.png",
+			Frames: 90,
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, "\n")
-	if !strings.Contains(joined, "-i\nlooks/p001_l05.png") {
-		t.Fatalf("missing previous page still:\n%s", joined)
+	if strings.Contains(joined, "xfade") {
+		t.Fatalf("page-head look is a hard cut, got xfade:\n%s", joined)
 	}
 	if !strings.Contains(joined, "-i\nlooks/p002_l00.png") {
 		t.Fatalf("missing look still:\n%s", joined)
-	}
-	if !strings.Contains(joined, "xfade=transition=custom:duration=0.233:offset=0") {
-		t.Fatalf("missing page-head xfade:\n%s", joined)
 	}
 }
 
@@ -385,10 +619,6 @@ func TestStillPrevImagePrefersLastLookStill(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "looks"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	last := lookStillPath(dir, 1, 1)
-	if err := os.WriteFile(last, []byte("png"), 0o640); err != nil {
-		t.Fatal(err)
-	}
 	plan := &Timeline{
 		FPS: 30,
 		Pages: []Page{
@@ -399,6 +629,10 @@ func TestStillPrevImagePrefersLastLookStill(t *testing.T) {
 			}},
 			{Index: 2, DurationMs: 3000, BaseImage: "pages/p2.png", Transition: Transition{Type: animation.TransitionFade, DurationMs: 240}},
 		},
+	}
+	last := lookStillPath(dir, 1, len(lookWindows(plan.Pages[1]))-1)
+	if err := os.WriteFile(last, []byte("png"), 0o640); err != nil {
+		t.Fatal(err)
 	}
 	got, err := stillPrevImage(context.Background(), "ffmpeg-unused", plan, dir, 2, nil)
 	if err != nil {

@@ -1,9 +1,11 @@
 package app
 
 import (
+	"context"
 	"testing"
 
 	"github.com/F31/ppts/internal/animation"
+	"github.com/F31/ppts/internal/animation/bind"
 	"github.com/F31/ppts/internal/design"
 	"github.com/F31/ppts/internal/integrations/tts"
 	"github.com/F31/ppts/internal/media"
@@ -117,4 +119,40 @@ func TestPageBeatSheetIgnoresOtherSlides(t *testing.T) {
 	if out.Reason != "no_speech" || out.Sheet.Valid() {
 		t.Fatalf("other-slide subtitles must not produce a sheet: %+v", out)
 	}
+}
+
+func TestPreviewStaysPhase1WhenDirectorWouldRescue(t *testing.T) {
+	page := &project.Page{
+		Index: 0, SlideID: "s1",
+		Shapes: []*project.Shape{
+			{ID: "c1", Kind: "text", Text: "智慧城市", Bounds: &project.Box{X: 406400, Y: 1231900, Width: 2724150, Height: 1473200}},
+			{ID: "c2", Kind: "text", Text: "智能办公", Bounds: &project.Box{X: 3213100, Y: 1231900, Width: 2724150, Height: 1473200}},
+			{ID: "c3", Kind: "text", Text: "智能制造", Bounds: &project.Box{X: 6019800, Y: 1231900, Width: 2724150, Height: 1473200}},
+		},
+	}
+	slide := media.SlideCue{
+		SlideID: "s1", StartUS: 0, EndUS: 8_000_000,
+		Segments: []media.SegmentCue{{SegmentID: "seg-1", StartUS: 0, EndUS: 8_000_000, AlignmentMethod: tts.AlignEstimate}},
+	}
+	subs := []media.SubtitleCue{{
+		SlideID: "s1", SegmentID: "seg-1", StartUS: 0, EndUS: 8_000_000,
+		Text: "本页展示六个应用方向。",
+	}}
+	bindElems := PageBindElements(page, 12192000, 6858000)
+	ids := compileIDsOf(PageElements(page))
+	preview := PageBeatSheet(bindElems, ids, slide, subs, 8000)
+	if preview.Sheet.Valid() {
+		t.Fatalf("cover page should stay Phase 1 invalid in preview: %+v", preview.Sheet)
+	}
+	in, phase1 := producePageBeatSheet(bindElems, ids, slide, subs, 8000)
+	rescued := directPageBeatSheet(context.Background(), in, phase1, coverCompleter{}, nil, "")
+	if !rescued.Sheet.Valid() || rescued.Sheet.Source != animation.BeatSourceLLM {
+		t.Fatalf("export director should rescue: reason=%s source=%s", rescued.Reason, rescued.Sheet.Source)
+	}
+}
+
+type coverCompleter struct{}
+
+func (coverCompleter) Complete(context.Context, bind.ModelPrompt) (bind.ModelCompletion, error) {
+	return bind.ModelCompletion{Text: `{"beats":[{"startMs":0,"endMs":4000,"segmentId":"seg-1","shapeId":"c1","shot":"gaze"},{"startMs":4000,"endMs":0,"segmentId":"seg-1","shapeId":"c2","shot":"gaze"}]}`}, nil
 }

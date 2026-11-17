@@ -586,6 +586,7 @@ type previewScene struct {
 	Annotations     []share.SlideAnnotation `json:"annotations,omitempty"`
 	LookCrop        bool                    `json:"lookCrop,omitempty"`
 	LookCropPadPx   int                     `json:"lookCropPadPx,omitempty"`
+	ClearRects      []share.SlideBox        `json:"clearRects,omitempty"`
 	Shots           []share.SlideShot       `json:"shots"`
 	LayerCount      int                     `json:"layerCount"`
 	FocusCount      int                     `json:"focusCount"`
@@ -612,6 +613,7 @@ func buildPreviewScene(base image.Image, pagePNG []byte, plan *render.Timeline, 
 		Annotations:     previewAnnotations(page.Annotations),
 		LookCrop:        page.LookCrop,
 		LookCropPadPx:   page.LookCropPadPx,
+		ClearRects:      previewClearRects(page.ClearRects),
 		Shots:           []share.SlideShot{},
 		FocusCount:      len(page.Focus),
 		FocusSkipped:    focusSkipped,
@@ -696,6 +698,23 @@ func previewClips(clips []render.Motion) []share.Clip {
 			ElementID:            clip.ElementID,
 			Carry:                clip.Carry,
 		})
+	}
+	return out
+}
+
+func previewClearRects(in []render.Box) []share.SlideBox {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideBox, 0, len(in))
+	for _, b := range in {
+		if b.W <= 0 || b.H <= 0 {
+			continue
+		}
+		out = append(out, share.SlideBox{X: b.X, Y: b.Y, W: b.W, H: b.H})
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

@@ -113,6 +113,7 @@
 | `PPTS_RENDERER_TIMEOUT_SECONDS` | int | `30` | `30` | worker 调用渲染服务的 HTTP 超时（秒）。这是单次请求，不是整段动画任务。 |
 | `PPTS_RENDERER_URL` | string | `（空）` | （空） | 渲染服务地址，如 http://127.0.0.1:8090。留空则不出动画、也不做字体子集。 |
 | `PPTS_CHROME` | string | `（空）` | （空） | chrome-headless-shell 或 Chrome 的路径。留空则交给 Remotion 自己找。 |
+| `PPTS_FFMPEG` | string | `（空）` | （空） | ffmpeg 可执行文件。留空则在 PATH 里找；找不到时静页/注视页退回 Chrome 合成器。 |
 | `PPTS_NODE` | string | `node` | `node` | node 可执行文件。 |
 | `PPTS_PDFINFO_BIN` | string | `（空）` | （空） | pdfinfo 路径。留空则在 PATH 里找。 |
 | `PPTS_PDFTOPPPM_BIN` | string | `（空）` | （空） | pdftoppm 路径。留空则在 PATH 里找。 |

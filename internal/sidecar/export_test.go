@@ -151,9 +151,27 @@ func TestExportBundleWritesPlayableDirectory(t *testing.T) {
 	if result.DurationUS != 200_000 {
 		t.Fatalf("durationUs = %d", result.DurationUS)
 	}
-	for _, name := range []string{share.FileIndexHTML, share.FileManifestJSON, "slides/001.jpg", share.FileAppJS} {
+	for _, name := range []string{share.FileIndexHTML, share.FileManifestJSON, share.FileAppJS} {
 		if _, err := os.Stat(filepath.Join(req.OutDir, filepath.FromSlash(name))); err != nil {
 			t.Fatalf("missing %s: %v", name, err)
+		}
+	}
+	// 页图扩展名取决于本机 ffmpeg 有没有 libwebp（有则 .webp，无则退回 .jpg）。
+	// 断言 manifest 指针指向的文件真实存在，而不是把某一档编码结果写死。
+	raw, err := os.ReadFile(filepath.Join(req.OutDir, share.FileManifestJSON))
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest share.Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if len(manifest.Slides) != 2 {
+		t.Fatalf("manifest slides = %d, want 2", len(manifest.Slides))
+	}
+	for _, slide := range manifest.Slides {
+		if _, err := os.Stat(filepath.Join(req.OutDir, filepath.FromSlash(slide.Image))); err != nil {
+			t.Fatalf("missing slide image %s: %v", slide.Image, err)
 		}
 	}
 	// 混音轨的名字取决于本机有没有 ffmpeg：装了是 mix.m4a，没装退回 mix.wav。

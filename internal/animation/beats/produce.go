@@ -36,8 +36,11 @@ type Input struct {
 type Output struct {
 	Sheet       animation.BeatSheet
 	DenyIDs     map[string]struct{}
-	DenyReasons map[string]int // page_number | aux
+	DenyReasons map[string]int // page_number | aux | title
 	Reason      string         // ok | too_few | structured_cover | no_speech
+	// DirectorFallback 是阶段 2 导演没能换掉阶段 1 回退的原因。空串表示没问模型，
+	// 或问了并且这份 Sheet 就是它的产出。
+	DirectorFallback string
 }
 
 // Produce 按句读 / VAD 停顿切拍，字面匹配形状。不读时钟、不打模型。

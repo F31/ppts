@@ -161,6 +161,14 @@ func (h *AnimationPrefillHandler) WithCompleter(f func(ctx context.Context, tena
 	return h
 }
 
+// Completer 返回预填用的租户模型解析器，导出拍表导演复用同一条通道。
+func (h *AnimationPrefillHandler) Completer() func(ctx context.Context, tenantID string) (bind.ModelCompleter, error) {
+	if h == nil {
+		return nil
+	}
+	return h.completer
+}
+
 // WithTokenAccounting 注入 LLM token 额度记账；未注入时不做预占/结算（测试/私有化）。
 func (h *AnimationPrefillHandler) WithTokenAccounting(a LLMTokenAccountant) *AnimationPrefillHandler {
 	h.tokens = a

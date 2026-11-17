@@ -46,6 +46,7 @@ func geometryDocument() project.Document {
 					// 尺寸用真实 EMU（13.33in 宽页）：几十 EMU 的框换算成像素是 0，
 					// 编译期会以「无可用包围盒」跳过，用例就测不到自己要测的东西。
 					{ID: "sh-bullet", Kind: "text", Text: "第二条", Bounds: box(838200, 2286000, 7315200, 571500)},
+					{ID: "sh-bullet-2", Kind: "text", Text: "第三条", Bounds: box(838200, 3000000, 7315200, 571500)},
 					{ID: "sh-title", Kind: "text", Text: "标题", Bounds: box(838200, 838200, 7315200, 1143000)},
 					// 无包围盒的形状不该出现在几何里：渲染侧无法对它做位移/缩放。
 					{ID: "sh-nobounds", Kind: "text", Text: "无框"},
@@ -75,14 +76,17 @@ func TestDocumentGeometryReadsExtractedDocument(t *testing.T) {
 	}
 
 	page := bySlide["s1"]
-	if len(page) != 2 {
-		t.Fatalf("s1 元素 = %d, want 2（无包围盒的必须跳过）: %+v", len(page), page)
+	if len(page) != 3 {
+		t.Fatalf("s1 元素 = %d, want 3（无包围盒的必须跳过）: %+v", len(page), page)
 	}
 	if page[0].ID != "sh-title" || page[0].Kind != "title" {
 		t.Fatalf("首个元素 = %+v, want sh-title/title（阅读顺序 + 第一个文字元素算标题）", page[0])
 	}
 	if page[1].ID != "sh-bullet" || page[1].Kind != "bullet" {
 		t.Fatalf("第二个元素 = %+v, want sh-bullet/bullet", page[1])
+	}
+	if page[2].ID != "sh-bullet-2" || page[2].Kind != "bullet" {
+		t.Fatalf("第三个元素 = %+v, want sh-bullet-2/bullet", page[2])
 	}
 	if b := page[0].Bounds; b == nil || b.X != 838200 || b.Y != 838200 || b.Width != 7315200 || b.Height != 1143000 {
 		t.Fatalf("几何没有原样带过来：%+v", b)
@@ -113,6 +117,13 @@ func TestPageElementsIncludesEmptyCardFrames(t *testing.T) {
 	}
 	if ids["card-a"] != "shape" || ids["card-b"] != "shape" {
 		t.Fatalf("empty cards must be shape frames: %+v", ids)
+	}
+	byID := map[string]string{}
+	for _, e := range got {
+		byID[e.ID] = e.Text
+	}
+	if byID["title-a"] != "大会全景" || byID["title-b"] != "AI Coding" {
+		t.Fatalf("shape text dropped: %+v", byID)
 	}
 }
 
@@ -467,5 +478,94 @@ func TestPageFocusBoxesCarriesLabelBand(t *testing.T) {
 		X: pxToEMU(420), Y: pxToEMU(300), Width: pxToEMU(60), Height: pxToEMU(200),
 	}); got != want {
 		t.Fatalf("没标签的柱子焦点框 = %+v, want %+v（不该被扩）", got, want)
+	}
+}
+
+func TestPageElementsEmitsBarBodiesNotLabelBand(t *testing.T) {
+	page := &project.Page{SlideID: "s1", Shapes: []*project.Shape{{
+		ID: "chart-1", Kind: "chart", ChartType: "col",
+		ChartOrientation: "vertical",
+		Bounds:           &project.Box{X: 1000000, Y: 2000000, Width: 4000000, Height: 3000000},
+		ChartBars: []project.ChartBar{
+			{ID: "chart-1-b0", Category: "Q1", Value: 174, Box: [4]int{300, 250, 60, 250}, LabelDir: "up", LabelPad: 42},
+			{ID: "chart-1-b1", Category: "Q2", Value: -40, Box: [4]int{420, 500, 60, 120}, LabelDir: "down", LabelPad: 30},
+		},
+	}}}
+	got := PageElements(page)
+	byID := map[string]render.Element{}
+	for _, e := range got {
+		byID[e.ID] = e
+	}
+	b0, ok := byID["chart-1-b0"]
+	if !ok {
+		t.Fatalf("missing bar element: %+v", byID)
+	}
+	if b0.Kind != animation.KindBar {
+		t.Fatalf("kind = %s, want bar", b0.Kind)
+	}
+	if b0.GrowAxis != "y" || b0.GrowOrigin != render.OriginBottom {
+		t.Fatalf("b0 axis/origin = %s/%s, want y/bottom", b0.GrowAxis, b0.GrowOrigin)
+	}
+	if b0.Bounds == nil || b0.Bounds.Y != pxToEMU(250) || b0.Bounds.Height != pxToEMU(250) {
+		t.Fatalf("grow box used label band: %+v", b0.Bounds)
+	}
+	if b0.Text != "Q1" {
+		t.Fatalf("text = %q, want Q1", b0.Text)
+	}
+	b1 := byID["chart-1-b1"]
+	if b1.GrowOrigin != render.OriginTop {
+		t.Fatalf("negative bar origin = %s, want top", b1.GrowOrigin)
+	}
+}
+
+func TestPageElementsEmitsTableRowsSkipHeader(t *testing.T) {
+	const (
+		x int64 = 457200
+		y int64 = 1280160
+		w int64 = 8229600
+		h int64 = 914400
+	)
+	page := &project.Page{SlideID: "s1", Shapes: []*project.Shape{{
+		ID: "shape-7", Kind: "table", TableRows: 6, TableCols: 3,
+		Bounds: &project.Box{X: x, Y: y, Width: w, Height: h},
+		TableCells: [][]string{
+			{"时间", "节点", "要点"},
+			{"2023-04", "Qwen", "开源"},
+			{"2023-08", "Qwen-72B", "长文"},
+			{"2024-02", "Qwen1.5", "MoE"},
+			{"2024-06", "Qwen2", "多模态"},
+			{"2024-09", "Qwen2.5", "代码"},
+		},
+	}}}
+	got := PageElements(page)
+	byID := map[string]render.Element{}
+	for _, e := range got {
+		byID[e.ID] = e
+	}
+	if _, ok := byID["shape-7-r0"]; ok {
+		t.Fatal("header row must stay on the plate")
+	}
+	r1, ok := byID["shape-7-r1"]
+	if !ok {
+		t.Fatalf("missing first data row: %+v", byID)
+	}
+	if r1.Kind != animation.KindRow {
+		t.Fatalf("kind = %s, want row", r1.Kind)
+	}
+	if r1.Text != "2023-04 Qwen 开源" {
+		t.Fatalf("text = %q", r1.Text)
+	}
+	rowH := h / 6
+	if r1.Bounds == nil || r1.Bounds.X != x || r1.Bounds.Y != y+rowH || r1.Bounds.Height != rowH {
+		t.Fatalf("r1 box = %+v, want y=%d h=%d", r1.Bounds, y+rowH, rowH)
+	}
+	r5, ok := byID["shape-7-r5"]
+	if !ok {
+		t.Fatal("missing last data row")
+	}
+	wantY := y + 5*rowH
+	wantH := y + h - wantY
+	if r5.Bounds.Y != wantY || r5.Bounds.Height != wantH {
+		t.Fatalf("r5 box = %+v, want y=%d h=%d", r5.Bounds, wantY, wantH)
 	}
 }

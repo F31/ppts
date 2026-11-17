@@ -178,9 +178,9 @@ test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）'
       `${name}：setState 的更新函数里读 e.currentTarget 会在 React 19 下崩溃；必须先同步取出 checked`
     );
   }
-  // 修复形态必须保留：讲稿/配音/动效/要点依次出现各自先取值。
+  // 修复形态必须保留：讲稿/配音/动效/导出/要点依次出现各自先取值。
   const safeAssignments = (pageSrc + drawerSrc).match(/const checked = e\.currentTarget\.checked;/g) || [];
-  assert.equal(safeAssignments.length, 4, '四个一键成片复选框都要先同步取出 checked');
+  assert.equal(safeAssignments.length, 5, '五个一键成片复选框都要先同步取出 checked');
 });
 
 // 真机：点「开始」后抽屉盖住整页，关闭钮在 running 时禁用，页面所有按钮都点不了。
@@ -232,6 +232,40 @@ test('一键成片抽屉可勾选要点依次出现，且套用请求真的带 w
   assert.match(src, /oneClickEntrance/, '页面要持有勾选状态');
   assert.match(src, /const entrance = oneClickEntrance/, '关窗之后仍要用点击当时的勾选');
   assert.match(src, /applyAnimationToAll\([\s\S]*preset, false, entrance\)/, '套用请求必须带 withEntrance');
+});
+
+// 真机：只勾「套用动效到所有页面」再点开始生成，任务中心没有任务、成品库没有视频。
+// 成片必须把导出作为默认第四步，入队 MP4，进度在任务中心，完成后进成品库。
+test('一键成片默认导出 MP4，入队后不等渲染结束', () => {
+  const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const drawer = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
+  const zh = JSON.parse(readFileSync(new URL('./src/i18n/zh.json', import.meta.url), 'utf8'));
+  const en = JSON.parse(readFileSync(new URL('./src/i18n/en.json', import.meta.url), 'utf8'));
+  const model = readFileSync(new URL('./src/pages/projectEditor/model.ts', import.meta.url), 'utf8');
+  assert.match(drawer, /editor\.oneClickStepExport/, '抽屉里要有导出成片勾选');
+  assert.match(src, /export: true/, '导出步默认勾选');
+  assert.match(model, /genJobKinds = \['narration', 'script_draft', 'export'\]/, '顶部任务条要把导出任务算进进行中');
+  const run = src.slice(src.indexOf('const runOneClick'), src.indexOf('const regenerateVoiceActive'));
+  assert.match(run, /steps\.export/, '流水线必须读取导出勾选');
+  assert.match(run, /createArtifactExport/, '必须真正提交导出');
+  assert.match(run, /ARTIFACT_FORMAT_MP4/, '成片格式是 MP4');
+  assert.match(run, /oneClickExportNoTimeline/, '没有配音时间轴时要拦住，不能假装已成片');
+  const exportAt = run.indexOf('createArtifactExport');
+  const refreshLast = run.lastIndexOf('refreshActiveGenJobs');
+  assert.ok(exportAt >= 0 && refreshLast > exportAt, '导出入队后要立刻刷新任务条');
+  assert.doesNotMatch(run.slice(exportAt), /waitForOneClickJob/, '导出不得在编辑器里等到渲染结束');
+  for (const key of [
+    'editor.oneClickStepExport',
+    'editor.oneClickPhaseExport',
+    'editor.oneClickExportQueued',
+    'editor.oneClickExportNoTimeline',
+    'editor.oneClickExportHint'
+  ]) {
+    assert.equal(typeof zh[key], 'string', `zh.json 缺 ${key}`);
+    assert.equal(typeof en[key], 'string', `en.json 缺 ${key}`);
+  }
+  assert.match(zh['editor.oneClickExportQueued'], /任务中心/, '入队文案要指向任务中心');
+  assert.match(zh['editor.oneClickExportQueued'], /成品库/, '入队文案要指向成品库');
 });
 
 // 成稿预估（跳过/无可生成材料）是从编辑器里抽出来的纯函数，口径必须守住：

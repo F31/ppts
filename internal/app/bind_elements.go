@@ -10,9 +10,9 @@ import (
 
 // 本文件是「形状 → 绑定器元素」的换算（changes/animation-narration-binding tasks 2.1）。
 //
-// 为什么不复用 PageElements：那份换算产出的是 render.Element，只剩 {ID, Kind, Bounds}——
-// 文本在换算时被丢掉，而无文本的容器（卡片底、圆形底座）也被排除（它们挂不上预设动效）。
-// 绑定器两样都要：文本是字面匹配的全部依据，容器是「结构推断」与「同块带出」的锚点。
+// 为什么不复用 PageElements：那份换算产出 render.Element {ID, Kind, Bounds, Text}，
+// Text 已留给词级下划线。绑定器仍走自己的投影：Kind 要分成标题/眉标/页脚，
+// 无文字容器（卡片底、圆形底座）是「结构推断」与「同块带出」的锚点。
 // 所以绑定器走自己的换算，位置就在 PageElements 之上——同一个 project.Page，不同的投影。
 //
 // **与实验脚本的口径差异（诚实记录）**：Python 版的版面分类（extract_pptx_elements.py）
@@ -76,6 +76,52 @@ func PageBindElements(page *project.Page, slideWEMU, slideHEMU int64) []bind.Ele
 			b.W = max(b.W, 0)
 			b.H = max(b.H, 0)
 			text := strings.TrimSpace(sh.Text)
+			if len(sh.ChartBars) > 0 {
+				for _, bar := range sh.ChartBars {
+					if bar.ID == "" {
+						continue
+					}
+					bb := bind.Box{
+						X: float64(bar.Box[0]), Y: float64(bar.Box[1]),
+						W: float64(bar.Box[2]), H: float64(bar.Box[3]),
+					}
+					bb.W = max(bb.W, 0)
+					bb.H = max(bb.H, 0)
+					barText := barElementText(bar)
+					if bb.W*bb.H >= minBindAreaPx {
+						list = append(list, bindRaw{
+							el:   bind.Element{ID: bar.ID, Kind: "bar", Box: bb, Text: barText},
+							text: barText != "",
+						})
+					}
+				}
+				if len(sh.Children) > 0 {
+					walk(sh.Children)
+				}
+				continue
+			}
+			if rows := tableDataRows(sh); len(rows) > 0 {
+				for _, row := range rows {
+					bb := bind.Box{
+						X: pxOf(row.Bounds.X, slideWEMU, bindCanvasW),
+						Y: pxOf(row.Bounds.Y, slideHEMU, bindCanvasH),
+						W: pxOf(row.Bounds.Width, slideWEMU, bindCanvasW),
+						H: pxOf(row.Bounds.Height, slideHEMU, bindCanvasH),
+					}
+					bb.W = max(bb.W, 0)
+					bb.H = max(bb.H, 0)
+					if bb.W*bb.H >= minBindAreaPx {
+						list = append(list, bindRaw{
+							el:   bind.Element{ID: row.ID, Kind: "row", Box: bb, Text: row.Text},
+							text: row.Text != "",
+						})
+					}
+				}
+				if len(sh.Children) > 0 {
+					walk(sh.Children)
+				}
+				continue
+			}
 			if b.W*b.H >= minBindAreaPx {
 				list = append(list, bindRaw{
 					el:   bind.Element{ID: sh.ID, Kind: baseBindKind(sh, b, text), Box: b, Text: text},
@@ -112,7 +158,7 @@ func pickBindTitle(list []bindRaw) int {
 			continue
 		}
 		switch r.el.Kind {
-		case "marker", "page_number", "shape", "image", "table", "chart":
+		case "marker", "page_number", "shape", "image", "table", "chart", "bar", "row":
 			continue
 		}
 		if r.el.Box.Y+r.el.Box.H/2 >= bindCanvasH*0.5 {

@@ -6,7 +6,6 @@ import { useI18n } from './i18n';
 import {
   applyLookCrop,
   buildLayerNodes,
-  hasEntranceLayers,
   needsLayerStage,
   releaseLayers,
   seekLayer,
@@ -76,7 +75,9 @@ export function StagePlayback({ scene }: { scene: AnimationPreviewScene }) {
         reduceMotion,
         focus,
         annotations,
-        lookCrop: scene.lookCrop
+        lookCrop: scene.lookCrop,
+        pageImage: scene.image,
+        clearRects: scene.clearRects
       });
     }
 
@@ -125,11 +126,11 @@ export function StagePlayback({ scene }: { scene: AnimationPreviewScene }) {
           lookCrop: scene.lookCrop,
           lookCropPadPx: scene.lookCropPadPx,
           reduceMotion,
-          hasEntranceLayers: hasEntranceLayers(scene.layers),
           focus: scene.focus,
           tMs: localMs,
           canvasW: videoW,
-          canvasH: videoH
+          canvasH: videoH,
+          layers: layersBox
         });
         layersBox.style.visibility = '';
         return;
@@ -144,6 +145,13 @@ export function StagePlayback({ scene }: { scene: AnimationPreviewScene }) {
         setShotSrc(img, frame.shot.image);
         hideTop();
       }
+      applyLookCrop(img, {
+        lookCrop: false,
+        tMs: localMs,
+        canvasW: videoW,
+        canvasH: videoH,
+        layers: layersBox
+      });
       applyCamera(img, frame.from ?? frame.shot, localMs);
       if (fading && frame.from) applyCamera(imgTop, frame.shot, localMs);
       layersBox.style.visibility = frame.shot.crop ? 'hidden' : '';

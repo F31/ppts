@@ -97,6 +97,8 @@ type SlideEntry struct {
 	LookCrop bool `json:"lookCrop,omitempty"`
 	// LookCropPadPx 是 punch-in 裁切外扩。缺省 8。
 	LookCropPadPx int `json:"lookCropPadPx,omitempty"`
+	// ClearRects 是页眉大标题矩形。播放器把原页图再贴一层盖在纱之上。
+	ClearRects []SlideBox `json:"clearRects,omitempty"`
 	// Shots 把一页切成若干镜头切片（IR 的 page.shots 原样透传）。
 	// 为空时 Image 是唯一画面来源，与 M6-2 的清单逐字节一致。
 	Shots []SlideShot `json:"shots,omitempty"`

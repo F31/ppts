@@ -31,9 +31,11 @@ export function lookCropEnabled(opts: {
   lookCrop?: boolean;
   reduceMotion?: boolean;
   hasShotCrop?: boolean;
+  /** 保留给调用方；入场层跟底板进同一套 crop 变换，不再关掉 punch-in。 */
   hasEntranceLayers?: boolean;
 }): boolean {
-  return Boolean(opts.lookCrop) && !opts.reduceMotion && !opts.hasShotCrop && !opts.hasEntranceLayers;
+  void opts.hasEntranceLayers;
+  return Boolean(opts.lookCrop) && !opts.reduceMotion && !opts.hasShotCrop;
 }
 
 /** 外扩 pad 像素并夹到画布。退化盒返回 null。 */

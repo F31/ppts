@@ -115,6 +115,33 @@ func TestIntensityScalesAmplitudeNotBase(t *testing.T) {
 	}
 }
 
+func TestTiltAngle(t *testing.T) {
+	def, err := PlanMotion("tilt", Params{}, "easeOut", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rot := findProp(t, def.Props, PropRotate)
+	if rot.From != 0 || math.Abs(rot.To-8) > 1e-9 {
+		t.Fatalf("default tilt = %+v, want 0→8", rot)
+	}
+	neg, err := PlanMotion("tilt", Params{Angle: -12}, "easeOut", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rot = findProp(t, neg.Props, PropRotate)
+	if math.Abs(rot.To+12) > 1e-9 {
+		t.Fatalf("negative tilt to = %v, want -12", rot.To)
+	}
+	hot, err := PlanMotion("tilt", Params{Angle: 90}, "easeOut", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rot = findProp(t, hot.Props, PropRotate)
+	if rot.To != maxTiltDeg {
+		t.Fatalf("clamped tilt to = %v, want %v", rot.To, maxTiltDeg)
+	}
+}
+
 func TestGrowAxis(t *testing.T) {
 	y, err := PlanMotion("grow", Params{}, "easeOut", 1)
 	if err != nil {

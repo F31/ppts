@@ -67,6 +67,9 @@ func (t *Timeline) CanonicalJSON() ([]byte, error) {
 		if len(p.Annotations) == 0 {
 			p.Annotations = nil
 		}
+		if len(p.ClearRects) == 0 {
+			p.ClearRects = nil
+		}
 		c.Pages[i] = p
 	}
 	if len(c.Fonts) == 0 {

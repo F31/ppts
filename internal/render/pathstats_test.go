@@ -106,7 +106,7 @@ func TestDescribePageMotionGazeSkipsPlate(t *testing.T) {
 		t.Fatalf("mode = %q, want gaze", mode)
 	}
 	if looks != 2 {
-		t.Fatalf("looks = %d, want 2", looks)
+		t.Fatalf("looks = %d, want 2 (two focus, no arrive split)", looks)
 	}
 	if plate != "skipped" {
 		t.Fatalf("plate = %q, want skipped", plate)
@@ -130,7 +130,7 @@ func TestDescribePageMotionGazeEntranceBuildsPlate(t *testing.T) {
 		t.Fatalf("mode = %q, want gaze+entrance", mode)
 	}
 	if looks != 1 {
-		t.Fatalf("looks = %d, want 1", looks)
+		t.Fatalf("looks = %d, want 1 (entrance skips arrive)", looks)
 	}
 	if plate != "built" {
 		t.Fatalf("plate = %q, want built", plate)
