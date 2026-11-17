@@ -891,9 +891,13 @@ func (s *PGProjectStore) CreateFolder(ctx context.Context, tenantID, name, creat
 			}
 		}
 		f = &Folder{}
-		return tx.QueryRow(ctx,
+		e := tx.QueryRow(ctx,
 			`INSERT INTO folders (tenant_id, name, created_by, sort_order) VALUES ($1,$2,$3,$4) RETURNING id, tenant_id, name, COALESCE(created_by::text, ''), sort_order, created_at`,
 			tenantID, name, nullIfEmpty(createdBy), sortOrder).Scan(&f.ID, &f.TenantID, &f.Name, &f.CreatedBy, &f.SortOrder, &f.CreatedAt)
+		if isPGUniqueViolation(e) {
+			return ErrFolderNameExists
+		}
+		return e
 	})
 	return f, err
 }

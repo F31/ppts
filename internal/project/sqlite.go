@@ -615,8 +615,7 @@ func (s *SQLiteStore) CreateFolder(ctx context.Context, tenantID, name, createdB
 		return nil, err
 	}
 	defer tx.Rollback()
-	// folders 表没有 (tenant_id, name) 唯一约束（tags 有），所以 isUniqueViolation
-	// 那条路在这里永远不会触发——重名分组会被真的写进去。改成与 PG 一样先查后插。
+	// 先查后插负责友好报错；0022 的唯一索引负责并发兜底（预检查挡不住两个同时提交）。
 	var exists int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT 1 FROM folders WHERE tenant_id = ? AND name = ?`, tenantID, name).Scan(&exists); err == nil {
@@ -659,7 +658,7 @@ func (s *SQLiteStore) RenameFolder(ctx context.Context, tenantID, folderID, name
 	if name == "" {
 		return nil, ErrFolderNameRequired
 	}
-	// 同 CreateFolder：没有唯一约束兜底，重名只能在这里拦。
+	// 同 CreateFolder：预检查负责友好报错，0022 的唯一索引负责并发兜底。
 	var exists int
 	if err := s.db.QueryRowContext(ctx,
 		`SELECT 1 FROM folders WHERE tenant_id = ? AND name = ? AND id <> ?`,

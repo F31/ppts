@@ -50,6 +50,7 @@ func runProjectStoreConformance(t *testing.T, newEnv func(t *testing.T) conforma
 		{"SourceRevisionLifecycle", conformanceSourceRevisionLifecycle},
 		{"TagLifecycle", conformanceTagLifecycle},
 		{"FolderLifecycle", conformanceFolderLifecycle},
+		{"FolderUniqueUnderConcurrency", conformanceFolderUniqueUnderConcurrency},
 		{"CollaborationLifecycle", conformanceCollaborationLifecycle},
 		{"ShareLinkLifecycle", conformanceShareLinkLifecycle},
 		{"ProjectOrganization", conformanceProjectOrganization},
@@ -429,6 +430,37 @@ func conformanceTagLifecycle(t *testing.T, ctx context.Context, env conformanceE
 	}
 	if err := env.Store.DeleteTag(ctx, env.Tenant, other.ID); err != nil {
 		t.Fatalf("删标签：%v", err)
+	}
+}
+
+// 唯一性不能只靠应用层「先查后插」：两个并发请求会同时通过预检查。
+// 数据库唯一索引兜底后，两个实现都必须把冲突映射成 ErrFolderNameExists，而不是 500。
+func conformanceFolderUniqueUnderConcurrency(t *testing.T, ctx context.Context, env conformanceEnv) {
+	results := make(chan error, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			_, err := env.Store.CreateFolder(ctx, env.Tenant, "并发同名", env.Owner, "")
+			results <- err
+		}()
+	}
+	close(start)
+
+	var created, duplicated int
+	for i := 0; i < 2; i++ {
+		err := <-results
+		switch {
+		case err == nil:
+			created++
+		case errors.Is(err, ErrFolderNameExists):
+			duplicated++
+		default:
+			t.Fatalf("并发建同名分组：%v", err)
+		}
+	}
+	if created != 1 || duplicated != 1 {
+		t.Fatalf("并发结果 = 成功 %d / 重名 %d，want 1/1", created, duplicated)
 	}
 }
 

@@ -87,10 +87,9 @@ PG 的唯一约束冲突补 `isPGUniqueViolation`（23505）映射：先 SELECT 
 
 ## 未覆盖 / 已知缺口
 
-- `MarkStep` / `CompleteWithStep` 的步骤覆盖规则（既有 `steps_read_test.go` 两侧各有一份），
-  尚未纳入契约集。
-- `folders` 表两侧都没有 `(tenant_id, name)` 唯一约束，靠应用层预检查；
-  并发建同名分组在两种实现上都会产生重复。要根治得先清存量再加索引，
-  留待单独一次数据迁移。
+- ✅ 2026-11-17 已闭环：`MarkStep` / `CompleteWithStep` 已进契约集（`StepUpsert`、
+  `CompleteWithStepAtomic`、`CompleteWithStepFencing`），两种实现同跑。
+- ✅ 2026-11-17 已闭环：`folders` 增加 `(tenant_id, name)` 唯一索引（PG `0056` /
+  SQLite `0022`），迁移先合并存量重名再建索引；应用层预检查保留用于友好报错。
 - 租约过期后的重领取（`lease_until < now`）只验证了「未到期领不到」，
   未覆盖时钟推进后的竞态；需要可控时钟，成本高于收益。
