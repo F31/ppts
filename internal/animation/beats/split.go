@@ -1,7 +1,10 @@
 package beats
 
 import (
+	"regexp"
+	"sort"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/F31/ppts/internal/animation"
 	"github.com/F31/ppts/internal/design"
@@ -12,7 +15,12 @@ type piece struct {
 	StartMs   int64
 	EndMs     int64
 	SegmentID string
+	// NoMerge 是显式结构边界切出的片段（如「第二部分」「第三部分」）。
+	// 短拍不能跨过它合并，否则两个点名句会重新粘成一片。
+	NoMerge bool
 }
+
+var ordinalClauseRe = regexp.MustCompile(`第[一二两三四五六七八九十\p{Nd}]{1,3}\s*(?:部分|步|条|点|项|章|节|块|类)`)
 
 func holdMsOf(in Input) int64 {
 	if in.Profile.HoldMs > 0 {
@@ -48,8 +56,22 @@ func splitAll(in Input) (pieces []piece, source string) {
 }
 
 type charCut struct {
-	at int
-	t  int64
+	at   int
+	t    int64
+	hard bool
+}
+
+func ordinalCuts(runes []rune) []charCut {
+	text := string(runes)
+	var out []charCut
+	for _, loc := range ordinalClauseRe.FindAllStringIndex(text, -1) {
+		at := utf8.RuneCountInString(text[:loc[0]])
+		if at <= 0 || at >= len(runes) {
+			continue
+		}
+		out = append(out, charCut{at: at, t: 0, hard: true})
+	}
+	return out
 }
 
 func splitByChars(seg SpeechSeg, hold int64) []piece {
@@ -60,37 +82,57 @@ func splitByChars(seg SpeechSeg, hold int64) []piece {
 	}
 	var cuts []charCut
 	seen := map[int]struct{}{}
-	add := func(at int) {
+	add := func(at int, hard bool) {
 		if at <= 0 || at >= n {
 			return
 		}
 		if _, ok := seen[at]; ok {
+			if hard {
+				for k := range cuts {
+					if cuts[k].at == at {
+						cuts[k].hard = true
+					}
+				}
+			}
 			return
 		}
 		seen[at] = struct{}{}
-		cuts = append(cuts, charCut{at: at, t: seg.Chars[at].StartMs})
+		cuts = append(cuts, charCut{at: at, t: seg.Chars[at].StartMs, hard: hard})
 	}
 	for i := 0; i < n-1; i++ {
 		if isSentencePunct(runes[i]) {
-			add(i + 1)
+			add(i+1, false)
 		}
 		gap := seg.Chars[i+1].StartMs - seg.Chars[i].EndMs
 		if gap >= hold {
-			add(i + 1)
+			add(i+1, false)
 		}
+	}
+	for _, c := range ordinalCuts(runes) {
+		add(c.at, true)
 	}
 	sortCuts(cuts)
 	cuts = mergeCloseCuts(cuts, hold)
 
 	out := make([]piece, 0, len(cuts)+1)
+	hardAt := make(map[int]struct{}, len(cuts))
+	for _, c := range cuts {
+		if c.hard {
+			hardAt[c.at] = struct{}{}
+		}
+	}
 	lo := 0
+	loHard := false
 	for _, c := range cuts {
 		if p, ok := pieceFromRunes(seg, runes, lo, c.at); ok {
+			p.NoMerge = loHard || c.hard
 			out = append(out, p)
 		}
 		lo = c.at
+		_, loHard = hardAt[c.at]
 	}
 	if p, ok := pieceFromRunes(seg, runes, lo, n); ok {
+		p.NoMerge = loHard
 		out = append(out, p)
 	}
 	return mergeShortPieces(out, hold)
@@ -112,7 +154,7 @@ func mergeCloseCuts(cuts []charCut, hold int64) []charCut {
 	}
 	out := cuts[:0]
 	for _, c := range cuts {
-		if len(out) > 0 && c.t-out[len(out)-1].t < hold {
+		if len(out) > 0 && c.t-out[len(out)-1].t < hold && !c.hard && !out[len(out)-1].hard {
 			out[len(out)-1] = c
 			continue
 		}
@@ -148,19 +190,42 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 	if n == 0 {
 		return nil
 	}
-	var bounds []int
-	bounds = append(bounds, 0)
+	bounds := []int{0}
+	hardAt := map[int]struct{}{}
+	addBound := func(at int, hard bool) {
+		if at <= 0 || at >= n {
+			return
+		}
+		if at == bounds[len(bounds)-1] {
+			if hard {
+				hardAt[at] = struct{}{}
+			}
+			return
+		}
+		bounds = append(bounds, at)
+		if hard {
+			hardAt[at] = struct{}{}
+		}
+	}
 	for i := 0; i < n-1; i++ {
 		if isSentencePunct(runes[i]) {
-			at := i + 1
-			if at != bounds[len(bounds)-1] {
-				bounds = append(bounds, at)
-			}
+			addBound(i+1, false)
 		}
+	}
+	for _, c := range ordinalCuts(runes) {
+		addBound(c.at, true)
 	}
 	if bounds[len(bounds)-1] != n {
 		bounds = append(bounds, n)
 	}
+	sort.Ints(bounds)
+	uniq := bounds[:0]
+	for _, b := range bounds {
+		if len(uniq) == 0 || uniq[len(uniq)-1] != b {
+			uniq = append(uniq, b)
+		}
+	}
+	bounds = uniq
 
 	type raw struct {
 		text   string
@@ -203,11 +268,14 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 		if end < t {
 			end = t
 		}
+		_, hardStart := hardAt[bounds[i]]
+		_, hardEnd := hardAt[bounds[i+1]]
 		out = append(out, piece{
 			Text:      p.text,
 			StartMs:   t,
 			EndMs:     end,
 			SegmentID: seg.ID,
+			NoMerge:   hardStart || hardEnd,
 		})
 		t = end
 	}
@@ -251,10 +319,16 @@ func mergeShortPieces(pieces []piece, hold int64) []piece {
 				continue
 			}
 			if i == 0 {
+				if out[0].NoMerge || out[1].NoMerge {
+					continue
+				}
 				out[1].StartMs = out[0].StartMs
 				out[1].Text = out[0].Text + out[1].Text
 				out = out[1:]
 			} else {
+				if out[i-1].NoMerge || out[i].NoMerge {
+					continue
+				}
 				out[i-1].EndMs = out[i].EndMs
 				out[i-1].Text += out[i].Text
 				out = append(out[:i], out[i+1:]...)

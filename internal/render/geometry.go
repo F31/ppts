@@ -180,8 +180,49 @@ func rectNear(a, b Box) bool {
 	return dx <= gazeRectNearPx && dy <= gazeRectNearPx && dw <= gazeRectNearPx && dh <= gazeRectNearPx
 }
 
-// expandGazeRect 把标题/编号的小盒扩到最小的合法卡片底。没有合适容器时原样返回。
-func expandGazeRect(box Box, frames []Box, pageArea float64) Box {
+// gazeTargetsLocal 判断两个目标是否属于同一张卡/同一条目，而不是共享面板里的并列项。
+// 同一张卡的标题和正文通常紧邻、横向投影重合；目录三行之间的空隙明显更大。
+func gazeTargetsLocal(a, b Box) bool {
+	gap := math.Max(12, math.Min(float64(a.H), float64(b.H))*0.5)
+	xOverlap := math.Max(0, math.Min(float64(a.X+a.W), float64(b.X+b.W))-math.Max(float64(a.X), float64(b.X)))
+	yOverlap := math.Max(0, math.Min(float64(a.Y+a.H), float64(b.Y+b.H))-math.Max(float64(a.Y), float64(b.Y)))
+	yGap := math.Max(0, math.Max(float64(a.Y)-float64(b.Y+b.H), float64(b.Y)-float64(a.Y+a.H)))
+	xGap := math.Max(0, math.Max(float64(a.X)-float64(b.X+b.W), float64(b.X)-float64(a.X+a.W)))
+	if yGap <= gap && xOverlap >= 0.5*math.Min(float64(a.W), float64(b.W)) {
+		return true
+	}
+	if xGap <= gap && yOverlap >= 0.5*math.Min(float64(a.H), float64(b.H)) {
+		return true
+	}
+	return false
+}
+
+// frameCoversOtherTarget 判断 frame 是否越过当前目标、包住了另一个拍点目标。
+//
+// 当前目标盒包含另一目标（或反之）时仍允许：同一张卡的标题/正文是嵌套关系，
+// 它们本来就该塌成一个 look。目录三行是并列的，互不包含，共享面板会被挡掉。
+func frameCoversOtherTarget(frame, box Box, blocked []Box) bool {
+	for _, other := range blocked {
+		if !boxCovers(frame, other) {
+			continue
+		}
+		if boxCovers(box, other) || boxCovers(other, box) {
+			continue
+		}
+		if gazeTargetsLocal(box, other) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// expandGazeRectForTarget 在扩框时排除「覆盖了其他注视目标」的形状。
+//
+// 目录页的三行常共用一个底板。若把每行都扩到这块共享底板，三行会得到同一
+// 矩形，后面的按矩形去重就会把前两行吃掉。这里只允许扩到本目标的局部卡片；
+// 共享父面板一旦覆盖了另一个目标，就不是这张卡片的底。
+func expandGazeRectForTarget(box Box, frames []Box, blocked []Box, pageArea float64) Box {
 	elArea := boxArea(box)
 	if elArea <= 0 {
 		return box
@@ -198,6 +239,9 @@ func expandGazeRect(box Box, frames []Box, pageArea float64) Box {
 			continue
 		}
 		if !boxCovers(f, box) {
+			continue
+		}
+		if frameCoversOtherTarget(f, box, blocked) {
 			continue
 		}
 		if !found || fa < bestArea {

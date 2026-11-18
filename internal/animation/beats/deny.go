@@ -75,5 +75,5 @@ func collectCandidates(in Input) (usable []bind.Element, deny map[string]struct{
 		}
 		usable = append(usable, e)
 	}
-	return usable, deny, reasons
+	return bind.ReadingOrder(usable), deny, reasons
 }

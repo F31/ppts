@@ -267,7 +267,14 @@ func parseDirectorBeats(raw string, cands []bind.Element, segs []SpeechSeg) ([]a
 			if !directorIDOK(item.ShapeID) {
 				return nil, false
 			}
-			if _, ok := candIDs[item.ShapeID]; !ok {
+			cand, ok := candIDs[item.ShapeID]
+			if !ok {
+				return nil, false
+			}
+			// 有明确序数的段落，模型不能把「第二部分」指到第三部分。
+			// 无结构页仍允许模型补字面匹配不到的语义关系。
+			if ordinalClauseRe.MatchString(seg.Text) &&
+				bind.Score(seg.Text, cand.Text, cand.Kind) < bind.DefaultThreshold {
 				return nil, false
 			}
 			b.ShapeID = item.ShapeID

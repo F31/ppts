@@ -23,6 +23,12 @@ import (
 //
 // 排序在绑定器内部做，返回新切片，不改调用方的元素顺序——Bindings 里带的是 ElementID，
 // 调用方按 ID 回查，不依赖下标。
+// ReadingOrder 把元素按讲者的阅读顺序排好。beats 的候选顺序与 bind 同源，
+// 不能一边用 z-order、一边用阅读序。
+func ReadingOrder(els []Element) []Element {
+	return readingOrder(els)
+}
+
 func readingOrder(els []Element) []Element {
 	if len(els) < 2 {
 		return els

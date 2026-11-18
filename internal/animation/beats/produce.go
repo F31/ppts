@@ -73,7 +73,7 @@ func Produce(in Input) Output {
 	beats := matchPieces(pieces, cands)
 	ids := uniqueGazeIDs(beats)
 
-	if structuredCover(in, ids) {
+	if structuredCover(in, ids, pieces) {
 		return Output{
 			Sheet:       animation.BeatSheet{Source: animation.BeatSourceFallback},
 			DenyIDs:     deny,
@@ -100,8 +100,19 @@ func Produce(in Input) Output {
 	}
 }
 
-func structuredCover(in Input, gazeIDs map[string]struct{}) bool {
+func structuredCover(in Input, gazeIDs map[string]struct{}, pieces []piece) bool {
 	if len(gazeIDs) >= 3 {
+		return false
+	}
+	// 有显式序数切出的多个 clause 时，这不是「一句话概括整页」，而是逐条讲；
+	// 哪怕只命中两项也不能按总起页回退。T5b 那种单句擦到两张卡仍走下面的总起判定。
+	hard := 0
+	for _, p := range pieces {
+		if p.NoMerge {
+			hard++
+		}
+	}
+	if hard >= 2 && len(gazeIDs) >= 2 {
 		return false
 	}
 	bsegs := make([]bind.Segment, 0, len(in.Segments))

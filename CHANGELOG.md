@@ -6,6 +6,7 @@
 
 ### 行为变化
 
+- 注视目标改为按组对齐：目录等多项目共用一个面板时，不再把不同条目扩成同一矩形后只保留最后一项；`第N部分/步/条` 会作为不可跨合并的 clause 边界；拍点与形状改单调 DP 对齐并补齐倒序空位；导出导演不能把带序数的段落指到别的条目。已有成品需重新导出才会换成新结果。
 - SRT/VTT 改为逐行 cue（12–34 字，复用时间轴字符时间戳），分享包的 inline cues 同步；长段落不再用一条字幕覆盖整页。已有成品的字幕文件需重新配音或导出后才会换成新布局。
 - 新默认是整页静图 + 旁白时钟上的 spotlight / 圈选 / 压暗，不再为每个要点发射 fadeIn。教学页走 look 链（每条注视一帧 + ffmpeg hold），不按页时长进 Chrome。
 - 「要点依次出现」是显式开关：打开后才挖洞、编入场层；包围盒不可靠时本页回退纯注视，并留下 `entrance_skipped`。一键成片与「应用到全部页面」把该勾选发给 apply-all，由 catalog `EntranceClips` 写入 `gaze+entrance`，不必再改主机 JSON。`ppts apply-animation --source-revision 0` 与缺省查询参数一样落到项目 `current_revision`，不再写 src=0 行。

@@ -508,6 +508,98 @@ func TestT6KeepTimesUniqueByRect(t *testing.T) {
 	}
 }
 
+func TestGazeFallbackKeepsSiblingsInSharedPanel(t *testing.T) {
+	c := newTestCompiler(t)
+	panel := Element{ID: "panel", Kind: animation.KindShape, Bounds: emuBox(80, 180, 760, 620)}
+	rows := []Element{
+		{ID: "row-1", Kind: animation.KindTitle, Bounds: emuBox(160, 240, 560, 80)},
+		{ID: "row-2", Kind: animation.KindTitle, Bounds: emuBox(160, 380, 560, 80)},
+		{ID: "row-3", Kind: animation.KindTitle, Bounds: emuBox(160, 520, 560, 80)},
+	}
+	els := append([]Element{panel}, rows...)
+	tracks := make([]*animation.Track, 0, len(rows))
+	for i, row := range rows {
+		tracks = append(tracks, &animation.Track{ElementID: row.ID, Kind: row.Kind,
+			Clips: []*animation.Clip{clipOf("s"+row.ID, "spotlight", int64(i)*140, 240, "withSegment:seg-1")}})
+	}
+	rev := revisionOf("teaching-clear", 1, tracks...)
+	rev.MotionMode = animation.MotionModeGaze
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "slide-1", DurationMs: 15000, BaseImage: "pages/p0.png",
+		Elements: els, SegmentOffsets: map[string]int64{"seg-1": 0}, Revision: rev,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) != 3 {
+		t.Fatalf("fallback shared panel must keep 3 looks, got %d: %+v", len(page.Focus), page.Focus)
+	}
+	for i, want := range []string{"row-1", "row-2", "row-3"} {
+		if page.Focus[i].ElementID != want {
+			t.Fatalf("look %d = %s, want %s", i, page.Focus[i].ElementID, want)
+		}
+	}
+}
+
+func TestMergeGazeLooksDoesNotCollapseDifferentGroups(t *testing.T) {
+	r := Box{X: 64, Y: 194, W: 760, H: 620}
+	spans := []FocusSpan{
+		{StartMs: 0, ElementID: "row-1", Rect: &r, group: "row-1"},
+		{StartMs: 5000, ElementID: "row-2", Rect: &r, group: "row-2"},
+		{StartMs: 10000, ElementID: "row-3", Rect: &r, group: "row-3"},
+	}
+	got := mergeGazeLooks(spans, 15000, true)
+	if len(got) != 3 {
+		t.Fatalf("different groups sharing a rect must stay separate, got %d: %+v", len(got), got)
+	}
+	got = dropContainedLooks(got)
+	if len(got) != 3 {
+		t.Fatalf("dropContainedLooks cross-group must not drop, got %d: %+v", len(got), got)
+	}
+}
+
+func TestFocusFromBeatSheetKeepsSiblingsInSharedPanel(t *testing.T) {
+	c := newTestCompiler(t)
+	panel := Element{ID: "panel", Kind: animation.KindShape, Bounds: emuBox(80, 180, 760, 620)}
+	rows := []Element{
+		{ID: "row-1", Kind: animation.KindTitle, Bounds: emuBox(160, 240, 560, 80), Text: "行业趋势"},
+		{ID: "row-2", Kind: animation.KindTitle, Bounds: emuBox(160, 380, 560, 80), Text: "AI 大模型"},
+		{ID: "row-3", Kind: animation.KindTitle, Bounds: emuBox(160, 520, 560, 80), Text: "智能体"},
+	}
+	els := append([]Element{panel}, rows...)
+	tracks := make([]*animation.Track, 0, len(rows))
+	beats := make([]animation.Beat, 0, len(rows))
+	for i, row := range rows {
+		tracks = append(tracks, &animation.Track{ElementID: row.ID, Kind: row.Kind,
+			Clips: []*animation.Clip{clipOf("s"+row.ID, "spotlight", 0, 240, "withSegment:seg-1")}})
+		beats = append(beats, animation.Beat{
+			StartMs: int64(i) * 5000, EndMs: int64(i+1) * 5000,
+			SegmentID: "seg-1", ShapeID: row.ID, Shot: animation.BeatShotGaze, Text: row.Text,
+		})
+	}
+	rev := revisionOf("teaching-clear", 1, tracks...)
+	rev.MotionMode = animation.MotionModeGaze
+	page, _, err := c.CompilePage(PageInput{
+		Index: 0, SlideID: "slide-1", DurationMs: 15000, BaseImage: "pages/p0.png",
+		Elements: els, SegmentOffsets: map[string]int64{"seg-1": 0},
+		Revision: rev, BeatSheet: &animation.BeatSheet{Source: animation.BeatSourcePunct, Beats: beats},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Focus) != 3 {
+		t.Fatalf("shared panel must keep 3 sibling looks, got %d: %+v", len(page.Focus), page.Focus)
+	}
+	for i, want := range []string{"row-1", "row-2", "row-3"} {
+		if page.Focus[i].ElementID != want {
+			t.Fatalf("look %d = %s, want %s", i, page.Focus[i].ElementID, want)
+		}
+	}
+	if page.Focus[1].StartMs != 5000 {
+		t.Fatalf("second look start = %d, want 5000", page.Focus[1].StartMs)
+	}
+}
+
 func TestT8EntranceIgnoresBeatSheet(t *testing.T) {
 	c := newTestCompiler(t)
 	rev := revisionOf("teaching-clear", 1,

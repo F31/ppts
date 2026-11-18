@@ -201,6 +201,9 @@ type FocusSpan struct {
 	FadeMs int64 `json:"fadeMs,omitempty"`
 	// VeilAlpha 是矩形遮罩盖白的不透明度。(0,1]；0 与缺省同义，求值器用 1-FOCUS_DIM_OPACITY。
 	VeilAlpha float64 `json:"veilAlpha,omitempty"`
+	// group 是同卡/同条目的内部身份，只在编译期合并时使用，不进 IR。
+	// 空值保留旧的「矩形相等即同卡」行为，供手工输入与历史测试使用。
+	group string
 }
 
 // Annotation 是注视之上的描边或台上短标签，不挖洞、不改底板。

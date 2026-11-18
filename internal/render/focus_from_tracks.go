@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -129,12 +130,20 @@ func GazeFromSegmentTracks(rev *animation.Revision, offsets map[string]int64, du
 	for _, el := range elements {
 		byID[el.ID] = el
 	}
+	targetIDs := make(map[string]struct{}, len(rev.Tracks))
+	for _, track := range rev.Tracks {
+		if track != nil && track.ElementID != "" {
+			targetIDs[track.ElementID] = struct{}{}
+		}
+	}
 	pageArea := float64(canvasW) * float64(canvasH)
 	frames := gazeFrameBoxes(elements, scale, canvasW, canvasH, pageArea)
+	targets := gazeTargetBoxes(elements, scale, canvasW, canvasH, targetIDs)
 	type cand struct {
 		id    string
 		start int64
 		rect  Box
+		group string
 	}
 	var cands []cand
 	seenID := make(map[string]struct{})
@@ -159,7 +168,7 @@ func GazeFromSegmentTracks(rev *animation.Revision, offsets map[string]int64, du
 		if rawOK && isPageHeading(el.Kind, raw, canvasW, canvasH) {
 			continue
 		}
-		rect, ok := gazeRectFor(el, frames, scale, canvasW, canvasH, pageArea)
+		rect, group, ok := gazeRectForTarget(el, frames, blockedTargetBoxes(targets, el.ID), scale, canvasW, canvasH, pageArea)
 		if !ok {
 			continue
 		}
@@ -168,7 +177,7 @@ func GazeFromSegmentTracks(rev *animation.Revision, offsets map[string]int64, du
 			continue
 		}
 		seenID[track.ElementID] = struct{}{}
-		cands = append(cands, cand{id: track.ElementID, start: start, rect: rect})
+		cands = append(cands, cand{id: track.ElementID, start: start, rect: rect, group: group})
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].start != cands[j].start {
@@ -186,7 +195,7 @@ func GazeFromSegmentTracks(rev *animation.Revision, offsets map[string]int64, du
 		rect := c.rect
 		out = append(out, FocusSpan{
 			StartMs: c.start, ElementID: c.id, Rect: &rect,
-			FadeMs: focusFadeDefaultMS, VeilAlpha: veil,
+			FadeMs: focusFadeDefaultMS, VeilAlpha: veil, group: c.group,
 		})
 		prev = c.start
 	}
@@ -211,20 +220,60 @@ func gazeFrameBoxes(elements []Element, scale float64, canvasW, canvasH int, pag
 	return out
 }
 
-func gazeRectFor(el Element, frames []Box, scale float64, canvasW, canvasH int, pageArea float64) (Box, bool) {
+// gazeRectForTarget 在扩框时避开覆盖其他注视目标的共享面板，并返回本次 look 的组身份。
+// 组身份只用于编译期合并：同卡标题/正文共享一个 frame，目录并列条目各自一个 el。
+func gazeRectForTarget(el Element, frames, blocked []Box, scale float64, canvasW, canvasH int, pageArea float64) (Box, string, bool) {
 	box, _, ok, _ := boxOf(el.Bounds, scale, canvasW, canvasH)
 	if !ok {
-		return Box{}, false
+		return Box{}, "", false
 	}
 	area := boxArea(box)
 	if pageArea > 0 && (area/pageArea <= gazeMinAreaRatio || area/pageArea >= plateFullPageRatio) {
-		return Box{}, false
+		return Box{}, "", false
 	}
-	expanded := expandGazeRect(box, frames, pageArea)
-	return PadGazeRect(expanded, canvasW, canvasH), true
+	expanded := expandGazeRectForTarget(box, frames, blocked, pageArea)
+	group := "el:" + el.ID
+	if expanded != box {
+		group = fmt.Sprintf("frame:%d:%d:%d:%d", expanded.X, expanded.Y, expanded.W, expanded.H)
+	}
+	return PadGazeRect(expanded, canvasW, canvasH), group, true
 }
 
-// mergeGazeLooks 按矩形去重（保留 StartMs 更晚的那条），同一张卡上的标题/正文只留正文。
+func gazeTargetBoxes(elements []Element, scale float64, canvasW, canvasH int, ids map[string]struct{}) map[string]Box {
+	out := make(map[string]Box, len(ids))
+	for _, el := range elements {
+		if el.ID == "" || el.Bounds == nil {
+			continue
+		}
+		if ids != nil {
+			if _, ok := ids[el.ID]; !ok {
+				continue
+			}
+		}
+		box, _, ok, _ := boxOf(el.Bounds, scale, canvasW, canvasH)
+		if !ok {
+			continue
+		}
+		out[el.ID] = box
+	}
+	return out
+}
+
+func blockedTargetBoxes(targets map[string]Box, self string) []Box {
+	if len(targets) <= 1 {
+		return nil
+	}
+	out := make([]Box, 0, len(targets)-1)
+	for id, box := range targets {
+		if id == self {
+			continue
+		}
+		out = append(out, box)
+	}
+	return out
+}
+
+// mergeGazeLooks 按组 + 矩形去重：同组（同一张卡）保留 StartMs 更晚的正文，不同组不合并。
 // 更晚的起点让 gaze+entrance 的 look 仍帧采在正文入场之后。keepTimes 时按时间序排并重算 EndMs，
 // 禁止 (Y,X) 与 duration/n。回退路径保持今日阅读序重铺。
 func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []FocusSpan {
@@ -239,10 +288,18 @@ func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []Focus
 		}
 		dupAt := -1
 		for i, u := range uniq {
-			if u.Rect != nil && rectNear(*u.Rect, *s.Rect) {
-				dupAt = i
-				break
+			if u.Rect == nil || !rectNear(*u.Rect, *s.Rect) {
+				continue
 			}
+			// 有组身份时，只有同组才允许矩形去重。目录三行共用面板但组不同，
+			// 不能被「矩形相等」静默吞掉。
+			if s.group != "" || u.group != "" {
+				if s.group != u.group {
+					continue
+				}
+			}
+			dupAt = i
+			break
 		}
 		if dupAt < 0 {
 			uniq = append(uniq, s)
@@ -392,10 +449,30 @@ func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision, al
 		intensity = orig.Intensity
 	}
 	veil := bakedVeilAlpha(intensity)
+	targetIDs := make(map[string]struct{}, len(beats))
+	for _, b := range beats {
+		if b.ShapeID == "" || b.Shot == animation.BeatShotHold {
+			continue
+		}
+		if _, deny := in.GazeDenyIDs[b.ShapeID]; deny {
+			continue
+		}
+		el, ok := byID[b.ShapeID]
+		if !ok || skipGazeActorKind(el.Kind, allowRow) {
+			continue
+		}
+		raw, _, rawOK, _ := boxOf(el.Bounds, c.scale, cw, ch)
+		if rawOK && isPageHeading(el.Kind, raw, cw, ch) {
+			continue
+		}
+		targetIDs[b.ShapeID] = struct{}{}
+	}
+	targets := gazeTargetBoxes(in.Elements, c.scale, cw, ch, targetIDs)
 	out := make([]FocusSpan, 0, len(beats))
 	var prev int64 = -1
 	var lastID string
 	var lastRect Box
+	var lastGroup string
 	phraseExtra := 0
 	for _, b := range beats {
 		id := b.ShapeID
@@ -418,6 +495,7 @@ func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision, al
 				Rect:      &r,
 				FadeMs:    focusFadeDefaultMS,
 				VeilAlpha: veil,
+				group:     lastGroup,
 			})
 			prev = b.StartMs
 			phraseExtra++
@@ -437,7 +515,7 @@ func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision, al
 		if rawOK && isPageHeading(el.Kind, raw, cw, ch) {
 			continue
 		}
-		rect, ok := gazeRectFor(el, frames, c.scale, cw, ch, pageArea)
+		rect, group, ok := gazeRectForTarget(el, frames, blockedTargetBoxes(targets, id), c.scale, cw, ch, pageArea)
 		if !ok {
 			continue
 		}
@@ -451,10 +529,12 @@ func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision, al
 			Rect:      &r,
 			FadeMs:    focusFadeDefaultMS,
 			VeilAlpha: veil,
+			group:     group,
 		})
 		prev = b.StartMs
 		lastID = id
 		lastRect = rect
+		lastGroup = group
 	}
 	for i := range out {
 		if i+1 < len(out) {
@@ -517,6 +597,13 @@ func fillFocusRects(spans []FocusSpan, elements []Element, scale float64, canvas
 	}
 	pageArea := float64(canvasW) * float64(canvasH)
 	frames := gazeFrameBoxes(elements, scale, canvasW, canvasH, pageArea)
+	targetIDs := make(map[string]struct{}, len(spans))
+	for _, s := range spans {
+		if s.ElementID != "" {
+			targetIDs[s.ElementID] = struct{}{}
+		}
+	}
+	targets := gazeTargetBoxes(elements, scale, canvasW, canvasH, targetIDs)
 	out := make([]FocusSpan, 0, len(spans))
 	for _, s := range spans {
 		el, ok := byID[s.ElementID]
@@ -531,12 +618,13 @@ func fillFocusRects(spans []FocusSpan, elements []Element, scale float64, canvas
 		if rawOK && isPageHeading(el.Kind, raw, canvasW, canvasH) {
 			continue
 		}
-		rect, ok := gazeRectFor(el, frames, scale, canvasW, canvasH, pageArea)
+		rect, group, ok := gazeRectForTarget(el, frames, blockedTargetBoxes(targets, el.ID), scale, canvasW, canvasH, pageArea)
 		if !ok {
 			out = append(out, s)
 			continue
 		}
 		s.Rect = &rect
+		s.group = group
 		out = append(out, s)
 	}
 	return out
@@ -728,6 +816,11 @@ func dropContainedLooks(spans []FocusSpan) []FocusSpan {
 			}
 			if boxArea(*spans[j].Rect) <= ai {
 				continue
+			}
+			if spans[i].group != "" || spans[j].group != "" {
+				if spans[i].group != spans[j].group {
+					continue
+				}
 			}
 			if boxCovers(*spans[j].Rect, *spans[i].Rect) {
 				drop[i] = true

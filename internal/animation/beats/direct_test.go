@@ -248,6 +248,19 @@ func TestDirectCacheHitSkipsModel(t *testing.T) {
 	}
 }
 
+func TestParseDirectorRejectsOrdinalWrongSection(t *testing.T) {
+	cands := []bind.Element{
+		{ID: "sec-1", Kind: "title", Text: "行业趋势", Box: bind.Box{X: 160, Y: 240, W: 560, H: 80}},
+		{ID: "sec-2", Kind: "title", Text: "AI 大模型", Box: bind.Box{X: 160, Y: 380, W: 560, H: 80}},
+		{ID: "sec-3", Kind: "title", Text: "智能体", Box: bind.Box{X: 160, Y: 520, W: 560, H: 80}},
+	}
+	segs := []SpeechSeg{{ID: "s1", Text: "第二部分是 AI 大模型，第三部分是智能体。", StartMs: 0, EndMs: 10000}}
+	raw := `{"beats":[{"startMs":0,"endMs":0,"segmentId":"s1","shapeId":"sec-3","shot":"gaze"},{"startMs":4000,"endMs":0,"segmentId":"s1","shapeId":"sec-1","shot":"gaze"}]}`
+	if _, ok := parseDirectorBeats(raw, cands, segs); ok {
+		t.Fatal("第二部分不应被模型指到第三部分")
+	}
+}
+
 func TestDirectorPromptJSONRoundTrip(t *testing.T) {
 	var top llmBeatSheet
 	if err := json.Unmarshal([]byte(validDirectorJSON()), &top); err != nil {

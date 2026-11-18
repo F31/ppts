@@ -517,6 +517,41 @@ func TestT10OpeningHoleFromLaterHit(t *testing.T) {
 	})
 }
 
+func TestT12OrdinalCommaSplitsTOCSections(t *testing.T) {
+	elems := []bind.Element{
+		{ID: "sec-1", Kind: "title", Text: "行业趋势", Box: bind.Box{X: 160, Y: 240, W: 560, H: 80}},
+		{ID: "sec-2", Kind: "title", Text: "AI 大模型", Box: bind.Box{X: 160, Y: 380, W: 560, H: 80}},
+		{ID: "sec-3", Kind: "title", Text: "智能体", Box: bind.Box{X: 160, Y: 520, W: 560, H: 80}},
+	}
+	text := "报告目录。第二部分是 AI 大模型，第三部分是智能体。"
+	out := Produce(Input{
+		Elements:   elems,
+		CompileIDs: compileIDs(elems...),
+		Segments: []SpeechSeg{{
+			ID: "s1", Text: text, StartMs: 0, EndMs: 15000, Method: tts.AlignEstimate,
+		}},
+	})
+	if out.Reason != ReasonOK {
+		t.Fatalf("reason=%s beats=%v", out.Reason, out.Sheet.Beats)
+	}
+	ids := gazeIDs(out.Sheet)
+	if len(ids) != 2 || ids[0] != "sec-2" || ids[1] != "sec-3" {
+		t.Fatalf("TOC gaze=%v want [sec-2 sec-3]; beats=%v", ids, out.Sheet.Beats)
+	}
+	var thirdStart int64 = -1
+	for _, b := range out.Sheet.Beats {
+		if b.ShapeID == "sec-3" && b.Shot != animation.BeatShotHold {
+			thirdStart = b.StartMs
+		}
+	}
+	if thirdStart < 0 {
+		t.Fatal("第三部分没有独立拍点")
+	}
+	if thirdStart <= out.Sheet.Beats[0].StartMs {
+		t.Fatalf("第三部分必须排在开场孔之后: %v", out.Sheet.Beats)
+	}
+}
+
 func TestT11DecorativeBindIDDoesNotForceFallback(t *testing.T) {
 	cards := sixCards()[:2]
 	deco := bind.Element{
