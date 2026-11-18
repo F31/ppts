@@ -79,8 +79,9 @@ install -m 0755 build/ffmpeg/ffmpeg build/ffmpeg/ffprobe "$STAGE/bin/"
 # ---------- 4. 打包资产 ----------
 install -m 0755 packaging/install.sh "$STAGE/install.sh"
 install -m 0644 packaging/config.env.example "$STAGE/config.env.example"
+install -m 0755 scripts/tls-renew.sh "$STAGE/tls-renew.sh"
 mkdir -p "$STAGE/systemd" "$STAGE/migrations"
-install -m 0644 packaging/ppts-api.service packaging/ppts-worker.service "$STAGE/systemd/"
+install -m 0644 packaging/ppts-api.service packaging/ppts-worker.service packaging/ppts-tls-renew.service packaging/ppts-tls-renew.timer "$STAGE/systemd/"
 # 迁移已内嵌进二进制（ppts migrate）；随包附 SQL 仅供 DBA 审阅/手工排查
 cp migrations/*.sql "$STAGE/migrations/"
 

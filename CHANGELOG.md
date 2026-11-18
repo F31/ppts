@@ -41,6 +41,11 @@
 - 观测：`ppts_animation_render_duration_ms_total{path=gaze_looks|chrome|still}`；教学导出 chrome 占 gaze+chrome 持续 > 20% 告警。
 - 30 页教学 deck、一键成片、1080p30 的墙钟目标 18 min 以金丝雀为准，本版本不把该 SLO 写成硬门禁。
 
+### 运维
+
+- 生产升级走 `scripts/upgrade-production.sh <new-ppts>`：备份二进制、用本机 postgres peer 迁移、重启、healthz 失败自动回滚。
+- 生产 HTTPS 改用 Let's Encrypt 证书（lego TLS-ALPN-01，`/etc/lego/certificates/`），`ppts-tls-renew.timer` 每日检查并自动续期。HTTP 80 仍被云侧 webblock 拦截，不影响 HTTPS。
+
 ### 回滚
 
 还原 catalog 默认即可回到入场生成。已保存的注视规格再导出仍是注视。

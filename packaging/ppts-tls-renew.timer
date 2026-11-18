@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily check for the PPTS TLS certificate
+
+[Timer]
+OnCalendar=*-*-* 03:20:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

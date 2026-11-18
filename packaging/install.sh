@@ -150,7 +150,20 @@ fi
 
 # ---------- 6. systemd ----------
 install -m 0644 "$SRC_DIR/systemd/ppts-api.service" "$SRC_DIR/systemd/ppts-worker.service" /etc/systemd/system/
+# TLS 续期是可选运维件：只有发行目录带了脚本与 unit 才安装；首次签发证书仍需人工完成。
+if [[ -f "$SRC_DIR/tls-renew.sh" ]]; then
+  install -m 0755 "$SRC_DIR/tls-renew.sh" /usr/local/sbin/ppts-tls-renew.sh
+fi
+if [[ -f "$SRC_DIR/systemd/ppts-tls-renew.service" ]]; then
+  install -m 0644 "$SRC_DIR/systemd/ppts-tls-renew.service" "$SRC_DIR/systemd/ppts-tls-renew.timer" /etc/systemd/system/
+fi
 systemctl daemon-reload
+if [[ -x /usr/local/bin/lego && -d /etc/lego/certificates ]]; then
+  systemctl enable --now ppts-tls-renew.timer
+  log "TLS 续期定时器已启用（ppts-tls-renew.timer）"
+else
+  log "未安装 lego 或 /etc/lego/certificates：TLS 续期定时器未启用（首次证书需人工签发）"
+fi
 if [[ "${SKIP_START:-0}" != "1" ]]; then
   systemctl enable ppts-api ppts-worker >/dev/null
   # 用 restart 而非 enable --now：重复安装（升级二进制/变更配置）时也须让服务吃到新状态

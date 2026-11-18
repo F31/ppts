@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the PPTS TLS certificate with TLS-ALPN-01
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ppts-tls-renew.sh
