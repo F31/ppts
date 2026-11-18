@@ -839,6 +839,10 @@ func buildCharToToken(ctx context.Context, engine TextPreparer, spoken, lang str
 	return res.DisplayToSpoken
 }
 
+// subtitleLayoutVersion 参与对象键：SRT/VTT 从「一段一条」改成逐行 cue 后，
+// 相同时间轴必须换新键，否则 objectsExist 短路会继续复用旧的长 cue 文件。
+const subtitleLayoutVersion = "line-cues-v1"
+
 // publishTimeline 发布播放时间轴（含精确逐字高亮映射；无映射时 timeline 内回落比例近似）。
 
 func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Job, timing media.Timing, slides []media.SlideInput, revisionNo int, stats SynthesisStats) error {
@@ -858,7 +862,8 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 	if err != nil {
 		return err
 	}
-	assetID := hashBytes(timelineBytes)
+	// 布局版本进内容寻址：SRT/VTT 改为逐行 cue 后，旧对象不能命中复用。
+	assetID := hashBytes(append(append([]byte(nil), timelineBytes...), []byte("\nsubtitle-layout="+subtitleLayoutVersion)...))
 	revision := "narration-" + job.ID
 	srtKey := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: revision, AssetType: "subtitle", AssetID: assetID, Ext: "srt"}
 	vttKey := objectstore.ObjectKey{TenantID: job.TenantID, ProjectID: job.ProjectID, Revision: revision, AssetType: "subtitle", AssetID: assetID, Ext: "vtt"}
@@ -878,11 +883,12 @@ func (h *NarrationHandler) publishTimeline(ctx context.Context, job *pipeline.Jo
 		step.State = pipeline.StepSuccess
 		return h.markStep(ctx, step)
 	}
-	srt, err := media.RenderSRT(timeline.Subtitles)
+	lineCues := media.SplitSubtitleCues(timeline.Subtitles)
+	srt, err := media.RenderSRT(lineCues)
 	if err != nil {
 		return err
 	}
-	vtt, err := media.RenderWebVTT(timeline.Subtitles)
+	vtt, err := media.RenderWebVTT(lineCues)
 	if err != nil {
 		return err
 	}

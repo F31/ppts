@@ -74,3 +74,74 @@ func TestRenderASSWithoutWatermarkIsUnchanged(t *testing.T) {
 		t.Fatalf("未配置水印却写出了 Watermark 样式：\n%s", out)
 	}
 }
+
+// 方案 A：SRT/VTT 不能继续一条 cue 覆盖整段 50 秒。逐行 cue 的行首/行尾必须
+// 复用时间轴里的 Chars，而不是重新估算。
+func TestSplitSubtitleCuesUsesCharBoundaries(t *testing.T) {
+	text := "第一行内容测试内容。第二行内容测试内容。第三行内容测试内容。第四行内容测试内容。"
+	runes := []rune(text)
+	chars := make([]CharCue, len(runes))
+	for i, r := range runes {
+		start := int64(200_000 + i*100_000)
+		chars[i] = CharCue{StartUS: start, EndUS: start + 100_000, Char: string(r)}
+	}
+	cue := SubtitleCue{
+		SlideID: "s1", SegmentID: "seg-1",
+		StartUS: chars[0].StartUS, EndUS: chars[len(chars)-1].EndUS,
+		Text: text, Chars: chars,
+	}
+	lines := SplitSubtitleCues([]SubtitleCue{cue})
+	if len(lines) < 2 {
+		t.Fatalf("lines = %d, want at least 2", len(lines))
+	}
+	var joined strings.Builder
+	var previousEnd int64
+	for i, line := range lines {
+		if strings.TrimSpace(line.Text) == "" {
+			t.Fatalf("line %d has empty text", i)
+		}
+		if len(line.Chars) != len([]rune(line.Text)) {
+			t.Fatalf("line %d chars = %d, text runes = %d", i, len(line.Chars), len([]rune(line.Text)))
+		}
+		if line.StartUS < previousEnd || line.EndUS <= line.StartUS {
+			t.Fatalf("line %d times = %d..%d, previous end %d", i, line.StartUS, line.EndUS, previousEnd)
+		}
+		previousEnd = line.EndUS
+		joined.WriteString(line.Text)
+	}
+	if joined.String() != text {
+		t.Fatalf("joined = %q, want %q", joined.String(), text)
+	}
+	if lines[0].StartUS != chars[0].StartUS || lines[len(lines)-1].EndUS != chars[len(chars)-1].EndUS {
+		t.Fatalf("line boundaries lost: first=%d last=%d", lines[0].StartUS, lines[len(lines)-1].EndUS)
+	}
+	if _, err := RenderSRT(lines); err != nil {
+		t.Fatalf("RenderSRT line cues: %v", err)
+	}
+}
+
+// 没有 Chars 的旧时间轴仍要可用：按行均分，不能重叠，也不能把最后一行吃掉。
+func TestSplitSubtitleCuesFallsBackToEvenDistribution(t *testing.T) {
+	cue := SubtitleCue{
+		SlideID: "s1", SegmentID: "seg-1",
+		StartUS: 0, EndUS: 6_000_000,
+		Text: "这是一句没有字符时间戳的字幕。这是一句没有字符时间戳的字幕。这是一句没有字符时间戳的字幕。",
+	}
+	lines := SplitSubtitleCues([]SubtitleCue{cue})
+	if len(lines) < 2 {
+		t.Fatalf("lines = %d, want at least 2", len(lines))
+	}
+	if lines[0].StartUS != 0 || lines[len(lines)-1].EndUS != cue.EndUS {
+		t.Fatalf("distributed range = %d..%d, want 0..%d", lines[0].StartUS, lines[len(lines)-1].EndUS, cue.EndUS)
+	}
+	var previousEnd int64
+	for i, line := range lines {
+		if line.StartUS < previousEnd || line.EndUS <= line.StartUS {
+			t.Fatalf("line %d times = %d..%d, previous end %d", i, line.StartUS, line.EndUS, previousEnd)
+		}
+		previousEnd = line.EndUS
+	}
+	if _, err := RenderWebVTT(lines); err != nil {
+		t.Fatalf("RenderWebVTT line cues: %v", err)
+	}
+}

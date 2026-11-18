@@ -202,6 +202,10 @@ func TestBuildProducesPlayableBundle(t *testing.T) {
 	if !strings.Contains(string(files[FileSubtitlesJS]), `"text":"第二页。"`) {
 		t.Fatalf("subtitles.js does not carry timeline cues: %s", files[FileSubtitlesJS])
 	}
+	// 方案 A：长段落在 subtitles.js 里也必须拆成逐行 cue，而不是整段一条。
+	if got := strings.Count(string(files[FileSubtitlesJS]), `"segmentId"`); got < 3 {
+		t.Fatalf("subtitles.js cues = %d, want line-level (>=3): %s", got, files[FileSubtitlesJS])
+	}
 	if manifest.AudioMix != FileAudioMix {
 		t.Fatalf("audioMix = %q", manifest.AudioMix)
 	}

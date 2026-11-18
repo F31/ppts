@@ -217,6 +217,49 @@ func RenderASS(cues []SubtitleCue, opts ASSOptions) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
+// SplitSubtitleCues 把「一段一条」的字幕拆成播放器同款的逐行 cue。
+//
+// 字幕同步的根因不是字符时间戳不够准，而是 SRT/VTT 一条 cue 覆盖整段 40–60 秒：
+// 外部播放器只能整段铺在屏幕上。SRT/VTT 与分享包里的 inline cues MUST 共用这一份
+// 逐行结果，避免「网页逐行、下载整段」两套时间轴。
+//
+// 有 Chars 时行首/行尾取对应字符时间；缺失或与文本长度不一致时按行均分。
+func SplitSubtitleCues(cues []SubtitleCue) []SubtitleCue {
+	out := make([]SubtitleCue, 0, len(cues))
+	for _, cue := range cues {
+		runes := []rune(cue.Text)
+		lines := splitCueLines(cue.Text)
+		useChars := len(cue.Chars) == len(runes)
+		for li, ln := range lines {
+			start, end := ln[0], ln[1]
+			if start >= end {
+				continue
+			}
+			line := SubtitleCue{
+				SlideID:   cue.SlideID,
+				SegmentID: cue.SegmentID,
+				Text:      string(runes[start:end]),
+			}
+			if useChars {
+				line.StartUS = cue.Chars[start].StartUS
+				line.EndUS = cue.Chars[end-1].EndUS
+				line.Chars = append([]CharCue(nil), cue.Chars[start:end]...)
+			} else {
+				line.StartUS, line.EndUS = distributedLine(cue, li, len(lines))
+			}
+			// 字符时间异常时不要造出毫秒级塌缩的 cue；退回按行均分。
+			if line.EndUS <= line.StartUS {
+				line.StartUS, line.EndUS = distributedLine(cue, li, len(lines))
+			}
+			if line.EndUS <= line.StartUS {
+				line.EndUS = line.StartUS + 1000
+			}
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // splitCueLines 复刻前端 splitLines：优先尊重换行，无换行的整段按标点/长度拆分。
 // 返回每个单行片段对应的 [startChar, endChar) 字符（rune）下标区间。
 func splitCueLines(text string) [][2]int {

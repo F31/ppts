@@ -383,7 +383,8 @@ func (b *BundleBuilder) buildInto(
 			return nil, nil, err
 		}
 	}
-	subtitlesJS, err := subtitlesScriptBody(timeline.Subtitles)
+	// 与 SRT/VTT 同一份逐行 cue；分享播放器不再自己从整段 cue 里轮换。
+	subtitlesJS, err := subtitlesScriptBody(media.SplitSubtitleCues(timeline.Subtitles))
 	if err != nil {
 		return nil, nil, fmt.Errorf("share: marshal subtitles: %w", err)
 	}

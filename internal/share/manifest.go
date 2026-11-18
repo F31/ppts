@@ -532,7 +532,7 @@ func (m *Manifest) scriptBody() ([]byte, error) {
 	return []byte("window.__PPT_MANIFEST__ = " + string(payload) + ";\n"), nil
 }
 
-// subtitlesScriptBody 生成 subtitles.js：cues 来自时间轴（含字符级时间戳），
+// subtitlesScriptBody 生成 subtitles.js：cues 是时间轴按行拆好的逐行 cue（含字符级时间戳），
 // 与 subtitles.vtt 同一份内容，只是换成经典脚本形式以绕开 file:// 的 fetch/CORS 限制。
 func subtitlesScriptBody(cues []media.SubtitleCue) ([]byte, error) {
 	if cues == nil {

@@ -112,7 +112,7 @@ type SubtitleCue struct {
 	EndUS     int64  `json:"endUs"`
 	Text      string `json:"text"`
 	// Chars 是可选字符级时间戳（相对全局时钟），供播放器按朗读位置逐行轮换 + 高亮。
-	// SRT/VTT 渲染只消费 Text，忽略此字段以保持导出格式稳定。
+	// SRT/VTT 通过 SplitSubtitleCues 用它切行；没有 Chars 时退回按行均分。
 	Chars []CharCue `json:"chars,omitempty"`
 }
 

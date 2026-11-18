@@ -764,3 +764,56 @@ func TestValidateSynthesisResultAcceptsAlignMethods(t *testing.T) {
 		t.Fatal("越界 token 应被拒绝")
 	}
 }
+
+// 方案 A 的端到端门禁：长讲稿发布后的 SRT/VTT 必须是逐行 cue，而不是整段一条。
+func TestNarrationPublishesLineLevelSubtitles(t *testing.T) {
+	longText := "第一句内容测试内容内容。第二句内容测试内容内容。第三句内容测试内容内容。第四句内容测试内容内容。"
+	store := &narrationStoreStub{revision: approvedRevision(
+		&narration.Segment{SegmentID: "seg-1", DisplayText: longText, SpokenText: longText},
+	)}
+	steps := &stepRecorder{}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	handler := NewNarrationHandler(store, steps, objects, providerForTests())
+
+	if err := handler.Handle(context.Background(), narrationJob(t)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	var timelineRef string
+	for _, step := range steps.latest {
+		if step.StepType == "timeline" {
+			timelineRef = step.ResultRef
+		}
+	}
+	if timelineRef == "" {
+		t.Fatal("timeline step missing")
+	}
+	key, err := objectstore.Parse(timelineRef)
+	if err != nil {
+		t.Fatalf("parse bundle key: %v", err)
+	}
+	r, _, err := objects.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("get bundle: %v", err)
+	}
+	data, _ := io.ReadAll(r)
+	r.Close()
+	var bundle TimelineAsset
+	if err := json.Unmarshal(data, &bundle); err != nil {
+		t.Fatalf("decode bundle: %v", err)
+	}
+	for _, subtitleKey := range []string{bundle.SRTKey, bundle.VTTKey} {
+		key, err := objectstore.Parse(subtitleKey)
+		if err != nil {
+			t.Fatalf("parse subtitle key: %v", err)
+		}
+		r, _, err := objects.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("get subtitle: %v", err)
+		}
+		body, _ := io.ReadAll(r)
+		r.Close()
+		if got := strings.Count(string(body), " --> "); got < 2 {
+			t.Fatalf("subtitle cues = %d, want line-level (>=2):\n%s", got, body)
+		}
+	}
+}
