@@ -56,6 +56,7 @@ func runPipelineStoreConformance(t *testing.T, newEnv func(t *testing.T) pipelin
 		{"RetryFailed", conformanceJobRetryFailed},
 		{"ListPaging", conformanceJobListPaging},
 		{"EventsSince", conformanceJobEventsSince},
+		{"ExpiredLeaseReclaim", conformanceExpiredLeaseReclaim},
 		{"StepUpsert", conformanceStepUpsert},
 		{"CompleteWithStepAtomic", conformanceCompleteWithStepAtomic},
 		{"CompleteWithStepFencing", conformanceCompleteWithStepFencing},
@@ -410,6 +411,35 @@ func mustDepth(t *testing.T, ctx context.Context, env pipelineConformanceEnv) []
 		t.Fatalf("QueueDepthByKind: %v", err)
 	}
 	return stats
+}
+
+// 租约过期后的重领取：不需要可控时钟——用负租期直接写出一个已经过期的 lease，
+// 第二个 worker 必须能领到同一行，且 fencing 单调递增、旧租约无法再续租/提交。
+func conformanceExpiredLeaseReclaim(t *testing.T, ctx context.Context, env pipelineConformanceEnv) {
+	j := mustCreateJob(t, env, ctx, KindParse, "lease-expired", time.Time{})
+	first, err := env.Store.ClaimNext(ctx, env.Tenant, "old-worker", -time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext(old): %v", err)
+	}
+	if first.ID != j.ID || first.FencingToken != 1 || first.Attempt != 1 {
+		t.Fatalf("first claim = %+v, want id=%s fencing=1 attempt=1", first, j.ID)
+	}
+
+	second, err := env.Store.ClaimNext(ctx, env.Tenant, "new-worker", 30*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimNext(new after expiry): %v", err)
+	}
+	if second.ID != j.ID || second.FencingToken != 2 || second.Attempt != 2 {
+		t.Fatalf("reclaim = %+v, want same job with fencing=2 attempt=2", second)
+	}
+
+	// 旧 worker 不能靠旧 fencing 续租或提交，否则过期租约等于永久授权。
+	if err := env.Store.Heartbeat(ctx, j.ID, "old-worker", first.FencingToken, time.Minute); !errors.Is(err, ErrLeaseMismatch) {
+		t.Fatalf("old heartbeat = %v, want ErrLeaseMismatch", err)
+	}
+	if err := env.Store.Complete(ctx, j.ID, "old-worker", first.FencingToken, StateSucceeded, nil); !errors.Is(err, ErrLeaseMismatch) {
+		t.Fatalf("old complete = %v, want ErrLeaseMismatch", err)
+	}
 }
 
 // 步骤覆盖规则：同 key 重放只留一行、引用不被空值覆盖；任务终态后仍可读。

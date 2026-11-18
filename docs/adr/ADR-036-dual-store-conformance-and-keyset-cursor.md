@@ -91,5 +91,7 @@ PG 的唯一约束冲突补 `isPGUniqueViolation`（23505）映射：先 SELECT 
   `CompleteWithStepAtomic`、`CompleteWithStepFencing`），两种实现同跑。
 - ✅ 2026-11-17 已闭环：`folders` 增加 `(tenant_id, name)` 唯一索引（PG `0056` /
   SQLite `0022`），迁移先合并存量重名再建索引；应用层预检查保留用于友好报错。
-- 租约过期后的重领取（`lease_until < now`）只验证了「未到期领不到」，
-  未覆盖时钟推进后的竞态；需要可控时钟，成本高于收益。
+- ✅ 2026-11-18 已闭环：租约过期后的重领取用负租期写出一个已过期的 lease，
+  第二个 worker 必须领到同一行且 fencing 递增；旧 worker 的 Heartbeat / Complete
+  必须返回 `ErrLeaseMismatch`。这不需要可控时钟，语义等价于时钟推进。
+- 仍未覆盖：真实系统时钟回拨 / 数据库时间跳变；本决策不引入假时钟，保持测试成本可接受。
