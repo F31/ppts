@@ -11,6 +11,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -68,7 +71,41 @@ const (
 	TriggerEnter         = "onEnter"
 	TriggerSegmentPrefix = "withSegment:"
 	TriggerAtTimePrefix  = "atTime:"
+	TriggerAtWordPrefix  = "atWord:"
 )
+
+// AtWordTrigger 是 atWord:<segmentId>:<charStart>[:<charEnd>] 的解析结果。
+// 它只描述字符区间，不携带时间；时间由渲染编译器用字幕字级钟换算。
+type AtWordTrigger struct {
+	SegmentID string
+	CharStart int
+	CharEnd   int
+}
+
+var atWordTriggerRe = regexp.MustCompile(`^atWord:(.*?):(\d+)(?::(\d+))?$`)
+
+// ParseAtWordTrigger 解析 atWord 触发。非法时返回 false，由调用方决定 400 还是回退。
+func ParseAtWordTrigger(raw string) (AtWordTrigger, bool) {
+	if !strings.HasPrefix(raw, TriggerAtWordPrefix) {
+		return AtWordTrigger{}, false
+	}
+	m := atWordTriggerRe.FindStringSubmatch(raw)
+	if len(m) != 4 || m[1] == "" {
+		return AtWordTrigger{}, false
+	}
+	start, err := strconv.Atoi(m[2])
+	if err != nil || start < 0 {
+		return AtWordTrigger{}, false
+	}
+	end := 0
+	if m[3] != "" {
+		end, err = strconv.Atoi(m[3])
+		if err != nil || end < start {
+			return AtWordTrigger{}, false
+		}
+	}
+	return AtWordTrigger{SegmentID: m[1], CharStart: start, CharEnd: end}, true
+}
 
 // 绑定来源标注（Q7 决策 4：每条机器绑定 MUST 带来源）。
 //

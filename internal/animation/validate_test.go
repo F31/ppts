@@ -44,6 +44,24 @@ func validRevision() *Revision {
 	}
 }
 
+func TestValidateAcceptsAtWordTrigger(t *testing.T) {
+	rev := validRevision()
+	rev.Tracks[1].Clips[0].Trigger = "atWord:seg-1:2"
+	if err := rev.Validate(validPageContext()); err != nil {
+		t.Fatalf("atWord trigger rejected: %v", err)
+	}
+}
+
+func TestValidateRejectsMalformedAtWordTrigger(t *testing.T) {
+	rev := validRevision()
+	rev.Tracks[1].Clips[0].Trigger = "atWord:seg-1:-1"
+	err := rev.Validate(validPageContext())
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Status != 400 {
+		t.Fatalf("err = %v, want 400 validation error", err)
+	}
+}
+
 func TestValidateAcceptsLegalSpec(t *testing.T) {
 	rev := validRevision()
 	if err := rev.Validate(validPageContext()); err != nil {

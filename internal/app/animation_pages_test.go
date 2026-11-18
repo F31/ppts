@@ -90,6 +90,27 @@ func assemblerInput() AnimationPageInput {
 	}
 }
 
+func TestAnimationPageAssemblerMapsAtWordStarts(t *testing.T) {
+	in := assemblerInput()
+	in.Subtitles = []media.SubtitleCue{{
+		SlideID: "s1", SegmentID: "s1:seg1",
+		Text: "测试",
+		Chars: []media.CharCue{
+			{StartUS: 1_050_000, EndUS: 1_100_000, Char: "测"},
+			{StartUS: 1_200_000, EndUS: 1_250_000, Char: "试"},
+		},
+	}}
+	a := NewAnimationPageAssembler(&recordingPublisher{}, &fakeSpecSource{})
+	req, err := a.Build(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := req.Pages[0].SegmentCharStarts["seg1"]
+	if len(got) != 2 || got[0] != 50 || got[1] != 200 {
+		t.Fatalf("char starts = %v, want [50 200] (page-relative)", got)
+	}
+}
+
 func TestAnimationPageAssemblerBuildsPages(t *testing.T) {
 	pub := &recordingPublisher{}
 	key := animation.Key{TenantID: "t1", ProjectID: "p1", SlideID: "s1", Language: "zh-CN", SourceRevisionNo: 2}

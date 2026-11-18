@@ -175,6 +175,26 @@ func TestMissingPageNeverReusesPlate(t *testing.T) {
 
 // 清单字段名是给播放器读的契约，改名字要改播放器。这里锁住 JSON 形状，
 // 避免「字段名换了但两端都编译通过」这种静默不兼容。
+func TestSlideOverlayJSONShape(t *testing.T) {
+	entry := SlideEntry{
+		SlideID: "s1", StartUS: 0, EndUS: 1000, Image: "slides/001.png",
+		Overlays: []SlideOverlay{{
+			ID: "flow-1", Kind: "dot", StartMs: 100, DurationMs: 800,
+			Points: []SlideOverlayPoint{{X: 10, Y: 20}, {X: 300, Y: 200}},
+			Color:  "#FFD166", SizePx: 12, Opacity: 1,
+		}},
+	}
+	raw, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"overlays":[`, `"kind":"dot"`, `"points":[{"x":10,"y":20}`, `"sizePx":12`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("overlay JSON missing %s: %s", want, raw)
+		}
+	}
+}
+
 func TestManifestAnimationJSONShape(t *testing.T) {
 	entry := SlideEntry{
 		SlideID: "s1", StartUS: 0, EndUS: 1000, Image: "slides/001.png",

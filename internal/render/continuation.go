@@ -150,7 +150,7 @@ func (c *Compiler) injectContinuations(pages []PageInput, out *Timeline) {
 // 天然连续，避免了「两段预拆分 Props 再各自施加缓动」导致的二次缓动跳变（设计 §2）。
 func (c *Compiler) continuationSegFor(in PageInput, track *animation.Track, clip *animation.Clip,
 	intensity float64) (*Motion, *Diagnostic) {
-	anchor, ok, _ := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
+	anchor, ok, _ := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.SegmentCharStarts, in.Index, clip.ID)
 	if !ok {
 		return nil, nil
 	}

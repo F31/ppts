@@ -10,7 +10,7 @@ import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } 
 import type { SlideCue, SubtitleCue, Timeline } from '../types';
 import { easeOutCubic } from '../../../shared/motion.ts';
 import { shotAt, cameraTransform } from '../../../shared/shots.ts';
-import type { Annotation, FocusSpan, Shot } from '../../../shared/types';
+import type { Annotation, FocusSpan, Overlay, Shot } from '../../../shared/types';
 import { applyLookCrop, buildLayerNodes, pickStageLayers, releaseLayers, seekLayer } from './animation';
 import type { CompiledLayer, ManifestLayer } from './animation';
 import { createPlayGuard } from './playGuard';
@@ -122,6 +122,7 @@ type ShareSlide = SlideCue & {
   /** 页级焦点序列：此刻讲的是谁（与 MP4 同一份求值）。 */
   focus?: FocusSpan[];
   annotations?: Annotation[];
+  overlays?: Overlay[];
   lookCrop?: boolean;
   lookCropPadPx?: number;
   clearRects?: { x: number; y: number; w: number; h: number }[];
@@ -458,7 +459,7 @@ function mount(): void {
     // 同一份清单，MP4 在指、网页版全亮。
     //
     // 低电量也只省元素层、不省遮罩，取舍写在 pickStageLayers 里（那里能被 CI 测到）。
-    const stageLayers = pickStageLayers(layers, slide.focus, lowPower || degraded, slide.annotations);
+    const stageLayers = pickStageLayers(layers, slide.focus, lowPower || degraded, slide.annotations, slide.overlays);
     if (stageLayers === null) return;
     activeLayers = buildLayerNodes(layersBox, stageLayers as ManifestLayer[], videoW, videoH, {
       fps: manifest.video.fps > 0 ? manifest.video.fps : 30,
@@ -466,6 +467,7 @@ function mount(): void {
       reduceMotion,
       focus: slide.focus,
       annotations: slide.annotations,
+      overlays: lowPower || degraded ? [] : slide.overlays,
       lookCrop: slide.lookCrop,
       pageImage: slide.image,
       clearRects: slide.clearRects
@@ -679,7 +681,7 @@ function mount(): void {
     // 前一页的层同样受低内存约束；否则降级只降了当前页、交叉时又冒出来一层。
     // 判据与当前页完全同一条（pickStageLayers）：只有焦点没有层的页，交叉时也要把
     // 遮罩建出来；低电量/已降级下元素层不建，但遮罩仍建。
-    const stageLayers = pickStageLayers(layers, before.focus, lowPower || degraded, before.annotations);
+    const stageLayers = pickStageLayers(layers, before.focus, lowPower || degraded, before.annotations, before.overlays);
     if (stageLayers === null) return;
     const pageMs = (before.endUs - before.startUs) / 1000;
     prevLayers = buildLayerNodes(prev.layers, stageLayers as ManifestLayer[], videoW, videoH, {
@@ -688,6 +690,7 @@ function mount(): void {
       reduceMotion,
       focus: before.focus,
       annotations: before.annotations,
+      overlays: lowPower || degraded ? [] : before.overlays,
       lookCrop: before.lookCrop,
       pageImage: before.image,
       clearRects: before.clearRects

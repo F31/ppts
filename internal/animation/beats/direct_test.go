@@ -161,6 +161,54 @@ func TestDirectRescuesCoverPage(t *testing.T) {
 	}
 }
 
+func TestParseDirectorFlow(t *testing.T) {
+	cands := []bind.Element{{ID: "a", Kind: "title", Text: "A"}, {ID: "b", Kind: "title", Text: "B"}}
+	segs := []SpeechSeg{{ID: "s1", Text: "A 传到 B。", StartMs: 0, EndMs: 6000}}
+	raw := `{"beats":[{"startMs":0,"endMs":3000,"segmentId":"s1","shapeId":"a","shot":"gaze","flow":{"from":"a","to":"b","carrier":"dot","route":"orthogonal","startMs":1000,"durationMs":800}},{"startMs":3000,"endMs":0,"segmentId":"s1","shapeId":"b","shot":"gaze"}]}`
+	beats, ok := parseDirectorBeats(raw, cands, segs)
+	if !ok || beats[0].Intent == nil || beats[0].Intent.Flow == nil {
+		t.Fatalf("flow intent missing: ok=%v beats=%+v", ok, beats)
+	}
+	f := beats[0].Intent.Flow
+	if f.From != "a" || f.To != "b" || f.Carrier != "dot" || f.Route != "orthogonal" {
+		t.Fatalf("flow = %+v", f)
+	}
+}
+
+func TestParseDirectorCreativeIntent(t *testing.T) {
+	cands := []bind.Element{
+		{ID: "sec-1", Kind: "title", Text: "行业趋势", Box: bind.Box{X: 160, Y: 240, W: 560, H: 80}},
+		{ID: "sec-2", Kind: "title", Text: "AI 大模型", Box: bind.Box{X: 160, Y: 380, W: 560, H: 80}},
+	}
+	segs := []SpeechSeg{{ID: "s1", Text: "第一部分是行业趋势，第二部分是 AI 大模型。", StartMs: 0, EndMs: 10000}}
+	raw := `{"beats":[{"startMs":0,"endMs":4000,"segmentId":"s1","shapeId":"sec-1","shot":"gaze","audienceQuestion":"先看什么","visualMetaphor":"目录点亮","initialState":"两项都暗","actions":[{"actor":"sec-1","action":"highlight","anchorWord":"行业趋势","anchorMs":1000}],"finalState":"第一项亮起","causalAction":"点名第一部分","causalChange":"第一项亮起","motionIntent":"focus+reveal","anchorWord":"行业趋势","anchorMs":1000,"confidence":0.8},{"startMs":4000,"endMs":0,"segmentId":"s1","shapeId":"sec-2","shot":"gaze"}]}`
+	beats, ok := parseDirectorBeats(raw, cands, segs)
+	if !ok {
+		t.Fatal("creative intent JSON rejected")
+	}
+	if beats[0].Intent == nil || beats[0].Intent.MotionIntent != "focus+reveal" {
+		t.Fatalf("intent = %+v", beats[0].Intent)
+	}
+	if len(beats[0].Intent.Actions) != 1 || beats[0].Intent.Actions[0].Actor != "sec-1" {
+		t.Fatalf("actions = %+v", beats[0].Intent.Actions)
+	}
+	if beats[1].Intent != nil {
+		t.Fatalf("empty optional fields must stay nil, got %+v", beats[1].Intent)
+	}
+}
+
+func TestParseDirectorOldJSONStillWorks(t *testing.T) {
+	cands := []bind.Element{
+		{ID: "c1", Kind: "title", Text: "甲"},
+		{ID: "c2", Kind: "title", Text: "乙"},
+	}
+	segs := []SpeechSeg{{ID: "s1", Text: "先甲后乙。", StartMs: 0, EndMs: 5000}}
+	beats, ok := parseDirectorBeats(validDirectorJSON(), cands, segs)
+	if !ok || len(beats) != 2 || beats[0].Intent != nil {
+		t.Fatalf("old JSON must remain compatible: ok=%v beats=%+v", ok, beats)
+	}
+}
+
 func TestDirectRejectsUnknownShape(t *testing.T) {
 	in, phase1 := coverInput()
 	f := &fixedDirector{fn: func(context.Context, bind.ModelPrompt) (bind.ModelCompletion, error) {

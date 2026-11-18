@@ -64,6 +64,22 @@ export type Layer = {
   image?: string;
 };
 
+/** v1 页级叠加 token：点/脉冲/箭头/连线。只是视觉原语，不含 flow/signal 业务语义。 */
+export type OverlayPoint = { x: number; y: number };
+
+export type Overlay = {
+  id?: string;
+  /** dot | pulse | arrow | line */
+  kind: string;
+  startMs: number;
+  durationMs: number;
+  points: OverlayPoint[];
+  color?: string;
+  sizePx?: number;
+  strokePx?: number;
+  opacity?: number;
+};
+
 export type Transition = {
   /** none | fade | slide | zoom */
   type: string;

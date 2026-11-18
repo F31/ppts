@@ -93,6 +93,8 @@ type SlideEntry struct {
 	Focus []SlideFocus `json:"focus,omitempty"`
 	// Annotations 是注视之上的圈选 / 台上标签。缺省表示没有。
 	Annotations []SlideAnnotation `json:"annotations,omitempty"`
+	// Overlays 是 v1 页级信号/数据 token；与 IR 的 page.overlays 同义。
+	Overlays []SlideOverlay `json:"overlays,omitempty"`
 	// LookCrop 为真时播放器把当前 Focus.rect 裁切铺满舞台。
 	LookCrop bool `json:"lookCrop,omitempty"`
 	// LookCropPadPx 是 punch-in 裁切外扩。缺省 8。
@@ -139,6 +141,24 @@ type SlideFocus struct {
 	Rect *SlideBox `json:"rect,omitempty"`
 	// VeilAlpha 矩形遮罩盖白的不透明度；(0,1]。缺省由播放器按 1-FOCUS_DIM_OPACITY。
 	VeilAlpha float64 `json:"veilAlpha,omitempty"`
+}
+
+// SlideOverlay 与 render.Overlay 同构；点坐标是画布像素。
+type SlideOverlay struct {
+	ID         string              `json:"id,omitempty"`
+	Kind       string              `json:"kind"`
+	StartMs    int64               `json:"startMs"`
+	DurationMs int64               `json:"durationMs"`
+	Points     []SlideOverlayPoint `json:"points"`
+	Color      string              `json:"color,omitempty"`
+	SizePx     int                 `json:"sizePx,omitempty"`
+	StrokePx   int                 `json:"strokePx,omitempty"`
+	Opacity    float64             `json:"opacity,omitempty"`
+}
+
+type SlideOverlayPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
 }
 
 // SlideAnnotation 与 render.Annotation 同构。

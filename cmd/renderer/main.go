@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -68,6 +69,7 @@ func run() error {
 		fontFamily   = flag.String("font-family", "Noto Sans CJK SC", "母版字体族名")
 		fontSubsetTO = flag.Duration("font-subset-timeout", 20*time.Second, "单次字体子集超时")
 		fontSubsetCC = flag.Int("font-subset-concurrency", 2, "同时运行的字体子集进程数")
+		features     = flag.String("features", "overlay_v1,flow_v1", "逗号分隔的加法能力声明；空 = 只支持 schema 基线")
 	)
 	flag.Parse()
 
@@ -166,6 +168,7 @@ func run() error {
 		AssetDir:       *assetDir,
 		Version:        *version,
 		Fonts:          parseFonts(*fonts),
+		Features:       parseFeatures(*features),
 		MaxConcurrent:  *concurrent,
 		MaxQueued:      *maxQueued,
 		JobTTL:         *jobTTL,
@@ -237,6 +240,16 @@ func parseFonts(s string) []render.Font {
 				}
 			}
 			out = append(out, render.Font{Family: family, Version: version})
+		}
+	}
+	return out
+}
+
+func parseFeatures(raw string) []string {
+	var out []string
+	for _, f := range strings.Split(raw, ",") {
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
 		}
 	}
 	return out

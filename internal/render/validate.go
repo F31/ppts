@@ -150,6 +150,9 @@ func (t *Timeline) validatePage(p *Page, frameMS int64) error {
 	if err := validateAnnotations(p, base); err != nil {
 		return err
 	}
+	if err := validateOverlays(p, base, frameMS, t.Width, t.Height); err != nil {
+		return err
+	}
 	if p.LookCrop {
 		if err := validateLookCrop(p, base); err != nil {
 			return err
@@ -500,6 +503,53 @@ func SafeAssetPath(p string) error {
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
 			return fmt.Errorf("asset path %q escapes the work root", p)
+		}
+	}
+	return nil
+}
+
+func validateOverlays(p *Page, base string, frameMS int64, width, height int) error {
+	if len(p.Overlays) == 0 {
+		return nil
+	}
+	if len(p.Overlays) > MaxOverlaysPerPage {
+		return planErr(base+".overlays", CodeInvalidPlan,
+			"%d overlays exceeds limit %d", len(p.Overlays), MaxOverlaysPerPage)
+	}
+	for i := range p.Overlays {
+		o := &p.Overlays[i]
+		ob := fmt.Sprintf("%s.overlays[%d]", base, i)
+		switch o.Kind {
+		case OverlayDot, OverlayPulse, OverlayArrow, OverlayLine:
+		default:
+			return planErr(ob+".kind", CodeInvalidPlan, "unknown overlay kind %q", o.Kind)
+		}
+		if o.StartMs < 0 || o.DurationMs < MinOverlayDurationMS {
+			return planErr(ob+".durationMs", CodeInvalidPlan,
+				"start/duration must be non-negative and >= %dms", MinOverlayDurationMS)
+		}
+		if o.StartMs+o.DurationMs > p.DurationMs+frameMS {
+			return planErr(ob+".durationMs", CodeInvalidPlan,
+				"overlay ends past page: %d > %d", o.StartMs+o.DurationMs, p.DurationMs)
+		}
+		if len(o.Points) < 2 || len(o.Points) > 16 {
+			return planErr(ob+".points", CodeInvalidPlan,
+				"want 2..16 points, got %d", len(o.Points))
+		}
+		for j, pt := range o.Points {
+			if pt.X < 0 || pt.X > float64(width) || pt.Y < 0 || pt.Y > float64(height) {
+				return planErr(fmt.Sprintf("%s.points[%d]", ob, j), CodeInvalidPlan,
+					"point (%.1f,%.1f) outside canvas %dx%d", pt.X, pt.Y, width, height)
+			}
+		}
+		if o.Opacity < 0 || o.Opacity > 1 {
+			return planErr(ob+".opacity", CodeInvalidPlan, "opacity must be in [0,1]")
+		}
+		if o.SizePx < 0 || o.SizePx > 128 {
+			return planErr(ob+".sizePx", CodeInvalidPlan, "sizePx must be in [0,128]")
+		}
+		if o.StrokePx < 0 || o.StrokePx > 16 {
+			return planErr(ob+".strokePx", CodeInvalidPlan, "strokePx must be in [0,16]")
 		}
 	}
 	return nil

@@ -39,6 +39,9 @@ type AnimationPage struct {
 	Shots []render.PageShotInput
 	// SegmentOffsets 是分段 id → 相对本页起点的毫秒偏移，供 withSegment 触发器解析。
 	SegmentOffsets map[string]int64
+	// SegmentCharStarts 是分段 id → 每个 DisplayText 字符相对本页起点的毫秒。
+	// 供 atWord 触发器解析；缺失时编译器退回分段起点并留 word_anchor_missing。
+	SegmentCharStarts map[string][]int64
 	// Focus 是本页的焦点序列（画布像素矩形，或者图层 id）。
 	//
 	// 由讲稿的分段目标 + 解析产物的框算出（见 focus_spans.go），不是规格的一部分：

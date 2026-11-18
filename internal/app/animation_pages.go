@@ -194,17 +194,18 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 			spans = nil
 		}
 		req.Pages = append(req.Pages, AnimationPage{
-			SlideID:        slide.SlideID,
-			DurationMs:     durationMS,
-			BaseImage:      rel,
-			Elements:       elements,
-			Revision:       rev,
-			Shots:          revShots(rev),
-			SegmentOffsets: segmentOffsets(slide),
-			Focus:          spans,
-			Diagnostics:    focusDiags,
-			BeatSheet:      sheet,
-			GazeDenyIDs:    deny,
+			SlideID:           slide.SlideID,
+			DurationMs:        durationMS,
+			BaseImage:         rel,
+			Elements:          elements,
+			Revision:          rev,
+			Shots:             revShots(rev),
+			SegmentOffsets:    segmentOffsets(slide),
+			SegmentCharStarts: segmentCharStarts(slide, in.Subtitles),
+			Focus:             spans,
+			Diagnostics:       focusDiags,
+			BeatSheet:         sheet,
+			GazeDenyIDs:       deny,
 		})
 	}
 	return req, nil
@@ -435,6 +436,40 @@ func specRefsBySlide(snapshot ExportSnapshot) map[string]AnimationSpecRef {
 // 键用**页内 id**（去掉时间轴的「页:段」前缀）：动画规格里存的、编辑器里列的
 // 都是页内 id，编译器按同一个键查偏移。不换算就等于 withSegment 永远查不到，
 // 动效静默退化到页首。
+// SegmentCharStarts 暴露页内字符起点，供单页预览复用与导出完全相同的 atWord 口径。
+func SegmentCharStarts(slide media.SlideCue, subtitles []media.SubtitleCue) map[string][]int64 {
+	return segmentCharStarts(slide, subtitles)
+}
+
+func segmentCharStarts(slide media.SlideCue, subtitles []media.SubtitleCue) map[string][]int64 {
+	if len(subtitles) == 0 {
+		return nil
+	}
+	out := make(map[string][]int64)
+	for _, cue := range subtitles {
+		if cue.SlideID != "" && cue.SlideID != slide.SlideID {
+			continue
+		}
+		seg := media.UnscopedSegmentID(slide.SlideID, cue.SegmentID)
+		if seg == "" || len(cue.Chars) == 0 {
+			continue
+		}
+		starts := make([]int64, len(cue.Chars))
+		for i, ch := range cue.Chars {
+			ms := (ch.StartUS - slide.StartUS) / 1000
+			if ms < 0 {
+				ms = 0
+			}
+			starts[i] = ms
+		}
+		out[seg] = starts
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func segmentOffsets(slide media.SlideCue) map[string]int64 {
 	if len(slide.Segments) == 0 {
 		return nil

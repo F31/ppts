@@ -47,6 +47,9 @@ type PageInput struct {
 	Revision   *animation.Revision
 	// SegmentOffsets 是分段 id → 相对本页起点的毫秒偏移。
 	SegmentOffsets map[string]int64
+	// SegmentCharStarts 是分段 id → 每个 DisplayText 字符相对本页起点的毫秒。
+	// atWord 用它把字符锚点换算成页内时间；没有这一项时 atWord 回退到分段起点。
+	SegmentCharStarts map[string][]int64
 	// Focus 是页级焦点序列（见 Page.Focus）。这里只透传：焦点不是动效，
 	// 由画布求值器推导非焦点元素的压暗量，编译器不参与。
 	Focus []FocusSpan
@@ -158,6 +161,7 @@ func (c *Compiler) Compile(pages []PageInput) (*Timeline, error) {
 	if err := out.Validate(); err != nil {
 		return nil, err
 	}
+	out.Warnings = append(out.Warnings, LintTimeline(out, DefaultLintOptions())...)
 	return out, nil
 }
 
@@ -276,6 +280,9 @@ func (c *Compiler) CompilePage(in PageInput) (Page, []Diagnostic, error) {
 			}
 			alignEntranceClipsToFocus(&page)
 			page.ClearRects = headingClearRects(in.Elements, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)
+			overlays, fd := flowOverlays(in, c.scale, c.opt.Canvas.Width, c.opt.Canvas.Height)
+			page.Overlays = append(page.Overlays, overlays...)
+			diags = append(diags, fd...)
 		} else if len(page.Focus) == 0 && presetFocusFollowsSegment(in.Revision) {
 			ids := make(map[string]struct{}, len(page.Layers))
 			for _, l := range page.Layers {
@@ -483,7 +490,7 @@ func (c *Compiler) compileClip(in PageInput, clip *animation.Clip, layer Layer,
 		return m, diags, false
 	}
 
-	anchor, ok, diag := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.Index, clip.ID)
+	anchor, ok, diag := resolveTrigger(clip.Trigger, in.SegmentOffsets, in.SegmentCharStarts, in.Index, clip.ID)
 	if diag != nil {
 		// 分段失效是可恢复的：起点退化为 0 并留痕，用户看到的是"这条提前了"而不是"导出失败"。
 		diags = append(diags, *diag)
@@ -837,10 +844,35 @@ func alignEntranceClipsToFocus(page *Page) {
 
 // resolveTrigger 把三种触发形式解析为页内锚点毫秒。
 // 返回的是锚点而非最终起点：clip.startMs 的相对偏移由 compileClip 叠加。
-func resolveTrigger(trigger string, offsets map[string]int64, page int, clipID string) (int64, bool, *Diagnostic) {
+func resolveTrigger(trigger string, offsets map[string]int64, charStarts map[string][]int64, page int, clipID string) (int64, bool, *Diagnostic) {
 	switch {
 	case trigger == "" || trigger == "onEnter":
 		return 0, true, nil
+	case len(trigger) > len(animation.TriggerAtWordPrefix) && trigger[:len(animation.TriggerAtWordPrefix)] == animation.TriggerAtWordPrefix:
+		wt, ok := animation.ParseAtWordTrigger(trigger)
+		if !ok {
+			return 0, false, &Diagnostic{
+				Code: "trigger_invalid", Page: page, ClipID: clipID,
+				Message: fmt.Sprintf("无法解析触发 %q", trigger),
+			}
+		}
+		if starts := charStarts[wt.SegmentID]; wt.CharStart < len(starts) {
+			at := starts[wt.CharStart]
+			if at < 0 {
+				at = 0
+			}
+			return at, true, nil
+		}
+		if off, ok := offsets[wt.SegmentID]; ok {
+			return off, true, &Diagnostic{
+				Code: DiagWordAnchorMissing, Page: page, ClipID: clipID,
+				Message: fmt.Sprintf("分段 %q 没有第 %d 个字符的时间戳，atWord 退回分段起点", wt.SegmentID, wt.CharStart),
+			}
+		}
+		return 0, true, &Diagnostic{
+			Code: DiagSegmentUnresolved, Page: page, ClipID: clipID,
+			Message: fmt.Sprintf("分段 %q 在当前讲稿修订中不存在，atWord 起点退化为 0", wt.SegmentID),
+		}
 	case len(trigger) > len("withSegment:") && trigger[:len("withSegment:")] == "withSegment:":
 		seg := trigger[len("withSegment:"):]
 		if off, ok := offsets[seg]; ok {

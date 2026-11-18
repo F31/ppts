@@ -19,6 +19,13 @@ import (
 // IRSchemaVersion 是 IR 的契约版本。改动字段语义必须递增，服务端据此拒绝旧版计划。
 const IRSchemaVersion = "compiled-timeline/v1"
 
+// 可选的加法能力名。它们不是 schema 版本：老 renderer 仍拒绝未知字段，
+// API 必须先用 Health.Features 协商，再决定是否写/发这些内容。
+const (
+	RenderFeatureOverlayV1 = "overlay_v1"
+	RenderFeatureFlowV1    = "flow_v1"
+)
+
 // 渲染参数的硬边界（IR 校验与服务端请求限制共用）。
 const (
 	MinFPS = 12
@@ -35,6 +42,11 @@ const (
 	// MaxShotsPerPage 是一页里镜头切片的上限。超过这个数就不是「切镜」，
 	// 是把一整段剪贴进一页：观众跟不上，片段缓存也失去意义（一页仍是一段）。
 	MaxShotsPerPage = 4
+	// MaxOverlaysPerPage 是 v1 的 Flow/信号叠加上限；它不是特效容量，而是
+	// 注意力预算：超过两条主传递，观众会同时被拉向多处。
+	MaxOverlaysPerPage = 4
+	// MinOverlayDurationMS 防止一帧闪过的 token；与 clip 最短时长同量级。
+	MinOverlayDurationMS = 120
 
 	// MaxAnnotationsPerPage 是一页标注条数上限（圈选 + 词级下划线 + 台上 caption）。
 	MaxAnnotationsPerPage = 48
@@ -125,7 +137,39 @@ type Page struct {
 	// 内容单元、时间单元（DurationMs）、渲染单元（一个分段）与交互单元
 	// （页变即重建层），牵动片段缓存、清单游标校验与 V13/V13b 的按页取样。
 	Shots []Shot `json:"shots,omitempty"`
+	// Overlays 是 v1 的轻量叠加原语：点/脉冲/箭头/连线。它是页面上的临时 token，
+	// 不是源元素图层；源 PPT 不拆矢量层，也不参与 overlay 的几何生成。
+	//
+	// 全部 omitempty：旧计划字节与 planHash 不变。渲染能力由 renderer 的
+	// `overlay_v1` feature 协商；未声明时 API 不得提交本字段。
+	Overlays []Overlay `json:"overlays,omitempty"`
 }
+
+// Overlay 是页级临时绘制原语。它只有视觉参数，不含 flow/signal/data 等业务语义。
+type Overlay struct {
+	ID         string         `json:"id,omitempty"`
+	Kind       string         `json:"kind"` // dot | pulse | arrow | line
+	StartMs    int64          `json:"startMs"`
+	DurationMs int64          `json:"durationMs"`
+	Points     []OverlayPoint `json:"points"`
+	Color      string         `json:"color,omitempty"`
+	SizePx     int            `json:"sizePx,omitempty"`
+	StrokePx   int            `json:"strokePx,omitempty"`
+	Opacity    float64        `json:"opacity,omitempty"`
+}
+
+// OverlayPoint 是画布像素坐标（与 Layer.Box 同一套坐标）。
+type OverlayPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+const (
+	OverlayDot   = "dot"
+	OverlayPulse = "pulse"
+	OverlayArrow = "arrow"
+	OverlayLine  = "line"
+)
 
 // Shot 是一段页内镜头：一张铺满舞台的图，以及它取自原页的哪一块。
 //
@@ -307,6 +351,9 @@ const (
 	DiagAnchorMissing             = "anchor_missing"
 	DiagBoxClamped                = "box_clamped"
 	DiagSegmentUnresolved         = "segment_unresolved"
+	DiagWordAnchorMissing         = "word_anchor_missing"
+	DiagMotionBudget              = "motion_budget"
+	DiagFocusDwell                = "focus_dwell"
 	DiagDurationTierConflict      = "duration_tier_conflict"
 	DiagGeometryInferred          = "geometry_inferred"
 	DiagClipTruncated             = "clip_truncated"
@@ -321,7 +368,8 @@ const (
 	DiagFocusTargetMissing = "focus_target_missing"
 	// 同一页里同一目标被两段指向。渲染器要求焦点互斥（按 elementId 求压暗量），
 	// 第二段起无法表达，只能保留第一段并留痕。
-	DiagFocusDuplicate = "focus_duplicate"
+	DiagFocusDuplicate    = "focus_duplicate"
+	DiagFlowTargetMissing = "flow_target_missing"
 )
 
 // Diagnostic 是一条编译诊断。

@@ -218,6 +218,7 @@ export type AnimationPreviewScene = {
   layers: AnimationPreviewLayer[];
   focus: FocusSpan[];
   annotations?: Annotation[];
+  overlays?: import('../../../shared/types').Overlay[];
   lookCrop?: boolean;
   lookCropPadPx?: number;
   clearRects?: { x: number; y: number; w: number; h: number }[];

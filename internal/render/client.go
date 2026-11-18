@@ -116,6 +116,26 @@ func (c *Client) Health(ctx context.Context) (Health, error) {
 }
 
 // Available 报告渲染服务是否可用。上层用法：不可用就直接走静态导出，不构造计划。
+// Supports 报告当前渲染器是否声明支持某个加法能力。
+//
+// 它复用 Health 的进程级缓存：能力在容器生命周期内不变；不支持时调用方应降级，
+// 而不是把新字段发给会 `DisallowUnknownFields` 的老服务。
+func (c *Client) Supports(ctx context.Context, feature string) bool {
+	if strings.TrimSpace(feature) == "" {
+		return true
+	}
+	h, err := c.Health(ctx)
+	if err != nil {
+		return false
+	}
+	for _, f := range h.Features {
+		if f == feature {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) Available(ctx context.Context) bool {
 	_, err := c.Health(ctx)
 	return err == nil

@@ -4,7 +4,7 @@
 // 两端漂移的典型后果是「浏览器预览里入场是 600ms，导出的 mp4 里是 400ms」——
 // 这是客户最容易发现、也最伤信任的一类 bug（设计方案 §20.4）。
 
-import type { Annotation, Box, CubicBezier, FocusSpan, Layer, Motion } from './types';
+import type { Annotation, Box, CubicBezier, FocusSpan, Layer, Motion, Overlay, OverlayPoint } from './types';
 
 /** 层在某一时刻的合成状态。 */
 export type LayerState = {
@@ -463,4 +463,110 @@ export function originCss(origin?: string): string {
     default:
       return 'center center';
   }
+}
+
+
+/** Overlay 的默认颜色 / 尺寸（与 Go IR 的默认语义一致）。 */
+export const OVERLAY_COLOR = '#ffd166';
+export const OVERLAY_SIZE_PX = 12;
+export const OVERLAY_STROKE_PX = 2;
+export const OVERLAY_FADE_MS = 120;
+
+export type OverlayEval = {
+  /** 当前 token 位置（画布像素）。 */
+  x: number;
+  y: number;
+  /** 0 = 刚出现，1 = 到达终点。 */
+  progress: number;
+  /** 已绘制的点数；dot/pulse 只有当前点。 */
+  drawn: OverlayPoint[];
+  opacity: number;
+  /** 当前路径方向（度），供箭头使用；dot/pulse 为 0。 */
+  angle: number;
+};
+
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
+}
+
+function pointAt(points: OverlayPoint[], p: number): { x: number; y: number; angle: number } {
+  if (points.length === 0) return { x: 0, y: 0, angle: 0 };
+  if (points.length === 1) return { x: points[0].x, y: points[0].y, angle: 0 };
+  let total = 0;
+  const segs: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    const dx = points[i].x - points[i - 1].x;
+    const dy = points[i].y - points[i - 1].y;
+    const len = Math.hypot(dx, dy);
+    segs.push(len);
+    total += len;
+  }
+  if (total <= 1e-9) return { x: points[0].x, y: points[0].y, angle: 0 };
+  let remain = clamp01(p) * total;
+  for (let i = 0; i < segs.length; i++) {
+    if (remain <= segs[i] || i === segs.length - 1) {
+      const seg = Math.max(1e-9, segs[i]);
+      const t = Math.min(1, remain / seg);
+      const a = points[i];
+      const b = points[i + 1];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+      return { x: a.x + dx * t, y: a.y + dy * t, angle };
+    }
+    remain -= segs[i];
+  }
+  const last = points[points.length - 1];
+  return { x: last.x, y: last.y, angle: 0 };
+}
+
+function drawnPoints(points: OverlayPoint[], p: number, current: OverlayPoint): OverlayPoint[] {
+  if (p <= 0) return [current];
+  const out: OverlayPoint[] = [];
+  let total = 0;
+  const segs: number[] = [];
+  for (let i = 1; i < points.length; i++) {
+    const len = Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+    segs.push(len);
+    total += len;
+  }
+  if (total <= 1e-9) return points.slice();
+  let remain = clamp01(p) * total;
+  out.push(points[0]);
+  for (let i = 0; i < segs.length; i++) {
+    if (remain >= segs[i]) {
+      out.push(points[i + 1]);
+      remain -= segs[i];
+      continue;
+    }
+    if (remain > 1e-9) out.push(current);
+    break;
+  }
+  return out.length >= 2 ? out : [points[0], current];
+}
+
+/**
+ * evaluateOverlay 把一条页级 Overlay 变成某一时刻的 token 状态。
+ *
+ * 它只做几何/透明度求值，不解释 flow/signal/data：两端（Remotion 与 HTML）都用这一份，
+ * 防止「MP4 里信号到了终点，网页版还停在起点」这类漂移。
+ */
+export function evaluateOverlay(o: Overlay | undefined, tMs: number): OverlayEval | null {
+  if (!o || !(o.durationMs > 0) || !o.points || o.points.length < 2) return null;
+  const start = o.startMs;
+  const end = o.startMs + o.durationMs;
+  if (tMs < start || tMs >= end) return null;
+  const p = clamp01((tMs - start) / o.durationMs);
+  const fade = Math.min(OVERLAY_FADE_MS, Math.max(1, o.durationMs / 2));
+  const inP = clamp01((tMs - start) / fade);
+  const outP = clamp01((end - tMs) / fade);
+  const opacity = Math.min(inP, outP) * (o.opacity ?? 1);
+  if (opacity <= 1e-6) return null;
+  const current = pointAt(o.points, p);
+  const isLine = o.kind === 'line' || o.kind === 'arrow';
+  const drawn = isLine ? drawnPoints(o.points, p, { x: current.x, y: current.y }) : [{ x: current.x, y: current.y }];
+  return {
+    x: current.x, y: current.y, progress: p,
+    drawn, opacity, angle: current.angle
+  };
 }

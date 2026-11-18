@@ -94,16 +94,16 @@ test('降级接在渲染循环里，且与 lowPower 共用「不建元素层」�
   const renderAt = player.indexOf('    render(us);');
   const sampleAt = player.indexOf('fpsMeter.frame(performance.now())');
   assert.ok(renderAt > 0 && sampleAt > renderAt, '帧率采样要放在 render 之后');
-  // 换页重建层时，降级与低内存走同一个分支（第四参 annotations 是批注层，不参与降级判定）。
+  // 换页重建层时，降级与低内存走同一个分支（第五参 overlays 也不参与降级判定）。
   assert.match(
     player,
-    /pickStageLayers\(layers, slide\.focus, lowPower \|\| degraded, slide\.annotations\)/,
+    /pickStageLayers\(layers, slide\.focus, lowPower \|\| degraded, slide\.annotations, slide\.overlays\)/,
     '降级后新页也不得再建元素层'
   );
   // 交叉转场会重建前一页的层，同样必须带上 degraded，否则降级只降当前页。
   assert.match(
     player,
-    /pickStageLayers\(layers, before\.focus, lowPower \|\| degraded, before\.annotations\)/,
+    /pickStageLayers\(layers, before\.focus, lowPower \|\| degraded, before\.annotations, before\.overlays\)/,
     '降级后交叉转场的前一页也不得再建元素层'
   );
   // 已建的层要当场拆掉。

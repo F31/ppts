@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	directorPromptVersion  = "beats-direct-v1"
+	directorPromptVersion  = "beats-direct-v2"
 	defaultDirectorTimeout = 12 * time.Second
 	maxDirectorBeats       = 24
 	maxDirectorElemChars   = 120
@@ -50,6 +50,7 @@ const directorSystemPrompt = `你在做一件很窄的事：根据讲解稿，�
 5. 至少两个不同的 gaze shapeId。
 6. 宁可少拍，也不要猜。没点名的形状不要出现。
 7. 页码、页眉、图注已经不在候选里。
+8. 可选创作字段（有把握才填，没有就省略）：audienceQuestion、visualMetaphor、initialState、actions、finalState、causalAction、causalChange、motionIntent、flow、anchorWord、anchorMs、confidence。不要为了填而编。
 
 只输出一个 JSON 对象，形状严格如下，不要任何解释文字、不要 markdown 代码块：
 {"beats":[{"startMs":0,"endMs":0,"segmentId":"...","shapeId":"...","shot":"gaze"}]}
@@ -191,6 +192,20 @@ type llmBeat struct {
 	ShapeID   string `json:"shapeId"`
 	Shot      string `json:"shot"`
 	Text      string `json:"text"`
+
+	// 可选创作字段：缺失/非法时忽略，不影响旧六字段解析。
+	Confidence       float64                `json:"confidence,omitempty"`
+	AudienceQuestion string                 `json:"audienceQuestion,omitempty"`
+	VisualMetaphor   string                 `json:"visualMetaphor,omitempty"`
+	InitialState     string                 `json:"initialState,omitempty"`
+	Actions          []animation.BeatAction `json:"actions,omitempty"`
+	FinalState       string                 `json:"finalState,omitempty"`
+	CausalAction     string                 `json:"causalAction,omitempty"`
+	CausalChange     string                 `json:"causalChange,omitempty"`
+	MotionIntent     string                 `json:"motionIntent,omitempty"`
+	Flow             *animation.BeatFlow    `json:"flow,omitempty"`
+	AnchorWord       string                 `json:"anchorWord,omitempty"`
+	AnchorMs         int64                  `json:"anchorMs,omitempty"`
 }
 
 func parseDirectorBeats(raw string, cands []bind.Element, segs []SpeechSeg) ([]animation.Beat, bool) {
@@ -262,6 +277,7 @@ func parseDirectorBeats(raw string, cands []bind.Element, segs []SpeechSeg) ([]a
 			SegmentID: item.SegmentID,
 			Shot:      shot,
 			Text:      strings.TrimSpace(item.Text),
+			Intent:    intentFromLLM(item),
 		}
 		if shot == animation.BeatShotGaze {
 			if !directorIDOK(item.ShapeID) {
@@ -286,6 +302,33 @@ func parseDirectorBeats(raw string, cands []bind.Element, segs []SpeechSeg) ([]a
 		prevStart = item.StartMs
 	}
 	return out, true
+}
+
+func intentFromLLM(item llmBeat) *animation.BeatIntent {
+	if item.AudienceQuestion == "" && item.VisualMetaphor == "" &&
+		item.InitialState == "" && len(item.Actions) == 0 &&
+		item.FinalState == "" && item.CausalAction == "" &&
+		item.CausalChange == "" && item.MotionIntent == "" && item.Flow == nil &&
+		item.AnchorWord == "" && item.AnchorMs == 0 && item.Confidence == 0 {
+		return nil
+	}
+	intent := &animation.BeatIntent{
+		AudienceQuestion: item.AudienceQuestion,
+		VisualMetaphor:   item.VisualMetaphor,
+		InitialState:     item.InitialState,
+		Actions:          item.Actions,
+		FinalState:       item.FinalState,
+		CausalAction:     item.CausalAction,
+		CausalChange:     item.CausalChange,
+		MotionIntent:     item.MotionIntent,
+		Flow:             item.Flow,
+		AnchorWord:       item.AnchorWord,
+		AnchorMs:         item.AnchorMs,
+	}
+	if item.Confidence >= 0 && item.Confidence <= 1 {
+		intent.Confidence = item.Confidence
+	}
+	return intent
 }
 
 func directorHasForbidden(raw string) bool {

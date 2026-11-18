@@ -1,6 +1,10 @@
 package animation
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestBeatSheetValidCountsGlobalUniqueIDs(t *testing.T) {
 	if (*BeatSheet)(nil).Valid() {
@@ -37,5 +41,23 @@ func TestBeatSheetValidCountsGlobalUniqueIDs(t *testing.T) {
 	}}
 	if !emptyShot.Valid() {
 		t.Fatal("空 Shot 视为 gaze")
+	}
+}
+func TestBeatIntentIsOptional(t *testing.T) {
+	b := Beat{StartMs: 1000, SegmentID: "s1", ShapeID: "sec-1", Shot: BeatShotGaze, Text: "甲"}
+	raw, err := json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "intent") {
+		t.Fatalf("nil intent must be omitted: %s", raw)
+	}
+	b.Intent = &BeatIntent{MotionIntent: "focus", Confidence: 0.8}
+	raw, err = json.Marshal(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"intent"`) {
+		t.Fatalf("intent missing: %s", raw)
 	}
 }

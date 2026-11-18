@@ -130,7 +130,9 @@ type PageAnimation struct {
 	// Focus 是页级焦点序列，原样透传到清单。
 	Focus []SlideFocus
 	// Annotations 原样透传到清单。
-	Annotations   []SlideAnnotation
+	Annotations []SlideAnnotation
+	// Overlays 原样透传到清单。
+	Overlays      []SlideOverlay
 	LookCrop      bool
 	LookCropPadPx int
 	ClearRects    []SlideBox
@@ -592,7 +594,8 @@ func (b *BundleBuilder) writeSlides(
 			entries = append(entries, SlideEntry{
 				SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
 				Plate: true, Transition: &transition, Layers: layers, Shots: shots, Focus: anim.Focus,
-				Annotations: anim.Annotations, LookCrop: anim.LookCrop, LookCropPadPx: anim.LookCropPadPx,
+				Annotations: anim.Annotations, Overlays: anim.Overlays,
+				LookCrop: anim.LookCrop, LookCropPadPx: anim.LookCropPadPx,
 				ClearRects: anim.ClearRects,
 			})
 			previousName, previousPlate = name, true
@@ -651,7 +654,8 @@ func (b *BundleBuilder) writeSlides(
 		entry := SlideEntry{
 			SlideID: slide.SlideID, StartUS: slide.StartUS, EndUS: slide.EndUS, Image: name,
 			Shots: shots, Focus: anim.Focus,
-			Annotations: anim.Annotations, LookCrop: anim.LookCrop, LookCropPadPx: anim.LookCropPadPx,
+			Annotations: anim.Annotations, Overlays: anim.Overlays,
+			LookCrop: anim.LookCrop, LookCropPadPx: anim.LookCropPadPx,
 			ClearRects: anim.ClearRects,
 		}
 		// 转场同样不依赖图层：这一页没有元素级动效，不等于它不该有入场方式。

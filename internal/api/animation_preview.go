@@ -416,16 +416,17 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 	// BaseImage 只为通过 IR 的路径校验。浏览器播放读的是下面编码的 data URL，
 	// 不把页图投递给渲染服务，也不提交渲染任务。
 	plan, err := compiler.Compile([]render.PageInput{{
-		Index:          0,
-		SlideID:        key.SlideID,
-		DurationMs:     durationMS,
-		BaseImage:      "page.png",
-		Elements:       elements,
-		Revision:       rev,
-		SegmentOffsets: segmentOffsetsOf(*slide),
-		Focus:          focus,
-		BeatSheet:      beatSheet,
-		GazeDenyIDs:    denyIDs,
+		Index:             0,
+		SlideID:           key.SlideID,
+		DurationMs:        durationMS,
+		BaseImage:         "page.png",
+		Elements:          elements,
+		Revision:          rev,
+		SegmentOffsets:    segmentOffsetsOf(*slide),
+		SegmentCharStarts: app.SegmentCharStarts(*slide, bundle.Timeline.Subtitles),
+		Focus:             focus,
+		BeatSheet:         beatSheet,
+		GazeDenyIDs:       denyIDs,
 	}})
 	if err != nil {
 		// 编译失败是"这份规格/这页数据有问题"，不是服务故障：
@@ -584,6 +585,7 @@ type previewScene struct {
 	Layers          []share.SlideLayer      `json:"layers"`
 	Focus           []share.SlideFocus      `json:"focus"`
 	Annotations     []share.SlideAnnotation `json:"annotations,omitempty"`
+	Overlays        []share.SlideOverlay    `json:"overlays,omitempty"`
 	LookCrop        bool                    `json:"lookCrop,omitempty"`
 	LookCropPadPx   int                     `json:"lookCropPadPx,omitempty"`
 	ClearRects      []share.SlideBox        `json:"clearRects,omitempty"`
@@ -611,6 +613,7 @@ func buildPreviewScene(base image.Image, pagePNG []byte, plan *render.Timeline, 
 		Layers:          []share.SlideLayer{},
 		Focus:           previewFocus(page.Focus),
 		Annotations:     previewAnnotations(page.Annotations),
+		Overlays:        previewOverlays(page.Overlays),
 		LookCrop:        page.LookCrop,
 		LookCropPadPx:   page.LookCropPadPx,
 		ClearRects:      previewClearRects(page.ClearRects),
@@ -643,6 +646,25 @@ func buildPreviewScene(base image.Image, pagePNG []byte, plan *render.Timeline, 
 		}
 	}
 	return scene
+}
+
+func previewOverlays(in []render.Overlay) []share.SlideOverlay {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideOverlay, 0, len(in))
+	for _, o := range in {
+		so := share.SlideOverlay{
+			ID: o.ID, Kind: o.Kind, StartMs: o.StartMs, DurationMs: o.DurationMs,
+			Color: o.Color, SizePx: o.SizePx, StrokePx: o.StrokePx, Opacity: o.Opacity,
+		}
+		so.Points = make([]share.SlideOverlayPoint, 0, len(o.Points))
+		for _, pt := range o.Points {
+			so.Points = append(so.Points, share.SlideOverlayPoint{X: pt.X, Y: pt.Y})
+		}
+		out = append(out, so)
+	}
+	return out
 }
 
 func previewHasAnimatedLayer(layers []render.Layer) bool {

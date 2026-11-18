@@ -229,3 +229,20 @@ func TestCheckDoesNotDoubleWrapUnavailable(t *testing.T) {
 		t.Fatalf("错误前缀出现了 %d 次: %v", n, err)
 	}
 }
+
+func TestClientSupportsFeature(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(Health{
+			Version: "x", SchemaVersion: IRSchemaVersion, Features: []string{RenderFeatureFlowV1},
+		})
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv.URL)
+	if !c.Supports(context.Background(), RenderFeatureFlowV1) {
+		t.Fatal("declared feature should be supported")
+	}
+	if c.Supports(context.Background(), RenderFeatureOverlayV1) {
+		t.Fatal("undeclared feature must not be supported")
+	}
+}

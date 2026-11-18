@@ -67,14 +67,16 @@ export function StagePlayback({ scene }: { scene: AnimationPreviewScene }) {
     const layers = (scene.layers ?? []) as ManifestLayer[];
     const focus = scene.focus ?? [];
     const annotations = scene.annotations ?? [];
+    const overlays = scene.overlays ?? [];
     let compiled: CompiledLayer[] = [];
-    if (needsLayerStage(layers, focus, annotations)) {
+    if (needsLayerStage(layers, focus, annotations, overlays)) {
       compiled = buildLayerNodes(layersBox, layers, scene.width, scene.height, {
         fps: scene.fps > 0 ? scene.fps : 30,
         pageDurationMs: scene.durationMs,
         reduceMotion,
         focus,
         annotations,
+        overlays,
         lookCrop: scene.lookCrop,
         pageImage: scene.image,
         clearRects: scene.clearRects

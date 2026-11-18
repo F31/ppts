@@ -29,13 +29,17 @@ import {
   calloutLayout,
   evaluateAnnotation,
   evaluateLayer,
+  evaluateOverlay,
+  OVERLAY_COLOR,
+  OVERLAY_SIZE_PX,
+  OVERLAY_STROKE_PX,
   focusDim,
   focusMasks,
   focusOpacity,
   isPageHeading,
   originCss
 } from '../../../shared/motion.ts';
-import type { Annotation, FocusSpan, Layer, Motion } from '../../../shared/types.ts';
+import type { Annotation, FocusSpan, Layer, Motion, Overlay } from '../../../shared/types.ts';
 
 /** 清单里的一层（字段是 IR 的投影，见 internal/share/manifest.go 的 SlideLayer）。 */
 export type ManifestLayer = {
@@ -65,11 +69,13 @@ export type CompileOptions = {
   pageImage?: string;
   /** 页眉大标题矩形：纱之上再贴原页图。 */
   clearRects?: { x: number; y: number; w: number; h: number }[];
+  /** v1 页级信号/数据 token。 */
+  overlays?: Overlay[];
 };
 
 /** 一页编译结果：每层一个 Animation，按清单顺序。 */
 export type CompiledLayer = {
-  element: HTMLElement;
+  element: HTMLElement | SVGElement;
   animation: Animation | null;
 };
 
@@ -202,6 +208,121 @@ export function compileKeyframes(
  * 元素尺寸与位置全部用百分比：清单里的 box 是画布像素，舞台按同一宽高比渲染，
  * 所以 x/W 与 w/W 直接就是百分比。用 px 会让 4:3 的页在 16:9 的舞台上错位。
  */
+function overlayKeyframes(o: Overlay, pageMs: number): Keyframe[] | null {
+  if (!(pageMs > 0) || !(o.durationMs > 0) || o.points.length < 2) return null;
+  const start = o.startMs;
+  const end = start + o.durationMs;
+  const times: number[] = [0];
+  for (let t = start; t <= end; t += 1000 / 30) times.push(t);
+  times.push(pageMs);
+  const points = timelinePoints(times, pageMs);
+  const isLine = o.kind === 'line' || o.kind === 'arrow';
+  const frames: Keyframe[] = [];
+  for (const t of points) {
+    const ev = evaluateOverlay(o, t);
+    if (!ev) {
+      frames.push({ offset: t / pageMs, opacity: '0' });
+      continue;
+    }
+    if (isLine) {
+      frames.push({ offset: t / pageMs, opacity: String(ev.opacity), strokeDashoffset: String(1 - ev.progress) });
+    } else {
+      const half = Math.max(2, (o.sizePx || OVERLAY_SIZE_PX) / 2);
+      frames.push({
+        offset: t / pageMs,
+        opacity: String(ev.opacity),
+        transform: `translate(calc(${ev.x - half}px * var(--ppts-k, 1)), calc(${ev.y - half}px * var(--ppts-k, 1)))`
+      });
+    }
+  }
+  return frames.length >= 2 ? frames : null;
+}
+
+function buildOverlays(
+  container: HTMLElement,
+  canvasW: number,
+  canvasH: number,
+  opts: CompileOptions,
+  canAnimate: boolean
+): CompiledLayer[] {
+  if (opts.reduceMotion) return [];
+  const out: CompiledLayer[] = [];
+  const pageMs = opts.pageDurationMs > 0 ? opts.pageDurationMs : 0;
+  for (const o of opts.overlays ?? []) {
+    if (!o.points || o.points.length < 2) continue;
+    const isLine = o.kind === 'line' || o.kind === 'arrow';
+    let node: HTMLElement | SVGElement;
+    if (isLine) {
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('viewBox', `0 0 ${canvasW} ${canvasH}`);
+      svg.setAttribute('preserveAspectRatio', 'none');
+      svg.style.position = 'absolute';
+      svg.style.inset = '0';
+      svg.style.width = '100%';
+      svg.style.height = '100%';
+      svg.style.overflow = 'visible';
+      svg.style.pointerEvents = 'none';
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      const d = o.points.map((pt, i) => `${i === 0 ? 'M' : 'L'}${pt.x},${pt.y}`).join(' ');
+      path.setAttribute('d', d);
+      path.setAttribute('fill', 'none');
+      path.setAttribute('stroke', o.color || OVERLAY_COLOR);
+      path.setAttribute('stroke-width', String(o.strokePx || OVERLAY_STROKE_PX));
+      path.setAttribute('stroke-linecap', 'round');
+      path.setAttribute('pathLength', '1');
+      path.setAttribute('stroke-dasharray', '1');
+      path.setAttribute('stroke-dashoffset', '1');
+      if (o.kind === 'arrow') {
+        const last = o.points[o.points.length - 1];
+        const prev = o.points[o.points.length - 2];
+        const angle = Math.atan2(last.y - prev.y, last.x - prev.x);
+        const size = o.sizePx || OVERLAY_SIZE_PX;
+        const ax = last.x - Math.cos(angle) * size;
+        const ay = last.y - Math.sin(angle) * size;
+        const px = Math.sin(angle) * size * 0.55;
+        const py = -Math.cos(angle) * size * 0.55;
+        const head = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+        head.setAttribute('points', `${last.x},${last.y} ${ax + px},${ay + py} ${ax - px},${ay - py}`);
+        head.setAttribute('fill', o.color || OVERLAY_COLOR);
+        svg.append(head);
+      }
+      svg.append(path);
+      node = svg;
+    } else {
+      const div = document.createElement('div');
+      const size = o.sizePx || OVERLAY_SIZE_PX;
+      div.style.position = 'absolute';
+      div.style.left = '0';
+      div.style.top = '0';
+      div.style.width = pct(size, canvasW);
+      div.style.height = pct(size, canvasH);
+      div.style.borderRadius = '50%';
+      div.style.background = o.color || OVERLAY_COLOR;
+      div.style.boxSizing = 'border-box';
+      div.style.boxShadow = o.kind === 'pulse' ? `0 0 0 ${Math.max(1, o.strokePx || OVERLAY_STROKE_PX)}px ${o.color || OVERLAY_COLOR}` : '';
+      div.style.opacity = '0';
+      div.style.pointerEvents = 'none';
+      node = div;
+    }
+    container.append(node);
+    let animation: Animation | null = null;
+    if (canAnimate && pageMs > 0) {
+      const frames = overlayKeyframes(o, pageMs);
+      if (frames) {
+        animation = node.animate(frames, {
+          duration: Math.max(1, pageMs),
+          fill: 'both',
+          easing: 'linear'
+        });
+        animation.pause();
+        animation.currentTime = 0;
+      }
+    }
+    out.push({ element: node, animation });
+  }
+  return out;
+}
+
 export function buildLayerNodes(
   container: HTMLElement,
   layers: ManifestLayer[],
@@ -281,6 +402,7 @@ export function buildLayerNodes(
     for (const layer of heading) appendLayer(layer, false);
   }
   out.push(...buildCaptions(container, opts, canAnimate));
+  if (!punchIn) out.push(...buildOverlays(container, canvasW, canvasH, opts, canAnimate));
   return out;
 }
 
@@ -415,13 +537,18 @@ export function hasCaption(annotations?: Annotation[]): boolean {
   return (annotations ?? []).some((a) => a.kind === 'caption' && (a.text ?? '').length > 0);
 }
 
+export function hasOverlays(overlays?: Overlay[]): boolean {
+  return (overlays ?? []).some((o) => o.kind && o.points?.length >= 2 && o.durationMs > 0);
+}
+
 export function needsLayerStage(
   layers: readonly ManifestLayer[],
   focus?: FocusSpan[],
-  annotations?: Annotation[]
+  annotations?: Annotation[],
+  overlays?: Overlay[]
 ): boolean {
   if (layers.length > 0) return true;
-  return hasRectFocus(focus) || hasCallout(annotations) || hasPointer(annotations) || hasCaption(annotations);
+  return hasRectFocus(focus) || hasCallout(annotations) || hasPointer(annotations) || hasCaption(annotations) || hasOverlays(overlays);
 }
 
 /**
@@ -439,11 +566,12 @@ export function pickStageLayers(
   layers: readonly ManifestLayer[],
   focus: FocusSpan[] | undefined,
   lowPower: boolean,
-  annotations?: Annotation[]
+  annotations?: Annotation[],
+  overlays?: Overlay[]
 ): readonly ManifestLayer[] | null {
-  if (!needsLayerStage(layers, focus, annotations)) return null;
+  if (!needsLayerStage(layers, focus, annotations, overlays)) return null;
   if (!lowPower) return layers;
-  // 低电量：元素层一个不放。纱 / 圈选 / 台上条仍建。
+  // 低电量：元素层与临时 Overlay 一个不放。纱 / 圈选 / 台上条仍建。
   return hasRectFocus(focus) || hasCallout(annotations) || hasPointer(annotations) || hasCaption(annotations)
     ? []
     : null;
@@ -738,7 +866,7 @@ export function seekLayer(layer: CompiledLayer, localMs: number): void {
     const t = Math.max(0, Math.min(duration > 0 ? duration : 0, localMs));
     layer.animation.currentTime = t;
   }
-  if (layer.element.classList.contains('ppts-caption')) {
+  if (layer.element instanceof HTMLElement && layer.element.classList.contains('ppts-caption')) {
     paintCaptionKaraoke(layer.element, localMs);
   }
 }

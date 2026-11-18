@@ -8,7 +8,7 @@
 // 这里刻意不引入 zod 之类的运行时校验：校验的权威在 Go 侧（Validate 已在提交前跑过），
 // Node 端重复校验只会得到两套规则。
 
-import type { Annotation, Box, FocusSpan, Layer, Shot, Transition } from '../../shared/types';
+import type { Annotation, Box, FocusSpan, Layer, Overlay, Shot, Transition } from '../../shared/types';
 
 export type {
   Annotation,
@@ -18,6 +18,8 @@ export type {
   Layer,
   Motion,
   MotionProp,
+  Overlay,
+  OverlayPoint,
   Shot,
   Transition
 } from '../../shared/types';
@@ -53,6 +55,7 @@ export type Page = {
   /** 页级焦点序列：此刻讲的是谁（见 shared/motion.ts 的 focusDim）。 */
   focus?: FocusSpan[];
   annotations?: Annotation[];
+  overlays?: Overlay[];
   lookCrop?: boolean;
   lookCropPadPx?: number;
   /** 页眉大标题矩形：纱之上再贴原页图，标题保持原始清晰。 */

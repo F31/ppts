@@ -372,6 +372,20 @@ func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, 
 			}
 		}
 		return nil
+	case strings.HasPrefix(c.Trigger, TriggerAtWordPrefix):
+		wt, ok := ParseAtWordTrigger(c.Trigger)
+		if !ok {
+			return invalid(RuleStructure, field+".trigger", "atWord requires segment id and non-negative char range", 400)
+		}
+		if _, ok := segments[wt.SegmentID]; !ok {
+			return &ValidationError{
+				Rule: RuleSegment, Field: field + ".trigger",
+				Message: fmt.Sprintf("segment %q no longer exists", wt.SegmentID),
+				Hint:    "讲稿已重新生成，请重新选择分段或改为页首触发",
+				Status:  409,
+			}
+		}
+		return nil
 	case strings.HasPrefix(c.Trigger, TriggerAtTimePrefix):
 		raw := strings.TrimPrefix(c.Trigger, TriggerAtTimePrefix)
 		ms, err := strconv.ParseInt(raw, 10, 64)
@@ -393,7 +407,7 @@ func validateClipTrigger(c *Clip, segments map[string]struct{}, pc PageContext, 
 		return &ValidationError{
 			Rule: RuleStructure, Field: field + ".trigger",
 			Message: fmt.Sprintf("unknown trigger %q", c.Trigger),
-			Hint:    "onEnter | withSegment:<id> | atTime:<ms>",
+			Hint:    "onEnter | withSegment:<id> | atTime:<ms> | atWord:<segment>:<charStart>[:<charEnd>]",
 			Status:  400,
 		}
 	}

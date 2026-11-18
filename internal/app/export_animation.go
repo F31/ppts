@@ -39,7 +39,7 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 		inputs = append(inputs, render.PageInput{
 			Index: i, SlideID: p.SlideID, DurationMs: p.DurationMs,
 			BaseImage: p.BaseImage, Elements: p.Elements, Revision: p.Revision,
-			SegmentOffsets: p.SegmentOffsets, Shots: p.Shots,
+			SegmentOffsets: p.SegmentOffsets, SegmentCharStarts: p.SegmentCharStarts, Shots: p.Shots,
 			// 焦点在这一层已经换算成画布像素：编译器的职责是排版与动效，
 			// 不该再替内容层决定"这段话在讲哪根柱子"。
 			Focus: p.Focus, BeatSheet: p.BeatSheet, GazeDenyIDs: p.GazeDenyIDs,
@@ -98,6 +98,7 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 			Focus:         slideFocus(page.Focus),
 			Shots:         shots,
 			Annotations:   slideAnnotations(page.Annotations),
+			Overlays:      slideOverlays(page.Overlays),
 			LookCrop:      page.LookCrop,
 			LookCropPadPx: page.LookCropPadPx,
 			ClearRects:    slideBoxes(page.ClearRects),
@@ -457,7 +458,8 @@ func hasAnimatedLayer(layers []render.Layer) bool {
 // 最需要指的那一页往往一个层都没有。真正什么都没有的静态页不占，M6-1 的包必须
 // 逐字节不变（清单里多一条空动画就是一次回归）。
 func pageNeedsBundleEntry(anim share.PageAnimation) bool {
-	if len(anim.Shots) > 0 || len(anim.Focus) > 0 || len(anim.Annotations) > 0 || anim.LookCrop || len(anim.ClearRects) > 0 {
+	if len(anim.Shots) > 0 || len(anim.Focus) > 0 || len(anim.Annotations) > 0 ||
+		len(anim.Overlays) > 0 || anim.LookCrop || len(anim.ClearRects) > 0 {
 		return true
 	}
 	// type=none 与「没有转场」同义：写进清单只是多一个字段，播放器按 none 直接切。
@@ -479,6 +481,25 @@ func bundleClips(clips []render.Motion) []share.Clip {
 			ElementID:            c.ElementID,
 			Carry:                c.Carry,
 		})
+	}
+	return out
+}
+
+func slideOverlays(in []render.Overlay) []share.SlideOverlay {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideOverlay, 0, len(in))
+	for _, o := range in {
+		so := share.SlideOverlay{
+			ID: o.ID, Kind: o.Kind, StartMs: o.StartMs, DurationMs: o.DurationMs,
+			Color: o.Color, SizePx: o.SizePx, StrokePx: o.StrokePx, Opacity: o.Opacity,
+		}
+		so.Points = make([]share.SlideOverlayPoint, 0, len(o.Points))
+		for _, pt := range o.Points {
+			so.Points = append(so.Points, share.SlideOverlayPoint{X: pt.X, Y: pt.Y})
+		}
+		out = append(out, so)
 	}
 	return out
 }

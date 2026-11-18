@@ -143,9 +143,12 @@ type Health struct {
 	// 但漏洞台账与「升级后像素为什么变了」的排查需要它单独可读。
 	ChromeVersion string `json:"chromeVersion,omitempty"`
 	SchemaVersion string `json:"schemaVersion"`
-	FPS           int    `json:"maxFps"`
-	Fonts         []Font `json:"fonts"`
-	MaxConcurrent int    `json:"maxConcurrent"`
+	// Features 是渲染器支持的加法能力（如 overlay_v1）。调用方按它决定是否提交
+	// 新 IR 字段；老 renderer 不认识这些字段，不能静默收到。
+	Features      []string `json:"features,omitempty"`
+	FPS           int      `json:"maxFps"`
+	Fonts         []Font   `json:"fonts"`
+	MaxConcurrent int      `json:"maxConcurrent"`
 	// Running 只数正在跑的任务；排队中的单独报 Queued。
 	// 把 queued 混进 running 会让「到底有几个渲染进程在吃内存」这个最该看数的指标失真。
 	Running   int `json:"running"`
@@ -171,6 +174,9 @@ type ServiceConfig struct {
 	Version string
 	// Fonts 是镜像内可用字体清单，参与 planHash。
 	Fonts []Font
+	// Features 是当前渲染器实现支持的可选能力清单。空 = 只支持 schema 基线。
+	// 新能力必须先在渲染端实现并写进这里，API 才能编译/提交对应字段。
+	Features []string
 	// MaxConcurrent 是同时渲染的任务数上限（0 = 2）。
 	MaxConcurrent int
 	// MaxQueued 是排队中（queued）任务数上限（0 = 8）。
@@ -463,6 +469,7 @@ func (s *Service) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Backend:       s.cfg.Backend.Name(),
 		ChromeVersion: chromeVersion,
 		SchemaVersion: IRSchemaVersion,
+		Features:      s.cfg.Features,
 		FPS:           MaxFPS,
 		Fonts:         s.cfg.Fonts,
 		MaxConcurrent: s.cfg.MaxConcurrent,

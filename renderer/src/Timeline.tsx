@@ -21,11 +21,15 @@ import {
   focusOpacity,
   framesForDuration,
   isPageHeading,
-  originCss
+  originCss,
+  evaluateOverlay,
+  OVERLAY_COLOR,
+  OVERLAY_SIZE_PX,
+  OVERLAY_STROKE_PX
 } from '../../shared/motion';
 import { lookCropAt, lookCropEnabled, lookCropImageStyle } from '../../shared/lookcrop';
 import { shotAt } from '../../shared/shots';
-import type { Layer, Page, Timeline } from './types';
+import type { Layer, Overlay, Page, Timeline } from './types';
 
 /** 一层元素：位置、透明度、位图。heading 在纱之上时 dim 必须为 0。 */
 const LayerView: React.FC<{
@@ -72,6 +76,52 @@ const LayerView: React.FC<{
         />
       )}
     </div>
+  );
+};
+
+const OverlayView: React.FC<{ overlay: Overlay; tMs: number }> = ({ overlay, tMs }) => {
+  const ev = evaluateOverlay(overlay, tMs);
+  if (!ev) return null;
+  const color = overlay.color || OVERLAY_COLOR;
+  const size = overlay.sizePx || OVERLAY_SIZE_PX;
+  const stroke = overlay.strokePx || OVERLAY_STROKE_PX;
+  if (overlay.kind === 'line' || overlay.kind === 'arrow') {
+    const points = ev.drawn.map((pt: { x: number; y: number }) => `${pt.x},${pt.y}`).join(' ');
+    const rad = (ev.angle * Math.PI) / 180;
+    const ax = ev.x - Math.cos(rad) * size;
+    const ay = ev.y - Math.sin(rad) * size;
+    const px = Math.sin(rad) * size * 0.55;
+    const py = -Math.cos(rad) * size * 0.55;
+    return (
+      <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: ev.opacity, pointerEvents: 'none' }}>
+        <polyline points={points} fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round" />
+        {overlay.kind === 'arrow' ? (
+          <polygon
+            points={`${ev.x},${ev.y} ${ax + px},${ay + py} ${ax - px},${ay - py}`}
+            fill={color}
+          />
+        ) : null}
+      </svg>
+    );
+  }
+  const ring = overlay.kind === 'pulse';
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: ev.x - size / 2,
+        top: ev.y - size / 2,
+        width: size,
+        height: size,
+        borderRadius: '50%',
+        background: ring ? 'transparent' : color,
+        border: ring ? `${Math.max(1, stroke)}px solid ${color}` : undefined,
+        boxSizing: 'border-box',
+        opacity: ev.opacity,
+        transform: ring ? `scale(${1 + 0.35 * Math.sin(ev.progress * Math.PI)})` : undefined,
+        pointerEvents: 'none'
+      }}
+    />
   );
 };
 
@@ -283,6 +333,11 @@ const PageView: React.FC<{
               />
             );
           })
+        : null}
+      {!skipPageSpace
+        ? (page.overlays ?? []).map((o, i) => (
+            <OverlayView key={o.id || `overlay-${i}`} overlay={o} tMs={tMs} />
+          ))
         : null}
     </AbsoluteFill>
   );

@@ -154,7 +154,7 @@ func (h *ExportHandler) packHTMLSingle(ctx context.Context, job *pipeline.Job, s
 func animatedPageCount(pages []share.PageAnimation) int {
 	n := 0
 	for _, p := range pages {
-		if len(p.Layers) > 0 {
+		if len(p.Layers) > 0 || len(p.Overlays) > 0 {
 			n++
 		}
 	}

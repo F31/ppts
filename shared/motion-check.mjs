@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { CALLOUT_ARRIVE_MS, CALLOUT_ARRIVE_SCALE, calloutArriveScale, calloutLayout, cubicBezier, evaluateAnnotation, evaluateLayer, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY, layerTransformPx } from './motion.ts';
+import { CALLOUT_ARRIVE_MS, CALLOUT_ARRIVE_SCALE, calloutArriveScale, calloutLayout, cubicBezier, evaluateAnnotation, evaluateLayer, evaluateOverlay, FOCUS_DIM_OPACITY, focusDim, focusMasks, framesForDuration, IDENTITY, layerTransformPx } from './motion.ts';
 import {
   cropLocalRect,
   lookCropAt,
@@ -337,4 +337,18 @@ test('LookCrop 无 rect / 降级 / 镜头裁切都不 punch-in；入场层仍 pu
   assert.equal(lookCropEnabled({ lookCrop: true, hasEntranceLayers: true }), true);
   assert.equal(lookCropAt([{ startMs: 0, elementId: 'a' }], 0, 1920, 1080), null);
   assert.equal(lookCropAt([{ startMs: 1000, elementId: 'a', rect: { x: 1, y: 1, w: 10, h: 10 } }], 0, 1920, 1080), null);
+});
+
+test('Overlay：A→B 路径与淡入淡出同源，线/点都按进度取点', () => {
+  const o = { kind: 'line', startMs: 1000, durationMs: 900, points: [{ x: 0, y: 0 }, { x: 400, y: 0 }], opacity: 1 };
+  assert.equal(evaluateOverlay(o, 900), null);
+  const mid = evaluateOverlay(o, 1450);
+  assert.ok(mid);
+  assert.equal(Math.round(mid.x), 200);
+  assert.equal(Math.round(mid.y), 0);
+  assert.equal(mid.drawn.length, 2);
+  const end = evaluateOverlay(o, 1899);
+  assert.ok(end);
+  assert.ok(end.x > 399);
+  assert.equal(evaluateOverlay(o, 1900), null);
 });

@@ -183,6 +183,47 @@ func TestUnknownDurationFails(t *testing.T) {
 	}
 }
 
+func TestAtWordTriggerUsesCharStart(t *testing.T) {
+	c := newTestCompiler(t)
+	page, diags, err := c.CompilePage(PageInput{
+		Index: 1, SlideID: "s2", DurationMs: 6400, BaseImage: "p1.png",
+		Elements:          []Element{{ID: "e", Kind: animation.KindBullet, Bounds: emuBox(100, 100, 400, 100)}},
+		SegmentOffsets:    map[string]int64{"seg-3": 3500},
+		SegmentCharStarts: map[string][]int64{"seg-3": {3500, 3800, 4200}},
+		Revision: revisionOf("business-calm", 1, &animation.Track{ElementID: "e", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c", "fadeIn", 120, 500, "atWord:seg-3:2")}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", diags)
+	}
+	if got := page.Layers[0].Clips[0].StartMs; got != 4320 {
+		t.Fatalf("startMs = %d, want 4320 (char 2 at 4200 + 120)", got)
+	}
+}
+
+func TestAtWordTriggerFallsBackWhenCharMissing(t *testing.T) {
+	c := newTestCompiler(t)
+	page, diags, err := c.CompilePage(PageInput{
+		Index: 1, SlideID: "s2", DurationMs: 6400, BaseImage: "p1.png",
+		Elements:       []Element{{ID: "e", Kind: animation.KindBullet, Bounds: emuBox(100, 100, 400, 100)}},
+		SegmentOffsets: map[string]int64{"seg-3": 3500},
+		Revision: revisionOf("business-calm", 1, &animation.Track{ElementID: "e", Kind: animation.KindBullet,
+			Clips: []*animation.Clip{clipOf("c", "fadeIn", 0, 500, "atWord:seg-3:9")}}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasDiag(diags, DiagWordAnchorMissing) {
+		t.Fatalf("missing word anchor should be diagnosed, got %+v", diags)
+	}
+	if got := page.Layers[0].Clips[0].StartMs; got != 3500 {
+		t.Fatalf("startMs = %d, want segment fallback 3500", got)
+	}
+}
+
 func TestSegmentTriggerResolvesToPageOffset(t *testing.T) {
 	c := newTestCompiler(t)
 	page, _, err := c.CompilePage(PageInput{
