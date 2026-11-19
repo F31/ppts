@@ -335,7 +335,3 @@ func toCanvasRect(b render.EMUBox, canvas design.Canvas, slideHeightEMU int64) (
 	}
 	return rect, ""
 }
-
-// focusSource 是组装器要的窄能力：按源版本取「可作焦点的框」。
-// 单独成接口是为了让测试不必造假对象存储。
-type focusSource = PageFocusSource

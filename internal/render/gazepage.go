@@ -638,19 +638,6 @@ func concatLooksArgs(list, out string, frames, fps, crf, gop int) []string {
 	return args
 }
 
-func concatLooks(ctx context.Context, ffmpeg string, clips []string, out string, frames, fps, crf, gop int) error {
-	list := out + ".concat.txt"
-	if err := os.WriteFile(list, []byte(concatListBody(filepath.Dir(list), clips)), 0o640); err != nil {
-		return fmt.Errorf("render: concat list: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, ffmpeg, concatLooksArgs(list, out, frames, fps, crf, gop)...)
-	outBytes, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("render: concat looks: %w: %s", err, trimTail(outBytes))
-	}
-	return nil
-}
-
 func trimTail(out []byte) string {
 	tail := strings.TrimSpace(string(out))
 	if len(tail) > 500 {

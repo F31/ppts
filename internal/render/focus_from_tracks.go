@@ -642,19 +642,6 @@ func gazeFocusReady(spans []FocusSpan) bool {
 	return true
 }
 
-func dropFocusWithoutRect(spans []FocusSpan) []FocusSpan {
-	out := spans[:0]
-	for _, s := range spans {
-		if s.Rect != nil && s.Rect.W > 0 && s.Rect.H > 0 {
-			out = append(out, s)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func annotationsFromFocus(spans []FocusSpan, callout string) []Annotation {
 	if len(spans) == 0 {
 		return nil
