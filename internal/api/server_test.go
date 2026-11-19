@@ -2731,8 +2731,8 @@ func TestArtifactManifestRouteMounted(t *testing.T) {
 		t.Fatalf("manifest 命中 SPA 兜底返回了 HTML（路由未挂载）: %s", body)
 	}
 	var payload struct {
-		TimelineJson    string `json:"timelineJson"`
-		Resources       []struct {
+		TimelineJson string `json:"timelineJson"`
+		Resources    []struct {
 			Type      string `json:"type"`
 			SignedUrl string `json:"signedUrl"`
 		} `json:"resources"`
