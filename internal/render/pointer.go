@@ -63,6 +63,15 @@ func pointerRect(box Box, shapeText, spoken string) *Box {
 	return &Box{X: x, Y: y, W: w, H: pointerHPx}
 }
 
+func pointerAllowed(kind string) bool {
+	switch kind {
+	case animation.KindTable, animation.KindRow, animation.KindChart, animation.KindBar:
+		return false
+	default:
+		return true
+	}
+}
+
 func compactRunes(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -123,6 +132,9 @@ func pointersFromFocus(spans []FocusSpan, elements []Element, sheet *animation.B
 			continue
 		}
 		el, ok := byID[s.ElementID]
+		if ok && !pointerAllowed(el.Kind) {
+			continue
+		}
 		box := *s.Rect
 		shapeText := ""
 		if ok {

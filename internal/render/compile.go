@@ -50,6 +50,8 @@ type PageInput struct {
 	// SegmentCharStarts 是分段 id → 每个 DisplayText 字符相对本页起点的毫秒。
 	// atWord 用它把字符锚点换算成页内时间；没有这一项时 atWord 回退到分段起点。
 	SegmentCharStarts map[string][]int64
+	// SegmentTexts 是分段 id → DisplayText，供容器/表头等文本锚点定位。
+	SegmentTexts map[string]string
 	// Focus 是页级焦点序列（见 Page.Focus）。这里只透传：焦点不是动效，
 	// 由画布求值器推导非焦点元素的压暗量，编译器不参与。
 	Focus []FocusSpan

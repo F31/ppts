@@ -39,7 +39,7 @@ func (h *ExportHandler) compileAnimationPlan(req AnimationRequest) (*render.Time
 		inputs = append(inputs, render.PageInput{
 			Index: i, SlideID: p.SlideID, DurationMs: p.DurationMs,
 			BaseImage: p.BaseImage, Elements: p.Elements, Revision: p.Revision,
-			SegmentOffsets: p.SegmentOffsets, SegmentCharStarts: p.SegmentCharStarts, Shots: p.Shots,
+			SegmentOffsets: p.SegmentOffsets, SegmentCharStarts: p.SegmentCharStarts, SegmentTexts: p.SegmentTexts, Shots: p.Shots,
 			// 焦点在这一层已经换算成画布像素：编译器的职责是排版与动效，
 			// 不该再替内容层决定"这段话在讲哪根柱子"。
 			Focus: p.Focus, BeatSheet: p.BeatSheet, GazeDenyIDs: p.GazeDenyIDs,

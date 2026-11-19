@@ -202,6 +202,7 @@ func (a *AnimationPageAssembler) Build(ctx context.Context, in AnimationPageInpu
 			Shots:             revShots(rev),
 			SegmentOffsets:    segmentOffsets(slide),
 			SegmentCharStarts: segmentCharStarts(slide, in.Subtitles),
+			SegmentTexts:      segmentTexts(slide, in.Subtitles),
 			Focus:             spans,
 			Diagnostics:       focusDiags,
 			BeatSheet:         sheet,
@@ -463,6 +464,32 @@ func segmentCharStarts(slide media.SlideCue, subtitles []media.SubtitleCue) map[
 			starts[i] = ms
 		}
 		out[seg] = starts
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// SegmentTexts 暴露页内 DisplayText，供容器/表头文本锚点与字级时间联用。
+func SegmentTexts(slide media.SlideCue, subtitles []media.SubtitleCue) map[string]string {
+	return segmentTexts(slide, subtitles)
+}
+
+func segmentTexts(slide media.SlideCue, subtitles []media.SubtitleCue) map[string]string {
+	if len(subtitles) == 0 {
+		return nil
+	}
+	out := make(map[string]string)
+	for _, cue := range subtitles {
+		if cue.SlideID != "" && cue.SlideID != slide.SlideID {
+			continue
+		}
+		seg := media.UnscopedSegmentID(slide.SlideID, cue.SegmentID)
+		if seg == "" || cue.Text == "" {
+			continue
+		}
+		out[seg] = cue.Text
 	}
 	if len(out) == 0 {
 		return nil

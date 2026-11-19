@@ -424,6 +424,7 @@ func (p *AnimationPreviewer) preview(w http.ResponseWriter, r *http.Request) {
 		Revision:          rev,
 		SegmentOffsets:    segmentOffsetsOf(*slide),
 		SegmentCharStarts: app.SegmentCharStarts(*slide, bundle.Timeline.Subtitles),
+		SegmentTexts:      app.SegmentTexts(*slide, bundle.Timeline.Subtitles),
 		Focus:             focus,
 		BeatSheet:         beatSheet,
 		GazeDenyIDs:       denyIDs,

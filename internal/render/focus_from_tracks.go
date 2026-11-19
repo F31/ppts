@@ -423,7 +423,7 @@ func (c *Compiler) compileGazeFocus(in PageInput, orig *animation.Revision) []Fo
 	if len(focus) < 2 {
 		return nil
 	}
-	return focus
+	return c.addContainerOverviews(in, focus)
 }
 
 func (c *Compiler) focusFromBeatSheet(in PageInput, orig *animation.Revision, allowRow bool) []FocusSpan {
