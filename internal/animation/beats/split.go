@@ -15,6 +15,10 @@ type piece struct {
 	StartMs   int64
 	EndMs     int64
 	SegmentID string
+	// Section / SectionID 是页面结构锚点：Section 是页内第几个编号分区，
+	// SectionID 是这一区的落点形状。没有编号页时为 0 / 空。
+	Section   int
+	SectionID string
 	// NoMerge 是显式结构边界切出的片段（如「第二部分」「第三部分」）。
 	// 短拍不能跨过它合并，否则两个点名句会重新粘成一片。
 	NoMerge bool
@@ -41,24 +45,31 @@ func isSentencePunct(r rune) bool {
 func splitAll(in Input) (pieces []piece, source string) {
 	source = animation.BeatSourcePunct
 	hold := holdMsOf(in)
+	sections := sectionsFromElements(in.Elements)
 	for _, seg := range in.Segments {
 		if trimText(seg.Text) == "" {
 			continue
 		}
+		refs := sectionRefCuts([]rune(seg.Text), sections)
+		if len(refs) == 0 {
+			refs = ordinalCuts([]rune(seg.Text))
+		}
 		if charsUsable(seg) {
 			source = animation.BeatSourceVAD
-			pieces = append(pieces, splitByChars(seg, hold)...)
+			pieces = append(pieces, splitByChars(seg, hold, refs)...)
 			continue
 		}
-		pieces = append(pieces, splitByPunct(seg, hold)...)
+		pieces = append(pieces, splitByPunct(seg, hold, refs)...)
 	}
 	return pieces, source
 }
 
 type charCut struct {
-	at   int
-	t    int64
-	hard bool
+	at        int
+	t         int64
+	hard      bool
+	section   int
+	sectionID string
 }
 
 func ordinalCuts(runes []rune) []charCut {
@@ -74,7 +85,7 @@ func ordinalCuts(runes []rune) []charCut {
 	return out
 }
 
-func splitByChars(seg SpeechSeg, hold int64) []piece {
+func splitByChars(seg SpeechSeg, hold int64, refs []charCut) []piece {
 	runes := []rune(seg.Text)
 	n := len(runes)
 	if n == 0 {
@@ -82,7 +93,7 @@ func splitByChars(seg SpeechSeg, hold int64) []piece {
 	}
 	var cuts []charCut
 	seen := map[int]struct{}{}
-	add := func(at int, hard bool) {
+	add := func(at int, hard bool, section int, sectionID string) {
 		if at <= 0 || at >= n {
 			return
 		}
@@ -94,44 +105,56 @@ func splitByChars(seg SpeechSeg, hold int64) []piece {
 					}
 				}
 			}
+			if section > 0 {
+				for k := range cuts {
+					if cuts[k].at == at {
+						cuts[k].section = section
+						cuts[k].sectionID = sectionID
+					}
+				}
+			}
 			return
 		}
 		seen[at] = struct{}{}
-		cuts = append(cuts, charCut{at: at, t: seg.Chars[at].StartMs, hard: hard})
+		cuts = append(cuts, charCut{at: at, t: seg.Chars[at].StartMs, hard: hard, section: section, sectionID: sectionID})
 	}
 	for i := 0; i < n-1; i++ {
 		if isSentencePunct(runes[i]) {
-			add(i+1, false)
+			add(i+1, false, 0, "")
 		}
 		gap := seg.Chars[i+1].StartMs - seg.Chars[i].EndMs
 		if gap >= hold {
-			add(i+1, false)
+			add(i+1, false, 0, "")
 		}
 	}
-	for _, c := range ordinalCuts(runes) {
-		add(c.at, true)
+	for _, c := range refs {
+		add(c.at, c.hard, c.section, c.sectionID)
 	}
 	sortCuts(cuts)
 	cuts = mergeCloseCuts(cuts, hold)
 
 	out := make([]piece, 0, len(cuts)+1)
 	hardAt := make(map[int]struct{}, len(cuts))
+	sectionAt := make(map[int]charCut, len(cuts))
 	for _, c := range cuts {
 		if c.hard {
 			hardAt[c.at] = struct{}{}
+		}
+		if c.section > 0 {
+			sectionAt[c.at] = c
 		}
 	}
 	lo := 0
 	loHard := false
 	for _, c := range cuts {
-		if p, ok := pieceFromRunes(seg, runes, lo, c.at); ok {
+		if p, ok := pieceFromRunes(seg, runes, lo, c.at, sectionAt[lo]); ok {
 			p.NoMerge = loHard || c.hard
 			out = append(out, p)
 		}
 		lo = c.at
 		_, loHard = hardAt[c.at]
 	}
-	if p, ok := pieceFromRunes(seg, runes, lo, n); ok {
+	if p, ok := pieceFromRunes(seg, runes, lo, n, sectionAt[lo]); ok {
 		p.NoMerge = loHard
 		out = append(out, p)
 	}
@@ -163,7 +186,7 @@ func mergeCloseCuts(cuts []charCut, hold int64) []charCut {
 	return out
 }
 
-func pieceFromRunes(seg SpeechSeg, runes []rune, lo, hi int) (piece, bool) {
+func pieceFromRunes(seg SpeechSeg, runes []rune, lo, hi int, cut charCut) (piece, bool) {
 	if lo >= hi {
 		return piece{}, false
 	}
@@ -181,10 +204,12 @@ func pieceFromRunes(seg SpeechSeg, runes []rune, lo, hi int) (piece, bool) {
 		StartMs:   start,
 		EndMs:     end,
 		SegmentID: seg.ID,
+		Section:   cut.section,
+		SectionID: cut.sectionID,
 	}, true
 }
 
-func splitByPunct(seg SpeechSeg, hold int64) []piece {
+func splitByPunct(seg SpeechSeg, hold int64, refs []charCut) []piece {
 	runes := []rune(seg.Text)
 	n := len(runes)
 	if n == 0 {
@@ -192,7 +217,8 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 	}
 	bounds := []int{0}
 	hardAt := map[int]struct{}{}
-	addBound := func(at int, hard bool) {
+	sectionAt := map[int]charCut{}
+	addBound := func(at int, hard bool, section int, sectionID string) {
 		if at <= 0 || at >= n {
 			return
 		}
@@ -200,20 +226,26 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 			if hard {
 				hardAt[at] = struct{}{}
 			}
+			if section > 0 {
+				sectionAt[at] = charCut{at: at, section: section, sectionID: sectionID}
+			}
 			return
 		}
 		bounds = append(bounds, at)
 		if hard {
 			hardAt[at] = struct{}{}
 		}
+		if section > 0 {
+			sectionAt[at] = charCut{at: at, section: section, sectionID: sectionID}
+		}
 	}
 	for i := 0; i < n-1; i++ {
 		if isSentencePunct(runes[i]) {
-			addBound(i+1, false)
+			addBound(i+1, false, 0, "")
 		}
 	}
-	for _, c := range ordinalCuts(runes) {
-		addBound(c.at, true)
+	for _, c := range refs {
+		addBound(c.at, c.hard, c.section, c.sectionID)
 	}
 	if bounds[len(bounds)-1] != n {
 		bounds = append(bounds, n)
@@ -228,8 +260,10 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 	bounds = uniq
 
 	type raw struct {
-		text   string
-		weight float64
+		text      string
+		weight    float64
+		section   int
+		sectionID string
 	}
 	var parts []raw
 	for i := 0; i < len(bounds)-1; i++ {
@@ -237,7 +271,8 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 		if trimText(text) == "" {
 			continue
 		}
-		parts = append(parts, raw{text: text, weight: textWeight(text)})
+		cut := sectionAt[bounds[i]]
+		parts = append(parts, raw{text: text, weight: textWeight(text), section: cut.section, sectionID: cut.sectionID})
 	}
 	if len(parts) == 0 {
 		return nil
@@ -275,6 +310,8 @@ func splitByPunct(seg SpeechSeg, hold int64) []piece {
 			StartMs:   t,
 			EndMs:     end,
 			SegmentID: seg.ID,
+			Section:   p.section,
+			SectionID: p.sectionID,
 			NoMerge:   hardStart || hardEnd,
 		})
 		t = end

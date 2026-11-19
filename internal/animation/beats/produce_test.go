@@ -517,6 +517,82 @@ func TestT10OpeningHoleFromLaterHit(t *testing.T) {
 	})
 }
 
+func tocCards() []bind.Element {
+	names := []string{
+		"01 行业趋势", "02 AI 大模型", "03 智能体",
+		"04 AI Coding", "05 智能办公", "06 启示与总结",
+	}
+	pos := []bind.Box{
+		{X: 64, Y: 194, W: 429, H: 232},
+		{X: 506, Y: 194, W: 429, H: 232},
+		{X: 947, Y: 194, W: 429, H: 232},
+		{X: 64, Y: 438, W: 429, H: 232},
+		{X: 506, Y: 438, W: 429, H: 232},
+		{X: 947, Y: 438, W: 429, H: 232},
+	}
+	out := make([]bind.Element, len(names))
+	for i, name := range names {
+		out[i] = bind.Element{ID: "sec-" + string(rune('1'+i)), Kind: "title", Box: pos[i], Text: name}
+	}
+	return out
+}
+
+func TestT13SectionNumberAnchorsTOCSections(t *testing.T) {
+	cards := tocCards()
+	text := "这一页是报告目录。开篇大会全景给出主题、规模、核心判断；随后第 2 板块 AI 大模型聚焦 Qwen；第 3 板块智能体覆盖 Agentic Cloud；第 4 板块 AI Coding 围绕 Qoder；第 5 板块智能办公落到千问办公；收束于启示与总结。"
+	out := Produce(Input{
+		Elements:   cards,
+		CompileIDs: compileIDs(cards...),
+		Segments: []SpeechSeg{{
+			ID: "s1", Text: text, StartMs: 0, EndMs: 15000, Method: tts.AlignEstimate,
+		}},
+	})
+	if out.Reason != ReasonOK {
+		t.Fatalf("reason=%s beats=%v", out.Reason, out.Sheet.Beats)
+	}
+	ids := gazeIDs(out.Sheet)
+	for _, want := range []string{"sec-4", "sec-5"} {
+		found := false
+		for _, id := range ids {
+			if id == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("gaze IDs=%v, want %s; beats=%v", ids, want, out.Sheet.Beats)
+		}
+	}
+}
+
+func TestT14SectionNumberDoesNotDependOnClassifier(t *testing.T) {
+	cards := tocCards()
+	text := "报告目录。第 2 区域 AI 大模型；第 3 区域智能体；第 4 区域 AI Coding；第 5 区域智能办公。"
+	out := Produce(Input{
+		Elements:   cards,
+		CompileIDs: compileIDs(cards...),
+		Segments: []SpeechSeg{{
+			ID: "s1", Text: text, StartMs: 0, EndMs: 12000, Method: tts.AlignEstimate,
+		}},
+	})
+	if out.Reason != ReasonOK {
+		t.Fatalf("reason=%s beats=%v", out.Reason, out.Sheet.Beats)
+	}
+	ids := gazeIDs(out.Sheet)
+	for _, want := range []string{"sec-4", "sec-5"} {
+		found := false
+		for _, id := range ids {
+			if id == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("gaze IDs=%v, want %s; beats=%v", ids, want, out.Sheet.Beats)
+		}
+	}
+}
+
 func TestT12OrdinalCommaSplitsTOCSections(t *testing.T) {
 	elems := []bind.Element{
 		{ID: "sec-1", Kind: "title", Text: "行业趋势", Box: bind.Box{X: 160, Y: 240, W: 560, H: 80}},

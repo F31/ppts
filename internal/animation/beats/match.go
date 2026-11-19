@@ -7,7 +7,7 @@ import (
 
 func matchPieces(pieces []piece, cands []bind.Element) []animation.Beat {
 	beats := make([]animation.Beat, 0, len(pieces))
-	matched := alignPieces(pieces, cands)
+	matched := alignPiecesWithSections(pieces, cands)
 	for i, p := range pieces {
 		b := animation.Beat{
 			StartMs:   p.StartMs,
@@ -25,6 +25,74 @@ func matchPieces(pieces []piece, cands []bind.Element) []animation.Beat {
 	}
 	assignOpeningHole(beats)
 	return beats
+}
+
+// alignPiecesWithSections 先固定页面结构给出的 section 落点，再让其余拍点走 DP。
+//
+// section 落点来自旁白数字引用（第 4 板块）与页面编号（04 AI Coding）的对应。
+// 它不是文本相似度猜出来的，所以即使一句里说了多个分区，也不会被 DP 合并掉一个。
+func alignPiecesWithSections(pieces []piece, cands []bind.Element) []int {
+	matched := make([]int, len(pieces))
+	for i := range matched {
+		matched[i] = -1
+	}
+	if len(pieces) == 0 || len(cands) == 0 {
+		return matched
+	}
+	byID := make(map[string]int, len(cands))
+	for i, c := range cands {
+		if _, ok := byID[c.ID]; !ok && c.ID != "" {
+			byID[c.ID] = i
+		}
+	}
+	used := make(map[int]struct{}, len(pieces))
+	anchored := false
+	for i, p := range pieces {
+		if p.SectionID == "" {
+			continue
+		}
+		j, ok := byID[p.SectionID]
+		if !ok {
+			continue
+		}
+		if _, dup := used[j]; dup {
+			continue
+		}
+		matched[i] = j
+		used[j] = struct{}{}
+		anchored = true
+	}
+	if !anchored {
+		return alignPieces(pieces, cands)
+	}
+
+	var subPieces []piece
+	var subPieceIndex []int
+	for i, p := range pieces {
+		if matched[i] >= 0 {
+			continue
+		}
+		subPieces = append(subPieces, p)
+		subPieceIndex = append(subPieceIndex, i)
+	}
+	var subCands []bind.Element
+	var subCandIndex []int
+	for j, c := range cands {
+		if _, ok := used[j]; ok {
+			continue
+		}
+		subCands = append(subCands, c)
+		subCandIndex = append(subCandIndex, j)
+	}
+	if len(subPieces) > 0 && len(subCands) > 0 {
+		subMatched := alignPieces(subPieces, subCands)
+		for i, j := range subMatched {
+			if j >= 0 {
+				matched[subPieceIndex[i]] = subCandIndex[j]
+			}
+		}
+	}
+	return matched
 }
 
 // alignPieces 在拍点与候选形状之间做单调一一对齐。
