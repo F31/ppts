@@ -57,6 +57,8 @@ func (h *ExportHandler) htmlBundleInput(ctx context.Context, job *pipeline.Job, 
 		CreatedAt:    time.Now(),
 		TextCopy:     snapshot.TextCopy,
 		Watermark:    snapshot.Watermark,
+		// 字幕显示偏移固化进分享包 manifest（迁移 0057），三处播放器共用。
+		DisplayOffsetMs: snapshot.DisplayOffsetMs,
 	}, pages, nil
 }
 

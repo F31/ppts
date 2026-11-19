@@ -2,6 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useI18n } from './i18n';
 import type { PlaybackManifest, PlaybackResource, Timeline } from './types';
 import { progress, slideAt, spokenCharAt, splitLines, subtitleAt, usecToClock } from './playerClock';
+import {
+  clampSyncOffset,
+  clearDraftOffset,
+  readDraftOffset,
+  syncOffsetKey,
+  writeDraftOffset,
+} from './syncOffset';
 
 type PlayerProps = {
   manifest: PlaybackManifest;
@@ -56,27 +63,25 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   const [fullscreen, setFullscreen] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
-  // 手动同步偏移（毫秒，正=高亮延后）：按时间轴持久化到本地，用于用户微调字/语音对齐残差。
-  const syncKey = `ppts-sync-${manifest.timelineKey || manifest.projectId}`;
-  const [syncOffsetMs, setSyncOffsetMs] = useState(0);
+  // 手动同步偏移（毫秒，正=高亮延后）。
+  // 成品预览（manifest 带固化 displayOffsetMs）只读固化值；编辑器实时预览用 localStorage 草稿，
+  // 导出时由页面把草稿读出并固化进成品。两种场景都由 syncOffset.ts 统一解析（三处口径一致）。
+  const isBakedArtifact = manifest.displayOffsetMs !== undefined;
+  const syncKey = syncOffsetKey(manifest.timelineKey, manifest.projectId);
+  const [draftOffsetMs, setDraftOffsetMs] = useState(() =>
+    readDraftOffset(manifest.timelineKey, manifest.projectId),
+  );
+  const syncOffsetMs = isBakedArtifact ? clampSyncOffset(manifest.displayOffsetMs!) : draftOffsetMs;
+  // cue 选择与字级高亮共用同一偏移：把"显示时间"整体平移，避免高亮与字幕各走各的时钟。
+  const displayPositionUs = positionUs - syncOffsetMs * 1000;
   useEffect(() => {
-    let n = 0;
-    try {
-      const raw = window.localStorage.getItem(syncKey);
-      n = raw ? Number(raw) : 0;
-    } catch {
-      n = 0;
-    }
-    setSyncOffsetMs(Number.isFinite(n) ? Math.max(-2000, Math.min(2000, n)) : 0);
+    setDraftOffsetMs(readDraftOffset(manifest.timelineKey, manifest.projectId));
   }, [syncKey]);
   const adjustSync = (delta: number) => {
-    setSyncOffsetMs((cur) => {
-      const next = Math.max(-2000, Math.min(2000, cur + delta));
-      try {
-        window.localStorage.setItem(syncKey, String(next));
-      } catch {
-        /* 隐私模式等无法写入时忽略 */
-      }
+    if (isBakedArtifact) return; // 成品固化值不可在预览里改（改了也不影响已发出的分享包）
+    setDraftOffsetMs((cur) => {
+      const next = clampSyncOffset(cur + delta);
+      writeDraftOffset(manifest.timelineKey, manifest.projectId, next);
       return next;
     });
   };
@@ -90,7 +95,8 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   const hideControlsTimerRef = useRef<number | null>(null);
 
   const activeSlide = slideAt(timeline, positionUs);
-  const activeSubtitle = subtitleAt(timeline, positionUs);
+  // cue 选择与页/音频时钟无关，只用于字幕显示，因此吃补偿后的显示时间（与高亮同一时钟）。
+  const activeSubtitle = subtitleAt(timeline, displayPositionUs);
   const pageResource = manifest.resources.find(
     (r: PlaybackResource) => r.type === 'PLAYBACK_RESOURCE_TYPE_PAGE_PNG' && r.slideId === activeSlide.slideId
   );
@@ -103,7 +109,7 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
   // B4-M6 字幕：只显示当前朗读的那一行（按 \n 切行、随朗读位置轮换），已朗读字符用高亮色。
   const spokenSubtitle = (() => {
     if (!displaySubtitle) return null;
-    const at = spokenCharAt(displaySubtitle, positionUs - syncOffsetMs * 1000);
+    const at = spokenCharAt(displaySubtitle, displayPositionUs);
     const lines = splitLines(displaySubtitle);
     const found = lines.findIndex((line) => at >= line.start && at < line.end);
     const lineIdx = found >= 0 ? found : at >= displaySubtitle.text.length ? lines.length - 1 : 0;
@@ -472,23 +478,26 @@ export function Player({ manifest, activeSlideId, activeSlideIndex = -1, activeI
           {hasAudio && (
             <span className="player-sync" title={t('player.syncHint')}>
               <span>{t('player.sync')}</span>
-              <button type="button" onClick={() => adjustSync(-50)} aria-label="-50ms">−</button>
-              <span className="player-sync-value">{syncOffsetMs > 0 ? `+${syncOffsetMs}` : syncOffsetMs}ms</span>
-              <button type="button" onClick={() => adjustSync(50)} aria-label="+50ms">＋</button>
-              {syncOffsetMs !== 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    try {
-                      window.localStorage.removeItem(syncKey);
-                    } catch {
-                      /* ignore */
-                    }
-                    setSyncOffsetMs(0);
-                  }}
-                >
-                  {t('player.syncReset')}
-                </button>
+              {isBakedArtifact ? (
+                // 成品固化值只读：它已随成品发布，改预览里的值不会也不该影响已导出的分享包。
+                <span className="player-sync-value">{syncOffsetMs > 0 ? `+${syncOffsetMs}` : syncOffsetMs}ms</span>
+              ) : (
+                <>
+                  <button type="button" onClick={() => adjustSync(-50)} aria-label="-50ms">−</button>
+                  <span className="player-sync-value">{syncOffsetMs > 0 ? `+${syncOffsetMs}` : syncOffsetMs}ms</span>
+                  <button type="button" onClick={() => adjustSync(50)} aria-label="+50ms">＋</button>
+                  {syncOffsetMs !== 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        clearDraftOffset(manifest.timelineKey, manifest.projectId);
+                        setDraftOffsetMs(0);
+                      }}
+                    >
+                      {t('player.syncReset')}
+                    </button>
+                  )}
+                </>
               )}
             </span>
           )}

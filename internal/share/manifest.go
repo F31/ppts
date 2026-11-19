@@ -62,6 +62,10 @@ type Manifest struct {
 	// 与 TextCopy 同一条理由写进清单：成品发出去之后，它的行为与外观不该因为
 	// 后台改套餐而变化。
 	Watermark string `json:"watermark,omitempty"`
+	// DisplayOffsetMs 是字幕显示偏移（毫秒，正 = 卡拉OK高亮延后），供播放器同时平移
+	// cue 选择与字级高亮。导出时固化，一份成品三处（编辑器预览/成品库预览/分享包）共用。
+	// 省略（0）时播放器用 0，与旧包逐字节一致。
+	DisplayOffsetMs int64 `json:"displayOffsetMs,omitempty"`
 }
 
 type ArtifactInfo struct {

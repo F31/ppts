@@ -325,6 +325,44 @@ func TestBuildTimelinePreciseCharMap(t *testing.T) {
 	}
 }
 
+// TestBuildTimelineCharMapOutOfRangeFallback 守 P3 的 bug：CharToToken 长度与显示文本
+// 一致但含越界下标时，pickCharsByToken 返回 nil；旧实现直接赋值 nil 会静默清空整段
+// Chars，播放器退化到整段线性高亮且无任何诊断。现在必须回落到比例重映射，Chars 仍在。
+func TestBuildTimelineCharMapOutOfRangeFallback(t *testing.T) {
+	timing := Timing{LeadInMS: 0, GapMS: 0, TailHoldMS: 0}
+	slides := []SlideInput{{
+		SlideID: "s1",
+		Segments: []SegmentInput{{
+			SegmentID: "seg-1", DisplayText: "ABCD",
+			AudioKey: "k.wav", DurationMS: 400,
+			Alignment: &tts.Alignment{Method: tts.AlignProvider, Tokens: []tts.TokenOffset{
+				{StartUS: 0, EndUS: 100000, Char: "A"},
+				{StartUS: 100000, EndUS: 200000, Char: "B"},
+				{StartUS: 200000, EndUS: 300000, Char: "C"},
+				{StartUS: 300000, EndUS: 400000, Char: "D"},
+			}},
+			// 长度与显示文本一致（4），但下标 99 越界 → pickCharsByToken 返回 nil。
+			CharToToken: []int{0, 99, 2, 3},
+		}},
+	}}
+	tl, err := BuildTimeline(slides, timing)
+	if err != nil {
+		t.Fatalf("BuildTimeline: %v", err)
+	}
+	chars := tl.Subtitles[0].Chars
+	if len(chars) != 4 {
+		t.Fatalf("越界映射必须回落比例重映射保住 Chars，len = %d want 4", len(chars))
+	}
+	for i := range chars {
+		if chars[i].EndUS <= chars[i].StartUS {
+			t.Fatalf("invalid fallback cue %d: %+v", i, chars[i])
+		}
+		if want := string([]rune("ABCD")[i]); chars[i].Char != want {
+			t.Fatalf("cue %d char = %q want %q", i, chars[i].Char, want)
+		}
+	}
+}
+
 // TestUnscopedSegmentID 守「规格用页内 id、时间轴用页:段」这个换算。
 // 两边形式一致时它什么都没做，不一致时缺了它就会让 withSegment 查不到偏移。
 func TestUnscopedSegmentID(t *testing.T) {

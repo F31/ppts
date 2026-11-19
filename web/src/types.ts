@@ -61,6 +61,8 @@ export type PlaybackManifest = {
   timelineJson: string;
   resources: PlaybackResource[];
   expiresAtUnix: number;
+  /** 成品固化的字幕显示偏移（毫秒，正=高亮延后）；缺省 0，与旧行为一致。 */
+  displayOffsetMs?: number;
 };
 
 export type ScriptSegment = {

@@ -17,3 +17,12 @@ var ttsVADAlignmentCacheTotal = expvar.NewMap("ppts_tts_vad_alignment_cache_tota
 func TTSVADAlignmentCache(event string) {
 	ttsVADAlignmentCacheTotal.Add(clean(event), 1)
 }
+
+var subtitleCharsSourceTotal = expvar.NewMap("ppts_subtitle_chars_source_total")
+
+// SubtitleCharsSource records how each subtitle cue's char-level timestamps were sourced.
+// Values are fixed labels (exact_map / proportional_remap / exact_map_invalid_fallback / none),
+// never text or IDs. It makes alignmentMethod + charsFallback observable per P2/P3.
+func SubtitleCharsSource(source string) {
+	subtitleCharsSourceTotal.Add(clean(source), 1)
+}

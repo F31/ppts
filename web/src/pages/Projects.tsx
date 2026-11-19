@@ -37,6 +37,7 @@ import { ExportDialog, type ExportFormat, type ExportOptions } from '../componen
 import { ImportDialog } from '../components/ImportDialog';
 import { useConfirmDialog } from '../components/ConfirmDialog';
 import { useI18n } from '../i18n';
+import { readDraftOffset } from '../syncOffset';
 import { Link, navigate } from '../router';
 import { can, type Capability } from '../permissions';
 import { type Folder, type PlaybackManifest, type Project, type ProjectOrg, type Role, type Tag } from '../types';
@@ -402,6 +403,7 @@ export function Projects({
         burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
         includeNotes: options.includeNotes,
         animation,
+        displayOffsetMs: readDraftOffset(exportManifest.timelineKey, exportTarget.projectId),
         idempotencyKey
       });
       setExportTarget(null);

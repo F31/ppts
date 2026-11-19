@@ -105,6 +105,9 @@ type BundleInput struct {
 	// Watermark 是成品画面上的水印文案（ADR-029 ②）；空 = 不加。
 	// 同样由调用方给出：打包器不该去读租户策略，否则离线打包（夹具/CLI）会需要一整套租户上下文。
 	Watermark string
+	// DisplayOffsetMs 是字幕显示偏移（毫秒，正=高亮延后），写入 manifest 供播放器三处共用。
+	// 由导出快照固化，0 = 无偏移（省略字段，旧包行为不变）。
+	DisplayOffsetMs int64
 	// singleFile 表示本次组装服务于单文件形态（BuildSingle 内部置位）。
 	//
 	// 刻意不导出：它不是调用方的选择，而是"这一次组装会被内联成单个 HTML"
@@ -351,6 +354,7 @@ func (b *BundleBuilder) buildInto(
 	manifest := newManifest(timeline, in.Width, in.Height, in.FPS, in.Title, in.SnapshotHash, in.CreatedAt)
 	manifest.TextCopy = in.TextCopy
 	manifest.Watermark = in.Watermark
+	manifest.DisplayOffsetMs = in.DisplayOffsetMs
 
 	files := make(map[string]struct{}, len(timeline.Slides)+8)
 	out := &bundleOut{sink: sink, files: files}

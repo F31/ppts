@@ -1,0 +1,13 @@
+-- 0057_artifact_display_offset.sql
+-- 目标：成品级"字幕显示偏移"(display_offset_ms) 持久化，供编辑器预览、成品库内嵌预览与
+-- 分享播放器三处共用同一份固化值，修复字幕高亮与语音不同步。
+--
+-- 语义：毫秒，正 = 高亮延后。0 = 无偏移（历史行 / 未校准），行为与引入本列前逐字节一致。
+-- 为什么在成品行而不只是播放器 localStorage：一份已发出的成品在三个入口（编辑器预览、
+-- 成品库预览、静态分享包）必须表现一致，localStorage 只在本机、且分享包用户拿不到。
+-- 为什么在导出时固化而不做成品创建后的 PATCH 动态注入：分享包是导出时烘焙的静态文件
+-- （见 internal/share/manifest.go 的 TextCopy/Watermark 同款理由），发出后行为不因后台改配置
+-- 而变化；要改偏移即重新导出一份新成品（同一 timelineKey + 新偏移 → 新 snapshotHash）。
+--
+-- 仅在既有表上加列：表级授权（见 0003_artifacts.sql 的 GRANT ON artifacts）与 RLS 策略已覆盖新列。
+ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS display_offset_ms bigint NOT NULL DEFAULT 0;

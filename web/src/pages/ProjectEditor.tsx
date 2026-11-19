@@ -72,6 +72,7 @@ import { ScriptConflictError, ScriptEditor, type ScriptEditorHandle, type Script
 import { ExportDialog, type ExportFormat, type ExportOptions } from '../components/ExportDialog';
 import { ScriptCompareDialog } from '../components/ScriptCompareDialog';
 import { useI18n } from '../i18n';
+import { readDraftOffset } from '../syncOffset';
 import { Link, navigate } from '../router';
 import type { Job, PlaybackManifest, PronunciationRule, Role, ScriptMode, ScriptRevision, ScriptSegment } from '../types';
 import { hiddenCount, isHiddenPage, scopeSlideIds } from '../slideVisibility';
@@ -1864,6 +1865,8 @@ export function ProjectEditor({
             burnSubtitles: true,
             includeNotes: true,
             animation,
+            // 固化编辑器里微调好的字幕偏移（草稿按 timelineKey 存），导出后三处播放器共用。
+            displayOffsetMs: readDraftOffset(status.timelineKey, projectId),
             idempotencyKey: `oneclick-export-${projectId}-${Date.now()}`
           });
           exportJobId = result.jobId;
@@ -1932,6 +1935,7 @@ export function ProjectEditor({
         burnSubtitles: format === 'ARTIFACT_FORMAT_MP4' ? options.burnSubtitles : undefined,
         includeNotes: options.includeNotes,
         animation,
+        displayOffsetMs: readDraftOffset(realManifest.timelineKey, projectId),
         idempotencyKey
       });
       setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });

@@ -106,12 +106,16 @@ func artifactManifest(w http.ResponseWriter, r *http.Request, artifacts artifact
 		writeConnectError(w, connect.NewError(connect.CodeInternal, err))
 		return
 	}
+	// 成品固化的字幕显示偏移（含 0）：用指针保证即使为 0 也输出该键，
+	// 前端据此把成品预览判为"只读固化值"而非编辑器草稿。
+	displayOffset := a.DisplayOffsetMs
 	writeJSON(w, http.StatusOK, publicManifest{
-		ProjectId:     a.ProjectID,
-		TimelineKey:   a.TimelineKey,
-		TimelineJson:  string(timelineJSON),
-		Resources:     out,
-		ExpiresAtUnix: time.Now().Add(ttl).Unix(),
+		ProjectId:       a.ProjectID,
+		TimelineKey:     a.TimelineKey,
+		TimelineJson:    string(timelineJSON),
+		Resources:       out,
+		ExpiresAtUnix:   time.Now().Add(ttl).Unix(),
+		DisplayOffsetMs: &displayOffset,
 	})
 }
 

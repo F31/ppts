@@ -86,6 +86,9 @@ type bundleExportRequest struct {
 	// 为什么规格身份要由客户端提交而不是后端取最新版：导出是对一份输入的承诺，
 	// 排队期间规格被改，产物就不同；键若不随之改变，步骤去重会把新任务并进旧产物。
 	Animation *bundleAnimationRequest `json:"animation"`
+	// DisplayOffsetMs 是字幕显示偏移（毫秒，正=高亮延后），仅在导出时固化进成品与分享包。
+	// 0 = 无偏移。前端把编辑器里微调好的值随导出请求提交，保证成品发出后行为稳定。
+	DisplayOffsetMs int64 `json:"displayOffsetMs"`
 	// IdempotencyKey 是 header 的重试兜底：部分客户端无法设置自定义 header。
 	IdempotencyKey string `json:"idempotencyKey"`
 }
@@ -187,6 +190,14 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 		FPS: req.FPS, Width: width, Height: height,
 		BurnSubtitles: req.BurnSubtitles, IncludeNotes: req.IncludeNotes,
 	}
+	// 字幕显示偏移钳制到 ±2000ms（与编辑器 Player.tsx 的 syncOffsetMs 同范围）：
+	// 越界值来自手改请求/旧客户端，静默收窄比拒绝更稳；它是播放器补偿量，不涉安全。
+	if req.DisplayOffsetMs > 2000 {
+		req.DisplayOffsetMs = 2000
+	} else if req.DisplayOffsetMs < -2000 {
+		req.DisplayOffsetMs = -2000
+	}
+	snapshot.DisplayOffsetMs = req.DisplayOffsetMs
 	// 免费层三项（ADR-029 ②）：分辨率夹紧、水印、时长上限。
 	// 时长超限在这里就返回，不建任务、不预占额度（设计 §7.5）。
 	if lerr := enforceExportLimits(r.Context(), h.objects, principal.TenantID, timelineKey, capability, &snapshot); lerr != nil {

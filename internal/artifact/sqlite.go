@@ -27,13 +27,13 @@ func NewSQLiteStore(sqldb *sql.DB) *SQLiteStore { return &SQLiteStore{db: sqldb}
 // 因此本包的 SDLC 规则是：**列清单定义顺序即 Scan 顺序，二者必须相邻可读、改一处必改另一处**，
 // 并由 sqlite_test.go 的往返用例兜底。
 const sqArtifactColumns = `id, tenant_id, project_id, snapshot_hash, format, object_key,
-	content_hash, size_bytes, duration_ms, timeline_key, created_at, revision_no, source_display_name`
+	content_hash, size_bytes, duration_ms, timeline_key, created_at, revision_no, source_display_name, display_offset_ms`
 
 func sqScanArtifact(row rowScanner) (*Artifact, error) {
 	var a Artifact
 	var format, created string
 	if err := row.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
-		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &created, &a.SourceRevisionNo, &a.SourceDisplayName); err != nil {
+		&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &created, &a.SourceRevisionNo, &a.SourceDisplayName, &a.DisplayOffsetMs); err != nil {
 		return nil, err
 	}
 	a.Format = Format(format)
@@ -49,15 +49,16 @@ func (s *SQLiteStore) Create(ctx context.Context, tenantID string, in NewArtifac
 	// 故此处的"重导出"必须以最新产物覆盖指针。对象为内容寻址，刷新安全。
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO artifacts (id, tenant_id, project_id, snapshot_hash, format, object_key,
-		   content_hash, size_bytes, duration_ms, timeline_key, created_at, revision_no, source_display_name)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		   content_hash, size_bytes, duration_ms, timeline_key, created_at, revision_no, source_display_name, display_offset_ms)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(tenant_id, project_id, snapshot_hash, format) DO UPDATE
 		   SET object_key = excluded.object_key, content_hash = excluded.content_hash,
 		       size_bytes = excluded.size_bytes, duration_ms = excluded.duration_ms,
 		       timeline_key = excluded.timeline_key,
-		       revision_no = excluded.revision_no, source_display_name = excluded.source_display_name`,
+		       revision_no = excluded.revision_no, source_display_name = excluded.source_display_name,
+		       display_offset_ms = excluded.display_offset_ms`,
 		id, tenantID, in.ProjectID, in.SnapshotHash, string(in.Format), in.ObjectKey,
-		in.ContentHash, in.SizeBytes, in.DurationMS, in.TimelineKey, now, in.SourceRevisionNo, in.SourceDisplayName); err != nil {
+		in.ContentHash, in.SizeBytes, in.DurationMS, in.TimelineKey, now, in.SourceRevisionNo, in.SourceDisplayName, in.DisplayOffsetMs); err != nil {
 		return nil, err
 	}
 	return sqScanArtifact(s.db.QueryRowContext(ctx,
@@ -97,7 +98,7 @@ func (s *SQLiteStore) ListByProject(ctx context.Context, tenantID, projectID str
 func (s *SQLiteStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT a.id, a.tenant_id, a.project_id, a.snapshot_hash, a.format, a.object_key,
-		        a.content_hash, a.size_bytes, a.duration_ms, a.timeline_key, a.created_at, a.revision_no, a.source_display_name, COALESCE(p.title, '')
+		        a.content_hash, a.size_bytes, a.duration_ms, a.timeline_key, a.created_at, a.revision_no, a.source_display_name, a.display_offset_ms, COALESCE(p.title, '')
 		 FROM artifacts a
 		 LEFT JOIN projects p ON p.id = a.project_id AND p.tenant_id = a.tenant_id
 		 WHERE a.tenant_id = ? ORDER BY a.created_at DESC`, tenantID)
@@ -112,7 +113,7 @@ func (s *SQLiteStore) ListAll(ctx context.Context, tenantID string) ([]*Artifact
 		// 列顺序与 sqArtifactColumns 一致（a. 前缀是 JOIN projects 消歧义所需），
 		// 尾部追加 COALESCE(p.title,'')。Scan 目标顺序同步。
 		if err := rows.Scan(&a.ID, &a.TenantID, &a.ProjectID, &a.SnapshotHash, &format,
-			&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &created, &a.SourceRevisionNo, &a.SourceDisplayName, &a.ProjectName); err != nil {
+			&a.ObjectKey, &a.ContentHash, &a.SizeBytes, &a.DurationMS, &a.TimelineKey, &created, &a.SourceRevisionNo, &a.SourceDisplayName, &a.DisplayOffsetMs, &a.ProjectName); err != nil {
 			return nil, err
 		}
 		a.Format = Format(format)

@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/F31/ppts/internal/artifact"
@@ -69,6 +70,31 @@ func TestSnapshotBytesFrozenWhenAnimationOff(t *testing.T) {
 					"这是历史产物的键，改动它等于让成品库里所有旧视频失联。", hash, tc.hash)
 			}
 		})
+	}
+}
+
+// 字幕显示偏移（P1）：0 时省略（上面的 frozen 用例已守）；非 0 时必须进快照并改变
+// 成品身份——不同偏移是不同成品，符合"静态成品发出后行为不因后台改动而变"的设计。
+func TestSnapshotDisplayOffsetAffectsIdentity(t *testing.T) {
+	base := ExportSnapshot{Format: artifact.FormatHTMLBundle, TimelineKey: "t/1/b.zip"}
+	off, err := snapshotHashOf(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.DisplayOffsetMs = 120
+	b, err := SnapshotBytes(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(b) || !strings.Contains(string(b), `"displayOffsetMs":120`) {
+		t.Fatalf("非 0 偏移必须进快照字节：%s", b)
+	}
+	on, err := snapshotHashOf(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on == off {
+		t.Fatal("不同显示偏移必须得到不同 snapshotHash（不同成品身份）")
 	}
 }
 

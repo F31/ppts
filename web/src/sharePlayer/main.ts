@@ -150,6 +150,8 @@ type ShareManifest = {
   textCopy?: boolean;
   /** 画面水印文案（ADR-029 ②）。缺省视为无水印，与旧包行为一致。 */
   watermark?: string;
+  /** 成品固化的字幕显示偏移（毫秒，正=高亮延后）。cue 选择与字级高亮共用它。缺省 0。 */
+  displayOffsetMs?: number;
 };
 
 declare global {
@@ -233,6 +235,11 @@ function mount(): void {
 
   const subtitles = Array.isArray(window.__PPT_SUBTITLES__) ? window.__PPT_SUBTITLES__ : [];
   const durationUs = Math.max(0, manifest.artifact.durationUs);
+  // 成品固化的字幕显示偏移（毫秒，正=高亮延后）。cue 选择与字级高亮共用同一显示时钟，
+  // 修正浏览器音频输出延迟造成的"画面/字幕与声音对不上"。非法值退化为 0。
+  const displayOffsetUs = (Number.isFinite(manifest.displayOffsetMs)
+    ? Math.max(-2000, Math.min(2000, manifest.displayOffsetMs!))
+    : 0) * 1000;
   // 首帧曝光、进度、来源都挂在这次观看的会话上；离线/隐私形态下这里是 null，
   // 后面所有 telemetry?. 调用都退化成 no-op，不产生任何请求。
   const telemetry = startShareTelemetry();
@@ -740,14 +747,17 @@ function mount(): void {
 
   const renderSubtitle = (us: number): void => {
     if (!subtitlesVisible) return;
-    const cue = subtitleAt(timeline, us);
+    // 用补偿后的显示时钟同时做 cue 选择与字级高亮：两者必须在同一时间轴上，
+    // 否则会出现"字幕已经切到下一句、高亮却停在上句"的错位。
+    const displayUs = us - displayOffsetUs;
+    const cue = subtitleAt(timeline, displayUs);
     if (!cue) {
       subtitleBox.hidden = true;
       lastCueIndex = -1;
       return;
     }
     const cueIndex = subtitles.indexOf(cue);
-    const at = spokenCharAt(cue, us);
+    const at = spokenCharAt(cue, displayUs);
     const lines = splitLines(cue);
     let lineIndex = lines.findIndex((line) => at >= line.start && at < line.end);
     if (lineIndex < 0) lineIndex = at >= cue.text.length ? lines.length - 1 : 0;

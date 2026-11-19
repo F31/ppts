@@ -53,6 +53,11 @@ type ExportSnapshot struct {
 	// 否则租户升级去掉水印后，用同一幂等键重放会命中旧的去重记录，
 	// 用户拿到的还是带水印的那份，且没有任何环节报错。
 	Watermark string `json:"watermark,omitempty"`
+	// DisplayOffsetMs 是成品固化的"字幕显示偏移"（毫秒，正 = 高亮延后），供编辑器预览、
+	// 成品库预览与分享播放器三处共用。0 = 无偏移（默认/历史），omitempty 保证旧快照的
+	// 序列化字节与 snapshotHash 不变。它进入快照意味着：不同偏移得到不同成品身份，
+	// 符合"静态成品发出后行为不变"的设计（改偏移=重新导出，而非后台动态注入）。
+	DisplayOffsetMs int64 `json:"displayOffsetMs,omitempty"`
 }
 
 // AnimationOptions 固定「这片视频依据哪些动画规格渲染」。
@@ -433,6 +438,8 @@ func (h *ExportHandler) storeArtifact(ctx context.Context, job *pipeline.Job, sn
 		// 见 internal/media/timeline.go 与 internal/app/narration.go。
 		SourceRevisionNo:  sourceRevisionNo,
 		SourceDisplayName: sourceDisplayName,
+		// 字幕显示偏移固化进成品行（迁移 0057），三处播放器共用同一值。
+		DisplayOffsetMs: snapshot.DisplayOffsetMs,
 	})
 	if err != nil {
 		return nil, err

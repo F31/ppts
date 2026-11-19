@@ -53,7 +53,11 @@ type Artifact struct {
 	// SourceDisplayName 是该源版本的展示名（source_revisions.display_name）；空表示历史行未知，
 	// 前端回退到 projectName。与 SourceRevisionNo 一并，避免依赖成品↔source_revisions 缺失外键。
 	SourceDisplayName string
-	CreatedAt         time.Time
+	// DisplayOffsetMs 是成品固化的"字幕显示偏移"（毫秒，正 = 高亮延后），供编辑器预览、
+	// 成品库预览与分享播放器三处共用（迁移 0057）。0 = 无偏移（历史行/未校准），
+	// 行为与引入本列前一致。导出时写入，之后不再变（静态分享包不可变，改=重新导出）。
+	DisplayOffsetMs int64
+	CreatedAt       time.Time
 }
 
 type NewArtifact struct {
@@ -70,6 +74,8 @@ type NewArtifact struct {
 	// SourceRevisionNo / SourceDisplayName 见 Artifact.SourceRevisionNo / SourceDisplayName。
 	SourceRevisionNo  int
 	SourceDisplayName string
+	// DisplayOffsetMs 见 Artifact.DisplayOffsetMs，由导出快照写入。
+	DisplayOffsetMs int64
 }
 
 var ErrNotFound = errors.New("artifact: not found")

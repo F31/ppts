@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/F31/ppts/internal/integrations/tts"
+	"github.com/F31/ppts/internal/observability"
 )
 
 const TimelineSchemaVersion = "1.0"
@@ -216,13 +217,26 @@ func BuildTimeline(slides []SlideInput, timing Timing) (*Timeline, error) {
 			}
 			// 精确映射（N2 数值展开）优先：每个显示字符直接对应朗读文本中某个字级
 			// token；否则按比例把字级时间戳重映射到显示文本（V2.8 §7.5 时间域 A）。
-			if len(chars) > 0 {
-				runes := []rune(inputSegment.DisplayText)
-				if len(inputSegment.CharToToken) == len(runes) {
-					chars = pickCharsByToken(chars, runes, inputSegment.CharToToken)
-				} else if len(runes) != len(chars) {
+			runes := []rune(inputSegment.DisplayText)
+			switch {
+			case len(chars) == 0:
+				observability.SubtitleCharsSource("none")
+			case len(inputSegment.CharToToken) == len(runes):
+				if mapped := pickCharsByToken(chars, runes, inputSegment.CharToToken); len(mapped) == len(runes) {
+					chars = mapped
+					observability.SubtitleCharsSource("exact_map")
+				} else {
+					// 精确映射越界/非单调时 pickCharsByToken 返回 nil。旧实现直接赋值 nil，
+					// 静默清空整段 Chars → 播放器退化到整段线性高亮。这里显式回落比例
+					// 重映射，并把异常计入指标，避免"看起来没高亮"却查不到原因。
+					observability.SubtitleCharsSource("exact_map_invalid_fallback")
 					chars = remapCharsToCount(chars, runes)
 				}
+			case len(runes) != len(chars):
+				chars = remapCharsToCount(chars, runes)
+				observability.SubtitleCharsSource("proportional_remap")
+			default:
+				observability.SubtitleCharsSource("exact_map")
 			}
 			timeline.Subtitles = append(timeline.Subtitles, SubtitleCue{
 				SlideID: inputSlide.SlideID, SegmentID: inputSegment.SegmentID,

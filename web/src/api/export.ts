@@ -151,6 +151,8 @@ export async function createArtifactExport(
     burnSubtitles?: boolean;
     includeNotes?: boolean;
     animation?: AnimationExportSpec[];
+    /** 字幕显示偏移（毫秒，正=高亮延后），导出时固化进成品与分享包；缺省 0。 */
+    displayOffsetMs?: number;
     idempotencyKey: string;
   }
 ): Promise<ExportJobResult> {
@@ -171,6 +173,7 @@ export async function createArtifactExport(
       includeNotes: params.includeNotes,
       // 空数组与不传等价（后端归一成 nil，两者得到同一个快照键）。
       animation: specs.length > 0 ? { specs } : undefined,
+      displayOffsetMs: params.displayOffsetMs ?? 0,
       idempotencyKey: params.idempotencyKey
     });
   }

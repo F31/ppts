@@ -196,6 +196,11 @@ type publicManifest struct {
 	TimelineJson  string                   `json:"timelineJson"`
 	Resources     []publicManifestResource `json:"resources"`
 	ExpiresAtUnix int64                    `json:"expiresAtUnix"`
+	// DisplayOffsetMs 是该成品固化的字幕显示偏移（毫秒）；仅成品预览填充，
+	// 其余 publicManifest 生产点（协作私密分享）省略，前端据此决定是否只读固化值。
+	// 用指针而非裸 int64：0 是合法的"已校准为无偏移"，必须序列化成 0 让前端识别为成品，
+	// 而不能与"字段缺失（非成品/编辑器预览）"混淆。
+	DisplayOffsetMs *int64 `json:"displayOffsetMs,omitempty"`
 }
 
 // publicGetManifest 为已批准公开作品生成匿名可播放的讲解清单（B3 音频播放接入）。

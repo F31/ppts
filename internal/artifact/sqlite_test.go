@@ -50,6 +50,7 @@ func TestSQLiteArtifactRoundTrip(t *testing.T) {
 		TimelineKey:       "t/p/narration-1/timeline/abc.json",
 		SourceRevisionNo:  7,
 		SourceDisplayName: "年度汇报 v7",
+		DisplayOffsetMs:   120,
 	}
 	created, err := s.Create(ctx, tenant, in)
 	if err != nil {
@@ -97,6 +98,9 @@ func assertSourceMeta(t *testing.T, path string, got *Artifact, want NewArtifact
 	}
 	if got.TimelineKey != want.TimelineKey {
 		t.Fatalf("%s: TimelineKey=%q want %q", path, got.TimelineKey, want.TimelineKey)
+	}
+	if got.DisplayOffsetMs != want.DisplayOffsetMs {
+		t.Fatalf("%s: DisplayOffsetMs=%d want %d", path, got.DisplayOffsetMs, want.DisplayOffsetMs)
 	}
 	if got.CreatedAt.IsZero() {
 		t.Fatalf("%s: CreatedAt not parsed (zero)", path)

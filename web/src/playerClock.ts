@@ -17,19 +17,26 @@ export function subtitleAt(timeline: Timeline, positionUs: number): SubtitleCue 
 }
 
 // 当前已朗读到的字符下标（-1 = 尚未开始，text.length = 已读完全部）。
-// 依赖 cue.chars 字符级时间戳；缺失时按整段线性估算。
+// 依赖 cue.chars 字符级时间戳；缺失时按行均分（与后端 media.SplitSubtitleCues / ASS 的
+// distributedLine 同口径），避免网页整段线性、烧录按行均分两套节奏对不上。
 export function spokenCharAt(cue: SubtitleCue, positionUs: number): number {
   const chars = cue.chars;
   if (!chars || chars.length === 0) {
-    if (cue.endUs <= cue.startUs) return -1;
-    const ratio = (positionUs - cue.startUs) / (cue.endUs - cue.startUs);
-    return Math.floor(Math.max(0, Math.min(1, ratio)) * cue.text.length);
+    return spokenCharFallback(cue, positionUs);
   }
   // chars 下标与 text 下标一一对应；取最后一个 startUs <= positionUs 的字符。
+  // 长字幕可达数十字，用二分替代线性扫描（每帧渲染都会调用）。
+  let lo = 0;
+  let hi = chars.length - 1;
   let idx = -1;
-  for (let i = 0; i < chars.length; i++) {
-    if (chars[i].startUs <= positionUs) idx = i;
-    else break;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (chars[mid].startUs <= positionUs) {
+      idx = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
   return idx;
 }
@@ -88,4 +95,31 @@ export function splitLines(cue: SubtitleCue): { start: number; end: number }[] {
 export function progress(positionUs: number, durationUs: number): number {
   if (durationUs <= 0) return 0;
   return Math.min(1, Math.max(0, positionUs / durationUs));
+}
+
+// Chars 缺失时的高亮估算：与后端 media.SplitSubtitleCues / RenderASS 的 distributedLine
+// 同口径——先把 cue 时长按行数均分，定位当前行，再在该行的字符区间内线性推进。
+// 旧实现按整段线性，与 ASS 烧录的按行均分在断行处节奏不同，导致"预览和成片高亮对不上"。
+function spokenCharFallback(cue: SubtitleCue, positionUs: number): number {
+  const dur = cue.endUs - cue.startUs;
+  if (dur <= 0) return -1;
+  if (positionUs <= cue.startUs) return -1;
+  if (positionUs >= cue.endUs) return cue.text.length;
+  const lines = splitLines(cue);
+  if (lines.length === 0 || (lines.length === 1 && lines[0].end <= lines[0].start)) {
+    const ratio = (positionUs - cue.startUs) / dur;
+    return Math.floor(Math.max(0, Math.min(1, ratio)) * cue.text.length);
+  }
+  const perLine = dur / lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    const lineStart = cue.startUs + perLine * i;
+    const lineEnd = cue.startUs + perLine * (i + 1);
+    if (positionUs < lineEnd || i === lines.length - 1) {
+      const { start, end } = lines[i];
+      if (end <= start) return start;
+      const frac = Math.max(0, Math.min(1, (positionUs - lineStart) / (lineEnd - lineStart)));
+      return start + Math.floor(frac * (end - start));
+    }
+  }
+  return cue.text.length;
 }

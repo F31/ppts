@@ -295,3 +295,41 @@ func TestManifestCarriesWatermark(t *testing.T) {
 		t.Fatal("未配置水印时产物里不应出现 watermark 字样")
 	}
 }
+
+// 字幕显示偏移（P1）：导出时固化进 manifest，zip 与单文件两种形态必须同值；
+// 0（默认/历史）时整个键不出现，旧包行为逐字节不变。
+func TestManifestCarriesDisplayOffset(t *testing.T) {
+	ctx := context.Background()
+
+	in := buildInput()
+	in.DisplayOffsetMs = 120
+	var buf bytes.Buffer
+	m, err := NewBundleBuilder(baseReader(t), nil).Build(ctx, in, &buf)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if m.DisplayOffsetMs != 120 {
+		t.Fatalf("清单显示偏移 = %d want 120", m.DisplayOffsetMs)
+	}
+
+	single, mSingle, err := NewBundleBuilder(baseReader(t), nil).BuildSingle(ctx, in)
+	if err != nil {
+		t.Fatalf("build single: %v", err)
+	}
+	if mSingle.DisplayOffsetMs != m.DisplayOffsetMs {
+		t.Fatalf("两种形态偏移不一致：bundle=%d single=%d", m.DisplayOffsetMs, mSingle.DisplayOffsetMs)
+	}
+	if !bytes.Contains(single, []byte(`"displayOffsetMs":120`)) {
+		t.Fatal("单文件清单没有带 displayOffsetMs")
+	}
+
+	// 0 时整个键省略：旧包没有这个字段，播放器缺省按 0 处理，行为一致。
+	in.DisplayOffsetMs = 0
+	var buf2 bytes.Buffer
+	if _, err := NewBundleBuilder(baseReader(t), nil).Build(ctx, in, &buf2); err != nil {
+		t.Fatalf("build off: %v", err)
+	}
+	if bytes.Contains(buf2.Bytes(), []byte("displayOffsetMs")) {
+		t.Fatal("偏移为 0 时产物里不应出现 displayOffsetMs 字样")
+	}
+}

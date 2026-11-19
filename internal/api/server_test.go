@@ -2731,15 +2731,24 @@ func TestArtifactManifestRouteMounted(t *testing.T) {
 		t.Fatalf("manifest 命中 SPA 兜底返回了 HTML（路由未挂载）: %s", body)
 	}
 	var payload struct {
-		TimelineJson string `json:"timelineJson"`
-		Resources    []struct {
+		TimelineJson    string `json:"timelineJson"`
+		Resources       []struct {
 			Type      string `json:"type"`
 			SignedUrl string `json:"signedUrl"`
 		} `json:"resources"`
-		ExpiresAtUnix int64 `json:"expiresAtUnix"`
+		ExpiresAtUnix   int64  `json:"expiresAtUnix"`
+		DisplayOffsetMs *int64 `json:"displayOffsetMs"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("响应不是 JSON: %v body = %s", err, body)
+	}
+	// 成品预览必须始终带 displayOffsetMs 键（含 0）：前端据此区分"成品只读固化值"
+	// 与"编辑器可微调草稿"。字段缺失会让 0 偏移的成品回退去读 localStorage，与分享包不一致。
+	if payload.DisplayOffsetMs == nil {
+		t.Fatalf("成品预览 manifest 缺少 displayOffsetMs 键: %s", body)
+	}
+	if *payload.DisplayOffsetMs != 0 {
+		t.Fatalf("默认成品偏移应为 0，得到 %d", *payload.DisplayOffsetMs)
 	}
 	if payload.TimelineJson == "" || payload.ExpiresAtUnix <= time.Now().Unix() || len(payload.Resources) != 4 {
 		t.Fatalf("manifest = %+v", payload)
