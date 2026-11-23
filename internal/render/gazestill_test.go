@@ -22,8 +22,8 @@ func TestGazePaintOK(t *testing.T) {
 	}
 	entrance := gaze
 	entrance.Layers = []Layer{{ElementID: "a", Clips: []Motion{{Effect: "fadeIn", DurationMs: 400}}}}
-	if gazePaintOK(entrance) {
-		t.Fatal("entrance layers must stay on Remotion stills")
+	if !gazePaintOK(entrance) {
+		t.Fatal("gaze+entrance look pages must paint without chrome")
 	}
 	crop := gaze
 	crop.LookCrop = true
@@ -119,5 +119,33 @@ func TestWritePaintedLookStills(t *testing.T) {
 		if err != nil || st.Size() == 0 {
 			t.Fatalf("%s missing: %v", name, err)
 		}
+	}
+}
+
+func TestComposeEntranceHidesFutureLayers(t *testing.T) {
+	plate := image.NewNRGBA(image.Rect(0, 0, 40, 20))
+	for i := range plate.Pix {
+		plate.Pix[i] = 255
+	}
+	layer := image.NewNRGBA(image.Rect(0, 0, 10, 8))
+	red := color.NRGBA{R: 200, G: 20, B: 20, A: 255}
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 10; x++ {
+			layer.SetNRGBA(x, y, red)
+		}
+	}
+	layers := []Layer{{
+		ElementID: "card", Box: Box{X: 4, Y: 4, W: 10, H: 8},
+		Clips: []Motion{{Effect: "fadeIn", StartMs: 1000, DurationMs: 400,
+			Props: []animation.MotionProp{{Name: animation.PropOpacity, From: 0, To: 1}}}},
+	}}
+	before := composeEntranceFrame(plate, layers, []*image.NRGBA{layer}, 200)
+	if before.NRGBAAt(8, 6) == red {
+		t.Fatal("layer must stay off the plate before fadeIn")
+	}
+	after := composeEntranceFrame(plate, layers, []*image.NRGBA{layer}, 1600)
+	got := after.NRGBAAt(8, 6)
+	if int(got.R) < 150 {
+		t.Fatalf("layer after fadeIn = %+v, want red", got)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+
+	"github.com/F31/ppts/internal/animation"
 )
 
 // 与 shared/motion.ts FOCUS_DIM_OPACITY=0.55 对齐：非焦点区盖白 1-0.55。
@@ -18,13 +20,10 @@ var (
 	gazeCalloutPx    = 3
 )
 
-// gazePaintOK 是可以绕开 Chrome 的纯注视页：整页 PNG + 矩形纱/框，没有入场层、
-// 切近、overlay。入场页仍走 Remotion 仍帧（底板挖洞 + 层图）。
+// gazePaintOK 是可以绕开 Chrome 的注视页：纱/框从底图（及已 staging 的底板+层图）
+// 画出来。切近、overlay、grow/tilt（isGazeLookPage 已排除）仍走 Remotion。
 func gazePaintOK(p Page) bool {
 	if !isGazeLookPage(p) {
-		return false
-	}
-	if HasEntranceElementLayer(p.Layers) {
 		return false
 	}
 	if p.LookCrop {
@@ -62,8 +61,36 @@ func writePaintedLookStills(plan *Timeline, dir string, pages []int) error {
 		}
 		src = CropSlack(src, plan.Width, plan.Height)
 		base := cloneNRGBA(src)
+		plate := base
+		if page.PlateImage != "" {
+			pp, err := workPath(dir, page.PlateImage)
+			if err != nil {
+				return fmt.Errorf("render: paint looks: page %d plate: %w", i, err)
+			}
+			pimg, err := readImage(pp)
+			if err != nil {
+				return fmt.Errorf("render: paint looks: page %d plate: %w", i, err)
+			}
+			plate = cloneNRGBA(CropSlack(pimg, plan.Width, plan.Height))
+		}
+		layerImgs := make([]*image.NRGBA, len(page.Layers))
+		for li, layer := range page.Layers {
+			if layer.Image == "" {
+				continue
+			}
+			lp, err := workPath(dir, layer.Image)
+			if err != nil {
+				return fmt.Errorf("render: paint looks: page %d layer: %w", i, err)
+			}
+			limg, err := readImage(lp)
+			if err != nil {
+				return fmt.Errorf("render: paint looks: page %d layer: %w", i, err)
+			}
+			layerImgs[li] = cloneNRGBA(limg)
+		}
 		for li, w := range windows {
-			img := paintGazeLook(base, page, w.MidMs, plan.Width, plan.Height)
+			composed := composeEntranceFrame(plate, page.Layers, layerImgs, w.MidMs)
+			img := paintGazeLookOn(composed, base, page, w.MidMs, plan.Width, plan.Height)
 			out := lookStillPath(dir, i, li)
 			if err := os.MkdirAll(filepath.Dir(out), 0o750); err != nil {
 				return fmt.Errorf("render: paint looks: %w", err)
@@ -77,7 +104,136 @@ func writePaintedLookStills(plan *Timeline, dir string, pages []int) error {
 }
 
 func paintGazeLook(src *image.NRGBA, page Page, tMs int64, canvasW, canvasH int) *image.NRGBA {
-	dst := cloneNRGBA(src)
+	return paintGazeLookOn(src, src, page, tMs, canvasW, canvasH)
+}
+
+func composeEntranceFrame(plate *image.NRGBA, layers []Layer, layerImgs []*image.NRGBA, tMs int64) *image.NRGBA {
+	dst := cloneNRGBA(plate)
+	for i, layer := range layers {
+		if i >= len(layerImgs) || layerImgs[i] == nil {
+			continue
+		}
+		op := layerOpacityAt(layer, tMs)
+		if op <= 0.01 {
+			continue
+		}
+		overlayLayer(dst, layerImgs[i], layer.Box, op)
+	}
+	return dst
+}
+
+func layerOpacityAt(layer Layer, tMs int64) float64 {
+	op := 1.0
+	for _, clip := range layer.Clips {
+		p := clipProgressAt(clip, tMs)
+		for _, prop := range clip.Props {
+			if prop.Name != animation.PropOpacity {
+				continue
+			}
+			op *= prop.From + (prop.To-prop.From)*p
+		}
+	}
+	return op
+}
+
+func clipProgressAt(clip Motion, tMs int64) float64 {
+	if clip.IsContinuation {
+		tMs += clip.ContinuationOffsetMs
+	}
+	if clip.DurationMs <= 0 {
+		if tMs >= clip.StartMs {
+			return 1
+		}
+		return 0
+	}
+	raw := float64(tMs-clip.StartMs) / float64(clip.DurationMs)
+	if raw <= 0 {
+		return 0
+	}
+	if raw >= 1 {
+		return 1
+	}
+	return cubicBezierY(clip.Easing, raw)
+}
+
+func cubicBezierY(c animation.CubicBezier, x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	if x >= 1 {
+		return 1
+	}
+	if c.X1 == 0 && c.Y1 == 0 && c.X2 == 0 && c.Y2 == 0 {
+		return x
+	}
+	t := x
+	for i := 0; i < 8; i++ {
+		s := bezierSlope(t, c.X1, c.X2)
+		if math.Abs(s) < 0.001 {
+			break
+		}
+		cur := bezierComp(t, c.X1, c.X2) - x
+		if math.Abs(cur) < 1e-7 {
+			return bezierComp(t, c.Y1, c.Y2)
+		}
+		t -= cur / s
+		if t < 0 {
+			t = 0
+		}
+		if t > 1 {
+			t = 1
+		}
+	}
+	return bezierComp(t, c.Y1, c.Y2)
+}
+
+func bezierComp(t, p1, p2 float64) float64 {
+	mt := 1 - t
+	return 3*mt*mt*t*p1 + 3*mt*t*t*p2 + t*t*t
+}
+
+func bezierSlope(t, p1, p2 float64) float64 {
+	mt := 1 - t
+	return 3*mt*mt*p1 + 6*mt*t*(p2-p1) + 3*t*t*(1-p2)
+}
+
+func overlayLayer(dst, src *image.NRGBA, box Box, opacity float64) {
+	if opacity <= 0 {
+		return
+	}
+	if opacity > 1 {
+		opacity = 1
+	}
+	sb := src.Bounds()
+	db := dst.Bounds()
+	for sy := sb.Min.Y; sy < sb.Max.Y; sy++ {
+		for sx := sb.Min.X; sx < sb.Max.X; sx++ {
+			dx := box.X + sx - sb.Min.X
+			dy := box.Y + sy - sb.Min.Y
+			if dx < db.Min.X || dx >= db.Max.X || dy < db.Min.Y || dy >= db.Max.Y {
+				continue
+			}
+			si := src.PixOffset(sx, sy)
+			sa := float64(src.Pix[si+3]) / 255 * opacity
+			if sa <= 0 {
+				continue
+			}
+			di := dst.PixOffset(dx, dy)
+			ia := 1 - sa
+			dst.Pix[di+0] = uint8(float64(src.Pix[si+0])*sa + float64(dst.Pix[di+0])*ia)
+			dst.Pix[di+1] = uint8(float64(src.Pix[si+1])*sa + float64(dst.Pix[di+1])*ia)
+			dst.Pix[di+2] = uint8(float64(src.Pix[si+2])*sa + float64(dst.Pix[di+2])*ia)
+			outA := sa + float64(dst.Pix[di+3])/255*ia
+			if outA > 1 {
+				outA = 1
+			}
+			dst.Pix[di+3] = uint8(outA * 255)
+		}
+	}
+}
+
+func paintGazeLookOn(composed, base *image.NRGBA, page Page, tMs int64, canvasW, canvasH int) *image.NRGBA {
+	dst := cloneNRGBA(composed)
 	b := dst.Bounds()
 	if canvasW <= 0 {
 		canvasW = b.Dx()
@@ -85,13 +241,16 @@ func paintGazeLook(src *image.NRGBA, page Page, tMs int64, canvasW, canvasH int)
 	if canvasH <= 0 {
 		canvasH = b.Dy()
 	}
+	if base == nil {
+		base = composed
+	}
 	hole, veil := gazeHoleAt(page, tMs)
 	overlayWhite(dst, veil)
 	if hole != nil {
-		copyBox(dst, src, *hole, canvasW, canvasH)
+		copyBox(dst, composed, *hole, canvasW, canvasH)
 	}
 	for _, r := range page.ClearRects {
-		copyBox(dst, src, r, canvasW, canvasH)
+		copyBox(dst, base, r, canvasW, canvasH)
 	}
 	if hole != nil {
 		strokeCallout(dst, *hole, page, tMs, canvasW, canvasH)

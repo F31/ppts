@@ -555,8 +555,11 @@ func TestEncodeGazePageArgsFirstBoxOverlay(t *testing.T) {
 	if strings.Contains(joined, "xfade") {
 		t.Fatalf("first box must not use xfade:\n%s", joined)
 	}
-	if !strings.Contains(joined, "fade=t=in:st=0") || !strings.Contains(joined, "overlay=eof_action=pass") {
+	if !strings.Contains(joined, "fade=t=in:st=0") || !strings.Contains(joined, "overlay") {
 		t.Fatalf("first box wants overlay fade-in:\n%s", joined)
+	}
+	if !strings.Contains(joined, "concat=n=2:v=1:a=0") {
+		t.Fatalf("overlay look must concat head+tail so the page keeps its duration:\n%s", joined)
 	}
 	if !strings.Contains(joined, "-i\nlooks/p001_l00.png") || !strings.Contains(joined, "-i\nlooks/p001_l01.png") {
 		t.Fatalf("missing look stills:\n%s", joined)

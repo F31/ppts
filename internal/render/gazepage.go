@@ -418,13 +418,24 @@ type gazePageEncodeSpec struct {
 
 const gazeXfadeExpr = `expr='A*pow(1-P\,3)+B*(1-pow(1-P\,3))'`
 
-func lookXFadeFilter(prevIdx, imgIdx int, transSec string, frames int, kind, label string) string {
+func overlayHeadFrames(trans, frames int) int {
+	if trans < 1 {
+		trans = 1
+	}
+	if frames > 1 && trans >= frames {
+		trans = frames - 1
+	}
+	return trans
+}
+
+func lookXFadeFilter(prevIdx, imgIdx, trans, frames int, kind, label, transSec string) string {
 	switch kind {
 	case "over":
-		// 新仍帧 alpha 淡入叠在旧仍帧上。两路都从 PTS 0 起，不会出现 xfade 那种
-		// 「先切 B 再闪回 A」。淡入结束后 overlay 保持 B 不透明，直到本段 trim。
-		return fmt.Sprintf("[s%d]format=yuva420p,fade=t=in:st=0:d=%s:alpha=1[o%s];[s%d][o%s]overlay=eof_action=pass,format=yuv420p,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
-			imgIdx, transSec, label, prevIdx, label, frames, label)
+		// 转场只铺 prev 那么长。overlay 在 A 结束时会截断整段（83s 页只剩 22s，
+		// worker 换成静帧）。头 overlay、尾接 B 的剩余帧。
+		head := overlayHeadFrames(trans, frames)
+		return fmt.Sprintf("[s%d]split=2[b%s][c%s];[c%s]format=yuva420p,fade=t=in:st=0:d=%s:alpha=1,trim=end_frame=%d[o%s];[s%d][o%s]overlay,format=yuv420p,trim=end_frame=%d,setpts=PTS-STARTPTS[h%s];[b%s]trim=start_frame=%d,setpts=PTS-STARTPTS[t%s];[h%s][t%s]concat=n=2:v=1:a=0,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
+			imgIdx, label, label, label, transSec, head, label, prevIdx, label, head, label, label, head, label, label, label, frames, label)
 	case "wipeleft", "wiperight", "wipeup", "wipedown":
 		return fmt.Sprintf("[s%d][s%d]xfade=transition=%s:duration=%s:offset=0,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
 			prevIdx, imgIdx, kind, transSec, frames, label)
@@ -528,7 +539,7 @@ func encodeGazePageArgs(spec gazePageEncodeSpec) ([]string, error) {
 		label := fmt.Sprintf("l%d", i)
 		if p.trans > 0 {
 			transSec := strconv.FormatFloat(float64(p.trans)/float64(fps), 'f', 3, 64)
-			xf := lookXFadeFilter(p.prevIdx, p.imgIdx, transSec, p.frames, p.xfade, label)
+			xf := lookXFadeFilter(p.prevIdx, p.imgIdx, p.trans, p.frames, p.xfade, label, transSec)
 			fc = append(fc, xf)
 		} else {
 			fc = append(fc, fmt.Sprintf("[s%d]trim=end_frame=%d,setpts=PTS-STARTPTS[%s]", p.imgIdx, p.frames, label))
