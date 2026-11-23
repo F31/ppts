@@ -329,7 +329,8 @@ export async function applyAnimationToAll(
   scope: AnimationApplyAllScope,
   presetId: string,
   overwrite = false,
-  withEntrance = false
+  withEntrance = false,
+  filmForm?: string
 ): Promise<AnimationApplyAllResponse> {
   const params = new URLSearchParams();
   if (scope.sourceRevisionNo && scope.sourceRevisionNo > 0) {
@@ -341,7 +342,12 @@ export async function applyAnimationToAll(
   // 嵌套模板会让路径尾部残留字符，被误判成「后端没有这条路由」。
   const query = qs ? `?${qs}` : '';
   const path = `/api/projects/${encodeURIComponent(scope.projectId)}/animation/apply-all${query}`;
-  return postJSON<AnimationApplyAllResponse>(identity, path, { presetId, overwrite, withEntrance });
+  return postJSON<AnimationApplyAllResponse>(identity, path, {
+    presetId,
+    overwrite,
+    withEntrance,
+    ...(filmForm ? { filmForm } : {})
+  });
 }
 
 // 批量套用：把某一页已调好的规格复制到选中的页。后端要求全成或全不成，

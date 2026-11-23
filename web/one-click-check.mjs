@@ -178,9 +178,9 @@ test('状态更新函数里不得再读 e.currentTarget（否则整页崩溃）'
       `${name}：setState 的更新函数里读 e.currentTarget 会在 React 19 下崩溃；必须先同步取出 checked`
     );
   }
-  // 修复形态必须保留：讲稿/配音/动效/导出/要点依次出现各自先取值。
+  // 修复形态必须保留：讲稿/配音/动效/导出各自先取值。片种是 radio，不走这套。
   const safeAssignments = (pageSrc + drawerSrc).match(/const checked = e\.currentTarget\.checked;/g) || [];
-  assert.equal(safeAssignments.length, 5, '五个一键成片复选框都要先同步取出 checked');
+  assert.equal(safeAssignments.length, 4, '四个一键成片步骤复选框都要先同步取出 checked');
 });
 
 // 真机：点「开始」后抽屉盖住整页，关闭钮在 running 时禁用，页面所有按钮都点不了。
@@ -224,14 +224,14 @@ test('一键成片抽屉可直接改覆盖策略，且流水线真的用这个�
   assert.match(src, /overwrite: oneDraftOverwrite === 'overwrite_all'/, '流水线必须真的用这个值');
 });
 
-test('一键成片抽屉可勾选要点依次出现，且套用请求真的带 withEntrance', () => {
+test('一键成片抽屉先选片种，套用请求带 filmForm', () => {
   const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
   const drawer = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
-  assert.match(drawer, /editor\.animationEntranceLayers/, '抽屉里要有要点依次出现勾选');
-  assert.match(drawer, /onEntranceChange/, '抽屉要把勾选回传给流水线');
-  assert.match(src, /oneClickEntrance/, '页面要持有勾选状态');
-  assert.match(src, /const entrance = oneClickEntrance/, '关窗之后仍要用点击当时的勾选');
-  assert.match(src, /applyAnimationToAll\([\s\S]*preset, false, entrance\)/, '套用请求必须带 withEntrance');
+  assert.match(drawer, /editor\.filmForm/, '抽屉里要有片种');
+  assert.match(drawer, /onFilmFormChange/, '抽屉要把片种回传给流水线');
+  assert.match(src, /oneClickFilmForm/, '页面要持有片种状态');
+  assert.match(src, /const filmForm = oneClickFilmForm/, '关窗之后仍要用点击当时的片种');
+  assert.match(src, /applyAnimationToAll\([\s\S]*filmForm\)/, '套用请求必须带 filmForm');
 });
 
 // 真机：只勾「套用动效到所有页面」再点开始生成，任务中心没有任务、成品库没有视频。

@@ -36,7 +36,8 @@ import {
   isDirty,
   savePayloadOf,
   wantsEntranceLayers,
-  withEntranceLayers,
+  withFilmForm,
+  filmFormOf,
   segmentOfTrigger,
   segmentTrigger,
   staleSegmentIds,
@@ -528,7 +529,8 @@ export function AnimationEditor({
         { projectId, sourceRevisionNo, language },
         presetId,
         false,
-        wantsEntranceLayers(draft)
+        wantsEntranceLayers(draft),
+        filmFormOf(draft)
       );
       setApplyAllResult(result);
       // 当前页被改写后要重读规格，否则面板里还挂着旧草案（保存时必冲突）。
@@ -788,24 +790,36 @@ export function AnimationEditor({
                 <p className="form-hint">{t('editor.animationIntensityHint')}</p>
               </section>
 
-              <details className="animation-block animation-advanced">
-                <summary className="eyebrow">{t('editor.animationEntranceLayers')}</summary>
+              <section className="animation-block">
+                <span className="eyebrow">{t('editor.filmForm')}</span>
                 <label className="animation-entrance">
                   <input
-                    type="checkbox"
-                    checked={wantsEntranceLayers(draft)}
+                    type="radio"
+                    name="animation-film-form"
+                    checked={filmFormOf(draft) === 'gaze'}
                     disabled={disabled}
-                    onChange={(event) => {
+                    onChange={() => {
                       const preset = anchors?.presets.find((item) => item.id === draft.presetId);
-                      setDraft(
-                        withEntranceLayers(draft, event.currentTarget.checked, preset?.entranceClips)
-                      );
+                      setDraft(withFilmForm(draft, 'gaze', preset?.entranceClips));
                     }}
                   />
-                  <span>{t('editor.animationEntranceLayersLabel')}</span>
+                  <span>{t('editor.filmFormGaze')}</span>
                 </label>
-                <p className="form-hint">{t('editor.animationEntranceLayersHint')}</p>
-              </details>
+                <label className="animation-entrance">
+                  <input
+                    type="radio"
+                    name="animation-film-form"
+                    checked={filmFormOf(draft) === 'reveal'}
+                    disabled={disabled}
+                    onChange={() => {
+                      const preset = anchors?.presets.find((item) => item.id === draft.presetId);
+                      setDraft(withFilmForm(draft, 'reveal', preset?.entranceClips));
+                    }}
+                  />
+                  <span>{t('editor.filmFormReveal')}</span>
+                </label>
+                <p className="form-hint">{t('editor.filmFormHint')}</p>
+              </section>
 
               {/* 逐条轨道收在高级里。默认只留风格和强度。 */}
               <details className="animation-block animation-advanced">

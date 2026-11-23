@@ -21,7 +21,8 @@ func runApplyAnimation(args []string) error {
 	preset := fs.String("preset", "teaching-clear", "catalog preset id")
 	language := fs.String("language", "zh-CN", "spec language")
 	overwrite := fs.Bool("overwrite", false, "replace manual edits")
-	entrance := fs.Bool("entrance", false, "write gaze+entrance using catalog EntranceClips")
+	entrance := fs.Bool("entrance", false, "legacy: write reveal (gaze+entrance); ignored when --form is set")
+	form := fs.String("form", "", "film form: gaze (注视) or reveal (显现)")
 	sourceRev := fs.Int("source-revision", 0, "document revision; 0 = current")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -42,11 +43,16 @@ func runApplyAnimation(args []string) error {
 
 	pages, deck := api.NewAnimationResolver(stores.projects, stores.objects, stores.scripts, stores.jobs)
 	h := api.NewAnimationHandler(stores.animation, pages, true).WithDeck(deck)
+	formID := strings.TrimSpace(*form)
+	if formID != "" && formID != "gaze" && formID != "reveal" {
+		return fmt.Errorf("apply-animation: --form must be gaze or reveal")
+	}
 	summary, err := h.ApplyAllSlides(ctx, *tenantID, *userID, *projectID, *sourceRev, *language, api.ApplyAllOptions{
 		PresetID:     *preset,
 		Overwrite:    *overwrite,
 		Prefill:      true,
 		WithEntrance: *entrance,
+		FilmForm:     formID,
 	})
 	if err != nil {
 		return err

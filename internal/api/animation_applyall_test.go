@@ -267,6 +267,56 @@ func TestApplyAllWithEntranceWritesGazeEntrance(t *testing.T) {
 	}
 }
 
+func TestApplyAllFilmFormRevealWritesGazeEntrance(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "filmForm": "reveal",
+	})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("apply-all: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.MotionMode != animation.MotionModeGazeEntrance {
+		t.Fatalf("mode = %q, want gaze+entrance", rev.MotionMode)
+	}
+}
+
+func TestApplyAllFilmFormGazeWinsOverWithEntrance(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "filmForm": "gaze", "withEntrance": true,
+	})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("apply-all: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.MotionMode != animation.MotionModeGaze {
+		t.Fatalf("mode = %q, want gaze when filmForm=gaze", rev.MotionMode)
+	}
+}
+
+func TestApplyAllRejectsUnknownFilmForm(t *testing.T) {
+	ts, _ := newApplyAllServer(t, []string{"slide-1"}, nil)
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "filmForm": "punch",
+	})
+	if status != http.StatusBadRequest || payload["code"] != "invalid_film_form" {
+		t.Fatalf("未知片种应 400: %d %v", status, payload)
+	}
+}
+
 func TestApplyAllRejectsUnknownPreset(t *testing.T) {
 	ts, _ := newApplyAllServer(t, []string{"slide-1"}, nil)
 	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{"presetId": "not-a-preset"})

@@ -510,7 +510,7 @@ export function applyLookCrop(
  * 单独导出是因为**低电量降级要按它做例外**：低内存设备不建元素层，但焦点遮罩得留下
  * （见 main.ts 的 lowPower 分支）。判据只有一份，两处不能各写一个「rect.w > 0」。
  */
-export function hasEntranceLayers(layers?: { elementId?: string; clips?: unknown[] }[]): boolean {
+export function hasEntranceLayers(layers?: readonly { elementId?: string; clips?: unknown[] }[]): boolean {
   return (layers ?? []).some((layer) => Boolean(layer.elementId) && (layer.clips?.length ?? 0) > 0);
 }
 

@@ -23,8 +23,8 @@ export type OneClickDrawerProps = {
   mode: ScriptMode;
   overwrite: OneDraftOverwrite;
   preset: string;
-  /** 「要点依次出现」：一键套用写入 gaze+entrance。默认关。 */
-  entrance: boolean;
+  /** 片种：gaze 注视、reveal 显现。 */
+  filmForm: 'gaze' | 'reveal';
   phase: string;
   error: string;
   done: OneClickResult | null;
@@ -35,7 +35,7 @@ export type OneClickDrawerProps = {
   onModeChange: (mode: ScriptMode) => void;
   onOverwriteChange: (value: OneDraftOverwrite) => void;
   onPresetChange: (id: string) => void;
-  onEntranceChange: (value: boolean) => void;
+  onFilmFormChange: (value: 'gaze' | 'reveal') => void;
   onRun: () => void;
 };
 
@@ -46,7 +46,7 @@ export type OneClickDrawerProps = {
  * 因为它要串联讲稿生成、配音任务、动效套用与导出四条既有通道）。
  */
 export function OneClickDrawer(props: OneClickDrawerProps) {
-  const { dialogRef, t, running, steps, mode, overwrite, preset, entrance, phase, error, done, canRun } = props;
+  const { dialogRef, t, running, steps, mode, overwrite, preset, filmForm, phase, error, done, canRun } = props;
   // 关闭只收起抽屉。流水线在编辑器里继续，不因关窗而中断。
 
   return (
@@ -153,6 +153,30 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
             </select>
           </label>
           <p className="narration-note">{t('editor.oneClickOverwriteNote')}</p>
+          <fieldset className="field-label" disabled={running || !steps.animation}>
+            <legend>{t('editor.filmForm')}</legend>
+            <label>
+              <input
+                type="radio"
+                name="one-click-film-form"
+                value="gaze"
+                checked={filmForm === 'gaze'}
+                onChange={() => props.onFilmFormChange('gaze')}
+              />
+              {t('editor.filmFormGaze')}
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="one-click-film-form"
+                value="reveal"
+                checked={filmForm === 'reveal'}
+                onChange={() => props.onFilmFormChange('reveal')}
+              />
+              {t('editor.filmFormReveal')}
+            </label>
+          </fieldset>
+          <p className="narration-note">{t('editor.oneClickFilmFormHint')}</p>
           <label className="field-label">
             {t('editor.oneClickPreset')}
             <select value={preset} disabled={running || !steps.animation} onChange={(e) => props.onPresetChange(e.currentTarget.value)}>
@@ -162,19 +186,6 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
               <option value="launch-bold">{t('editor.oneClickPresetLaunch')}</option>
             </select>
           </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={entrance}
-              disabled={running || !steps.animation}
-              onChange={(e) => {
-                const checked = e.currentTarget.checked;
-                props.onEntranceChange(checked);
-              }}
-            />
-            {t('editor.animationEntranceLayers')}
-          </label>
-          <p className="narration-note">{t('editor.oneClickEntranceHint')}</p>
           <p className="narration-note">{t('editor.oneClickExportHint')}</p>
           <p className="narration-note">{t('editor.oneClickAdvancedNote')}</p>
           {running && <p className="narration-note" role="status">{t('editor.oneClickBackground')}</p>}

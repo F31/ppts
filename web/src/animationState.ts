@@ -207,6 +207,24 @@ export function withIntensity(draft: AnimationSpec, value: number): AnimationSpe
 export const MOTION_MODE_GAZE = 'gaze';
 export const MOTION_MODE_GAZE_ENTRANCE = 'gaze+entrance';
 
+/** 片种：注视（整页框要点）或显现（依次出现）。 */
+export const FILM_FORM_GAZE = 'gaze';
+export const FILM_FORM_REVEAL = 'reveal';
+
+export type FilmForm = typeof FILM_FORM_GAZE | typeof FILM_FORM_REVEAL;
+
+export function filmFormOf(spec: AnimationSpec | null | undefined): FilmForm {
+  return wantsEntranceLayers(spec) ? FILM_FORM_REVEAL : FILM_FORM_GAZE;
+}
+
+export function withFilmForm(
+  draft: AnimationSpec,
+  form: FilmForm,
+  templates?: Record<string, EntranceClipTemplate[]>
+): AnimationSpec {
+  return withEntranceLayers(draft, form === FILM_FORM_REVEAL, templates);
+}
+
 export function withMotionMode(draft: AnimationSpec, mode: string): AnimationSpec {
   return { ...draft, motionMode: mode };
 }

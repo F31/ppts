@@ -262,7 +262,7 @@ export function ProjectEditor({
   const oneClickDialogRef = useDialogA11y<HTMLElement>(() => setOneClickOpen(false));
   const [oneClickSteps, setOneClickSteps] = useState({ script: true, voice: true, animation: true, export: true });
   const [oneClickPreset, setOneClickPreset] = useState('business-calm');
-  const [oneClickEntrance, setOneClickEntrance] = useState(false);
+  const [oneClickFilmForm, setOneClickFilmForm] = useState<'gaze' | 'reveal'>('gaze');
   const [oneClickRunning, setOneClickRunning] = useState(false);
   // 状态要等下一次渲染才变，连点「开始」会在那之前进两次。用 ref 挡住第二次。
   const oneClickLockRef = useRef(false);
@@ -1720,7 +1720,7 @@ export function ProjectEditor({
     // 关窗之后用户还能改表单，所以这一轮用点击当时的值，不读之后的 state。
     const steps = { ...oneClickSteps };
     const preset = oneClickPreset;
-    const entrance = oneClickEntrance;
+    const filmForm = oneClickFilmForm;
     const language = oneDraftLanguage;
     const sourceMode = oneDraftSource;
     const mode = oneDraftMode;
@@ -1836,7 +1836,7 @@ export function ProjectEditor({
           projectId,
           sourceRevisionNo: revisionNo,
           language: scriptLanguage || language
-        }, preset, false, entrance);
+        }, preset, false, filmForm === 'reveal', filmForm);
         applied = result.applied;
         skipped = result.skipped;
         reasons = summarizeApplyAllReasons(result, t);
@@ -2634,7 +2634,7 @@ export function ProjectEditor({
           mode={oneDraftMode}
           overwrite={oneDraftOverwrite}
           preset={oneClickPreset}
-          entrance={oneClickEntrance}
+          filmForm={oneClickFilmForm}
           phase={oneClickPhase}
           error={oneClickError}
           done={oneClickDone}
@@ -2644,7 +2644,7 @@ export function ProjectEditor({
           onModeChange={(mode) => patchDraftForm({ mode })}
           onOverwriteChange={(overwrite) => patchDraftForm({ overwrite })}
           onPresetChange={setOneClickPreset}
-          onEntranceChange={setOneClickEntrance}
+          onFilmFormChange={setOneClickFilmForm}
           onRun={() => void runOneClick()}
         />
       )}

@@ -84,9 +84,10 @@ type applyAllRequest struct {
 	// Prefill 默认开启：规则预填是同步的、不调模型，却能让动效跟着讲稿走
 	// （「讲到哪条出现哪条」）。显式传 false 才退回纯顺序淡入。
 	Prefill *bool `json:"prefill,omitempty"`
-	// WithEntrance 勾选「要点依次出现」：写入 gaze+entrance，并把 catalog
-	// EntranceClips 追加到 spotlight 轨。默认 false，与逐页编辑器勾选同一套模板。
+	// WithEntrance 旧勾选「要点依次出现」。filmForm 非空时以片种为准。
 	WithEntrance bool `json:"withEntrance,omitempty"`
+	// FilmForm 是片种：gaze 注视、reveal 显现。空串时回退 WithEntrance。
+	FilmForm string `json:"filmForm,omitempty"`
 }
 
 type applyAllSlideResult struct {
@@ -143,6 +144,12 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 	if req.Prefill != nil {
 		prefill = *req.Prefill
 	}
+	form := strings.TrimSpace(req.FilmForm)
+	if form != "" && !animation.ValidFilmForm(form) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": "invalid_film_form", "message": "未知的片种"})
+		return
+	}
+	_, withEntrance := animation.ResolveFilmForm(form, req.WithEntrance)
 
 	// 整份 deck 的页序与逐页 Resolve 读的是同一份 document.json、同一份时间轴；
 	// 这两份数据在一次请求里不变，挂上请求级缓存后整份 deck 只读一次
@@ -165,7 +172,7 @@ func (h *AnimationHandler) applyAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := h.applyDeck(ctx, principal.TenantID, principal.UserID, projectID, revNo, language, req.PresetID, req.Overwrite, prefill, req.WithEntrance, slideIDs)
+	resp := h.applyDeck(ctx, principal.TenantID, principal.UserID, projectID, revNo, language, req.PresetID, req.Overwrite, prefill, withEntrance, slideIDs)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -175,6 +182,7 @@ type ApplyAllOptions struct {
 	Overwrite    bool
 	Prefill      bool
 	WithEntrance bool
+	FilmForm     string
 }
 
 // ApplyAllSummary 是整份套用的计数与逐页结果（供 CLI 打印，不改变 HTTP JSON）。
@@ -199,6 +207,11 @@ func (h *AnimationHandler) ApplyAllSlides(ctx context.Context, tenantID, userID,
 	if _, ok := animation.Catalog().Preset(presetID); !ok {
 		return out, fmt.Errorf("unknown preset %q", presetID)
 	}
+	form := strings.TrimSpace(opt.FilmForm)
+	if form != "" && !animation.ValidFilmForm(form) {
+		return out, fmt.Errorf("unknown film form %q", form)
+	}
+	_, withEntrance := animation.ResolveFilmForm(form, opt.WithEntrance)
 	if language == "" {
 		language = lang.Default
 	}
@@ -214,7 +227,7 @@ func (h *AnimationHandler) ApplyAllSlides(ctx context.Context, tenantID, userID,
 	if len(slideIDs) == 0 {
 		return out, errors.New("no slides")
 	}
-	resp := h.applyDeck(ctx, tenantID, userID, projectID, revNo, language, presetID, opt.Overwrite, opt.Prefill, opt.WithEntrance, slideIDs)
+	resp := h.applyDeck(ctx, tenantID, userID, projectID, revNo, language, presetID, opt.Overwrite, opt.Prefill, withEntrance, slideIDs)
 	out.PresetID = resp.PresetID
 	out.Total = resp.Total
 	out.Applied = resp.Applied
