@@ -1180,6 +1180,9 @@ func TestHeadingClearRectsBulletTitleAndCornerTag(t *testing.T) {
 		&animation.Track{ElementID: "metric", Kind: animation.KindBullet, Clips: []*animation.Clip{
 			clipOf("m-spot", "spotlight", 200, 240, "withSegment:seg-1"),
 		}},
+		&animation.Track{ElementID: "metric2", Kind: animation.KindBullet, Clips: []*animation.Clip{
+			clipOf("m2-spot", "spotlight", 400, 240, "withSegment:seg-1"),
+		}},
 	)
 	rev.MotionMode = animation.MotionModeGaze
 	page, _, err := c.CompilePage(PageInput{
@@ -1189,6 +1192,7 @@ func TestHeadingClearRectsBulletTitleAndCornerTag(t *testing.T) {
 			{ID: "heading", Kind: animation.KindBullet, Bounds: emuBox(96, 58, 1728, 115)},
 			{ID: "kicker", Kind: animation.KindBullet, Bounds: emuBox(96, 173, 1728, 67)},
 			{ID: "metric", Kind: animation.KindBullet, Bounds: emuBox(96, 299, 410, 170)},
+			{ID: "metric2", Kind: animation.KindBullet, Bounds: emuBox(520, 299, 410, 170)},
 		},
 		SegmentOffsets: map[string]int64{"seg-1": 0},
 		Revision:       rev,
@@ -1196,8 +1200,8 @@ func TestHeadingClearRectsBulletTitleAndCornerTag(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.ClearRects) != 2 {
-		t.Fatalf("clearRects = %d, want tag + page title: %+v", len(page.ClearRects), page.ClearRects)
+	if len(page.ClearRects) != 3 {
+		t.Fatalf("clearRects = %d, want tag + title + kicker: %+v", len(page.ClearRects), page.ClearRects)
 	}
 	var sawTitle, sawTag, sawKicker bool
 	for _, r := range page.ClearRects {
@@ -1207,18 +1211,15 @@ func TestHeadingClearRectsBulletTitleAndCornerTag(t *testing.T) {
 		if r.Y >= 50 && r.Y < 80 && r.W >= 1700 {
 			sawTitle = true
 		}
-		if r.Y >= 160 {
+		if r.Y >= 160 && r.Y < 200 && r.W >= 1700 {
 			sawKicker = true
 		}
 	}
-	if !sawTitle || !sawTag {
-		t.Fatalf("clearRects = %+v, want corner tag and 大会概览-sized title", page.ClearRects)
-	}
-	if sawKicker {
-		t.Fatalf("subtitle/kicker must stay dimmable: %+v", page.ClearRects)
+	if !sawTitle || !sawTag || !sawKicker {
+		t.Fatalf("clearRects = %+v, want corner tag, 大会概览, and subtitle", page.ClearRects)
 	}
 	for _, f := range page.Focus {
-		if f.ElementID == "heading" || f.ElementID == "tag" {
+		if f.ElementID == "heading" || f.ElementID == "tag" || f.ElementID == "kicker" {
 			t.Fatalf("page chrome became a look: %+v", page.Focus)
 		}
 	}

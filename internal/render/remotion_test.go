@@ -268,14 +268,14 @@ func TestSegmentEnvLooksOnce(t *testing.T) {
 	if strings.Contains(env.Encoding, "arrive=1") || strings.Contains(env.Encoding, "xfade=var") {
 		t.Fatalf("encoding = %q, want arrive=0 without xfade=var", env.Encoding)
 	}
-	if !strings.Contains(env.Encoding, "arrive=0") || !strings.Contains(env.Encoding, "look=cut") {
-		t.Fatalf("encoding = %q, want arrive=0;look=cut", env.Encoding)
+	if !strings.Contains(env.Encoding, "arrive=0") || !strings.Contains(env.Encoding, "look=over") {
+		t.Fatalf("encoding = %q, want arrive=0;look=over", env.Encoding)
 	}
-	if !strings.Contains(env.Encoding, "first=over") {
-		t.Fatalf("encoding = %q, want first=over", env.Encoding)
+	if strings.Contains(env.Encoding, "look=cut") {
+		t.Fatalf("encoding = %q, look=cut must not remain", env.Encoding)
 	}
-	if !strings.Contains(env.Encoding, "title=wide") {
-		t.Fatalf("encoding = %q, want title=wide", env.Encoding)
+	if !strings.Contains(env.Encoding, "title=band") {
+		t.Fatalf("encoding = %q, want title=band", env.Encoding)
 	}
 	if !strings.Contains(env.Encoding, "pointer=1") {
 		t.Fatalf("encoding = %q, want pointer=1", env.Encoding)

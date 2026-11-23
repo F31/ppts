@@ -31,8 +31,12 @@ func TestLookWindowsFiveSpotlightsOver80s(t *testing.T) {
 		if w.StartMs != wantStart[i] || w.EndMs != wantEnd[i] {
 			t.Fatalf("look[%d] = [%d,%d), want [%d,%d)", i, w.StartMs, w.EndMs, wantStart[i], wantEnd[i])
 		}
-		if w.FadeMs != 0 || w.XFade != "cut" {
-			t.Fatalf("look[%d] fade=%d xfade=%q, want hard cut", i, w.FadeMs, w.XFade)
+		if i == 0 {
+			if w.FadeMs != 0 || w.XFade != "cut" {
+				t.Fatalf("look[0] fade=%d xfade=%q, want page-head hard cut", w.FadeMs, w.XFade)
+			}
+		} else if w.FadeMs != lookFirstBoxMS || w.XFade != "over" {
+			t.Fatalf("look[%d] fade=%d xfade=%q, want overlay %dms", i, w.FadeMs, w.XFade, lookFirstBoxMS)
 		}
 		if w.MidMs < w.StartMs || w.MidMs >= w.EndMs {
 			t.Fatalf("look[%d] mid %d not in [%d,%d)", i, w.MidMs, w.StartMs, w.EndMs)
@@ -152,17 +156,14 @@ func TestLookWindowsIgnoresSpansWithoutRect(t *testing.T) {
 		},
 	}
 	got := lookWindows(page)
-	if len(got) != 3 {
-		t.Fatalf("looks = %d, want 3 (unveiled prefix + two rects): %+v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("looks = %d, want 2 (first rect folded to page start): %+v", len(got), got)
 	}
-	if got[0].StartMs != 0 || got[0].EndMs != 1000 || got[0].FadeMs != 0 {
-		t.Fatalf("prefix = %+v, want [0,1000) fade 0", got[0])
+	if got[0].StartMs != 0 || got[0].EndMs != 2000 || got[0].XFade != "cut" {
+		t.Fatalf("folded first = %+v, want [0,2000) cut", got[0])
 	}
-	if got[0].MidMs != 500 {
-		t.Fatalf("prefix MidMs = %d, want 500 (inside the unveiled hold, not page boundary)", got[0].MidMs)
-	}
-	if got[1].XFade != "over" || got[1].FadeMs != lookFirstBoxMS {
-		t.Fatalf("first boxed = %+v, want overlay %dms", got[1], lookFirstBoxMS)
+	if got[1].StartMs != 2000 || got[1].XFade != "over" || got[1].FadeMs != lookFirstBoxMS {
+		t.Fatalf("second = %+v, want overlay %dms", got[1], lookFirstBoxMS)
 	}
 }
 
@@ -175,23 +176,20 @@ func TestLookWindowsPrefixSamplesInsidePage(t *testing.T) {
 		},
 	}
 	got := lookWindows(page)
-	if len(got) != 3 {
-		t.Fatalf("looks = %d, want 3 (prefix + two looks, no arrive): %+v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("looks = %d, want 2 (prefix folded into first look): %+v", len(got), got)
 	}
-	if got[0].StartMs != 0 || got[0].EndMs != 420 || got[0].FadeMs != 0 {
-		t.Fatalf("prefix = %+v, want [0,420) fade 0", got[0])
+	if got[0].StartMs != 0 || got[0].EndMs != 20100 || got[0].XFade != "cut" {
+		t.Fatalf("folded first = %+v, want [0,20100) cut", got[0])
 	}
-	if got[0].MidMs <= 0 || got[0].MidMs >= 420 {
-		t.Fatalf("prefix MidMs = %d, want inside (0,420)", got[0].MidMs)
+	if got[0].MidMs <= 0 || got[0].MidMs >= 20100 {
+		t.Fatalf("first MidMs = %d, want inside (0,20100)", got[0].MidMs)
 	}
-	if got[0].MidMs != 210 {
-		t.Fatalf("prefix MidMs = %d, want 210", got[0].MidMs)
-	}
-	if got[1].StartMs != 420 || got[1].XFade != "over" || got[1].FadeMs != lookFirstBoxMS {
-		t.Fatalf("first boxed = %+v, want start 420 overlay %dms", got[1], lookFirstBoxMS)
+	if got[1].StartMs != 20100 || got[1].XFade != "over" || got[1].FadeMs != lookFirstBoxMS {
+		t.Fatalf("second = %+v, want overlay %dms", got[1], lookFirstBoxMS)
 	}
 	if frame := lookFrame(500, 2515, got[0].MidMs, 30); frame <= 500 {
-		t.Fatalf("prefix still frame %d must be inside the page (start 500)", frame)
+		t.Fatalf("first still frame %d must be inside the page (start 500)", frame)
 	}
 }
 
@@ -273,8 +271,8 @@ func TestLookWindowsSkipArriveWhenLookCrop(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("lookCrop pages keep one still per look, got %d: %+v", len(got), got)
 	}
-	if got[1].FadeMs != 0 || got[1].XFade != "cut" {
-		t.Fatalf("look travel is a hard cut, got fade=%d xfade=%q", got[1].FadeMs, got[1].XFade)
+	if got[1].FadeMs != lookFirstBoxMS || got[1].XFade != "over" {
+		t.Fatalf("look travel is overlay, got fade=%d xfade=%q", got[1].FadeMs, got[1].XFade)
 	}
 }
 

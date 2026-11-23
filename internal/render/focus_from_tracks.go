@@ -713,12 +713,12 @@ func skipGazeActorKind(kind string, allowRow bool) bool {
 //
 // 阅读序第一个文字标成 title，但角标（「大会全景」）Y 更小会抢走 kind，真正的
 // 大标题变成 bullet。title 用 20% 宽（角标也算页眉）；bullet/shape 必须过半宽，
-// 才不会把靠上的要点条当成标题。六宫格卡片标题 Y 过不了 15%。
+// 才不会把靠上的要点条当成标题。六宫格卡片标题 Y 过不了 20%。
 func isPageHeading(kind string, box Box, canvasW, canvasH int) bool {
 	if canvasW <= 0 || canvasH <= 0 {
 		return false
 	}
-	if box.Y >= int(float64(canvasH)*0.15) {
+	if box.Y >= int(float64(canvasH)*0.20) {
 		return false
 	}
 	if box.H >= int(float64(canvasH)*0.18) {

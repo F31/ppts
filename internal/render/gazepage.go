@@ -54,23 +54,14 @@ func lookWindows(page Page) []lookWindow {
 		return nil
 	}
 	late := HasEntranceElementLayer(page.Layers)
-	clearMs := pageFadeClearMs(page)
-	// 入场页的前缀窗是挖空底板：页切 xfade 会闪一帧空卡。第一条 Focus 落在页间
-	// fade 里时，前缀仍帧也会烘进上一页残影。这两种都并进第一条 look。
-	foldPrefix := late || (clearMs > 0 && spans[0].StartMs > 0 && spans[0].StartMs < clearMs)
+	// 一进页就框第一条。未加纱前缀（全亮再砸框）既闪，又会让页 0 空等十几秒。
+	// 入场页的空底板前缀同样并进第一条，避免页切烘到挖空卡。
 	var out []lookWindow
-	if !foldPrefix && spans[0].StartMs > 0 {
-		end := spans[0].StartMs
-		out = append(out, lookWindow{
-			StartMs: 0, EndMs: end, FadeMs: 0,
-			MidMs: lookStillMid(page, 0, end, 0, 0, late), XFade: "cut",
-		})
-	}
 	var ready int64
 	seen := map[string]struct{}{}
 	for i, f := range spans {
 		start := f.StartMs
-		if foldPrefix && i == 0 {
+		if i == 0 {
 			start = 0
 		}
 		end := page.DurationMs
@@ -93,13 +84,10 @@ func lookWindows(page Page) []lookWindow {
 				}
 			}
 		}
-		// look 之间硬切。loop 静图走 ffmpeg xfade 时 PTS 会先切到新框，再把上一框
-		// 冲回来。到达拆帧（1.12→1）同样要叠化，硬切后只剩缩放跳变，一并取消。
-		// 第一条黄框从「未加纱前缀」过来时，用 overlay 淡入（不是 xfade），纱和框
-		// 在 200ms 里铺上，避免硬切那一下整页闪灰。
+		// look 旅行用 overlay 淡入，不用 ffmpeg xfade（loop 静图 PTS 会先切新框再闪回）。
 		fadeMs := int64(0)
 		xfade := "cut"
-		if i == 0 && len(out) > 0 {
+		if i > 0 {
 			fadeMs = lookFirstBoxMS
 			xfade = "over"
 			if fadeMs >= end-start {
@@ -362,7 +350,7 @@ func encodeGazePage(ctx context.Context, ffmpeg string, plan *Timeline, dir stri
 		enc := gazeLookEncode{
 			Image: img, Frames: counts[li], XFade: windows[li].XFade,
 		}
-		// 第一条黄框：把未加纱前缀 overlay 淡入到带纱带框的仍帧。其余 look 硬切。
+		// look 旅行：把上一张仍帧 overlay 淡入到这一张。页头第一条没有 PrevImage。
 		if li > 0 && windows[li].XFade == "over" && windows[li].FadeMs > 0 {
 			enc.PrevImage = lookStillPath(dir, i, li-1)
 			enc.TransitionFrames = framesForDuration(windows[li].FadeMs, plan.FPS)

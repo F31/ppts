@@ -156,7 +156,7 @@ export const FOCUS_DIM_OPACITY = 0.55;
 /**
  * 页眉大标题：靠上、不太高。与 Go `isPageHeading` 同一套门槛。
  * 角标会抢走 title kind，真正的大标题常是 bullet/shape：title 宽过 20% 即可，
- * bullet/shape 必须过半宽。六宫格卡片标题 Y 过不了 15%，继续跟着纱走。
+ * bullet/shape 必须过半宽。六宫格卡片标题 Y 过不了 20%，继续跟着纱走。
  */
 export function isPageHeading(
   kind: string | undefined,
@@ -165,7 +165,7 @@ export function isPageHeading(
   canvasH: number
 ): boolean {
   if (canvasW <= 0 || canvasH <= 0) return false;
-  if (box.y >= Math.trunc(canvasH * 0.15)) return false;
+  if (box.y >= Math.trunc(canvasH * 0.20)) return false;
   if (box.h >= Math.trunc(canvasH * 0.18)) return false;
   let minW = canvasW * 0.5;
   if (kind === 'title') minW = canvasW * 0.2;
