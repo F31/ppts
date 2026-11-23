@@ -269,33 +269,54 @@ func encodeGazePages(ctx context.Context, b *RemotionBackend, staged *Timeline, 
 	if len(pages) == 0 {
 		return nil
 	}
-	jobs, err := collectLookJobs(staged, dir, pages)
-	if err != nil {
-		return err
-	}
-	if len(jobs) == 0 {
-		return fmt.Errorf("render: gaze pages have no look windows")
-	}
 	if err := os.MkdirAll(filepath.Join(dir, "looks"), 0o750); err != nil {
 		return fmt.Errorf("render: prepare looks dir: %w", err)
 	}
-	stillsPath := filepath.Join(dir, "stills.json")
-	raw, err := json.Marshal(jobs)
-	if err != nil {
-		return fmt.Errorf("render: marshal stills: %w", err)
+	var paintPages, chromePages []int
+	for _, i := range pages {
+		if i < 0 || i >= len(staged.Pages) {
+			return fmt.Errorf("render: gaze page index %d out of range", i)
+		}
+		if gazePaintOK(staged.Pages[i]) {
+			paintPages = append(paintPages, i)
+		} else {
+			chromePages = append(chromePages, i)
+		}
 	}
-	if err := os.WriteFile(stillsPath, raw, 0o640); err != nil {
-		return fmt.Errorf("render: write stills: %w", err)
+	if len(paintPages) > 0 {
+		if b.Logf != nil {
+			b.Logf("render: %d gaze pages painted without chrome", len(paintPages))
+		}
+		if err := writePaintedLookStills(staged, dir, paintPages); err != nil {
+			return err
+		}
 	}
-	script := b.resolveScript()
-	if script == "" {
-		return errors.New("render: renderer script not configured (set PPTS_RENDERER_SCRIPT)")
-	}
-	if _, err := os.Stat(script); err != nil {
-		return fmt.Errorf("render: renderer script %q: %w", script, err)
-	}
-	if err := b.execStills(ctx, script, planPath, stillsPath, dir, contentDuration(staged)); err != nil {
-		return err
+	if len(chromePages) > 0 {
+		jobs, err := collectLookJobs(staged, dir, chromePages)
+		if err != nil {
+			return err
+		}
+		if len(jobs) == 0 {
+			return fmt.Errorf("render: gaze pages have no look windows")
+		}
+		stillsPath := filepath.Join(dir, "stills.json")
+		raw, err := json.Marshal(jobs)
+		if err != nil {
+			return fmt.Errorf("render: marshal stills: %w", err)
+		}
+		if err := os.WriteFile(stillsPath, raw, 0o640); err != nil {
+			return fmt.Errorf("render: write stills: %w", err)
+		}
+		script := b.resolveScript()
+		if script == "" {
+			return errors.New("render: renderer script not configured (set PPTS_RENDERER_SCRIPT)")
+		}
+		if _, err := os.Stat(script); err != nil {
+			return fmt.Errorf("render: renderer script %q: %w", script, err)
+		}
+		if err := b.execStills(ctx, script, planPath, stillsPath, dir, contentDuration(staged)); err != nil {
+			return err
+		}
 	}
 	ffmpeg := b.resolveFFmpeg()
 	for n, i := range pages {

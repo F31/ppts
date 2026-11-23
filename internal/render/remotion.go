@@ -196,7 +196,14 @@ func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir s
 		}
 	}
 	planPath := filepath.Join(dir, "plan.json")
-	if len(chromePages) > 0 || len(gazePages) > 0 {
+	needChromeStills := false
+	for _, i := range gazePages {
+		if i >= 0 && i < len(plan.Pages) && !gazePaintOK(plan.Pages[i]) {
+			needChromeStills = true
+			break
+		}
+	}
+	if len(chromePages) > 0 || needChromeStills {
 		payload, err := json.Marshal(staged)
 		if err != nil {
 			return RenderReport{}, fmt.Errorf("render: marshal staged plan: %w", err)
@@ -306,7 +313,7 @@ func (b *RemotionBackend) RenderPages(ctx context.Context, plan *Timeline, dir s
 // 字节就变了，片段缓存必须跟着失效。
 func (b *RemotionBackend) SegmentEnv() SegmentEnv {
 	return SegmentEnv{
-		Encoding:      fmt.Sprintf("crf=%d;gop=%d;cs=bt709;pad=%d;looks=once;callout=end;crop=slack;punch=off;arrive=0;look=over;pointer=1;sample=ready;page=cut;title=band", b.crf(), b.gop(), platePadPx),
+		Encoding:      fmt.Sprintf("crf=%d;gop=%d;cs=bt709;pad=%d;looks=once;callout=end;crop=slack;punch=off;arrive=0;look=over;pointer=1;sample=ready;page=cut;title=band;still=paint", b.crf(), b.gop(), platePadPx),
 		ChromeVersion: b.ChromeVersion(),
 	}
 }
