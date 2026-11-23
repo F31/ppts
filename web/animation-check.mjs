@@ -1214,6 +1214,8 @@ test('pickStageLayers：低电量也只省元素层，焦点遮罩照建', async
   assert.equal(pickStageLayers([], [], false), null);
   const callout = [{ kind: 'callout', startMs: 0, rect: { x: 1, y: 2, w: 10, h: 10 } }];
   assert.deepEqual(pickStageLayers(oneLayer, [], true, callout), []);
+  const entrance = [{ elementId: 'card-1', box: { x: 0, y: 0, w: 10, h: 10 }, image: 'a.png', clips: [{ effect: 'fadeIn', startMs: 0, durationMs: 400 }] }];
+  assert.deepEqual(pickStageLayers(entrance, rectFocus, true), entrance, '挖空底板上的入场层低电量也要留');
 });
 
 // ---- 焦点过渡：网页版与成片在**每个帧时刻**逐点一致 ----

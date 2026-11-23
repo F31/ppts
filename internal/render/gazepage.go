@@ -402,7 +402,7 @@ func lookXFadeFilter(prevIdx, imgIdx int, transSec string, frames int, kind, lab
 	case "over":
 		// 新仍帧 alpha 淡入叠在旧仍帧上。两路都从 PTS 0 起，不会出现 xfade 那种
 		// 「先切 B 再闪回 A」。淡入结束后 overlay 保持 B 不透明，直到本段 trim。
-		return fmt.Sprintf("[s%d]format=yuva420p,fade=t=in:st=0:d=%s:alpha=1[o%s];[s%d][o%s]overlay,format=yuv420p,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
+		return fmt.Sprintf("[s%d]format=yuva420p,fade=t=in:st=0:d=%s:alpha=1[o%s];[s%d][o%s]overlay=eof_action=pass,format=yuv420p,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
 			imgIdx, transSec, label, prevIdx, label, frames, label)
 	case "wipeleft", "wiperight", "wipeup", "wipedown":
 		return fmt.Sprintf("[s%d][s%d]xfade=transition=%s:duration=%s:offset=0,trim=end_frame=%d,setpts=PTS-STARTPTS[%s]",
@@ -481,9 +481,13 @@ func encodeGazePageArgs(spec gazePageEncodeSpec) ([]string, error) {
 		}
 		prevIdx := -1
 		if trans > 0 {
-			// 两路都铺满本段时长。只给 prev 转场那么长时，loop 图的 PTS 一旦
-			// 不是从 0 起，xfade 会先吐 B（新页），再把上一页冲回来，页切闪一下。
-			prevIdx = addInput(look.PrevImage, frames)
+			prevFrames := frames
+			if kindOver := look.XFade == "over"; kindOver {
+				// overlay 只需要转场那么长的上一张。铺满整段会让 6–9 路 loop 静图
+				// 把 2G 渲染器 OOM（preview.41 cardalign ffmpeg rss 2.0G）。
+				prevFrames = trans + 1
+			}
+			prevIdx = addInput(look.PrevImage, prevFrames)
 		}
 		imgIdx := addInput(look.Image, frames)
 		kind := look.XFade

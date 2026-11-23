@@ -491,10 +491,9 @@ function mount(): void {
   // 单向不回退——中途恢复动效会让画面突然"开始动"，比一直不动更像故障。
   const degradeForFps = (fps: number): void => {
     degraded = true;
-    // 已建的层要当场拆：低端机上"下一帧再拆"会继续掉帧，而层本身就是成本。
-    releaseLayers(activeLayers);
+    // 入场层留着：底板已经挖空，拆掉只剩空卡。后续页不再建 overlay。
     // 留一条可诊断的日志：用户只会说"卡"，不会说"没降级"。
-    console.info(`[ppts] 实测帧率 ${fps.toFixed(1)}fps，已降级为静态页 + 音频 + 字幕`);
+    console.info(`[ppts] 实测帧率 ${fps.toFixed(1)}fps，已降级（保留入场层，停 overlay）`);
   };
 
   // ---- 页内镜头（换底图）----

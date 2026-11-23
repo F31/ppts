@@ -811,7 +811,8 @@ func lookChainEntrance(effect string) bool {
 }
 
 // alignEntranceClipsToFocus 把 fadeIn/slideIn/pop 的起点拉到该元素第一条 Focus。
-// equal-spread 与拍表 Focus 各自铺时，圈选亮起时洞还是空的，下一条 look 才看得到上一格。
+// 同一张卡上的标题/正文经常只有一条进拍表：另一条还停在 equal-spread，圈选 04
+// 时正文还是空的，06 标题却已经按均分时刻冒出来。落在 Focus.rect 里的层一并拉齐。
 func alignEntranceClipsToFocus(page *Page) {
 	if page == nil || len(page.Focus) == 0 || len(page.Layers) == 0 {
 		return
@@ -830,7 +831,7 @@ func alignEntranceClipsToFocus(page *Page) {
 		return
 	}
 	for i := range page.Layers {
-		start, ok := first[page.Layers[i].ElementID]
+		start, ok := entranceStartForLayer(page.Layers[i], first, page.Focus)
 		if !ok {
 			continue
 		}
@@ -842,6 +843,36 @@ func alignEntranceClipsToFocus(page *Page) {
 			c.StartMs = start
 		}
 	}
+}
+
+func entranceStartForLayer(layer Layer, first map[string]int64, spans []FocusSpan) (int64, bool) {
+	if start, ok := first[layer.ElementID]; ok {
+		return start, true
+	}
+	best := -1
+	var start int64
+	for _, f := range spans {
+		if f.Rect == nil || !boxContained(layer.Box, *f.Rect) {
+			continue
+		}
+		area := f.Rect.W * f.Rect.H
+		if area < 1 {
+			continue
+		}
+		if best < 0 || area < best {
+			best = area
+			start = f.StartMs
+		}
+	}
+	return start, best >= 0
+}
+
+func boxContained(inner, outer Box) bool {
+	if inner.W < 1 || inner.H < 1 || outer.W < 1 || outer.H < 1 {
+		return false
+	}
+	return inner.X >= outer.X && inner.Y >= outer.Y &&
+		inner.X+inner.W <= outer.X+outer.W && inner.Y+inner.H <= outer.Y+outer.H
 }
 
 // resolveTrigger 把三种触发形式解析为页内锚点毫秒。

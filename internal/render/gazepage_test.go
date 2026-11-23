@@ -146,6 +146,34 @@ func TestAlignEntranceClipsToFocus(t *testing.T) {
 	}
 }
 
+func TestAlignEntranceClipsToFocusPullsCardSiblings(t *testing.T) {
+	card := Box{X: 88, Y: 587, W: 566, H: 304}
+	other := Box{X: 1266, Y: 587, W: 566, H: 304}
+	page := Page{
+		Focus: []FocusSpan{
+			{StartMs: 43574, ElementID: "shape-14", Rect: &card},
+			{StartMs: 74320, ElementID: "shape-21", Rect: &other},
+		},
+		Layers: []Layer{
+			{ElementID: "shape-14", Box: Box{X: 119, Y: 608, W: 505, H: 89},
+				Clips: []Motion{{Effect: "fadeIn", StartMs: 43574, DurationMs: 500}}},
+			{ElementID: "shape-15", Box: Box{X: 119, Y: 695, W: 505, H: 175},
+				Clips: []Motion{{Effect: "fadeIn", StartMs: 58043, DurationMs: 500}}},
+			{ElementID: "shape-20", Box: Box{X: 1296, Y: 608, W: 505, H: 89},
+				Clips: []Motion{{Effect: "fadeIn", StartMs: 51593, DurationMs: 500}}},
+			{ElementID: "shape-21", Box: Box{X: 1296, Y: 695, W: 505, H: 175},
+				Clips: []Motion{{Effect: "fadeIn", StartMs: 74320, DurationMs: 500}}},
+		},
+	}
+	alignEntranceClipsToFocus(&page)
+	if page.Layers[1].Clips[0].StartMs != 43574 {
+		t.Fatalf("04 body = %d, want 43574 with the title look", page.Layers[1].Clips[0].StartMs)
+	}
+	if page.Layers[2].Clips[0].StartMs != 74320 {
+		t.Fatalf("06 title = %d, want 74320 with the 06 look, not during 04", page.Layers[2].Clips[0].StartMs)
+	}
+}
+
 func TestLookWindowsIgnoresSpansWithoutRect(t *testing.T) {
 	page := Page{
 		DurationMs: 4000,
@@ -527,7 +555,7 @@ func TestEncodeGazePageArgsFirstBoxOverlay(t *testing.T) {
 	if strings.Contains(joined, "xfade") {
 		t.Fatalf("first box must not use xfade:\n%s", joined)
 	}
-	if !strings.Contains(joined, "fade=t=in:st=0") || !strings.Contains(joined, "overlay") {
+	if !strings.Contains(joined, "fade=t=in:st=0") || !strings.Contains(joined, "overlay=eof_action=pass") {
 		t.Fatalf("first box wants overlay fade-in:\n%s", joined)
 	}
 	if !strings.Contains(joined, "-i\nlooks/p001_l00.png") || !strings.Contains(joined, "-i\nlooks/p001_l01.png") {

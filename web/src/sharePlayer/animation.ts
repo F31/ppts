@@ -571,7 +571,8 @@ export function pickStageLayers(
 ): readonly ManifestLayer[] | null {
   if (!needsLayerStage(layers, focus, annotations, overlays)) return null;
   if (!lowPower) return layers;
-  // 低电量：元素层与临时 Overlay 一个不放。纱 / 圈选 / 台上条仍建。
+  // 挖空底板上的入场层不能省：省掉只剩六张空卡。没有入场时仍只建纱/圈选。
+  if (hasEntranceLayers(layers)) return layers;
   return hasRectFocus(focus) || hasCallout(annotations) || hasPointer(annotations) || hasCaption(annotations)
     ? []
     : null;

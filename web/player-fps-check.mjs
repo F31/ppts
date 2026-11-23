@@ -98,20 +98,20 @@ test('降级接在渲染循环里，且与 lowPower 共用「不建元素层」�
   assert.match(
     player,
     /pickStageLayers\(layers, slide\.focus, lowPower \|\| degraded, slide\.annotations, slide\.overlays\)/,
-    '降级后新页也不得再建元素层'
+    '降级后新页走同一 pickStageLayers 入口'
   );
   // 交叉转场会重建前一页的层，同样必须带上 degraded，否则降级只降当前页。
   assert.match(
     player,
     /pickStageLayers\(layers, before\.focus, lowPower \|\| degraded, before\.annotations, before\.overlays\)/,
-    '降级后交叉转场的前一页也不得再建元素层'
+    '降级后交叉转场的前一页走同一 pickStageLayers 入口'
   );
   // 已建的层要当场拆掉。
   // 只截 degradeForFps 的函数体：后面的镜头/字幕代码会误伤"没碰 image/subtitle"的断言。
   const degradeBody = /const degradeForFps = \(fps: number\): void => \{[\s\S]*?\n  \};/.exec(player);
   assert.ok(degradeBody, '找不到 degradeForFps 的函数体');
   const degrade = degradeBody[0];
-  assert.match(degrade, /releaseLayers\(activeLayers\)/, '降级必须立刻释放已建的层');
+  assert.doesNotMatch(degrade, /releaseLayers\(activeLayers\)/, '降级不得拆入场层（挖空底板会露出空卡）');
   // 只降动画、不降画面与字幕：degradeForFps 里不许碰 image / subtitle / audio。
   assert.doesNotMatch(degrade, /image\.|subtitle|audio\./, '降级只拆动画层，页面、音频与字幕必须保留');
 });
