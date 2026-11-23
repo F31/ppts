@@ -273,9 +273,10 @@ func blockedTargetBoxes(targets map[string]Box, self string) []Box {
 	return out
 }
 
-// mergeGazeLooks 按组 + 矩形去重：同组（同一张卡）保留 StartMs 更晚的正文，不同组不合并。
-// 更晚的起点让 gaze+entrance 的 look 仍帧采在正文入场之后。keepTimes 时按时间序排并重算 EndMs，
-// 禁止 (Y,X) 与 duration/n。回退路径保持今日阅读序重铺。
+// mergeGazeLooks 按组 + 矩形去重：同组（同一张卡）保留第一次被点到的时刻。
+// 旁白先点标题、正文拍点落在句末时，取更晚会让卡片在话讲完才入场。
+// 入场层已按 Focus.rect 对齐，仍帧在 lookStillMid 等到 fadeIn 结束。
+// keepTimes 时按时间序排并重算 EndMs；回退路径保持阅读序重铺。
 func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []FocusSpan {
 	if len(spans) < 2 {
 		return spans
@@ -306,11 +307,12 @@ func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []Focus
 			continue
 		}
 		sameEl := s.ElementID != "" && s.ElementID == uniq[dupAt].ElementID
-		if keepTimes && sameEl && s.StartMs-uniq[dupAt].StartMs >= lookPhraseGapMS {
+		gap := s.StartMs - uniq[dupAt].StartMs
+		if keepTimes && gap >= lookPhraseGapMS && (sameEl || gap >= minPhraseHoldMS) {
 			uniq = append(uniq, s)
 			continue
 		}
-		if s.StartMs > uniq[dupAt].StartMs {
+		if s.StartMs < uniq[dupAt].StartMs {
 			uniq[dupAt] = s
 		}
 	}
@@ -331,7 +333,7 @@ func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []Focus
 				uniq[i].EndMs = 0
 			}
 		}
-		return uniq
+		return dropShortLooks(uniq, minPhraseHoldMS)
 	}
 	sort.SliceStable(uniq, func(i, j int) bool {
 		ri, rj := uniq[i].Rect, uniq[j].Rect
@@ -361,6 +363,37 @@ func mergeGazeLooks(spans []FocusSpan, durationMs int64, keepTimes bool) []Focus
 		}
 	}
 	return uniq
+}
+
+func dropShortLooks(spans []FocusSpan, minMS int64) []FocusSpan {
+	if minMS <= 0 || len(spans) < 2 {
+		return spans
+	}
+	out := make([]FocusSpan, 0, len(spans))
+	for i, s := range spans {
+		end := s.EndMs
+		if i+1 < len(spans) {
+			end = spans[i+1].StartMs
+		}
+		if end > 0 && end-s.StartMs < minMS {
+			continue
+		}
+		out = append(out, s)
+	}
+	if len(out) < 2 {
+		return spans
+	}
+	if len(out) == len(spans) {
+		return spans
+	}
+	for i := range out {
+		if i+1 < len(out) {
+			out[i].EndMs = out[i+1].StartMs
+		} else {
+			out[i].EndMs = 0
+		}
+	}
+	return out
 }
 
 func firstGazeSegmentStart(track *animation.Track, offsets map[string]int64, durationMs int64) (int64, bool) {

@@ -152,6 +152,7 @@ func TestAlignEntranceClipsToFocusPullsCardSiblings(t *testing.T) {
 	page := Page{
 		Focus: []FocusSpan{
 			{StartMs: 43574, ElementID: "shape-14", Rect: &card},
+			{StartMs: 64437, ElementID: "shape-20", Rect: &other},
 			{StartMs: 74320, ElementID: "shape-21", Rect: &other},
 		},
 		Layers: []Layer{
@@ -169,8 +170,11 @@ func TestAlignEntranceClipsToFocusPullsCardSiblings(t *testing.T) {
 	if page.Layers[1].Clips[0].StartMs != 43574 {
 		t.Fatalf("04 body = %d, want 43574 with the title look", page.Layers[1].Clips[0].StartMs)
 	}
-	if page.Layers[2].Clips[0].StartMs != 74320 {
-		t.Fatalf("06 title = %d, want 74320 with the 06 look, not during 04", page.Layers[2].Clips[0].StartMs)
+	if page.Layers[2].Clips[0].StartMs != 64437 {
+		t.Fatalf("06 title = %d, want 64437 first mention", page.Layers[2].Clips[0].StartMs)
+	}
+	if page.Layers[3].Clips[0].StartMs != 64437 {
+		t.Fatalf("06 body = %d, want 64437 with the title look, not 74320", page.Layers[3].Clips[0].StartMs)
 	}
 }
 

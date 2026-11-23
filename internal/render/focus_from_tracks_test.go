@@ -475,6 +475,21 @@ func TestFocusFromBeatSheetDenseDropsPhraseExtras(t *testing.T) {
 	}
 }
 
+func TestMergeGazeLooksSameCardKeepsFirstMention(t *testing.T) {
+	card := Box{X: 88, Y: 587, W: 566, H: 304}
+	spans := []FocusSpan{
+		{StartMs: 62000, EndMs: 74000, ElementID: "shape-20", Rect: &card},
+		{StartMs: 74320, ElementID: "shape-21", Rect: &card},
+	}
+	got := mergeGazeLooks(spans, 83840, true)
+	if len(got) != 2 {
+		t.Fatalf("got %d looks, want first mention plus later body: %+v", len(got), got)
+	}
+	if got[0].StartMs != 62000 || got[0].ElementID != "shape-20" {
+		t.Fatalf("06 must gaze at first mention, got %+v", got[0])
+	}
+}
+
 func TestT6KeepTimesUniqueByRect(t *testing.T) {
 	cardA := Box{X: 64, Y: 194, W: 429, H: 232}
 	cardB := Box{X: 506, Y: 194, W: 429, H: 232}
@@ -484,27 +499,27 @@ func TestT6KeepTimesUniqueByRect(t *testing.T) {
 		{StartMs: 40000, ElementID: "title-b", Rect: &cardB},
 	}
 	got := mergeGazeLooks(spans, 80000, true)
-	if len(got) != 2 {
-		t.Fatalf("got %d looks, want 2: %+v", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("got %d looks, want title-a, body-a, title-b: %+v", len(got), got)
 	}
-	if got[0].StartMs != 18000 || got[0].EndMs != 40000 {
-		t.Fatalf("collapsed card StartMs=%d EndMs=%d, want 18000/40000", got[0].StartMs, got[0].EndMs)
+	if got[0].StartMs != 12000 || got[0].ElementID != "title-a" {
+		t.Fatalf("first mention = %+v, want title-a@12000", got[0])
 	}
-	if got[0].ElementID != "body-a" {
-		t.Fatalf("keep later body, got %s", got[0].ElementID)
+	if got[1].StartMs != 18000 || got[1].ElementID != "body-a" {
+		t.Fatalf("same-card body = %+v, want body-a@18000", got[1])
 	}
-	if got[1].StartMs != 40000 || got[1].ElementID != "title-b" {
-		t.Fatalf("second = %+v, want title-b@40000", got[1])
+	if got[2].StartMs != 40000 || got[2].ElementID != "title-b" {
+		t.Fatalf("second card = %+v, want title-b@40000", got[2])
 	}
 	if got[1].StartMs <= got[0].StartMs {
 		t.Fatal("array must be time order, not (Y,X)")
 	}
 	anns := annotationsFromFocus(got, "rect")
-	if len(anns) != 2 {
-		t.Fatalf("callouts = %d, want 2", len(anns))
+	if len(anns) != 3 {
+		t.Fatalf("callouts = %d, want 3", len(anns))
 	}
-	if anns[0].EndMs != 40000 {
-		t.Fatalf("first callout EndMs=%d, want 40000", anns[0].EndMs)
+	if anns[0].EndMs != 18000 {
+		t.Fatalf("first callout EndMs=%d, want 18000", anns[0].EndMs)
 	}
 }
 

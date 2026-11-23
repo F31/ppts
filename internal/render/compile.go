@@ -846,25 +846,19 @@ func alignEntranceClipsToFocus(page *Page) {
 }
 
 func entranceStartForLayer(layer Layer, first map[string]int64, spans []FocusSpan) (int64, bool) {
+	earliest := int64(-1)
 	if start, ok := first[layer.ElementID]; ok {
-		return start, true
+		earliest = start
 	}
-	best := -1
-	var start int64
 	for _, f := range spans {
 		if f.Rect == nil || !boxContained(layer.Box, *f.Rect) {
 			continue
 		}
-		area := f.Rect.W * f.Rect.H
-		if area < 1 {
-			continue
-		}
-		if best < 0 || area < best {
-			best = area
-			start = f.StartMs
+		if earliest < 0 || f.StartMs < earliest {
+			earliest = f.StartMs
 		}
 	}
-	return start, best >= 0
+	return earliest, earliest >= 0
 }
 
 func boxContained(inner, outer Box) bool {
