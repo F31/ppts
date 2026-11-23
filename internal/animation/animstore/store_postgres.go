@@ -38,13 +38,14 @@ func pgScanRevision(row pgx.Row) (*animation.Revision, error) {
 		&tracks, &r.RenderedRevision, &r.UpdatedAt); err != nil {
 		return nil, err
 	}
-	parsed, mode, err := unmarshalTracks(tracks)
+	decoded, err := unmarshalTracks(tracks)
 	if err != nil {
 		return nil, err
 	}
 	r.Status = animation.Status(status)
-	r.Tracks = parsed
-	r.MotionMode = mode
+	r.Tracks = decoded.Tracks
+	r.MotionMode = decoded.MotionMode
+	r.FormSource = decoded.FormSource
 	return &r, nil
 }
 

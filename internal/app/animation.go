@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/F31/ppts/internal/animation"
@@ -191,13 +192,17 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 	if len(req.Pages) == 0 {
 		return nil, errors.New("animation: no pages to render")
 	}
+	doneCompile := observability.ExportStage(ctx, observability.ExportStageCompile)
 	plan, err := h.compileAnimationPlan(req)
+	doneCompile()
 	if err != nil {
 		return nil, err
 	}
 	h.observeCompiledPlan(plan)
+	doneRender := observability.ExportStage(ctx, observability.ExportStageRender)
 	jobID, err := h.renderer.Submit(ctx, plan)
 	if err != nil {
+		doneRender()
 		return nil, fmt.Errorf("animation: submit: %w", err)
 	}
 	waitFor := animationWaitTimeout(h.animationTimeout, compiledContentDuration(plan))
@@ -207,6 +212,7 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 	}
 	st, err := h.renderer.Wait(ctx, jobID, 0, waitFor)
 	if err != nil {
+		doneRender()
 		// 等待失败（超时/取消）必须让服务端尽快释放并发位：一次卡住的导出
 		// 会把渲染槽占满，后面的导出连排队都进不去。成功路径不取消——
 		// 对已成功任务发 DELETE 是纯噪声。
@@ -214,12 +220,14 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 		return nil, fmt.Errorf("animation: wait %s: %w", jobID, err)
 	}
 	if st.State != render.StateSucceeded {
+		doneRender()
 		msg := st.Error
 		if msg == "" {
 			msg = "render job ended in state " + string(st.State)
 		}
 		return nil, fmt.Errorf("animation: render failed: %s", msg)
 	}
+	doneRender()
 	if err := os.MkdirAll(workDir, 0o750); err != nil {
 		return nil, fmt.Errorf("animation: prepare work dir: %w", err)
 	}
@@ -248,31 +256,66 @@ func (h *ExportHandler) RenderAnimation(ctx context.Context, req AnimationReques
 		PlanHash:    st.PlanHash,
 		Diagnostics: plan.Warnings,
 	}
-	for i := range req.Pages {
+	doneDownload := observability.ExportStage(ctx, observability.ExportStageDownload)
+	h.downloadRenderSegments(ctx, jobID, workDir, present, out)
+	doneDownload()
+	return out, nil
+}
+
+type segmentDownload struct {
+	path    string
+	missing bool
+	reason  string
+}
+
+func (h *ExportHandler) downloadRenderSegments(ctx context.Context, jobID, workDir string, present map[string]struct{}, out *AnimationRender) {
+	n := len(out.Segments)
+	results := make([]segmentDownload, n)
+	sem := make(chan struct{}, exportObjectFetchLimit)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
 		name := render.SegmentName(i)
 		if _, ok := present[name]; !ok {
-			// 服务端说成功但缺了某一页：换静态段继续（ADR-23），不整片失败。
-			out.Missing = append(out.Missing, i)
-			h.logAnimationDegrade(jobID, i, "segment missing from artifacts")
+			results[i] = segmentDownload{missing: true, reason: "segment missing from artifacts"}
 			continue
 		}
-		dst := filepath.Join(workDir, name)
-		n, err := h.downloadSegment(ctx, jobID, name, dst)
-		if err != nil {
-			out.Missing = append(out.Missing, i)
-			h.logAnimationDegrade(jobID, i, err.Error())
-			continue
-		}
-		if n == 0 {
-			// 空片段比缺片段更坏：ffprobe 能过、拼接也能过，成片里那一页是黑的。
-			_ = os.Remove(dst)
-			out.Missing = append(out.Missing, i)
-			h.logAnimationDegrade(jobID, i, "empty segment")
-			continue
-		}
-		out.Segments[i] = dst
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				reason := "canceled"
+				if err := ctx.Err(); err != nil {
+					reason = err.Error()
+				}
+				results[i] = segmentDownload{missing: true, reason: reason}
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+			dst := filepath.Join(workDir, name)
+			got, err := h.downloadSegment(ctx, jobID, name, dst)
+			if err != nil {
+				results[i] = segmentDownload{missing: true, reason: err.Error()}
+				return
+			}
+			if got == 0 {
+				_ = os.Remove(dst)
+				results[i] = segmentDownload{missing: true, reason: "empty segment"}
+				return
+			}
+			results[i] = segmentDownload{path: dst}
+		}(i, name)
 	}
-	return out, nil
+	wg.Wait()
+	for i, r := range results {
+		if r.missing {
+			out.Missing = append(out.Missing, i)
+			h.logAnimationDegrade(jobID, i, r.reason)
+			continue
+		}
+		out.Segments[i] = r.path
+	}
 }
 
 // downloadSegment 把一页片段写到本地文件。写失败时删掉半成品：

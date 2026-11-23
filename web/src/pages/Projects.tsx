@@ -404,6 +404,7 @@ export function Projects({
         includeNotes: options.includeNotes,
         animation,
         displayOffsetMs: readDraftOffset(exportManifest.timelineKey, exportTarget.projectId),
+        directBeats: options.directBeats && animation.length > 0,
         idempotencyKey
       });
       setExportTarget(null);

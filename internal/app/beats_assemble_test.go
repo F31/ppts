@@ -145,7 +145,7 @@ func TestPreviewStaysPhase1WhenDirectorWouldRescue(t *testing.T) {
 		t.Fatalf("cover page should stay Phase 1 invalid in preview: %+v", preview.Sheet)
 	}
 	in, phase1 := producePageBeatSheet(bindElems, ids, slide, subs, 8000)
-	rescued := directPageBeatSheet(context.Background(), in, phase1, coverCompleter{}, nil, "")
+	rescued := directPageBeatSheet(context.Background(), in, phase1, coverCompleter{}, nil, "", false)
 	if !rescued.Sheet.Valid() || rescued.Sheet.Source != animation.BeatSourceLLM {
 		t.Fatalf("export director should rescue: reason=%s source=%s", rescued.Reason, rescued.Sheet.Source)
 	}

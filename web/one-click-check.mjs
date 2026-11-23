@@ -232,6 +232,16 @@ test('一键成片抽屉先选片种，套用请求带 filmForm', () => {
   assert.match(src, /oneClickFilmForm/, '页面要持有片种状态');
   assert.match(src, /const filmForm = oneClickFilmForm/, '关窗之后仍要用点击当时的片种');
   assert.match(src, /applyAnimationToAll\([\s\S]*filmForm\)/, '套用请求必须带 filmForm');
+  assert.match(drawer, /editor\.oneClickFilmFormHint/, '抽屉要说明逐页片种会被跳过');
+});
+
+test('一键成片可勾选导演加强，导出请求带 directBeats', () => {
+  const src = readFileSync(new URL('./src/pages/ProjectEditor.tsx', import.meta.url), 'utf8');
+  const drawer = readFileSync(new URL('./src/pages/projectEditor/OneClickDrawer.tsx', import.meta.url), 'utf8');
+  assert.match(drawer, /editor\.oneClickDirectBeats/, '抽屉里要有导演加强');
+  assert.match(src, /oneClickDirectBeats/, '页面要持有导演加强状态');
+  assert.match(src, /const directBeats = oneClickDirectBeats/, '关窗之后仍要用点击当时的值');
+  assert.match(src, /directBeats: directBeats && animation.length > 0/, '导出请求必须带 directBeats');
 });
 
 // 真机：只勾「套用动效到所有页面」再点开始生成，任务中心没有任务、成品库没有视频。

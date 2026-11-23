@@ -193,6 +193,7 @@ export const APPLY_ALL_REASON_KEYS: Record<string, string> = {
   locked: 'editor.animationApplyAllReasonLocked',
   approved: 'editor.animationApplyAllReasonApproved',
   manual_edits: 'editor.animationApplyAllReasonManual',
+  film_form_override: 'editor.animationApplyAllReasonFilmForm',
   duration_unknown: 'editor.animationApplyAllReasonNoVoice',
   page_unavailable: 'editor.animationApplyAllReasonPage',
   conflict: 'editor.animationApplyAllReasonConflict',

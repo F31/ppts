@@ -38,6 +38,9 @@ type DirectOptions struct {
 	Cache   bind.CompletionCache
 	ModelID string
 	Timeout time.Duration
+	// Refine 为真时，阶段 1 已经 Valid 也再问一次：用户在导出勾了「导演加强」。
+	// 模型失败或拍表不合格时仍退回 phase1。
+	Refine bool
 }
 
 const directorSystemPrompt = `你在做一件很窄的事：根据讲解稿，给这一页 PPT 排出注视节拍表。
@@ -59,13 +62,14 @@ endMs=0 表示持续到下一拍。`
 // Direct 在阶段 1 拍表无效时问模型要一份约束 JSON。永不因为模型而失败：
 // 没配模型、超时、输出不是拍表、校验一条都不该收，都退回 phase1。
 //
-// 阶段 1 已经 Valid、没有旁白、或候选不足 2 个时连请求都不发。
+// 阶段 1 已经 Valid 时默认连请求都不发（预览与未勾加强的导出）。
+// Refine 时对 Valid 拍表再问一次，失败仍用阶段 1。
 func Direct(ctx context.Context, in Input, phase1 Output, opt DirectOptions) Output {
-	if phase1.Sheet.Valid() {
-		return phase1
-	}
 	if phase1.Reason == ReasonNoSpeech {
 		phase1.DirectorFallback = DirectorFallbackNoSpeech
+		return phase1
+	}
+	if phase1.Sheet.Valid() && !opt.Refine {
 		return phase1
 	}
 	if opt.Model == nil {
@@ -78,7 +82,7 @@ func Direct(ctx context.Context, in Input, phase1 Output, opt DirectOptions) Out
 		return phase1
 	}
 
-	prompt := directorPromptFor(cands, in.Segments)
+	prompt := directorPromptFor(cands, in.Segments, phase1, opt.Refine)
 	timeout := opt.Timeout
 	if timeout <= 0 {
 		timeout = defaultDirectorTimeout
@@ -141,7 +145,7 @@ func completeDirector(ctx context.Context, prompt bind.ModelPrompt, opt DirectOp
 	return text, "", nil
 }
 
-func directorPromptFor(cands []bind.Element, segs []SpeechSeg) bind.ModelPrompt {
+func directorPromptFor(cands []bind.Element, segs []SpeechSeg, phase1 Output, refine bool) bind.ModelPrompt {
 	var b strings.Builder
 	b.WriteString("PAGE\n")
 	n := 0
@@ -177,6 +181,27 @@ func directorPromptFor(cands []bind.Element, segs []SpeechSeg) bind.ModelPrompt 
 		b.WriteString(" | ")
 		b.WriteString(clipDirectorText(s.Text, maxDirectorSegChars))
 		b.WriteByte('\n')
+	}
+	if refine && phase1.Sheet.Valid() && len(phase1.Sheet.Beats) > 0 {
+		b.WriteString("PHASE1\n")
+		for _, beat := range phase1.Sheet.Beats {
+			shot := beat.Shot
+			if shot == "" {
+				shot = animation.BeatShotGaze
+			}
+			b.WriteString("B ")
+			b.WriteString(strconv.FormatInt(beat.StartMs, 10))
+			b.WriteByte('-')
+			b.WriteString(strconv.FormatInt(beat.EndMs, 10))
+			b.WriteString(" | ")
+			b.WriteString(beat.SegmentID)
+			b.WriteString(" | ")
+			b.WriteString(beat.ShapeID)
+			b.WriteString(" | ")
+			b.WriteString(shot)
+			b.WriteByte('\n')
+		}
+		b.WriteString("若给不出至少两个不同 gaze shapeId 的更好排法，请原样复述 PHASE1。\n")
 	}
 	return bind.ModelPrompt{System: directorSystemPrompt, User: strings.TrimRight(b.String(), "\n")}
 }

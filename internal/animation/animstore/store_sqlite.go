@@ -43,13 +43,14 @@ func sqScanRevision(row rowScanner) (*animation.Revision, error) {
 		&tracks, &r.RenderedRevision, &updated); err != nil {
 		return nil, err
 	}
-	parsed, mode, err := unmarshalTracks(tracks)
+	decoded, err := unmarshalTracks(tracks)
 	if err != nil {
 		return nil, err
 	}
 	r.Status = animation.Status(status)
-	r.Tracks = parsed
-	r.MotionMode = mode
+	r.Tracks = decoded.Tracks
+	r.MotionMode = decoded.MotionMode
+	r.FormSource = decoded.FormSource
 	r.UpdatedAt = db.ParseTime(updated)
 	return &r, nil
 }

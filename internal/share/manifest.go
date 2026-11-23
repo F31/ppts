@@ -105,6 +105,8 @@ type SlideEntry struct {
 	LookCropPadPx int `json:"lookCropPadPx,omitempty"`
 	// ClearRects 是页眉大标题矩形。播放器把原页图再贴一层盖在纱之上。
 	ClearRects []SlideBox `json:"clearRects,omitempty"`
+	// Looks 是注视仍帧窗。有它时播放器按 MidMs 求值，与 MP4 look 链同一套时间。
+	Looks []SlideLook `json:"looks,omitempty"`
 	// Shots 把一页切成若干镜头切片（IR 的 page.shots 原样透传）。
 	// 为空时 Image 是唯一画面来源，与 M6-2 的清单逐字节一致。
 	Shots []SlideShot `json:"shots,omitempty"`
@@ -145,6 +147,15 @@ type SlideFocus struct {
 	Rect *SlideBox `json:"rect,omitempty"`
 	// VeilAlpha 矩形遮罩盖白的不透明度；(0,1]。缺省由播放器按 1-FOCUS_DIM_OPACITY。
 	VeilAlpha float64 `json:"veilAlpha,omitempty"`
+}
+
+// SlideLook 是一段注视的仍帧窗：播放器在 [StartMs, EndMs) 按 MidMs 求值。
+// FadeMs 是换框 overlay（本段开头），与 MP4 look=over 对齐。
+type SlideLook struct {
+	StartMs int64 `json:"startMs"`
+	EndMs   int64 `json:"endMs"`
+	MidMs   int64 `json:"midMs"`
+	FadeMs  int64 `json:"fadeMs,omitempty"`
 }
 
 // SlideOverlay 与 render.Overlay 同构；点坐标是画布像素。

@@ -5,8 +5,8 @@ package api
 // 为什么单独一个端点，而不是让前端循环调 GET ?default=true&preset=x + PUT：
 //   1. N 页就是 2N 次请求，中途失败会留下「前 10 页换了风格、后 13 页没换」的半成品，
 //      而且前端没有事务能力把它回滚；
-//   2. 「跳过人手改过的页」是存储侧判据（TriggerSource=manual / approved / locked），
-//      让前端判断等于把业务规则复制一份，必然走偏；
+//   2. 「跳过人手改过的页」是存储侧判据（TriggerSource=manual / approved / locked /
+//      FormSource=page），让前端判断等于把业务规则复制一份，必然走偏；
 //   3. 主流的整份套用（WPS 智能动画 / Canva Magic Animate）都是一次动作，
 //      逐页精修是之后的例外操作，不该反过来成为必经路径。
 //
@@ -296,6 +296,10 @@ func (h *AnimationHandler) applyOneSlide(ctx context.Context, userID string, key
 				out.Reason = "manual_edits"
 				return out
 			}
+			if animation.HasPageFilmForm(prev) {
+				out.Reason = "film_form_override"
+				return out
+			}
 		}
 	}
 
@@ -329,7 +333,8 @@ func (h *AnimationHandler) applyOneSlide(ctx context.Context, userID string, key
 		TenantID: key.TenantID, ProjectID: key.ProjectID, SlideID: key.SlideID,
 		Language: key.Language, SourceRevisionNo: key.SourceRevisionNo,
 		Status: animation.StatusDraft, PresetID: presetID,
-		Intensity: dto.Intensity, MotionMode: dto.MotionMode, Tracks: dto.Tracks,
+		Intensity: dto.Intensity, MotionMode: dto.MotionMode,
+		FormSource: animation.FormSourceBatch, Tracks: dto.Tracks,
 	}
 	if err := rev.Validate(pc); err != nil {
 		out.Reason = "validation_failed"

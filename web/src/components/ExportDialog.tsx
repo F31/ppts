@@ -5,7 +5,12 @@ import type { AnimationExportOptions } from '../api';
 import { animationReasonText } from '../animationText';
 import { useDialogA11y } from '../a11y';
 
-export type ExportOptions = { burnSubtitles: boolean; includeNotes: boolean; animation: boolean };
+export type ExportOptions = {
+  burnSubtitles: boolean;
+  includeNotes: boolean;
+  animation: boolean;
+  directBeats: boolean;
+};
 
 // ExportFormat 比 ArtifactFormat 多一个 html_bundle：它不走 Connect（proto enum 里没有该值），
 // 而是走原生 REST 端点。两者对用户是同一层"导出格式"，故在这里统一。
@@ -66,6 +71,7 @@ export function ExportDialog({
   const [burnSubtitles, setBurnSubtitles] = useState(true);
   const [includeNotes, setIncludeNotes] = useState(true);
   const [wantAnimation, setWantAnimation] = useState(false);
+  const [wantDirectBeats, setWantDirectBeats] = useState(false);
   const warnRef = useRef<HTMLParagraphElement | null>(null);
 
   // 降级提示紧贴底部按钮，但对话框内容常常比可视区高（格式选项 7 行 + 说明），
@@ -160,6 +166,16 @@ export function ExportDialog({
             {canAnimate && wantAnimation && (
               <p className="form-hint" role="note">{t('editor.exportAnimationDegradeNote')}</p>
             )}
+            <label className={`export-checkbox${canAnimate && wantAnimation ? '' : ' disabled'}`}>
+              <input
+                type="checkbox"
+                checked={wantDirectBeats && wantAnimation && canAnimate}
+                disabled={busy || !canAnimate || !wantAnimation}
+                onChange={(e) => setWantDirectBeats(e.currentTarget.checked)}
+              />
+              {t('editor.exportDirectBeats')}
+            </label>
+            <p className="form-hint">{t('editor.exportDirectBeatsHint')}</p>
           </div>
         )}
 
@@ -189,7 +205,12 @@ export function ExportDialog({
             type="button"
             className="button-primary"
             disabled={busy}
-            onClick={() => onSubmit(format, { burnSubtitles, includeNotes, animation: wantAnimation && canAnimate })}
+            onClick={() => onSubmit(format, {
+              burnSubtitles,
+              includeNotes,
+              animation: wantAnimation && canAnimate,
+              directBeats: wantAnimation && canAnimate && wantDirectBeats
+            })}
           >
             {busy ? t('editor.exporting') : t('editor.exportSubmit')}
           </button>

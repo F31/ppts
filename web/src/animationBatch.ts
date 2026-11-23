@@ -16,6 +16,8 @@ export type BatchSnapshot = {
   revision?: number;
   presetId?: string;
   intensity?: number;
+  motionMode?: string;
+  formSource?: string;
   tracks?: unknown[];
 };
 

@@ -10,6 +10,7 @@ import { AbsoluteFill, Img, Sequence, staticFile, useCurrentFrame, useVideoConfi
 import {
   CALLOUT_STROKE,
   CALLOUT_STROKE_PX,
+  LOOK_HOLE_FEATHER_PX,
   calloutArriveScale,
   calloutLayout,
   easeOutCubic,
@@ -235,7 +236,7 @@ const PageView: React.FC<{
                 width: mask.rect.w,
                 height: mask.rect.h,
                 boxShadow: `0 0 0 9999px rgba(255,255,255,${mask.alpha})`,
-                filter: 'blur(8px)',
+                filter: `blur(${LOOK_HOLE_FEATHER_PX}px)`,
                 pointerEvents: 'none'
               }}
             />

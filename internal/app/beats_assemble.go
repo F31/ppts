@@ -73,11 +73,12 @@ func recordBeatMetrics(out beats.Output) {
 	}
 }
 
-func directPageBeatSheet(ctx context.Context, in beats.Input, phase1 beats.Output, model bind.ModelCompleter, cache bind.CompletionCache, modelID string) beats.Output {
+func directPageBeatSheet(ctx context.Context, in beats.Input, phase1 beats.Output, model bind.ModelCompleter, cache bind.CompletionCache, modelID string, refine bool) beats.Output {
 	return beats.Direct(ctx, in, phase1, beats.DirectOptions{
 		Model:   model,
 		Cache:   cache,
 		ModelID: modelID,
+		Refine:  refine,
 	})
 }
 

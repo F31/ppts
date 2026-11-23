@@ -102,6 +102,7 @@ func BundleAnimations(plan *render.Timeline, pagePNGs [][]byte, logger *slog.Log
 			LookCrop:      page.LookCrop,
 			LookCropPadPx: page.LookCropPadPx,
 			ClearRects:    slideBoxes(page.ClearRects),
+			Looks:         slideLooks(page),
 		}
 
 		if !hasAnimatedLayer(page.Layers) {
@@ -299,22 +300,15 @@ func cropShot(src image.Image, crop render.Box, canvasW, canvasH int) ([]byte, e
 // 单页失败记 nil 而不是整包失败：缺图在 M6-1 里本来就有降级路径（沿用/占位），
 // 打包器会处理。返回第一个错误只是为了日志能说清「为什么这页没动画」。
 func (h *ExportHandler) readPagePNGs(ctx context.Context, tenantID string, keys []string) ([][]byte, error) {
-	out := make([][]byte, len(keys))
+	fetched, errs := h.fetchTenantObjects(ctx, tenantID, keys, exportObjectFetchLimit)
 	var firstErr error
-	for i, key := range keys {
-		if key == "" {
-			continue
-		}
-		data, err := h.readTenantObject(ctx, tenantID, key)
+	for _, err := range errs {
 		if err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
+			firstErr = err
+			break
 		}
-		out[i] = data
 	}
-	return out, firstErr
+	return fetched, firstErr
 }
 
 // htmlBundleAnimations 产出成品包的分层素材；nil 表示这一包没有动画。
@@ -459,7 +453,8 @@ func hasAnimatedLayer(layers []render.Layer) bool {
 // 逐字节不变（清单里多一条空动画就是一次回归）。
 func pageNeedsBundleEntry(anim share.PageAnimation) bool {
 	if len(anim.Shots) > 0 || len(anim.Focus) > 0 || len(anim.Annotations) > 0 ||
-		len(anim.Overlays) > 0 || anim.LookCrop || len(anim.ClearRects) > 0 {
+		len(anim.Overlays) > 0 || anim.LookCrop || len(anim.ClearRects) > 0 ||
+		len(anim.Looks) > 0 {
 		return true
 	}
 	// type=none 与「没有转场」同义：写进清单只是多一个字段，播放器按 none 直接切。
@@ -545,6 +540,21 @@ func slideBoxes(in []render.Box) []share.SlideBox {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func slideLooks(page render.Page) []share.SlideLook {
+	if page.LookCrop {
+		return nil
+	}
+	in := render.GazeLooks(page)
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]share.SlideLook, len(in))
+	for i, w := range in {
+		out[i] = share.SlideLook{StartMs: w.StartMs, EndMs: w.EndMs, MidMs: w.MidMs, FadeMs: w.FadeMs}
 	}
 	return out
 }

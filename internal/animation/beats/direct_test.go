@@ -61,6 +61,61 @@ func validDirectorJSON() string {
 	return `{"beats":[{"startMs":0,"endMs":4000,"segmentId":"s1","shapeId":"c1","shot":"gaze"},{"startMs":4000,"endMs":0,"segmentId":"s1","shapeId":"c2","shot":"gaze"}]}`
 }
 
+func TestDirectRefineAsksWhenPhase1Valid(t *testing.T) {
+	cards := sixCards()
+	text := "首先看智慧城市。接着看智能办公。再看智能制造。然后是数字政务。还有智慧医疗。最后是产业升级。"
+	in := Input{
+		Elements:   cards,
+		CompileIDs: compileIDs(cards...),
+		Segments: []SpeechSeg{{
+			ID: "s1", Text: text, StartMs: 0, EndMs: 60000, Method: tts.AlignEstimate,
+		}},
+	}
+	phase1 := Produce(in)
+	if !phase1.Sheet.Valid() {
+		t.Fatalf("fixture should be Valid: %s", phase1.Reason)
+	}
+	f := &fixedDirector{fn: func(_ context.Context, req bind.ModelPrompt) (bind.ModelCompletion, error) {
+		if !strings.Contains(req.User, "PHASE1") {
+			t.Fatalf("refine prompt must include PHASE1: %s", req.User)
+		}
+		return bind.ModelCompletion{Text: validDirectorJSON()}, nil
+	}}
+	got := Direct(context.Background(), in, phase1, DirectOptions{Model: f, Refine: true})
+	if f.calls != 1 {
+		t.Fatalf("calls=%d want 1", f.calls)
+	}
+	if got.Sheet.Source != animation.BeatSourceLLM || !got.Sheet.Valid() {
+		t.Fatalf("source=%s valid=%v", got.Sheet.Source, got.Sheet.Valid())
+	}
+}
+
+func TestDirectRefineKeepsPhase1OnFailure(t *testing.T) {
+	cards := sixCards()
+	text := "首先看智慧城市。接着看智能办公。再看智能制造。然后是数字政务。还有智慧医疗。最后是产业升级。"
+	in := Input{
+		Elements:   cards,
+		CompileIDs: compileIDs(cards...),
+		Segments: []SpeechSeg{{
+			ID: "s1", Text: text, StartMs: 0, EndMs: 60000, Method: tts.AlignEstimate,
+		}},
+	}
+	phase1 := Produce(in)
+	f := &fixedDirector{fn: func(context.Context, bind.ModelPrompt) (bind.ModelCompletion, error) {
+		return bind.ModelCompletion{Text: "not json"}, nil
+	}}
+	got := Direct(context.Background(), in, phase1, DirectOptions{Model: f, Refine: true})
+	if f.calls != 1 {
+		t.Fatalf("calls=%d", f.calls)
+	}
+	if got.Sheet.Source != phase1.Sheet.Source || !got.Sheet.Valid() {
+		t.Fatalf("must keep phase1: source=%s valid=%v fallback=%s", got.Sheet.Source, got.Sheet.Valid(), got.DirectorFallback)
+	}
+	if got.DirectorFallback != DirectorFallbackInvalidJSON {
+		t.Fatalf("fallback=%s", got.DirectorFallback)
+	}
+}
+
 func TestDirectSkipsWhenPhase1Valid(t *testing.T) {
 	cards := sixCards()
 	text := "首先看智慧城市。接着看智能办公。再看智能制造。然后是数字政务。还有智慧医疗。最后是产业升级。"

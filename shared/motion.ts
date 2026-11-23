@@ -145,6 +145,36 @@ export function framesForDuration(durationMs: number, fps: number): number {
 /** 焦点切换的缺省过渡时长。与 `internal/render` 的缺省值同一个数。 */
 export const FOCUS_FADE_MS = 240;
 
+/** 注视孔边羽化（px）。Remotion/HTML 遮罩 blur，Go 免 Chrome 仍帧同一宽度。 */
+export const LOOK_HOLE_FEATHER_PX = 8;
+
+/** 注视仍帧窗：MP4 look 链按 midMs 取样，HTML 有 looks 时同一套钟。 */
+export type LookWindow = {
+  startMs: number;
+  endMs: number;
+  midMs: number;
+  fadeMs?: number;
+};
+
+/**
+ * 把页内时间收成 look 仍帧取样点。没有 looks 时原样返回（旧包、非注视页）。
+ * 换框 fadeMs 内在相邻两窗 midMs 之间 easeOutCubic，对应 MP4 overlay。
+ */
+export function lookClock(tMs: number, looks?: LookWindow[] | null): number {
+  if (!looks || looks.length === 0) return tMs;
+  let i = 0;
+  for (let k = 1; k < looks.length; k++) {
+    if (looks[k].startMs <= tMs) i = k;
+  }
+  const cur = looks[i];
+  const fade = cur.fadeMs ?? 0;
+  if (i === 0 || !(fade > 0) || tMs >= cur.startMs + fade) {
+    return cur.midMs;
+  }
+  const p = easeOutCubic(Math.min(1, Math.max(0, (tMs - cur.startMs) / fade)));
+  return looks[i - 1].midMs + (cur.midMs - looks[i - 1].midMs) * p;
+}
+
 /**
  * 非焦点元素保留的不透明度。
  *

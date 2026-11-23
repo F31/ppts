@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/share"
@@ -25,13 +26,17 @@ func (h *ExportHandler) htmlBundleInput(ctx context.Context, job *pipeline.Job, 
 	}
 	// 页图先读一遍：挖空必须基于原始 PNG（转码后再挖取色会偏），而 builder 也要写它们。
 	// 读到的字节同时交给两边，避免同一份对象读两次。
+	doneAssets := observability.ExportStage(ctx, observability.ExportStageAssets)
 	pagePNGs, pngErr := h.readPagePNGs(ctx, job.TenantID, snapshot.PagePNGKeys)
+	doneAssets()
 	if pngErr != nil && h.logger != nil {
 		// 读失败不致命：打包器会退回按 key 再读一次。留痕是为了让「包很慢」有解释。
 		h.logger.Warn("export: read page images for html bundle failed; bundle will fall back to re-reading",
 			"job", job.ID, "error", pngErr)
 	}
+	doneAssemble := observability.ExportStage(ctx, observability.ExportStageAssemble)
 	pages, animErr := h.htmlBundleAnimations(ctx, job, snapshot, bundle, pagePNGs)
+	doneAssemble()
 	if animErr != nil {
 		// 动画是增强层：组装不出来就出静态包，与 M6-1 逐像素一致。
 		// 但必须留痕——用户会看到「我勾了动画，包里的页面却不动」。
@@ -92,7 +97,9 @@ func (h *ExportHandler) packHTMLBundle(ctx context.Context, job *pipeline.Job, s
 	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger).
 		SetAudioEncoder(h.audioEncoder()).
 		SetPageImageEncoder(h.pageImageEncoder)
+	donePack := observability.ExportStage(ctx, observability.ExportStagePack)
 	manifest, err := builder.Build(ctx, in, tmp)
+	donePack()
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("export job: pack html bundle: %w", err)
@@ -121,7 +128,9 @@ func (h *ExportHandler) packHTMLSingle(ctx context.Context, job *pipeline.Job, s
 	builder := share.NewBundleBuilder(tenantObjectReader{handler: h, tenantID: job.TenantID}, h.logger).
 		SetAudioEncoder(h.audioEncoder()).
 		SetPageImageEncoder(h.pageImageEncoder)
+	donePack := observability.ExportStage(ctx, observability.ExportStagePack)
 	data, manifest, err := builder.BuildSingle(ctx, in)
+	donePack()
 	if err != nil {
 		return nil, fmt.Errorf("export job: pack single-file html: %w", err)
 	}

@@ -194,7 +194,9 @@ type Revision struct {
 	Intensity        float64 // 统一缩放幅度/时长，[MinIntensity, MaxIntensity]
 	// MotionMode 是 "gaze" | "entrance" | "gaze+entrance"；空串由 InferMotionMode 推断。
 	// 持久化在 tracks 列的包装对象里，不是单独一列。
-	MotionMode       string `json:"motionMode,omitempty"`
+	MotionMode string `json:"motionMode,omitempty"`
+	// FormSource 是 "batch" | "page"；空串表示旧行未记录。与 MotionMode 同列。
+	FormSource       string `json:"formSource,omitempty"`
 	Tracks           []*Track
 	RenderedRevision int64      // 最近一次成功渲染对应的 Revision；< Revision 表示过期
 	Shots            []ShotSpec `json:"shots,omitempty"` // 页内镜头切片（见 render.PageShotInput）
@@ -415,8 +417,9 @@ func (r *Revision) Size() int {
 		PresetID   string   `json:"presetId"`
 		Intensity  float64  `json:"intensity"`
 		MotionMode string   `json:"motionMode,omitempty"`
+		FormSource string   `json:"formSource,omitempty"`
 		Tracks     []*Track `json:"tracks"`
-	}{PresetID: r.PresetID, Intensity: r.Intensity, MotionMode: r.MotionMode, Tracks: r.Tracks}
+	}{PresetID: r.PresetID, Intensity: r.Intensity, MotionMode: r.MotionMode, FormSource: r.FormSource, Tracks: r.Tracks}
 	b, err := json.Marshal(payload)
 	if err != nil { // 结构本身可序列化，这里只可能是极端情况
 		return 0

@@ -379,10 +379,10 @@ func (a *AnimationPageAssembler) pageBeatSheet(ctx context.Context, in Animation
 	if !ran {
 		return nil, nil
 	}
-	if !out.Sheet.Valid() && a.director != nil {
+	if a.director != nil {
 		if c, err := a.director(ctx, in.TenantID); err == nil && c != nil {
 			modelID := directorModelID(c)
-			out = directPageBeatSheet(ctx, beatIn, out, c, a.dirCache, modelID)
+			out = directPageBeatSheet(ctx, beatIn, out, c, a.dirCache, modelID, in.Snapshot.DirectBeats)
 		}
 	}
 	recordBeatMetrics(out)

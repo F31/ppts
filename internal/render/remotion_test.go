@@ -280,6 +280,9 @@ func TestSegmentEnvLooksOnce(t *testing.T) {
 	if !strings.Contains(env.Encoding, "still=plate2") {
 		t.Fatalf("encoding = %q, want still=plate2", env.Encoding)
 	}
+	if !strings.Contains(env.Encoding, "paint=feather") {
+		t.Fatalf("encoding = %q, want paint=feather", env.Encoding)
+	}
 	if !strings.Contains(env.Encoding, "pointer=1") {
 		t.Fatalf("encoding = %q, want pointer=1", env.Encoding)
 	}

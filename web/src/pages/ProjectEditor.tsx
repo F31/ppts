@@ -263,6 +263,7 @@ export function ProjectEditor({
   const [oneClickSteps, setOneClickSteps] = useState({ script: true, voice: true, animation: true, export: true });
   const [oneClickPreset, setOneClickPreset] = useState('business-calm');
   const [oneClickFilmForm, setOneClickFilmForm] = useState<'gaze' | 'reveal'>('gaze');
+  const [oneClickDirectBeats, setOneClickDirectBeats] = useState(false);
   const [oneClickRunning, setOneClickRunning] = useState(false);
   // 状态要等下一次渲染才变，连点「开始」会在那之前进两次。用 ref 挡住第二次。
   const oneClickLockRef = useRef(false);
@@ -1721,6 +1722,7 @@ export function ProjectEditor({
     const steps = { ...oneClickSteps };
     const preset = oneClickPreset;
     const filmForm = oneClickFilmForm;
+    const directBeats = oneClickDirectBeats;
     const language = oneDraftLanguage;
     const sourceMode = oneDraftSource;
     const mode = oneDraftMode;
@@ -1867,6 +1869,7 @@ export function ProjectEditor({
             animation,
             // 固化编辑器里微调好的字幕偏移（草稿按 timelineKey 存），导出后三处播放器共用。
             displayOffsetMs: readDraftOffset(status.timelineKey, projectId),
+            directBeats: directBeats && animation.length > 0,
             idempotencyKey: `oneclick-export-${projectId}-${Date.now()}`
           });
           exportJobId = result.jobId;
@@ -1936,6 +1939,7 @@ export function ProjectEditor({
         includeNotes: options.includeNotes,
         animation,
         displayOffsetMs: readDraftOffset(realManifest.timelineKey, projectId),
+        directBeats: options.directBeats && animation.length > 0,
         idempotencyKey
       });
       setNarrationStatus({ phase: 'ready', message: t('editor.exportQueuedId', { jobId: result.jobId }) });
@@ -2645,6 +2649,8 @@ export function ProjectEditor({
           onOverwriteChange={(overwrite) => patchDraftForm({ overwrite })}
           onPresetChange={setOneClickPreset}
           onFilmFormChange={setOneClickFilmForm}
+          directBeats={oneClickDirectBeats}
+          onDirectBeatsChange={setOneClickDirectBeats}
           onRun={() => void runOneClick()}
         />
       )}

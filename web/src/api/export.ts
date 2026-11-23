@@ -153,6 +153,8 @@ export async function createArtifactExport(
     animation?: AnimationExportSpec[];
     /** 字幕显示偏移（毫秒，正=高亮延后），导出时固化进成品与分享包；缺省 0。 */
     displayOffsetMs?: number;
+    /** 导出可选：阶段 1 已 Valid 也再问拍表导演，失败仍用阶段 1。 */
+    directBeats?: boolean;
     idempotencyKey: string;
   }
 ): Promise<ExportJobResult> {
@@ -174,6 +176,7 @@ export async function createArtifactExport(
       // 空数组与不传等价（后端归一成 nil，两者得到同一个快照键）。
       animation: specs.length > 0 ? { specs } : undefined,
       displayOffsetMs: params.displayOffsetMs ?? 0,
+      directBeats: specs.length > 0 && params.directBeats ? true : undefined,
       idempotencyKey: params.idempotencyKey
     });
   }

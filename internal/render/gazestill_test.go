@@ -74,9 +74,28 @@ func TestPaintGazeLookPunchesHoleAndCallout(t *testing.T) {
 	if int(out.R) <= int(blue.R)+20 {
 		t.Fatalf("veiled pixel %+v should be lighter than blue", out)
 	}
-	edge := got.NRGBAAt(hole.X, hole.Y)
+	edge := got.NRGBAAt(hole.X+hole.W/2, hole.Y)
 	if edge.R < 200 || edge.G < 160 {
 		t.Fatalf("callout edge %+v want yellow", edge)
+	}
+	far := got.NRGBAAt(70, 40)
+	near := got.NRGBAAt(hole.X+hole.W+3, hole.Y+hole.H/2)
+	if int(near.R) <= int(inside.R)+8 {
+		t.Fatalf("feather pixel %+v should lift off the hole", near)
+	}
+	if int(near.R) >= int(far.R)-2 {
+		t.Fatalf("feather pixel %+v should be softer than full veil %+v", near, far)
+	}
+}
+
+func TestGazeCalloutLayoutRoundsRect(t *testing.T) {
+	wide := gazeCalloutLayout(Box{X: 0, Y: 0, W: 200, H: 80}, AnnotationShapeRect)
+	if wide.Circle || wide.R < 6 || wide.R > 12 {
+		t.Fatalf("wide rect radius = %+v, want min(12, 80*0.08)=6.4", wide)
+	}
+	circle := gazeCalloutLayout(Box{X: 10, Y: 10, W: 40, H: 30}, AnnotationShapeCircle)
+	if !circle.Circle || circle.W != 30 || circle.H != 30 {
+		t.Fatalf("circle layout = %+v", circle)
 	}
 }
 

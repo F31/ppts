@@ -126,6 +126,7 @@ type ShareSlide = SlideCue & {
   lookCrop?: boolean;
   lookCropPadPx?: number;
   clearRects?: { x: number; y: number; w: number; h: number }[];
+  looks?: { startMs: number; endMs: number; midMs: number; fadeMs?: number }[];
 };
 
 type ShareAudio = {
@@ -477,7 +478,8 @@ function mount(): void {
       overlays: lowPower || degraded ? [] : slide.overlays,
       lookCrop: slide.lookCrop,
       pageImage: slide.image,
-      clearRects: slide.clearRects
+      clearRects: slide.clearRects,
+      looks: slide.looks
     });
   };
 
@@ -699,7 +701,8 @@ function mount(): void {
       overlays: lowPower || degraded ? [] : before.overlays,
       lookCrop: before.lookCrop,
       pageImage: before.image,
-      clearRects: before.clearRects
+      clearRects: before.clearRects,
+      looks: before.looks
     });
     // 前一页取的是它自己的末帧（与 MP4 的 PageView tMs=durationMs 一致）：
     // 若该页有出场动画，末帧才是正确画面，不能拿底板顶替。

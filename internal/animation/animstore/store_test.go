@@ -257,6 +257,26 @@ func runStoreSuite(t *testing.T, s Store, tenantID, projectID string) {
 		_ = updated
 	})
 
+	t.Run("formSource envelope round-trips", func(t *testing.T) {
+		slide := "slide-form-source"
+		rev := sampleRevision(tenantID, projectID, slide, 1)
+		rev.MotionMode = animation.MotionModeGaze
+		rev.FormSource = animation.FormSourcePage
+		if _, err := s.Put(ctx, rev, 0); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+		got, err := s.Get(ctx, animation.Key{TenantID: tenantID, ProjectID: projectID, SlideID: slide, Language: "zh-CN", SourceRevisionNo: 1})
+		if err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		if got.FormSource != animation.FormSourcePage {
+			t.Fatalf("formSource = %q, want page", got.FormSource)
+		}
+		if got.MotionMode != animation.MotionModeGaze {
+			t.Fatalf("mode = %q", got.MotionMode)
+		}
+	})
+
 	t.Run("tenant isolation", func(t *testing.T) {
 		slide := "slide-isolation"
 		if _, err := s.Put(ctx, sampleRevision(tenantID, projectID, slide, 0), 0); err != nil {

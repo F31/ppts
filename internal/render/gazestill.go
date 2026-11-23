@@ -15,6 +15,9 @@ import (
 // 与 shared/motion.ts FOCUS_DIM_OPACITY=0.55 对齐：非焦点区盖白 1-0.55。
 const gazePaintVeilAlpha = 0.45
 
+// gazeHoleFeatherPx 与 Remotion/HTML 遮罩 filter:blur(8px) 同宽。
+const gazeHoleFeatherPx = 8
+
 var (
 	gazeCalloutColor = color.NRGBA{R: 0xff, G: 0xd1, B: 0x66, A: 0xff}
 	gazeCalloutPx    = 3
@@ -244,10 +247,10 @@ func paintGazeLookOn(composed, base *image.NRGBA, page Page, tMs int64, canvasW,
 	if base == nil {
 		base = composed
 	}
-	hole, veil := gazeHoleAt(page, tMs)
+	hole, veil, shape := gazeHoleAt(page, tMs)
 	overlayWhite(dst, veil)
 	if hole != nil {
-		copyBox(dst, composed, *hole, canvasW, canvasH)
+		punchGazeHole(dst, composed, *hole, shape)
 	}
 	for _, r := range page.ClearRects {
 		copyBox(dst, base, r, canvasW, canvasH)
@@ -259,7 +262,7 @@ func paintGazeLookOn(composed, base *image.NRGBA, page Page, tMs int64, canvasW,
 	return dst
 }
 
-func gazeHoleAt(page Page, tMs int64) (*Box, float64) {
+func gazeHoleAt(page Page, tMs int64) (*Box, float64, string) {
 	var cur *FocusSpan
 	for i := range page.Focus {
 		f := &page.Focus[i]
@@ -276,14 +279,145 @@ func gazeHoleAt(page Page, tMs int64) (*Box, float64) {
 		break
 	}
 	if cur == nil {
-		return nil, 0
+		return nil, 0, AnnotationShapeRect
 	}
 	veil := gazePaintVeilAlpha
 	if cur.VeilAlpha > 0 && cur.VeilAlpha <= 1 {
 		veil = cur.VeilAlpha
 	}
-	r := *cur.Rect
-	return &r, veil
+	shape := AnnotationShapeRect
+	rect := *cur.Rect
+	for _, a := range page.Annotations {
+		if a.Kind != AnnotationCallout || a.Rect == nil {
+			continue
+		}
+		if tMs < a.StartMs {
+			continue
+		}
+		if a.EndMs > 0 && tMs >= a.EndMs {
+			continue
+		}
+		if a.Shape != "" {
+			shape = a.Shape
+		}
+		rect = *a.Rect
+		break
+	}
+	return &rect, veil, shape
+}
+
+func punchGazeHole(dst, src *image.NRGBA, hole Box, shape string) {
+	if src == nil {
+		return
+	}
+	layout := gazeCalloutLayout(hole, shape)
+	b := dst.Bounds()
+	pad := gazeHoleFeatherPx + 2
+	x0 := layout.X - pad
+	y0 := layout.Y - pad
+	x1 := layout.X + layout.W + pad
+	y1 := layout.Y + layout.H + pad
+	if x0 < b.Min.X {
+		x0 = b.Min.X
+	}
+	if y0 < b.Min.Y {
+		y0 = b.Min.Y
+	}
+	if x1 > b.Max.X {
+		x1 = b.Max.X
+	}
+	if y1 > b.Max.Y {
+		y1 = b.Max.Y
+	}
+	sb := src.Bounds()
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			d := gazeHoleSDF(float64(x)+0.5, float64(y)+0.5, layout)
+			cover := 1 - clamp01(d/float64(gazeHoleFeatherPx))
+			if cover <= 0 {
+				continue
+			}
+			if x < sb.Min.X || x >= sb.Max.X || y < sb.Min.Y || y >= sb.Max.Y {
+				continue
+			}
+			di := dst.PixOffset(x, y)
+			si := src.PixOffset(x, y)
+			ia := 1 - cover
+			dst.Pix[di+0] = uint8(float64(src.Pix[si+0])*cover + float64(dst.Pix[di+0])*ia)
+			dst.Pix[di+1] = uint8(float64(src.Pix[si+1])*cover + float64(dst.Pix[di+1])*ia)
+			dst.Pix[di+2] = uint8(float64(src.Pix[si+2])*cover + float64(dst.Pix[di+2])*ia)
+			dst.Pix[di+3] = uint8(float64(src.Pix[si+3])*cover + float64(dst.Pix[di+3])*ia)
+		}
+	}
+}
+
+type gazeLayout struct {
+	X, Y, W, H int
+	R          float64
+	Circle     bool
+}
+
+func gazeCalloutLayout(rect Box, shape string) gazeLayout {
+	if shape == AnnotationShapeCircle {
+		s := rect.W
+		if rect.H < s {
+			s = rect.H
+		}
+		return gazeLayout{
+			X: rect.X + (rect.W-s)/2, Y: rect.Y + (rect.H-s)/2,
+			W: s, H: s, R: float64(s) / 2, Circle: true,
+		}
+	}
+	short := rect.W
+	if rect.H < short {
+		short = rect.H
+	}
+	r := math.Min(12, float64(short)*0.08)
+	if r > float64(short)/2 {
+		r = float64(short) / 2
+	}
+	if r < 0 {
+		r = 0
+	}
+	return gazeLayout{X: rect.X, Y: rect.Y, W: rect.W, H: rect.H, R: r}
+}
+
+func gazeHoleSDF(px, py float64, layout gazeLayout) float64 {
+	if layout.Circle {
+		cx := float64(layout.X) + float64(layout.W)/2
+		cy := float64(layout.Y) + float64(layout.H)/2
+		return math.Hypot(px-cx, py-cy) - layout.R
+	}
+	return sdfRoundRect(px, py, float64(layout.X), float64(layout.Y), float64(layout.W), float64(layout.H), layout.R)
+}
+
+func sdfRoundRect(px, py, x, y, w, h, r float64) float64 {
+	if r < 0 {
+		r = 0
+	}
+	cx := x + w/2
+	cy := y + h/2
+	dx := math.Abs(px-cx) - w/2 + r
+	dy := math.Abs(py-cy) - h/2 + r
+	ax := dx
+	if ax < 0 {
+		ax = 0
+	}
+	ay := dy
+	if ay < 0 {
+		ay = 0
+	}
+	return math.Min(math.Max(dx, dy), 0) + math.Hypot(ax, ay) - r
+}
+
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 func overlayWhite(img *image.NRGBA, a float64) {
@@ -360,11 +494,42 @@ func strokeCallout(img *image.NRGBA, hole Box, page Page, tMs int64, canvasW, ca
 	if r.W < 2 || r.H < 2 {
 		return
 	}
-	if shape == AnnotationShapeCircle {
-		strokeCircle(img, r)
+	strokeCalloutLayout(img, gazeCalloutLayout(r, shape), gazeCalloutPx, gazeCalloutColor)
+}
+
+func strokeCalloutLayout(img *image.NRGBA, layout gazeLayout, px int, c color.NRGBA) {
+	if px < 1 || layout.W < 2 || layout.H < 2 {
 		return
 	}
-	strokeRect(img, r, gazeCalloutPx, gazeCalloutColor)
+	half := float64(px) / 2
+	b := img.Bounds()
+	pad := px + 2
+	x0 := layout.X - pad
+	y0 := layout.Y - pad
+	x1 := layout.X + layout.W + pad
+	y1 := layout.Y + layout.H + pad
+	if x0 < b.Min.X {
+		x0 = b.Min.X
+	}
+	if y0 < b.Min.Y {
+		y0 = b.Min.Y
+	}
+	if x1 > b.Max.X {
+		x1 = b.Max.X
+	}
+	if y1 > b.Max.Y {
+		y1 = b.Max.Y
+	}
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			d := gazeHoleSDF(float64(x)+0.5, float64(y)+0.5, layout)
+			cover := 1 - clamp01(math.Abs(d+half)-half)
+			if cover <= 0 {
+				continue
+			}
+			blendNRGBA(img, b, x, y, c, cover)
+		}
+	}
 }
 
 func paintPointers(img *image.NRGBA, page Page, tMs int64, canvasW, canvasH int) {
@@ -382,25 +547,6 @@ func paintPointers(img *image.NRGBA, page Page, tMs int64, canvasW, canvasH int)
 	}
 }
 
-func strokeRect(img *image.NRGBA, box Box, px int, c color.NRGBA) {
-	if px < 1 || box.W < 1 || box.H < 1 {
-		return
-	}
-	b := img.Bounds()
-	x0, y0 := box.X, box.Y
-	x1, y1 := box.X+box.W, box.Y+box.H
-	for t := 0; t < px; t++ {
-		for x := x0; x < x1; x++ {
-			setNRGBA(img, b, x, y0+t, c)
-			setNRGBA(img, b, x, y1-1-t, c)
-		}
-		for y := y0; y < y1; y++ {
-			setNRGBA(img, b, x0+t, y, c)
-			setNRGBA(img, b, x1-1-t, y, c)
-		}
-	}
-}
-
 func fillGazeRect(img *image.NRGBA, box Box, c color.NRGBA) {
 	b := img.Bounds()
 	for y := box.Y; y < box.Y+box.H; y++ {
@@ -410,44 +556,27 @@ func fillGazeRect(img *image.NRGBA, box Box, c color.NRGBA) {
 	}
 }
 
-func strokeCircle(img *image.NRGBA, box Box) {
-	s := box.W
-	if box.H < s {
-		s = box.H
-	}
-	cx := box.X + box.W/2
-	cy := box.Y + box.H/2
-	r := s / 2
-	if r < 2 {
-		return
-	}
-	b := img.Bounds()
-	outer := r
-	inner := r - gazeCalloutPx
-	if inner < 1 {
-		inner = 1
-	}
-	for y := cy - outer; y <= cy + outer; y++ {
-		for x := cx - outer; x <= cx + outer; x++ {
-			dx := x - cx
-			dy := y - cy
-			d2 := dx*dx + dy*dy
-			if d2 <= outer*outer && d2 >= inner*inner {
-				setNRGBA(img, b, x, y, gazeCalloutColor)
-			}
-		}
-	}
+func setNRGBA(img *image.NRGBA, b image.Rectangle, x, y int, c color.NRGBA) {
+	blendNRGBA(img, b, x, y, c, 1)
 }
 
-func setNRGBA(img *image.NRGBA, b image.Rectangle, x, y int, c color.NRGBA) {
-	if x < b.Min.X || x >= b.Max.X || y < b.Min.Y || y >= b.Max.Y {
+func blendNRGBA(img *image.NRGBA, b image.Rectangle, x, y int, c color.NRGBA, a float64) {
+	if x < b.Min.X || x >= b.Max.X || y < b.Min.Y || y >= b.Max.Y || a <= 0 {
 		return
 	}
+	if a > 1 {
+		a = 1
+	}
 	i := img.PixOffset(x, y)
-	img.Pix[i+0] = c.R
-	img.Pix[i+1] = c.G
-	img.Pix[i+2] = c.B
-	img.Pix[i+3] = c.A
+	ia := 1 - a
+	img.Pix[i+0] = uint8(float64(c.R)*a + float64(img.Pix[i+0])*ia)
+	img.Pix[i+1] = uint8(float64(c.G)*a + float64(img.Pix[i+1])*ia)
+	img.Pix[i+2] = uint8(float64(c.B)*a + float64(img.Pix[i+2])*ia)
+	outA := a*float64(c.A)/255 + float64(img.Pix[i+3])/255*ia
+	if outA > 1 {
+		outA = 1
+	}
+	img.Pix[i+3] = uint8(outA * 255)
 }
 
 func cloneNRGBA(src image.Image) *image.NRGBA {

@@ -126,6 +126,12 @@ func TestBundleAnimationsGazeFocusHasNoPlate(t *testing.T) {
 	if len(pages[0].Focus) != 1 {
 		t.Fatalf("focus must still ship in the bundle, got %d", len(pages[0].Focus))
 	}
+	if len(pages[0].Looks) != 1 {
+		t.Fatalf("gaze looks = %d, want 1 still window", len(pages[0].Looks))
+	}
+	if pages[0].Looks[0].StartMs != 0 || pages[0].Looks[0].MidMs < 0 || pages[0].Looks[0].MidMs >= 1000 {
+		t.Fatalf("look = %+v", pages[0].Looks[0])
+	}
 }
 
 // 没有 clip 的轨道不该出图：挖空它只会多一张几乎等于底板的位图，

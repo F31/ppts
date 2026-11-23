@@ -42,6 +42,10 @@ func TestLookWindowsFiveSpotlightsOver80s(t *testing.T) {
 			t.Fatalf("look[%d] mid %d not in [%d,%d)", i, w.MidMs, w.StartMs, w.EndMs)
 		}
 	}
+	pub := GazeLooks(page)
+	if len(pub) != 5 || pub[0].StartMs != 0 || pub[1].FadeMs != lookFirstBoxMS {
+		t.Fatalf("GazeLooks = %+v", pub)
+	}
 }
 
 func TestLookWindowsEntranceSettlesLater(t *testing.T) {

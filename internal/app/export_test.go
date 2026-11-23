@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"image"
 	"image/color"
 	_ "image/jpeg"
@@ -22,6 +23,7 @@ import (
 	"github.com/F31/ppts/internal/integrations"
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/project"
 	"github.com/F31/ppts/internal/share"
@@ -170,6 +172,49 @@ func TestExportHandlerPublishesMP4Artifact(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(os.TempDir(), "ppts-export-job-export.mp4")); !os.IsNotExist(statErr) {
 		t.Fatalf("mp4 temp file should be removed after publish, stat err = %v", statErr)
 	}
+}
+
+func TestExportMP4RecordsWallClockStages(t *testing.T) {
+	encoder, err := media.NewMP4Encoder()
+	if err != nil {
+		t.Skipf("ffmpeg unavailable: %v", err)
+	}
+	objects := objectstore.NewLocal(t.TempDir(), nil)
+	bundle, bundleKey := seedTimelineBundle(t, objects)
+	audioKey, _ := objectstore.Parse(bundle.Timeline.Slides[0].Segments[0].AudioKey)
+	putObject(t, objects, audioKey, pcmWAVForExportTest(1000, 100), "audio/wav")
+	pageKey := objectstore.ObjectKey{TenantID: "tenant-1", ProjectID: "project-1", Revision: "render", AssetType: "render", AssetID: "slide-1", Ext: "png"}
+	putObject(t, objects, pageKey, pngForExportTest(), "image/png")
+	before := exportStageJobs(observability.ExportStageAssets)
+	handler := NewExportHandler(&artifactStoreStub{}, &stepRecorder{}, objects, encoder)
+	if err := handler.Handle(context.Background(), exportJob(t, ExportSnapshot{
+		Format: artifact.FormatMP4, TimelineKey: bundleKey.String(), PagePNGKeys: []string{pageKey.String()}, Width: 320, Height: 180, FPS: 20,
+	})); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if exportStageJobs(observability.ExportStageAssets) <= before {
+		t.Fatal("assets stage was not recorded")
+	}
+	for _, stage := range []string{observability.ExportStageTimeline, observability.ExportStageMixAudio, observability.ExportStageEncode, observability.ExportStagePublish} {
+		if exportStageJobs(stage) == 0 {
+			t.Fatalf("stage %s has no jobs", stage)
+		}
+	}
+}
+
+func exportStageJobs(stage string) int64 {
+	m, _ := expvar.Get("ppts_export_stage_jobs_total").(*expvar.Map)
+	if m == nil {
+		return 0
+	}
+	var got int64
+	key := "stage=" + stage
+	m.Do(func(kv expvar.KeyValue) {
+		if kv.Key == key {
+			got = kv.Value.(*expvar.Int).Value()
+		}
+	})
+	return got
 }
 
 // assertArtifactSourceFields 断言成品行写全了「绑定时间轴 + 来源版本」三列。

@@ -124,6 +124,29 @@ func TestSnapshotHashNormalizesEmptyAnimation(t *testing.T) {
 	}
 }
 
+func TestSnapshotDirectBeatsAffectsIdentity(t *testing.T) {
+	base := ExportSnapshot{Format: artifact.FormatMP4, TimelineKey: "t/1/b.zip"}
+	off, err := snapshotHashOf(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := SnapshotBytes(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "directBeats") {
+		t.Fatalf("未勾选导演加强不得进快照：%s", b)
+	}
+	base.DirectBeats = true
+	on, err := snapshotHashOf(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on == off {
+		t.Fatal("导演加强必须改变 snapshotHash")
+	}
+}
+
 func TestSnapshotHashTracksAnimationSpecs(t *testing.T) {
 	off := ExportSnapshot{Format: artifact.FormatMP4, TimelineKey: "t/1/b.zip"}
 	offHash, err := snapshotHashOf(off)

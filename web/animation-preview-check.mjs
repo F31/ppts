@@ -173,10 +173,11 @@ test('整份应用：跳过原因按种类计数并翻成本地文案，不把�
       { slideId: 'a', status: 'skipped', reason: 'duration_unknown' },
       { slideId: 'b', status: 'skipped', reason: 'duration_unknown' },
       { slideId: 'c', status: 'skipped', reason: 'manual_edits' },
-      { slideId: 'd', status: 'applied' }
+      { slideId: 'd', status: 'applied' },
+      { slideId: 'e', status: 'skipped', reason: 'film_form_override' }
     ]
   }, t);
-  assert.equal(out, 'editor.animationApplyAllReasonNoVoice 2、editor.animationApplyAllReasonManual 1');
+  assert.equal(out, 'editor.animationApplyAllReasonNoVoice 2、editor.animationApplyAllReasonManual 1、editor.animationApplyAllReasonFilmForm 1');
 });
 
 test('整份应用：未登记的原因原样显示，applied 页不进统计', () => {

@@ -36,6 +36,9 @@ export type OneClickDrawerProps = {
   onOverwriteChange: (value: OneDraftOverwrite) => void;
   onPresetChange: (id: string) => void;
   onFilmFormChange: (value: 'gaze' | 'reveal') => void;
+  /** 导出时导演加强：阶段 1 已 Valid 也再问模型。 */
+  directBeats: boolean;
+  onDirectBeatsChange: (value: boolean) => void;
   onRun: () => void;
 };
 
@@ -46,7 +49,7 @@ export type OneClickDrawerProps = {
  * 因为它要串联讲稿生成、配音任务、动效套用与导出四条既有通道）。
  */
 export function OneClickDrawer(props: OneClickDrawerProps) {
-  const { dialogRef, t, running, steps, mode, overwrite, preset, filmForm, phase, error, done, canRun } = props;
+  const { dialogRef, t, running, steps, mode, overwrite, preset, filmForm, directBeats, phase, error, done, canRun } = props;
   // 关闭只收起抽屉。流水线在编辑器里继续，不因关窗而中断。
 
   return (
@@ -177,6 +180,16 @@ export function OneClickDrawer(props: OneClickDrawerProps) {
             </label>
           </fieldset>
           <p className="narration-note">{t('editor.oneClickFilmFormHint')}</p>
+          <label>
+            <input
+              type="checkbox"
+              checked={directBeats}
+              disabled={running || !steps.export}
+              onChange={(e) => props.onDirectBeatsChange(e.currentTarget.checked)}
+            />
+            {t('editor.oneClickDirectBeats')}
+          </label>
+          <p className="narration-note">{t('editor.oneClickDirectBeatsHint')}</p>
           <label className="field-label">
             {t('editor.oneClickPreset')}
             <select value={preset} disabled={running || !steps.animation} onChange={(e) => props.onPresetChange(e.currentTarget.value)}>

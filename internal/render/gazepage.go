@@ -43,6 +43,27 @@ const (
 	lookCropXFadeMS   int64 = 200
 )
 
+// GazeLook 是一页里一段注视的时间窗。MidMs 是 MP4 仍帧取样点，HTML 求值跟这个钟走。
+type GazeLook struct {
+	StartMs int64
+	EndMs   int64
+	MidMs   int64
+	FadeMs  int64
+}
+
+// GazeLooks 把 lookWindows 收成导出/清单用的公开结构。没有矩形焦点时为空。
+func GazeLooks(page Page) []GazeLook {
+	ws := lookWindows(page)
+	if len(ws) == 0 {
+		return nil
+	}
+	out := make([]GazeLook, len(ws))
+	for i, w := range ws {
+		out[i] = GazeLook{StartMs: w.StartMs, EndMs: w.EndMs, MidMs: w.MidMs, FadeMs: w.FadeMs}
+	}
+	return out
+}
+
 func lookWindows(page Page) []lookWindow {
 	var spans []FocusSpan
 	for _, f := range page.Focus {

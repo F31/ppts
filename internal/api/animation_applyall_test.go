@@ -307,6 +307,139 @@ func TestApplyAllFilmFormGazeWinsOverWithEntrance(t *testing.T) {
 	}
 }
 
+func TestApplyAllWritesFormSourceBatch(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{"presetId": "teaching-clear"})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("apply-all: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.FormSource != animation.FormSourceBatch {
+		t.Fatalf("formSource = %q, want batch", rev.FormSource)
+	}
+}
+
+func TestApplyAllSkipsPageFilmFormOverride(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1", "slide-2"}, nil)
+	if status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "filmForm": "gaze",
+	}); status != http.StatusOK || payload["applied"] != float64(2) {
+		t.Fatalf("seed apply-all: %d %v", status, payload)
+	}
+
+	body := validPutBody(1)
+	body["motionMode"] = animation.MotionModeGazeEntrance
+	putURL := "/api/projects/" + anTestProject + "/slides/slide-1/animation?sourceRevisionNo=1&language=zh-CN"
+	if status, payload := doJSON(t, http.MethodPut, ts.URL+putURL, body); status != http.StatusOK {
+		t.Fatalf("PUT 显现失败: %d %v", status, payload)
+	}
+	before, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.FormSource != animation.FormSourcePage {
+		t.Fatalf("PUT 后 formSource = %q, want page", before.FormSource)
+	}
+
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "launch-bold", "filmForm": "gaze",
+	})
+	if status != http.StatusOK || payload["applied"] != float64(1) || payload["skipped"] != float64(1) {
+		t.Fatalf("应跳过页级片种: %d %v", status, payload)
+	}
+	results := applyAllResultOf(t, payload)
+	if results["slide-1"].Reason != "film_form_override" || results["slide-2"].Status != "applied" {
+		t.Fatalf("跳过原因不对: %+v", results)
+	}
+	after, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision != before.Revision || after.PresetID != before.PresetID {
+		t.Fatalf("页级片种被冲掉: before=%d/%s after=%d/%s",
+			before.Revision, before.PresetID, after.Revision, after.PresetID)
+	}
+}
+
+func TestApplyAllOverwriteReclaimsFilmFormOverride(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	if status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "filmForm": "gaze",
+	}); status != http.StatusOK {
+		t.Fatalf("seed: %d %v", status, payload)
+	}
+	body := validPutBody(1)
+	body["motionMode"] = animation.MotionModeGazeEntrance
+	putURL := "/api/projects/" + anTestProject + "/slides/slide-1/animation?sourceRevisionNo=1&language=zh-CN"
+	if status, payload := doJSON(t, http.MethodPut, ts.URL+putURL, body); status != http.StatusOK {
+		t.Fatalf("PUT: %d %v", status, payload)
+	}
+
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "launch-bold", "filmForm": "gaze", "overwrite": true,
+	})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("overwrite 应覆盖页级片种: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.FormSource != animation.FormSourceBatch {
+		t.Fatalf("overwrite formSource = %q, want batch", rev.FormSource)
+	}
+	if rev.PresetID != "launch-bold" {
+		t.Fatalf("preset = %s", rev.PresetID)
+	}
+}
+
+func TestPutSameFilmFormKeepsBatchSource(t *testing.T) {
+	ts, store := newApplyAllServer(t, []string{"slide-1"}, nil)
+	if status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "teaching-clear", "filmForm": "gaze",
+	}); status != http.StatusOK {
+		t.Fatalf("seed: %d %v", status, payload)
+	}
+	body := validPutBody(1)
+	body["motionMode"] = animation.MotionModeGaze
+	putURL := "/api/projects/" + anTestProject + "/slides/slide-1/animation?sourceRevisionNo=1&language=zh-CN"
+	if status, payload := doJSON(t, http.MethodPut, ts.URL+putURL, body); status != http.StatusOK {
+		t.Fatalf("PUT: %d %v", status, payload)
+	}
+	rev, err := store.Get(context.Background(), animation.Key{
+		TenantID: db.LocalTenantID, ProjectID: anTestProject, SlideID: "slide-1",
+		Language: "zh-CN", SourceRevisionNo: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rev.FormSource != animation.FormSourceBatch {
+		t.Fatalf("same form formSource = %q, want batch", rev.FormSource)
+	}
+
+	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{
+		"presetId": "launch-bold", "filmForm": "gaze",
+	})
+	if status != http.StatusOK || payload["applied"] != float64(1) {
+		t.Fatalf("未改片种应能被一键覆盖: %d %v", status, payload)
+	}
+}
+
 func TestApplyAllRejectsUnknownFilmForm(t *testing.T) {
 	ts, _ := newApplyAllServer(t, []string{"slide-1"}, nil)
 	status, payload := doJSON(t, http.MethodPost, ts.URL+applyAllURL, map[string]any{

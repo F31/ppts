@@ -16,6 +16,7 @@ import (
 	"github.com/F31/ppts/internal/integrations/objectstore"
 	sliderenderer "github.com/F31/ppts/internal/integrations/render"
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 	"github.com/F31/ppts/internal/render"
 	"github.com/F31/ppts/internal/share"
@@ -58,6 +59,9 @@ type ExportSnapshot struct {
 	// 序列化字节与 snapshotHash 不变。它进入快照意味着：不同偏移得到不同成品身份，
 	// 符合"静态成品发出后行为不变"的设计（改偏移=重新导出，而非后台动态注入）。
 	DisplayOffsetMs int64 `json:"displayOffsetMs,omitempty"`
+	// DirectBeats 是导出可选的导演加强：阶段 1 已 Valid 也再问模型。
+	// 失败仍用阶段 1。omitempty：未勾选时旧快照字节不变。
+	DirectBeats bool `json:"directBeats,omitempty"`
 }
 
 // AnimationOptions 固定「这片视频依据哪些动画规格渲染」。
@@ -218,6 +222,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 	if job.TenantID == "" || job.ProjectID == "" || snapshot.TimelineKey == "" || snapshot.Format == "" {
 		return errors.New("export job: incomplete input snapshot")
 	}
+	clock := observability.NewExportClock()
+	ctx = observability.WithExportClock(ctx, clock)
+	defer h.logExportClock(clock, job, snapshot.Format)
 	snapshotHash, err := snapshotHashOf(snapshot)
 	if err != nil {
 		return fmt.Errorf("export job: %w", err)
@@ -234,7 +241,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		_ = h.steps.MarkStep(ctx, step)
 		return err
 	}
+	doneTimeline := observability.ExportStage(ctx, observability.ExportStageTimeline)
 	bundle, err := h.loadTimelineBundle(ctx, job.TenantID, snapshot.TimelineKey)
+	doneTimeline()
 	if err != nil {
 		return failStep(err)
 	}
@@ -264,7 +273,9 @@ func (h *ExportHandler) Handle(ctx context.Context, job *pipeline.Job) error {
 		return failStep(err)
 	}
 	defer out.Close()
+	donePublish := observability.ExportStage(ctx, observability.ExportStagePublish)
 	a, err := h.storeArtifact(ctx, job, snapshot, snapshotHash, durationMS, sourceRevisionNo, sourceDisplayName, out)
+	donePublish()
 	if err != nil {
 		return failStep(err)
 	}
@@ -464,6 +475,15 @@ func (h *ExportHandler) warnExport(msg string, job *pipeline.Job, err error) {
 	if h.logger != nil {
 		h.logger.Warn(msg, "job", job.ID, "error", err)
 	}
+}
+
+func (h *ExportHandler) logExportClock(clock *observability.ExportClock, job *pipeline.Job, format artifact.Format) {
+	snap := clock.Finish(string(format))
+	if h.logger == nil || job == nil {
+		return
+	}
+	attrs := append([]any{"job", job.ID, "format", format}, snap.Attrs()...)
+	h.logger.Info("export wall clock", attrs...)
 }
 
 // tenantObjectReader 把对象存储适配成 share.ResourceReader。

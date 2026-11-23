@@ -359,6 +359,8 @@ export type AnimationBatchSnapshot = {
   revision?: number;
   presetId?: string;
   intensity?: number;
+  motionMode?: string;
+  formSource?: string;
   tracks?: unknown[];
 };
 

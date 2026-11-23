@@ -819,6 +819,9 @@ export function AnimationEditor({
                   <span>{t('editor.filmFormReveal')}</span>
                 </label>
                 <p className="form-hint">{t('editor.filmFormHint')}</p>
+                {draft.formSource === 'page' && (
+                  <p className="form-hint">{t('editor.filmFormPageOverride')}</p>
+                )}
               </section>
 
               {/* 逐条轨道收在高级里。默认只留风格和强度。 */}

@@ -55,6 +55,8 @@ export type AnimationSpec = {
   intensity: number;
   /** gaze | entrance | gaze+entrance；缺省由服务端按 clip 推断。 */
   motionMode?: string;
+  /** batch = 一键套用；page = 本页改过片种。一键套用（不覆盖）会跳过 page。 */
+  formSource?: 'batch' | 'page' | string;
   tracks: AnimationTrack[];
   /** true 表示保存时页时长未知（还没配音），渲染前必须用真实时长重校验。 */
   needsDurationRecheck?: boolean;
@@ -222,7 +224,7 @@ export function withFilmForm(
   form: FilmForm,
   templates?: Record<string, EntranceClipTemplate[]>
 ): AnimationSpec {
-  return withEntranceLayers(draft, form === FILM_FORM_REVEAL, templates);
+  return { ...withEntranceLayers(draft, form === FILM_FORM_REVEAL, templates), formSource: 'page' };
 }
 
 export function withMotionMode(draft: AnimationSpec, mode: string): AnimationSpec {

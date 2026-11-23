@@ -25,8 +25,10 @@ import {
   CALLOUT_STROKE_PX,
   CALLOUT_ARRIVE_MS,
   FOCUS_FADE_MS,
+  LOOK_HOLE_FEATHER_PX,
   calloutArriveScale,
   calloutLayout,
+  lookClock,
   evaluateAnnotation,
   evaluateLayer,
   evaluateOverlay,
@@ -37,7 +39,8 @@ import {
   focusMasks,
   focusOpacity,
   isPageHeading,
-  originCss
+  originCss,
+  type LookWindow
 } from '../../../shared/motion.ts';
 import type { Annotation, FocusSpan, Layer, Motion, Overlay } from '../../../shared/types.ts';
 
@@ -71,6 +74,8 @@ export type CompileOptions = {
   clearRects?: { x: number; y: number; w: number; h: number }[];
   /** v1 页级信号/数据 token。 */
   overlays?: Overlay[];
+  /** 注视仍帧窗。有它时层/纱/圈选按 midMs 求值，与 MP4 look 链对齐。 */
+  looks?: LookWindow[];
 };
 
 /** 一页编译结果：每层一个 Animation，按清单顺序。 */
@@ -106,6 +111,14 @@ function pushFadeSamples(times: number[], at: number, fade: number): void {
 }
 
 /** 去重并夹到 [0,pageMs]，且必须严格递增（WAAPI 遇到重复 offset 会跳一下）。 */
+function pushLookSamples(times: number[], looks?: LookWindow[]): void {
+  if (!looks) return;
+  for (const look of looks) {
+    times.push(look.startMs, look.midMs, look.endMs);
+    if (look.fadeMs && look.fadeMs > 0) pushFadeSamples(times, look.startMs, look.fadeMs);
+  }
+}
+
 function timelinePoints(marks: number[], pageMs: number): number[] {
   const points: number[] = [];
   for (const t of marks) {
@@ -164,6 +177,7 @@ export function compileKeyframes(
       if (f.endMs) pushFadeSamples(times, f.endMs, fade);
     }
   }
+  pushLookSamples(times, opts.looks);
   times.push(pageMs);
   const points = timelinePoints(times, pageMs);
   if (points.length < 2) return null;
@@ -178,8 +192,9 @@ export function compileKeyframes(
 
   const frames: Keyframe[] = [];
   for (const t of points) {
-    const state = evaluateLayer(layer, t);
-    const dim = elementId ? focusDim(opts.focus, t)[elementId] ?? 0 : 0;
+    const tEval = lookClock(t, opts.looks);
+    const state = evaluateLayer(layer, tEval);
+    const dim = elementId ? focusDim(opts.focus, tEval)[elementId] ?? 0 : 0;
     const opacity = clamp01(state.opacity * focusOpacity(dim));
     const tx = opts.reduceMotion ? 0 : state.tx;
     const ty = opts.reduceMotion ? 0 : state.ty;
@@ -600,7 +615,8 @@ export function pickStageLayers(
 export function focusMaskKeyframes(
   focus: FocusSpan[] | undefined,
   index: number,
-  pageMs: number
+  pageMs: number,
+  looks?: LookWindow[]
 ): Keyframe[] | null {
   const span = focus?.[index];
   const rect = span?.rect;
@@ -614,10 +630,11 @@ export function focusMaskKeyframes(
   // 也不能在 `next.startMs` 补归零点——那一刻它仍是满的，归零会让整页闪一帧全亮。
   const next = focus[index + 1];
   if (next) pushFadeSamples(marks, next.startMs, next.fadeMs ?? FOCUS_FADE_MS);
+  pushLookSamples(marks, looks);
   marks.push(pageMs);
   const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
     // 同一时刻可能有两块（换段窗口）：只取自己那一段，别的由它自己的节点画。
-    const mine = focusMasks(focus, t).find((m) => m.index === index);
+    const mine = focusMasks(focus, lookClock(t, looks)).find((m) => m.index === index);
     return { offset: t / pageMs, opacity: String(round(mine ? mine.alpha : 0)) };
   });
   return frames.length >= 2 ? frames : null;
@@ -664,14 +681,14 @@ function buildFocusMasks(
     // 一个透明的 div + 无穷大的阴影 = 中间留孔的白纱。孔边用 blur 羽化：
     // 硬边会在网格线上切出一亮一淡的接缝。
     node.style.boxShadow = '0 0 0 9999px #fff';
-    node.style.filter = 'blur(8px)';
+    node.style.filter = `blur(${LOOK_HOLE_FEATHER_PX}px)`;
     // 初始「不压暗」是终态：没有 WAAPI 时只是少一层遮罩，不会把整页盖白。
     node.style.opacity = '0';
     container.append(node);
 
     let animation: Animation | null = null;
     if (canAnimate && pageMs > 0) {
-      const frames = focusMaskKeyframes(focus, i, pageMs);
+      const frames = focusMaskKeyframes(focus, i, pageMs, opts.looks);
       if (frames) {
         animation = node.animate(frames, {
           duration: Math.max(1, pageMs),
@@ -687,17 +704,19 @@ function buildFocusMasks(
   return out;
 }
 
-export function calloutKeyframes(a: Annotation, pageMs: number): Keyframe[] | null {
+export function calloutKeyframes(a: Annotation, pageMs: number, looks?: LookWindow[]): Keyframe[] | null {
   if (a.kind !== 'callout' || !a.rect || !(a.rect.w > 0) || !(a.rect.h > 0) || !(pageMs > 0)) return null;
   const fade = a.fadeMs ?? FOCUS_FADE_MS;
   const marks: number[] = [0];
   pushFadeSamples(marks, a.startMs, fade);
   pushFadeSamples(marks, a.startMs, CALLOUT_ARRIVE_MS);
   if (a.endMs) pushFadeSamples(marks, a.endMs, fade);
+  pushLookSamples(marks, looks);
   marks.push(pageMs);
   const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
-    const ev = evaluateAnnotation(a, t);
-    const k = calloutArriveScale(a.startMs, t);
+    const tEval = lookClock(t, looks);
+    const ev = evaluateAnnotation(a, tEval);
+    const k = calloutArriveScale(a.startMs, tEval);
     return {
       offset: t / pageMs,
       opacity: String(round(ev ? ev.opacity : 0)),
@@ -738,7 +757,7 @@ function buildCallouts(
 
     let animation: Animation | null = null;
     if (canAnimate && pageMs > 0) {
-      const frames = calloutKeyframes(a, pageMs);
+      const frames = calloutKeyframes(a, pageMs, opts.looks);
       if (frames) {
         animation = node.animate(frames, {
           duration: Math.max(1, pageMs),
@@ -754,15 +773,16 @@ function buildCallouts(
   return out;
 }
 
-export function pointerKeyframes(a: Annotation, pageMs: number): Keyframe[] | null {
+export function pointerKeyframes(a: Annotation, pageMs: number, looks?: LookWindow[]): Keyframe[] | null {
   if (a.kind !== 'pointer' || !a.rect || !(a.rect.w > 0) || !(a.rect.h > 0) || !(pageMs > 0)) return null;
   const fade = a.fadeMs ?? FOCUS_FADE_MS;
   const marks: number[] = [0];
   pushFadeSamples(marks, a.startMs, fade);
   if (a.endMs) pushFadeSamples(marks, a.endMs, fade);
+  pushLookSamples(marks, looks);
   marks.push(pageMs);
   const frames: Keyframe[] = timelinePoints(marks, pageMs).map((t) => {
-    const ev = evaluateAnnotation(a, t);
+    const ev = evaluateAnnotation(a, lookClock(t, looks));
     return { offset: t / pageMs, opacity: String(round(ev ? ev.opacity : 0)) };
   });
   return frames.length >= 2 ? frames : null;
@@ -796,7 +816,7 @@ function buildPointers(
 
     let animation: Animation | null = null;
     if (canAnimate && pageMs > 0) {
-      const frames = pointerKeyframes(a, pageMs);
+      const frames = pointerKeyframes(a, pageMs, opts.looks);
       if (frames) {
         animation = node.animate(frames, {
           duration: Math.max(1, pageMs),

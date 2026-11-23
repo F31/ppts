@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/F31/ppts/internal/media"
+	"github.com/F31/ppts/internal/observability"
 	"github.com/F31/ppts/internal/pipeline"
 )
 
@@ -65,6 +66,7 @@ func (h *ExportHandler) animatedVideo(ctx context.Context, job *pipeline.Job, sn
 	if bundle == nil || bundle.Timeline == nil {
 		return nil
 	}
+	doneAssemble := observability.ExportStage(ctx, observability.ExportStageAssemble)
 	req, err := h.animationPages(ctx, AnimationPageInput{
 		Snapshot:  snapshot,
 		TenantID:  job.TenantID,
@@ -73,6 +75,7 @@ func (h *ExportHandler) animatedVideo(ctx context.Context, job *pipeline.Job, sn
 		PagePNGs:  pagePNGs,
 		Subtitles: bundle.Timeline.Subtitles,
 	})
+	doneAssemble()
 	if err != nil {
 		h.logAnimationSkip("animation: assemble pages: " + err.Error())
 		return nil
@@ -191,8 +194,10 @@ func (h *ExportHandler) tryAnimation(ctx context.Context, req AnimationRequest, 
 		Height:           opts.Height,
 		OutPath:          outPath,
 	}
+	doneConcat := observability.ExportStage(ctx, observability.ExportStageConcat)
 	cr, err := h.encoder.ConcatSegments(ctx, concatOpts)
 	if err != nil {
+		doneConcat()
 		h.logAnimationSkip("animation: concat: " + err.Error())
 		return nil
 	}
@@ -206,6 +211,7 @@ func (h *ExportHandler) tryAnimation(ctx context.Context, req AnimationRequest, 
 			}
 			still, serr := h.stillSegment(ctx, opts, workDir, i)
 			if serr != nil {
+				doneConcat()
 				h.logAnimationSkip(fmt.Sprintf("animation: still segment for drifted page %d: %v", i, serr))
 				return nil
 			}
@@ -217,14 +223,17 @@ func (h *ExportHandler) tryAnimation(ctx context.Context, req AnimationRequest, 
 		sort.Ints(drifted)
 		cr, err = h.encoder.ConcatSegments(ctx, concatOpts)
 		if err != nil {
+			doneConcat()
 			h.logAnimationSkip("animation: concat after drift repair: " + err.Error())
 			return nil
 		}
 		if len(cr.Drifted) > 0 {
+			doneConcat()
 			h.logAnimationSkip(fmt.Sprintf("animation: still drifted after repair on pages %v", cr.Drifted))
 			return nil
 		}
 	}
+	doneConcat()
 	f, err := os.Open(outPath)
 	if err != nil {
 		h.logAnimationSkip("animation: open output: " + err.Error())

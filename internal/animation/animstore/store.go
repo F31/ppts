@@ -60,22 +60,29 @@ type BatchOp struct {
 	Expected int64
 }
 
-// tracksColumn 是 tracks jsonb 列的包装：把 MotionMode 和轨道放在同一列里，
+// tracksColumn 是 tracks jsonb 列的包装：把 MotionMode / FormSource 和轨道放在同一列里，
 // 避免加 SQL 列。旧行仍是裸数组。
 type tracksColumn struct {
 	MotionMode string             `json:"motionMode,omitempty"`
+	FormSource string             `json:"formSource,omitempty"`
 	Tracks     []*animation.Track `json:"tracks"`
+}
+
+type decodedTracks struct {
+	Tracks     []*animation.Track
+	MotionMode string
+	FormSource string
 }
 
 // marshalTracks / unmarshalTracks 是列编码细节：tracks 存成 JSON 文本，
 // NULL 与 `[]` 在读端统一成空切片。只有存储实现在意这件事，因此留在本包。
 //
-// 未写 motionMode 时仍写成裸数组，已保存的入场规格字节不变。
+// 未写 motionMode 且未写 formSource 时仍写成裸数组，已保存的入场规格字节不变。
 func marshalTracks(rev *animation.Revision) ([]byte, error) {
 	if rev == nil {
 		return []byte("[]"), nil
 	}
-	if rev.MotionMode == "" {
+	if rev.MotionMode == "" && rev.FormSource == "" {
 		if rev.Tracks == nil {
 			return []byte("[]"), nil
 		}
@@ -85,7 +92,7 @@ func marshalTracks(rev *animation.Revision) ([]byte, error) {
 		}
 		return b, nil
 	}
-	env := tracksColumn{MotionMode: rev.MotionMode, Tracks: rev.Tracks}
+	env := tracksColumn{MotionMode: rev.MotionMode, FormSource: rev.FormSource, Tracks: rev.Tracks}
 	if env.Tracks == nil {
 		env.Tracks = []*animation.Track{}
 	}
@@ -96,31 +103,31 @@ func marshalTracks(rev *animation.Revision) ([]byte, error) {
 	return b, nil
 }
 
-func unmarshalTracks(raw []byte) ([]*animation.Track, string, error) {
+func unmarshalTracks(raw []byte) (decodedTracks, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
-		return []*animation.Track{}, "", nil
+		return decodedTracks{Tracks: []*animation.Track{}}, nil
 	}
 	switch raw[0] {
 	case '[':
 		var tracks []*animation.Track
 		if err := json.Unmarshal(raw, &tracks); err != nil {
-			return nil, "", fmt.Errorf("animation: unmarshal tracks: %w", err)
+			return decodedTracks{}, fmt.Errorf("animation: unmarshal tracks: %w", err)
 		}
 		if tracks == nil {
 			tracks = []*animation.Track{}
 		}
-		return tracks, "", nil
+		return decodedTracks{Tracks: tracks}, nil
 	case '{':
 		var env tracksColumn
 		if err := json.Unmarshal(raw, &env); err != nil {
-			return nil, "", fmt.Errorf("animation: unmarshal tracks: %w", err)
+			return decodedTracks{}, fmt.Errorf("animation: unmarshal tracks: %w", err)
 		}
 		if env.Tracks == nil {
 			env.Tracks = []*animation.Track{}
 		}
-		return env.Tracks, env.MotionMode, nil
+		return decodedTracks{Tracks: env.Tracks, MotionMode: env.MotionMode, FormSource: env.FormSource}, nil
 	default:
-		return nil, "", fmt.Errorf("animation: tracks json: expected array or object")
+		return decodedTracks{}, fmt.Errorf("animation: tracks json: expected array or object")
 	}
 }

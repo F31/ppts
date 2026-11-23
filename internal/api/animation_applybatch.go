@@ -48,6 +48,7 @@ const (
 	batchReasonLocked   = "locked"
 	batchReasonApproved = "approved"
 	batchReasonManual   = "manual_edits"
+	batchReasonFilmForm = "film_form_override"
 	batchReasonNoPage   = "page_unavailable"
 	batchReasonNoDur    = "duration_unknown"
 	batchReasonValidate = "validation_failed"
@@ -71,6 +72,7 @@ type batchSlideSnapshot struct {
 	PresetID   string             `json:"presetId,omitempty"`
 	Intensity  float64            `json:"intensity,omitempty"`
 	MotionMode string             `json:"motionMode,omitempty"`
+	FormSource string             `json:"formSource,omitempty"`
 	Tracks     []*animation.Track `json:"tracks,omitempty"`
 }
 
@@ -245,7 +247,8 @@ func (h *AnimationHandler) applyBatch(w http.ResponseWriter, r *http.Request) {
 			TenantID: key.TenantID, ProjectID: key.ProjectID, SlideID: key.SlideID,
 			Language: key.Language, SourceRevisionNo: key.SourceRevisionNo,
 			Status: animation.StatusDraft, PresetID: source.PresetID,
-			Intensity: source.Intensity, MotionMode: dto.MotionMode, Tracks: dto.Tracks,
+			Intensity: source.Intensity, MotionMode: dto.MotionMode,
+			FormSource: animation.FormSourceBatch, Tracks: dto.Tracks,
 		}
 		if err := rev.Validate(pc); err != nil {
 			res.Reason = batchReasonValidate
@@ -397,7 +400,8 @@ func (h *AnimationHandler) restoreBatch(w http.ResponseWriter, r *http.Request) 
 			TenantID: key.TenantID, ProjectID: key.ProjectID, SlideID: key.SlideID,
 			Language: key.Language, SourceRevisionNo: key.SourceRevisionNo,
 			Status: animation.StatusDraft, PresetID: snap.PresetID,
-			Intensity: snap.Intensity, MotionMode: snap.MotionMode, Tracks: tracks,
+			Intensity: snap.Intensity, MotionMode: snap.MotionMode,
+			FormSource: snap.FormSource, Tracks: tracks,
 		}
 		if err := rev.Validate(pc); err != nil {
 			res.Status, res.Reason = "skipped", batchReasonValidate
@@ -438,6 +442,9 @@ func batchGuard(prev *animation.Revision, overwrite bool) string {
 		if hasManualAnimationEdits(prev) {
 			return batchReasonManual
 		}
+		if animation.HasPageFilmForm(prev) {
+			return batchReasonFilmForm
+		}
 	}
 	return ""
 }
@@ -453,7 +460,7 @@ func snapshotOf(slideID string, prev *animation.Revision) batchSlideSnapshot {
 	return batchSlideSnapshot{
 		SlideID: slideID, Existed: true, Revision: prev.Revision,
 		PresetID: prev.PresetID, Intensity: prev.Intensity,
-		MotionMode: prev.MotionMode, Tracks: tracks,
+		MotionMode: prev.MotionMode, FormSource: prev.FormSource, Tracks: tracks,
 	}
 }
 

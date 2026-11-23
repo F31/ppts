@@ -1,5 +1,26 @@
 # 变更说明
 
+## v0.6.2
+
+页级片种不被一键冲掉；免 Chrome 纱/框贴近预览；HTML 跟 MP4 同一套 look 钟；导出可选导演加强。已有成品需重新导出才会换像素和 HTML 钟。
+
+### 行为变化
+
+- 逐页编辑器切换注视/显现并保存后，规格记下 `formSource=page`。一键成片与「应用到全部页面」在 overwrite=false 时跳过这些页，原因码 `film_form_override`。
+- 一键套用写入 `formSource=batch`。只改强度/预设、片种没变的保存仍是 batch，可被一键覆盖。
+- 免 Chrome 注视仍帧的纱孔 8px 羽化、圈选圆角（`min(12px, 短边×0.08)`），与 Remotion/HTML 遮罩 blur 和 `calloutLayout` 对齐。片段键 `paint=feather`。
+- HTML 成品包写入 `looks`（start/end/mid/fade）。播放器按 midMs 求值层/纱/圈选，换框 overlay 跟 MP4 look 链同一套钟。旧包没有 looks 时仍走 240ms 淡入。
+- 导演加强是导出可选项（一键成片 / 导出对话框）。未勾选时行为不变：阶段 1 已 Valid 不问模型，封面等拍表不够的页导出仍会补救。勾选后对 Valid 拍表再问一次，提示里带上 PHASE1；失败或不合格仍用阶段 1。预览不跑。快照字段 `directBeats`，未勾选时旧成品键不变。
+- 导出墙钟拆开：日志 `export wall clock` 带 total/other 与各阶段毫秒；指标 `ppts_export_duration_ms_total{format}`、`ppts_export_stage_duration_ms_total{stage}`。页图、配音、渲染片段最多 4 路并发拉取，不改画面。
+
+### 运维
+
+- 发布构建 `GOWORK=off`。备份 `/opt/ppts/bin/ppts.backup-before-v0.6.2` 与 `ppts-renderer.backup-before-v0.6.2`。控制台硬刷新。
+
+### 回滚
+
+还原 `ppts.backup-before-v0.6.2` 与 `ppts-renderer.backup-before-v0.6.2` 后重启 `ppts-api` `ppts-worker` `ppts-renderer`。已保存的 `formSource=page` 规格在旧二进制上会被忽略，一键套用会重新覆盖这些页。
+
 ## v0.6.1
 
 一键成片把「注视 / 显现」做成片种选择。口味（商务稳重等）仍是第二项。已保存规格不改；重新套用才切换片种。

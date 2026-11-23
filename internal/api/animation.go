@@ -333,6 +333,7 @@ type animationSpecDTO struct {
 	PresetID         string             `json:"presetId"`
 	Intensity        float64            `json:"intensity"`
 	MotionMode       string             `json:"motionMode,omitempty"`
+	FormSource       string             `json:"formSource,omitempty"`
 	Tracks           []*animation.Track `json:"tracks"`
 	// NeedsDurationRecheck 为 true 表示保存时页时长未知（尚无配音），
 	// 渲染前必须用真实时长重新校验（设计方案 §5.4 V3 的编辑期例外）。
@@ -381,6 +382,7 @@ func animationDTO(rev *animation.Revision, needsRecheck bool) animationSpecDTO {
 		PresetID:             rev.PresetID,
 		Intensity:            rev.Intensity,
 		MotionMode:           rev.MotionMode,
+		FormSource:           rev.FormSource,
 		Tracks:               rev.Tracks,
 		NeedsDurationRecheck: needsRecheck,
 	}
@@ -575,8 +577,12 @@ func (h *AnimationHandler) put(w http.ResponseWriter, r *http.Request) {
 	}
 	// 来源降级（tasks 1.3）：整份 PUT 让服务端看不出「这条 trigger 是人改的」，
 	// 只能和上一版逐条比对。比对放在校验之后——body 本身非法时不必多读一次库。
+	// 片种相对上一版变了就标 FormSource=page，一键套用不会冲掉这一页。
 	if prev, gerr := h.store.Get(r.Context(), key); gerr == nil && prev != nil {
 		animation.ReconcileTriggerSources(prev, rev)
+		animation.ReconcileFormSource(prev, rev)
+	} else {
+		animation.ReconcileFormSource(nil, rev)
 	}
 	saved, err := h.store.Put(r.Context(), rev, *req.ExpectedRevision)
 	if err != nil {

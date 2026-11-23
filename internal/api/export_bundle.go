@@ -89,6 +89,8 @@ type bundleExportRequest struct {
 	// DisplayOffsetMs 是字幕显示偏移（毫秒，正=高亮延后），仅在导出时固化进成品与分享包。
 	// 0 = 无偏移。前端把编辑器里微调好的值随导出请求提交，保证成品发出后行为稳定。
 	DisplayOffsetMs int64 `json:"displayOffsetMs"`
+	// DirectBeats 是导出可选的导演加强。只在带动画时写入快照。
+	DirectBeats bool `json:"directBeats"`
 	// IdempotencyKey 是 header 的重试兜底：部分客户端无法设置自定义 header。
 	IdempotencyKey string `json:"idempotencyKey"`
 }
@@ -261,6 +263,9 @@ func (h *BundleExportHandler) create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	snapshot.Animation = animation
+	if animation != nil {
+		snapshot.DirectBeats = req.DirectBeats
+	}
 	// 与 Connect 入口保持同一套默认值：帧率缺省 30。
 	// 尺寸不在这里补：它已经由 canvasFor 按源页比例定好，再补一次会把竖屏改回 16:9。
 	if snapshot.FPS <= 0 {

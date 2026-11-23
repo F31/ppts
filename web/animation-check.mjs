@@ -37,6 +37,7 @@ const {
   withIntensity,
   withMotionMode,
   withEntranceLayers,
+  withFilmForm,
   wantsEntranceLayers,
   MOTION_MODE_GAZE,
   MOTION_MODE_GAZE_ENTRANCE,
@@ -237,6 +238,16 @@ test('withEntranceLayers 去掉勾选只删入场 clip，旧入场轨不动', ()
   assert.equal(leftover.motionMode, MOTION_MODE_GAZE);
   assert.equal(leftover.tracks[0].clips[0].type, 'fadeIn', '没有 spotlight 的旧入场轨必须保留');
   assert.equal(leftover.tracks[1].clips[0].type, 'slideIn');
+});
+
+test('withFilmForm 写页级 formSource，一键套用据此跳过', () => {
+  const spec = gazeSpec();
+  const reveal = withFilmForm(draftOf(spec), 'reveal', entranceTemplates);
+  assert.equal(reveal.motionMode, MOTION_MODE_GAZE_ENTRANCE);
+  assert.equal(reveal.formSource, 'page');
+  const gaze = withFilmForm(reveal, 'gaze');
+  assert.equal(gaze.motionMode, MOTION_MODE_GAZE);
+  assert.equal(gaze.formSource, 'page');
 });
 
 test('脏判据只看产物相关字段', () => {
@@ -1242,6 +1253,32 @@ const sampleKeyframes = (frames, pageMs, t) => {
   }
   return pts[pts.length - 1].v;
 };
+
+test('lookClock 把页内时间钉在 midMs，换框 overlay 才过渡', async () => {
+  const { lookClock } = await import('../shared/motion.ts');
+  const looks = [
+    { startMs: 0, endMs: 4000, midMs: 2000, fadeMs: 0 },
+    { startMs: 4000, endMs: 8000, midMs: 6000, fadeMs: 200 }
+  ];
+  assert.equal(lookClock(100, looks), 2000);
+  assert.equal(lookClock(3900, looks), 2000);
+  assert.equal(lookClock(4200, looks), 6000);
+  const mid = lookClock(4100, looks);
+  assert.ok(mid > 2000 && mid < 6000, `overlay mix mid=${mid}`);
+  assert.equal(lookClock(500, undefined), 500);
+});
+
+test('有 looks 时遮罩按 mid 保持，不再走 240ms 淡入', async () => {
+  const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');
+  const pageMs = 4000;
+  const focus = [{ startMs: 1000, elementId: 'card', fadeMs: 240, rect: { x: 10, y: 10, w: 40, h: 20 } }];
+  const looks = [{ startMs: 0, endMs: 4000, midMs: 2000, fadeMs: 0 }];
+  const frames = focusMaskKeyframes(focus, 0, pageMs, looks);
+  assert.ok(frames && frames.length >= 2);
+  const at0 = frames.find((f) => f.offset === 0);
+  assert.ok(at0, 'must sample t=0');
+  assert.ok(Math.abs(Number(at0.opacity) - 0.45) < 1e-6, `t=0 hold opacity=${at0.opacity}, want 0.45 (MP4 still)`);
+});
 
 test('矩形焦点：过渡区间里网页版也走曲线，不是一条弦', async () => {
   const { focusMaskKeyframes } = await import('./src/sharePlayer/animation.ts');

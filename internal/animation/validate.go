@@ -83,6 +83,15 @@ func (r *Revision) Validate(pc PageContext) error {
 			Status:  400,
 		}
 	}
+	if r.FormSource != "" && !ValidFormSource(r.FormSource) {
+		return &ValidationError{
+			Rule:    RuleStructure,
+			Field:   "formSource",
+			Message: fmt.Sprintf("unknown formSource %q", r.FormSource),
+			Hint:    "batch|page",
+			Status:  400,
+		}
+	}
 
 	// V5（页级部分）：强度。
 	if r.Intensity < MinIntensity || r.Intensity > MaxIntensity {
